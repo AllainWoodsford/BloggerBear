@@ -25,12 +25,14 @@ jobs:
           sudo apt-get install -y trivy
 
       - name: Install Bandit
-        run: python3 -m pip install --upgrade pip bandit
+        run: |
+          BANDIT_VERSION=1.7.10
+          python3 -m pip install --upgrade pip "bandit==${BANDIT_VERSION}"
 
       - name: Trivy IaC scan
         run: |
           if [ -d infra ]; then
-            trivy config infra/
+            trivy config --severity HIGH,CRITICAL --exit-code 1 infra/
           else
             echo "infra/ not present; skipping IaC scan"
           fi
@@ -38,7 +40,7 @@ jobs:
       - name: Trivy vulnerability/secret scan
         run: |
           if [ -d lambdas ]; then
-            trivy fs --scanners vuln,secret lambdas/
+            trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 lambdas/
           else
             echo "lambdas/ not present; skipping fs scan"
           fi
