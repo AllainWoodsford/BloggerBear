@@ -1,0 +1,94 @@
+name: terraform
+
+on:
+  pull_request:
+    paths:
+      - 'infra/**'
+      - '.github/workflows/terraform.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/terraform.yml'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          VERSION=1.9.8
+          curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${VERSION}/terraform_${VERSION}_linux_amd64.zip"
+          sudo apt-get update && sudo apt-get install -y unzip
+          unzip -o /tmp/terraform.zip -d /tmp
+          sudo mv /tmp/terraform /usr/local/bin/terraform
+          terraform version
+
+      - name: Terraform plan (all envs)
+        run: |
+          set -euo pipefail
+          if [ ! -d infra/environments ]; then
+            echo "No infra/environments directory; skipping"
+            exit 0
+          fi
+
+          found=0
+          for dir in infra/environments/*; do
+            [ -d "$dir" ] || continue
+            if ls "$dir"/*.tf >/dev/null 2>&1; then
+              found=1
+              echo "Running terraform checks in $dir"
+              terraform -chdir="$dir" init -backend=false
+              terraform -chdir="$dir" fmt -check
+              terraform -chdir="$dir" validate
+              terraform -chdir="$dir" plan -lock=false -input=false
+            fi
+          done
+
+          if [ "$found" -eq 0 ]; then
+            echo "No Terraform environment directories with .tf files found"
+          fi
+
+  apply:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          VERSION=1.9.8
+          curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${VERSION}/terraform_${VERSION}_linux_amd64.zip"
+          sudo apt-get update && sudo apt-get install -y unzip
+          unzip -o /tmp/terraform.zip -d /tmp
+          sudo mv /tmp/terraform /usr/local/bin/terraform
+          terraform version
+
+      - name: Terraform apply (all envs)
+        run: |
+          set -euo pipefail
+          if [ ! -d infra/environments ]; then
+            echo "No infra/environments directory; skipping"
+            exit 0
+          fi
+
+          for dir in infra/environments/*; do
+            [ -d "$dir" ] || continue
+            if ls "$dir"/*.tf >/dev/null 2>&1; then
+              echo "Applying terraform in $dir"
+              terraform -chdir="$dir" init
+              terraform -chdir="$dir" apply -auto-approve -input=false
+            fi
+          done

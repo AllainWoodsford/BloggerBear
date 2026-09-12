@@ -1,0 +1,52 @@
+name: security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Install Bandit
+        run: python3 -m pip install --upgrade pip bandit
+
+      - name: Trivy IaC scan
+        run: |
+          if [ -d infra ]; then
+            trivy config infra/
+          else
+            echo "infra/ not present; skipping IaC scan"
+          fi
+
+      - name: Trivy vulnerability/secret scan
+        run: |
+          if [ -d lambdas ]; then
+            trivy fs --scanners vuln,secret lambdas/
+          else
+            echo "lambdas/ not present; skipping fs scan"
+          fi
+
+      - name: Bandit scan
+        run: |
+          if [ -d lambdas ]; then
+            bandit -r lambdas/ -ll
+          else
+            echo "lambdas/ not present; skipping bandit"
+          fi
