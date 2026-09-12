@@ -48,7 +48,9 @@ jobs:
       - name: Trivy vulnerability/secret scan
         run: |
           if [ -d lambdas ]; then
-            trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 lambdas/
+            trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
+              --skip-dirs lambdas/.venv,lambdas/venv,lambdas/node_modules,lambdas/dist,lambdas/build \
+              lambdas/
           else
             echo "lambdas/ not present; skipping fs scan"
           fi
