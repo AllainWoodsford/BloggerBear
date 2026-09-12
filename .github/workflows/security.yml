@@ -40,7 +40,9 @@ jobs:
       - name: Trivy IaC scan
         run: |
           if [ -d infra ]; then
-            trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs infra/bootstrap infra/
+            trivy config --severity HIGH,CRITICAL --exit-code 1 \
+              --skip-dirs infra/bootstrap,infra/.terraform,infra/environments/.terraform \
+              infra/
           else
             echo "infra/ not present; skipping IaC scan"
           fi
