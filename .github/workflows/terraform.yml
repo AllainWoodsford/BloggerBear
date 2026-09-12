@@ -89,6 +89,8 @@ jobs:
             if ls "$dir"/*.tf >/dev/null 2>&1; then
               echo "Applying terraform in $dir"
               terraform -chdir="$dir" init
+              terraform -chdir="$dir" fmt -check
+              terraform -chdir="$dir" validate
               terraform -chdir="$dir" apply -auto-approve -input=false
             fi
           done
