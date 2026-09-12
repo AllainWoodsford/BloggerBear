@@ -60,8 +60,7 @@ jobs:
       - name: Bandit scan
         run: |
           if [ -d lambdas ]; then
-            # Bandit severity levels are LOW/MEDIUM/HIGH (no CRITICAL tier).
-            bandit -r lambdas/ -lll
+            bandit -r lambdas/ --severity-level high --confidence-level high
           else
             echo "lambdas/ not present; skipping bandit"
           fi

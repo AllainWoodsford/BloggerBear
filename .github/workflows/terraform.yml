@@ -97,5 +97,5 @@ jobs:
           terraform -chdir="$target_dir" init
           terraform -chdir="$target_dir" fmt -check
           terraform -chdir="$target_dir" validate
-          terraform -chdir="$target_dir" plan -out="$plan_file" -input=false -lock=false
+          terraform -chdir="$target_dir" plan -out="$plan_file" -input=false
           terraform -chdir="$target_dir" apply -input=false "$plan_file"
