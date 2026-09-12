@@ -3,10 +3,13 @@
 Status: tracked in `docs/PROGRESS.md` under "Phase 0 — Foundations."
 Source of truth for rationale/constraints: `docs/project-plan.md`.
 
-**Revision note (2026-09-12):** superseded the original "rename master → main,
-one production environment" plan below with a two-branch, release-gated
-model. See "Branch & Release Model" — this is now the load-bearing part of
-Phase 0.
+**Revision history:**
+- 2026-09-12: superseded the original "rename master → main, one production
+  environment" plan with a two-branch, release-gated model. See "Branch &
+  Release Model."
+- 2026-09-12 (later): removed the DynamoDB lock table — Terraform ≥1.10's
+  native S3 locking replaces it — and fixed the hosting region to
+  `ap-southeast-2`. See "Region" and the updated "State backend" section.
 
 ## Objective
 
@@ -17,6 +20,28 @@ production through a deliberate, approved release — with **zero**
 application logic (no Lambda business logic, no Bedrock calls, no
 DynamoDB app tables). Everything below should be provable end-to-end before
 Phase 1 writes a single Lambda.
+
+## Region
+
+Everything deploys to **`ap-southeast-2` (Sydney)** — this is fixed, not an
+open question.
+
+Two AWS-mandated exceptions, which are platform constraints, not a
+contradiction of that choice: the CloudFront-scope **WAF Web ACL** and the
+**ACM certificate** used by CloudFront both must be created in `us-east-1`,
+because CloudFront only reads global-scope WAF ACLs and viewer certificates
+from that region, regardless of where the distribution's origin or
+everything else lives. Both resources still protect/serve the
+`ap-southeast-2` deployment — they just have to be declared in a different
+region block in Terraform (a second `aws` provider alias for `us-east-1`,
+used only for these two resources).
+
+One thing to verify before Phase 1 locks in a model choice (not a Phase 0
+blocker): confirm which specific Claude model IDs are directly invokable in
+`ap-southeast-2` versus which require routing through a cross-region
+inference profile (AWS publishes an APAC inference-profile grouping for
+exactly this) — Bedrock's model availability by region varies and is worth
+checking in the console rather than assumed.
 
 ## Branch & Release Model
 
@@ -52,8 +77,7 @@ don't build parallel environments or traffic-shifting for this.
 **Concurrency:** add a `concurrency` block per environment (e.g. `group:
 deploy-dev` / `group: deploy-production`, `cancel-in-progress: false`) to
 whichever workflow(s) do the applying, so two triggers close together queue
-instead of racing. The DynamoDB state lock would otherwise just make the
-second run fail ugly rather than queue cleanly.
+instead of racing.
 
 **Branch protection:** both `dev` and `prod` require a PR (no direct
 pushes) and require the `terraform plan` + `security` checks to pass before
@@ -73,16 +97,21 @@ releases" is a better line in an interview than "pushed to main."
    `terraform` and `security` status checks.
 4. GitHub Environments: `dev` (no protection rules — auto-deploy) and
    `production` (required reviewer = you).
-5. Confirm the **prerequisites** in `docs/PROGRESS.md` are done — root MFA,
-   admin IAM user, AWS Budget alarm, Bedrock model access requested, region
-   picked. Terraform should not be applied, even to dev, before the Budget
-   alarm exists.
+5. Bump the Terraform version pinned in both `.github/workflows/*.yml` files
+   (currently `1.9.8`) to a current stable ≥1.10.0 — 1.16.2 as of this
+   writing, but pin whatever the actual current stable release is when this
+   PR is built. 1.9.8 predates native S3 state locking; `use_lockfile` is
+   silently unavailable on it.
+6. Confirm the **prerequisites** in `docs/PROGRESS.md` are done — root MFA,
+   admin IAM user, AWS Budget alarm, Bedrock model access requested for
+   `ap-southeast-2`. Terraform should not be applied, even to dev, before
+   the Budget alarm exists.
 
 ## Scope
 
 **In scope:**
-- `infra/bootstrap` — Terraform state backend (S3 bucket + DynamoDB lock
-  table), applied manually/locally, one time, never through CI
+- `infra/bootstrap` — Terraform state backend (a single S3 bucket — no
+  DynamoDB), applied manually/locally, one time, never through CI
 - `infra/environments/dev` and `infra/environments/production` — both
   environments, sharing the reusable module below but with different inputs
 - Placeholder static site (S3 + CloudFront + Origin Access Control) in both
@@ -100,7 +129,9 @@ releases" is a better line in an interview than "pushed to main."
 - Any Lambda function with real logic (research tick, ideation, draft,
   compliance review, publish, admin API)
 - `Topics` / `Findings` / `CandidateIdeas` / `Articles` / any app DynamoDB
-  table
+  table (unrelated to the state-locking DynamoDB removed above — if/when
+  these app tables get built in Phase 1, that's a separate, deliberate use
+  of DynamoDB)
 - Bedrock IAM permissions or model invocation of any kind
 - Cognito / admin auth
 - Anything under `frontend/` beyond a single static placeholder page
@@ -110,9 +141,9 @@ releases" is a better line in an interview than "pushed to main."
 ```
 infra/
 ├── bootstrap/                  # one-time, applied locally, not via CI
-│   ├── main.tf                 # S3 state bucket + DynamoDB lock table
+│   ├── main.tf                 # S3 state bucket only — native locking, no DynamoDB
 │   ├── variables.tf
-│   └── outputs.tf               # bucket name / table name, for backend blocks below
+│   └── outputs.tf               # bucket name, for backend blocks below
 ├── modules/
 │   └── static-site/            # reusable: S3 + CloudFront + OAC (+ WAF/DNS optionally)
 │       ├── main.tf
@@ -130,15 +161,36 @@ infra/
 ```
 
 One shared bootstrap bucket, two state file keys (`dev/terraform.tfstate`,
-`production/terraform.tfstate`) — no need for separate buckets, and the
-shared DynamoDB lock table handles both without conflict since locks are
-keyed by state path.
+`production/terraform.tfstate`). Locking is handled natively by S3
+(`use_lockfile = true`, Terraform ≥1.10) — no DynamoDB table at all. Each
+state key gets its own `.tflock` companion object, so dev and production can
+never contend for the same lock.
 
 ## Component detail
 
-**State backend (`infra/bootstrap`)** — unchanged from the original plan:
-versioned, encrypted, block-public-access S3 bucket; on-demand DynamoDB
-table with a `LockID` key.
+**State backend (`infra/bootstrap`)** — a single S3 bucket: versioned,
+encrypted (SSE-S3 or SSE-KMS), block-all-public-access, no lifecycle
+deletion of state. No DynamoDB table — Terraform ≥1.10's native S3 locking
+(`use_lockfile = true` in each environment's backend block) replaces it
+entirely; HashiCorp has deprecated DynamoDB-based locking for the S3
+backend. Whatever applies Terraform (your local CLI, and the CI role) needs
+`s3:GetObject`/`PutObject`/`DeleteObject` on both the state object and its
+`.tflock` companion (e.g. `.../dev/terraform.tfstate` and
+`.../dev/terraform.tfstate.tflock`).
+
+Each environment's backend block looks like:
+
+```hcl
+terraform {
+  backend "s3" {
+    bucket       = "<bootstrap bucket name>"
+    key          = "dev/terraform.tfstate"   # or "production/terraform.tfstate"
+    region       = "ap-southeast-2"
+    encrypt      = true
+    use_lockfile = true
+  }
+}
+```
 
 **Static site module** — parameterize so `dev` and `production` can diverge
 cleanly:
@@ -150,20 +202,20 @@ cleanly:
 - CloudFront distribution, HTTPS-only viewer policy.
 - `enable_custom_domain` (bool): when false (dev), skip Route 53 + ACM
   entirely and just use the distribution's default `*.cloudfront.net`
-  domain. When true (production), request the ACM cert and wire the alias
-  record.
+  domain. When true (production), request the ACM cert (in `us-east-1`,
+  via a provider alias — see "Region") and wire the alias record.
 
-**WAF** — create **one** Web ACL (must be in `us-east-1` for CloudFront
-scope) with a rate-based rule + AWS Managed Rule Groups, and associate it
-with **both** distributions. A CloudFront-scope WAF ACL can be associated
-with multiple distributions — there's no reason to pay its flat monthly fee
-twice for a project with one operator and no real dev traffic.
+**WAF** — create **one** Web ACL, in `us-east-1` (required for CloudFront
+scope, regardless of the `ap-southeast-2` hosting region), with a
+rate-based rule + AWS Managed Rule Groups, and associate it with **both**
+distributions. A CloudFront-scope WAF ACL can be associated with multiple
+distributions — there's no reason to pay its flat monthly fee twice for a
+project with one operator and no real dev traffic.
 
 **DNS/TLS (production only)** — Route 53 hosted zone + ACM cert requested
-in `us-east-1` (regardless of deployment region — CloudFront only accepts
-viewer certs from there) + alias record. Dev deliberately has none of this,
-which also makes dev faster to destroy and rebuild (no DNS propagation or
-cert re-validation in the loop).
+in `us-east-1` (via a provider alias — see "Region") + alias record. Dev
+deliberately has none of this, which also makes dev faster to destroy and
+rebuild (no DNS propagation or cert re-validation in the loop).
 
 ## CI/CD workflow requirements
 
@@ -177,13 +229,18 @@ cert re-validation in the loop).
 Add a `concurrency` group per environment on whichever job(s) apply, so
 overlapping triggers queue rather than race. Optionally, have the release
 workflow verify the tagged commit is actually reachable from `prod`'s tip,
-as a guardrail against cutting a release from the wrong branch.
+as a guardrail against cutting a release from the wrong branch. Bump the
+Terraform version installed by these workflows from `1.9.8` to a current
+stable ≥1.10.0 (see "Fix first," item 5) — without this, `use_lockfile`
+doesn't work.
 
 ## Cost & teardown notes (portfolio project, cost-sensitive)
 
 - The plan's own cost section already flags WAF's flat ~$5–10/mo fee as the
   main "always-on" line item — sharing one ACL across dev+production
-  instead of two roughly halves that.
+  instead of two roughly halves that. Removing the DynamoDB lock table
+  entirely also drops a (small, but non-zero) line item versus the original
+  design.
 - Dev skipping Route 53/ACM removes another small fixed cost (hosted zone
   is ~$0.50/mo) and, more importantly, removes DNS propagation/cert
   re-validation from the destroy/rebuild loop, so tearing dev down and
@@ -207,10 +264,12 @@ as a guardrail against cutting a release from the wrong branch.
   protection requiring PR + passing `terraform`/`security` checks
 - [ ] GitHub Environments `dev` (no gate) and `production` (required
   reviewer) exist
-- [ ] `terraform apply` in `infra/bootstrap` has been run once, locally
+- [ ] CI's pinned Terraform version is ≥1.10.0 in both workflow files
+- [ ] `terraform apply` in `infra/bootstrap` has been run once, locally,
+  creating only an S3 bucket — no DynamoDB table anywhere
 - [ ] `infra/environments/dev` and `infra/environments/production` both have
-  working `backend "s3"` blocks pointing at bootstrap's bucket, with
-  distinct state keys
+  working `backend "s3"` blocks, region `ap-southeast-2`, distinct state
+  keys, `use_lockfile = true`, and no `dynamodb_table` argument
 - [ ] A PR touching `infra/**` produces a clean `terraform plan` for every
   changed environment
 - [ ] Merging to `dev` auto-applies `infra/environments/dev`; the site is
@@ -218,8 +277,10 @@ as a guardrail against cutting a release from the wrong branch.
 - [ ] Publishing a Release from `prod` applies `infra/environments/production`
   only after the `production` environment's approval; the site is reachable
   at the custom domain over HTTPS
-- [ ] One Web ACL is associated with both distributions (verify in console —
-  not two ACLs)
+- [ ] One Web ACL (created in `us-east-1`) is associated with both
+  distributions (verify in console — not two ACLs)
+- [ ] The ACM certificate for production is confirmed issued from
+  `us-east-1`, all other resources from `ap-southeast-2`
 - [ ] The manual "destroy dev" workflow successfully tears dev down, and a
   subsequent push to `dev` rebuilds it cleanly (round-trip test — this is
   the real proof that "tear down whenever" actually works)
@@ -230,29 +291,13 @@ as a guardrail against cutting a release from the wrong branch.
 
 1. Domain name and registrar — already registered, and where (Route 53 or
    external)?
-2. Region for everything non-CloudFront/non-WAF-global (plan suggests
-   `us-east-1` for broadest Bedrock model availability).
-3. Single AWS account for everything, or a separate account/OU?
-4. Are you fine with dev living only at its `*.cloudfront.net` URL (no
+2. Single AWS account for everything, or a separate account/OU?
+3. Are you fine with dev living only at its `*.cloudfront.net` URL (no
    subdomain), or would you rather it get something like `dev.yourdomain.com`
    for a closer-to-production feel? (Recommendation above assumes no
    subdomain, for simplicity and destroy/rebuild speed.)
 
 ## Suggested brief to hand Copilot
 
-> Implement Phase 0 per `docs/specs/phase-0-foundations.md`. This now
-> includes a two-branch model: rename the default branch to `dev`, create
-> `prod`, set up branch protection on both (PR required, `terraform` +
-> `security` checks required), and create GitHub Environments `dev` (no
-> gate) and `production` (required reviewer). Build `infra/bootstrap`
-> (manual, not wired to CI), a reusable `infra/modules/static-site` module,
-> and `infra/environments/{dev,production}`. Dev auto-applies on push to
-> `dev`; production only applies when a GitHub Release is published from
-> `prod`, gated by the `production` environment. One WAF Web ACL shared
-> across both distributions, not two. Dev skips Route 53/ACM entirely
-> (default CloudFront domain); production gets the real domain. Add a
-> `workflow_dispatch` "destroy dev" workflow. No Lambda logic, Bedrock, or
-> app DynamoDB tables in this PR — those are Phase 1, tracked in
-> `docs/PROGRESS.md`. Flag in the PR description: ACM cert must be
-> requested in `us-east-1` regardless of deployment region; dev's site
-> bucket should set `force_destroy = true`, production's should not.
+See the standalone prompt below — this file is what it points back to for
+detail.

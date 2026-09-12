@@ -99,10 +99,14 @@ governs how every phase from here on ships:
 - [ ] AWS root user MFA enabled; root no longer used day-to-day
 - [ ] IAM (or IAM Identity Center) admin user created for this project, MFA on
 - [ ] AWS Budget alarm set (e.g. $10 / $25 / $50) — **before** anything deploys
-- [ ] Bedrock model access requested in-console for the Claude models needed
-  (manual, per-model, per-region, can sit pending — start this early)
-- [ ] AWS region chosen (plan suggests `us-east-1` for broadest Bedrock access
-  if latency isn't a constraint)
+- [ ] Bedrock model access requested in-console for the Claude models needed,
+  **in `ap-southeast-2`** (manual, per-model, per-region, can sit pending —
+  start this early; before Phase 1, confirm which specific model IDs are
+  directly invokable there vs. need a cross-region inference profile)
+- [x] AWS region decided: **`ap-southeast-2` (Sydney)** — fixed, not still
+  open. Exception: the CloudFront-scope WAF ACL and ACM certificate must
+  still be created in `us-east-1` (AWS platform constraint, see
+  `docs/specs/phase-0-foundations.md` → "Region")
 - [ ] AWS CLI v2 installed locally, `aws configure` / `aws configure sso` run
 
 ---
@@ -112,15 +116,20 @@ governs how every phase from here on ships:
 Spec: `docs/specs/phase-0-foundations.md`
 
 - [ ] Known issues above resolved (branches, protections, environments)
-- [ ] `infra/bootstrap`: Terraform state S3 bucket + DynamoDB lock table,
-  applied manually/locally (never through CI)
+- [ ] CI's pinned Terraform version bumped from `1.9.8` to ≥1.10.0 (required
+  for native S3 locking below)
+- [ ] `infra/bootstrap`: Terraform state S3 bucket **only** — no DynamoDB
+  table; locking is native S3 (`use_lockfile = true`) — applied
+  manually/locally (never through CI)
 - [ ] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
   parameterized for `enable_custom_domain` and `force_destroy`
-- [ ] `infra/environments/dev`: placeholder site, no custom domain, dev
-  bucket `force_destroy = true`
-- [ ] `infra/environments/production`: placeholder site, custom domain via
-  Route 53 + ACM (`us-east-1`)
-- [ ] One WAF Web ACL, associated with **both** distributions (not two ACLs)
+- [ ] `infra/environments/dev`: region `ap-southeast-2`, no custom domain,
+  dev bucket `force_destroy = true`
+- [ ] `infra/environments/production`: region `ap-southeast-2`, custom
+  domain via Route 53 + ACM (ACM cert in `us-east-1` — CloudFront
+  requirement, not a region change)
+- [ ] One WAF Web ACL (created in `us-east-1`), associated with **both**
+  distributions (not two ACLs)
 - [ ] Dev workflow: auto-apply on push to `dev`, no approval
 - [ ] Production workflow: apply only on Release published from `prod`,
   gated by `production` environment approval
