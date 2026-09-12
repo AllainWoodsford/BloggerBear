@@ -47,7 +47,7 @@ jobs:
             if ls "$dir"/*.tf >/dev/null 2>&1; then
               found=1
               echo "Running terraform checks in $dir"
-              terraform -chdir="$dir" init -backend=false
+              terraform -chdir="$dir" init -input=false
               terraform -chdir="$dir" fmt -check
               terraform -chdir="$dir" validate
               terraform -chdir="$dir" plan -lock=false -input=false
