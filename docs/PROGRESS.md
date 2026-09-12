@@ -60,23 +60,37 @@ tracks *what's built vs. not*.
 
 ---
 
-## ⚠️ Known issues (fix before/with Phase 0)
+## Branch & Release Model
 
-- [ ] **Branch mismatch**: `.github/workflows/terraform.yml` and
-  `security.yml` both gate on `refs/heads/main`, but the repo's default
-  branch is `master`. As written, the `apply` job will never run. Rename the
-  default branch to `main` (GitHub: Settings → Branches → rename, one click,
-  PRs auto-update) — simplest fix, don't edit the workflows to chase `master`.
-- [ ] **GitHub Environment missing**: `terraform.yml`'s apply job targets the
-  `production` environment for its approval gate. That environment doesn't
-  exist yet in the repo's Settings → Environments — until it's created (with
-  at least one required reviewer, ideally you), the apply job either fails
-  or, worse, has no real approval gate at all.
-- [ ] `docs/project-plan.md` in this repo is a condensed rewrite that has
+Full detail in `docs/specs/phase-0-foundations.md`. Summary, since this
+governs how every phase from here on ships:
+
+- `dev` (default branch) — feature branches fork from here, PR back in.
+  Merging to `dev` auto-deploys `infra/environments/dev`. No approval gate —
+  it's meant to be broken and torn down freely.
+- `prod` — promoted from `dev` via PR when you're happy with it. Merging
+  into `prod` does **not** deploy by itself.
+- A production deploy only happens when you publish a GitHub Release
+  (tagged, e.g. `v0.1.0`) from `prod` — gated by the `production`
+  environment's required-reviewer approval. A new release replaces whatever
+  was previously deployed, since both target the same Terraform state.
+- Direct pushes to `dev` or `prod` are blocked by branch protection —
+  everything is task branch → PR → review → merge, always.
+
+---
+
+## ⚠️ Known issues (fix with Phase 0)
+
+- [ ] Rename default branch `master` → `dev`; create `prod` from its tip
+- [ ] Branch protection on `dev` and `prod`: PR required, `terraform` +
+  `security` checks required, no direct pushes
+- [ ] GitHub Environments: `dev` (no protection) and `production` (required
+  reviewer) — the latter is what actually gates a production release
+- [ ] `docs/project-plan.md` in this repo is a condensed rewrite that had
   drifted from the full spec (this Project's copy) — missing the financial-
   topic compliance detail (§4.4), the feedback PII-scrub mechanics (§7.2),
-  and phases 3–8. Reconcile these into one document before Copilot leans on
-  the condensed version for anything past Phase 1.
+  and phases 3–8. Its CI/CD section (§8) has now been updated to match the
+  branch/release model above; the rest of the reconciliation is still open.
 
 ---
 
@@ -97,18 +111,23 @@ tracks *what's built vs. not*.
 
 Spec: `docs/specs/phase-0-foundations.md`
 
-- [ ] Known issues above resolved (branch rename, `production` environment)
+- [ ] Known issues above resolved (branches, protections, environments)
 - [ ] `infra/bootstrap`: Terraform state S3 bucket + DynamoDB lock table,
   applied manually/locally (never through CI)
-- [ ] `infra/environments/production`: placeholder static site (S3 +
-  CloudFront + Origin Access Control)
-- [ ] WAF Web ACL attached to CloudFront: rate-based rule + AWS Managed Rule
-  Groups (Core Rule Set, Known Bad Inputs, IP Reputation List)
-- [ ] Route 53 hosted zone + ACM certificate (requested in `us-east-1`
-  regardless of deployment region) + custom domain wired to CloudFront
-- [ ] `terraform fmt/validate/plan` clean in CI for the new environment
-- [ ] `terraform apply` succeeds end-to-end; placeholder site reachable over
-  HTTPS at the custom domain
+- [ ] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
+  parameterized for `enable_custom_domain` and `force_destroy`
+- [ ] `infra/environments/dev`: placeholder site, no custom domain, dev
+  bucket `force_destroy = true`
+- [ ] `infra/environments/production`: placeholder site, custom domain via
+  Route 53 + ACM (`us-east-1`)
+- [ ] One WAF Web ACL, associated with **both** distributions (not two ACLs)
+- [ ] Dev workflow: auto-apply on push to `dev`, no approval
+- [ ] Production workflow: apply only on Release published from `prod`,
+  gated by `production` environment approval
+- [ ] Concurrency groups on both apply paths (queue, don't race)
+- [ ] `workflow_dispatch` "destroy dev" workflow
+- [ ] Round-trip proven: destroy dev, rebuild it via a push, confirm it
+  comes back clean
 
 ## Phase 1 — First adapter + manual pipeline
 
@@ -183,6 +202,32 @@ Spec: `docs/specs/phase-0-foundations.md`
 - [ ] Cross-topic "trending everywhere" digest
 - [ ] Public read API / RSS so other tools can consume output via API
   instead of scraping it
+
+---
+
+## Cost control & tapering
+
+Called out separately because it cuts across every phase, not just one:
+
+- AWS Budget alarm (see Prerequisites) is the tripwire — set it before
+  anything deploys, not after.
+- WAF's flat monthly fee is the main "always-on" cost per the plan's own
+  cost section (§9) — Phase 0 shares one Web ACL across dev and production
+  rather than paying for two.
+- Dev has no custom domain/DNS, only the `*.cloudfront.net` URL — smaller
+  footprint, faster to destroy and rebuild, one less thing to pay for.
+- **If it needs to taper rather than stop outright:** once Phase 3's
+  schedules exist, disabling an EventBridge rule (or a single topic) is
+  free and instantly reversible — a much smaller step than tearing anything
+  down. Cutting the priciest topic (crypto/financial ones likely call
+  Bedrock most, per §9) or lowering a topic's research/publish cadence are
+  both good middle-ground moves before a full kill.
+- **If it needs to stop outright:** `terraform destroy` on dev, then
+  production, in that order (the `workflow_dispatch` destroy job from
+  Phase 0 covers dev; production would need the equivalent run manually or
+  a similar dispatch job added when you're ready to consider it). Decide
+  up front whether to release the domain/hosted zone or keep it parked —
+  that's the one piece that isn't free to walk away from and re-acquire.
 
 ---
 
