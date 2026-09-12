@@ -93,7 +93,7 @@ jobs:
           fi
 
           echo "Applying terraform in $target_dir"
-          plan_file="/tmp/${TARGET_ENVIRONMENT}.tfplan"
+          plan_file="tfplan"
           terraform -chdir="$target_dir" init
           terraform -chdir="$target_dir" fmt -check
           terraform -chdir="$target_dir" validate
