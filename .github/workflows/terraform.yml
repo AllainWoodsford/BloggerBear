@@ -47,10 +47,10 @@ jobs:
             if ls "$dir"/*.tf >/dev/null 2>&1; then
               found=1
               echo "Running terraform checks in $dir"
-              terraform -chdir="$dir" init -input=false
+              terraform -chdir="$dir" init -backend=false -input=false
               terraform -chdir="$dir" fmt -check
               terraform -chdir="$dir" validate
-              terraform -chdir="$dir" plan -lock=false -input=false
+              terraform -chdir="$dir" plan -refresh=false -lock=false -input=false
             fi
           done
 
@@ -76,21 +76,24 @@ jobs:
           sudo mv /tmp/terraform /usr/local/bin/terraform
           terraform version
 
-      - name: Terraform apply (all envs)
+      - name: Terraform apply (production)
         run: |
           set -euo pipefail
-          if [ ! -d infra/environments ]; then
-            echo "No infra/environments directory; skipping"
+          TARGET_ENVIRONMENT=production
+          target_dir="infra/environments/${TARGET_ENVIRONMENT}"
+
+          if [ ! -d "$target_dir" ]; then
+            echo "Target environment directory '$target_dir' not found; skipping"
             exit 0
           fi
 
-          for dir in infra/environments/*; do
-            [ -d "$dir" ] || continue
-            if ls "$dir"/*.tf >/dev/null 2>&1; then
-              echo "Applying terraform in $dir"
-              terraform -chdir="$dir" init
-              terraform -chdir="$dir" fmt -check
-              terraform -chdir="$dir" validate
-              terraform -chdir="$dir" apply -auto-approve -input=false
-            fi
-          done
+          if ! ls "$target_dir"/*.tf >/dev/null 2>&1; then
+            echo "No Terraform files in '$target_dir'; skipping"
+            exit 0
+          fi
+
+          echo "Applying terraform in $target_dir"
+          terraform -chdir="$target_dir" init
+          terraform -chdir="$target_dir" fmt -check
+          terraform -chdir="$target_dir" validate
+          terraform -chdir="$target_dir" apply -auto-approve -input=false

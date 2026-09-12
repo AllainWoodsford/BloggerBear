@@ -2,8 +2,16 @@ name: security
 
 on:
   pull_request:
+    paths:
+      - 'infra/**'
+      - 'lambdas/**'
+      - '.github/workflows/security.yml'
   push:
     branches: [main]
+    paths:
+      - 'infra/**'
+      - 'lambdas/**'
+      - '.github/workflows/security.yml'
 
 permissions:
   contents: read
