@@ -11,7 +11,7 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
 3. Drafts must pass compliance review before publish.
 4. Financial/investment-adjacent topics always route to manual moderation and disallow recommendation language.
 5. New domains are implemented as adapters, not core pipeline branches.
-6. Terraform apply is CI-only (except one-time bootstrap).
+6. Terraform apply is never manual/ad hoc — see §8 for the branch/release model that governs when it runs.
 7. Security checks block merges on HIGH/CRITICAL findings.
 
 ## 3) Target Architecture
@@ -63,10 +63,33 @@ Core pipeline code must remain topic-agnostic.
 - Financial topics must avoid advice language and always queue for manual moderation.
 
 ## 8) CI/CD and Infrastructure Rules
-- Bootstrap (`infra/bootstrap`) is one-time and local.
-- Ongoing deployment is through GitHub Actions only.
-- PRs run Terraform plan + security checks.
-- Merge to `main` triggers apply with environment approval gate.
+
+Two long-lived branches, two environments:
+
+- `dev` (default branch) — all work lands here via PR from a task branch,
+  never a direct push. Merging to `dev` **auto-applies**
+  `infra/environments/dev`. No approval gate — dev is disposable and can be
+  torn down and rebuilt at any time via a manual `workflow_dispatch`
+  "destroy dev" job.
+- `prod` — promoted from `dev` via PR when a set of changes is ready to
+  ship. Merging into `prod` does **not** deploy by itself.
+- A production deploy happens only when a GitHub Release is published from
+  a commit on `prod` (tagged with semver, e.g. `v0.1.0`). That workflow
+  applies `infra/environments/production`, gated by the `production`
+  GitHub Environment's required-reviewer approval. Because every release
+  targets the same Terraform-managed production state, a new release
+  replaces whatever was previously deployed rather than running alongside
+  it.
+- Both `dev` and `prod` require PRs and passing `terraform`/`security`
+  checks via branch protection — no direct pushes to either.
+- `infra/bootstrap` (the Terraform state backend itself) is the one
+  exception to all of this: it's applied once, manually, locally, and is
+  never wired into CI.
+- One shared WAF Web ACL is associated with both the dev and production
+  CloudFront distributions, rather than one each, to avoid paying its flat
+  fee twice.
+
+Full detail: `docs/specs/phase-0-foundations.md`.
 
 ## 9) Validation Commands
 - Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
@@ -76,6 +99,7 @@ Core pipeline code must remain topic-agnostic.
 ## 10) Build Phases
 ### Phase 0 — Foundations (current)
 - Establish CI workflows (Terraform + security)
+- Set up the `dev`/`prod` branch and release model (§8)
 - Create initial infra and lambda scaffolding
 - Capture and enforce non-negotiable guardrails
 
@@ -89,3 +113,6 @@ Core pipeline code must remain topic-agnostic.
 - Additional adapters/domains
 - Prompt refinement automation
 - Frontend polish and analytics improvements
+
+See `docs/PROGRESS.md` for the full phase 0–8 breakdown and live status —
+this section is intentionally a summary, not the tracker.
