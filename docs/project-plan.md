@@ -15,12 +15,18 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
 7. Security checks block merges on HIGH/CRITICAL findings.
 
 ## 3) Target Architecture
+- **Region**: `ap-southeast-2` (Sydney) for everything, except the
+  CloudFront-scope WAF Web ACL and ACM certificate, which AWS requires in
+  `us-east-1` regardless of hosting region
 - **Compute**: Python 3.11 AWS Lambda functions
-- **AI**: Amazon Bedrock (Claude)
+- **AI**: Amazon Bedrock (Claude) — confirm which model IDs are directly
+  invokable in `ap-southeast-2` vs. need a cross-region inference profile
+  before Phase 1 locks in a model choice
 - **Storage**: DynamoDB + S3
 - **Frontend**: Static site (S3 + CloudFront)
 - **Security**: CloudFront + WAF + Shield Standard
-- **IaC**: Terraform with GitHub Actions deployment
+- **IaC**: Terraform (≥1.10, for native S3 state locking — no DynamoDB lock
+  table) with GitHub Actions deployment
 
 ## 4) Pipelines
 ### Hourly Research Tick
@@ -82,9 +88,10 @@ Two long-lived branches, two environments:
   it.
 - Both `dev` and `prod` require PRs and passing `terraform`/`security`
   checks via branch protection — no direct pushes to either.
-- `infra/bootstrap` (the Terraform state backend itself) is the one
-  exception to all of this: it's applied once, manually, locally, and is
-  never wired into CI.
+- `infra/bootstrap` (the Terraform state backend itself — a single S3
+  bucket, no DynamoDB table; locking is native to S3 via `use_lockfile`,
+  Terraform ≥1.10) is the one exception to all of this: it's applied once,
+  manually, locally, and is never wired into CI.
 - One shared WAF Web ACL is associated with both the dev and production
   CloudFront distributions, rather than one each, to avoid paying its flat
   fee twice.
