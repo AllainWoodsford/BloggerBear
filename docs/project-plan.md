@@ -1,0 +1,91 @@
+# BloggerBear Project Plan
+
+## 1) Purpose
+BloggerBear is an autonomous, multi-domain research-and-publishing platform. Topics are configured by admins and run two cadences:
+- **Hourly research tick** to refresh a rolling knowledge base
+- **Daily authoring cycle** to ideate, select, draft, review, and publish one article
+
+## 2) Hard Constraints
+1. No PII is collected or persisted.
+2. Research ticks must do structural diffing before any Bedrock call.
+3. Drafts must pass compliance review before publish.
+4. Financial/investment-adjacent topics always route to manual moderation and disallow recommendation language.
+5. New domains are implemented as adapters, not core pipeline branches.
+6. Terraform apply is CI-only (except one-time bootstrap).
+7. Security checks block merges on HIGH/CRITICAL findings.
+
+## 3) Target Architecture
+- **Compute**: Python 3.11 AWS Lambda functions
+- **AI**: Amazon Bedrock (Claude)
+- **Storage**: DynamoDB + S3
+- **Frontend**: Static site (S3 + CloudFront)
+- **Security**: CloudFront + WAF + Shield Standard
+- **IaC**: Terraform with GitHub Actions deployment
+
+## 4) Pipelines
+### Hourly Research Tick
+1. Load topic + adapter config
+2. Fetch current source state via adapter
+3. Diff against prior structural snapshot
+4. If no material change: stop
+5. If changed: summarize with Bedrock and store findings
+
+### Daily Authoring Cycle
+1. Generate candidate angles
+2. Select one angle
+3. Draft article
+4. Run compliance review
+5. Publish if compliant; else moderation queue
+
+## 5) Data Model (DynamoDB)
+| Table | PK/SK | Purpose |
+|---|---|---|
+| Topics | `topic_id` | Topic config, cadence, adapter list |
+| Findings | `topic_id` / `captured_at` | Research summaries and source hashes |
+| CandidateIdeas | `topic_id` / `created_at` | Daily generated article ideas |
+| Articles | `article_id` | Draft/compliance/publish lifecycle |
+| ViewCounters | `article_id` | Aggregate read counters |
+| Feedback | `article_id` / `feedback_id` | Scrubbed public feedback |
+| PromptRefinements | `topic_id` / `version` | Prompt iterations and rationale |
+| ModerationQueue | `queue_id` | Manual review tasks |
+
+## 6) Adapter Contract
+Each new domain provides an adapter implementing the same contract:
+- `fetch_state(topic_config) -> normalized_state`
+- `material_diff(old_state, new_state) -> bool, diff_summary`
+- `source_refs(new_state) -> list[SourceRef]`
+
+Core pipeline code must remain topic-agnostic.
+
+## 7) Compliance and Safety
+- Run regex-based redaction then Bedrock redaction review before writing feedback.
+- Never persist raw, unredacted comment text.
+- Financial topics must avoid advice language and always queue for manual moderation.
+
+## 8) CI/CD and Infrastructure Rules
+- Bootstrap (`infra/bootstrap`) is one-time and local.
+- Ongoing deployment is through GitHub Actions only.
+- PRs run Terraform plan + security checks.
+- Merge to `main` triggers apply with environment approval gate.
+
+## 9) Validation Commands
+- Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
+- Python: `ruff check .`, `pytest`
+- Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
+
+## 10) Build Phases
+### Phase 0 — Foundations (current)
+- Establish CI workflows (Terraform + security)
+- Create initial infra and lambda scaffolding
+- Capture and enforce non-negotiable guardrails
+
+### Phase 1 — Core Pipeline (current scope)
+- Implement topic model and one adapter path
+- Implement hourly diff-first research tick
+- Implement daily ideation/selection/draft/compliance/publish chain
+- Route uncertain/financial outputs to moderation queue
+
+### Phase 2 — Refinement (out of scope until Phase 1 is stable)
+- Additional adapters/domains
+- Prompt refinement automation
+- Frontend polish and analytics improvements
