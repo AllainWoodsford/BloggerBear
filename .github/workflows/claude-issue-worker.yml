@@ -1,0 +1,26 @@
+name: 🤖 Claude Issue Worker
+on:
+  issues:
+    types: [opened, labeled]
+
+# Grant permissions so Claude can write comments on your issues and create PRs
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  run-claude:
+    # Triggers if the issue description contains '@claude' OR if you add a 'claude' label
+    if: contains(github.event.issue.labels.*.name, 'claude') || contains(github.event.issue.body, '@claude')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Claude Task
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          command: |
+            /run-task-from-issue "${{ github.event.issue.number }}"
