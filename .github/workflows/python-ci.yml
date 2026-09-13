@@ -1,0 +1,67 @@
+name: python-ci
+
+on:
+  pull_request:
+    paths:
+      - 'lambdas/**'
+      - '.github/workflows/python-ci.yml'
+  push:
+    branches: [dev, prod]
+    paths:
+      - 'lambdas/**'
+      - '.github/workflows/python-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  # Lint + test only -- no AWS credentials requested. lambdas/ code under
+  # test talks to DynamoDB/S3/Bedrock only via mocks at this stage, so
+  # this job never needs to authenticate to AWS.
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      # Pinned to the actual v5.6.0 tag commit (actions/setup-python has
+      # no v5 moving tag reliably resolvable without a live lookup at
+      # authoring time -- pin the same way actions/checkout is pinned
+      # elsewhere in this repo's workflows).
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          if [ ! -d lambdas ]; then
+            echo "lambdas/ not present; skipping"
+            exit 0
+          fi
+          python -m pip install --upgrade pip
+          if [ -f lambdas/requirements.txt ]; then
+            pip install -r lambdas/requirements.txt
+          fi
+          if [ -f lambdas/requirements-dev.txt ]; then
+            pip install -r lambdas/requirements-dev.txt
+          fi
+
+      - name: Ruff lint
+        run: |
+          set -euo pipefail
+          if [ ! -d lambdas ]; then
+            echo "lambdas/ not present; skipping"
+            exit 0
+          fi
+          ruff check lambdas/
+
+      - name: Pytest
+        run: |
+          set -euo pipefail
+          if [ ! -d lambdas ]; then
+            echo "lambdas/ not present; skipping"
+            exit 0
+          fi
+          pytest lambdas/

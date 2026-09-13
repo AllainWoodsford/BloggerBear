@@ -18,3 +18,15 @@ output "bucket_name" {
 output "custom_domain_url" {
   value = module.static_site.custom_domain_url
 }
+
+output "content_bucket_name" {
+  value = aws_s3_bucket.content.bucket
+}
+
+output "research_tick_function_name" {
+  value = aws_lambda_function.research_tick.function_name
+}
+
+output "daily_cycle_function_name" {
+  value = aws_lambda_function.daily_cycle.function_name
+}
