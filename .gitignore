@@ -16,6 +16,12 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 
+# Exception: the tracked per-environment tfvars under infra/environments/*
+# hold no secrets (booleans and non-sensitive placeholders only, e.g.
+# force_destroy, domain_name TODOs) and are required by design -- see
+# docs/specs/phase-0-foundations.md's directory layout.
+!infra/environments/*/terraform.tfvars
+
 # Ignore override files as they are usually used to override resources locally and so
 # are not checked in
 override.tf

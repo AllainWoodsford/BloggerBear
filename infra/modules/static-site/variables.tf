@@ -1,0 +1,33 @@
+variable "environment_name" {
+  type        = string
+  description = "Short environment name (e.g. \"dev\", \"production\"), used to name resources."
+}
+
+variable "enable_custom_domain" {
+  type        = bool
+  description = "When false, the distribution only ever uses its default *.cloudfront.net domain and no ACM/Route53 resources are created. When true, domain_name and hosted_zone_id are required."
+}
+
+variable "force_destroy" {
+  type        = bool
+  default     = false
+  description = "Whether the site S3 bucket can be destroyed even when non-empty. Dev sets this true so `terraform destroy` never chokes on a non-empty bucket; production leaves it false so an accidental destroy can't silently delete real content."
+}
+
+variable "domain_name" {
+  type        = string
+  default     = ""
+  description = "Custom domain for the CloudFront distribution. Only used when enable_custom_domain = true."
+}
+
+variable "hosted_zone_id" {
+  type        = string
+  default     = ""
+  description = "Route 53 hosted zone ID to create the ACM validation and alias records in. Only used when enable_custom_domain = true."
+}
+
+variable "web_acl_id" {
+  type        = string
+  default     = ""
+  description = "ARN of a pre-existing, shared WAFv2 Web ACL (CLOUDFRONT scope, created in us-east-1) to associate with this distribution. This module never creates the ACL itself -- it's created once, outside the module, and shared across environments. Leave empty to skip association."
+}
