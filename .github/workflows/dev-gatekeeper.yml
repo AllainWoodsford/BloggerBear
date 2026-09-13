@@ -19,27 +19,20 @@ concurrency:
 
 jobs:
   static-checks:
-    name: ⬢ Lint & Static Security Scans
+    name: ⬢ Static Security Scans
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # -- 1. RUN YOUR PROJECT'S LINTERS FIRST --
-      # (Adjust this part according to your project stack, e.g., ESLint, Flake8)
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          
-      - name: Install Dependencies
-        run: npm ci
+      # This project is Python/Terraform, not Node -- there is no
+      # package.json anywhere in this repo, so an npm-based lint step here
+      # would just fail on `npm ci`. Linting (ruff) and tests (pytest) are
+      # already covered by .github/workflows/python-ci.yml, and IaC/secret
+      # scanning (trivy, bandit) by .github/workflows/security.yml -- this
+      # job only needs the one check that isn't redundant with those.
 
-      - name: Run Linter
-        run: npm run lint
-
-      # -- 2. FAST SECURITY TRIVIAL CHECK (SAST) --
+      # -- FAST SECURITY TRIVIAL CHECK (SAST) --
       # Catch easy hardcoded credentials/secrets before hitting Claude
       - name: Run Trufflehog Secret Scan
         uses: trufflesecurity/trufflehog@main
@@ -58,14 +51,18 @@ jobs:
         with:
           fetch-depth: 0 # Fetches full history so Claude can see diffs
 
-      # -- 3. MULTI-AGENT ADVERSARIAL REVIEW --
-      # Invokes Claude Code in cloud mode to run the red-team/blue-team verification protocol
+      # -- MULTI-AGENT ADVERSARIAL REVIEW --
+      # Invokes Claude Code in cloud mode to run a deep multi-agent review
       - name: Claude Code Guardrail
         uses: anthropics/claude-code-action@v1
         with:
-          # Provide the key you mapped during /install-github-app
-          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} 
-        with:
-          # System directive telling Claude's subagents exactly how to audit the code
-          command: |
-            /code-review --tier ultra --adversarial
+          # CLAUDE_CODE_OAUTH_TOKEN is a long-lived token from `claude
+          # setup-token` (Pro/Max subscription auth), not an API key -- it
+          # goes in `claude_code_oauth_token`, not `anthropic_api_key`.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Instructions for Claude go in `prompt` -- `command` isn't a
+          # valid input on this action. `/code-review ultra` is the actual
+          # invocation for a deep multi-agent review; `--tier`/`--adversarial`
+          # aren't flags this skill recognizes.
+          prompt: |
+            /code-review ultra
