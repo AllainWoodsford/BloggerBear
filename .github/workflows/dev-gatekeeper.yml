@@ -6,6 +6,12 @@ on:
       - dev    # Triggers on any PR aiming to merge into 'dev'
     types: [opened, synchronize, reopened, ready_for_review]
 
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write 
+  
 # Cancel old running jobs if the developer pushes new commits to the same PR
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
