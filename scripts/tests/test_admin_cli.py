@@ -1,0 +1,288 @@
+from __future__ import annotations
+
+import json
+from unittest.mock import MagicMock, patch
+
+import pytest
+from botocore.credentials import Credentials
+
+import admin_cli
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, payload=None, text=""):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text if payload is None else json.dumps(payload)
+
+    def json(self):
+        if self._payload is None:
+            raise ValueError("no json body")
+        return self._payload
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    monkeypatch.delenv("BLOGGERBEAR_ADMIN_API_URL", raising=False)
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+
+
+# --- config resolution -----------------------------------------------------
+
+
+def test_resolve_api_url_prefers_flag():
+    args = MagicMock(api_url="https://flag-url")
+    assert admin_cli._resolve_api_url(args) == "https://flag-url"
+
+
+def test_resolve_api_url_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("BLOGGERBEAR_ADMIN_API_URL", "https://env-url/")
+    args = MagicMock(api_url=None)
+    assert admin_cli._resolve_api_url(args) == "https://env-url"
+
+
+def test_resolve_api_url_missing_raises():
+    args = MagicMock(api_url=None)
+    with pytest.raises(admin_cli.CliError):
+        admin_cli._resolve_api_url(args)
+
+
+def test_resolve_region_missing_raises():
+    args = MagicMock(region=None)
+    with pytest.raises(admin_cli.CliError):
+        admin_cli._resolve_region(args)
+
+
+def test_resolve_region_falls_back_to_aws_default_region(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+    args = MagicMock(region=None)
+    assert admin_cli._resolve_region(args) == "ap-southeast-2"
+
+
+# --- signed_request ---------------------------------------------------------
+
+
+def test_signed_request_adds_sigv4_authorization_header():
+    fake_creds = Credentials("AKIA_TEST", "secret", token=None)
+    with (
+        patch.object(admin_cli.BotocoreSession, "get_credentials", return_value=fake_creds),
+        patch("admin_cli.requests.request", return_value=FakeResponse(200, {})) as mock_request,
+    ):
+        admin_cli.signed_request("GET", "https://api.example.com", "/topics", "ap-southeast-2")
+
+    mock_request.assert_called_once()
+    _, kwargs = mock_request.call_args
+    assert "Authorization" in kwargs["headers"]
+    assert kwargs["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256")
+
+
+def test_signed_request_no_credentials_raises():
+    with patch.object(admin_cli.BotocoreSession, "get_credentials", return_value=None):
+        with pytest.raises(admin_cli.CliError):
+            admin_cli.signed_request("GET", "https://api.example.com", "/topics", "ap-southeast-2")
+
+
+# --- CLI command dispatch (signed_request mocked out) -----------------------
+
+
+COMMON_ARGS = ["--api-url", "https://api.example.com", "--region", "ap-southeast-2"]
+
+
+def _run(argv):
+    admin_cli.main(COMMON_ARGS + argv)
+
+
+def test_topics_list_calls_get_topics():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"topics": []})) as m:
+        _run(["topics", "list"])
+    m.assert_called_once_with("GET", "https://api.example.com", "/topics", "ap-southeast-2", body=None)
+
+
+def test_topics_get_calls_get_with_topic_id():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "get", "my-topic"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/topics/my-topic", "ap-southeast-2", body=None
+    )
+
+
+def test_topics_create_builds_expected_body():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics",
+                "create",
+                "--topic-id",
+                "new-topic",
+                "--name",
+                "New Topic",
+                "--adapter",
+                "github_trending",
+                "--config-json",
+                '{"language": "python"}',
+                "--financial",
+            ]
+        )
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/topics",
+        "ap-southeast-2",
+        body={
+            "topic_id": "new-topic",
+            "name": "New Topic",
+            "adapter": "github_trending",
+            "adapter_config": {"language": "python"},
+            "is_financial": True,
+        },
+    )
+
+
+def test_topics_create_defaults_config_and_financial():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics",
+                "create",
+                "--topic-id",
+                "new-topic",
+                "--name",
+                "New Topic",
+                "--adapter",
+                "github_trending",
+            ]
+        )
+    body = m.call_args.kwargs["body"]
+    assert body["adapter_config"] == {}
+    assert body["is_financial"] is False
+
+
+def test_topics_create_invalid_json_exits_nonzero(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(
+                [
+                    "topics",
+                    "create",
+                    "--topic-id",
+                    "t",
+                    "--name",
+                    "n",
+                    "--adapter",
+                    "a",
+                    "--config-json",
+                    "not-json",
+                ]
+            )
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "not valid JSON" in capsys.readouterr().err
+
+
+def test_topics_update_partial_body():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--name", "Renamed", "--no-financial"])
+    m.assert_called_once_with(
+        "PUT",
+        "https://api.example.com",
+        "/topics/my-topic",
+        "ap-southeast-2",
+        body={"name": "Renamed", "is_financial": False},
+    )
+
+
+def test_topics_update_with_no_fields_errors(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "update", "my-topic"])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "at least one field" in capsys.readouterr().err
+
+
+def test_topics_delete_calls_delete():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "delete", "my-topic"])
+    m.assert_called_once_with(
+        "DELETE", "https://api.example.com", "/topics/my-topic", "ap-southeast-2", body=None
+    )
+
+
+def test_topics_trigger_builds_body():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+        _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/topics/my-topic/trigger",
+        "ap-southeast-2",
+        body={"pipeline": "daily_cycle"},
+    )
+
+
+def test_topics_trigger_invalid_pipeline_rejected_by_argparse():
+    with pytest.raises(SystemExit):
+        _run(["topics", "trigger", "my-topic", "--pipeline", "not_a_pipeline"])
+
+
+def test_topics_candidates_calls_get():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "candidates", "my-topic"])
+    m.assert_called_once_with(
+        "GET",
+        "https://api.example.com",
+        "/topics/my-topic/candidates",
+        "ap-southeast-2",
+        body=None,
+    )
+
+
+def test_moderation_list_calls_get():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"items": []})) as m:
+        _run(["moderation", "list"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/moderation-queue", "ap-southeast-2", body=None
+    )
+
+
+def test_moderation_approve_calls_post():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["moderation", "approve", "queue-1"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/moderation-queue/queue-1/approve",
+        "ap-southeast-2",
+        body=None,
+    )
+
+
+def test_moderation_reject_calls_post():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["moderation", "reject", "queue-1"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/moderation-queue/queue-1/reject",
+        "ap-southeast-2",
+        body=None,
+    )
+
+
+def test_non_2xx_response_exits_nonzero_and_prints_error(capsys):
+    with patch(
+        "admin_cli.signed_request",
+        return_value=FakeResponse(404, {"error": "topic 'x' not found"}),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "get", "x"])
+    assert exc_info.value.code != 0
+    assert "topic 'x' not found" in capsys.readouterr().err
+
+
+def test_success_response_prints_pretty_json(capsys):
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"topics": []})):
+        _run(["topics", "list"])
+    out = capsys.readouterr().out
+    assert json.loads(out) == {"topics": []}

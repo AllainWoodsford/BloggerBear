@@ -257,6 +257,23 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["arn:aws:iam::*:role/bloggerbear-*-lambda-exec"]
   }
 
+  # Phase 2: API Gateway HTTP API for the admin console (see
+  # infra/environments/*/main.tf's aws_apigatewayv2_api.admin and related
+  # resources). API Gateway management-API ARNs deliberately don't carry
+  # an account ID -- this is the correct ARN shape for apigateway:*
+  # actions, not an oversight -- so this can't be scoped down to
+  # bloggerbear-* the way Lambda/DynamoDB/logs are above; it's scoped by
+  # action + region instead.
+  statement {
+    sid     = "ApiGateway"
+    effect  = "Allow"
+    actions = ["apigateway:*"]
+    resources = [
+      "arn:aws:apigateway:ap-southeast-2::/apis",
+      "arn:aws:apigateway:ap-southeast-2::/apis/*",
+    ]
+  }
+
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever
   # invoked by the Lambda execution role at runtime (see
   # infra/environments/*/main.tf's aws_iam_role_policy.lambda_exec) --
