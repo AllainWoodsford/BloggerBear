@@ -229,18 +229,20 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*"]
   }
 
-  # Phase 1: IAM for the Lambda execution role. This is the sensitive one
-  # -- IAM actions are deliberately NEVER granted against resources = ["*"]
-  # anywhere in this policy, unlike the S3/CloudFront/WAF/Route53/ACM
-  # statements above. `resources` is scoped to exactly the
-  # bloggerbear-*-lambda-exec role name pattern, and nothing else. This
-  # is what stops a compromised (or merely buggy) CI deploy role from
+  # Phase 1 (extended in Phase 3): IAM for the Lambda execution role, plus
+  # (Phase 3) the Step Functions and EventBridge Scheduler roles. This is
+  # the sensitive one -- IAM actions are deliberately NEVER granted
+  # against resources = ["*"] anywhere in this policy, unlike the
+  # S3/CloudFront/WAF/Route53/ACM statements above. `resources` is scoped
+  # to exactly the bloggerbear-*-lambda-exec / bloggerbear-*-states-exec /
+  # bloggerbear-*-scheduler-invoke role name patterns, and nothing else.
+  # This is what stops a compromised (or merely buggy) CI deploy role from
   # creating or passing an arbitrary, more-privileged IAM role --
   # including PassRole, which is the specific permission that would
   # otherwise let it hand any role to any service. If this policy is
   # extended later (more roles, more actions), preserve this scoping:
-  # widen the resource pattern only as far as `bloggerbear-*-lambda-exec`-
-  # style naming requires, never to a bare "*".
+  # widen the resource pattern only as far as this naming convention
+  # requires, never to a bare "*".
   statement {
     sid    = "LambdaExecRole"
     effect = "Allow"
@@ -254,7 +256,11 @@ data "aws_iam_policy_document" "gha_deploy" {
       "iam:TagRole",
       "iam:PassRole",
     ]
-    resources = ["arn:aws:iam::*:role/bloggerbear-*-lambda-exec"]
+    resources = [
+      "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
+      "arn:aws:iam::*:role/bloggerbear-*-states-exec",
+      "arn:aws:iam::*:role/bloggerbear-*-scheduler-invoke",
+    ]
   }
 
   # Phase 2: API Gateway HTTP API for the admin console (see
@@ -273,6 +279,45 @@ data "aws_iam_policy_document" "gha_deploy" {
       "arn:aws:apigateway:ap-southeast-2::/apis/*",
     ]
   }
+
+  # Phase 3: the Step Functions state machine that wraps the daily_cycle
+  # Lambda invocation for retries + a DLQ on failure. Scoped to the
+  # bloggerbear-* state machine name prefix.
+  statement {
+    sid    = "StepFunctions"
+    effect = "Allow"
+    actions = [
+      "states:CreateStateMachine",
+      "states:DeleteStateMachine",
+      "states:DescribeStateMachine",
+      "states:UpdateStateMachine",
+      "states:TagResource",
+    ]
+    resources = ["arn:aws:states:ap-southeast-2:*:stateMachine:bloggerbear-*"]
+  }
+
+  # Phase 3: the dead-letter queue the state machine sends failed
+  # executions to. Scoped to the bloggerbear-* queue name prefix.
+  statement {
+    sid    = "SQS"
+    effect = "Allow"
+    actions = [
+      "sqs:CreateQueue",
+      "sqs:DeleteQueue",
+      "sqs:GetQueueAttributes",
+      "sqs:SetQueueAttributes",
+      "sqs:TagQueue",
+    ]
+    resources = ["arn:aws:sqs:ap-southeast-2:*:bloggerbear-*"]
+  }
+
+  # Note: no scheduler:* statement here. Terraform/CI only ever creates the
+  # scheduler_invoke IAM role (below) -- the per-topic
+  # aws_scheduler_schedule-equivalent resources are created dynamically at
+  # runtime by admin_api_handler's common/scheduler.py via the AWS SDK,
+  # using the Lambda execution role's own scheduler:* grant (see
+  # infra/environments/*/main.tf's aws_iam_role_policy.scheduler_manage),
+  # not this CI deploy role. Nothing here needs scheduler:* permissions.
 
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever
   # invoked by the Lambda execution role at runtime (see
