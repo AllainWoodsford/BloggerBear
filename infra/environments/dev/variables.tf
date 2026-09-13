@@ -19,6 +19,20 @@ variable "bedrock_model_id" {
   EOT
 }
 
+variable "admin_allowed_cidrs" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Public IP CIDRs (as /32s, e.g. ["203.0.113.7/32"]) allowed through the
+    regional WAF Web ACL in front of the admin API. This MUST be set to
+    the operator's own public IP before the admin API becomes reachable at
+    all -- with this left empty, the Web ACL's default-block action means
+    NOTHING can call the API. That is the deliberately safe default (fail
+    closed, consistent with this project's compliance-review posture),
+    not a bug. Set the real value in terraform.tfvars.
+  EOT
+}
+
 variable "web_acl_arn" {
   type        = string
   default     = ""

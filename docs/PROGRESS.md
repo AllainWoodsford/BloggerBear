@@ -177,12 +177,25 @@ Spec: `docs/specs/phase-0-foundations.md`
 
 ## Phase 2 — Admin console
 
-- [ ] Admin API, separate from public API, authenticated (Cognito or IAM +
-  WAF IP allowlist)
-- [ ] Topic CRUD UI, including adapter selection
-- [ ] Manual "trigger a run" button per topic
-- [ ] Moderation queue UI: approve / reject flagged drafts
-- [ ] "Candidates considered but not published" view (from `CandidateIdeas`)
+- [x] Admin API, separate from public API, authenticated (Cognito or IAM +
+  WAF IP allowlist) — went with **IAM (SigV4) + a regional WAF IP allowlist**
+  rather than Cognito (simpler/cheaper for a single-operator project, and
+  explicitly sanctioned as an equal alternative here); code complete, not
+  yet deployed — `admin_allowed_cidrs` is still an empty-list TODO in both
+  `terraform.tfvars`, which fails closed (nothing can reach the API) until
+  set to the operator's real IP
+- [x] Topic CRUD UI, including adapter selection — implemented as a local
+  operator CLI (`scripts/admin_cli.py`), not a browser app, since IAM auth
+  from a browser would otherwise need Cognito Identity Pool federation
+  anyway; `topics create/get/update/delete` cover CRUD, `adapter`/
+  `adapter_config` are free-form CLI args so any adapter key works
+- [x] Manual "trigger a run" button per topic — `admin_cli.py topics
+  trigger <id> --pipeline {research_tick,daily_cycle}`, async Lambda invoke
+- [x] Moderation queue UI: approve / reject flagged drafts —
+  `admin_cli.py moderation list/approve/reject`
+- [x] "Candidates considered but not published" view (from `CandidateIdeas`)
+  — `admin_cli.py topics candidates <id>`, returns every candidate
+  regardless of status so rejected/unselected angles are visible too
 
 ## Phase 3 — Automation
 
