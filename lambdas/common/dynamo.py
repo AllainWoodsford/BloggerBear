@@ -7,8 +7,10 @@ briefs):
   owned by the research-tick worker (alongside `common/adapters/`).
 - The `CandidateIdeas` / `Articles` / `ModerationQueue` helpers further down
   are owned by the daily-cycle worker.
+- The "Admin API" section at the bottom (Phase 2) is owned by the
+  `admin_api_handler` worker.
 
-Both workers add to this one file -- please keep additions inside their own
+All workers add to this one file -- please keep additions inside their own
 clearly-labeled section, and keep function names narrowly scoped (e.g.
 `get_topic`, `put_finding`) to avoid collisions.
 
@@ -20,7 +22,7 @@ from __future__ import annotations
 import os
 
 import boto3
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 _dynamodb_resource = None
 
@@ -172,3 +174,105 @@ def put_moderation_item(
     }
     table.put_item(Item=item)
     return item
+
+
+# --- Admin API ---------------------------------------------------------------
+
+
+def list_topics() -> list[dict]:
+    """Return every Topic item (Scan -- acceptable at this project's scale)."""
+    table = get_table(os.environ["TOPICS_TABLE"])
+    response = table.scan()
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
+
+
+def put_topic(item: dict) -> None:
+    """Write (create or overwrite) a Topic item as-is."""
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.put_item(Item=item)
+
+
+def delete_topic(topic_id: str) -> None:
+    """Delete a Topic item by `topic_id`."""
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.delete_item(Key={"topic_id": topic_id})
+
+
+def list_candidate_ideas(topic_id: str) -> list[dict]:
+    """Return every CandidateIdeas item for a topic, regardless of status.
+
+    This backs the admin "candidates considered but not published" view, so
+    unlike a pipeline-internal helper it must not filter by status.
+    """
+    table = get_table(os.environ["CANDIDATE_IDEAS_TABLE"])
+    response = table.query(KeyConditionExpression=Key("topic_id").eq(topic_id))
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.query(
+            KeyConditionExpression=Key("topic_id").eq(topic_id),
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+    return items
+
+
+def list_pending_moderation() -> list[dict]:
+    """Return every ModerationQueue item with `status == "pending"`.
+
+    Scan + filter -- acceptable at this project's scale, no GSI.
+    """
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    response = table.scan(FilterExpression=Attr("status").eq("pending"))
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression=Attr("status").eq("pending"),
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+    return items
+
+
+def get_moderation_item(queue_id: str) -> dict | None:
+    """Fetch a ModerationQueue item by `queue_id`, or None if it doesn't exist."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    response = table.get_item(Key={"queue_id": queue_id})
+    return response.get("Item")
+
+
+def update_moderation_status(queue_id: str, status: str) -> None:
+    """Update a ModerationQueue item's `status` field in place."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    table.update_item(
+        Key={"queue_id": queue_id},
+        UpdateExpression="SET #status = :status",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":status": status},
+    )
+
+
+def get_article(article_id: str) -> dict | None:
+    """Fetch an Articles item by `article_id`, or None if it doesn't exist."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    response = table.get_item(Key={"article_id": article_id})
+    return response.get("Item")
+
+
+def update_article_status(article_id: str, status: str, published_at: str | None = None) -> None:
+    """Update an Articles item's `status` (and optionally `published_at`)."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    update_expression = "SET #status = :status"
+    expression_attribute_values = {":status": status}
+    if published_at is not None:
+        update_expression += ", published_at = :published_at"
+        expression_attribute_values[":published_at"] = published_at
+    table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression=update_expression,
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues=expression_attribute_values,
+    )
