@@ -203,6 +203,19 @@ locals {
     MODERATION_QUEUE_TABLE = module.app_data.moderation_queue_table_name
     CONTENT_BUCKET         = aws_s3_bucket.content.bucket
     BEDROCK_MODEL_ID       = var.bedrock_model_id
+    # Phase 2: lets the admin-api handler invoke the other two pipeline
+    # Lambdas on demand (e.g. POST /topics/{topic_id}/trigger). Harmless
+    # on research_tick/daily_cycle themselves -- they just never read it.
+    #
+    # Literal strings, not aws_lambda_function.research_tick.function_name
+    # / .daily_cycle.function_name -- those resources' own `environment`
+    # blocks consume this same local, so referencing their attributes here
+    # would create a dependency cycle. function_name is a fixed literal
+    # (not computed), so it's identical either way; keep these in sync
+    # with the function_name arguments on aws_lambda_function.research_tick
+    # and aws_lambda_function.daily_cycle below.
+    RESEARCH_TICK_FUNCTION_NAME = "bloggerbear-dev-research-tick"
+    DAILY_CYCLE_FUNCTION_NAME   = "bloggerbear-dev-daily-cycle"
   }
 }
 
@@ -236,4 +249,173 @@ resource "aws_lambda_function" "daily_cycle" {
   environment {
     variables = local.lambda_env_variables
   }
+}
+
+# =========================================================================
+# Phase 2 -- Admin console API: a third Lambda (from the same shared
+# deployment package above) fronted by an IAM-authenticated API Gateway
+# HTTP API and a regional WAF IP allowlist. Per docs/PROGRESS.md's Phase 2
+# line, this project uses IAM (SigV4) auth + a WAF IP allowlist rather than
+# Cognito -- simpler and cheaper for a single operator driving this
+# entirely through a local CLI (scripts/admin_cli.py, Python workstream),
+# never a browser app. See infra/environments/production/main.tf for the
+# unrelated Phase 0 CLOUDFRONT-scope Web ACL -- this is a separate,
+# REGIONAL-scope ACL that protects only this API.
+# =========================================================================
+
+resource "aws_lambda_function" "admin_api" {
+  function_name = "bloggerbear-dev-admin-api"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "admin_api_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+# Second inline policy on the same shared exec role (rather than folding
+# into aws_iam_role_policy.lambda_exec above) so this grant stays visibly
+# scoped to exactly the two pipeline Lambda ARNs -- deliberately NOT
+# aws_lambda_function.admin_api.arn (no self-invoke) and NOT "*".
+data "aws_iam_policy_document" "lambda_invoke_pipeline" {
+  statement {
+    sid       = "InvokePipelineLambdas"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.research_tick.arn, aws_lambda_function.daily_cycle.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_invoke_pipeline" {
+  name   = "bloggerbear-dev-lambda-invoke-pipeline"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_invoke_pipeline.json
+}
+
+# -----------------------------------------------------------------------
+# API Gateway HTTP API. authorization_type = "AWS_IAM" on every route is
+# what enforces SigV4 auth -- HTTP APIs need no separate authorizer
+# resource for IAM auth, unlike REST APIs. Reachability is further
+# restricted to the operator's own IP by the regional WAF Web ACL below.
+# -----------------------------------------------------------------------
+resource "aws_apigatewayv2_api" "admin" {
+  name          = "bloggerbear-dev-admin-api"
+  protocol_type = "HTTP"
+}
+
+resource "aws_apigatewayv2_integration" "admin_lambda" {
+  api_id                 = aws_apigatewayv2_api.admin.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.admin_api.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_lambda_permission" "admin_api_apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.admin_api.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.admin.execution_arn}/*/*"
+}
+
+# One route per admin_cli.py operation. for_each over the route-key list
+# below creates one aws_apigatewayv2_route resource instance per entry
+# (rather than 10 hand-copied blocks) -- keep this list and
+# scripts/admin_cli.py's routes in sync.
+locals {
+  admin_api_routes = toset([
+    "GET /topics",
+    "POST /topics",
+    "GET /topics/{topic_id}",
+    "PUT /topics/{topic_id}",
+    "DELETE /topics/{topic_id}",
+    "POST /topics/{topic_id}/trigger",
+    "GET /topics/{topic_id}/candidates",
+    "GET /moderation-queue",
+    "POST /moderation-queue/{queue_id}/approve",
+    "POST /moderation-queue/{queue_id}/reject",
+  ])
+}
+
+resource "aws_apigatewayv2_route" "admin" {
+  for_each = local.admin_api_routes
+
+  api_id             = aws_apigatewayv2_api.admin.id
+  route_key          = each.value
+  target             = "integrations/${aws_apigatewayv2_integration.admin_lambda.id}"
+  authorization_type = "AWS_IAM"
+}
+
+resource "aws_apigatewayv2_stage" "default" {
+  api_id      = aws_apigatewayv2_api.admin.id
+  name        = "$default"
+  auto_deploy = true
+}
+
+# -----------------------------------------------------------------------
+# Regional WAF IP allowlist -- a different Web ACL from the Phase 0
+# CLOUDFRONT-scope one in production/main.tf (that one is shared by both
+# CloudFront distributions, us-east-1 only). This one is REGIONAL scope,
+# created in this environment's default ap-southeast-2 provider (regional
+# WAF for API Gateway lives in the API's own region, no us-east-1 alias
+# needed), and protects only the admin API.
+#
+# default_action = block: until var.admin_allowed_cidrs is set to the
+# operator's real public IP (a /32 CIDR), the IP set is empty and NOTHING
+# can call this API. That is the deliberately safe default -- fail closed
+# -- not a bug.
+# -----------------------------------------------------------------------
+resource "aws_wafv2_ip_set" "admin_allowlist" {
+  name               = "bloggerbear-dev-admin-allowlist"
+  scope              = "REGIONAL"
+  ip_address_version = "IPV4"
+  addresses          = var.admin_allowed_cidrs
+}
+
+resource "aws_wafv2_web_acl" "admin" {
+  name        = "bloggerbear-dev-admin-api"
+  description = "Regional WAF Web ACL for the BloggerBear dev admin API -- allows only the operator's allowlisted IP(s); blocks everything else by default."
+  scope       = "REGIONAL"
+
+  default_action {
+    block {}
+  }
+
+  rule {
+    name     = "allow-admin-ips"
+    priority = 1
+
+    action {
+      allow {}
+    }
+
+    statement {
+      ip_set_reference_statement {
+        arn = aws_wafv2_ip_set.admin_allowlist.arn
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-dev-admin-allow"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "bloggerbear-dev-admin-acl"
+    sampled_requests_enabled   = true
+  }
+}
+
+resource "aws_wafv2_web_acl_association" "admin" {
+  resource_arn = aws_apigatewayv2_stage.default.arn
+  web_acl_arn  = aws_wafv2_web_acl.admin.arn
 }

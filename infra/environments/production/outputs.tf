@@ -30,3 +30,8 @@ output "research_tick_function_name" {
 output "daily_cycle_function_name" {
   value = aws_lambda_function.daily_cycle.function_name
 }
+
+output "admin_api_url" {
+  value       = aws_apigatewayv2_stage.default.invoke_url
+  description = "Invoke URL for the admin API's $default stage. Copy into BLOGGERBEAR_ADMIN_API_URL for scripts/admin_cli.py. Unreachable until var.admin_allowed_cidrs is set (see that variable's description)."
+}
