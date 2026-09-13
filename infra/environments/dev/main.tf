@@ -216,8 +216,43 @@ locals {
     # and aws_lambda_function.daily_cycle below.
     RESEARCH_TICK_FUNCTION_NAME = "bloggerbear-dev-research-tick"
     DAILY_CYCLE_FUNCTION_NAME   = "bloggerbear-dev-daily-cycle"
+
+    # Phase 3: lets admin_api_handler's common/scheduler.py create/update/
+    # delete per-topic EventBridge Scheduler schedules at runtime (topics
+    # are runtime data -- there's no fixed list for Terraform to enumerate
+    # here). RESEARCH_TICK_FUNCTION_ARN and STATE_MACHINE_ARN are the two
+    # possible per-topic invocation targets; SCHEDULER_INVOKE_ROLE_ARN is
+    # the role EventBridge Scheduler assumes to call them (see
+    # aws_iam_role.scheduler_invoke below). ENVIRONMENT_NAME is a literal
+    # string, not computed, for the same dependency-cycle reason as the
+    # *_FUNCTION_NAME entries above.
+    #
+    # RESEARCH_TICK_FUNCTION_ARN and STATE_MACHINE_ARN are built from
+    # data.aws_caller_identity.current.account_id plus the same fixed
+    # literal names used elsewhere (function_name below /
+    # aws_sfn_state_machine.daily_cycle's name), rather than referencing
+    # aws_lambda_function.research_tick.arn / aws_sfn_state_machine.
+    # daily_cycle.arn directly -- the state machine's definition already
+    # references aws_lambda_function.daily_cycle.arn, so a direct
+    # STATE_MACHINE_ARN = aws_sfn_state_machine.daily_cycle.arn reference
+    # here would create daily_cycle -> local.lambda_env_variables ->
+    # state_machine -> daily_cycle, a dependency cycle Terraform refuses
+    # to plan. data.aws_caller_identity has no such dependency, so this
+    # sidesteps the cycle the same way the literal function_name strings
+    # do. SCHEDULER_INVOKE_ROLE_ARN has no such issue (scheduler_invoke's
+    # own attributes don't depend on any Lambda/state-machine resource) so
+    # it's referenced directly.
+    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:ap-southeast-2:${data.aws_caller_identity.current.account_id}:function:bloggerbear-dev-research-tick"
+    STATE_MACHINE_ARN          = "arn:aws:states:ap-southeast-2:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-dev-daily-cycle"
+    SCHEDULER_INVOKE_ROLE_ARN  = aws_iam_role.scheduler_invoke.arn
+    ENVIRONMENT_NAME           = "dev"
   }
 }
+
+# Used only to construct RESEARCH_TICK_FUNCTION_ARN / STATE_MACHINE_ARN
+# above without a direct resource reference (see the comment there for
+# why a direct reference would create a dependency cycle).
+data "aws_caller_identity" "current" {}
 
 resource "aws_lambda_function" "research_tick" {
   function_name = "bloggerbear-dev-research-tick"
@@ -418,4 +453,195 @@ resource "aws_wafv2_web_acl" "admin" {
 resource "aws_wafv2_web_acl_association" "admin" {
   resource_arn = aws_apigatewayv2_stage.default.arn
   web_acl_arn  = aws_wafv2_web_acl.admin.arn
+}
+
+# =========================================================================
+# Phase 3 -- Automation: a Step Functions state machine wraps the single
+# daily_cycle Lambda invocation purely to get retries + a dead-letter
+# queue on failure (see docs/project-plan.md §4 -- the daily authoring
+# cycle is deliberately one Lambda, not four Step-Functions-orchestrated
+# stages; rewriting working Phase 1 code into a multi-stage pipeline for a
+# single-operator portfolio project isn't worth it). The hourly research
+# tick does NOT go through Step Functions at all -- EventBridge Scheduler
+# invokes it directly, since it's already a single self-contained
+# diff-and-maybe-summarize operation with nothing to orchestrate.
+#
+# Per-topic schedules themselves are NOT Terraform resources -- topics are
+# runtime data (created/edited/deleted via the admin API), so there's no
+# fixed list for Terraform to enumerate. They're created dynamically at
+# runtime by admin_api_handler's common/scheduler.py via the AWS SDK.
+# Terraform only creates the IAM role those dynamically-created schedules
+# assume (aws_iam_role.scheduler_invoke) and grants the Lambda execution
+# role permission to manage them (aws_iam_role_policy.scheduler_manage).
+# =========================================================================
+
+resource "aws_sqs_queue" "pipeline_dlq" {
+  name = "bloggerbear-dev-pipeline-dlq"
+}
+
+data "aws_iam_policy_document" "states_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["states.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "states_exec" {
+  name               = "bloggerbear-dev-states-exec"
+  assume_role_policy = data.aws_iam_policy_document.states_assume.json
+}
+
+data "aws_iam_policy_document" "states_exec" {
+  statement {
+    sid       = "InvokeDailyCycle"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.daily_cycle.arn]
+  }
+
+  statement {
+    sid       = "SendToDeadLetterQueue"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.pipeline_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "states_exec" {
+  name   = "bloggerbear-dev-states-exec"
+  role   = aws_iam_role.states_exec.id
+  policy = data.aws_iam_policy_document.states_exec.json
+}
+
+resource "aws_sfn_state_machine" "daily_cycle" {
+  name     = "bloggerbear-dev-daily-cycle"
+  role_arn = aws_iam_role.states_exec.arn
+
+  definition = jsonencode({
+    StartAt = "RunDailyCycle"
+    States = {
+      RunDailyCycle = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.daily_cycle.arn
+          "Payload.$"  = "$"
+        }
+        Retry = [
+          {
+            ErrorEquals     = ["States.ALL"]
+            IntervalSeconds = 30
+            MaxAttempts     = 2
+            BackoffRate     = 2.0
+          }
+        ]
+        Catch = [
+          {
+            ErrorEquals = ["States.ALL"]
+            Next        = "SendToDeadLetterQueue"
+            ResultPath  = "$.error"
+          }
+        ]
+        End = true
+      }
+      SendToDeadLetterQueue = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::sqs:sendMessage"
+        Parameters = {
+          QueueUrl        = aws_sqs_queue.pipeline_dlq.url
+          "MessageBody.$" = "$"
+        }
+        End = true
+      }
+    }
+  })
+}
+
+# -----------------------------------------------------------------------
+# EventBridge Scheduler invocation role -- assumed by EventBridge
+# Scheduler (not by Lambda or Step Functions) whenever a per-topic
+# schedule fires. The per-topic schedules themselves are created
+# dynamically at runtime by admin_api_handler's common/scheduler.py, not
+# by Terraform -- see the Phase 3 header comment above.
+# -----------------------------------------------------------------------
+data "aws_iam_policy_document" "scheduler_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "scheduler_invoke" {
+  name               = "bloggerbear-dev-scheduler-invoke"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+data "aws_iam_policy_document" "scheduler_invoke" {
+  statement {
+    sid       = "InvokeResearchTick"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.research_tick.arn]
+  }
+
+  statement {
+    sid       = "StartDailyCycleExecution"
+    effect    = "Allow"
+    actions   = ["states:StartExecution"]
+    resources = [aws_sfn_state_machine.daily_cycle.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_invoke" {
+  name   = "bloggerbear-dev-scheduler-invoke"
+  role   = aws_iam_role.scheduler_invoke.id
+  policy = data.aws_iam_policy_document.scheduler_invoke.json
+}
+
+# Third inline policy on the shared lambda_exec role (same pattern as
+# Phase 2's lambda_invoke_pipeline above) -- lets admin_api_handler's
+# common/scheduler.py manage per-topic EventBridge Scheduler schedules at
+# runtime. Scoped to the default schedule group (no custom group is
+# created) and the bloggerbear-dev-* name prefix, never "*". iam:PassRole
+# is scoped to exactly the one scheduler_invoke role ARN -- CreateSchedule
+# / UpdateSchedule calls pass that role for EventBridge to assume, and IAM
+# requires the caller to hold explicit PassRole on it; this must never be
+# widened beyond that single role ARN (see bootstrap/main.tf's
+# LambdaExecRole comment for why IAM statements in this project are never
+# scoped to "*").
+data "aws_iam_policy_document" "scheduler_manage" {
+  statement {
+    sid    = "ManageTopicSchedules"
+    effect = "Allow"
+    actions = [
+      "scheduler:CreateSchedule",
+      "scheduler:UpdateSchedule",
+      "scheduler:DeleteSchedule",
+      "scheduler:GetSchedule",
+    ]
+    resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-dev-*"]
+  }
+
+  statement {
+    sid       = "PassSchedulerInvokeRole"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.scheduler_invoke.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_manage" {
+  name   = "bloggerbear-dev-scheduler-manage"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.scheduler_manage.json
 }
