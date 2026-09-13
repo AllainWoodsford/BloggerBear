@@ -23,6 +23,13 @@ Phase 1 writes a single Lambda.
 
 ## Region
 
+> ⚠️ **Every `us-east-1` mention in this document is intentional.** It
+> refers only to the CloudFront-scope WAF Web ACL and the ACM certificate —
+> AWS requires both in `us-east-1` specifically, regardless of hosting
+> region. Do not "fix" these to `ap-southeast-2`; doing so breaks the WAF
+> association and cert issuance outright. Everything else in this project
+> is `ap-southeast-2`.
+
 Everything deploys to **`ap-southeast-2` (Sydney)** — this is fixed, not an
 open question.
 
@@ -216,6 +223,48 @@ project with one operator and no real dev traffic.
 in `us-east-1` (via a provider alias — see "Region") + alias record. Dev
 deliberately has none of this, which also makes dev faster to destroy and
 rebuild (no DNS propagation or cert re-validation in the loop).
+
+## Connecting to AWS (local + CI)
+
+Two separate connections, set up differently — do not reuse one for the
+other.
+
+**Local (for the one-time `infra/bootstrap` apply and ad hoc Terraform
+runs):** the IAM admin user from the prerequisites list, via `aws configure`
+or `aws configure sso`. Nothing else needed.
+
+**GitHub Actions → AWS (for the actual dev/production applies):** OIDC role
+federation — no long-lived AWS access keys stored anywhere in this repo.
+The existing `terraform.yml` already declares `permissions: id-token:
+write` on its jobs but never actually calls
+`aws-actions/configure-aws-credentials` — as written today it cannot
+authenticate to AWS at all. This PR needs to finish that:
+
+- Create an IAM OIDC Identity Provider for `token.actions.githubusercontent.com`
+  (one per AWS account) in `infra/bootstrap`, applied locally alongside the
+  state bucket — same chicken-and-egg reasoning as the bucket itself.
+- Create two IAM roles, also in `infra/bootstrap`:
+  - `gha-bloggerbear-dev-deploy` — trust policy restricted to
+    `repo:<owner>/BloggerBear:ref:refs/heads/dev`, so only a workflow run
+    actually triggered off the `dev` branch can assume it.
+  - `gha-bloggerbear-prod-deploy` — trust policy restricted to
+    `repo:<owner>/BloggerBear:environment:production`, so only a run
+    associated with the `production` GitHub Environment can assume it. This
+    is a deliberate second enforcement layer: even if the workflow logic
+    were somehow edited to skip the required-reviewer gate, AWS itself
+    still refuses to hand out credentials without that Environment
+    context.
+- Scope each role's permission policy to what Phase 0 actually touches —
+  S3, CloudFront, WAF (`us-east-1` only), Route 53, ACM (`us-east-1` only).
+  No Bedrock, Lambda, or app-DynamoDB permissions yet; grow the policy
+  phase by phase rather than granting broad access up front.
+- Add the missing `aws-actions/configure-aws-credentials` step to both
+  workflow files, pinned to a full commit SHA (same practice as the other
+  pinned actions), with `aws-region: ap-southeast-2` and `role-to-assume`
+  read from a GitHub Environment **variable** (not a secret — the ARN
+  itself isn't sensitive, the trust policy is what protects it), set
+  differently on the `dev` and `production` Environments so the same
+  workflow code picks up the right role automatically.
 
 ## CI/CD workflow requirements
 
