@@ -199,11 +199,25 @@ Spec: `docs/specs/phase-0-foundations.md`
 
 ## Phase 3 — Automation
 
-- [ ] EventBridge Scheduler per topic: hourly tick + daily cycle, each on its
-  own configured cadence
-- [ ] Step Functions state machine: Research → Draft → Review → Publish, with
-  retries and a DLQ
-- [ ] Manual-trigger-only dependency removed — topics run unattended
+- [x] EventBridge Scheduler per topic: hourly tick + daily cycle, each on its
+  own configured cadence — created/updated/deleted dynamically by
+  `admin_api_handler.py` (`lambdas/common/scheduler.py`) at topic
+  create/update/delete time, since topics are runtime data Terraform can't
+  enumerate; code complete, not yet deployed
+- [x] Step Functions state machine: Research → Draft → Review → Publish, with
+  retries and a DLQ — **scoped down**: wraps the existing single
+  `daily_cycle_handler` Lambda (already the full ideate→select→draft→
+  review→publish chain from Phase 1) in one Task state with retries + a
+  Catch→SQS dead-letter queue, rather than splitting it into four
+  separately-orchestrated Lambdas, since that would be a large rewrite of
+  working Phase 1 code for limited benefit on a single-operator project.
+  The hourly research tick bypasses Step Functions entirely (EventBridge
+  Scheduler invokes it directly) — it's a single self-contained operation
+  with nothing to orchestrate.
+- [x] Manual-trigger-only dependency removed — topics run unattended — once
+  deployed, every topic created via the Admin API gets its own schedules;
+  the CLI's manual `trigger` command still exists for on-demand runs but is
+  no longer the only path
 
 ## Phase 4 — Public frontend polish
 

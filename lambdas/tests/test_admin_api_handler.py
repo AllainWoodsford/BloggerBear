@@ -26,13 +26,26 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("RESEARCH_TICK_FUNCTION_NAME", "research-tick-fn")
     monkeypatch.setenv("DAILY_CYCLE_FUNCTION_NAME", "daily-cycle-fn")
+    monkeypatch.setenv(
+        "RESEARCH_TICK_FUNCTION_ARN",
+        "arn:aws:lambda:ap-southeast-2:123456789012:function:research-tick-fn",
+    )
+    monkeypatch.setenv(
+        "STATE_MACHINE_ARN", "arn:aws:states:ap-southeast-2:123456789012:stateMachine:daily-cycle"
+    )
+    monkeypatch.setenv(
+        "SCHEDULER_INVOKE_ROLE_ARN", "arn:aws:iam::123456789012:role/scheduler-invoke"
+    )
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
 
     # common.dynamo caches a boto3 resource at module scope, and
     # admin_api_handler caches a boto3 lambda client -- reset both so each
     # test gets one bound to moto's mock (or a fresh mock to patch over).
     import common.dynamo as dynamo_module
+    import common.scheduler as scheduler_module
 
     dynamo_module._dynamodb_resource = None
+    scheduler_module._scheduler_client = None
     admin_api_handler._lambda_client = None
 
 
@@ -121,7 +134,9 @@ def test_create_topic_success(aws_resources):
         "name": "New Topic",
         "adapter": "github_trending",
     }
-    result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
     assert result["statusCode"] == 201
     created = json.loads(result["body"])
     assert created == {
@@ -130,10 +145,50 @@ def test_create_topic_success(aws_resources):
         "adapter": "github_trending",
         "adapter_config": {},
         "is_financial": False,
+        "research_cadence": "rate(1 hour)",
+        "daily_cadence": "cron(0 6 * * ? *)",
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert table.get_item(Key={"topic_id": "new-topic"})["Item"] == created
+
+    mock_upsert.assert_called_once_with("new-topic", "rate(1 hour)", "cron(0 6 * * ? *)")
+
+
+def test_create_topic_custom_cadence(aws_resources):
+    body = {
+        "topic_id": "new-topic",
+        "name": "New Topic",
+        "adapter": "github_trending",
+        "research_cadence": "rate(30 minutes)",
+        "daily_cadence": "cron(0 12 * * ? *)",
+    }
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["research_cadence"] == "rate(30 minutes)"
+    assert created["daily_cadence"] == "cron(0 12 * * ? *)"
+    mock_upsert.assert_called_once_with("new-topic", "rate(30 minutes)", "cron(0 12 * * ? *)")
+
+
+def test_create_topic_invalid_cadence_expression_returns_400(aws_resources):
+    body = {
+        "topic_id": "new-topic",
+        "name": "New Topic",
+        "adapter": "github_trending",
+        "research_cadence": "every hour please",
+    }
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 400
+    mock_upsert.assert_not_called()
+
+    # The bad cadence must be rejected before the topic item is ever written.
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    assert "Item" not in table.get_item(Key={"topic_id": "new-topic"})
 
 
 @pytest.mark.parametrize(
@@ -145,6 +200,10 @@ def test_create_topic_success(aws_resources):
         {"topic_id": "t", "name": "n"},
         {"topic_id": "t", "name": "n", "adapter": "x", "adapter_config": "not-a-dict"},
         {"topic_id": "t", "name": "n", "adapter": "x", "is_financial": "not-a-bool"},
+        {"topic_id": "t", "name": "n", "adapter": "x", "research_cadence": 123},
+        {"topic_id": "t", "name": "n", "adapter": "x", "research_cadence": ""},
+        {"topic_id": "t", "name": "n", "adapter": "x", "daily_cadence": 123},
+        {"topic_id": "t", "name": "n", "adapter": "x", "daily_cadence": ""},
     ],
 )
 def test_create_topic_invalid_input_returns_400(aws_resources, body):
@@ -186,12 +245,53 @@ def test_update_topic_partial(aws_resources):
         path_params={"topic_id": "github-trending"},
         body={"name": "Renamed", "is_financial": True},
     )
-    result = admin_api_handler.handler(event, None)
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(event, None)
+
     assert result["statusCode"] == 200
     updated = json.loads(result["body"])
     assert updated["name"] == "Renamed"
     assert updated["is_financial"] is True
     assert updated["adapter"] == TOPIC["adapter"]  # untouched field preserved
+    # Not present on TOPIC -- update fills in the defaults.
+    assert updated["research_cadence"] == "rate(1 hour)"
+    assert updated["daily_cadence"] == "cron(0 6 * * ? *)"
+    mock_upsert.assert_called_once_with(
+        "github-trending", "rate(1 hour)", "cron(0 6 * * ? *)"
+    )
+
+
+def test_update_topic_custom_cadence(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"research_cadence": "rate(2 hours)", "daily_cadence": "cron(0 18 * * ? *)"},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    updated = json.loads(result["body"])
+    assert updated["research_cadence"] == "rate(2 hours)"
+    assert updated["daily_cadence"] == "cron(0 18 * * ? *)"
+    mock_upsert.assert_called_once_with(
+        "github-trending", "rate(2 hours)", "cron(0 18 * * ? *)"
+    )
+
+
+def test_update_topic_invalid_cadence_expression_returns_400(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"daily_cadence": "whenever"},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 400
+    mock_upsert.assert_not_called()
 
 
 def test_update_topic_not_found(aws_resources):
@@ -216,9 +316,12 @@ def test_update_topic_invalid_field_returns_400(aws_resources):
 def test_delete_topic_success(aws_resources):
     _put_topic()
     event = _event("DELETE /topics/{topic_id}", path_params={"topic_id": "github-trending"})
-    result = admin_api_handler.handler(event, None)
+    with patch("admin_api_handler.delete_topic_schedules") as mock_delete_schedules:
+        result = admin_api_handler.handler(event, None)
+
     assert result["statusCode"] == 200
     assert json.loads(result["body"]) == {"deleted": "github-trending"}
+    mock_delete_schedules.assert_called_once_with("github-trending")
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert "Item" not in table.get_item(Key={"topic_id": "github-trending"})

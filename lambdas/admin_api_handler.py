@@ -31,6 +31,14 @@ from common.dynamo import (
     update_article_status,
     update_moderation_status,
 )
+from common.scheduler import (
+    _validate_schedule_expression,
+    delete_topic_schedules,
+    upsert_topic_schedules,
+)
+
+_DEFAULT_RESEARCH_CADENCE = "rate(1 hour)"
+_DEFAULT_DAILY_CADENCE = "cron(0 6 * * ? *)"
 
 _lambda_client = None
 
@@ -98,6 +106,18 @@ def _create_topic(event: dict) -> dict:
     if not isinstance(is_financial, bool):
         return _error(400, "'is_financial' must be a boolean if provided")
 
+    research_cadence = body.get("research_cadence", _DEFAULT_RESEARCH_CADENCE)
+    daily_cadence = body.get("daily_cadence", _DEFAULT_DAILY_CADENCE)
+    if not isinstance(research_cadence, str) or not research_cadence:
+        return _error(400, "'research_cadence' must be a non-empty string if provided")
+    if not isinstance(daily_cadence, str) or not daily_cadence:
+        return _error(400, "'daily_cadence' must be a non-empty string if provided")
+    try:
+        _validate_schedule_expression(research_cadence)
+        _validate_schedule_expression(daily_cadence)
+    except ValueError as exc:
+        return _error(400, str(exc))
+
     if get_topic(topic_id) is not None:
         return _error(409, f"topic '{topic_id}' already exists")
 
@@ -107,8 +127,14 @@ def _create_topic(event: dict) -> dict:
         "adapter": adapter,
         "adapter_config": adapter_config,
         "is_financial": is_financial,
+        "research_cadence": research_cadence,
+        "daily_cadence": daily_cadence,
     }
     put_topic(item)
+    try:
+        upsert_topic_schedules(topic_id, research_cadence, daily_cadence)
+    except ValueError as exc:
+        return _error(400, str(exc))
     return _response(201, item)
 
 
@@ -132,7 +158,14 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "request body must be valid JSON")
 
     updated = dict(topic)
-    for field in ("name", "adapter", "adapter_config", "is_financial"):
+    for field in (
+        "name",
+        "adapter",
+        "adapter_config",
+        "is_financial",
+        "research_cadence",
+        "daily_cadence",
+    ):
         if field in body:
             updated[field] = body[field]
 
@@ -144,8 +177,28 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "'adapter_config' must be an object")
     if "is_financial" in body and not isinstance(updated["is_financial"], bool):
         return _error(400, "'is_financial' must be a boolean")
+    if "research_cadence" in body and (
+        not isinstance(updated["research_cadence"], str) or not updated["research_cadence"]
+    ):
+        return _error(400, "'research_cadence' must be a non-empty string")
+    if "daily_cadence" in body and (
+        not isinstance(updated["daily_cadence"], str) or not updated["daily_cadence"]
+    ):
+        return _error(400, "'daily_cadence' must be a non-empty string")
+
+    research_cadence = updated.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
+    daily_cadence = updated.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
+    try:
+        _validate_schedule_expression(research_cadence)
+        _validate_schedule_expression(daily_cadence)
+    except ValueError as exc:
+        return _error(400, str(exc))
 
     put_topic(updated)
+    try:
+        upsert_topic_schedules(topic_id, research_cadence, daily_cadence)
+    except ValueError as exc:
+        return _error(400, str(exc))
     return _response(200, updated)
 
 
@@ -153,6 +206,7 @@ def _delete_topic(event: dict) -> dict:
     topic_id = _path_param(event, "topic_id")
     if get_topic(topic_id) is None:
         return _error(404, f"topic '{topic_id}' not found")
+    delete_topic_schedules(topic_id)
     delete_topic(topic_id)
     return _response(200, {"deleted": topic_id})
 
