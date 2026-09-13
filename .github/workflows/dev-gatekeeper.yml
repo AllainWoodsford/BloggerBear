@@ -1,0 +1,65 @@
+name: 🛡️ Dev Quality & Adversarial Security Gate
+
+on:
+  pull_request:
+    branches:
+      - dev    # Triggers on any PR aiming to merge into 'dev'
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Cancel old running jobs if the developer pushes new commits to the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-checks:
+    name: ⬢ Lint & Static Security Scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -- 1. RUN YOUR PROJECT'S LINTERS FIRST --
+      # (Adjust this part according to your project stack, e.g., ESLint, Flake8)
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Linter
+        run: npm run lint
+
+      # -- 2. FAST SECURITY TRIVIAL CHECK (SAST) --
+      # Catch easy hardcoded credentials/secrets before hitting Claude
+      - name: Run Trufflehog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+
+  adversarial-review:
+    name: 🤖 Claude Adversarial AI Review
+    needs: static-checks # Only runs if linters & fast scanners pass perfectly
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetches full history so Claude can see diffs
+
+      # -- 3. MULTI-AGENT ADVERSARIAL REVIEW --
+      # Invokes Claude Code in cloud mode to run the red-team/blue-team verification protocol
+      - name: Claude Code Guardrail
+        uses: anthropics/claude-code-action@v1
+        with:
+          # Provide the key you mapped during /install-github-app
+          anthropic_api_key: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }} 
+        with:
+          # System directive telling Claude's subagents exactly how to audit the code
+          command: |
+            /code-review --tier ultra --adversarial
