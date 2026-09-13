@@ -5,3 +5,5 @@
 # that first apply succeeds.
 domain_name    = ""
 hosted_zone_id = ""
+
+bedrock_model_id = "" # TODO: set after confirming Bedrock model access/availability in ap-southeast-2 (see docs/project-plan.md §3)

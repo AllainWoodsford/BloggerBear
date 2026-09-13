@@ -88,10 +88,13 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   client_id_list = ["sts.amazonaws.com"]
 }
 
-# Shared permission policy for both deploy roles: only what Phase 0 infra
-# touches (S3, CloudFront, WAFv2, Route 53, ACM). Deliberately excludes
-# Bedrock, Lambda, and app-table DynamoDB permissions -- those get added
-# phase by phase, not granted up front.
+# Shared permission policy for both deploy roles. Started in Phase 0 with
+# only S3, CloudFront, WAFv2, Route 53, and ACM; Phase 1 adds narrowly
+# scoped DynamoDB, Lambda, CloudWatch Logs, and IAM statements below for
+# the app-data tables and pipeline Lambdas -- each added only when the
+# phase that needs it lands, not granted up front. Bedrock remains
+# deliberately excluded even now; see the comment at the end of this
+# policy.
 data "aws_iam_policy_document" "gha_deploy" {
   # State backend: list the bucket (needed by the S3 backend/native
   # locking) and read/write the state object + its .tflock companion for
@@ -171,8 +174,93 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["*"]
   }
 
-  # Deliberately excluded (Phase 0 is infra skeleton only, zero application
-  # logic): Bedrock, Lambda, and app-table DynamoDB permissions.
+  # Phase 1: application data tables. Scoped to the bloggerbear-* table
+  # name prefix (not "*") -- more sensitive than the S3/CloudFront/etc.
+  # wildcards above, since these are real app tables, not per-environment
+  # buckets created fresh each time.
+  statement {
+    sid    = "DynamoDBAppTables"
+    effect = "Allow"
+    actions = [
+      "dynamodb:CreateTable",
+      "dynamodb:DeleteTable",
+      "dynamodb:DescribeTable",
+      "dynamodb:UpdateTable",
+      "dynamodb:TagResource",
+      "dynamodb:UntagResource",
+      "dynamodb:UpdateTimeToLive",
+      "dynamodb:DescribeTimeToLive",
+      "dynamodb:ListTagsOfResource",
+    ]
+    resources = ["arn:aws:dynamodb:ap-southeast-2:*:table/bloggerbear-*"]
+  }
+
+  # Phase 1: the two pipeline Lambda functions. Scoped to the
+  # bloggerbear-* function name prefix.
+  statement {
+    sid    = "LambdaFunctions"
+    effect = "Allow"
+    actions = [
+      "lambda:CreateFunction",
+      "lambda:DeleteFunction",
+      "lambda:GetFunction",
+      "lambda:UpdateFunctionCode",
+      "lambda:UpdateFunctionConfiguration",
+      "lambda:TagResource",
+      "lambda:ListVersionsByFunction",
+      "lambda:GetPolicy",
+    ]
+    resources = ["arn:aws:lambda:ap-southeast-2:*:function:bloggerbear-*"]
+  }
+
+  # Phase 1: the CloudWatch log groups Lambda creates on first invocation
+  # (and that Terraform may come to manage directly for retention).
+  # Scoped to the /aws/lambda/bloggerbear-* log group prefix.
+  statement {
+    sid    = "LambdaLogGroups"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:DeleteLogGroup",
+      "logs:PutRetentionPolicy",
+      "logs:DescribeLogGroups",
+      "logs:TagResource",
+    ]
+    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*"]
+  }
+
+  # Phase 1: IAM for the Lambda execution role. This is the sensitive one
+  # -- IAM actions are deliberately NEVER granted against resources = ["*"]
+  # anywhere in this policy, unlike the S3/CloudFront/WAF/Route53/ACM
+  # statements above. `resources` is scoped to exactly the
+  # bloggerbear-*-lambda-exec role name pattern, and nothing else. This
+  # is what stops a compromised (or merely buggy) CI deploy role from
+  # creating or passing an arbitrary, more-privileged IAM role --
+  # including PassRole, which is the specific permission that would
+  # otherwise let it hand any role to any service. If this policy is
+  # extended later (more roles, more actions), preserve this scoping:
+  # widen the resource pattern only as far as `bloggerbear-*-lambda-exec`-
+  # style naming requires, never to a bare "*".
+  statement {
+    sid    = "LambdaExecRole"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:DeleteRole",
+      "iam:GetRole",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:GetRolePolicy",
+      "iam:TagRole",
+      "iam:PassRole",
+    ]
+    resources = ["arn:aws:iam::*:role/bloggerbear-*-lambda-exec"]
+  }
+
+  # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever
+  # invoked by the Lambda execution role at runtime (see
+  # infra/environments/*/main.tf's aws_iam_role_policy.lambda_exec) --
+  # never by CI/Terraform itself, which has no reason to call Bedrock.
 }
 
 resource "aws_iam_policy" "gha_deploy" {

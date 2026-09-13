@@ -152,18 +152,28 @@ Spec: `docs/specs/phase-0-foundations.md`
 
 ## Phase 1 — First adapter + manual pipeline
 
-- [ ] Adapter contract implemented: `fetch_state`, `material_diff`,
-  `source_refs` (per §6 of the plan)
-- [ ] First adapter built — simplest data source first (GitHub Trending is
+- [x] Adapter contract implemented: `fetch_state`, `material_diff`,
+  `source_refs` (per §6 of the plan) — `lambdas/common/adapters/base.py`
+- [x] First adapter built — simplest data source first (GitHub Trending is
   the obvious pick: no auth, no rate-limit pain, no compliance sensitivity)
-- [ ] Hourly research-tick Lambda: diff-first, only calls Bedrock on material
-  change, writes to `Findings` (rolling TTL 7–14 days)
-- [ ] DynamoDB tables: `Topics`, `Findings`, `CandidateIdeas`, `Articles`
-- [ ] S3 storage for article bodies + raw source snapshots
-- [ ] Daily cycle (manually triggered for now): ideation → selection → draft
-  → compliance review → publish
+  — `lambdas/common/adapters/github_trending.py`
+- [x] Hourly research-tick Lambda: diff-first, only calls Bedrock on material
+  change, writes to `Findings` (rolling TTL 7–14 days) —
+  `lambdas/research_tick_handler.py`; code complete, not yet deployed (see
+  manual follow-ups in the PR)
+- [x] DynamoDB tables: `Topics`, `Findings`, `CandidateIdeas`, `Articles` —
+  plus `ModerationQueue` (required by the "route to moderation" scope line
+  below, per the data model in §5) — `infra/modules/app-data/`
+- [x] S3 storage for article bodies + raw source snapshots — one private
+  `bloggerbear-<env>-content` bucket, `articles/` and `snapshots/` prefixes
+- [x] Daily cycle (manually triggered for now): ideation → selection → draft
+  → compliance review → publish — `lambdas/daily_cycle_handler.py`; code
+  complete, not yet deployed
 - [ ] At least one manually-triggered end-to-end run produces an article
-  you'd actually be willing to publish
+  you'd actually be willing to publish — blocked on real AWS: `infra/bootstrap`
+  hasn't been re-applied with Phase 1's IAM changes, `BEDROCK_MODEL_ID` is
+  still an empty TODO in both `terraform.tfvars` pending model-access
+  confirmation, and no `Topics` item has been seeded yet
 
 ## Phase 2 — Admin console
 
