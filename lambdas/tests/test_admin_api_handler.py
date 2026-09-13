@@ -22,6 +22,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("CANDIDATE_IDEAS_TABLE", "CandidateIdeas")
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
+    monkeypatch.setenv("PROMPT_REFINEMENTS_TABLE", "PromptRefinements")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("RESEARCH_TICK_FUNCTION_NAME", "research-tick-fn")
@@ -81,6 +82,18 @@ def aws_resources(aws_env):
             TableName="ModerationQueue",
             KeySchema=[{"AttributeName": "queue_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "queue_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="PromptRefinements",
+            KeySchema=[
+                {"AttributeName": "topic_id", "KeyType": "HASH"},
+                {"AttributeName": "version", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "topic_id", "AttributeType": "S"},
+                {"AttributeName": "version", "AttributeType": "S"},
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
         yield
@@ -552,6 +565,123 @@ def test_reject_already_actioned_returns_409(aws_resources):
     _put_moderation_item(status="rejected")
 
     event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 409
+
+
+# --- Prompt refinements -----------------------------------------------
+
+
+def _put_refinement(
+    topic_id="github-trending",
+    version="2026-09-12T00:00:00+00:00",
+    status="pending",
+    rationale="recent feedback skewed negative",
+    prompt_changes="Write in a more accessible style.",
+):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    item = {
+        "topic_id": topic_id,
+        "version": version,
+        "proposed_at": version,
+        "rationale": rationale,
+        "prompt_changes": prompt_changes,
+        "status": status,
+    }
+    table.put_item(Item=item)
+    return item
+
+
+def test_list_prompt_refinements_no_filters(aws_resources):
+    _put_refinement(topic_id="topic-a", version="v1")
+    _put_refinement(topic_id="topic-b", version="v1")
+
+    result = admin_api_handler.handler(_event("GET /prompt-refinements"), None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert {r["topic_id"] for r in body["refinements"]} == {"topic-a", "topic-b"}
+
+
+def test_list_prompt_refinements_filters_by_topic_and_status(aws_resources):
+    _put_refinement(topic_id="topic-a", version="v1", status="pending")
+    _put_refinement(topic_id="topic-a", version="v2", status="approved")
+    _put_refinement(topic_id="topic-b", version="v1", status="pending")
+
+    event = {
+        "routeKey": "GET /prompt-refinements",
+        "queryStringParameters": {"topic_id": "topic-a", "status": "pending"},
+    }
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert len(body["refinements"]) == 1
+    assert body["refinements"][0]["version"] == "v1"
+    assert body["refinements"][0]["topic_id"] == "topic-a"
+
+
+def test_approve_prompt_refinement_success(aws_resources):
+    _put_refinement()
+    event = _event(
+        "POST /prompt-refinements/{topic_id}/{version}/approve",
+        path_params={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"},
+    )
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {
+        "approved": {"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
+    }
+
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    item = table.get_item(
+        Key={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
+    )["Item"]
+    assert item["status"] == "approved"
+
+
+def test_reject_prompt_refinement_success(aws_resources):
+    _put_refinement()
+    event = _event(
+        "POST /prompt-refinements/{topic_id}/{version}/reject",
+        path_params={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"},
+    )
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {
+        "rejected": {"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
+    }
+
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    item = table.get_item(
+        Key={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
+    )["Item"]
+    assert item["status"] == "rejected"
+
+
+def test_approve_prompt_refinement_not_found_returns_404(aws_resources):
+    event = _event(
+        "POST /prompt-refinements/{topic_id}/{version}/approve",
+        path_params={"topic_id": "nope", "version": "nope"},
+    )
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 404
+
+
+def test_approve_prompt_refinement_already_decided_returns_409(aws_resources):
+    _put_refinement(status="approved")
+    event = _event(
+        "POST /prompt-refinements/{topic_id}/{version}/approve",
+        path_params={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"},
+    )
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 409
+
+
+def test_reject_prompt_refinement_already_decided_returns_409(aws_resources):
+    _put_refinement(status="rejected")
+    event = _event(
+        "POST /prompt-refinements/{topic_id}/{version}/reject",
+        path_params={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"},
+    )
     result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 409
 

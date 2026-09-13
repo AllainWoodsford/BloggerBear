@@ -26,6 +26,8 @@ import boto3
 from common import compliance
 from common.bedrock import invoke_claude
 from common.dynamo import (
+    get_latest_approved_prompt_refinement,
+    get_top_voted_articles,
     get_topic,
     list_recent_findings,
     put_article,
@@ -35,6 +37,8 @@ from common.dynamo import (
 
 _NUM_CANDIDATE_ANGLES = 3
 _LIST_MARKER_RE = re.compile(r"^[\s\d.\-\)]+")
+_FEW_SHOT_EXCERPT_CHARS = 500
+_FEEDBACK_GUIDANCE_HEADER = "Additional guidance based on reader feedback:"
 
 
 def handler(event: dict, context) -> dict:
@@ -60,10 +64,24 @@ def _run_daily_cycle(topic_id: str) -> dict:
     model_id = os.environ["BEDROCK_MODEL_ID"]
     summaries_block = _format_findings_summaries(findings)
 
-    angles = _ideate(topic, summaries_block, model_id)
+    # Phase 5: fold in any admin-approved prompt refinement and a few-shot
+    # excerpt from the topic's best-received past article, if either exists.
+    # Both are strictly additive -- when neither exists, the prompts below
+    # are built exactly as they were before Phase 5.
+    guidance = _get_approved_guidance(topic_id)
+    few_shot_excerpt = _get_few_shot_excerpt(topic_id)
+
+    angles = _ideate(topic, summaries_block, model_id, guidance=guidance)
     selected = _select_and_store_candidates(topic_id, angles)
 
-    draft_text = _draft_article(topic, selected["angle"], summaries_block, model_id)
+    draft_text = _draft_article(
+        topic,
+        selected["angle"],
+        summaries_block,
+        model_id,
+        guidance=guidance,
+        few_shot_excerpt=few_shot_excerpt,
+    )
     title = _draft_title(selected["angle"], model_id)
 
     review = compliance.review_draft(draft_text, topic, model_id)
@@ -81,7 +99,42 @@ def _format_findings_summaries(findings: list[dict]) -> str:
     return "\n".join(f"- {finding.get('summary', '')}" for finding in findings)
 
 
-def _ideate(topic: dict, summaries_block: str, model_id: str) -> list[str]:
+def _get_approved_guidance(topic_id: str) -> str | None:
+    """Return the latest approved PromptRefinements' guidance text, or None.
+
+    None means no refinement has ever been approved for this topic --
+    callers must leave their prompts completely unchanged in that case.
+    """
+    refinement = get_latest_approved_prompt_refinement(topic_id)
+    if refinement is None:
+        return None
+    return refinement.get("prompt_changes") or None
+
+
+def _get_few_shot_excerpt(topic_id: str) -> str | None:
+    """Return a short excerpt of the topic's top-voted past article, or None.
+
+    None means there's no positively-received article yet for this topic
+    (e.g. a brand new topic) -- callers must leave their prompts completely
+    unchanged in that case.
+    """
+    top_articles = get_top_voted_articles(topic_id, limit=1)
+    if not top_articles:
+        return None
+
+    body_s3_key = top_articles[0].get("body_s3_key")
+    if not body_s3_key:
+        return None
+
+    s3 = boto3.client("s3")
+    response = s3.get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=body_s3_key)
+    body = response["Body"].read().decode("utf-8")
+    return body[:_FEW_SHOT_EXCERPT_CHARS] or None
+
+
+def _ideate(
+    topic: dict, summaries_block: str, model_id: str, guidance: str | None = None
+) -> list[str]:
     prompt = (
         f"Based on the following recent research findings about "
         f"'{topic.get('name', topic.get('topic_id', ''))}', propose exactly "
@@ -90,6 +143,8 @@ def _ideate(topic: dict, summaries_block: str, model_id: str) -> list[str]:
         "commentary.\n\n"
         f"Findings:\n{summaries_block}"
     )
+    if guidance:
+        prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     response = invoke_claude(prompt, model_id)
 
     angles = []
@@ -120,12 +175,27 @@ def _select_and_store_candidates(topic_id: str, angles: list[str]) -> dict:
     )
 
 
-def _draft_article(topic: dict, angle: str, summaries_block: str, model_id: str) -> str:
+def _draft_article(
+    topic: dict,
+    angle: str,
+    summaries_block: str,
+    model_id: str,
+    guidance: str | None = None,
+    few_shot_excerpt: str | None = None,
+) -> str:
     prompt = (
         "Write a full article draft in markdown (a few paragraphs) for a blog "
         f"about '{topic.get('name', topic.get('topic_id', ''))}', on this angle: "
         f"{angle}\n\nBase it on these recent findings:\n{summaries_block}"
     )
+    if guidance:
+        prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
+    if few_shot_excerpt:
+        prompt += (
+            "\n\nHere is an excerpt from a well-received past article on this "
+            "topic, for style reference only (do not repeat its content):\n"
+            f"{few_shot_excerpt}"
+        )
     return invoke_claude(prompt, model_id)
 
 

@@ -319,13 +319,31 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["arn:aws:sqs:ap-southeast-2:*:bloggerbear-*"]
   }
 
-  # Note: no scheduler:* statement here. Terraform/CI only ever creates the
-  # scheduler_invoke IAM role (below) -- the per-topic
-  # aws_scheduler_schedule-equivalent resources are created dynamically at
-  # runtime by admin_api_handler's common/scheduler.py via the AWS SDK,
-  # using the Lambda execution role's own scheduler:* grant (see
-  # infra/environments/*/main.tf's aws_iam_role_policy.scheduler_manage),
-  # not this CI deploy role. Nothing here needs scheduler:* permissions.
+  # Phase 5: unlike the per-topic schedules research_tick/daily_cycle use
+  # (created dynamically at runtime by admin_api_handler's
+  # common/scheduler.py via the Lambda execution role's own scheduler:*
+  # grant -- see infra/environments/*/main.tf's
+  # aws_iam_role_policy.scheduler_manage -- which is why no such statement
+  # existed here before Phase 5), the weekly reflection job's schedule
+  # (aws_scheduler_schedule.weekly_reflection) IS a Terraform-managed
+  # resource, since it's one static, global, non-per-topic cron. That means
+  # Terraform/CI itself -- not the runtime Lambda execution role -- needs
+  # to create/read/update/delete/tag it, so this CI deploy role needs its
+  # own scheduler:* grant. Scoped to the same default schedule group and
+  # bloggerbear-* name prefix as scheduler_manage's grant above, not to a
+  # bare "*".
+  statement {
+    sid    = "SchedulerStaticSchedules"
+    effect = "Allow"
+    actions = [
+      "scheduler:CreateSchedule",
+      "scheduler:GetSchedule",
+      "scheduler:UpdateSchedule",
+      "scheduler:DeleteSchedule",
+      "scheduler:TagResource",
+    ]
+    resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-*"]
+  }
 
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever
   # invoked by the Lambda execution role at runtime (see

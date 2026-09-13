@@ -23,13 +23,16 @@ import boto3
 from common.dynamo import (
     delete_topic,
     get_moderation_item,
+    get_prompt_refinement,
     get_topic,
     list_candidate_ideas,
     list_pending_moderation,
+    list_prompt_refinements,
     list_topics,
     put_topic,
     update_article_status,
     update_moderation_status,
+    update_prompt_refinement_status,
 )
 from common.scheduler import (
     _validate_schedule_expression,
@@ -72,6 +75,10 @@ def _parse_body(event: dict) -> dict:
 
 def _path_param(event: dict, name: str) -> str | None:
     return (event.get("pathParameters") or {}).get(name)
+
+
+def _query_param(event: dict, name: str) -> str | None:
+    return (event.get("queryStringParameters") or {}).get(name)
 
 
 # --- Topics -------------------------------------------------------------
@@ -282,6 +289,38 @@ def _reject_moderation_item(event: dict) -> dict:
     return _resolve_moderation_item(event, new_status="rejected", article_status="rejected")
 
 
+# --- Prompt refinements (Phase 5) ----------------------------------------
+
+
+def _list_prompt_refinements(event: dict) -> dict:
+    topic_id = _query_param(event, "topic_id")
+    status = _query_param(event, "status")
+    refinements = list_prompt_refinements(topic_id=topic_id, status=status)
+    return _response(200, {"refinements": refinements})
+
+
+def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
+    topic_id = _path_param(event, "topic_id")
+    version = _path_param(event, "version")
+    item = get_prompt_refinement(topic_id, version)
+    if item is None:
+        return _error(404, f"prompt refinement '{topic_id}'/'{version}' not found")
+    if item.get("status") != "pending":
+        return _error(409, f"prompt refinement '{topic_id}'/'{version}' is not pending")
+
+    update_prompt_refinement_status(topic_id, version, new_status)
+    action_key = "approved" if new_status == "approved" else "rejected"
+    return _response(200, {action_key: {"topic_id": topic_id, "version": version}})
+
+
+def _approve_prompt_refinement(event: dict) -> dict:
+    return _resolve_prompt_refinement(event, new_status="approved")
+
+
+def _reject_prompt_refinement(event: dict) -> dict:
+    return _resolve_prompt_refinement(event, new_status="rejected")
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -293,6 +332,9 @@ _ROUTES = {
     "GET /moderation-queue": _list_moderation_queue,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,
     "POST /moderation-queue/{queue_id}/reject": _reject_moderation_item,
+    "GET /prompt-refinements": _list_prompt_refinements,
+    "POST /prompt-refinements/{topic_id}/{version}/approve": _approve_prompt_refinement,
+    "POST /prompt-refinements/{topic_id}/{version}/reject": _reject_prompt_refinement,
 }
 
 
