@@ -60,6 +60,11 @@ tracks *what's built vs. not*.
 
 ---
 
+> ⚠️ **Every `us-east-1` mention anywhere in this file is intentional** — it
+> refers only to the CloudFront-scope WAF Web ACL and ACM certificate, which
+> AWS requires in `us-east-1` regardless of hosting region. Everything else
+> is `ap-southeast-2`. Do not "fix" these.
+
 ## Branch & Release Model
 
 Full detail in `docs/specs/phase-0-foundations.md`. Summary, since this
@@ -115,28 +120,35 @@ governs how every phase from here on ships:
 
 Spec: `docs/specs/phase-0-foundations.md`
 
-- [ ] Known issues above resolved (branches, protections, environments)
-- [ ] CI's pinned Terraform version bumped from `1.9.8` to ≥1.10.0 (required
-  for native S3 locking below)
-- [ ] `infra/bootstrap`: Terraform state S3 bucket **only** — no DynamoDB
-  table; locking is native S3 (`use_lockfile = true`) — applied
-  manually/locally (never through CI)
-- [ ] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
+- [ ] Known issues above resolved (branches, protections, environments) —
+  default branch rename to `dev` is done; `prod` branch, branch protection,
+  and GitHub Environments are still manual/pending (see PR #TBD)
+- [x] CI's pinned Terraform version bumped from `1.9.8` to ≥1.10.0 (required
+  for native S3 locking below) — bumped to `1.16.2`
+- [x] `infra/bootstrap`: Terraform state S3 bucket **only** — no DynamoDB
+  table; locking is native S3 (`use_lockfile = true`) — code complete; the
+  one-time local apply is still a manual step for the human
+- [x] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
   parameterized for `enable_custom_domain` and `force_destroy`
-- [ ] `infra/environments/dev`: region `ap-southeast-2`, no custom domain,
+- [x] `infra/environments/dev`: region `ap-southeast-2`, no custom domain,
   dev bucket `force_destroy = true`
-- [ ] `infra/environments/production`: region `ap-southeast-2`, custom
+- [x] `infra/environments/production`: region `ap-southeast-2`, custom
   domain via Route 53 + ACM (ACM cert in `us-east-1` — CloudFront
-  requirement, not a region change)
+  requirement, not a region change) — domain/hosted zone values are still
+  TODO in `terraform.tfvars` pending the open domain-registrar question
 - [ ] One WAF Web ACL (created in `us-east-1`), associated with **both**
-  distributions (not two ACLs)
-- [ ] Dev workflow: auto-apply on push to `dev`, no approval
-- [ ] Production workflow: apply only on Release published from `prod`,
-  gated by `production` environment approval
-- [ ] Concurrency groups on both apply paths (queue, don't race)
-- [ ] `workflow_dispatch` "destroy dev" workflow
+  distributions (not two ACLs) — production creates the ACL; wiring dev's
+  distribution to the same ACL ARN is a manual `terraform.tfvars` edit
+  after production's first apply (see `infra/environments/dev/variables.tf`)
+- [x] Dev workflow: auto-apply on push to `dev`, no approval
+- [x] Production workflow: apply only on Release published from `prod`,
+  gated by `production` environment approval — workflow is wired up;
+  actually gating requires the human to create the `production` GitHub
+  Environment with a required reviewer (see known issues above)
+- [x] Concurrency groups on both apply paths (queue, don't race)
+- [x] `workflow_dispatch` "destroy dev" workflow
 - [ ] Round-trip proven: destroy dev, rebuild it via a push, confirm it
-  comes back clean
+  comes back clean — requires a real AWS deploy, not achievable from a PR
 
 ## Phase 1 — First adapter + manual pipeline
 
