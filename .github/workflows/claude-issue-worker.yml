@@ -8,8 +8,7 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
-  id-token: write
-
+  id-token: write 
 jobs:
   run-claude:
     # Triggers if the issue description contains '@claude' OR if you add a 'claude' label
