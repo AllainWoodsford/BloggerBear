@@ -196,7 +196,13 @@ data "aws_iam_policy_document" "gha_deploy" {
   }
 
   # Phase 1: the two pipeline Lambda functions. Scoped to the
-  # bloggerbear-* function name prefix.
+  # bloggerbear-* function name prefix. AddPermission/RemovePermission
+  # (added here in Phase 4, though the gap predates it -- Phase 2's
+  # aws_lambda_permission.admin_api_apigw already needed these) is what
+  # aws_lambda_permission resources need to create/update/destroy the
+  # resource-based policy statement that lets API Gateway invoke a
+  # function; both the Phase 2 admin API and the Phase 4 public API
+  # permissions fall under this same bloggerbear-* scoped statement.
   statement {
     sid    = "LambdaFunctions"
     effect = "Allow"
@@ -209,6 +215,8 @@ data "aws_iam_policy_document" "gha_deploy" {
       "lambda:TagResource",
       "lambda:ListVersionsByFunction",
       "lambda:GetPolicy",
+      "lambda:AddPermission",
+      "lambda:RemovePermission",
     ]
     resources = ["arn:aws:lambda:ap-southeast-2:*:function:bloggerbear-*"]
   }

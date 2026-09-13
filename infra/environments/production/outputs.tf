@@ -40,3 +40,8 @@ output "daily_cycle_state_machine_arn" {
   value       = aws_sfn_state_machine.daily_cycle.arn
   description = "ARN of the Step Functions state machine wrapping the daily_cycle Lambda invocation (retries + DLQ on failure). Also published as STATE_MACHINE_ARN in local.lambda_env_variables for admin_api_handler's common/scheduler.py."
 }
+
+output "public_api_url" {
+  value       = aws_apigatewayv2_stage.public_default.invoke_url
+  description = "Invoke URL for the public API's $default stage. Same value baked into config.js as window.PUBLIC_API_URL for the frontend. Unauthenticated -- reachable by anyone, rate-limited (not IP-allowlisted) by aws_wafv2_web_acl.public_api."
+}

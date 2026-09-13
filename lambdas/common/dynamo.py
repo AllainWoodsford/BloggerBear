@@ -276,3 +276,47 @@ def update_article_status(article_id: str, status: str, published_at: str | None
         ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues=expression_attribute_values,
     )
+
+
+# --- Public API ---------------------------------------------------------
+
+
+def list_published_articles(topic_id: str | None = None) -> list[dict]:
+    """Return every Articles item with `status == "published"`.
+
+    If `topic_id` is given, further filters to that topic. The Articles
+    table's only key is `article_id` (no sort key, no topic_id GSI -- see
+    infra/modules/app-data/main.tf), so this is a Scan + FilterExpression,
+    same pattern as `list_pending_moderation` above -- acceptable at this
+    project's scale.
+    """
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    filter_expression = Attr("status").eq("published")
+    if topic_id is not None:
+        filter_expression = filter_expression & Attr("topic_id").eq(topic_id)
+
+    response = table.scan(FilterExpression=filter_expression)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression=filter_expression,
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+    return items
+
+
+def increment_view_count(article_id: str) -> int:
+    """Atomically increment an Articles item's `view_count` and return the new value.
+
+    Uses `ADD view_count :incr`, which DynamoDB initializes to the operand
+    if the attribute doesn't exist yet.
+    """
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    response = table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="ADD view_count :incr",
+        ExpressionAttributeValues={":incr": 1},
+        ReturnValues="UPDATED_NEW",
+    )
+    return int(response["Attributes"]["view_count"])

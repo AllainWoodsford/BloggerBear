@@ -194,6 +194,17 @@ resource "aws_iam_role_policy" "lambda_exec" {
   policy = data.aws_iam_policy_document.lambda_exec.json
 }
 
+# Phase 4: the public site's URL, used by public_api_handler.py (e.g. to
+# build absolute links in rss.xml). Built from the module's bare
+# *.cloudfront.net domain output rather than a dedicated "site URL"
+# output on the module (there isn't one) -- dev never enables the custom
+# domain path, so this is always the CloudFront default domain. Also
+# reused below for the generated config.js's window.SITE_URL, so the
+# frontend and the Lambda agree on the same value.
+locals {
+  site_url = "https://${module.static_site.distribution_domain_name}"
+}
+
 locals {
   lambda_env_variables = {
     TOPICS_TABLE           = module.app_data.topics_table_name
@@ -246,6 +257,9 @@ locals {
     STATE_MACHINE_ARN          = "arn:aws:states:ap-southeast-2:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-dev-daily-cycle"
     SCHEDULER_INVOKE_ROLE_ARN  = aws_iam_role.scheduler_invoke.arn
     ENVIRONMENT_NAME           = "dev"
+
+    # Phase 4: consumed by public_api_handler.py.
+    SITE_URL = local.site_url
   }
 }
 
@@ -644,4 +658,199 @@ resource "aws_iam_role_policy" "scheduler_manage" {
   name   = "bloggerbear-dev-scheduler-manage"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.scheduler_manage.json
+}
+
+# =========================================================================
+# Phase 4 -- Public frontend: a fourth Lambda (from the same shared
+# deployment package above, sharing the same aws_iam_role.lambda_exec --
+# it already has read/write on all app tables and the content bucket from
+# Phase 1, which is everything public_api_handler.py needs; no new IAM
+# grant required) fronted by a PUBLIC, unauthenticated API Gateway HTTP
+# API with CORS enabled -- deliberately the opposite security posture
+# from Phase 2's admin API (which is IAM-SigV4-gated and IP-allowlisted).
+# Protected instead by a rate-limiting regional WAF Web ACL that defaults
+# to allow (vs. Phase 2's ACL, which defaults to block). Also uploads the
+# static frontend (frontend/, plain HTML/CSS/JS, no build step) to the
+# EXISTING Phase 0 site bucket (module.static_site.bucket_name) -- no new
+# bucket is created here.
+# =========================================================================
+
+resource "aws_lambda_function" "public_api" {
+  function_name = "bloggerbear-dev-public-api"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "public_api_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+# -----------------------------------------------------------------------
+# Public API Gateway HTTP API. Every route below is authorization_type =
+# "NONE" -- unauthenticated on purpose, this is public read data (topics/
+# articles/rss) plus an anonymous view counter. cors_configuration with
+# allow_origins = ["*"] is what lets the frontend's JS, served from the
+# CloudFront domain (a different origin than this API Gateway's own
+# domain), call these endpoints from the browser.
+# -----------------------------------------------------------------------
+resource "aws_apigatewayv2_api" "public" {
+  name          = "bloggerbear-dev-public-api"
+  protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["GET", "POST", "OPTIONS"]
+    allow_headers = ["content-type"]
+  }
+}
+
+resource "aws_apigatewayv2_integration" "public_lambda" {
+  api_id                 = aws_apigatewayv2_api.public.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.public_api.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_lambda_permission" "public_api_apigw" {
+  statement_id  = "AllowAPIGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.public_api.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.public.execution_arn}/*/*"
+}
+
+# for_each over the route-key list below (same pattern as Phase 2's
+# admin_api_routes) -- keep this list in sync with public_api_handler.py's
+# _ROUTES dict.
+locals {
+  public_api_routes = toset([
+    "GET /topics",
+    "GET /articles",
+    "GET /articles/{article_id}",
+    "POST /articles/{article_id}/view",
+    "GET /rss.xml",
+  ])
+}
+
+resource "aws_apigatewayv2_route" "public" {
+  for_each = local.public_api_routes
+
+  api_id             = aws_apigatewayv2_api.public.id
+  route_key          = each.value
+  target             = "integrations/${aws_apigatewayv2_integration.public_lambda.id}"
+  authorization_type = "NONE"
+}
+
+resource "aws_apigatewayv2_stage" "public_default" {
+  api_id      = aws_apigatewayv2_api.public.id
+  name        = "$default"
+  auto_deploy = true
+}
+
+# -----------------------------------------------------------------------
+# Rate-limiting regional WAF Web ACL -- protects the anonymous
+# POST /articles/{id}/view endpoint (and the rest of this public API)
+# from scripted abuse, without blocking legitimate public traffic.
+# default_action = allow is the deliberate opposite of Phase 2's admin
+# ACL (which defaults to block-everything): this is a public API meant to
+# be reachable by anyone. The one rule blocks only an individual source
+# IP once it exceeds 500 requests within WAF's fixed (non-configurable)
+# 5-minute rate-based window -- generous enough for a real visitor
+# browsing the site, low enough to blunt a scripted hammering of the view
+# counter.
+# -----------------------------------------------------------------------
+resource "aws_wafv2_web_acl" "public_api" {
+  name        = "bloggerbear-dev-public-api"
+  description = "Regional WAF Web ACL for the BloggerBear dev public API -- allows all traffic by default; rate-limits any single source IP past 500 requests per 5-minute window."
+  scope       = "REGIONAL"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "rate-limit"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 500
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-dev-public-api-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "bloggerbear-dev-public-api-acl"
+    sampled_requests_enabled   = true
+  }
+}
+
+resource "aws_wafv2_web_acl_association" "public_api" {
+  resource_arn = aws_apigatewayv2_stage.public_default.arn
+  web_acl_arn  = aws_wafv2_web_acl.public_api.arn
+}
+
+# -----------------------------------------------------------------------
+# Frontend static files -- uploaded to the EXISTING Phase 0 site bucket
+# (module.static_site.bucket_name), not a new bucket (Phase 0 already
+# created one per environment). config.js is generated here (not read
+# from frontend/) since it needs this environment's own API Gateway
+# invoke URL and site URL, both only known once the resources above
+# exist; frontend/index.html loads it before app.js to pick up
+# window.PUBLIC_API_URL and window.SITE_URL.
+#
+# fileexists()-guarded count: the frontend/ directory (owned by a
+# concurrent workstream) may not exist yet when this is first applied in
+# some environments/orderings; these resources simply create nothing
+# until the files land, rather than failing terraform validate/plan.
+# -----------------------------------------------------------------------
+locals {
+  frontend_dir = "${path.module}/../../../frontend"
+  frontend_files = {
+    "index.html" = "text/html"
+    "styles.css" = "text/css"
+    "app.js"     = "application/javascript"
+  }
+}
+
+resource "aws_s3_object" "frontend" {
+  for_each = {
+    for name, content_type in local.frontend_files :
+    name => content_type if fileexists("${local.frontend_dir}/${name}")
+  }
+
+  bucket       = module.static_site.bucket_name
+  key          = each.key
+  source       = "${local.frontend_dir}/${each.key}"
+  etag         = filemd5("${local.frontend_dir}/${each.key}")
+  content_type = each.value
+}
+
+resource "aws_s3_object" "frontend_config" {
+  bucket       = module.static_site.bucket_name
+  key          = "config.js"
+  content_type = "application/javascript"
+
+  content = <<-EOT
+    window.PUBLIC_API_URL = "${aws_apigatewayv2_stage.public_default.invoke_url}";
+    window.SITE_URL = "${local.site_url}";
+  EOT
 }
