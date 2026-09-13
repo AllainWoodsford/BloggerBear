@@ -221,10 +221,21 @@ Spec: `docs/specs/phase-0-foundations.md`
 
 ## Phase 4 — Public frontend polish
 
-- [ ] Per-topic nav entries, auto-updating as topics are added
-- [ ] Article pages with sources footer (URL + title + accessed date)
-- [ ] Public, anonymous view counters per article
-- [ ] Site-wide RSS feed
+- [x] Per-topic nav entries, auto-updating as topics are added — the static
+  frontend (`frontend/app.js`) fetches `GET /topics` from a new
+  unauthenticated public API at load time rather than baking nav into the
+  static build, so a topic created via the admin CLI appears without any
+  redeploy; code complete, not yet deployed
+- [x] Article pages with sources footer (URL + title + accessed date) —
+  `frontend/app.js`'s article view renders `source_refs` as a footer list
+- [x] Public, anonymous view counters per article — `POST
+  /articles/{id}/view` atomically increments a `view_count` attribute
+  (DynamoDB `ADD`, no read-modify-write race); the public API Gateway's
+  WAF Web ACL rate-limits (500 req/5min/IP) rather than blocking by
+  default, unlike Phase 2's admin ACL, since this one must stay reachable
+  by anonymous visitors
+- [x] Site-wide RSS feed — `GET /rss.xml` on the same public API, hand-built
+  valid RSS 2.0 (50 most recent published articles, XML-escaped)
 
 ## Phase 5 — Feedback loop
 
