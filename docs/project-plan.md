@@ -15,6 +15,9 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
 7. Security checks block merges on HIGH/CRITICAL findings.
 
 ## 3) Target Architecture
+> ⚠️ Every `us-east-1` mention below (and elsewhere in this repo's docs) is
+> intentional — the CloudFront-scope WAF Web ACL and ACM certificate only,
+> per AWS's own requirement. Do not change these to `ap-southeast-2`.
 - **Region**: `ap-southeast-2` (Sydney) for everything, except the
   CloudFront-scope WAF Web ACL and ACM certificate, which AWS requires in
   `us-east-1` regardless of hosting region

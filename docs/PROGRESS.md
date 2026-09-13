@@ -60,6 +60,11 @@ tracks *what's built vs. not*.
 
 ---
 
+> ⚠️ **Every `us-east-1` mention anywhere in this file is intentional** — it
+> refers only to the CloudFront-scope WAF Web ACL and ACM certificate, which
+> AWS requires in `us-east-1` regardless of hosting region. Everything else
+> is `ap-southeast-2`. Do not "fix" these.
+
 ## Branch & Release Model
 
 Full detail in `docs/specs/phase-0-foundations.md`. Summary, since this
