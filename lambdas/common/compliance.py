@@ -53,6 +53,41 @@ def is_financial_topic(topic: dict) -> bool:
     return topic.get("is_financial", False)
 
 
+# --- Financial-topic drafting guidance (Phase 7) -----------------------
+#
+# review_draft above already guarantees every financial draft goes to
+# manual moderation, deterministically -- not something an LLM call could
+# override. These two are defense-in-depth on the *drafting* side (per
+# the project's financial-topic rubric: no recommendation language, and a
+# standing "not financial advice" disclaimer), for topics like Phase 7's
+# crypto_feed adapter and any other is_financial topic. The disclaimer is
+# appended deterministically by the caller (daily_cycle_handler.py), not
+# left to the model to remember -- same "deterministic, not
+# LLM-dependent" posture as review_draft's unconditional routing above.
+
+FINANCIAL_DRAFTING_GUIDANCE = (
+    'Do not use recommendation language (e.g. "buy", "sell", "a good investment", '
+    '"you should"), and do not predict future prices -- describe only what the data '
+    "shows. This draft will always go to manual moderation regardless of content, but "
+    "write it as informational commentary, never as advice."
+)
+
+FINANCIAL_DISCLAIMER = (
+    "\n\n---\n\n*This article is for informational purposes only and does not "
+    "constitute financial or investment advice. Nothing in it should be construed as "
+    "a recommendation to buy, sell, or hold any asset.*"
+)
+
+
+def append_financial_disclaimer(draft_text: str) -> str:
+    """Deterministically append the standing "not financial advice" disclaimer.
+
+    Guaranteed regardless of whether the model actually followed
+    FINANCIAL_DRAFTING_GUIDANCE above.
+    """
+    return f"{draft_text}{FINANCIAL_DISCLAIMER}"
+
+
 def regex_redact(text: str) -> str:
     """Strip obvious PII-shaped substrings from `text`, replacing with a marker."""
     redacted = text

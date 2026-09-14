@@ -217,6 +217,43 @@ def test_handler_financial_topic_routes_to_moderation_without_calling_bedrock_fo
     mock_put_moderation.assert_called_once()
 
 
+def test_handler_financial_topic_folds_guidance_into_prompts_and_appends_disclaimer(
+    s3_bucket,
+):
+    ideation_response = "Angle one\nAngle two\nAngle three"
+    invoke_responses = [ideation_response, "Draft body text.", "Some Title"]
+
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+    ):
+        daily_cycle_handler.handler({"topic_id": "crypto"}, None)
+
+    # Ideation prompt (call 0) and draft prompt (call 1) must both carry
+    # the mandatory financial-topic guidance; the title prompt (call 2)
+    # doesn't need it.
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    assert "Financial-topic guidance (mandatory):" in ideation_prompt
+    assert "Financial-topic guidance (mandatory):" in draft_prompt
+    assert 'Do not use recommendation language' in ideation_prompt
+    assert 'Do not use recommendation language' in draft_prompt
+
+    # The standing disclaimer must be appended to the stored draft body
+    # regardless of what the model actually wrote.
+    body_s3_key = mock_put_article.call_args.kwargs["body_s3_key"]
+    stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=body_s3_key)
+    stored_body = stored["Body"].read().decode("utf-8")
+    assert stored_body.startswith("Draft body text.")
+    assert "not constitute financial or investment advice" in stored_body
+
+
 def test_handler_catches_unexpected_exception(s3_bucket):
     with patch("daily_cycle_handler.get_topic", side_effect=RuntimeError("boom")):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)

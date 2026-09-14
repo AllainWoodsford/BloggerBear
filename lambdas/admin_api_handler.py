@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 
 import boto3
 
+from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.dynamo import (
     delete_topic,
     get_moderation_item,
@@ -113,6 +114,13 @@ def _create_topic(event: dict) -> dict:
     is_financial = body.get("is_financial", False)
     if not isinstance(is_financial, bool):
         return _error(400, "'is_financial' must be a boolean if provided")
+    # Phase 7: the crypto_feed adapter is inherently financial/
+    # investment-adjacent -- force is_financial = True regardless of what
+    # was passed (or omitted), so this safety property can never be
+    # bypassed by an operator forgetting the flag. See
+    # common/adapters/crypto_feed.py's module docstring.
+    if adapter == CRYPTO_FEED_ADAPTER_KEY:
+        is_financial = True
 
     research_cadence = body.get("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = body.get("daily_cadence", _DEFAULT_DAILY_CADENCE)
@@ -185,6 +193,12 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "'adapter_config' must be an object")
     if "is_financial" in body and not isinstance(updated["is_financial"], bool):
         return _error(400, "'is_financial' must be a boolean")
+    # Phase 7: same forced-True guarantee as _create_topic above -- applies
+    # whether this update is switching a topic onto crypto_feed, or the
+    # topic was already on it and this update just isn't touching
+    # is_financial (or is trying to unset it).
+    if updated["adapter"] == CRYPTO_FEED_ADAPTER_KEY:
+        updated["is_financial"] = True
     if "research_cadence" in body and (
         not isinstance(updated["research_cadence"], str) or not updated["research_cadence"]
     ):

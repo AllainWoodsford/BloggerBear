@@ -324,12 +324,39 @@ them.
 
 ## Phase 7 — Second & third adapters
 
-- [ ] Second adapter added (whichever domain wasn't picked for Phase 1)
-- [ ] Third adapter added — crypto, with the stricter compliance rubric from
-  §4.4: no recommendation language, standing "not financial advice"
-  disclaimer, always routed to manual moderation regardless of confidence
-- [ ] Confirms the adapter pattern actually required zero changes to core
-  pipeline logic — the thing worth saying out loud in an interview
+- [x] Second adapter added (whichever domain wasn't picked for Phase 1) —
+  Hacker News top stories via the official public Firebase-backed API
+  (no auth, no compliance sensitivity, same low-risk profile as Phase 1's
+  GitHub Trending pick but a different fetch shape — many small JSON
+  requests instead of one HTML page, which is the point: it proves the
+  adapter contract isn't secretly HTML-scrape-shaped) —
+  `lambdas/common/adapters/hacker_news.py`, registered as `hacker_news`
+- [x] Third adapter added — crypto, with the stricter compliance rubric:
+  no recommendation language, standing "not financial advice" disclaimer,
+  always routed to manual moderation regardless of confidence —
+  `lambdas/common/adapters/crypto_feed.py` (public CoinGecko market-data
+  API, no auth), registered as `crypto_feed`. The rubric itself lives
+  entirely outside the adapter (by design, see the module's docstring):
+  `admin_api_handler.py` now forces `is_financial = True` on any topic
+  using this adapter, on both create and update, so the flag can never be
+  forgotten or unset by mistake; `common/compliance.py` gained
+  `FINANCIAL_DRAFTING_GUIDANCE` (folded into `daily_cycle_handler.py`'s
+  ideation/draft prompts for any financial topic) and
+  `append_financial_disclaimer` (deterministically appended to the stored
+  draft body, not left to the model to remember). The unconditional
+  manual-moderation routing itself was already in place since Phase 1
+  (`compliance.review_draft`'s `is_financial_topic` short-circuit) — this
+  phase adds the drafting-side guidance/disclaimer on top of it
+- [x] Confirms the adapter pattern actually required zero changes to core
+  pipeline logic — the thing worth saying out loud in an interview.
+  `research_tick_handler.py`'s flow (`handler`/`_run_daily_cycle`-style
+  logic) is untouched; adding both new domains was exactly "one new
+  adapter module + one new `ADAPTER_REGISTRY` line" each, now asserted
+  directly by `test_adapter_registry_has_all_three_phase_7_adapters`.
+  (The financial-topic guidance/disclaimer additions above touch
+  `daily_cycle_handler.py`, but that's the pre-existing, adapter-agnostic
+  `is_financial` flag mechanism — not a per-adapter branch — so it
+  doesn't count against this claim)
 
 ## Phase 8 — Stretch
 
