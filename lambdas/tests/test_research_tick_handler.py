@@ -138,6 +138,39 @@ def test_no_material_change_skips_bedrock_and_does_not_write_finding(aws_resourc
     assert len(items) == 1  # only the first tick's finding
 
 
+def test_missing_topic_id_returns_error():
+    result = research_tick_handler.handler({}, None)
+    assert result == {"status": "error", "reason": "event missing required 'topic_id'"}
+
+
+def test_none_event_returns_error():
+    result = research_tick_handler.handler(None, None)
+    assert result == {"status": "error", "reason": "event missing required 'topic_id'"}
+
+
+def test_unhandled_exception_returns_error_dict_not_raised(aws_resources):
+    # Bugfix regression guard: a transient failure deep in the flow (here,
+    # the adapter's fetch_state blowing up) must never propagate out of
+    # handler() unhandled -- every other handler in this codebase
+    # guarantees this, and research_tick_handler.py used to be the one
+    # exception.
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    table.put_item(
+        Item={
+            "topic_id": "flaky-topic",
+            "name": "Flaky",
+            "adapter": "github_trending",
+            "adapter_config": {},
+            "is_financial": False,
+        }
+    )
+
+    with patch.object(GitHubTrendingAdapter, "fetch_state", side_effect=RuntimeError("network blip")):
+        result = research_tick_handler.handler({"topic_id": "flaky-topic"}, None)
+
+    assert result == {"status": "error", "topic_id": "flaky-topic", "reason": "network blip"}
+
+
 def test_unknown_topic_returns_error(aws_resources):
     result = research_tick_handler.handler({"topic_id": "does-not-exist"}, None)
     assert result == {"status": "error", "reason": "unknown topic_id: does-not-exist"}

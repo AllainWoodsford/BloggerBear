@@ -12,6 +12,15 @@ diff-first, no Bedrock call unless something material changed):
   4. Diff. If unchanged, stop -- no Bedrock call.
   5. If changed, summarize with Bedrock, store the raw snapshot in S3, and
      write a new Finding.
+
+Bugfix: this used to be the one handler in the codebase without a
+top-level try/except -- on an hourly, unattended EventBridge Scheduler
+trigger with nobody watching synchronously, a transient failure (a
+network blip hitting an adapter's source, an S3 hiccup, a Bedrock
+throttle) surfaced as a raw unhandled Lambda function-error instead of a
+clean, structured log entry. Matches every other handler in this
+codebase now: never raises unhandled, always returns a `{"status":
+"error", ...}` dict on failure.
 """
 from __future__ import annotations
 
@@ -80,8 +89,18 @@ def _build_prompt(topic: dict, diff_summary: str, new_state: dict) -> str:
 
 
 def handler(event, context) -> dict:
-    topic_id = event["topic_id"]
+    topic_id = (event or {}).get("topic_id")
+    if not topic_id:
+        return {"status": "error", "reason": "event missing required 'topic_id'"}
 
+    try:
+        return _run_research_tick(topic_id)
+    except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+        print(f"research_tick_handler: unhandled exception for topic_id={topic_id}: {exc!r}")
+        return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+
+
+def _run_research_tick(topic_id: str) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
