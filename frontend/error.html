@@ -32,7 +32,7 @@
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
 
-  <header>
+  <header id="top">
     <a class="site-title" href="/">
       <picture>
         <source srcset="logo.webp" type="image/webp" />
@@ -58,18 +58,24 @@
 
   <footer class="site-footer">
     <nav class="legal-nav" aria-label="Legal">
+      <a href="about.html">About</a>
       <a href="/#/terms">Terms of Service</a>
       <a href="/#/privacy">Privacy Policy</a>
     </nav>
-    <!--
-      No RSS link here on purpose (unlike index.html's footer): the RSS
-      feed actually lives on the public API's own origin, not this
-      static site's, and index.html only gets that link right because
-      app.js's fixRssLinks() rewrites it at runtime -- which this
-      deliberately JS-free error page never runs. A hardcoded guess at
-      that URL would just be a second broken link on the page whose
-      whole job is telling you about a broken link.
-    -->
+    <div class="footer-links">
+      <!--
+        No RSS link here on purpose (unlike index.html's footer): the
+        RSS feed actually lives on the public API's own origin, not
+        this static site's, and index.html only gets that link right
+        because app.js's fixRssLinks() rewrites it at runtime -- which
+        this deliberately JS-free error page never runs. A hardcoded
+        guess at that URL would just be a second broken link on the
+        page whose whole job is telling you about a broken link.
+        Back to top needs no such caveat -- it's a plain same-page
+        fragment link, not JS-dependent.
+      -->
+      <a class="back-to-top" href="#top">Back to top ↑</a>
+    </div>
   </footer>
 </body>
 </html>
