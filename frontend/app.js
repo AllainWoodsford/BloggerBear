@@ -62,8 +62,24 @@
 
   // --- Nav ------------------------------------------------------------
 
+  // Phase 8: the cross-topic "trending everywhere" digest isn't a real
+  // Topic (no adapter, no cadence -- see trending_digest_handler.py), so
+  // it never comes back from GET /topics and needs its own static nav
+  // entry rather than the dynamic ones below. It links to the exact same
+  // #/topic/{id} route every other topic uses (topic_id "digest"), which
+  // already renders correctly with zero routing changes -- including the
+  // "No published articles yet." empty state, before the first digest
+  // has run.
+  var DIGEST_TOPIC_ID = "digest";
+
   function renderNav(topics) {
     clearChildren(navEl);
+    var digestLink = el("a", {
+      text: "Trending Everywhere",
+      href: "#/topic/" + DIGEST_TOPIC_ID,
+      className: "digest-link",
+    });
+    navEl.appendChild(digestLink);
     topics.forEach(function (topic) {
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
@@ -128,7 +144,8 @@
 
   function renderArticleList(topicId, articles) {
     clearChildren(contentEl);
-    contentEl.appendChild(el("h1", { text: topicId }));
+    var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
+    contentEl.appendChild(el("h1", { text: heading }));
 
     if (articles.length === 0) {
       contentEl.appendChild(el("p", { text: "No published articles yet." }));
