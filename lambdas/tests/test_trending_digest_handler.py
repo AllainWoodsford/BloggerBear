@@ -106,6 +106,9 @@ def test_publishes_digest_when_compliant(s3_bucket):
     prompt = mock_invoke.call_args.args[0]
     assert "Repo X is trending." in prompt
     assert "Story Y hit the front page." in prompt
+    # Neither topic is financial -> no financial guidance in the prompt, and
+    # no disclaimer on the stored body (checked below).
+    assert "Financial-topic guidance (mandatory):" not in prompt
 
     # Neither contributing topic is financial -> reviewed as non-financial.
     mock_review.assert_called_once()
@@ -138,7 +141,9 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
             "trending_digest_handler.get_latest_finding",
             side_effect=lambda topic_id: findings_by_topic[topic_id],
         ),
-        patch("trending_digest_handler.invoke_claude", return_value="A synthesized digest."),
+        patch(
+            "trending_digest_handler.invoke_claude", return_value="A synthesized digest."
+        ) as mock_invoke,
         patch(
             "trending_digest_handler.compliance.review_draft",
             return_value={
@@ -151,8 +156,13 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     ):
         result = trending_digest_handler.handler({}, None)
 
-    # One contributing topic (crypto) is financial -> reviewed as financial,
-    # regardless of the other (non-financial) contributor.
+    # One contributing topic (crypto) is financial -> the synthesis prompt
+    # must carry the mandatory financial guidance, and review_draft must be
+    # called with is_financial=True, regardless of the other (non-financial)
+    # contributor.
+    synthesis_prompt = mock_invoke.call_args.args[0]
+    assert "Financial-topic guidance (mandatory):" in synthesis_prompt
+    assert "Do not use recommendation language" in synthesis_prompt
     assert mock_review.call_args.args[1] == {"is_financial": True}
 
     assert result["status"] == "pending_moderation"
@@ -166,6 +176,15 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     assert moderation_kwargs["reasons"] == [
         "financial topic - routed to manual moderation regardless of content"
     ]
+
+    # The standing disclaimer must be appended to the stored draft body
+    # (even though it's pending moderation, not yet published) --
+    # deterministic, not left to the model to remember.
+    body_s3_key = mock_put_article.call_args.kwargs["body_s3_key"]
+    stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=body_s3_key)
+    stored_body = stored["Body"].read().decode("utf-8")
+    assert stored_body.startswith("A synthesized digest.")
+    assert "not constitute financial or investment advice" in stored_body
 
 
 def test_unhandled_exception_returns_error_dict(s3_bucket):

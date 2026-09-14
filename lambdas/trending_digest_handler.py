@@ -69,6 +69,8 @@ that out explicitly; otherwise just summarize the standout item from each topic 
 speculate beyond what's given, and do not give financial or investment advice.
 """
 
+_DIGEST_FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
+
 
 def handler(event, context) -> dict:
     try:
@@ -83,15 +85,25 @@ def _run_trending_digest() -> dict:
     if not contributions:
         return {"status": "no_recent_findings"}
 
+    # True if ANY contributing topic is financial -- the digest gets the
+    # same defense-in-depth a financial-topic daily_cycle draft gets:
+    # guidance folded into the synthesis prompt, a deterministically
+    # appended disclaimer regardless of what the model actually wrote,
+    # and (below) the same unconditional manual-moderation routing. See
+    # daily_cycle_handler.py's own use of these two compliance helpers --
+    # this must stay consistent with that, since the digest can echo
+    # financial-topic content even though it isn't itself a Topics-table
+    # financial topic.
+    any_financial = any(compliance.is_financial_topic(c["topic"]) for c in contributions)
+
     model_id = os.environ["BEDROCK_MODEL_ID"]
-    draft_text = _synthesize_digest(contributions, model_id)
+    draft_text = _synthesize_digest(contributions, model_id, financial=any_financial)
+    if any_financial:
+        draft_text = compliance.append_financial_disclaimer(draft_text)
     title = f"Trending Everywhere -- {datetime.now(UTC).strftime('%Y-%m-%d')}"
 
     # A minimal synthetic "topic" -- review_draft only ever reads
-    # is_financial off of it. True if ANY contributing topic is
-    # financial, so the digest gets the same unconditional
-    # manual-moderation routing a financial-topic draft would.
-    any_financial = any(compliance.is_financial_topic(c["topic"]) for c in contributions)
+    # is_financial off of it.
     review = compliance.review_draft(draft_text, {"is_financial": any_financial}, model_id)
 
     source_refs = []
@@ -128,12 +140,14 @@ def _recent_contributions() -> list[dict]:
     return contributions
 
 
-def _synthesize_digest(contributions: list[dict], model_id: str) -> str:
+def _synthesize_digest(contributions: list[dict], model_id: str, *, financial: bool) -> str:
     topic_blocks = "\n\n".join(
         f"## {c['topic'].get('name', c['topic']['topic_id'])}\n{c['finding'].get('summary', '')}"
         for c in contributions
     )
     prompt = _DIGEST_PROMPT_TEMPLATE.format(topic_blocks=topic_blocks)
+    if financial:
+        prompt += f"\n\n{_DIGEST_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
     return invoke_claude(prompt, model_id)
 
 
