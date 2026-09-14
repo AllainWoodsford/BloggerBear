@@ -265,6 +265,49 @@ Spec: `docs/specs/phase-0-foundations.md`
   local static server) rather than just visual inspection — 22/22
   checks covering routing, rendering, focus management, and the
   notice's localStorage persistence across a simulated return visit.
+- [x] `robots.txt`, security response headers, a standalone `error.html`,
+  a full favicon set, further ARIA work, and a sticky header/footer
+  layout (second ad hoc follow-up) — `robots.txt` allows all crawling
+  (this site's own public API + RSS exist specifically so it can be
+  consumed, per Phase 8's design) with a courtesy `Crawl-delay`, no
+  disallowed paths (the admin console isn't a page on this site at
+  all, so listing one to "hide" it would only advertise it). No
+  `.htaccess`: this stack is S3 + CloudFront, no Apache anywhere, so
+  an `.htaccess` file would be silently inert if deployed — the real
+  equivalent is `infra/modules/static-site/main.tf`'s new
+  `aws_cloudfront_response_headers_policy` (HSTS, X-Content-Type-
+  Options, X-Frame-Options: DENY, a real Content-Security-Policy,
+  Referrer-Policy, Permissions-Policy), applied to every response the
+  distribution serves — verified it doesn't introduce any new
+  `trivy config` findings. A standalone `error.html` (deliberately no
+  `app.js`/inline `<style>` — the CSP's `style-src 'self'` has no
+  `'unsafe-inline'`, so an inline safety-net style would just be
+  blocked) wired into the distribution's `custom_error_response` for
+  403 (S3/OAC's actual response for a missing key) and 404, both
+  mapped to one friendly page instead of leaking S3's raw XML error
+  body. A full favicon set generated from `logo.svg` (`favicon.ico`,
+  `apple-touch-icon.png`) plus a `logo.webp` variant wired in via
+  `<picture>` (WebP primary, SVG fallback). Further ARIA: `aria-live`
+  on the feedback status region (async submit/error state changes are
+  now actually announced to screen readers, not just visually
+  updated), `aria-label`s on the vote buttons/dismiss button/RSS
+  link/external source links, and a visible-plus-`aria-describedby`
+  reminder on the comment box not to include personal information —
+  tied directly to the Privacy Policy's own request. Tab order:
+  audited for zero positive `tabindex` values (an accepted anti-
+  pattern) and confirmed the skip link is first in DOM order via an
+  automated check, rather than by inspection. Sticky layout: `body` is
+  now a column flexbox (`min-height: 100vh`) with `main` as the one
+  flexible child (`flex: 1 0 auto`), which is what actually glues
+  `.site-footer` to the bottom of short pages rather than letting it
+  float up under sparse content; `header` is `position: sticky; top:
+  0` so it stays visible while scrolling instead of only "not
+  scrolling away because the page happened to be short." Verified
+  with an extended real functional test (jsdom again) — 29/29 new
+  checks plus the prior 22/22 and 6/6 regression checks, none broken —
+  though the visual layout itself (spacing, how the sticky header
+  actually looks while scrolling) wasn't eyeballed in a live browser
+  this session either.
 
 ## Phase 5 — Feedback loop
 

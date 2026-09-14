@@ -45,6 +45,16 @@
     if (opts.href !== undefined) {
       node.setAttribute("href", opts.href);
     }
+    // Generic escape hatch for anything not worth its own named option
+    // above -- primarily aria-*/role/tabindex/type, used throughout the
+    // accessibility-focused elements below.
+    if (opts.attrs) {
+      for (var attrName in opts.attrs) {
+        if (Object.prototype.hasOwnProperty.call(opts.attrs, attrName)) {
+          node.setAttribute(attrName, opts.attrs[attrName]);
+        }
+      }
+    }
     return node;
   }
 
@@ -209,9 +219,20 @@
       var sourcesSection = el("footer", { className: "sources-footer" });
       sourcesSection.appendChild(el("h2", { text: "Sources" }));
       var sourcesList = el("ul");
+      sourcesSection.setAttribute("aria-label", "Sources");
       sourceRefs.forEach(function (ref) {
         var item = el("li");
-        var link = el("a", { text: ref.title || ref.url, href: ref.url });
+        var refLabel = ref.title || ref.url;
+        // These links leave the site to third-party domains (the
+        // original source page a Finding was based on) -- calling that
+        // out in the accessible name, not just visually, matches how a
+        // sighted user infers "this isn't part of this site" from the
+        // "Sources" heading above it.
+        var link = el("a", {
+          text: refLabel,
+          href: ref.url,
+          attrs: { "aria-label": refLabel + " (external source link)" },
+        });
         item.appendChild(link);
         item.appendChild(
           document.createTextNode(" (accessed " + formatDate(ref.accessed_at) + ")")
@@ -231,13 +252,41 @@
     var section = el("section", { className: "feedback" });
     section.appendChild(el("h2", { text: "Feedback" }));
 
-    var status = el("p", { className: "feedback-status" });
+    // aria-live="polite" + aria-atomic="true": screen readers announce
+    // "Submitting...", then "Thanks for your feedback!" (or the error
+    // message) as they appear, the same way a sighted user sees the
+    // status line update -- without this, those changes are silent to
+    // assistive tech, since nothing else on the page moves focus or
+    // otherwise signals that anything happened.
+    var status = el("p", {
+      className: "feedback-status",
+      attrs: { "aria-live": "polite", "aria-atomic": "true" },
+    });
 
-    var upButton = el("button", { text: "Upvote" });
-    var downButton = el("button", { text: "Downvote" });
+    var upButton = el("button", {
+      text: "Upvote",
+      attrs: { type: "button", "aria-label": "Upvote this article" },
+    });
+    var downButton = el("button", {
+      text: "Downvote",
+      attrs: { type: "button", "aria-label": "Downvote this article" },
+    });
+
+    var commentHintId = "feedback-comment-hint-" + encodeURIComponent(articleId);
+    var commentHint = el("p", {
+      className: "feedback-comment-hint",
+      text: "Please don't include your name, contact details, or any other personal information.",
+      attrs: { id: commentHintId },
+    });
+
     var commentLabel = el("label", { text: "Comment (optional)" });
     var commentInput = document.createElement("textarea");
     commentInput.setAttribute("rows", "3");
+    // Announces the same "don't share personal info" reminder from the
+    // Privacy Policy to screen-reader users at the point they're about
+    // to type a comment, not just on a separate page they may never
+    // visit.
+    commentInput.setAttribute("aria-describedby", commentHintId);
     commentLabel.appendChild(document.createElement("br"));
     commentLabel.appendChild(commentInput);
 
@@ -283,6 +332,7 @@
     });
 
     section.appendChild(buttonRow);
+    section.appendChild(commentHint);
     section.appendChild(commentLabel);
     section.appendChild(status);
     return section;
