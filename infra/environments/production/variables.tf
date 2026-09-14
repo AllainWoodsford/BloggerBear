@@ -36,6 +36,19 @@ variable "domain_name" {
   description = "Custom domain for the production site. Required (non-empty) before the first production apply, since enable_custom_domain = true for this environment."
 }
 
+variable "alert_email" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Email address subscribed to the Phase 6 pipeline-health SNS topic
+    (module.observability). Left empty by default -- alarms are created
+    and fire either way, this only controls whether a human gets
+    notified. AWS SNS requires confirming the subscription (a
+    confirmation email/link) before it goes active. Set the real value in
+    terraform.tfvars.
+  EOT
+}
+
 variable "hosted_zone_id" {
   type        = string
   default     = ""

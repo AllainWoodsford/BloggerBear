@@ -483,16 +483,23 @@ def _put_article(article_id="article-1", status="pending_moderation"):
     )
 
 
-def _put_moderation_item(queue_id="queue-1", article_id="article-1", status="pending"):
+def _put_moderation_item(
+    queue_id="queue-1",
+    article_id="article-1",
+    status="pending",
+    topic_id="github-trending",
+    reasons=None,
+    created_at="2026-09-12T00:00:00+00:00",
+):
     table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
     table.put_item(
         Item={
             "queue_id": queue_id,
             "article_id": article_id,
-            "topic_id": "github-trending",
-            "reasons": ["needs review"],
+            "topic_id": topic_id,
+            "reasons": reasons if reasons is not None else ["needs review"],
             "status": status,
-            "created_at": "2026-09-12T00:00:00+00:00",
+            "created_at": created_at,
         }
     )
 
@@ -505,6 +512,59 @@ def test_list_moderation_queue_only_pending(aws_resources):
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
     assert [item["queue_id"] for item in body["items"]] == ["q-pending"]
+
+
+def test_moderation_queue_stats_empty(aws_resources):
+    result = admin_api_handler.handler(_event("GET /moderation-queue/stats"), None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body == {
+        "total_flagged": 0,
+        "by_status": {},
+        "by_topic": {},
+        "reason_counts": {},
+        "recent": [],
+    }
+
+
+def test_moderation_queue_stats_aggregates_across_all_statuses(aws_resources):
+    # Unlike GET /moderation-queue (pending only), stats must include
+    # approved/rejected history too -- that's the whole point.
+    _put_moderation_item(
+        queue_id="q-1",
+        topic_id="github-trending",
+        status="pending",
+        reasons=["financial topic - routed to manual moderation regardless of content"],
+        created_at="2026-09-10T00:00:00+00:00",
+    )
+    _put_moderation_item(
+        queue_id="q-2",
+        topic_id="github-trending",
+        status="approved",
+        reasons=["financial topic - routed to manual moderation regardless of content"],
+        created_at="2026-09-11T00:00:00+00:00",
+    )
+    _put_moderation_item(
+        queue_id="q-3",
+        topic_id="crypto",
+        status="rejected",
+        reasons=["unsubstantiated factual claim"],
+        created_at="2026-09-12T00:00:00+00:00",
+    )
+
+    result = admin_api_handler.handler(_event("GET /moderation-queue/stats"), None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+
+    assert body["total_flagged"] == 3
+    assert body["by_status"] == {"pending": 1, "approved": 1, "rejected": 1}
+    assert body["by_topic"] == {"github-trending": 2, "crypto": 1}
+    assert body["reason_counts"] == {
+        "financial topic - routed to manual moderation regardless of content": 2,
+        "unsubstantiated factual claim": 1,
+    }
+    # Most recent first.
+    assert [item["queue_id"] for item in body["recent"]] == ["q-3", "q-2", "q-1"]
 
 
 def test_approve_moderation_item(aws_resources):

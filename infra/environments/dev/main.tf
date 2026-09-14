@@ -400,6 +400,10 @@ locals {
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
+    # Phase 6: "what's actually been flagged so far" visibility -- see
+    # admin_api_handler.py's _moderation_queue_stats and
+    # scripts/admin_cli.py's `moderation stats` subcommand.
+    "GET /moderation-queue/stats",
     # Phase 5: prompt refinement approval workflow -- see
     # admin_api_handler.py's _ROUTES dict and scripts/admin_cli.py's
     # `refinements` subcommand.
@@ -828,11 +832,95 @@ resource "aws_wafv2_web_acl" "public_api" {
     }
   }
 
+  # Phase 6: baseline anti-abuse hardening on top of the rate limit above
+  # -- the same AWS Managed Common Rule Set already used by the
+  # CLOUDFRONT-scope shared ACL (see aws_wafv2_web_acl.this in
+  # production/main.tf), applied here too since this REGIONAL ACL is the
+  # only thing directly in front of the public API Gateway (CloudFront
+  # doesn't sit in front of API Gateway in this architecture). Not added
+  # to aws_wafv2_web_acl.admin below -- that ACL already default-blocks
+  # everything except the operator's own allowlisted IP, which is
+  # stricter than any managed rule set could add.
+  rule {
+    name     = "aws-managed-common"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-dev-public-api-common-rule-set"
+      sampled_requests_enabled   = true
+    }
+  }
+
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "bloggerbear-dev-public-api-acl"
     sampled_requests_enabled   = true
   }
+}
+
+# -----------------------------------------------------------------------
+# Phase 6: WAF logging -- both regional ACLs' traffic (allowed and
+# blocked) streams to CloudWatch Logs so the rate-limit/managed-rule
+# thresholds above can eventually be tuned from real observed traffic,
+# rather than guessed. Log group names MUST start with "aws-waf-logs-" --
+# an AWS WAFv2 requirement for logging directly to CloudWatch Logs (no
+# Kinesis Firehose needed). aws_cloudwatch_log_resource_policy grants the
+# WAFv2 service principal permission to write to any log group matching
+# that prefix in this account/region; without it, aws_wafv2_web_acl_
+# logging_configuration silently delivers nothing.
+# -----------------------------------------------------------------------
+resource "aws_cloudwatch_log_group" "waf_admin" {
+  name              = "aws-waf-logs-bloggerbear-dev-admin"
+  retention_in_days = 30
+}
+
+resource "aws_cloudwatch_log_group" "waf_public_api" {
+  name              = "aws-waf-logs-bloggerbear-dev-public-api"
+  retention_in_days = 30
+}
+
+data "aws_iam_policy_document" "waf_logs" {
+  statement {
+    sid    = "AllowWAFLogging"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+    actions   = ["logs:PutLogEvents", "logs:CreateLogStream"]
+    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-dev-*:*"]
+  }
+}
+
+resource "aws_cloudwatch_log_resource_policy" "waf_logs" {
+  policy_name     = "bloggerbear-dev-waf-logs"
+  policy_document = data.aws_iam_policy_document.waf_logs.json
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "admin" {
+  resource_arn            = aws_wafv2_web_acl.admin.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_admin.arn]
+
+  depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
+}
+
+resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
+  resource_arn            = aws_wafv2_web_acl.public_api.arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_public_api.arn]
+
+  depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
 }
 
 resource "aws_wafv2_web_acl_association" "public_api" {
@@ -936,4 +1024,30 @@ resource "aws_scheduler_schedule" "weekly_reflection" {
     arn      = aws_lambda_function.weekly_reflection.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
   }
+}
+
+# =========================================================================
+# Phase 6 -- Observability & hardening: CloudWatch alarms/dashboard for
+# all 5 pipeline Lambdas + the daily-cycle state machine/DLQ (see
+# infra/modules/observability), a Bedrock-spend budget alarm (see
+# infra/bootstrap/main.tf -- account-level, not per-environment, so it
+# lives in bootstrap rather than here), and the WAF managed-rule-set +
+# logging additions above (aws_wafv2_web_acl.public_api's second rule,
+# aws_wafv2_web_acl_logging_configuration.admin/public_api).
+# =========================================================================
+
+module "observability" {
+  source = "../../modules/observability"
+
+  environment_name = "dev"
+  lambda_function_names = [
+    aws_lambda_function.research_tick.function_name,
+    aws_lambda_function.daily_cycle.function_name,
+    aws_lambda_function.admin_api.function_name,
+    aws_lambda_function.public_api.function_name,
+    aws_lambda_function.weekly_reflection.function_name,
+  ]
+  state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
+  dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name
+  alert_email       = var.alert_email
 }
