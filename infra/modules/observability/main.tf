@@ -13,7 +13,12 @@
 # project: code complete, real value supplied via terraform.tfvars once
 # the human has an inbox to point it at.
 # -----------------------------------------------------------------------
-
+# AVD-AWS-0095 ("topic does not have encryption enabled") ignored
+# deliberately -- every bucket/topic/queue in this project uses AWS's
+# default managed-key encryption, not a customer-managed KMS key (see
+# the same comment on infra/environments/dev/main.tf's
+# aws_s3_bucket.content for the full cost/complexity rationale).
+# trivy:ignore:AVD-AWS-0095
 resource "aws_sns_topic" "alerts" {
   name = "bloggerbear-${var.environment_name}-alerts"
 }

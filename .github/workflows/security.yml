@@ -40,8 +40,20 @@ jobs:
       - name: Trivy IaC scan
         run: |
           if [ -d infra ]; then
+            # Bugfix: these three paths must point at the actual
+            # .terraform provider/module cache directories (one per root:
+            # bootstrap, dev, production) -- NOT infra/bootstrap itself.
+            # The previous list ("infra/bootstrap,infra/.terraform,
+            # infra/environments/.terraform") skipped the entire
+            # infra/bootstrap directory (missing its /.terraform suffix),
+            # silently excluding main.tf/variables.tf/outputs.tf -- the
+            # OIDC trust policies and the broadest IAM grants in this
+            # repo -- from every IaC security scan ever run. The other
+            # two entries didn't match any real path at all (the actual
+            # cache dirs are one level deeper, per-environment), so they
+            # were no-ops.
             trivy config --severity HIGH,CRITICAL --exit-code 1 \
-              --skip-dirs infra/bootstrap,infra/.terraform,infra/environments/.terraform \
+              --skip-dirs infra/bootstrap/.terraform,infra/environments/dev/.terraform,infra/environments/production/.terraform \
               infra/
           else
             echo "infra/ not present; skipping IaC scan"

@@ -49,6 +49,12 @@ resource "aws_s3_bucket_versioning" "terraform_state" {
   }
 }
 
+# AVD-AWS-0132 ("no customer-managed KMS key") ignored deliberately --
+# SSE-S3 (AES256) rather than a customer-managed KMS key, same
+# cost/complexity trade-off as every other bucket/topic/queue in this
+# project (see the same comment on infra/environments/dev/main.tf's
+# aws_s3_bucket.content for the full rationale).
+# trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state" {
   bucket = aws_s3_bucket.terraform_state.id
 
