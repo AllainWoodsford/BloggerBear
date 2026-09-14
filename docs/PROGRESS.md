@@ -360,9 +360,33 @@ them.
 
 ## Phase 8 — Stretch
 
-- [ ] Cross-topic "trending everywhere" digest
-- [ ] Public read API / RSS so other tools can consume output via API
-  instead of scraping it
+- [x] Cross-topic "trending everywhere" digest —
+  `lambdas/trending_digest_handler.py`, a sixth pipeline Lambda on its
+  own static daily EventBridge Scheduler cron (same "one global job, not
+  per-topic" pattern as Phase 5's weekly reflection — see
+  `aws_scheduler_schedule.trending_digest`). Pulls every topic's latest
+  Finding (skipping any older than 48h — nothing to contribute right
+  now), asks Bedrock to synthesize one short digest across all of them
+  (calling out genuine cross-topic connections where they exist), then
+  runs it through the exact same `compliance.review_draft` gate as any
+  other draft — routed to manual moderation unconditionally if ANY
+  contributing topic is financial, same "regardless of confidence" rule
+  a financial-topic draft gets. Published as a normal Articles item under
+  a synthetic `topic_id="digest"`, so it shows up through the *existing*
+  public API/RSS/frontend (`GET /articles?topic_id=digest`, `GET
+  /rss.xml`) with zero new API routes. `frontend/app.js`/`styles.css`
+  gained a static "Trending Everywhere" nav link (the digest isn't a real
+  Topic — no adapter, no cadence — so it never comes back from `GET
+  /topics` and needs its own entry) pointing at the same `#/topic/{id}`
+  route every other topic already uses. Code complete, not yet deployed
+- [x] Public read API / RSS so other tools can consume output via API
+  instead of scraping it — already fully satisfied by Phase 4's public
+  API: `GET /topics`, `GET /articles`, `GET /articles/{article_id}`, and
+  `GET /rss.xml` are all public, unauthenticated, and structured
+  (JSON/RSS 2.0) specifically so other tools can consume them
+  programmatically instead of scraping the site. No new work needed here
+  — noting it explicitly since this phase's own wording could otherwise
+  read as a duplicate ask
 
 ---
 

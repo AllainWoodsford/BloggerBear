@@ -713,6 +713,16 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.weekly_reflection.arn]
   }
+
+  # Phase 8: the trending-digest job's single static schedule (see
+  # aws_scheduler_schedule.trending_digest below) -- same pattern as
+  # InvokeWeeklyReflection above, its own separately-listed statement.
+  statement {
+    sid       = "InvokeTrendingDigest"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.trending_digest.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_invoke" {
@@ -1152,8 +1162,63 @@ module "observability" {
     aws_lambda_function.admin_api.function_name,
     aws_lambda_function.public_api.function_name,
     aws_lambda_function.weekly_reflection.function_name,
+    aws_lambda_function.trending_digest.function_name,
   ]
   state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name
   alert_email       = var.alert_email
+}
+
+# =========================================================================
+# Phase 8 -- Stretch: a seventh Lambda (from the same shared deployment
+# package above, sharing the same aws_iam_role.lambda_exec -- it already
+# has everything trending_digest_handler.py needs: read on Topics/
+# Findings, read+write on Articles/ModerationQueue, the content bucket,
+# and Bedrock, all granted since Phase 1/5; no new IAM role or policy
+# resource required) on a single, static, Terraform-managed daily
+# schedule.
+#
+# Same "one global job, not per-topic" pattern as Phase 5's
+# weekly_reflection: this looks across every topic at once, so there's
+# nothing per-topic to configure about its schedule. The "Public read
+# API / RSS" half of Phase 8's scope needed no new code at all -- Phase
+# 4's public API (GET /topics, GET /articles, GET /articles/{id},
+# GET /rss.xml) already covers it; see docs/PROGRESS.md.
+# =========================================================================
+
+resource "aws_lambda_function" "trending_digest" {
+  function_name = "bloggerbear-production-trending-digest"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "trending_digest_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 120
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+# Static daily schedule -- 7am UTC, an hour after the daily-cycle's own
+# default per-topic cadence (cron(0 6 * * ? *), see
+# admin_api_handler.py's _DEFAULT_DAILY_CADENCE), so a typical day's
+# freshly-published articles/findings have a chance to land before the
+# digest synthesizes across them. A fixed literal, not topic-driven
+# config, for the same reason as weekly_reflection's schedule above.
+resource "aws_scheduler_schedule" "trending_digest" {
+  name                = "bloggerbear-production-trending-digest"
+  group_name          = "default"
+  schedule_expression = "cron(0 7 * * ? *)"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.trending_digest.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
 }
