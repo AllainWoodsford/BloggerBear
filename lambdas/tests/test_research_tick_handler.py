@@ -8,7 +8,9 @@ import pytest
 from moto import mock_aws
 
 import research_tick_handler
+from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
+from common.adapters.hacker_news import HackerNewsAdapter
 
 REGION = "ap-southeast-2"
 
@@ -156,3 +158,13 @@ def test_unknown_adapter_returns_error(aws_resources):
     result = research_tick_handler.handler({"topic_id": "mystery-topic"}, None)
 
     assert result == {"status": "error", "reason": "unknown adapter: not_a_real_adapter"}
+
+
+def test_adapter_registry_has_all_three_phase_7_adapters():
+    # Phase 7: confirms adding domains 2 and 3 required zero changes to
+    # this handler's flow -- only new registry entries.
+    assert research_tick_handler.ADAPTER_REGISTRY == {
+        "github_trending": GitHubTrendingAdapter,
+        "hacker_news": HackerNewsAdapter,
+        "crypto_feed": CryptoFeedAdapter,
+    }
