@@ -29,3 +29,33 @@ variable "github_repo" {
   default     = "AllainWoodsford/BloggerBear"
   description = "GitHub <owner>/<repo> slug allowed to assume the deploy roles via OIDC."
 }
+
+variable "bedrock_budget_limit_usd" {
+  type        = string
+  default     = "20"
+  description = "Monthly USD threshold for the Phase 6 Bedrock-spend budget alarm (aws_budgets_budget.bedrock_spend below). See docs/PROGRESS.md's cost-tapering section for context on what levels are reasonable for a single-operator project."
+}
+
+variable "budget_alert_email" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Email address notified when Bedrock spend crosses 80% (actual) or is
+    forecast to cross 100% (forecasted) of var.bedrock_budget_limit_usd
+    for the current month. Left empty by default -- no aws_budgets_budget
+    resource is created at all until this is set, since AWS Budgets
+    requires at least one notification subscriber; that's the safe
+    default (nothing half-configured), not a bug.
+
+    This is IN ADDITION to the general AWS Budget alarm already called
+    out as a manual prerequisite in docs/PROGRESS.md (that one watches
+    total account spend across every service). This one is scoped
+    specifically to the Amazon Bedrock service line item, per
+    docs/PROGRESS.md's Phase 6 scope ("Cost/budget alarms specifically
+    watching Bedrock spend") -- Bedrock is the one service this project's
+    own cost section calls out as the likely biggest and most variable
+    line item, since spend scales with how much content actually gets
+    generated. Set the real value before running the one-time bootstrap
+    apply.
+  EOT
+}

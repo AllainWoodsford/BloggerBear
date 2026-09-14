@@ -279,11 +279,48 @@ them.
 
 ## Phase 6 — Observability & hardening
 
-- [ ] CloudWatch dashboards/alarms for pipeline health
-- [ ] Cost/budget alarms specifically watching Bedrock spend
-- [ ] WAF rule tuning based on real traffic patterns
-- [ ] Prompt iteration on the compliance-review step based on what's actually
-  been flagged so far
+- [x] CloudWatch dashboards/alarms for pipeline health —
+  `infra/modules/observability` (new, reusable like app-data/static-site):
+  an Errors + a Throttles alarm per pipeline Lambda (all 5, via
+  `for_each`), a DLQ-depth alarm, a Step Functions `ExecutionsFailed`
+  alarm, one SNS topic all of them publish to, and a dashboard
+  summarizing all of it. Wired into both `infra/environments/dev` and
+  `production` as `module.observability`; code complete, not yet
+  deployed. A human still needs to set `var.alert_email` in
+  `terraform.tfvars` and confirm the SNS subscription email before
+  anyone actually gets paged — alarms fire either way, but silently,
+  until then
+- [x] Cost/budget alarms specifically watching Bedrock spend —
+  `infra/bootstrap`'s new `aws_budgets_budget.bedrock_spend`
+  (account-level, so it lives in bootstrap alongside the other one-time
+  resources, not per-environment), filtered to the "Amazon Bedrock"
+  service, notifying at 80% actual / 100% forecasted. Gated on
+  `var.budget_alert_email` (empty by default → no budget resource is
+  created at all, matching this project's fail-closed-by-omission
+  pattern) — set it before the next bootstrap apply. This is in addition
+  to the general account-wide AWS Budget alarm already listed as a manual
+  prerequisite above
+- [ ] WAF rule tuning based on real traffic patterns — the tuning itself
+  (adjusting thresholds/rules from observed traffic) can't be done
+  without real traffic and stays open until some exists. What's done:
+  added the AWS Managed Common Rule Set to both public API WAF ACLs
+  (dev + production, previously rate-limit-only) and enabled WAF logging
+  to CloudWatch Logs on every ACL in both environments (admin, public
+  API, and production's shared CLOUDFRONT-scope ACL), so the data needed
+  to actually tune the rate-limit threshold and rule set will exist once
+  deployed
+- [ ] Prompt iteration on the compliance-review step based on what's
+  actually been flagged so far — the prompt edit itself needs real
+  flagged data and stays open. What's done: added
+  `GET /moderation-queue/stats` (admin API, IAM-authenticated) and
+  `admin_cli.py moderation stats`, which summarize ModerationQueue
+  history (`common/dynamo.py`'s `list_all_moderation_items`) — total
+  flagged, breakdown by status/topic, a `reason_counts` tally, and the 20
+  most recent flagged items with their full reasons. This is the
+  visibility a human needs to responsibly edit
+  `common/compliance.py`'s `_REVIEW_PROMPT_TEMPLATE`; the actual prompt
+  edit stays manual and requires real flagged data, same as the WAF item
+  above
 
 ## Phase 7 — Second & third adapters
 

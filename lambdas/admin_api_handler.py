@@ -25,6 +25,7 @@ from common.dynamo import (
     get_moderation_item,
     get_prompt_refinement,
     get_topic,
+    list_all_moderation_items,
     list_candidate_ideas,
     list_pending_moderation,
     list_prompt_refinements,
@@ -264,6 +265,68 @@ def _list_moderation_queue(event: dict) -> dict:
     return _response(200, {"items": list_pending_moderation()})
 
 
+_STATS_RECENT_LIMIT = 20
+
+
+def _moderation_queue_stats(event: dict) -> dict:
+    """Summarize what compliance review has flagged, across all history.
+
+    Phase 6 ("Prompt iteration on the compliance-review step based on
+    what's actually been flagged so far"): iterating the compliance
+    prompt (common/compliance.py's _REVIEW_PROMPT_TEMPLATE) responsibly
+    needs to look at what has actually tripped it, not guesswork -- this
+    is the read-only visibility that makes that possible. The prompt
+    edit itself stays a manual, human-reviewed step (same as any other
+    prompt change in this project); this endpoint only surfaces the data
+    to base that edit on.
+
+    `reason_counts` tallies raw reason strings as-is (no normalization) --
+    the one reason that's a fixed constant (financial-topic routing, see
+    compliance.py's _FINANCIAL_REASON) naturally buckets together;
+    Bedrock-authored reasons are free text and mostly won't collide, so
+    `recent` (the most recent items with their full reasons list) is
+    where the actual signal is for those.
+    """
+    items = list_all_moderation_items()
+
+    by_status: dict[str, int] = {}
+    by_topic: dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
+
+    for item in items:
+        status = item.get("status", "unknown")
+        by_status[status] = by_status.get(status, 0) + 1
+
+        topic_id = item.get("topic_id", "unknown")
+        by_topic[topic_id] = by_topic.get(topic_id, 0) + 1
+
+        for reason in item.get("reasons") or []:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+    recent = sorted(items, key=lambda i: i.get("created_at") or "", reverse=True)[:_STATS_RECENT_LIMIT]
+    recent_summaries = [
+        {
+            "queue_id": i.get("queue_id"),
+            "topic_id": i.get("topic_id"),
+            "status": i.get("status"),
+            "reasons": i.get("reasons", []),
+            "created_at": i.get("created_at"),
+        }
+        for i in recent
+    ]
+
+    return _response(
+        200,
+        {
+            "total_flagged": len(items),
+            "by_status": by_status,
+            "by_topic": by_topic,
+            "reason_counts": reason_counts,
+            "recent": recent_summaries,
+        },
+    )
+
+
 def _resolve_moderation_item(event: dict, *, new_status: str, article_status: str) -> dict:
     queue_id = _path_param(event, "queue_id")
     item = get_moderation_item(queue_id)
@@ -330,6 +393,7 @@ _ROUTES = {
     "POST /topics/{topic_id}/trigger": _trigger_topic,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /moderation-queue": _list_moderation_queue,
+    "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,
     "POST /moderation-queue/{queue_id}/reject": _reject_moderation_item,
     "GET /prompt-refinements": _list_prompt_refinements,

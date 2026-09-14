@@ -237,6 +237,26 @@ def list_pending_moderation() -> list[dict]:
     return items
 
 
+def list_all_moderation_items() -> list[dict]:
+    """Return every ModerationQueue item regardless of status.
+
+    Phase 6: backs the admin "what's actually been flagged so far" stats
+    view (see admin_api_handler.py's _moderation_queue_stats) -- unlike
+    list_pending_moderation above, this must include approved/rejected
+    history too, since the whole point is to look back at what compliance
+    review has flagged over time, not just what's still open. Same
+    Scan-until-no-LastEvaluatedKey pattern as list_pending_moderation,
+    just without the status filter.
+    """
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    response = table.scan()
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
+
+
 def get_moderation_item(queue_id: str) -> dict | None:
     """Fetch a ModerationQueue item by `queue_id`, or None if it doesn't exist."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
