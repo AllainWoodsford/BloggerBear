@@ -22,17 +22,21 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+import uuid
+from datetime import UTC, datetime
 from email.utils import format_datetime
 from xml.sax.saxutils import escape
 
 import boto3
 
+from common.compliance import bedrock_redact_review, regex_redact
 from common.dynamo import (
     get_article,
     increment_view_count,
     list_published_articles,
     list_topics,
+    put_feedback,
+    update_article_net_votes,
 )
 
 _RSS_ITEM_LIMIT = 50
@@ -142,6 +146,47 @@ def _view_article(event: dict) -> dict:
     return _response(200, {"article_id": article_id, "view_count": new_count})
 
 
+# --- Feedback -------------------------------------------------------------
+#
+# project-plan.md §7: regex redaction, then a Bedrock redaction review pass,
+# before anything is written -- raw comment text is never persisted, logged,
+# or echoed back, even transiently. `comment` is optional; a missing/empty
+# one, or one the Bedrock pass can't confirm is safe, is stored as None.
+
+
+def _submit_feedback(event: dict) -> dict:
+    article_id = _path_param(event, "article_id")
+    article = _get_published_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+
+    try:
+        payload = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return _error(400, "invalid JSON body")
+
+    vote = payload.get("vote")
+    if vote not in ("up", "down"):
+        return _error(400, "'vote' must be 'up' or 'down'")
+
+    final_comment = None
+    raw_comment = payload.get("comment")
+    if raw_comment:
+        redacted_comment = regex_redact(raw_comment)
+        model_id = os.environ["BEDROCK_MODEL_ID"]
+        final_comment = bedrock_redact_review(redacted_comment, model_id)
+
+    feedback_id = str(uuid.uuid4())
+    created_at = datetime.now(UTC).isoformat()
+    put_feedback(article_id, feedback_id, vote, final_comment, created_at)
+    update_article_net_votes(article_id, 1 if vote == "up" else -1)
+
+    return _response(
+        201,
+        {"status": "recorded", "article_id": article_id, "feedback_id": feedback_id},
+    )
+
+
 # --- RSS feed ---------------------------------------------------------------
 
 
@@ -221,6 +266,7 @@ _ROUTES = {
     "GET /articles": _list_articles,
     "GET /articles/{article_id}": _get_article_detail,
     "POST /articles/{article_id}/view": _view_article,
+    "POST /articles/{article_id}/feedback": _submit_feedback,
     "GET /rss.xml": _rss_feed,
 }
 

@@ -131,6 +131,69 @@ a {
   margin: 0;
 }
 
+.feedback {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.feedback h2 {
+  font-size: 1rem;
+  margin: 0 0 12px;
+  color: var(--fg);
+}
+
+.feedback-buttons {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.feedback-buttons button {
+  font: inherit;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.feedback-buttons button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.feedback-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.feedback label {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.feedback textarea {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  margin-top: 6px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.feedback-status {
+  font-size: 0.9rem;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+
 .site-footer {
   max-width: var(--max-width);
   margin: 0 auto;

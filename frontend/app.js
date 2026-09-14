@@ -202,6 +202,71 @@
       sourcesSection.appendChild(sourcesList);
       contentEl.appendChild(sourcesSection);
     }
+
+    contentEl.appendChild(renderFeedback(article.article_id));
+  }
+
+  // --- Feedback -----------------------------------------------------------
+
+  function renderFeedback(articleId) {
+    var section = el("section", { className: "feedback" });
+    section.appendChild(el("h2", { text: "Feedback" }));
+
+    var status = el("p", { className: "feedback-status" });
+
+    var upButton = el("button", { text: "Upvote" });
+    var downButton = el("button", { text: "Downvote" });
+    var commentLabel = el("label", { text: "Comment (optional)" });
+    var commentInput = document.createElement("textarea");
+    commentInput.setAttribute("rows", "3");
+    commentLabel.appendChild(document.createElement("br"));
+    commentLabel.appendChild(commentInput);
+
+    var buttonRow = el("div", { className: "feedback-buttons" });
+    buttonRow.appendChild(upButton);
+    buttonRow.appendChild(downButton);
+
+    function setDisabled(disabled) {
+      upButton.disabled = disabled;
+      downButton.disabled = disabled;
+      commentInput.disabled = disabled;
+    }
+
+    function submitVote(vote) {
+      setDisabled(true);
+      status.textContent = "Submitting...";
+
+      var commentValue = commentInput.value.trim();
+      var payload = { vote: vote, comment: commentValue === "" ? null : commentValue };
+
+      fetch(apiUrl("/articles/" + encodeURIComponent(articleId) + "/feedback"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+        .then(function (response) {
+          if (!response.ok) {
+            throw new Error("request failed: " + response.status);
+          }
+          status.textContent = "Thanks for your feedback!";
+        })
+        .catch(function () {
+          status.textContent = "Could not submit feedback right now. Please try again.";
+          setDisabled(false);
+        });
+    }
+
+    upButton.addEventListener("click", function () {
+      submitVote("up");
+    });
+    downButton.addEventListener("click", function () {
+      submitVote("down");
+    });
+
+    section.appendChild(buttonRow);
+    section.appendChild(commentLabel);
+    section.appendChild(status);
+    return section;
   }
 
   function recordView(articleId) {

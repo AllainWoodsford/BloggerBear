@@ -95,3 +95,69 @@ def _parse_compliance_response(response: str) -> dict:
     # Ambiguous response: fail closed rather than fail open, matching the
     # "no publish without compliance review" hard constraint.
     return {"compliant": False, "reasons": [response.strip()]}
+
+
+# --- Feedback redaction review (Phase 5) ------------------------------------
+#
+# project-plan.md §7: "Run regex-based redaction then Bedrock redaction
+# review before writing feedback. Never persist raw, unredacted comment
+# text." `regex_redact` above is the first pass; this is the second. The
+# caller (public_api_handler's feedback route) is responsible for calling
+# `regex_redact` first and passing the *already-redacted* text in here --
+# this function does not re-run the regex pass itself, to keep the two
+# passes visibly separate.
+
+_SAFE_TOKEN = "SAFE:"
+_REJECT_TOKEN = "REJECT"
+
+_REDACT_REVIEW_PROMPT_TEMPLATE = """You are reviewing a public comment submitted on a blog article. An
+automated regex pass has already redacted obvious PII-shaped substrings
+(replaced with [REDACTED]). Review what remains for any PII a regex pass
+could miss: full names, email addresses, phone numbers, physical addresses,
+usernames/handles, or any other detail that could identify a specific
+person.
+
+Respond in EXACTLY this format and nothing else:
+- If the text is safe to publish as-is, or can be made safe with further
+  redaction, reply with SAFE: on the first line, followed by the final safe
+  text (with any further redaction applied) on the following line(s).
+- If the text cannot be made safe without destroying its content, reply
+  with the single word REJECT and nothing else.
+
+Text:
+{text}
+"""
+
+
+def bedrock_redact_review(redacted_text: str, model_id: str) -> str | None:
+    """Run the Bedrock redaction-review pass on already regex-redacted text.
+
+    Returns the final safe text on a clear SAFE response, or None on an
+    explicit REJECT *or* any response that doesn't clearly match the
+    expected format -- fail closed, since dropping an optional comment is
+    harmless but silently passing through unreviewed text is not.
+    """
+    prompt = _REDACT_REVIEW_PROMPT_TEMPLATE.format(text=redacted_text)
+    response = invoke_claude(prompt, model_id)
+    return _parse_redact_review_response(response)
+
+
+def _parse_redact_review_response(response: str) -> str | None:
+    if not response or not response.strip():
+        return None
+
+    lines = response.strip().splitlines()
+    first_line = lines[0].strip()
+
+    if first_line.upper() == _REJECT_TOKEN:
+        return None
+
+    if first_line.upper().startswith(_SAFE_TOKEN):
+        same_line_remainder = first_line[len(_SAFE_TOKEN):].strip()
+        rest = lines[1:]
+        final_text = "\n".join(([same_line_remainder] if same_line_remainder else []) + rest).strip()
+        return final_text or None
+
+    # Ambiguous/malformed response: fail closed rather than pass raw or
+    # partially-reviewed text through.
+    return None

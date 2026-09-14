@@ -6,6 +6,11 @@
 # Findings, CandidateIdeas, Articles, ModerationQueue); the remaining
 # tables listed in §5 (ViewCounters, Feedback, PromptRefinements) are
 # Phase 2+ and deliberately not created yet.
+#
+# Phase 5 adds the two below (Feedback, PromptRefinements) for the
+# weekly reflection job -- see docs/project-plan.md §5. ViewCounters was
+# already folded into the Articles table's own view-count attribute in
+# Phase 4 rather than getting a dedicated table, so it never appears here.
 # -----------------------------------------------------------------------
 
 resource "aws_dynamodb_table" "topics" {
@@ -78,6 +83,50 @@ resource "aws_dynamodb_table" "moderation_queue" {
 
   attribute {
     name = "queue_id"
+    type = "S"
+  }
+}
+
+# Phase 5: reader feedback (thumbs up/down + optional comment) on published
+# articles, submitted anonymously via the public API's
+# POST /articles/{article_id}/feedback route (see lambdas/common/dynamo.py's
+# put_feedback). No TTL -- unlike Findings, feedback is a permanent record
+# the weekly reflection job reads back historically, not rolling research
+# history.
+resource "aws_dynamodb_table" "feedback" {
+  name         = "bloggerbear-${var.environment_name}-feedback"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "article_id"
+  range_key    = "feedback_id"
+
+  attribute {
+    name = "article_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "feedback_id"
+    type = "S"
+  }
+}
+
+# Phase 5: versioned per-topic prompt refinements the weekly reflection job
+# writes after analyzing a topic's recent feedback -- each write is a new
+# version rather than an overwrite, so history is preserved. No TTL --
+# refinement history is meant to persist, not expire.
+resource "aws_dynamodb_table" "prompt_refinements" {
+  name         = "bloggerbear-${var.environment_name}-prompt-refinements"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "topic_id"
+  range_key    = "version"
+
+  attribute {
+    name = "topic_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "version"
     type = "S"
   }
 }

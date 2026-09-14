@@ -99,6 +99,8 @@ def test_handler_publishes_when_compliant(s3_bucket):
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
         patch(
             "daily_cycle_handler.compliance.review_draft",
@@ -153,6 +155,8 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses),
         patch(
             "daily_cycle_handler.compliance.review_draft",
@@ -188,6 +192,8 @@ def test_handler_financial_topic_routes_to_moderation_without_calling_bedrock_fo
     with (
         patch("daily_cycle_handler.get_topic", return_value=FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article") as mock_put_article,
@@ -227,3 +233,133 @@ def _fake_put_candidate_idea(topic_id, created_at, angle, status="considered"):
         "angle": angle,
         "status": status,
     }
+
+
+# --- Phase 5: prompt-refinement guidance / few-shot splicing ---------------
+
+
+def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prompts(s3_bucket):
+    ideation_response = "Angle one\nAngle two\nAngle three"
+    invoke_responses = [ideation_response, "Draft body text.", "Some Title"]
+    refinement = {
+        "topic_id": "github-trending",
+        "version": "2026-09-01T00:00:00+00:00",
+        "rationale": "reader feedback skewed negative",
+        "prompt_changes": "Write in a more accessible, less jargon-heavy style.",
+        "status": "approved",
+    }
+
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch(
+            "daily_cycle_handler.get_latest_approved_prompt_refinement",
+            return_value=refinement,
+        ),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": []},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article"),
+        patch("daily_cycle_handler.put_moderation_item"),
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert result["status"] == "published"
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    title_prompt = mock_invoke.call_args_list[2].args[0]
+
+    guidance_text = "Write in a more accessible, less jargon-heavy style."
+    assert "Additional guidance based on reader feedback:" in ideation_prompt
+    assert guidance_text in ideation_prompt
+    assert "Additional guidance based on reader feedback:" in draft_prompt
+    assert guidance_text in draft_prompt
+    # Title prompt is untouched by this feature.
+    assert "reader feedback" not in title_prompt
+
+
+def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
+    ideation_response = "Angle one\nAngle two\nAngle three"
+    invoke_responses = [ideation_response, "Draft body text.", "Some Title"]
+
+    top_voted_body = "This is the body of the best-received past article. " * 20
+    s3_bucket.put_object(
+        Bucket=ENV["CONTENT_BUCKET"], Key="articles/top-voted.md", Body=top_voted_body.encode("utf-8")
+    )
+    top_articles = [{"article_id": "top-voted", "body_s3_key": "articles/top-voted.md"}]
+
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=top_articles) as mock_top,
+        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": []},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article"),
+        patch("daily_cycle_handler.put_moderation_item"),
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert result["status"] == "published"
+    mock_top.assert_called_once_with("github-trending", limit=1)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+
+    excerpt = top_voted_body[:500]
+    assert excerpt in draft_prompt
+    assert "well-received past article" in draft_prompt
+    # Few-shot examples are a drafting-stage concern only, not ideation.
+    assert excerpt not in ideation_prompt
+    assert "well-received past article" not in ideation_prompt
+
+
+def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_bucket):
+    """Regression check: with neither Phase 5 addition present, prompts are
+    built exactly as they were pre-Phase-5."""
+    ideation_response = "Angle one\nAngle two\nAngle three"
+    invoke_responses = [ideation_response, "Draft body text.", "Some Title"]
+
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": []},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article"),
+        patch("daily_cycle_handler.put_moderation_item"),
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+
+    expected_ideation = (
+        "Based on the following recent research findings about "
+        "'GitHub Trending', propose exactly 3 distinct, specific candidate "
+        "article angles. Reply with exactly one angle per line, no "
+        "numbering, no extra commentary.\n\n"
+        f"Findings:\n{daily_cycle_handler._format_findings_summaries(FINDINGS)}"
+    )
+    expected_draft = (
+        "Write a full article draft in markdown (a few paragraphs) for a "
+        "blog about 'GitHub Trending', on this angle: Angle one\n\n"
+        f"Base it on these recent findings:\n{daily_cycle_handler._format_findings_summaries(FINDINGS)}"
+    )
+
+    assert ideation_prompt == expected_ideation
+    assert draft_prompt == expected_draft
