@@ -1088,9 +1088,11 @@ resource "aws_wafv2_web_acl_association" "public_api" {
 locals {
   frontend_dir = "${path.module}/../../../frontend"
   frontend_files = {
-    "index.html" = "text/html"
-    "styles.css" = "text/css"
-    "app.js"     = "application/javascript"
+    "index.html"    = "text/html"
+    "styles.css"    = "text/css"
+    "normalize.css" = "text/css"
+    "app.js"        = "application/javascript"
+    "logo.svg"      = "image/svg+xml"
   }
 }
 

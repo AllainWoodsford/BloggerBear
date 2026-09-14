@@ -4,7 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BloggerBear</title>
+  <!--
+    normalize.css loads first, as a baseline: if styles.css fails to load
+    for any reason (network hiccup, a misconfigured deploy, a browser
+    extension blocking it, ...), the page still gets consistent, sane
+    cross-browser defaults instead of raw unstyled HTML. styles.css loads
+    second and builds on top of it. Both are vendored locally rather than
+    pulled from a CDN -- depending on a third party to deliver the
+    fallback for "our own styles didn't load" would defeat the point.
+  -->
+  <link rel="stylesheet" href="normalize.css" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="logo.svg" type="image/svg+xml" />
   <!--
     The RSS feed lives on the public API's origin, not this static site's --
     this placeholder href is rewritten to the real absolute URL by
@@ -14,14 +25,50 @@
   <link rel="alternate" type="application/rss+xml" title="BloggerBear RSS Feed" href="/rss.xml" />
 </head>
 <body>
+  <!--
+    Skip link: the first focusable thing on the page for keyboard/screen-
+    reader users, letting them jump straight past both nav regions below
+    to the actual content. Visually hidden until focused (see styles.css)
+    -- a standard WCAG 2.4.1 (Bypass Blocks) pattern.
+  -->
+  <a class="skip-link" href="#content">Skip to content</a>
+
   <header>
-    <a class="site-title" href="#/">BloggerBear</a>
+    <a class="site-title" href="#/">
+      <img class="site-logo" src="logo.svg" alt="" width="32" height="32" />
+      BloggerBear
+    </a>
     <nav id="nav" aria-label="Topics"></nav>
   </header>
-  <main id="content">
+
+  <!--
+    Site notice: not a cookie-consent banner in the usual sense -- this
+    site doesn't use cookies (see the Privacy Policy for how that's
+    verified) -- just an honest, upfront notice about the anonymous view
+    counting and infrastructure-level security logging this site does do.
+    Placed in-flow, right below the header (not a fixed overlay), so it
+    can never obscure content further down the page; it simply pushes
+    everything below it down while visible. Hidden by default; app.js
+    shows it once per browser (via localStorage, the one and only thing
+    this site stores client-side) unless already dismissed.
+  -->
+  <div id="site-notice" class="site-notice" role="region" aria-label="Site notice" hidden>
+    <p>
+      This site doesn't use cookies. It does keep anonymous per-article view
+      counts and basic infrastructure security logs to keep things running.
+      <a href="#/privacy">Privacy Policy</a>
+    </p>
+    <button type="button" id="site-notice-dismiss">Got it</button>
+  </div>
+
+  <main id="content" tabindex="-1">
     <p>Loading...</p>
   </main>
   <footer class="site-footer">
+    <nav class="legal-nav" aria-label="Legal">
+      <a href="#/terms">Terms of Service</a>
+      <a href="#/privacy">Privacy Policy</a>
+    </nav>
     <a id="rss-link" href="/rss.xml">RSS</a>
   </footer>
 
