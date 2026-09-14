@@ -168,6 +168,27 @@ def test_create_topic_success(aws_resources):
     mock_upsert.assert_called_once_with("new-topic", "rate(1 hour)", "cron(0 6 * * ? *)")
 
 
+def test_create_topic_crypto_feed_forces_is_financial_true(aws_resources):
+    # Phase 7: is_financial must be forced True for crypto_feed even when
+    # the caller explicitly passes False -- that safety property can't be
+    # bypassed by an operator mistake.
+    body = {
+        "topic_id": "crypto",
+        "name": "Crypto Markets",
+        "adapter": "crypto_feed",
+        "is_financial": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["is_financial"] is True
+
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    assert table.get_item(Key={"topic_id": "crypto"})["Item"]["is_financial"] is True
+
+
 def test_create_topic_custom_cadence(aws_resources):
     body = {
         "topic_id": "new-topic",
@@ -272,6 +293,37 @@ def test_update_topic_partial(aws_resources):
     mock_upsert.assert_called_once_with(
         "github-trending", "rate(1 hour)", "cron(0 6 * * ? *)"
     )
+
+
+def test_update_topic_switching_to_crypto_feed_forces_is_financial_true(aws_resources):
+    _put_topic()  # adapter=github_trending, is_financial=False
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter": "crypto_feed", "is_financial": False},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    updated = json.loads(result["body"])
+    assert updated["adapter"] == "crypto_feed"
+    assert updated["is_financial"] is True
+
+
+def test_update_topic_already_crypto_feed_cannot_unset_is_financial(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "crypto", "adapter": "crypto_feed", "is_financial": True})
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "crypto"},
+        body={"is_financial": False},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    updated = json.loads(result["body"])
+    assert updated["is_financial"] is True
 
 
 def test_update_topic_custom_cadence(aws_resources):

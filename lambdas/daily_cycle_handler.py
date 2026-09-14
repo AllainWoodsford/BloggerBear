@@ -39,6 +39,7 @@ _NUM_CANDIDATE_ANGLES = 3
 _LIST_MARKER_RE = re.compile(r"^[\s\d.\-\)]+")
 _FEW_SHOT_EXCERPT_CHARS = 500
 _FEEDBACK_GUIDANCE_HEADER = "Additional guidance based on reader feedback:"
+_FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 
 
 def handler(event: dict, context) -> dict:
@@ -83,6 +84,13 @@ def _run_daily_cycle(topic_id: str) -> dict:
         few_shot_excerpt=few_shot_excerpt,
     )
     title = _draft_title(selected["angle"], model_id)
+
+    # Phase 7: deterministically guarantee the standing "not financial
+    # advice" disclaimer on every financial-topic draft, regardless of
+    # whether the model actually followed the guidance folded into the
+    # prompts above -- see common/compliance.py's append_financial_disclaimer.
+    if compliance.is_financial_topic(topic):
+        draft_text = compliance.append_financial_disclaimer(draft_text)
 
     review = compliance.review_draft(draft_text, topic, model_id)
 
@@ -145,6 +153,8 @@ def _ideate(
     )
     if guidance:
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
+    if compliance.is_financial_topic(topic):
+        prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
     response = invoke_claude(prompt, model_id)
 
     angles = []
@@ -190,6 +200,8 @@ def _draft_article(
     )
     if guidance:
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
+    if compliance.is_financial_topic(topic):
+        prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
     if few_shot_excerpt:
         prompt += (
             "\n\nHere is an excerpt from a well-received past article on this "
