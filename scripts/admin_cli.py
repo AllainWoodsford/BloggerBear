@@ -142,6 +142,13 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         "adapter_config": adapter_config,
         "is_financial": args.financial,
     }
+    # Omitted entirely (not sent as null) when not passed, so the Admin
+    # API's own defaults (_DEFAULT_RESEARCH_CADENCE / _DEFAULT_DAILY_CADENCE)
+    # apply -- matching create_topic's own body.get(..., default) behavior.
+    if args.research_cadence is not None:
+        body["research_cadence"] = args.research_cadence
+    if args.daily_cadence is not None:
+        body["daily_cadence"] = args.daily_cadence
     _do_request(args, "POST", "/topics", body=body)
 
 
@@ -156,6 +163,10 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
             raise CliError(f"--adapter-config-json is not valid JSON: {exc}") from exc
     if args.financial is not None:
         body["is_financial"] = args.financial
+    if args.research_cadence is not None:
+        body["research_cadence"] = args.research_cadence
+    if args.daily_cadence is not None:
+        body["daily_cadence"] = args.daily_cadence
 
     if not body:
         raise CliError("topics update requires at least one field to change")
@@ -257,6 +268,18 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--adapter", required=True)
     create_parser.add_argument("--config-json", dest="config_json", default=None)
     create_parser.add_argument("--financial", action="store_true", default=False)
+    create_parser.add_argument(
+        "--research-cadence",
+        dest="research_cadence",
+        default=None,
+        help="EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1 hour))",
+    )
+    create_parser.add_argument(
+        "--daily-cadence",
+        dest="daily_cadence",
+        default=None,
+        help="EventBridge Scheduler expression, e.g. 'cron(0 6 * * ? *)' (default: cron(0 6 * * ? *))",
+    )
     create_parser.set_defaults(func=_cmd_topics_create)
 
     update_parser = topics_sub.add_parser("update", help="Update a topic")
@@ -268,6 +291,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_parser.add_argument(
         "--no-financial", dest="financial", action="store_false"
+    )
+    update_parser.add_argument(
+        "--research-cadence",
+        dest="research_cadence",
+        default=None,
+        help="EventBridge Scheduler expression, e.g. 'rate(1 hour)'",
+    )
+    update_parser.add_argument(
+        "--daily-cadence",
+        dest="daily_cadence",
+        default=None,
+        help="EventBridge Scheduler expression, e.g. 'cron(0 6 * * ? *)'",
     )
     update_parser.set_defaults(func=_cmd_topics_update)
 

@@ -216,6 +216,20 @@ data "aws_iam_policy_document" "lambda_exec" {
       "dynamodb:PutItem",
       "dynamodb:Query",
       "dynamodb:UpdateItem",
+      # Bugfix: Scan and DeleteItem were missing even though
+      # common/dynamo.py uses both extensively -- table.scan() backs
+      # every "list all" read (list_topics, list_pending_moderation,
+      # list_published_articles, list_prompt_refinements,
+      # list_feedback_since, list_all_moderation_items,
+      # get_top_voted_articles) and table.delete_item() backs
+      # delete_topic. Without these, the admin API's list/delete routes,
+      # the entire public API (articles list/detail/RSS all read via
+      # list_published_articles), the daily cycle's few-shot/prompt-
+      # refinement lookups, weekly_reflection, and trending_digest would
+      # all fail closed with AccessDeniedException. Never caught by the
+      # test suite because moto's mocked DynamoDB doesn't enforce IAM.
+      "dynamodb:Scan",
+      "dynamodb:DeleteItem",
     ]
     resources = module.app_data.table_arns
   }
