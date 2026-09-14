@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.parse
 
 import requests
 from botocore.auth import SigV4Auth
@@ -191,6 +192,34 @@ def _cmd_moderation_reject(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/moderation-queue/{args.queue_id}/reject")
 
 
+# --- refinements subcommands -----------------------------------------------
+
+
+def _cmd_refinements_list(args: argparse.Namespace) -> None:
+    query: dict = {}
+    if args.topic_id:
+        query["topic_id"] = args.topic_id
+    if args.status:
+        query["status"] = args.status
+
+    path = "/prompt-refinements"
+    if query:
+        path += "?" + urllib.parse.urlencode(query)
+    _do_request(args, "GET", path)
+
+
+def _cmd_refinements_approve(args: argparse.Namespace) -> None:
+    # `version` is an ISO-8601 timestamp and contains ':' characters, which
+    # must be percent-encoded before they can go in a URL path segment.
+    version = urllib.parse.quote(args.version, safe="")
+    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/approve")
+
+
+def _cmd_refinements_reject(args: argparse.Namespace) -> None:
+    version = urllib.parse.quote(args.version, safe="")
+    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/reject")
+
+
 # --- argument parsing -----------------------------------------------------
 
 
@@ -269,6 +298,30 @@ def build_parser() -> argparse.ArgumentParser:
     reject_parser = moderation_sub.add_parser("reject", help="Reject a moderation item")
     reject_parser.add_argument("queue_id")
     reject_parser.set_defaults(func=_cmd_moderation_reject)
+
+    refinements_parser = subparsers.add_parser("refinements", help="Manage prompt refinements")
+    refinements_sub = refinements_parser.add_subparsers(dest="action", required=True)
+
+    refinements_list_parser = refinements_sub.add_parser(
+        "list", help="List prompt refinement proposals"
+    )
+    refinements_list_parser.add_argument("--topic-id", dest="topic_id", default=None)
+    refinements_list_parser.add_argument("--status", dest="status", default=None)
+    refinements_list_parser.set_defaults(func=_cmd_refinements_list)
+
+    refinements_approve_parser = refinements_sub.add_parser(
+        "approve", help="Approve a pending prompt refinement"
+    )
+    refinements_approve_parser.add_argument("topic_id")
+    refinements_approve_parser.add_argument("version")
+    refinements_approve_parser.set_defaults(func=_cmd_refinements_approve)
+
+    refinements_reject_parser = refinements_sub.add_parser(
+        "reject", help="Reject a pending prompt refinement"
+    )
+    refinements_reject_parser.add_argument("topic_id")
+    refinements_reject_parser.add_argument("version")
+    refinements_reject_parser.set_defaults(func=_cmd_refinements_reject)
 
     return parser
 

@@ -5,6 +5,7 @@ import xml.etree.ElementTree as ET
 
 import boto3
 import pytest
+from boto3.dynamodb.conditions import Key
 from moto import mock_aws
 
 import public_api_handler
@@ -19,8 +20,10 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("TOPICS_TABLE", "Topics")
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
+    monkeypatch.setenv("FEEDBACK_TABLE", "Feedback")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
+    monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
 
     # common.dynamo caches a boto3 resource at module scope, and
     # public_api_handler caches a boto3 s3 client -- reset both so each
@@ -45,6 +48,18 @@ def aws_resources(aws_env):
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="Feedback",
+            KeySchema=[
+                {"AttributeName": "article_id", "KeyType": "HASH"},
+                {"AttributeName": "feedback_id", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "article_id", "AttributeType": "S"},
+                {"AttributeName": "feedback_id", "AttributeType": "S"},
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
 
@@ -328,6 +343,169 @@ def test_rss_feed_description_truncated_to_300_chars(aws_resources):
     root = ET.fromstring(result["body"])
     description = root.find("channel").find("item").find("description").text
     assert len(description) == 300
+
+
+# --- Feedback -----------------------------------------------------------
+
+
+def _feedback_items(article_id="article-1"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Feedback")
+    response = table.query(KeyConditionExpression=Key("article_id").eq(article_id))
+    return response.get("Items", [])
+
+
+def _get_article_item(article_id="article-1"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    return table.get_item(Key={"article_id": article_id}).get("Item")
+
+
+def _unexpected_call(*_args, **_kwargs):
+    raise AssertionError("should not have been called")
+
+
+def test_feedback_upvote_no_comment_succeeds(aws_resources, monkeypatch):
+    _put_article()
+    # No comment was submitted, so neither redaction pass should run.
+    monkeypatch.setattr(public_api_handler, "regex_redact", _unexpected_call)
+    monkeypatch.setattr(public_api_handler, "bedrock_redact_review", _unexpected_call)
+
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "up"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 201
+    body = json.loads(result["body"])
+    assert body["status"] == "recorded"
+    assert body["article_id"] == "article-1"
+    assert "feedback_id" in body
+    assert "comment" not in body
+
+    items = _feedback_items()
+    assert len(items) == 1
+    assert items[0]["vote"] == "up"
+    assert items[0]["comment"] is None
+
+    article = _get_article_item()
+    assert int(article["net_votes"]) == 1
+
+
+def test_feedback_downvote_updates_net_votes_negative(aws_resources):
+    _put_article()
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "down"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 201
+
+    article = _get_article_item()
+    assert int(article["net_votes"]) == -1
+
+
+def test_feedback_with_comment_runs_regex_then_bedrock_redaction(aws_resources, monkeypatch):
+    _put_article()
+
+    regex_calls = []
+    bedrock_calls = []
+
+    def fake_regex_redact(text):
+        regex_calls.append(text)
+        return "regex-redacted-text"
+
+    def fake_bedrock_redact_review(redacted_text, model_id):
+        bedrock_calls.append((redacted_text, model_id))
+        return "final-safe-text"
+
+    monkeypatch.setattr(public_api_handler, "regex_redact", fake_regex_redact)
+    monkeypatch.setattr(public_api_handler, "bedrock_redact_review", fake_bedrock_redact_review)
+
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "up", "comment": "My name is Jane, email jane@example.com"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 201
+
+    # Regex pass ran on the raw comment, Bedrock pass ran on its output.
+    assert regex_calls == ["My name is Jane, email jane@example.com"]
+    assert bedrock_calls == [("regex-redacted-text", "model-id")]
+
+    # The STORED comment is whatever the (mocked) redaction pipeline
+    # produced -- never the original raw text.
+    items = _feedback_items()
+    assert items[0]["comment"] == "final-safe-text"
+    assert "Jane" not in items[0]["comment"]
+    assert "jane@example.com" not in items[0]["comment"]
+
+
+def test_feedback_comment_rejected_by_bedrock_stored_as_none(aws_resources, monkeypatch):
+    _put_article()
+    monkeypatch.setattr(public_api_handler, "bedrock_redact_review", lambda *a, **k: None)
+
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "up", "comment": "some comment text"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 201
+
+    items = _feedback_items()
+    assert len(items) == 1
+    assert items[0]["comment"] is None
+
+
+def test_feedback_empty_comment_skips_redaction_pipeline(aws_resources, monkeypatch):
+    _put_article()
+    monkeypatch.setattr(public_api_handler, "regex_redact", _unexpected_call)
+    monkeypatch.setattr(public_api_handler, "bedrock_redact_review", _unexpected_call)
+
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "up", "comment": ""},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 201
+    assert _feedback_items()[0]["comment"] is None
+
+
+def test_feedback_invalid_vote_returns_400(aws_resources):
+    _put_article()
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "sideways"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 400
+    assert _feedback_items() == []
+
+
+def test_feedback_missing_article_returns_404(aws_resources):
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "nope"},
+        body={"vote": "up"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 404
+
+
+def test_feedback_non_published_article_returns_404(aws_resources):
+    _put_article(status="pending_moderation")
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "article-1"},
+        body={"vote": "up"},
+    )
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 404
+    assert _feedback_items() == []
 
 
 # --- Exception safety / routing -----------------------------------------

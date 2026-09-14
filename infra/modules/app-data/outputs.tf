@@ -48,6 +48,26 @@ output "moderation_queue_table_arn" {
   description = "ARN of the ModerationQueue DynamoDB table."
 }
 
+output "feedback_table_name" {
+  value       = aws_dynamodb_table.feedback.name
+  description = "Name of the Feedback DynamoDB table."
+}
+
+output "feedback_table_arn" {
+  value       = aws_dynamodb_table.feedback.arn
+  description = "ARN of the Feedback DynamoDB table."
+}
+
+output "prompt_refinements_table_name" {
+  value       = aws_dynamodb_table.prompt_refinements.name
+  description = "Name of the PromptRefinements DynamoDB table."
+}
+
+output "prompt_refinements_table_arn" {
+  value       = aws_dynamodb_table.prompt_refinements.arn
+  description = "ARN of the PromptRefinements DynamoDB table."
+}
+
 output "table_arns" {
   value = [
     aws_dynamodb_table.topics.arn,
@@ -55,6 +75,8 @@ output "table_arns" {
     aws_dynamodb_table.candidate_ideas.arn,
     aws_dynamodb_table.articles.arn,
     aws_dynamodb_table.moderation_queue.arn,
+    aws_dynamodb_table.feedback.arn,
+    aws_dynamodb_table.prompt_refinements.arn,
   ]
-  description = "All 5 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 7 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
 }

@@ -326,6 +326,17 @@ locals {
 
     # Phase 4: consumed by public_api_handler.py.
     SITE_URL = local.site_url
+
+    # Phase 5: the weekly reflection job's two new tables (see
+    # infra/modules/app-data's aws_dynamodb_table.feedback /
+    # prompt_refinements). Consumed by public_api_handler.py (feedback
+    # writes) and weekly_reflection_handler.py (reads feedback, writes
+    # refinements). aws_iam_role_policy.lambda_exec below already covers
+    # both -- its DynamoDB statement is `resources =
+    # module.app_data.table_arns`, which now includes these two ARNs
+    # automatically, no separate IAM change needed.
+    FEEDBACK_TABLE           = module.app_data.feedback_table_name
+    PROMPT_REFINEMENTS_TABLE = module.app_data.prompt_refinements_table_name
   }
 }
 
@@ -455,6 +466,12 @@ locals {
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
+    # Phase 5: prompt refinement approval workflow -- see
+    # admin_api_handler.py's _ROUTES dict and scripts/admin_cli.py's
+    # `refinements` subcommand.
+    "GET /prompt-refinements",
+    "POST /prompt-refinements/{topic_id}/{version}/approve",
+    "POST /prompt-refinements/{topic_id}/{version}/reject",
   ])
 }
 
@@ -680,6 +697,18 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     actions   = ["states:StartExecution"]
     resources = [aws_sfn_state_machine.daily_cycle.arn]
   }
+
+  # Phase 5: the weekly reflection job's single static schedule (see
+  # aws_scheduler_schedule.weekly_reflection below) also assumes this same
+  # role -- a third, separately-listed resource, same tight per-resource
+  # scoping as the two statements above, deliberately not merged into
+  # InvokeResearchTick's resources list or widened to a wildcard.
+  statement {
+    sid       = "InvokeWeeklyReflection"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.weekly_reflection.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_invoke" {
@@ -801,6 +830,9 @@ locals {
     "GET /articles",
     "GET /articles/{article_id}",
     "POST /articles/{article_id}/view",
+    # Phase 5: anonymous thumbs up/down + optional comment -- see
+    # public_api_handler.py's _submit_feedback.
+    "POST /articles/{article_id}/feedback",
     "GET /rss.xml",
   ])
 }
@@ -920,4 +952,55 @@ resource "aws_s3_object" "frontend_config" {
     window.PUBLIC_API_URL = "${aws_apigatewayv2_stage.public_default.invoke_url}";
     window.SITE_URL = "${local.site_url}";
   EOT
+}
+
+# =========================================================================
+# Phase 5 -- Feedback loop: a fifth Lambda (from the same shared deployment
+# package above, sharing the same aws_iam_role.lambda_exec -- it already has
+# DynamoDB access to the two new Phase 5 tables via
+# module.app_data.table_arns, plus bedrock:InvokeModel from Phase 1, which
+# is everything weekly_reflection_handler.py needs; no new IAM role or
+# policy resource required) on a single, static, Terraform-managed weekly
+# schedule.
+#
+# Unlike Phase 3's per-topic dynamic scheduling (research_tick/daily_cycle
+# cadence is genuinely per-topic-configurable), this is ONE global
+# analytical job that internally loops over all topics with recent
+# feedback -- so it gets one fixed weekly cron here, not a runtime-created
+# per-topic schedule.
+# =========================================================================
+
+resource "aws_lambda_function" "weekly_reflection" {
+  function_name = "bloggerbear-production-weekly-reflection"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "weekly_reflection_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 120
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+# Static weekly schedule -- Monday 9am UTC, a fixed literal (not
+# topic-driven config), since there's nothing per-topic to configure about
+# this global job. group_name = "default" matches the same schedule group
+# Phase 3's dynamically-created per-topic schedules use.
+resource "aws_scheduler_schedule" "weekly_reflection" {
+  name                = "bloggerbear-production-weekly-reflection"
+  group_name          = "default"
+  schedule_expression = "cron(0 9 ? * MON *)"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.weekly_reflection.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
 }

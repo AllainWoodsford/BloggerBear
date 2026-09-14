@@ -320,3 +320,205 @@ def increment_view_count(article_id: str) -> int:
         ReturnValues="UPDATED_NEW",
     )
     return int(response["Attributes"]["view_count"])
+
+
+# --- PromptRefinements (Phase 5) ---------------------------------------
+#
+# Owned by the weekly-reflection-handler worker. PromptRefinements items
+# (PK topic_id / SK version, per docs/project-plan.md §5) are proposed by
+# `weekly_reflection_handler.py` with status "pending" and approved/rejected
+# via the Admin API (below) before `daily_cycle_handler.py` will ever use
+# one. `version` is an ISO-8601 timestamp string rather than a sequential
+# counter -- it sorts correctly as a plain string and needs no atomic
+# increment.
+#
+# `list_feedback_since` also lives here even though it reads the Feedback
+# table: it's a helper for the weekly reflection job, not a Feedback
+# CRUD primitive, and reads FEEDBACK_TABLE without redefining it -- that env
+# var and the Feedback table's write path belong to the Phase 5
+# feedback-collection worker.
+
+
+def _paginated_scan(table, filter_expression=None) -> list[dict]:
+    """Scan a table to completion, optionally filtered, and return all items.
+
+    Local helper for this section only -- same Scan-until-no-LastEvaluatedKey
+    pattern used throughout this file (list_topics, list_pending_moderation,
+    list_published_articles), just factored out to avoid repeating it four
+    more times below.
+    """
+    scan_kwargs = {"FilterExpression": filter_expression} if filter_expression is not None else {}
+    response = table.scan(**scan_kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(**scan_kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
+
+
+def put_prompt_refinement(
+    topic_id: str,
+    version: str,
+    rationale: str,
+    prompt_changes: str,
+    status: str = "pending",
+) -> dict:
+    """Write a PromptRefinements item and return it.
+
+    `proposed_at` is set equal to `version` -- both are the same ISO-8601
+    timestamp; keeping them identical is simpler than tracking two separate
+    clock reads for one write.
+    """
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    item = {
+        "topic_id": topic_id,
+        "version": version,
+        "proposed_at": version,
+        "rationale": rationale,
+        "prompt_changes": prompt_changes,
+        "status": status,
+    }
+    table.put_item(Item=item)
+    return item
+
+
+def list_prompt_refinements(topic_id: str | None = None, status: str | None = None) -> list[dict]:
+    """Return PromptRefinements items, optionally filtered by topic_id and/or status.
+
+    Scan + filter -- same pattern as list_pending_moderation /
+    list_published_articles above -- acceptable at this project's scale, no
+    GSI. Both filters are optional; either, neither, or both may be given.
+    """
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+
+    filter_expression = None
+    if topic_id is not None:
+        filter_expression = Attr("topic_id").eq(topic_id)
+    if status is not None:
+        status_condition = Attr("status").eq(status)
+        filter_expression = (
+            status_condition if filter_expression is None else filter_expression & status_condition
+        )
+
+    return _paginated_scan(table, filter_expression)
+
+
+def get_prompt_refinement(topic_id: str, version: str) -> dict | None:
+    """Fetch a PromptRefinements item by (topic_id, version), or None."""
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    response = table.get_item(Key={"topic_id": topic_id, "version": version})
+    return response.get("Item")
+
+
+def update_prompt_refinement_status(topic_id: str, version: str, status: str) -> None:
+    """Update a PromptRefinements item's `status` field in place."""
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    table.update_item(
+        Key={"topic_id": topic_id, "version": version},
+        UpdateExpression="SET #status = :status",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":status": status},
+    )
+
+
+def get_latest_approved_prompt_refinement(topic_id: str) -> dict | None:
+    """Return the most recently approved PromptRefinements item for a topic.
+
+    Returns None if none has been approved yet. ISO-8601 timestamps sort
+    correctly as plain strings, so the max `version` string is the most
+    recent approval.
+    """
+    approved = list_prompt_refinements(topic_id=topic_id, status="approved")
+    if not approved:
+        return None
+    return max(approved, key=lambda item: item["version"])
+
+
+def list_feedback_since(since_iso: str) -> list[dict]:
+    """Return every Feedback item with `created_at >= since_iso`.
+
+    Scan + filter, paginated -- same pattern as the other Scan helpers in
+    this file. Reads the Feedback table via the FEEDBACK_TABLE env var,
+    which the Phase 5 feedback-collection worker defines and writes to; this
+    function only reads it.
+    """
+    table = get_table(os.environ["FEEDBACK_TABLE"])
+    filter_expression = Attr("created_at").gte(since_iso)
+    return _paginated_scan(table, filter_expression)
+
+
+# --- Feedback (Phase 5) ------------------------------------------------------
+#
+# Owned by the public-api worker. Table name comes from the FEEDBACK_TABLE
+# env var (PK `article_id`, SK `feedback_id`), wired up by the infra worker.
+# Per project-plan.md §7, a Feedback item carries no requester identifier of
+# any kind -- no IP, user agent, or session id -- so `put_feedback` doesn't
+# even accept such a parameter.
+
+
+def put_feedback(
+    article_id: str,
+    feedback_id: str,
+    vote: str,
+    comment: str | None,
+    created_at: str,
+) -> None:
+    """Write a Feedback item to the Feedback table.
+
+    `comment` is None when no comment was submitted, or when the Bedrock
+    redaction-review pass (`common.compliance.bedrock_redact_review`) could
+    not confirm the text was safe to store.
+    """
+    table = get_table(os.environ["FEEDBACK_TABLE"])
+    table.put_item(
+        Item={
+            "article_id": article_id,
+            "feedback_id": feedback_id,
+            "vote": vote,
+            "comment": comment,
+            "created_at": created_at,
+        }
+    )
+
+
+def update_article_net_votes(article_id: str, delta: int) -> None:
+    """Atomically add `delta` to an Articles item's `net_votes` attribute.
+
+    Uses `ADD net_votes :delta`, which DynamoDB initializes to the operand
+    if the attribute doesn't exist yet -- same pattern as
+    `increment_view_count` above. `delta` is +1 for an upvote, -1 for a
+    downvote.
+    """
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="ADD net_votes :delta",
+        ExpressionAttributeValues={":delta": delta},
+    )
+
+
+def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
+    """Return up to `limit` published articles for `topic_id`, best net_votes first.
+
+    The Articles table's only key is `article_id` (no sort key, no topic_id
+    GSI), so this is a Scan + FilterExpression, same pattern as
+    `list_published_articles` above, followed by an in-Python sort on
+    `net_votes` (missing/absent treated as 0). Only articles with
+    `net_votes > 0` are eligible -- a net-negative or neutral article isn't
+    worth reusing as a few-shot example for future drafts.
+    """
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
+
+    response = table.scan(FilterExpression=filter_expression)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression=filter_expression,
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+
+    positively_voted = [item for item in items if int(item.get("net_votes", 0)) > 0]
+    positively_voted.sort(key=lambda item: int(item.get("net_votes", 0)), reverse=True)
+    return positively_voted[:limit]
