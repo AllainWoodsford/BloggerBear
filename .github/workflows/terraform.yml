@@ -22,11 +22,28 @@ jobs:
   # trust condition (gha-bloggerbear-dev-deploy trusts
   # `ref:refs/heads/dev`; gha-bloggerbear-prod-deploy trusts
   # `environment:production`) -- there is deliberately no third role for
-  # this. `-backend=false`/`-refresh=false`/`-lock=false` keeps this job
-  # self-contained: it validates syntax and produces a plan against a
-  # throwaway local state, without touching the real S3 backend or live
-  # AWS resources.
-  plan:
+  # this.
+  #
+  # Bugfix: this job used to also run `terraform plan` (with `-backend=false
+  # -refresh=false -lock=false`), on the theory that a throwaway local plan
+  # wouldn't need real AWS access. That's wrong on two counts, both
+  # confirmed by reproducing this exact job in a genuinely credential-less
+  # sandbox: (1) `init -backend=false` leaves the working directory in a
+  # state where a later `plan` refuses to run at all ("Backend
+  # initialization required"), since the config still declares a real
+  # `backend "s3" {...}` block; (2) even past that, this project's
+  # Terraform config reads `data.aws_caller_identity.current` (used to
+  # build ARN strings without creating a resource-reference dependency
+  # cycle -- see infra/environments/*/main.tf's own comment on it) and the
+  # AWS provider itself validates credentials on init, so `plan` cannot
+  # succeed without live AWS access -- which this job deliberately never
+  # has. Rather than opening a new OIDC trust path for pull_request-
+  # triggered runs just to make PR-time plans possible, this job now
+  # stops at `fmt`/`validate` (genuine syntax/type/schema checking, no AWS
+  # calls needed) -- real plan diffs still happen for real at apply time
+  # (dev auto-apply on merge, production release), where credentials
+  # already exist.
+  validate:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -43,7 +60,7 @@ jobs:
           sudo mv /tmp/terraform /usr/local/bin/terraform
           terraform version
 
-      - name: Terraform plan (changed envs)
+      - name: Terraform fmt/validate (changed envs)
         run: |
           set -euo pipefail
           if [ ! -d infra/environments ]; then
@@ -60,7 +77,6 @@ jobs:
               terraform -chdir="$dir" init -backend=false -input=false -get=true -upgrade=false
               terraform -chdir="$dir" fmt -check
               terraform -chdir="$dir" validate
-              terraform -chdir="$dir" plan -refresh=false -lock=false -input=false
             fi
           done
 

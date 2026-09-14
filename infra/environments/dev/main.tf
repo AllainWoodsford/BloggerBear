@@ -74,7 +74,18 @@ module "app_data" {
 # (ownership controls + public access block) as the static-site module's
 # site bucket. force_destroy = true here only: dev is meant to be torn
 # down and rebuilt freely.
-# -----------------------------------------------------------------------
+#
+# AVD-AWS-0132 ("no customer-managed KMS key") is deliberately ignored
+# below. Every bucket/topic/queue in this project uses AWS's default
+# managed-key encryption (SSE-S3 / SSE-SNS / SSE-SQS), not a customer-
+# managed KMS key -- a cost/complexity trade-off for a single-operator
+# portfolio project: each additional CMK is a recurring per-key charge
+# plus key-policy/rotation overhead, for a threat model (this operator's
+# own AWS account, not shared-tenancy or regulated data) where AWS-
+# managed encryption at rest is judged sufficient. Same reasoning and
+# same ignore comment recur at every other resource this applies to in
+# infra/ (the site bucket, the SNS alerts topic, the SQS DLQ).
+# trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "content" {
   bucket        = "bloggerbear-dev-content"
   force_destroy = true
@@ -523,7 +534,10 @@ resource "aws_wafv2_web_acl_association" "admin" {
 # assume (aws_iam_role.scheduler_invoke) and grants the Lambda execution
 # role permission to manage them (aws_iam_role_policy.scheduler_manage).
 # =========================================================================
-
+# AVD-AWS-0096 ("queue is not encrypted") ignored deliberately -- see the
+# AVD-AWS-0132 comment on aws_s3_bucket.content above for the same
+# AWS-managed-vs-customer-managed-key rationale.
+# trivy:ignore:AVD-AWS-0096
 resource "aws_sqs_queue" "pipeline_dlq" {
   name = "bloggerbear-dev-pipeline-dlq"
 }
