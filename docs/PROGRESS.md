@@ -236,6 +236,35 @@ Spec: `docs/specs/phase-0-foundations.md`
   by anonymous visitors
 - [x] Site-wide RSS feed — `GET /rss.xml` on the same public API, hand-built
   valid RSS 2.0 (50 most recent published articles, XML-escaped)
+- [x] Legal pages, accessibility, and CSS resilience (ad hoc follow-up,
+  not originally scoped) — `#/terms` and `#/privacy` hash routes
+  (static content, no API call), grounded in what the codebase actually
+  does rather than boilerplate (confirmed via a real code/config scan:
+  no cookies anywhere — the CloudFront distribution explicitly forwards
+  none, and the frontend has no cookie-setting code — anonymous view
+  counts, and feedback that goes through the Phase 5 two-pass PII
+  redaction before storage). A separate `.legal-nav` (footer) links to
+  both. An honest, in-flow "site notice" banner (not a cookie-consent
+  banner — there's nothing to consent to) tells visitors about the
+  anonymous view counting and WAF-level security logging, dismissal
+  remembered via `localStorage` (the one and only thing this site
+  stores client-side). A placeholder square SVG logo
+  (`frontend/logo.svg`). Accessibility: a skip link (WCAG 2.4.1),
+  focus moved to `#content` on route change (WCAG 2.4.3), a real WCAG
+  AA contrast bug caught and fixed before shipping (white text on the
+  dark-mode accent blue was ~2.4:1, well under the 4.5:1 minimum —
+  both the skip link and the notice's dismiss button now use the
+  already-high-contrast `--fg`/`--bg` pair instead), and a ≥44px
+  dismiss-button target size. `normalize.css` (vendored, official
+  v8.0.1, unmodified) now loads before `styles.css` as a baseline, so a
+  failed `styles.css` load still leaves the page in a consistent,
+  readable cross-browser state rather than raw unstyled HTML; `body`'s
+  background/color also carry static fallback values ahead of their
+  `var()` versions for the same reason. Verified with a real functional
+  test (jsdom, actual `index.html`/`app.js`, real HTTP fetches against a
+  local static server) rather than just visual inspection — 22/22
+  checks covering routing, rendering, focus management, and the
+  notice's localStorage persistence across a simulated return visit.
 
 ## Phase 5 — Feedback loop
 

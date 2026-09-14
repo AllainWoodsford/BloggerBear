@@ -4,6 +4,8 @@
  *   #/                 -> home / topic list
  *   #/topic/{id}       -> published article list for a topic
  *   #/article/{id}     -> full article view
+ *   #/terms            -> Terms of Service (static content, no API call)
+ *   #/privacy          -> Privacy Policy (static content, no API call)
  *
  * Talks to the public API at window.PUBLIC_API_URL (e.g.
  * "https://xxxx.execute-api.ap-southeast-2.amazonaws.com"), set by
@@ -286,6 +288,232 @@
     return section;
   }
 
+  // --- Legal pages (Terms of Service / Privacy Policy) --------------------
+  //
+  // Static content, not fetched from the API -- rendered with the same
+  // el()/DOM-construction helpers as everything else on this page, for
+  // consistency (and so this content, like everything else here, never
+  // goes through innerHTML). Grounded in what this codebase actually
+  // does, not boilerplate: no cookies (verified against both the
+  // frontend source and the CloudFront config, which explicitly forwards
+  // none), an anonymous per-article view counter, anonymous feedback
+  // that goes through a two-pass PII redaction before being stored (see
+  // lambdas/common/compliance.py), and infrastructure-level WAF logging
+  // that's kept separate from application data (see
+  // docs/project-plan.md §7).
+
+  var GITHUB_REPO_URL = "https://github.com/AllainWoodsford/BloggerBear";
+
+  var LEGAL_PAGES = {
+    terms: {
+      title: "Terms of Service",
+      sections: [
+        {
+          heading: "1. About this site",
+          paragraphs: [
+            "BloggerBear is a personal, non-commercial portfolio and demonstration project — an experiment in autonomous, AI-assisted research and publishing. Software periodically checks public data sources (currently GitHub Trending, Hacker News, and public cryptocurrency market data), uses an AI model (Amazon Bedrock / Claude) to summarize findings and draft articles, and runs an automated compliance review before anything is published. It is not a commercial product, a news organization, or a registered business.",
+          ],
+        },
+        {
+          heading: "2. AI-generated content",
+          paragraphs: [
+            "Most article content on this site is drafted by an AI model from publicly available source data, then automatically reviewed for compliance before publishing; some drafts are additionally held for manual human review. Despite that review, AI-generated content can still be inaccurate, incomplete, or out of date. Nothing on this site should be treated as professional advice of any kind.",
+          ],
+        },
+        {
+          heading: "3. Not financial advice",
+          paragraphs: [
+            "Any article touching cryptocurrency or other financial/investment topics is generated under a stricter compliance rubric, is always held for manual human review before publishing regardless of how confident the automated review is, and carries a standing notice that it is not financial or investment advice. Nothing on this site is, or should be understood as, a recommendation to buy, sell, or hold any asset. Always do your own research and consult a qualified professional before making financial decisions.",
+          ],
+        },
+        {
+          heading: "4. No warranty, availability, or permanence",
+          paragraphs: ["This is a hobby/portfolio project, run by a single operator — not a supported product."],
+          list: [
+            "No uptime, availability, or continuity is guaranteed.",
+            "The site, every article on it, and the infrastructure behind it may be taken offline, modified, reset, or permanently deleted at any time, without notice.",
+            "The site and its content are provided “as is” and “as available,” without warranties of any kind, express or implied — including accuracy, reliability, merchantability, or fitness for a particular purpose.",
+            "The operator is not liable for any loss or damage arising from your use of, or inability to use, this site or its content.",
+          ],
+        },
+        {
+          heading: "5. Source material and attribution",
+          paragraphs: [
+            "Each article's “Sources” links point to the original public pages a piece of research was based on. That source material belongs to its respective owners — BloggerBear doesn't claim ownership of it, and links to it for attribution and further reading.",
+          ],
+        },
+        {
+          heading: "6. Anonymous feedback",
+          paragraphs: [
+            "You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the Privacy Policy for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. A comment may be automatically redacted, or never published at all, if it can't be confirmed safe.",
+          ],
+        },
+        {
+          heading: "7. Acceptable use",
+          paragraphs: [
+            "Please don't attempt to abuse, aggressively scrape, disrupt, or gain unauthorized access to this site or the systems behind it. Automated/programmatic use of the public read API and RSS feed is welcome — that's exactly what they're for.",
+          ],
+        },
+        {
+          heading: "8. Changes to these terms",
+          paragraphs: [
+            "Since this is an evolving personal project, these terms may change at any time as the project changes. Continued use of the site after a change means you accept the updated terms.",
+          ],
+        },
+        {
+          heading: "9. Contact",
+          paragraphs: ["This project is developed in the open. Questions, issues, or takedown requests can be raised via its GitHub repository."],
+          link: { text: "github.com/AllainWoodsford/BloggerBear", href: GITHUB_REPO_URL },
+        },
+      ],
+    },
+    privacy: {
+      title: "Privacy Policy",
+      sections: [
+        {
+          heading: "1. Short version",
+          paragraphs: ["This is a small personal project with a deliberately minimal data footprint:"],
+          list: [
+            "No accounts, no logins, no user profiles.",
+            "No cookies.",
+            "No advertising or analytics trackers.",
+            "No personal information is intentionally collected. If any ends up in a comment, automated redaction attempts to strip it before anything is stored — and you're asked not to include it in the first place (see “Please don't share personal information” below).",
+          ],
+        },
+        {
+          heading: "2. What we don't do",
+          list: [
+            "We do not use cookies. This is verified directly against this site's own source code and infrastructure configuration, not just asserted — the CloudFront distribution in front of this site is explicitly configured to forward none, and the frontend code contains no cookie-setting logic anywhere.",
+            "We do not run any third-party analytics, advertising, or tracking scripts.",
+            "We do not build profiles of individual visitors, and have no way to identify you from your use of this site.",
+          ],
+        },
+        {
+          heading: "3. What we do track: anonymous view counts",
+          paragraphs: [
+            "Each article has a public, anonymous view counter. Opening an article increments one shared counter for that article by one. This counter is not tied to your browser, device, or identity in any way — it's a running total, the same as a hit counter.",
+          ],
+        },
+        {
+          heading: "4. Feedback (votes and comments)",
+          paragraphs: [
+            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, after automated redaction — see below), and when it was submitted. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
+          ],
+        },
+        {
+          heading: "Please don't share personal information",
+          paragraphs: [
+            "Any comment you submit goes through a real, if best-effort, attempt to remove obvious personal information automatically — a pattern-matching pass, then a second AI-based review pass — before anything is stored. If that review can't confirm a comment is safe, the comment is dropped and only the vote is kept. But this is an automated filter, not a guarantee. Please don't include your name, email address, phone number, physical address, or any other personal or identifying information — about yourself or anyone else — in a comment. Assume anything you type could end up published.",
+          ],
+        },
+        {
+          heading: "5. Infrastructure and security logs",
+          paragraphs: [
+            "Like effectively every website, the infrastructure this site runs on (a web application firewall in front of the site and its APIs) keeps its own short-term operational logs — the kind that record request metadata, such as source IP address, purely to detect and block abusive traffic. These logs:",
+          ],
+          list: [
+            "live entirely at the infrastructure level, inside the cloud provider's (AWS) own logging systems",
+            "are never joined, matched, or cross-referenced with anything you submit through the site (feedback, view counts, or anything else)",
+            "are not used to identify or profile visitors",
+            "exist only for security and reliability, not analytics",
+          ],
+        },
+        {
+          heading: "6. Local storage on your device",
+          paragraphs: [
+            "This site uses a very small amount of your browser's local storage (localStorage) for exactly one purpose: remembering that you've dismissed the site notice banner, so it doesn't reappear on every visit. That preference lives only in your own browser — it is never sent to us, and clearing your browser data resets it.",
+          ],
+        },
+        {
+          heading: "7. Third-party AI processing",
+          paragraphs: [
+            "Article summaries and drafts are generated using Amazon Bedrock, a cloud AI service. Publicly available source data (trending repositories, news headlines, market prices) is sent to that service to generate content — no visitor data is ever sent there. If you submit a comment, the same service is also used purely to check the comment text for personal information before deciding whether to store it.",
+          ],
+        },
+        {
+          heading: "8. Data retention and deletion",
+          paragraphs: [
+            "Because this is a disposable, single-operator portfolio project (see the Terms of Service), the infrastructure behind everything described above — including this policy's own hosting — may be reset, rebuilt, or permanently deleted at any time, without notice. There is no guarantee any particular piece of content, feedback, or data will persist.",
+          ],
+        },
+        {
+          heading: "9. Changes to this policy",
+          paragraphs: ["This policy may change as the project changes. Check back here for the current version."],
+        },
+        {
+          heading: "10. Contact",
+          paragraphs: ["Questions about this policy can be raised via the project's GitHub repository."],
+          link: { text: "github.com/AllainWoodsford/BloggerBear", href: GITHUB_REPO_URL },
+        },
+      ],
+    },
+  };
+
+  function renderLegalPage(pageKey) {
+    var page = LEGAL_PAGES[pageKey];
+    clearChildren(contentEl);
+    contentEl.appendChild(el("h1", { text: page.title }));
+
+    page.sections.forEach(function (section) {
+      contentEl.appendChild(el("h2", { text: section.heading }));
+      (section.paragraphs || []).forEach(function (paragraph) {
+        contentEl.appendChild(el("p", { text: paragraph }));
+      });
+      if (section.list) {
+        var list = el("ul");
+        section.list.forEach(function (itemText) {
+          var item = el("li", { text: itemText });
+          list.appendChild(item);
+        });
+        contentEl.appendChild(list);
+      }
+      if (section.link) {
+        var linkPara = el("p");
+        linkPara.appendChild(el("a", { text: section.link.text, href: section.link.href }));
+        contentEl.appendChild(linkPara);
+      }
+    });
+  }
+
+  // --- Site notice ----------------------------------------------------
+  //
+  // Not a cookie-consent banner (there are no cookies to consent to) --
+  // an honest, upfront notice about the anonymous view counting and
+  // infrastructure security logging this site does do. Shown once per
+  // browser; dismissal is remembered in localStorage, the one and only
+  // thing this site stores client-side (see the Privacy Policy, §6).
+  var SITE_NOTICE_DISMISSED_KEY = "bloggerbear-site-notice-dismissed";
+
+  function initSiteNotice() {
+    var notice = document.getElementById("site-notice");
+    var dismissButton = document.getElementById("site-notice-dismiss");
+    if (!notice || !dismissButton) {
+      return;
+    }
+
+    var alreadyDismissed = false;
+    try {
+      alreadyDismissed = window.localStorage.getItem(SITE_NOTICE_DISMISSED_KEY) === "1";
+    } catch (err) {
+      // Private browsing / storage disabled -- fall back to showing the
+      // notice every visit rather than breaking the page.
+      alreadyDismissed = false;
+    }
+
+    if (!alreadyDismissed) {
+      notice.hidden = false;
+    }
+
+    dismissButton.addEventListener("click", function () {
+      notice.hidden = true;
+      try {
+        window.localStorage.setItem(SITE_NOTICE_DISMISSED_KEY, "1");
+      } catch (err) {
+        /* ignore -- worst case the notice reappears next visit */
+      }
+    });
+  }
+
   function recordView(articleId) {
     // Best-effort, anonymous view counting -- never blocks rendering and
     // never surfaces an error to the user if it fails.
@@ -324,6 +552,12 @@
     if (articleMatch) {
       return { name: "article", articleId: decodeURIComponent(articleMatch[1]) };
     }
+    if (path === "/terms") {
+      return { name: "legal", pageKey: "terms" };
+    }
+    if (path === "/privacy") {
+      return { name: "legal", pageKey: "privacy" };
+    }
     return { name: "not-found" };
   }
 
@@ -335,9 +569,20 @@
       loadTopicArticles(current.topicId);
     } else if (current.name === "article") {
       loadArticle(current.articleId);
+    } else if (current.name === "legal") {
+      renderLegalPage(current.pageKey);
     } else {
       showMessage("Page not found.");
     }
+
+    // Move focus to the main content landmark on every navigation --
+    // standard SPA accessibility practice (WCAG 2.4.3) so keyboard/
+    // screen-reader users land on the new content instead of wherever
+    // focus happened to be before. #content has tabindex="-1" precisely
+    // so it's programmatically focusable without joining the normal tab
+    // order (see styles.css for the accompanying outline: none on this
+    // specific, non-interactive focus target).
+    contentEl.focus();
   }
 
   function fixRssLinks() {
@@ -359,6 +604,7 @@
   window.addEventListener("hashchange", route);
   window.addEventListener("DOMContentLoaded", function () {
     fixRssLinks();
+    initSiteNotice();
     loadNav();
     route();
   });

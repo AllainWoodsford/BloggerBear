@@ -28,11 +28,60 @@
 body {
   margin: 0;
   padding: 0 16px;
+  /* Fallback declarations before the var()-based ones: every current
+     browser supports CSS custom properties, but if this ever runs
+     somewhere that genuinely doesn't (or a typo'd/missing --bg/--fg
+     token slips through some future edit), the page still renders
+     readable light-mode text on a white background rather than
+     unstyled black-on-transparent. The var() line below always wins
+     when supported, per normal CSS cascade rules -- this isn't an
+     @supports branch, just declaration order. */
+  background: #ffffff;
   background: var(--bg);
+  color: #1a1a1a;
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji";
   font-size: 17px;
   line-height: 1.55;
+}
+
+/* Skip link -- WCAG 2.4.1 (Bypass Blocks). The first focusable element
+   on the page; visually hidden until it receives keyboard focus, so
+   keyboard/screen-reader users can jump past both nav regions straight
+   to #content without affecting the visual layout for anyone else. */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 8px;
+  z-index: 100;
+  padding: 10px 16px;
+  /* --fg/--bg, inverted, rather than --accent + a fixed white text
+     color: --accent is a much lighter blue in dark mode (#7aa7ff),
+     which fails WCAG AA contrast (~2.4:1, needs 4.5:1) against white
+     text -- easy to miss since it looks fine in light mode alone. The
+     --fg/--bg pair is already chosen for strong mutual contrast in
+     both themes, so inverting it here is guaranteed safe in both. */
+  background: var(--fg);
+  color: var(--bg);
+  border-radius: 0 0 4px 4px;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* The programmatic focus target on route change (see app.js's route())
+   -- intentionally no visible ring here: #content is a landmark, not an
+   interactive control, and receiving focus is only there to move the
+   keyboard/screen-reader cursor to new content, not to look like a
+   clickable outline. Every actual interactive element (links, buttons,
+   the feedback textarea, the skip link above) keeps its normal focus
+   indicator -- nothing here suppresses those. */
+#content:focus {
+  outline: none;
 }
 
 header {
@@ -47,10 +96,24 @@ header {
 }
 
 .site-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 1.4rem;
   font-weight: 700;
   color: var(--fg);
   text-decoration: none;
+}
+
+.site-logo {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  /* Purely decorative next to the "BloggerBear" text right beside it
+     (see index.html's alt="") -- flex-shrink: 0 keeps it square even
+     when the header wraps on narrow viewports. */
+  flex-shrink: 0;
 }
 
 #nav {
@@ -211,4 +274,80 @@ a {
   border-top: 1px solid var(--border);
   font-size: 0.85rem;
   color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 20px;
+}
+
+.legal-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.legal-nav a,
+.site-footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.legal-nav a:hover,
+.site-footer a:hover {
+  text-decoration: underline;
+}
+
+/* --- Site notice ---------------------------------------------------- */
+
+.site-notice {
+  /* In-flow, not a fixed overlay -- sits right below the header and
+     pushes the rest of the page down while visible, so it can never
+     obscure content lower on the page (unlike a fixed bottom bar, which
+     would need extra reserved space to avoid covering short pages'
+     footers -- see the comment in index.html). */
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px 20px;
+  padding: 14px 16px;
+  background: var(--bg);
+  color: var(--fg);
+  border-bottom: 1px solid var(--border);
+}
+
+.site-notice p {
+  margin: 0;
+  max-width: 640px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.site-notice a {
+  color: var(--accent);
+}
+
+#site-notice-dismiss {
+  flex-shrink: 0;
+  font: inherit;
+  font-weight: 600;
+  /* Comfortably above the WCAG 2.5.8 (AA) 24x24px minimum target size,
+     closer to the 44x44px AAA guidance -- this is often the first thing
+     a visitor taps, so it should be an easy, unambiguous target. */
+  padding: 10px 20px;
+  border: 1px solid var(--fg);
+  border-radius: 4px;
+  /* --fg/--bg, inverted, not --accent + fixed white text -- see the
+     same contrast note on .skip-link above (--accent is too light
+     against white text in dark mode to meet WCAG AA). */
+  background: var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+}
+
+#site-notice-dismiss:hover {
+  opacity: 0.9;
 }
