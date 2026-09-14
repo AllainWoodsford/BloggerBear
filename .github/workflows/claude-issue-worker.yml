@@ -15,12 +15,23 @@ jobs:
     if: contains(github.event.issue.labels.*.name, 'claude') || contains(github.event.issue.body, '@claude')
     runs-on: ubuntu-latest
     steps:
+      # Pinned to the same actions/checkout@v4.1.7 commit used everywhere
+      # else in this repo's workflows -- see terraform.yml etc. for the
+      # stated policy (SHA-pinning, not a moving tag, to prevent a
+      # compromised/mutated tag from injecting code into CI).
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
 
       - name: Run Claude Task
-        uses: anthropics/claude-code-action@v1
+        # Pinned to anthropics/claude-code-action@v1's current release
+        # commit, same pinning policy as above.
+        uses: anthropics/claude-code-action@9cdae7f0d995e3ba7c33f226087fdf82a59cd520
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          command: |
+          # Bugfix: `command` is not a valid input on this action --
+          # instructions go in `prompt` (see dev-gatekeeper.yml's own
+          # comment on this exact mistake, already fixed there but never
+          # propagated to this second workflow that also calls the
+          # action).
+          prompt: |
             /run-task-from-issue "${{ github.event.issue.number }}"

@@ -17,7 +17,14 @@ terraform {
 # -----------------------------------------------------------------------
 # Site content bucket -- private, OAC-only access. No public bucket
 # policy, no public ACLs.
-# -----------------------------------------------------------------------
+#
+# AVD-AWS-0132 ("no customer-managed KMS key") ignored deliberately.
+# Every bucket/topic/queue in this project uses AWS's default managed-key
+# encryption, not a customer-managed KMS key -- a cost/complexity
+# trade-off for a single-operator portfolio project (see the same
+# comment on infra/environments/dev/main.tf's aws_s3_bucket.content for
+# the full rationale).
+# trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "site" {
   bucket        = "bloggerbear-${var.environment_name}-site"
   force_destroy = var.force_destroy
