@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Page Not Found — BloggerBear</title>
+  <!--
+    Same normalize.css + styles.css pair as index.html, in the same
+    order, for the same reason (see index.html's own comment) -- and
+    deliberately no inline <style> safety net here despite this being
+    the error page: the CloudFront response headers policy
+    (infra/modules/static-site/main.tf) sends a strict
+    style-src 'self' CSP with no 'unsafe-inline' on every response
+    from this distribution, including this one, so an inline style
+    block would just be silently blocked by browsers rather than
+    helping. If both stylesheets fail to load, this page still
+    degrades to normal (if plain) browser default styling -- readable,
+    just unstyled -- which is an acceptable floor for an error page.
+
+    This page is served directly by CloudFront's custom_error_response
+    (a real 403/404 from S3, not a client-side SPA route) -- it
+    intentionally does NOT load config.js/app.js. An error page whose
+    own JS dependency could itself be the thing failing isn't a safety
+    net.
+  -->
+  <link rel="stylesheet" href="normalize.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="logo.svg" type="image/svg+xml" />
+  <link rel="alternate icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header>
+    <a class="site-title" href="/">
+      <picture>
+        <source srcset="logo.webp" type="image/webp" />
+        <img class="site-logo" src="logo.svg" alt="" width="32" height="32" />
+      </picture>
+      BloggerBear
+    </a>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <h1>We couldn't find that page</h1>
+    <p>
+      The page you were looking for doesn't exist, has moved, or this
+      particular piece of content is no longer here — this is also a
+      small, single-operator portfolio project (see the
+      <a href="/#/terms">Terms of Service</a>), so content and
+      infrastructure here can change or disappear without notice.
+    </p>
+    <p>
+      <a href="/">Return to the homepage</a>
+    </p>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="legal-nav" aria-label="Legal">
+      <a href="/#/terms">Terms of Service</a>
+      <a href="/#/privacy">Privacy Policy</a>
+    </nav>
+    <!--
+      No RSS link here on purpose (unlike index.html's footer): the RSS
+      feed actually lives on the public API's own origin, not this
+      static site's, and index.html only gets that link right because
+      app.js's fixRssLinks() rewrites it at runtime -- which this
+      deliberately JS-free error page never runs. A hardcoded guess at
+      that URL would just be a second broken link on the page whose
+      whole job is telling you about a broken link.
+    -->
+  </footer>
+</body>
+</html>

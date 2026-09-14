@@ -983,11 +983,16 @@ resource "aws_wafv2_web_acl_association" "public_api" {
 locals {
   frontend_dir = "${path.module}/../../../frontend"
   frontend_files = {
-    "index.html"    = "text/html"
-    "styles.css"    = "text/css"
-    "normalize.css" = "text/css"
-    "app.js"        = "application/javascript"
-    "logo.svg"      = "image/svg+xml"
+    "index.html"           = "text/html"
+    "error.html"           = "text/html"
+    "styles.css"           = "text/css"
+    "normalize.css"        = "text/css"
+    "app.js"               = "application/javascript"
+    "robots.txt"           = "text/plain"
+    "logo.svg"             = "image/svg+xml"
+    "logo.webp"            = "image/webp"
+    "favicon.ico"          = "image/x-icon"
+    "apple-touch-icon.png" = "image/png"
   }
 }
 
