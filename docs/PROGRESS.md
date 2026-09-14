@@ -239,15 +239,43 @@ Spec: `docs/specs/phase-0-foundations.md`
 
 ## Phase 5 — Feedback loop
 
-- [ ] Thumbs up/down on articles, no identity attached
-- [ ] Optional free-text comment on a vote
-- [ ] PII-scrub Lambda: regex pass, then Bedrock pass, before anything is
-  stored; raw text never persisted, even transiently
-- [ ] `Feedback` table with no requester identifier of any kind (IP logging,
-  if any, stays in infra logs only — never joined to app data)
-- [ ] Weekly reflection job proposes prompt edits into `PromptRefinements`
-  (status `pending`) — admin must approve before they take effect
-- [ ] Highly-upvoted articles reusable as few-shot examples in future drafts
+- [x] Thumbs up/down on articles, no identity attached —
+  `frontend/app.js`'s `renderFeedback` posts `{vote: "up"|"down"}` to
+  `POST /articles/{article_id}/feedback` (public API,
+  `public_api_handler.py`'s `_submit_feedback`); code complete, not yet
+  deployed
+- [x] Optional free-text comment on a vote — same route, `comment` field is
+  optional and defaults to `null`
+- [x] PII-scrub Lambda: regex pass, then Bedrock pass, before anything is
+  stored; raw text never persisted, even transiently —
+  `common/compliance.py`'s `regex_redact` (reused from Phase 1) then
+  `bedrock_redact_review`, both run in `_submit_feedback` before
+  `put_feedback` is ever called; a `REJECT`/ambiguous Bedrock response fails
+  closed to `comment = None` rather than storing anything
+- [x] `Feedback` table with no requester identifier of any kind (IP logging,
+  if any, stays in infra logs only — never joined to app data) —
+  `infra/modules/app-data/main.tf`'s `aws_dynamodb_table.feedback`
+  (PK `article_id` / SK `feedback_id`); `common/dynamo.py`'s `put_feedback`
+  signature has no IP/user-agent/session parameter at all
+- [x] Weekly reflection job proposes prompt edits into `PromptRefinements`
+  (status `pending`) — admin must approve before they take effect —
+  `weekly_reflection_handler.py` on a static weekly EventBridge Scheduler
+  cron; `admin_api_handler.py` + `scripts/admin_cli.py`'s `refinements
+  approve/reject` gate whether `daily_cycle_handler.py` ever picks one up
+  (`get_latest_approved_prompt_refinement`, status must be `approved`)
+- [x] Highly-upvoted articles reusable as few-shot examples in future drafts
+  — `common/dynamo.py`'s `get_top_voted_articles` (net-positive `net_votes`
+  only) feeds a short excerpt into `daily_cycle_handler.py`'s draft prompt
+
+All six items above: code complete (143 lambda tests passing, ruff clean,
+`bandit -r lambdas/ --severity-level high --confidence-level high` clean,
+`terraform fmt`/`validate` clean on bootstrap/dev/production), not yet
+deployed to real AWS. Fixed post-first-pass: `admin_api_routes` /
+`public_api_routes` in both `infra/environments/dev/main.tf` and
+`infra/environments/production/main.tf` were missing the new
+`/prompt-refinements` and `/articles/{id}/feedback` routes, which would
+have 404'd at the API Gateway layer despite the Lambda handlers supporting
+them.
 
 ## Phase 6 — Observability & hardening
 
