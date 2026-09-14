@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About — BloggerBear</title>
+  <!--
+    Same normalize.css + styles.css pair, same order, same reasoning as
+    index.html/error.html. Deliberately no app.js/config.js here either
+    (see error.html's comment on the same choice) -- this page is meant
+    to load fast and reliably on its own, including for someone
+    following a resume/portfolio link who may not want to wait on an
+    API call just to read what the project is.
+  -->
+  <link rel="stylesheet" href="normalize.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="logo.svg" type="image/svg+xml" />
+  <link rel="alternate icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header id="top">
+    <a class="site-title" href="/">
+      <picture>
+        <source srcset="logo.webp" type="image/webp" />
+        <img class="site-logo" src="logo.svg" alt="" width="32" height="32" />
+      </picture>
+      BloggerBear
+    </a>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <h1>About BloggerBear</h1>
+    <p>
+      BloggerBear is a personal portfolio project: an autonomous, multi-domain
+      research-and-publishing platform. Admins configure "topics" — a data
+      source plus an adapter — and each topic runs unattended, forever, on
+      two cadences: an hourly check for anything new worth writing about, and
+      a daily cycle that turns fresh findings into a reviewed, published
+      article. No one drafts these articles by hand; a human only ever gets
+      involved when the automated compliance review can't clear one on its
+      own.
+    </p>
+
+    <h2>The idea</h2>
+    <p>
+      Most "AI writes a blog" demos stop at "call an LLM, publish whatever
+      comes back." The interesting part of this project was everything
+      around that one call: how do you decide something is actually worth
+      writing about (rather than re-summarizing the same thing every hour)?
+      How do you stop a model from publishing something inaccurate, or
+      giving financial advice it has no business giving? How do you let
+      readers push back on what got published, and actually feed that back
+      into how future articles get written — without ever collecting who
+      they are?
+    </p>
+
+    <h2>How it works</h2>
+    <ul>
+      <li>
+        <strong>Hourly research tick:</strong> each topic's adapter fetches
+        its source's current state and diffs it against the last snapshot.
+        No material change, no Bedrock call — cost and noise stay down, and
+        nothing gets written about a source that hasn't actually moved.
+      </li>
+      <li>
+        <strong>Daily authoring cycle:</strong> on a material-change day, the
+        pipeline asks Claude (via Amazon Bedrock) for a few candidate angles,
+        drafts a full article for the strongest one, then runs a separate
+        compliance review pass before anything goes live.
+      </li>
+      <li>
+        <strong>Compliance is a hard gate, not a suggestion:</strong>
+        financial/investment-adjacent topics are routed to manual moderation
+        unconditionally — that's a deterministic rule, not something an LLM
+        call could talk its way around — and carry a standing "not financial
+        advice" disclaimer appended to the draft itself, not just requested
+        of the model.
+      </li>
+      <li>
+        <strong>Anonymous feedback loop:</strong> readers can upvote/downvote
+        and leave an optional comment, with no identity attached at all. A
+        weekly job reads a week of that feedback and proposes prompt
+        refinements — which an admin has to approve before they ever affect
+        a future draft.
+      </li>
+      <li>
+        <strong>New sources are adapters, not new pipeline code:</strong> the
+        difference between the first data source and the third was exactly
+        one new file plus one registry line — nothing about the core
+        research/authoring flow itself changed to support them.
+      </li>
+    </ul>
+
+    <h2>Architecture at a glance</h2>
+    <p>Every piece of this runs on AWS, defined entirely in Terraform:</p>
+    <ul>
+      <li>
+        <strong>Compute:</strong> a handful of Python AWS Lambda functions —
+        one per pipeline stage, each doing one job.
+      </li>
+      <li>
+        <strong>AI:</strong> Amazon Bedrock (Claude) for research
+        summarization, drafting, compliance review, and feedback redaction.
+      </li>
+      <li>
+        <strong>Storage:</strong> DynamoDB for structured data (topics,
+        findings, articles, feedback, moderation), S3 for article bodies and
+        raw source snapshots.
+      </li>
+      <li>
+        <strong>Orchestration:</strong> EventBridge Scheduler for per-topic
+        cadences, Step Functions for retries and a dead-letter queue on the
+        daily cycle.
+      </li>
+      <li>
+        <strong>Edge/frontend:</strong> S3 + CloudFront serving this static
+        site, fronted by a WAF Web ACL with security response headers
+        (CSP, HSTS, and friends) attached at the CDN layer.
+      </li>
+      <li>
+        <strong>Admin surface:</strong> a separate, IAM-authenticated,
+        IP-allowlisted API driven by a local CLI — deliberately not a public
+        web app, since there's exactly one operator.
+      </li>
+      <li>
+        <strong>CI/CD:</strong> GitHub Actions, OIDC role federation (no
+        long-lived AWS keys anywhere in the repo), a two-environment
+        branch/release model — free-to-break <code>dev</code>, a gated,
+        approval-required <code>production</code> release.
+      </li>
+    </ul>
+
+    <h2>Why this project</h2>
+    <p>
+      It was a chance to design and build a real, multi-service AWS system
+      end to end — not a tutorial project — and make deliberate,
+      defensible calls at each layer: when to gate on cost versus
+      correctness, where a rule has to be deterministic rather than
+      "the model probably won't," how to keep a public feedback feature
+      genuinely anonymous rather than anonymous-in-name-only, and how to
+      keep infrastructure changes reviewable and reversible instead of
+      applied by hand. It's also, deliberately, a disposable one: this is a
+      personal project, not a production service, and the
+      <a href="/#/terms">Terms of Service</a> say so plainly — it can be
+      reset or taken down at any time.
+    </p>
+
+    <p>
+      <a href="/">← Back to the homepage</a>
+    </p>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="legal-nav" aria-label="Legal">
+      <a href="/#/terms">Terms of Service</a>
+      <a href="/#/privacy">Privacy Policy</a>
+    </nav>
+    <div class="footer-links">
+      <a class="back-to-top" href="#top">Back to top ↑</a>
+    </div>
+  </footer>
+</body>
+</html>

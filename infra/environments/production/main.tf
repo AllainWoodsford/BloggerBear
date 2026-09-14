@@ -1090,6 +1090,7 @@ locals {
   frontend_files = {
     "index.html"           = "text/html"
     "error.html"           = "text/html"
+    "about.html"           = "text/html"
     "styles.css"           = "text/css"
     "normalize.css"        = "text/css"
     "app.js"               = "application/javascript"
