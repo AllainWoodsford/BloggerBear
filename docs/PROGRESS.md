@@ -308,6 +308,32 @@ Spec: `docs/specs/phase-0-foundations.md`
   though the visual layout itself (spacing, how the sticky header
   actually looks while scrolling) wasn't eyeballed in a live browser
   this session either.
+- [x] Homepage hero + About page, header only sticky on mobile, a
+  "Back to top" link (third ad hoc follow-up) — `header`'s
+  `position: sticky` is now inside a `@media (max-width: 640px)`
+  block instead of applying unconditionally: on a phone, a scrolled-
+  away header is a longer, more deliberate gesture to get back to, so
+  staying docked earns its keep; on desktop/tablet it now scrolls
+  away like the rest of the page, trading a permanent chunk of every
+  page's vertical space for a `.back-to-top` link (`#top`, a plain
+  fragment link to `header`'s own `id="top"`, no JS) that solves the
+  same "get back to the nav" problem without the permanent cost. The
+  home route gained a hero section — an `h1` tagline + a "Find out
+  more" CTA to the new standalone `frontend/about.html` — with
+  "Topics" demoted to an `h2` to keep exactly one `h1` per page.
+  `about.html` (deliberately JS-free, like `error.html`, for the same
+  "loads fast and reliably even for someone following a resume link"
+  reason) is an interview-pitch-style architecture walkthrough: what
+  the project is, the two pipeline cadences, why compliance is a
+  deterministic gate rather than a model request, and the AWS/IaC/
+  CI-CD stack at a glance. Caught and fixed a second instance of the
+  same dark-mode contrast bug from the prior PR (white text on
+  `var(--accent)`, ~2.4:1 against WCAG AA's 4.5:1 minimum) on the new
+  CTA's hover state before shipping, and added an automated regression
+  check (`no background: var(--accent) anywhere in styles.css`) so a
+  third instance doesn't slip through unnoticed. Verified with a
+  third extended functional test — 24/24 new checks plus the prior
+  29/22/6 regression checks, all still passing.
 
 ## Phase 5 — Feedback loop
 
