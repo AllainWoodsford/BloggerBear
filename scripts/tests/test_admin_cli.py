@@ -192,6 +192,70 @@ def test_topics_update_partial_body():
     )
 
 
+def test_topics_create_with_custom_cadence():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics",
+                "create",
+                "--topic-id",
+                "new-topic",
+                "--name",
+                "New Topic",
+                "--adapter",
+                "github_trending",
+                "--research-cadence",
+                "rate(30 minutes)",
+                "--daily-cadence",
+                "cron(0 18 * * ? *)",
+            ]
+        )
+    body = m.call_args.kwargs["body"]
+    assert body["research_cadence"] == "rate(30 minutes)"
+    assert body["daily_cadence"] == "cron(0 18 * * ? *)"
+
+
+def test_topics_create_omits_cadence_when_not_passed():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics",
+                "create",
+                "--topic-id",
+                "new-topic",
+                "--name",
+                "New Topic",
+                "--adapter",
+                "github_trending",
+            ]
+        )
+    body = m.call_args.kwargs["body"]
+    assert "research_cadence" not in body
+    assert "daily_cadence" not in body
+
+
+def test_topics_update_with_custom_cadence():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "topics",
+                "update",
+                "my-topic",
+                "--research-cadence",
+                "rate(2 hours)",
+                "--daily-cadence",
+                "cron(0 9 * * ? *)",
+            ]
+        )
+    m.assert_called_once_with(
+        "PUT",
+        "https://api.example.com",
+        "/topics/my-topic",
+        "ap-southeast-2",
+        body={"research_cadence": "rate(2 hours)", "daily_cadence": "cron(0 9 * * ? *)"},
+    )
+
+
 def test_topics_update_with_no_fields_errors(capsys):
     with patch("admin_cli.signed_request") as m:
         with pytest.raises(SystemExit) as exc_info:
