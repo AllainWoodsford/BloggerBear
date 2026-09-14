@@ -433,3 +433,46 @@ resource "aws_iam_role_policy_attachment" "gha_prod_deploy" {
   role       = aws_iam_role.gha_prod_deploy.name
   policy_arn = aws_iam_policy.gha_deploy.arn
 }
+
+# -----------------------------------------------------------------------
+# Phase 6: Bedrock-spend budget. AWS Budgets is account-level, not a
+# per-region or per-environment resource, so this lives here alongside
+# the other account-level, one-time-applied resources (OIDC provider,
+# state bucket) rather than in infra/environments/dev or production --
+# there is exactly one of these regardless of how many environments
+# exist. count-gated on var.budget_alert_email rather than guessing an
+# address: AWS Budgets requires at least one notification subscriber, so
+# with no email configured this creates nothing rather than failing the
+# apply (same fail-closed-by-omission pattern as
+# infra/environments/dev's var.admin_allowed_cidrs).
+# -----------------------------------------------------------------------
+resource "aws_budgets_budget" "bedrock_spend" {
+  count = var.budget_alert_email != "" ? 1 : 0
+
+  name         = "bloggerbear-bedrock-spend"
+  budget_type  = "COST"
+  limit_amount = var.bedrock_budget_limit_usd
+  limit_unit   = "USD"
+  time_unit    = "MONTHLY"
+
+  cost_filter {
+    name   = "Service"
+    values = ["Amazon Bedrock"]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 80
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "ACTUAL"
+    subscriber_email_addresses = [var.budget_alert_email]
+  }
+
+  notification {
+    comparison_operator        = "GREATER_THAN"
+    threshold                  = 100
+    threshold_type             = "PERCENTAGE"
+    notification_type          = "FORECASTED"
+    subscriber_email_addresses = [var.budget_alert_email]
+  }
+}
