@@ -111,9 +111,31 @@
 
   // --- Home -------------------------------------------------------------
 
+  // One h1 per page is the rule this whole app follows (renderArticle,
+  // renderArticleList, renderLegalPage each have exactly one) -- on the
+  // home route specifically, the hero tagline below is that h1, so the
+  // topic list heading right after it is an h2, not a second h1.
+  var HOME_TAGLINE =
+    "BloggerBear researches its own stories, drafts them, and publishes " +
+    "them — with almost no human in the loop.";
+
   function renderHome(topics) {
     clearChildren(contentEl);
-    contentEl.appendChild(el("h1", { text: "Topics" }));
+
+    var hero = el("section", { className: "hero" });
+    hero.appendChild(el("h1", { text: "BloggerBear" }));
+    hero.appendChild(el("p", { className: "tagline", text: HOME_TAGLINE }));
+    hero.appendChild(
+      el("a", {
+        text: "Find out more",
+        href: "about.html",
+        className: "find-out-more",
+        attrs: { "aria-label": "Find out more about how BloggerBear works" },
+      })
+    );
+    contentEl.appendChild(hero);
+
+    contentEl.appendChild(el("h2", { text: "Topics" }));
 
     if (topics.length === 0) {
       contentEl.appendChild(el("p", { text: "No topics yet." }));

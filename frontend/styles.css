@@ -104,19 +104,20 @@ body {
   outline: none;
 }
 
-/* Glued to the top: sticky, not fixed, so it stays within the normal
-   document flow (nothing below it needs manual top-padding to avoid
-   being covered) while still remaining visible as the page scrolls,
-   rather than only "not scrolling away because the page happened to be
-   short." An explicit background is required here -- CSS background
-   isn't inherited, and without one the header would be transparent
-   while sticky-pinned over scrolled-under content. z-index keeps it
-   above the article content scrolling underneath it. */
+/* Sticky only below 640px (phones): on a small screen, real vertical
+   space is scarce and reaching a scrolled-away header/nav takes a
+   longer, more deliberate scroll gesture, so keeping it glued to the
+   top earns its keep there. On desktop/tablet the header scrolls away
+   normally -- with a whole viewport of width to work with, a
+   permanently-docked header just eats vertical space for content on
+   every page, for a "get back to the header" problem the new
+   "Back to top" footer link (see .back-to-top below) already solves
+   without any permanent cost. id="top" is this link's landmark target.
+   An explicit background on the sticky rule is required -- CSS
+   background isn't inherited, and without one the header would be
+   transparent while sticky-pinned over scrolled-under content; z-index
+   keeps it above the content scrolling underneath it. */
 header {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  background: var(--bg);
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 20px 0 12px;
@@ -126,6 +127,15 @@ header {
   align-items: baseline;
   gap: 8px 20px;
   flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: var(--bg);
+  }
 }
 
 .site-title {
@@ -201,6 +211,58 @@ main {
 main h1 {
   font-size: 1.6rem;
   margin: 0 0 12px;
+}
+
+main h2 {
+  font-size: 1.15rem;
+  margin: 0 0 12px;
+}
+
+/* --- Home hero -------------------------------------------------------- */
+
+.hero {
+  padding: 8px 0 28px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Bigger than the standard main h1 (1.6rem) above -- this is the one
+   place on the site meant to read as a landing moment rather than a
+   plain page title; every other route's h1 (an article title, "Terms
+   of Service", ...) stays at the standard size. */
+.hero h1 {
+  font-size: 2rem;
+  margin: 0 0 10px;
+}
+
+.hero .tagline {
+  margin: 0 0 16px;
+  max-width: 480px;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.find-out-more {
+  display: inline-block;
+  padding: 8px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.find-out-more:hover {
+  /* --fg/--bg, inverted, not --accent + fixed white text -- see the
+     same contrast note on .skip-link and #site-notice-dismiss: --accent
+     is a much lighter blue in dark mode (#7aa7ff), which fails WCAG AA
+     against white text (~2.4:1, needs 4.5:1). The --fg/--bg pair is
+     already guaranteed high-contrast in both themes. */
+  background: var(--fg);
+  border-color: var(--fg);
+  color: var(--bg);
 }
 
 a {
@@ -341,6 +403,13 @@ a {
 .legal-nav {
   display: flex;
   flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
   gap: 4px 16px;
 }
 
