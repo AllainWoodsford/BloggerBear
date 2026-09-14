@@ -38,7 +38,9 @@ _RATIONALE_LABEL = "RATIONALE:"
 _SUGGESTION_LABEL = "SUGGESTION:"
 _FALLBACK_RATIONALE = "See suggestion text"
 
-_REFLECTION_PROMPT_TEMPLATE = """You are reviewing a week of reader feedback on articles for the blog topic '{topic_id}', in order to propose a refinement to the prompts used to write future articles on this topic.
+_REFLECTION_PROMPT_TEMPLATE = """You are reviewing a week of reader feedback on articles for the blog \
+topic '{topic_id}', in order to propose a refinement to the prompts used to write future articles on \
+this topic.
 
 Feedback tally: {up_votes} upvote(s), {down_votes} downvote(s).
 
@@ -46,8 +48,10 @@ Reader comments (already reviewed and safe to use):
 {comments_block}
 
 Reply in EXACTLY this format and nothing else:
-RATIONALE: <one or two sentences on why a change is worth proposing, based on the tally and comments above>
-SUGGESTION: <a concrete, concise instruction to append as extra guidance for future article drafts on this topic>
+RATIONALE: <one or two sentences on why a change is worth proposing, based on the tally and \
+comments above>
+SUGGESTION: <a concrete, concise instruction to append as extra guidance for future article \
+drafts on this topic>
 """
 
 

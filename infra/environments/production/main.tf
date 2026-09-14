@@ -466,6 +466,12 @@ locals {
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
+    # Phase 5: prompt refinement approval workflow -- see
+    # admin_api_handler.py's _ROUTES dict and scripts/admin_cli.py's
+    # `refinements` subcommand.
+    "GET /prompt-refinements",
+    "POST /prompt-refinements/{topic_id}/{version}/approve",
+    "POST /prompt-refinements/{topic_id}/{version}/reject",
   ])
 }
 
@@ -824,6 +830,9 @@ locals {
     "GET /articles",
     "GET /articles/{article_id}",
     "POST /articles/{article_id}/view",
+    # Phase 5: anonymous thumbs up/down + optional comment -- see
+    # public_api_handler.py's _submit_feedback.
+    "POST /articles/{article_id}/feedback",
     "GET /rss.xml",
   ])
 }
