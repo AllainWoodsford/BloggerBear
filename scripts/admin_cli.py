@@ -192,6 +192,10 @@ def _cmd_moderation_reject(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/moderation-queue/{args.queue_id}/reject")
 
 
+def _cmd_moderation_stats(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/moderation-queue/stats")
+
+
 # --- refinements subcommands -----------------------------------------------
 
 
@@ -298,6 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
     reject_parser = moderation_sub.add_parser("reject", help="Reject a moderation item")
     reject_parser.add_argument("queue_id")
     reject_parser.set_defaults(func=_cmd_moderation_reject)
+
+    moderation_sub.add_parser(
+        "stats", help="Summarize what compliance review has flagged, across all history"
+    ).set_defaults(func=_cmd_moderation_stats)
 
     refinements_parser = subparsers.add_parser("refinements", help="Manage prompt refinements")
     refinements_sub = refinements_parser.add_subparsers(dest="action", required=True)
