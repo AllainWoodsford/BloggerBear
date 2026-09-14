@@ -25,9 +25,29 @@
   box-sizing: border-box;
 }
 
+/* html's height: 100% is what lets body's min-height: 100vh below
+   actually reach the true bottom of the viewport on every browser --
+   without it, some mobile browsers' dynamic toolbar/address-bar resize
+   behavior can leave a gap under a 100vh body. */
+html {
+  height: 100%;
+}
+
+/* Sticky-footer layout: body is a column flexbox spanning at least the
+   full viewport height; main is the one flexible child (flex: 1 0
+   auto), so it grows to fill any leftover space on short pages -- that
+   pushes .site-footer down to sit flush with the bottom of the
+   viewport, instead of floating up right under a short page's content.
+   On a page long enough to scroll, main simply doesn't grow past its
+   content size and the footer sits right after it as normal, scrolling
+   away with everything else -- nothing here pins the footer in place
+   while scrolling, only while it would otherwise be too high up. */
 body {
   margin: 0;
   padding: 0 16px;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   /* Fallback declarations before the var()-based ones: every current
      browser supports CSS custom properties, but if this ever runs
      somewhere that genuinely doesn't (or a typo'd/missing --bg/--fg
@@ -84,7 +104,19 @@ body {
   outline: none;
 }
 
+/* Glued to the top: sticky, not fixed, so it stays within the normal
+   document flow (nothing below it needs manual top-padding to avoid
+   being covered) while still remaining visible as the page scrolls,
+   rather than only "not scrolling away because the page happened to be
+   short." An explicit background is required here -- CSS background
+   isn't inherited, and without one the header would be transparent
+   while sticky-pinned over scrolled-under content. z-index keeps it
+   above the article content scrolling underneath it. */
 header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--bg);
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 20px 0 12px;
@@ -93,6 +125,7 @@ header {
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px 20px;
+  flex-shrink: 0;
 }
 
 .site-title {
@@ -103,6 +136,17 @@ header {
   font-weight: 700;
   color: var(--fg);
   text-decoration: none;
+}
+
+/* .site-title picture: the logo is a <picture> (WebP source + SVG
+   <img> fallback -- see index.html/error.html) wrapping the actual
+   .site-logo <img>. picture is the direct flex child of .site-title
+   here, not the img, so the shrink/display behavior needs to be set on
+   it too -- setting it only on .site-logo below would leave the
+   wrapping <picture> box to the flex algorithm's default sizing. */
+.site-title picture {
+  display: block;
+  flex-shrink: 0;
 }
 
 .site-logo {
@@ -146,6 +190,12 @@ main {
   max-width: var(--max-width);
   margin: 0 auto;
   padding: 24px 0 48px;
+  /* The one flexible child in body's column flexbox -- grows to absorb
+     any leftover vertical space on a short page (see the sticky-footer
+     comment on body above), which is what actually keeps .site-footer
+     glued to the bottom instead of it being an unrelated footer rule. */
+  flex: 1 0 auto;
+  width: 100%;
 }
 
 main h1 {
@@ -239,6 +289,13 @@ a {
 .feedback-buttons button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.feedback-comment-hint {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin: 0 0 10px;
+  max-width: 480px;
 }
 
 .feedback label {

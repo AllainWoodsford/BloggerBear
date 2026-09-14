@@ -1,0 +1,19 @@
+# BloggerBear is public content, meant to be read and indexed -- the
+# entire point of the public API + RSS feed (see /rss.xml) is letting
+# other tools consume it programmatically instead of scraping it, so
+# there's no reason to block crawlers here.
+#
+# Nothing under this domain is sensitive or worth disallowing by path:
+# the admin console isn't a page on this site at all -- it's a
+# separately authenticated (IAM SigV4 + IP allowlist), separately
+# hosted API with no public UI, so listing a path here to "hide" it
+# would be both pointless and the opposite of a security control
+# (publishing an admin path in a public, unauthenticated robots.txt
+# only advertises it to anyone looking).
+User-agent: *
+Allow: /
+
+# Not authoritative for every crawler, but respected by several
+# (including Bing) -- a light courtesy delay given the public API sits
+# behind a WAF rate limit (500 req/5min/IP, see docs/project-plan.md).
+Crawl-delay: 1
