@@ -32,8 +32,8 @@ output "daily_cycle_function_name" {
 }
 
 output "admin_api_url" {
-  value       = aws_apigatewayv2_stage.default.invoke_url
-  description = "Invoke URL for the admin API's $default stage. Copy into BLOGGERBEAR_ADMIN_API_URL for scripts/admin_cli.py. Unreachable until var.admin_allowed_cidrs is set (see that variable's description)."
+  value       = module.admin_api.invoke_url
+  description = "Invoke URL for the admin API's production stage (REST API -- the stage name is part of this URL, unlike the HTTP API predecessor's $default stage). Copy into BLOGGERBEAR_ADMIN_API_URL for scripts/admin_cli.py. Unreachable until var.admin_allowed_cidrs is set (see that variable's description)."
 }
 
 output "daily_cycle_state_machine_arn" {
@@ -42,6 +42,6 @@ output "daily_cycle_state_machine_arn" {
 }
 
 output "public_api_url" {
-  value       = aws_apigatewayv2_stage.public_default.invoke_url
-  description = "Invoke URL for the public API's $default stage. Same value baked into config.js as window.PUBLIC_API_URL for the frontend. Unauthenticated -- reachable by anyone, rate-limited (not IP-allowlisted) by aws_wafv2_web_acl.public_api."
+  value       = module.public_api.invoke_url
+  description = "Invoke URL for the public API's production stage (REST API -- the stage name is part of this URL, unlike the HTTP API predecessor's $default stage). Same value baked into config.js as window.PUBLIC_API_URL for the frontend. Unauthenticated -- reachable by anyone, rate-limited (not IP-allowlisted) by aws_wafv2_web_acl.public_api."
 }
