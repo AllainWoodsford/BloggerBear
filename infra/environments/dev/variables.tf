@@ -5,26 +5,34 @@ variable "force_destroy" {
 }
 
 variable "bedrock_model_id" {
-  type        = string
-  default     = "au.anthropic.claude-sonnet-5"
+  type = string
+  # au.anthropic.claude-sonnet-5 (the original default) turned out not to
+  # be enabled for this account -- confirmed the hard way via a real
+  # research_tick invocation: AccessDeniedException, "anthropic.claude-
+  # sonnet-5 is not available for this account". Switched to the AU Claude
+  # Haiku inference profile, confirmed working via the AWS CLI
+  # (bedrock-runtime converse --model-id) before landing here. Full ARN
+  # (not just the au.anthropic.claude-haiku-4-5-20251001-v1:0 short form)
+  # since that's the exact value confirmed to work.
+  default     = "arn:aws:bedrock:ap-southeast-2:547610822592:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"
   description = <<-EOT
-    Bedrock model ID or cross-region inference profile ID the Lambda
-    handlers pass to bedrock:InvokeModel via the Converse API
-    (lambdas/common/bedrock.py) -- NOT Anthropic/Claude-specific. Converse
-    normalizes the request/response shape across every model family Bedrock
-    supports through it (Anthropic, Amazon Nova, Meta, Mistral, Cohere,
-    ...), so this can be pointed at any Bedrock-invokable model or
-    inference profile ID without a code change, e.g.
-    "au.anthropic.claude-sonnet-5" or an Amazon Nova Pro inference profile
-    ID, as long as the chosen model/profile is actually enabled for this
-    account (Bedrock model access is opt-in per model, requested in the
-    console) and reachable via Converse. Deliberately defaults to an empty
-    string rather than a guessed model ID -- per docs/project-plan.md §3,
-    every Claude model AWS offers in ap-southeast-2 requires routing
-    through a cross-region inference profile rather than direct on-demand
-    invocation (confirmed via `aws bedrock list-foundation-models`); other
-    providers may differ. Set the real value in terraform.tfvars once
-    confirmed.
+    Bedrock model ID or cross-region inference profile ID (or its full
+    ARN) the Lambda handlers pass to bedrock:InvokeModel via the Converse
+    API (lambdas/common/bedrock.py) -- NOT Anthropic/Claude-specific.
+    Converse normalizes the request/response shape across every model
+    family Bedrock supports through it (Anthropic, Amazon Nova, Meta,
+    Mistral, Cohere, ...), so this can be pointed at any Bedrock-invokable
+    model or inference profile without a code change, as long as the
+    chosen model/profile is actually enabled for this account (Bedrock
+    model access is opt-in per model, requested in the console) and
+    reachable via Converse -- confirm with a real
+    `aws bedrock-runtime converse --model-id ... --messages ...` call
+    before changing this, since neither `terraform plan`/`validate` nor
+    this project's test suite can catch a model being unavailable for the
+    account. Every Claude model AWS offers directly (non-inference-profile)
+    in ap-southeast-2 requires routing through a cross-region inference
+    profile rather than on-demand invocation (confirmed via
+    `aws bedrock list-foundation-models`); other providers may differ.
   EOT
 }
 
