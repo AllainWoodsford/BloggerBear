@@ -444,6 +444,21 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["*"]
   }
 
+  # terraform.yml's apply-dev job has an opt-in workflow_dispatch input
+  # (debug_permissions) that queries CloudTrail after the apply for every
+  # AWS API call this role made, to help audit/tighten this policy without
+  # guessing -- see that workflow file's own comment. Read-only, and like
+  # WafLogResourcePolicy above, cloudtrail:LookupEvents isn't
+  # resource-scopable (it queries account/region-wide event history, not
+  # a specific resource), so resources = ["*"] is the only option, same
+  # reasoning as CloudFront/WAF/Route53/ACM/WafLogResourcePolicy.
+  statement {
+    sid       = "DebugPermissionsLookup"
+    effect    = "Allow"
+    actions   = ["cloudtrail:LookupEvents"]
+    resources = ["*"]
+  }
+
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever
   # invoked by the Lambda execution role at runtime (see
   # infra/environments/*/main.tf's aws_iam_role_policy.lambda_exec) --

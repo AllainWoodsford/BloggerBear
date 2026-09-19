@@ -11,6 +11,26 @@ on:
     paths:
       - 'infra/**'
       - '.github/workflows/terraform.yml'
+  # Manual-only: lets apply-dev run with debug_permissions=true without
+  # waiting for an actual push to dev. Run this from the Actions tab
+  # against the `dev` branch (branch selector must be `dev`, not just the
+  # default -- that's what makes the OIDC sub claim `ref:refs/heads/dev`,
+  # matching gha-bloggerbear-dev-deploy's trust condition, same as the
+  # push trigger above).
+  workflow_dispatch:
+    inputs:
+      debug_permissions:
+        description: >-
+          After apply, query CloudTrail for every AWS API call this run's
+          assumed role made (both successful and AccessDenied) and print
+          the deduplicated service+action list to the job summary. Use
+          this to audit/tighten gha-bloggerbear-dev-deploy's IAM policy
+          (infra/bootstrap/main.tf) -- e.g. after loosening it to unblock
+          a deploy, paste the output back for a review of what's actually
+          used vs. just granted.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -91,7 +111,12 @@ jobs:
   # deployment-history visibility, do not reference it on this job unless
   # the IAM trust policy is updated to match.
   apply-dev:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    # workflow_dispatch is only ever run manually against the `dev` branch
+    # selector (see the trigger comment above) -- github.ref is already
+    # 'refs/heads/dev' in that case too, but this doesn't re-check it,
+    # since workflow_dispatch has no equivalent of push's "which branch
+    # was pushed to" ambiguity to guard against.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -121,6 +146,13 @@ jobs:
           unzip -o /tmp/terraform.zip -d /tmp
           sudo mv /tmp/terraform /usr/local/bin/terraform
           terraform version
+
+      # Recorded before Terraform runs (with a buffer for clock skew
+      # between this runner and CloudTrail) so the debug step below knows
+      # how far back to look. Only needed for that step, but cheap enough
+      # to just always record rather than conditioning this one too.
+      - name: Record job start time (for debug_permissions)
+        run: echo "JOB_START_TIME=$(date -u -d '-2 minutes' +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       # Repo-level variable (NOT environment-scoped) -- the dev role's OIDC
       # trust condition is ref-based (`ref:refs/heads/dev`), not tied to a
@@ -154,3 +186,44 @@ jobs:
           terraform -chdir="$target_dir" validate
           terraform -chdir="$target_dir" plan -out="$plan_file" -input=false
           terraform -chdir="$target_dir" apply -input=false "$plan_file"
+
+      # Manual debug aid, not part of the normal deploy path: queries
+      # CloudTrail (no dedicated Trail needed -- the default 90-day Event
+      # History this account already has is enough, same mechanism used to
+      # root-cause the OIDC immutable-subject-claims issue and every
+      # AccessDenied gap fixed in #29-#32) for every AWS API call this
+      # run's assumed role made since JOB_START_TIME, successful or not,
+      # and prints the deduplicated service+action+result list to the job
+      # summary. `if: always()` so this still runs and reports what got as
+      # far as an AccessDenied even when the apply step above failed --
+      # that's the main use case (loosen the policy enough to get further,
+      # then paste this output back for a review of what's actually used).
+      # gha-bloggerbear-dev-deploy needs cloudtrail:LookupEvents for this
+      # step to work at all (see infra/bootstrap/main.tf).
+      - name: "Debug: required IAM permissions (CloudTrail lookup)"
+        if: always() && github.event.inputs.debug_permissions == 'true'
+        run: |
+          set -euo pipefail
+          role_fragment="gha-bloggerbear-dev-deploy"
+
+          {
+            echo "## Required IAM permissions (CloudTrail, from ${JOB_START_TIME} onward)"
+            echo
+            echo "CloudTrail can lag a few minutes behind real time -- if this looks incomplete, re-run this step a little later. Each row maps directly to an IAM action (e.g. \`s3.amazonaws.com\` + \`GetAccelerateConfiguration\` -> \`s3:GetAccelerateConfiguration\`); the last column is \`OK\` for a call that succeeded, or the AWS error code (usually \`AccessDenied\`) for one that's still missing a permission."
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          aws cloudtrail lookup-events \
+            --start-time "$JOB_START_TIME" \
+            --output json \
+          | jq -r --arg frag "$role_fragment" '
+              .Events[]
+              | (.CloudTrailEvent | fromjson) as $e
+              | select(($e.userIdentity.arn // "") | contains($frag))
+              | "\($e.eventSource)  \($e.eventName)  \($e.errorCode // "OK")"
+            ' \
+          | sort -u \
+          | tee -a "$GITHUB_STEP_SUMMARY"
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
