@@ -6,7 +6,7 @@ variable "force_destroy" {
 
 variable "bedrock_model_id" {
   type        = string
-  default     = ""
+  default     = "au.anthropic.claude-sonnet-5"
   description = <<-EOT
     Bedrock model ID or cross-region inference profile ID the Lambda
     handlers pass to bedrock:InvokeModel via the Converse API
