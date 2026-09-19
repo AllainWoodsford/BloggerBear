@@ -1,0 +1,45 @@
+variable "name" {
+  type        = string
+  description = "Base name for this API's resources, e.g. \"bloggerbear-dev-admin\"."
+}
+
+variable "stage_name" {
+  type        = string
+  description = "Stage name -- also the path prefix in the invoke URL. Unlike HTTP APIs' $default stage (no prefix), REST API stages always appear in the URL, e.g. \".../dev/topics\" rather than \".../topics\"."
+}
+
+variable "lambda_invoke_arn" {
+  type        = string
+  description = "invoke_arn of the Lambda function every route proxies to (AWS_PROXY integration -- one Lambda handles all routing internally, same as this project's HTTP API predecessor)."
+}
+
+variable "lambda_function_name" {
+  type        = string
+  description = "function_name of the same Lambda, for the resource-based invoke permission."
+}
+
+variable "authorization" {
+  type        = string
+  description = "API Gateway method authorization for every route -- \"AWS_IAM\" (SigV4) or \"NONE\" (public)."
+  validation {
+    condition     = contains(["AWS_IAM", "NONE"], var.authorization)
+    error_message = "authorization must be \"AWS_IAM\" or \"NONE\"."
+  }
+}
+
+variable "routes" {
+  type        = set(string)
+  description = "Route keys in \"METHOD /path/{param}\" form, e.g. [\"GET /topics\", \"POST /topics/{topic_id}/trigger\"]. Every unique path segment -- including intermediate ones with no method of their own, e.g. \"/moderation-queue/{queue_id}\" when only its /approve and /reject children have routes -- gets its own aws_api_gateway_resource node, built automatically from this set."
+}
+
+variable "enable_cors" {
+  type        = bool
+  default     = false
+  description = "Add a Lambda-proxied OPTIONS method on every unique path in var.routes, for browser CORS preflight. REST APIs have no declarative equivalent of HTTP APIs' cors_configuration block when every route (OPTIONS included) is AWS_PROXY -- the proxied Lambda function itself must handle OPTIONS and add CORS response headers to every response. Only meaningful for authorization = \"NONE\" APIs called from browser JS (this project's public API); the admin API is called via SigV4-signed CLI requests, never a browser, so never needs this."
+}
+
+variable "web_acl_id" {
+  type        = string
+  default     = ""
+  description = "ARN of a REGIONAL-scope WAFv2 Web ACL to associate with this API's stage. Empty (default) skips the association -- same optional pattern as infra/modules/static-site's web_acl_id."
+}

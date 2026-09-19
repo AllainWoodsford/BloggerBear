@@ -1,16 +1,27 @@
 """Public API Lambda handler (Phase 4 public frontend).
 
-Deployed behind a second, unauthenticated API Gateway HTTP API (payload
-format version 2.0) fronted by CloudFront/WAF rate limiting -- see `infra/`,
-owned by another worker in this phase. Unlike `admin_api_handler.py` (SigV4
-+ IP allowlist, for the operator), every route here is anonymous and
-read-mostly: list topics, list/read published articles, bump an anonymous
-view counter, and serve the site-wide RSS feed.
+Deployed behind a second, unauthenticated API Gateway REST API (v1) fronted
+by CloudFront/WAF rate limiting -- see `infra/`, owned by another worker in
+this phase. Unlike `admin_api_handler.py` (SigV4 + IP allowlist, for the
+operator), every route here is anonymous and read-mostly: list topics,
+list/read published articles, bump an anonymous view counter, and serve the
+site-wide RSS feed.
 
 Routing mirrors `admin_api_handler.py`'s style exactly: a plain dict
-dispatch keyed on `event["routeKey"]` (e.g. "GET /topics"), and `handler`
-never raises -- every route function runs under a broad top-level
-try/except that logs the real exception and returns a generic 500.
+dispatch keyed on a route key of the form "GET /topics", built from
+`routeKey` if present or `httpMethod` + `resource` otherwise (see that
+module's `_route_key` for why both exist -- this project migrated from API
+Gateway HTTP API to REST API after discovering AWS WAF can't attach to HTTP
+APIs at all). `handler` never raises -- every route function runs under a
+broad top-level try/except that logs the real exception and returns a
+generic 500.
+
+This API is called from browser JS on a different origin (the CloudFront
+domain) than its own API Gateway domain, so every response needs CORS
+headers, and OPTIONS preflight requests need a response of their own --
+REST API has no declarative equivalent of HTTP API's cors_configuration
+block when every method (OPTIONS included) is proxied straight to Lambda,
+so both are handled here instead of in Terraform.
 
 Because a pending-moderation or rejected article must never be
 distinguishable from one that doesn't exist at all (per the task contract),
@@ -52,11 +63,23 @@ def _get_s3_client():
     return _s3_client
 
 
+# Matches this project's original HTTP API cors_configuration
+# (allow_origins = ["*"], allow_methods = ["GET","POST","OPTIONS"],
+# allow_headers = ["content-type"]) -- REST API has no equivalent
+# declarative block, so every response (this dict) and the OPTIONS
+# preflight response (handler(), below) carry these explicitly instead.
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "content-type",
+}
+
+
 def _response(status_code: int, payload, *, content_type: str = "application/json") -> dict:
     body = json.dumps(payload) if content_type == "application/json" else payload
     return {
         "statusCode": status_code,
-        "headers": {"Content-Type": content_type},
+        "headers": {"Content-Type": content_type, **_CORS_HEADERS},
         "body": body,
     }
 
@@ -271,8 +294,30 @@ _ROUTES = {
 }
 
 
-def handler(event, context) -> dict:
+def _route_key(event: dict) -> str | None:
+    """"METHOD /path" for this event -- routeKey (HTTP API) if present,
+    else httpMethod + resource (REST API's Lambda proxy event shape).
+    """
     route_key = event.get("routeKey")
+    if route_key is not None:
+        return route_key
+    method = event.get("httpMethod")
+    resource = event.get("resource")
+    if method is None or resource is None:
+        return None
+    return f"{method} {resource}"
+
+
+def handler(event, context) -> dict:
+    # Browser CORS preflight -- every route this API serves is reachable
+    # cross-origin from the frontend's JS (see this module's docstring),
+    # so OPTIONS is handled uniformly here rather than per-route. No
+    # _ROUTES entry for it: unlike every real route, the response never
+    # depends on which path was requested.
+    if event.get("httpMethod") == "OPTIONS":
+        return {"statusCode": 200, "headers": _CORS_HEADERS, "body": ""}
+
+    route_key = _route_key(event)
     route_fn = _ROUTES.get(route_key)
 
     if route_fn is None:

@@ -394,37 +394,32 @@ resource "aws_iam_role_policy" "lambda_invoke_pipeline" {
 }
 
 # -----------------------------------------------------------------------
-# API Gateway HTTP API. authorization_type = "AWS_IAM" on every route is
-# what enforces SigV4 auth -- HTTP APIs need no separate authorizer
-# resource for IAM auth, unlike REST APIs. Reachability is further
-# restricted to the operator's own IP by the regional WAF Web ACL below.
-# -----------------------------------------------------------------------
-resource "aws_apigatewayv2_api" "admin" {
-  name          = "bloggerbear-dev-admin-api"
-  protocol_type = "HTTP"
-}
-
-resource "aws_apigatewayv2_integration" "admin_lambda" {
-  api_id                 = aws_apigatewayv2_api.admin.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.admin_api.invoke_arn
-  payload_format_version = "2.0"
-}
-
-resource "aws_lambda_permission" "admin_api_apigw" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.admin_api.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.admin.execution_arn}/*/*"
-}
-
-# One route per admin_cli.py operation. for_each over the route-key list
-# below creates one aws_apigatewayv2_route resource instance per entry
-# (rather than 10 hand-copied blocks) -- keep this list and
+# Admin API -- a REST API (v1), not the simpler/cheaper HTTP API (v2) this
+# started as. AWS WAFv2 cannot associate with HTTP APIs at all (only REST
+# APIs, ALB, AppSync, Cognito, App Runner, Verified Access) -- discovered
+# the hard way when the first real apply's WAF association failed with
+# "The ARN isn't valid" against an apigatewayv2 stage ARN, not a
+# permissions problem. See infra/modules/rest-api's own header comment
+# for the full migration rationale. authorization = "AWS_IAM" on every
+# route is what enforces SigV4 auth. Reachability is further restricted
+# to the operator's own IP by the regional WAF Web ACL below (now
+# actually attachable, which is the entire point of this being a REST
+# API instead of HTTP API).
+#
+# One route per admin_cli.py operation -- keep this set and
 # scripts/admin_cli.py's routes in sync.
-locals {
-  admin_api_routes = toset([
+# -----------------------------------------------------------------------
+module "admin_api" {
+  source = "../../modules/rest-api"
+
+  name                 = "bloggerbear-dev-admin-api"
+  stage_name           = "dev"
+  lambda_invoke_arn    = aws_lambda_function.admin_api.invoke_arn
+  lambda_function_name = aws_lambda_function.admin_api.function_name
+  authorization        = "AWS_IAM"
+  web_acl_id           = aws_wafv2_web_acl.admin.arn
+
+  routes = toset([
     "GET /topics",
     "POST /topics",
     "GET /topics/{topic_id}",
@@ -446,21 +441,6 @@ locals {
     "POST /prompt-refinements/{topic_id}/{version}/approve",
     "POST /prompt-refinements/{topic_id}/{version}/reject",
   ])
-}
-
-resource "aws_apigatewayv2_route" "admin" {
-  for_each = local.admin_api_routes
-
-  api_id             = aws_apigatewayv2_api.admin.id
-  route_key          = each.value
-  target             = "integrations/${aws_apigatewayv2_integration.admin_lambda.id}"
-  authorization_type = "AWS_IAM"
-}
-
-resource "aws_apigatewayv2_stage" "default" {
-  api_id      = aws_apigatewayv2_api.admin.id
-  name        = "$default"
-  auto_deploy = true
 }
 
 # -----------------------------------------------------------------------
@@ -524,10 +504,10 @@ resource "aws_wafv2_web_acl" "admin" {
   }
 }
 
-resource "aws_wafv2_web_acl_association" "admin" {
-  resource_arn = aws_apigatewayv2_stage.default.arn
-  web_acl_arn  = aws_wafv2_web_acl.admin.arn
-}
+# WAF association for the admin API is handled inside module "admin_api"
+# above (its web_acl_id input) -- REST API stage ARNs are a
+# WAFv2-supported association target, unlike the HTTP API stage ARN this
+# used to be.
 
 # =========================================================================
 # Phase 3 -- Automation: a Step Functions state machine wraps the single
@@ -777,44 +757,31 @@ resource "aws_lambda_function" "public_api" {
 }
 
 # -----------------------------------------------------------------------
-# Public API Gateway HTTP API. Every route below is authorization_type =
-# "NONE" -- unauthenticated on purpose, this is public read data (topics/
-# articles/rss) plus an anonymous view counter. cors_configuration with
-# allow_origins = ["*"] is what lets the frontend's JS, served from the
-# CloudFront domain (a different origin than this API Gateway's own
-# domain), call these endpoints from the browser.
+# Public API -- REST API (v1), same migration and rationale as
+# module "admin_api" above (see infra/modules/rest-api's header comment).
+# Every route is authorization = "NONE" -- unauthenticated on purpose,
+# this is public read data (topics/articles/rss) plus an anonymous view
+# counter. enable_cors = true is what lets the frontend's JS, served from
+# the CloudFront domain (a different origin than this API Gateway's own
+# domain), call these endpoints from the browser -- REST API has no
+# declarative cors_configuration block like HTTP API did, so this adds a
+# Lambda-proxied OPTIONS method per path instead; public_api_handler.py
+# handles OPTIONS itself and adds CORS headers to every response.
+#
+# Keep this route set in sync with public_api_handler.py's _ROUTES dict.
 # -----------------------------------------------------------------------
-resource "aws_apigatewayv2_api" "public" {
-  name          = "bloggerbear-dev-public-api"
-  protocol_type = "HTTP"
+module "public_api" {
+  source = "../../modules/rest-api"
 
-  cors_configuration {
-    allow_origins = ["*"]
-    allow_methods = ["GET", "POST", "OPTIONS"]
-    allow_headers = ["content-type"]
-  }
-}
+  name                 = "bloggerbear-dev-public-api"
+  stage_name           = "dev"
+  lambda_invoke_arn    = aws_lambda_function.public_api.invoke_arn
+  lambda_function_name = aws_lambda_function.public_api.function_name
+  authorization        = "NONE"
+  enable_cors          = true
+  web_acl_id           = aws_wafv2_web_acl.public_api.arn
 
-resource "aws_apigatewayv2_integration" "public_lambda" {
-  api_id                 = aws_apigatewayv2_api.public.id
-  integration_type       = "AWS_PROXY"
-  integration_uri        = aws_lambda_function.public_api.invoke_arn
-  payload_format_version = "2.0"
-}
-
-resource "aws_lambda_permission" "public_api_apigw" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.public_api.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_apigatewayv2_api.public.execution_arn}/*/*"
-}
-
-# for_each over the route-key list below (same pattern as Phase 2's
-# admin_api_routes) -- keep this list in sync with public_api_handler.py's
-# _ROUTES dict.
-locals {
-  public_api_routes = toset([
+  routes = toset([
     "GET /topics",
     "GET /articles",
     "GET /articles/{article_id}",
@@ -824,21 +791,6 @@ locals {
     "POST /articles/{article_id}/feedback",
     "GET /rss.xml",
   ])
-}
-
-resource "aws_apigatewayv2_route" "public" {
-  for_each = local.public_api_routes
-
-  api_id             = aws_apigatewayv2_api.public.id
-  route_key          = each.value
-  target             = "integrations/${aws_apigatewayv2_integration.public_lambda.id}"
-  authorization_type = "NONE"
-}
-
-resource "aws_apigatewayv2_stage" "public_default" {
-  api_id      = aws_apigatewayv2_api.public.id
-  name        = "$default"
-  auto_deploy = true
 }
 
 # -----------------------------------------------------------------------
@@ -977,10 +929,10 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
 }
 
-resource "aws_wafv2_web_acl_association" "public_api" {
-  resource_arn = aws_apigatewayv2_stage.public_default.arn
-  web_acl_arn  = aws_wafv2_web_acl.public_api.arn
-}
+# WAF association for the public API is handled inside module
+# "public_api" above (its web_acl_id input) -- REST API stage ARNs are a
+# WAFv2-supported association target, unlike the HTTP API stage ARN this
+# used to be.
 
 # -----------------------------------------------------------------------
 # Frontend static files -- uploaded to the EXISTING Phase 0 site bucket
@@ -1032,7 +984,7 @@ resource "aws_s3_object" "frontend_config" {
   content_type = "application/javascript"
 
   content = <<-EOT
-    window.PUBLIC_API_URL = "${aws_apigatewayv2_stage.public_default.invoke_url}";
+    window.PUBLIC_API_URL = "${module.public_api.invoke_url}";
     window.SITE_URL = "${local.site_url}";
   EOT
 }
