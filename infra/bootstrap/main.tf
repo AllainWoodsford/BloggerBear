@@ -292,6 +292,11 @@ data "aws_iam_policy_document" "gha_deploy" {
       # reached these roles).
       "iam:ListRolePolicies",
       "iam:ListAttachedRolePolicies",
+      # aws_iam_role's delete path checks for (and would need to detach)
+      # any instance profiles still using the role before it can be
+      # deleted, regardless of whether this config ever creates one --
+      # confirmed the hard way on a destroy.
+      "iam:ListInstanceProfilesForRole",
     ]
     resources = [
       "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
