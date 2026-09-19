@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.parse
 
 import requests
@@ -35,6 +36,21 @@ from botocore.awsrequest import AWSRequest
 from botocore.session import Session as BotocoreSession
 
 SERVICE_NAME = "execute-api"
+
+# `topics trigger`'s target Lambda invocations are fire-and-forget
+# (admin_api_handler.py's _trigger_topic uses InvocationType="Event"), so
+# a 202 response only means "accepted", not "finished". Left un-polled,
+# the easy mistake is firing research_tick then daily_cycle back to back:
+# daily_cycle reads Findings written by research_tick, and if it runs
+# before research_tick's Lambda has actually completed, it just returns
+# {"status": "no_findings"} with nothing to show for it -- no error,
+# nothing obviously wrong, just silently empty. See --no-wait below to
+# skip this and get the old fire-and-forget behavior back.
+_POLL_INTERVAL_SECONDS = 3
+_RESEARCH_TICK_TIMEOUT_SECONDS = 30
+# daily_cycle makes multiple sequential Bedrock calls (ideate, draft,
+# compliance review) -- allow more time than research_tick's single call.
+_DAILY_CYCLE_TIMEOUT_SECONDS = 90
 
 
 class CliError(Exception):
@@ -178,14 +194,113 @@ def _cmd_topics_delete(args: argparse.Namespace) -> None:
     _do_request(args, "DELETE", f"/topics/{args.topic_id}")
 
 
+def _get_json_or_none(args: argparse.Namespace, path: str) -> dict | None:
+    """GET `path`, returning the parsed JSON body, or None on a 404 or any
+    other non-2xx response. Used only for polling baselines/completion
+    checks, where a transient/expected "not there yet" response should
+    make the caller keep waiting rather than crash the whole command.
+    """
+    response = signed_request("GET", _resolve_api_url(args), path, _resolve_region(args))
+    if not (200 <= response.status_code < 300):
+        return None
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def _latest_finding_captured_at(args: argparse.Namespace, topic_id: str) -> str | None:
+    finding = _get_json_or_none(args, f"/topics/{topic_id}/findings/latest")
+    return finding.get("captured_at") if finding else None
+
+
+def _candidate_count(args: argparse.Namespace, topic_id: str) -> int:
+    body = _get_json_or_none(args, f"/topics/{topic_id}/candidates")
+    return len(body["candidates"]) if body else 0
+
+
+def _poll_until(predicate, timeout_seconds: float) -> bool:
+    """Calls `predicate()` every _POLL_INTERVAL_SECONDS until it returns
+    True or `timeout_seconds` elapses. Returns whether it succeeded.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_POLL_INTERVAL_SECONDS)
+
+
 def _cmd_topics_trigger(args: argparse.Namespace) -> None:
-    _do_request(
-        args, "POST", f"/topics/{args.topic_id}/trigger", body={"pipeline": args.pipeline}
+    topic_id = args.topic_id
+    pipeline = args.pipeline
+
+    # Captured before firing the trigger so "finished" can mean "produced
+    # something new", not just "produced something" -- a topic already
+    # sitting on findings/candidates from a previous run would otherwise
+    # look instantly "done" without this pipeline run having done anything.
+    baseline_captured_at = None
+    baseline_candidate_count = None
+    if args.wait:
+        if pipeline == "research_tick":
+            baseline_captured_at = _latest_finding_captured_at(args, topic_id)
+        else:
+            baseline_candidate_count = _candidate_count(args, topic_id)
+
+    _do_request(args, "POST", f"/topics/{topic_id}/trigger", body={"pipeline": pipeline})
+
+    if not args.wait:
+        return
+
+    print(
+        f"Waiting for {pipeline} to actually finish (its Lambda invocation is "
+        "asynchronous, so the response above only means it was accepted)...",
+        file=sys.stderr,
     )
+
+    if pipeline == "research_tick":
+        finished = _poll_until(
+            lambda: (current := _latest_finding_captured_at(args, topic_id)) is not None
+            and current != baseline_captured_at,
+            _RESEARCH_TICK_TIMEOUT_SECONDS,
+        )
+        if finished:
+            print(f"research_tick finished: a new Finding was written for '{topic_id}'.")
+        else:
+            print(
+                f"No new Finding after {_RESEARCH_TICK_TIMEOUT_SECONDS}s. This can be a "
+                "legitimate outcome (the adapter found no material change since last time), "
+                "or a real failure -- check the logs:\n"
+                "  aws logs tail /aws/lambda/<research-tick function name> --since 5m",
+                file=sys.stderr,
+            )
+    else:
+        finished = _poll_until(
+            lambda: _candidate_count(args, topic_id) > baseline_candidate_count,
+            _DAILY_CYCLE_TIMEOUT_SECONDS,
+        )
+        if finished:
+            print(
+                f"daily_cycle finished: new candidate ideas were generated for '{topic_id}'. "
+                "Check `moderation list` or the site for the final published/queued result."
+            )
+        else:
+            print(
+                f"No new candidates after {_DAILY_CYCLE_TIMEOUT_SECONDS}s. This can mean there "
+                "were no recent Findings to draft from yet (run research_tick first and confirm "
+                "it produced a Finding), or a real failure -- check the logs:\n"
+                "  aws logs tail /aws/lambda/<daily-cycle function name> --since 5m",
+                file=sys.stderr,
+            )
 
 
 def _cmd_topics_candidates(args: argparse.Namespace) -> None:
     _do_request(args, "GET", f"/topics/{args.topic_id}/candidates")
+
+
+def _cmd_topics_findings(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/topics/{args.topic_id}/findings/latest")
 
 
 # --- moderation subcommands ---------------------------------------------
@@ -315,6 +430,17 @@ def build_parser() -> argparse.ArgumentParser:
     trigger_parser.add_argument(
         "--pipeline", required=True, choices=["research_tick", "daily_cycle"]
     )
+    trigger_parser.add_argument(
+        "--no-wait",
+        dest="wait",
+        action="store_false",
+        default=True,
+        help=(
+            "Don't poll for completion after triggering -- just fire the request and "
+            "return immediately (the old behavior). Default is to wait and report when "
+            "the pipeline has actually finished, since the trigger itself is asynchronous."
+        ),
+    )
     trigger_parser.set_defaults(func=_cmd_topics_trigger)
 
     candidates_parser = topics_sub.add_parser(
@@ -322,6 +448,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     candidates_parser.add_argument("topic_id")
     candidates_parser.set_defaults(func=_cmd_topics_candidates)
+
+    findings_parser = topics_sub.add_parser(
+        "findings", help="Show the most recent research Finding for a topic"
+    )
+    findings_parser.add_argument("topic_id")
+    findings_parser.set_defaults(func=_cmd_topics_findings)
 
     moderation_parser = subparsers.add_parser("moderation", help="Manage the moderation queue")
     moderation_sub = moderation_parser.add_subparsers(dest="action", required=True)

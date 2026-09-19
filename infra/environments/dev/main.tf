@@ -427,6 +427,11 @@ module "admin_api" {
     "DELETE /topics/{topic_id}",
     "POST /topics/{topic_id}/trigger",
     "GET /topics/{topic_id}/candidates",
+    # research_tick's trigger is fire-and-forget (async Lambda invoke) --
+    # this is what scripts/admin_cli.py's `topics trigger` polls to find
+    # out when it's actually finished, since there's no dedicated job-
+    # status system. See admin_api_handler.py's _get_latest_finding_route.
+    "GET /topics/{topic_id}/findings/latest",
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
