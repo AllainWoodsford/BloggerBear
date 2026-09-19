@@ -242,11 +242,21 @@ variables.
   level): add `AWS_DEV_DEPLOY_ROLE_ARN` = the `dev_deploy_role_arn`
   output. This is a variable, not a secret — the ARN itself isn't
   sensitive, the IAM trust policy is what actually protects it.
+- **Settings → Secrets and variables → Actions → Secrets** (repository
+  level): add `ADMIN_ALLOWED_CIDRS_DEV` = your public IP as a Terraform
+  list-of-strings literal, e.g. `["203.0.113.7/32"]`. This is a secret,
+  not a variable — unlike the role ARN above, this is a real IP address,
+  and a secret is masked in Actions logs. `terraform.yml`'s `apply-dev`
+  job passes it through as the `TF_VAR_admin_allowed_cidrs` environment
+  variable, so it never needs to live in `terraform.tfvars` / git history.
 - **Settings → Environments**: create an environment named `production`,
-  add yourself as a required reviewer, and add an environment-scoped
-  variable `AWS_PROD_DEPLOY_ROLE_ARN` = the `prod_deploy_role_arn`
-  output. This gate is what makes a production release a deliberate,
-  approved act rather than an accidental push.
+  add yourself as a required reviewer, add an environment-scoped variable
+  `AWS_PROD_DEPLOY_ROLE_ARN` = the `prod_deploy_role_arn` output, and an
+  environment-scoped **secret** `ADMIN_ALLOWED_CIDRS_PROD` (same format
+  as the dev one above). The variable/secret split and the reasoning are
+  the same as dev's, just Environment-scoped instead of repo-level. The
+  required-reviewer gate is what makes a production release a
+  deliberate, approved act rather than an accidental push.
 - **Settings → Branches**: create the `prod` branch from `dev`'s current
   tip (`git branch prod dev && git push -u origin prod`, or via the
   GitHub UI). Add branch protection to both `dev` and `prod`: require a
@@ -263,12 +273,20 @@ unreachable/unconfigured until you set them:
 
 | File | Variable | Required before | Why it's empty by default |
 |---|---|---|---|
-| `dev/terraform.tfvars` | `bedrock_model_id` | the pipeline can run | model ID/inference-profile choice is an open question until you confirm it in-console (step 0) |
-| `dev/terraform.tfvars` | `admin_allowed_cidrs` | the admin API is reachable at all | fails closed — empty allowlist blocks everyone, including you, until set to your `/32` |
+| `dev/terraform.tfvars` | `bedrock_model_id` | the pipeline can run | model ID/inference-profile choice is an open question until you confirm it in-console (step 0). Any Bedrock provider's model or inference-profile ID works here, not just Anthropic's — `lambdas/common/bedrock.py` calls the Converse API, which normalizes the request/response shape across providers |
 | `dev/terraform.tfvars` | `web_acl_arn` | dev shares production's WAF ACL | doesn't exist until production has been applied once (step 5) |
 | `production/terraform.tfvars` | `domain_name`, `hosted_zone_id` | production's first apply succeeds at all | domain/registrar is a decision only you can make |
-| `production/terraform.tfvars` | `bedrock_model_id`, `admin_allowed_cidrs` | same as dev | same as dev |
+| `production/terraform.tfvars` | `bedrock_model_id` | same as dev | same as dev |
 | either (optional) | `alert_email` | CloudWatch alarms actually notify someone | alarms still fire and publish to SNS either way; this only controls whether you're told |
+
+`admin_allowed_cidrs` is deliberately **not** in this table — it's not
+set via `terraform.tfvars` at all, on either environment. A real IP
+checked into `terraform.tfvars` would sit in git history permanently,
+even after being changed later. It's instead supplied at apply time via
+a `TF_VAR_admin_allowed_cidrs` environment variable in CI, sourced from
+the `ADMIN_ALLOWED_CIDRS_DEV` / `ADMIN_ALLOWED_CIDRS_PROD` secrets set
+up in step 2. Still fails closed — a local apply without that env var
+set falls back to the variable's `[]` default, same as before.
 
 ### 4. First deploy: dev (CI, triggered by you)
 

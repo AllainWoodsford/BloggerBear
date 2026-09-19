@@ -2,14 +2,23 @@ variable "bedrock_model_id" {
   type        = string
   default     = ""
   description = <<-EOT
-    Bedrock model ID (or cross-region inference profile ARN/ID) the Lambda
-    handlers pass to bedrock:InvokeModel. Deliberately defaults to an
-    empty string rather than a guessed model ID -- per
-    docs/project-plan.md §3, which specific Claude model IDs are directly
-    invokable in ap-southeast-2 versus which require routing through a
-    cross-region inference profile is an open question that must be
-    confirmed in the Bedrock console before Phase 1 can run end-to-end.
-    Set the real value in terraform.tfvars once that's confirmed.
+    Bedrock model ID or cross-region inference profile ID the Lambda
+    handlers pass to bedrock:InvokeModel via the Converse API
+    (lambdas/common/bedrock.py) -- NOT Anthropic/Claude-specific. Converse
+    normalizes the request/response shape across every model family Bedrock
+    supports through it (Anthropic, Amazon Nova, Meta, Mistral, Cohere,
+    ...), so this can be pointed at any Bedrock-invokable model or
+    inference profile ID without a code change, e.g.
+    "au.anthropic.claude-sonnet-5" or an Amazon Nova Pro inference profile
+    ID, as long as the chosen model/profile is actually enabled for this
+    account (Bedrock model access is opt-in per model, requested in the
+    console) and reachable via Converse. Deliberately defaults to an empty
+    string rather than a guessed model ID -- per docs/project-plan.md §3,
+    every Claude model AWS offers in ap-southeast-2 requires routing
+    through a cross-region inference profile rather than direct on-demand
+    invocation (confirmed via `aws bedrock list-foundation-models`); other
+    providers may differ. Set the real value in terraform.tfvars once
+    confirmed.
   EOT
 }
 
@@ -23,7 +32,23 @@ variable "admin_allowed_cidrs" {
     all -- with this left empty, the Web ACL's default-block action means
     NOTHING can call the API. That is the deliberately safe default (fail
     closed, consistent with this project's compliance-review posture),
-    not a bug. Set the real value in terraform.tfvars.
+    not a bug.
+
+    Deliberately NOT set in terraform.tfvars -- a real home/office IP
+    checked into git history is a personal-information leak (and stays
+    leaked even if later removed/rotated) that also goes stale the moment
+    the operator's IP changes. Supplied instead as a `TF_VAR_
+    admin_allowed_cidrs` environment variable in CI (see
+    .github/workflows/terraform.yml's apply-dev job and
+    terraform-production-release.yml), sourced from a GitHub Actions
+    secret (masked in logs, never in the repo) -- a repo-level secret
+    `ADMIN_ALLOWED_CIDRS_DEV` for dev, a `production`-Environment-scoped
+    secret `ADMIN_ALLOWED_CIDRS_PROD` for production. Environment variables
+    are Terraform's lowest-precedence value source, so this only works
+    because terraform.tfvars doesn't also set this variable -- if it did,
+    the tfvars value would silently win and the CI-supplied one would be
+    ignored. A local `terraform apply` without that env var set falls back
+    to this variable's `[]` default (fail closed), same as before.
   EOT
 }
 
