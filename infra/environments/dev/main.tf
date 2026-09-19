@@ -134,20 +134,26 @@ resource "aws_s3_bucket_public_access_block" "content" {
 # Linux/bash environment (python3 + pip on PATH) -- true for the CI
 # runner (ubuntu-latest) that always performs the real apply, per this
 # project's "Terraform apply is never manual/ad hoc" rule.
-locals {
-  lambda_source_files = fileset("${path.module}/../../../lambdas", "**/*.py")
-  # Hashes every tracked .py file's content into one value, so this
-  # (and therefore a package rebuild) changes whenever any handler or
-  # common/ module changes -- not just requirements.txt.
-  lambda_source_hash = sha256(join("", [
-    for f in local.lambda_source_files : filesha256("${path.module}/../../../lambdas/${f}")
-  ]))
-}
-
+#
+# Bugfix #2: triggers_replace originally hashed requirements.txt + every
+# tracked .py file's content, on the reasonable-looking theory that the
+# expensive rebuild step should only run when something actually changed.
+# That's wrong for this specific case: the "something to skip re-doing"
+# is a purely local, on-disk build artifact, but the CI runner
+# (ubuntu-latest via GitHub Actions) is a brand new, empty VM on every
+# single run -- there is no "previous run's disk" for a content-hash-based
+# skip to safely assume still has anything on it. Confirmed the hard way:
+# an apply correctly saw (per its OWN remote state) that neither
+# requirements.txt nor any handler had changed since the prior apply, so
+# it skipped re-running this provisioner entirely -- and then failed with
+# "could not archive missing directory", because that prior apply ran on
+# a different, now-gone VM. Fixed by making this always re-run
+# (triggers_replace keyed on timestamp()), accepting the small, known
+# cost that every apply now re-stages and re-installs (a few seconds for
+# two small pure-Python packages) even when nothing changed.
 resource "terraform_data" "lambda_package" {
   triggers_replace = {
-    requirements_hash = filesha256("${path.module}/../../../lambdas/requirements.txt")
-    source_hash       = local.lambda_source_hash
+    always_run = timestamp()
   }
 
   provisioner "local-exec" {
@@ -172,12 +178,23 @@ resource "terraform_data" "lambda_package" {
   }
 }
 
+# Bugfix #3: a plain depends_on (as this had before) is NOT enough to make
+# Terraform defer reading a data source until apply time -- that only
+# happens when the data source's own config references a value that's
+# genuinely unknown until apply. Confirmed the hard way: "Archive creation
+# error ... could not archive missing directory" during planning, before
+# terraform_data.lambda_package's local-exec had run at all. output_path
+# below embeds that resource's own id -- always unknown-until-apply now
+# that it's forced to replace on every apply (see the always_run comment
+# above) -- purely to force this correct ordering; the id itself is
+# otherwise meaningless here. One consequence: the Lambda functions below
+# show as needing a (harmless, idempotent) code update on every apply as
+# a result, not just when the code actually changed -- an acceptable cost
+# given the package is genuinely rebuilt every apply anyway.
 data "archive_file" "lambdas" {
   type        = "zip"
   source_dir  = "${path.module}/lambda-build/package"
-  output_path = "${path.module}/lambda-build/lambdas.zip"
-
-  depends_on = [terraform_data.lambda_package]
+  output_path = "${path.module}/lambda-build/lambdas-${terraform_data.lambda_package.id}.zip"
 }
 
 # -----------------------------------------------------------------------
