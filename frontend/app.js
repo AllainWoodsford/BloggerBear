@@ -135,7 +135,7 @@
     );
     contentEl.appendChild(hero);
 
-    contentEl.appendChild(el("h2", { text: "Topics" }));
+    contentEl.appendChild(el("h2", { text: "Topics", className: "section-heading" }));
 
     if (topics.length === 0) {
       contentEl.appendChild(el("p", { text: "No topics yet." }));
@@ -673,10 +673,26 @@
     }
   }
 
+  function initBackToTop() {
+    // href="#top" is a no-JS fallback -- left uncaught, the click would set
+    // location.hash = "top", firing the hashchange listener below and
+    // routing to "Page not found." (parseRoute has no "top" route). Intercept
+    // it and scroll instead, without touching the hash at all.
+    var link = document.querySelector(".back-to-top");
+    if (!link) {
+      return;
+    }
+    link.addEventListener("click", function (event) {
+      event.preventDefault();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  }
+
   window.addEventListener("hashchange", route);
   window.addEventListener("DOMContentLoaded", function () {
     fixRssLinks();
     initSiteNotice();
+    initBackToTop();
     loadNav();
     route();
   });
