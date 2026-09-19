@@ -365,7 +365,20 @@ resource "aws_iam_policy" "gha_deploy" {
 # -----------------------------------------------------------------------
 # Dev deploy role -- assumable only by workflow runs actually triggered
 # off the `dev` branch.
-# -----------------------------------------------------------------------
+#
+# The sub condition below matches on wildcarded owner/repo segments
+# (`OWNER@*` / `REPO@*`), not the plain `repo:OWNER/REPO:...` form GitHub's
+# docs lead with. That's deliberate: this account/repo has GitHub's
+# "immutable subject claims" behavior on (confirmed via `gh api
+# repos/<owner>/<repo>/actions/oidc/customization/sub`, which returns
+# use_immutable_subject: true), so the actual sub claim GitHub issues is
+# `repo:OWNER@<owner-id>/REPO@<repo-id>:ref:refs/heads/dev` -- numeric IDs
+# appended to stop an old trust policy from matching after a repo
+# rename/transfer. A plain (non-wildcarded) condition here silently never
+# matches, and the failure only ever surfaces at the STS API as a generic
+# "Not authorized to perform sts:AssumeRoleWithWebIdentity" -- no hint
+# it's the sub format. Confirmed via CloudTrail's AssumeRoleWithWebIdentity
+# error events, which show the real principalId/sub GitHub actually sent.
 data "aws_iam_policy_document" "gha_dev_trust" {
   statement {
     effect  = "Allow"
@@ -385,7 +398,7 @@ data "aws_iam_policy_document" "gha_dev_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/dev"]
+      values   = ["repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:ref:refs/heads/dev"]
     }
   }
 }
@@ -405,6 +418,11 @@ resource "aws_iam_role_policy_attachment" "gha_dev_deploy" {
 # with the `production` GitHub Environment (required-reviewer gated).
 # Even if workflow logic were edited to skip that gate, AWS itself still
 # refuses credentials without the Environment context in the token.
+#
+# See the identical wildcard + comment on gha_dev_trust above for why the
+# sub condition matches OWNER@*/REPO@* rather than the plain OWNER/REPO
+# GitHub's docs lead with -- this account/repo has immutable subject
+# claims on, so the real sub carries numeric owner/repo IDs.
 # -----------------------------------------------------------------------
 data "aws_iam_policy_document" "gha_prod_trust" {
   statement {
@@ -425,7 +443,7 @@ data "aws_iam_policy_document" "gha_prod_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:environment:production"]
+      values   = ["repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*:environment:production"]
     }
   }
 }
