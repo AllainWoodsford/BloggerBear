@@ -484,8 +484,12 @@ resource "aws_wafv2_ip_set" "admin_allowlist" {
 }
 
 resource "aws_wafv2_web_acl" "admin" {
-  name        = "bloggerbear-dev-admin-api"
-  description = "Regional WAF Web ACL for the BloggerBear dev admin API -- allows only the operator's allowlisted IP(s); blocks everything else by default."
+  name = "bloggerbear-dev-admin-api"
+  # No apostrophe/semicolon/parens here -- aws_wafv2_web_acl's description
+  # is validated against a restrictive AWS-side regex
+  # (^[\w+=:#@/\-,.][\w+=:#@/\-,.\s]+[\w+=:#@/\-,.]$) that rejects them,
+  # confirmed the hard way (ValidationException) on the first real apply.
+  description = "Regional WAF Web ACL for the BloggerBear dev admin API -- allows only the operators allowlisted IPs, blocks everything else by default."
   scope       = "REGIONAL"
 
   default_action {
@@ -850,8 +854,10 @@ resource "aws_apigatewayv2_stage" "public_default" {
 # counter.
 # -----------------------------------------------------------------------
 resource "aws_wafv2_web_acl" "public_api" {
-  name        = "bloggerbear-dev-public-api"
-  description = "Regional WAF Web ACL for the BloggerBear dev public API -- allows all traffic by default; rate-limits any single source IP past 500 requests per 5-minute window."
+  name = "bloggerbear-dev-public-api"
+  # See the identical regex-safety comment on aws_wafv2_web_acl.admin
+  # above -- no semicolons/apostrophes/parens allowed in this field.
+  description = "Regional WAF Web ACL for the BloggerBear dev public API -- allows all traffic by default, rate-limits any single source IP past 500 requests per 5-minute window."
   scope       = "REGIONAL"
 
   default_action {

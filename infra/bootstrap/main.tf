@@ -134,13 +134,22 @@ data "aws_iam_policy_document" "gha_deploy" {
   # later, per environment), so this is scoped by action rather than by
   # resource ARN -- full S3 admin is acceptable for a single-operator
   # portfolio project, per the phase-0 spec, as long as it stays within S3.
+  # s3:Get*/s3:Put* (not just the GetBucket*/PutBucket* subset this
+  # started as) -- confirmed necessary the hard way: the provider's own
+  # post-create read of aws_s3_bucket calls s3:GetAccelerateConfiguration,
+  # which doesn't match a "GetBucket*" prefix despite being a per-bucket
+  # setting (S3's action naming isn't fully consistent here). Rather than
+  # enumerate every such exception as they surface one apply at a time,
+  # this widens to the full Get*/Put* surface already implied by the
+  # "full S3 admin is acceptable ... as long as it stays within S3" call
+  # above.
   statement {
     sid    = "SiteBuckets"
     effect = "Allow"
     actions = [
       "s3:*Object",
-      "s3:GetBucket*",
-      "s3:PutBucket*",
+      "s3:Get*",
+      "s3:Put*",
       "s3:CreateBucket",
       "s3:DeleteBucket",
       "s3:List*",
@@ -197,6 +206,11 @@ data "aws_iam_policy_document" "gha_deploy" {
       "dynamodb:UpdateTimeToLive",
       "dynamodb:DescribeTimeToLive",
       "dynamodb:ListTagsOfResource",
+      # The provider's post-create read of aws_dynamodb_table always
+      # calls DescribeContinuousBackups (point-in-time recovery status),
+      # regardless of whether the config sets point_in_time_recovery --
+      # confirmed the hard way on the first real apply.
+      "dynamodb:DescribeContinuousBackups",
     ]
     resources = ["arn:aws:dynamodb:ap-southeast-2:*:table/bloggerbear-*"]
   }
@@ -269,6 +283,12 @@ data "aws_iam_policy_document" "gha_deploy" {
       "iam:GetRolePolicy",
       "iam:TagRole",
       "iam:PassRole",
+      # The provider's post-create read of aws_iam_role always calls
+      # ListRolePolicies (drift-detecting any inline policies), regardless
+      # of whether this config manages them via a separate
+      # aws_iam_role_policy resource -- confirmed the hard way on the
+      # first real apply.
+      "iam:ListRolePolicies",
     ]
     resources = [
       "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
@@ -349,6 +369,102 @@ data "aws_iam_policy_document" "gha_deploy" {
       "scheduler:TagResource",
     ]
     resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-*"]
+  }
+
+  # Phase 6: the per-environment SNS alerts topic (module.observability's
+  # aws_sns_topic.alerts) plus the optional email subscription gated on
+  # var.alert_email. This whole statement was missing before the first
+  # real apply -- Phase 6 built the module but the deploy policy was never
+  # updated to match, so every SNS call failed AccessDenied. Scoped to the
+  # bloggerbear-* topic name prefix.
+  statement {
+    sid    = "SNSAlerts"
+    effect = "Allow"
+    actions = [
+      "sns:CreateTopic",
+      "sns:DeleteTopic",
+      "sns:GetTopicAttributes",
+      "sns:SetTopicAttributes",
+      "sns:TagResource",
+      "sns:ListTagsForResource",
+      "sns:Subscribe",
+      "sns:Unsubscribe",
+      "sns:GetSubscriptionAttributes",
+    ]
+    resources = ["arn:aws:sns:ap-southeast-2:*:bloggerbear-*"]
+  }
+
+  # Phase 6: the Lambda error/throttle, DLQ-depth, and Step Functions
+  # failure alarms (module.observability's aws_cloudwatch_metric_alarm.*),
+  # each publishing to the SNS topic above. Same "missing since Phase 6"
+  # gap as SNSAlerts. Scoped to the bloggerbear-* alarm name prefix.
+  statement {
+    sid    = "CloudWatchAlarms"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:PutMetricAlarm",
+      "cloudwatch:DescribeAlarms",
+      "cloudwatch:DeleteAlarms",
+      "cloudwatch:TagResource",
+    ]
+    resources = ["arn:aws:cloudwatch:ap-southeast-2:*:alarm:bloggerbear-*"]
+  }
+
+  # Phase 6: the pipeline-health dashboard (module.observability's
+  # aws_cloudwatch_dashboard.pipeline). Separate statement from
+  # CloudWatchAlarms above since dashboard ARNs are a different shape --
+  # no region segment. Same "missing since Phase 6" gap.
+  statement {
+    sid    = "CloudWatchDashboard"
+    effect = "Allow"
+    actions = [
+      "cloudwatch:PutDashboard",
+      "cloudwatch:GetDashboard",
+      "cloudwatch:DeleteDashboards",
+      "cloudwatch:ListDashboards",
+    ]
+    resources = ["arn:aws:cloudwatch::*:dashboard/bloggerbear-*"]
+  }
+
+  # Phase 0/6: the CloudWatch Logs log groups the WAF logging
+  # configurations (infra/environments/*/main.tf's
+  # aws_wafv2_web_acl_logging_configuration.*) write into
+  # (aws_cloudwatch_log_group.waf_admin/waf_public_api). Also missing
+  # before the first real apply. Scoped to the aws-waf-logs-bloggerbear-*
+  # log group prefix -- the trailing `:*` matches CloudWatch Logs' own
+  # documented ARN format for the log-group resource type, not a
+  # log-stream scoping (unlike LambdaLogGroups above, which predates this
+  # fix and hasn't been proven against a real apply yet since no
+  # aws_cloudwatch_log_group resource currently targets it).
+  statement {
+    sid    = "WafLogGroups"
+    effect = "Allow"
+    actions = [
+      "logs:CreateLogGroup",
+      "logs:DeleteLogGroup",
+      "logs:PutRetentionPolicy",
+      "logs:DescribeLogGroups",
+      "logs:TagResource",
+    ]
+    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*:*"]
+  }
+
+  # Phase 0/6: the CloudWatch Logs resource policy that lets the WAF
+  # service itself write into the log groups above
+  # (aws_cloudwatch_log_resource_policy.waf_logs). These three actions
+  # operate on the account/region's log delivery configuration as a
+  # whole, not a specific log group -- AWS doesn't support resource-level
+  # scoping for them, same reasoning as the CloudFront/WAF/Route53/ACM
+  # statements above using resources = ["*"].
+  statement {
+    sid    = "WafLogResourcePolicy"
+    effect = "Allow"
+    actions = [
+      "logs:PutResourcePolicy",
+      "logs:DeleteResourcePolicy",
+      "logs:DescribeResourcePolicies",
+    ]
+    resources = ["*"]
   }
 
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever

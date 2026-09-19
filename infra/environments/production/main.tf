@@ -46,8 +46,12 @@ provider "aws" {
 resource "aws_wafv2_web_acl" "this" {
   provider = aws.us_east_1
 
-  name        = "bloggerbear-shared"
-  description = "Shared WAF Web ACL for BloggerBear's CloudFront distributions (dev + production)."
+  name = "bloggerbear-shared"
+  # No apostrophe/parens here -- aws_wafv2_web_acl's description is
+  # validated against a restrictive AWS-side regex
+  # (^[\w+=:#@/\-,.][\w+=:#@/\-,.\s]+[\w+=:#@/\-,.]$) that rejects them,
+  # confirmed the hard way (ValidationException) on the first real apply.
+  description = "Shared WAF Web ACL for BloggerBear CloudFront distributions -- dev and production."
   scope       = "CLOUDFRONT"
 
   default_action {
@@ -546,8 +550,10 @@ resource "aws_wafv2_ip_set" "admin_allowlist" {
 }
 
 resource "aws_wafv2_web_acl" "admin" {
-  name        = "bloggerbear-production-admin-api"
-  description = "Regional WAF Web ACL for the BloggerBear production admin API -- allows only the operator's allowlisted IP(s); blocks everything else by default."
+  name = "bloggerbear-production-admin-api"
+  # See the identical regex-safety comment on production's shared
+  # aws_wafv2_web_acl.this above -- no semicolons/apostrophes/parens.
+  description = "Regional WAF Web ACL for the BloggerBear production admin API -- allows only the operators allowlisted IPs, blocks everything else by default."
   scope       = "REGIONAL"
 
   default_action {
@@ -913,8 +919,9 @@ resource "aws_apigatewayv2_stage" "public_default" {
 # counter.
 # -----------------------------------------------------------------------
 resource "aws_wafv2_web_acl" "public_api" {
-  name        = "bloggerbear-production-public-api"
-  description = "Regional WAF Web ACL for the BloggerBear production public API -- allows all traffic by default; rate-limits any single source IP past 500 requests per 5-minute window."
+  name = "bloggerbear-production-public-api"
+  # See the identical regex-safety comment above -- no semicolons.
+  description = "Regional WAF Web ACL for the BloggerBear production public API -- allows all traffic by default, rate-limits any single source IP past 500 requests per 5-minute window."
   scope       = "REGIONAL"
 
   default_action {
