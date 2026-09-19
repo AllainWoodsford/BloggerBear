@@ -1,15 +1,19 @@
 """Admin API Lambda handler (Phase 2 admin console).
 
-Deployed behind an API Gateway HTTP API (payload format version 2.0) that is
-authenticated separately (SigV4/IAM + a WAF IP allowlist -- see
-`infra/`, owned by another worker in this phase). This module only assumes
-that authentication has already happened by the time `handler` runs.
+Deployed behind an API Gateway REST API (v1) that is authenticated
+separately (SigV4/IAM + a WAF IP allowlist -- see `infra/`, owned by another
+worker in this phase). This module only assumes that authentication has
+already happened by the time `handler` runs.
 
-Routing is a plain dict dispatch keyed on `event["routeKey"]`
-(e.g. "GET /topics"), matching what API Gateway HTTP APIs send. `handler`
-never raises -- every route function is wrapped in a broad top-level
-try/except that logs the real exception and returns a generic 500, per the
-task contract.
+Routing is a plain dict dispatch keyed on a route key of the form
+"GET /topics". REST API's Lambda proxy event has no `routeKey` field (that's
+an HTTP API v2 thing, from this project's original design before AWS WAF's
+lack of HTTP API support forced a migration to REST API -- see
+infra/modules/rest-api's header comment) -- `handler` builds the equivalent
+from `httpMethod` + `resource` instead, so `_ROUTES` below needs no changes
+either way. `handler` never raises -- every route function is wrapped in a
+broad top-level try/except that logs the real exception and returns a
+generic 500, per the task contract.
 """
 
 from __future__ import annotations
@@ -416,8 +420,22 @@ _ROUTES = {
 }
 
 
-def handler(event, context) -> dict:
+def _route_key(event: dict) -> str | None:
+    """"METHOD /path" for this event -- routeKey (HTTP API) if present,
+    else httpMethod + resource (REST API's Lambda proxy event shape).
+    """
     route_key = event.get("routeKey")
+    if route_key is not None:
+        return route_key
+    method = event.get("httpMethod")
+    resource = event.get("resource")
+    if method is None or resource is None:
+        return None
+    return f"{method} {resource}"
+
+
+def handler(event, context) -> dict:
+    route_key = _route_key(event)
     route_fn = _ROUTES.get(route_key)
 
     if route_fn is None:
