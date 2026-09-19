@@ -274,8 +274,10 @@ def test_topics_delete_calls_delete():
 
 
 def test_topics_trigger_builds_body():
+    # --no-wait: this test is about the POST body only, not the polling
+    # behavior covered separately below.
     with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
-        _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle"])
+        _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle", "--no-wait"])
     m.assert_called_once_with(
         "POST",
         "https://api.example.com",
@@ -288,6 +290,77 @@ def test_topics_trigger_builds_body():
 def test_topics_trigger_invalid_pipeline_rejected_by_argparse():
     with pytest.raises(SystemExit):
         _run(["topics", "trigger", "my-topic", "--pipeline", "not_a_pipeline"])
+
+
+def test_topics_trigger_no_wait_skips_polling():
+    # No baseline GET, no polling GET -- only the POST itself.
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+        _run(["topics", "trigger", "my-topic", "--pipeline", "research_tick", "--no-wait"])
+    assert m.call_count == 1
+    assert m.call_args.args[0] == "POST"
+
+
+def test_topics_trigger_research_tick_waits_for_new_finding(capsys):
+    # Baseline (no finding yet) -> POST accepted -> poll sees a finding.
+    responses = [
+        FakeResponse(404),
+        FakeResponse(202, {}),
+        FakeResponse(200, {"captured_at": "2026-01-01T00:00:00+00:00"}),
+    ]
+    with patch("admin_cli.signed_request", side_effect=responses) as m:
+        _run(["topics", "trigger", "my-topic", "--pipeline", "research_tick"])
+    assert m.call_count == 3
+    assert "finished: a new Finding was written" in capsys.readouterr().out
+
+
+def test_topics_trigger_research_tick_times_out(monkeypatch, capsys):
+    # GET (baseline + every poll) always reports "no finding yet"; the POST
+    # trigger itself still succeeds -- polling exhausts its (shrunk, for
+    # test speed) timeout and reports it rather than hanging.
+    monkeypatch.setattr(admin_cli, "_RESEARCH_TICK_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(admin_cli, "_POLL_INTERVAL_SECONDS", 0.01)
+
+    def _fake(method, *args, **kwargs):
+        return FakeResponse(202, {}) if method == "POST" else FakeResponse(404)
+
+    with patch("admin_cli.signed_request", side_effect=_fake):
+        _run(["topics", "trigger", "my-topic", "--pipeline", "research_tick"])
+    assert "No new Finding after" in capsys.readouterr().err
+
+
+def test_topics_trigger_daily_cycle_waits_for_new_candidate(capsys):
+    # Baseline: 0 candidates -> POST accepted -> poll sees 1 candidate.
+    responses = [
+        FakeResponse(200, {"candidates": []}),
+        FakeResponse(202, {}),
+        FakeResponse(200, {"candidates": [{"angle": "an angle", "status": "considered"}]}),
+    ]
+    with patch("admin_cli.signed_request", side_effect=responses) as m:
+        _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle"])
+    assert m.call_count == 3
+    assert "finished: new candidate ideas were generated" in capsys.readouterr().out
+
+
+def test_topics_trigger_daily_cycle_times_out(monkeypatch, capsys):
+    monkeypatch.setattr(admin_cli, "_DAILY_CYCLE_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(admin_cli, "_POLL_INTERVAL_SECONDS", 0.01)
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"candidates": []})):
+        _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle"])
+    assert "No new candidates after" in capsys.readouterr().err
+
+
+def test_topics_findings_calls_get():
+    with patch(
+        "admin_cli.signed_request", return_value=FakeResponse(200, {"captured_at": "x"})
+    ) as m:
+        _run(["topics", "findings", "my-topic"])
+    m.assert_called_once_with(
+        "GET",
+        "https://api.example.com",
+        "/topics/my-topic/findings/latest",
+        "ap-southeast-2",
+        body=None,
+    )
 
 
 def test_topics_candidates_calls_get():

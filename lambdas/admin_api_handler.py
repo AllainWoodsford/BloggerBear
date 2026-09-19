@@ -27,6 +27,7 @@ import boto3
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.dynamo import (
     delete_topic,
+    get_latest_finding,
     get_moderation_item,
     get_prompt_refinement,
     get_topic,
@@ -276,6 +277,22 @@ def _list_candidates(event: dict) -> dict:
     return _response(200, {"topic_id": topic_id, "candidates": candidates})
 
 
+def _get_latest_finding_route(event: dict) -> dict:
+    """Surfaces get_latest_finding for scripts/admin_cli.py's `topics trigger`
+    to poll against -- research_tick's own Lambda invocation is fire-and-
+    forget (InvocationType="Event"), so this is how a caller finds out
+    whether it's actually finished yet, without a dedicated job-status
+    system: compare a Finding's captured_at against the time it triggered.
+    """
+    topic_id = _path_param(event, "topic_id")
+    if get_topic(topic_id) is None:
+        return _error(404, f"topic '{topic_id}' not found")
+    finding = get_latest_finding(topic_id)
+    if finding is None:
+        return _error(404, f"no findings yet for topic '{topic_id}'")
+    return _response(200, finding)
+
+
 # --- Moderation queue -----------------------------------------------------
 
 
@@ -410,6 +427,7 @@ _ROUTES = {
     "DELETE /topics/{topic_id}": _delete_topic,
     "POST /topics/{topic_id}/trigger": _trigger_topic,
     "GET /topics/{topic_id}/candidates": _list_candidates,
+    "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
     "GET /moderation-queue": _list_moderation_queue,
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,
