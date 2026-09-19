@@ -284,11 +284,14 @@ data "aws_iam_policy_document" "gha_deploy" {
       "iam:TagRole",
       "iam:PassRole",
       # The provider's post-create read of aws_iam_role always calls
-      # ListRolePolicies (drift-detecting any inline policies), regardless
-      # of whether this config manages them via a separate
-      # aws_iam_role_policy resource -- confirmed the hard way on the
-      # first real apply.
+      # ListRolePolicies (inline policies) AND ListAttachedRolePolicies
+      # (managed policy attachments) to drift-detect both, regardless of
+      # whether this config manages either -- confirmed the hard way,
+      # across two separate applies (ListRolePolicies surfaced first,
+      # ListAttachedRolePolicies only showed up once a destroy actually
+      # reached these roles).
       "iam:ListRolePolicies",
+      "iam:ListAttachedRolePolicies",
     ]
     resources = [
       "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
@@ -341,6 +344,10 @@ data "aws_iam_policy_document" "gha_deploy" {
       "sqs:GetQueueAttributes",
       "sqs:SetQueueAttributes",
       "sqs:TagQueue",
+      # The provider's post-create read of aws_sqs_queue always calls
+      # ListQueueTags to drift-detect tags, regardless of whether the
+      # config sets any -- confirmed the hard way on a destroy.
+      "sqs:ListQueueTags",
     ]
     resources = ["arn:aws:sqs:ap-southeast-2:*:bloggerbear-*"]
   }
