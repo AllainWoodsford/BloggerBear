@@ -57,7 +57,9 @@ python scripts/admin_cli.py topics create --topic-id github-trending \
 python scripts/admin_cli.py topics update github-trending --name "Renamed" --financial
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick
+python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
 python scripts/admin_cli.py topics candidates github-trending
+python scripts/admin_cli.py topics findings github-trending
 
 python scripts/admin_cli.py moderation list
 python scripts/admin_cli.py moderation approve <queue_id>
@@ -66,3 +68,12 @@ python scripts/admin_cli.py moderation reject <queue_id>
 
 Responses are pretty-printed JSON on stdout. A non-2xx response prints the
 error body to stderr and exits non-zero.
+
+`topics trigger`'s target Lambda invocation is fire-and-forget (async), so
+by default the command polls afterward and only returns once it sees actual
+new output -- a new Finding for `research_tick`, a new candidate idea for
+`daily_cycle` -- or times out (30s / 90s respectively) and says so. Pass
+`--no-wait` to skip this and get the old immediate-return behavior back.
+This also means running `daily_cycle` right after `research_tick` for the
+same topic is safe without a manual delay in between; running it beforehand
+still isn't -- `daily_cycle` needs a Finding to already exist.

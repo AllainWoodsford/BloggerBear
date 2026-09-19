@@ -61,6 +61,18 @@ def aws_resources(aws_env):
             BillingMode="PAY_PER_REQUEST",
         )
         dynamodb.create_table(
+            TableName="Findings",
+            KeySchema=[
+                {"AttributeName": "topic_id", "KeyType": "HASH"},
+                {"AttributeName": "captured_at", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "topic_id", "AttributeType": "S"},
+                {"AttributeName": "captured_at", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
             TableName="CandidateIdeas",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
@@ -508,6 +520,51 @@ def test_list_candidates_returns_all_statuses(aws_resources):
     assert len(body["candidates"]) == 2
     statuses = {c["status"] for c in body["candidates"]}
     assert statuses == {"considered", "selected"}
+
+
+# --- Findings ---------------------------------------------------------------
+
+
+def test_get_latest_finding_returns_most_recent(aws_resources):
+    _put_topic()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Findings")
+    table.put_item(
+        Item={
+            "topic_id": "github-trending",
+            "captured_at": "2026-09-12T00:00:00+00:00",
+            "summary": "older finding",
+        }
+    )
+    table.put_item(
+        Item={
+            "topic_id": "github-trending",
+            "captured_at": "2026-09-12T01:00:00+00:00",
+            "summary": "newer finding",
+        }
+    )
+
+    event = _event(
+        "GET /topics/{topic_id}/findings/latest", path_params={"topic_id": "github-trending"}
+    )
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["summary"] == "newer finding"
+
+
+def test_get_latest_finding_no_findings_yet_returns_404(aws_resources):
+    _put_topic()
+    event = _event(
+        "GET /topics/{topic_id}/findings/latest", path_params={"topic_id": "github-trending"}
+    )
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 404
+
+
+def test_get_latest_finding_unknown_topic_returns_404(aws_resources):
+    event = _event("GET /topics/{topic_id}/findings/latest", path_params={"topic_id": "nope"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 404
 
 
 def test_list_candidates_unknown_topic_returns_404(aws_resources):
