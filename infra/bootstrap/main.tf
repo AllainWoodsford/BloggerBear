@@ -295,20 +295,28 @@ data "aws_iam_policy_document" "gha_deploy" {
     ]
   }
 
-  # Phase 2: API Gateway HTTP API for the admin console (see
-  # infra/environments/*/main.tf's aws_apigatewayv2_api.admin and related
-  # resources). API Gateway management-API ARNs deliberately don't carry
-  # an account ID -- this is the correct ARN shape for apigateway:*
+  # Phase 2 (originally API Gateway HTTP API; migrated to REST API v1 --
+  # see infra/modules/rest-api's header comment for why) for the admin
+  # and public APIs (infra/environments/*/main.tf's module "admin_api" /
+  # "public_api"). API Gateway management-API ARNs deliberately don't
+  # carry an account ID -- this is the correct ARN shape for apigateway:*
   # actions, not an oversight -- so this can't be scoped down to
   # bloggerbear-* the way Lambda/DynamoDB/logs are above; it's scoped by
   # action + region instead.
+  #
+  # /restapis, not /apis -- REST API v1's resource-namespace prefix, not
+  # HTTP API v2's. Confirmed the hard way: the REST API migration (#35)
+  # updated every Terraform resource but missed this policy, so the very
+  # first CreateRestApi call after merging it failed AccessDenied against
+  # exactly this statement, still scoped to the now-dead /apis namespace
+  # nothing creates anymore.
   statement {
     sid     = "ApiGateway"
     effect  = "Allow"
     actions = ["apigateway:*"]
     resources = [
-      "arn:aws:apigateway:ap-southeast-2::/apis",
-      "arn:aws:apigateway:ap-southeast-2::/apis/*",
+      "arn:aws:apigateway:ap-southeast-2::/restapis",
+      "arn:aws:apigateway:ap-southeast-2::/restapis/*",
     ]
   }
 
@@ -449,6 +457,20 @@ data "aws_iam_policy_document" "gha_deploy" {
   #     post-create read, to drift-detect tags) -- same story again,
   #     despite CloudWatchAlarms above granting cloudwatch:* scoped to
   #     the exact alarm ARN.
+  #   - logs:CreateLogDelivery/GetLogDelivery/UpdateLogDelivery/
+  #     DeleteLogDelivery/ListLogDeliveries (aws_wafv2_web_acl_logging_
+  #     configuration.admin/public_api) -- CloudWatch Logs' "Log Delivery"
+  #     API family AWS WAF uses under the hood to actually ship logs into
+  #     a log group, entirely separate from the regular logs:* actions
+  #     already granted above (WafLogGroups/NotResourceScopable's own
+  #     PutResourcePolicy etc.). Confirmed the hard way: WAFV2's
+  #     PutLoggingConfiguration failed with a generic "You don't have the
+  #     permissions that are required to perform this operation" -- no
+  #     "not authorized to perform: X" detail, which is AWS WAF's tell
+  #     that the missing permission belongs to a service it calls
+  #     internally (CloudWatch Logs' log-delivery API), not to
+  #     wafv2:PutLoggingConfiguration itself (already granted via
+  #     wafv2:* above).
   statement {
     sid    = "NotResourceScopable"
     effect = "Allow"
@@ -459,6 +481,11 @@ data "aws_iam_policy_document" "gha_deploy" {
       "logs:DescribeLogGroups",
       "iam:ListInstanceProfilesForRole",
       "cloudwatch:ListTagsForResource",
+      "logs:CreateLogDelivery",
+      "logs:GetLogDelivery",
+      "logs:UpdateLogDelivery",
+      "logs:DeleteLogDelivery",
+      "logs:ListLogDeliveries",
     ]
     resources = ["*"]
   }
