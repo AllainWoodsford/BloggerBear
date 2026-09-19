@@ -105,6 +105,15 @@ data "aws_iam_policy_document" "gha_deploy" {
   # State backend: list the bucket (needed by the S3 backend/native
   # locking) and read/write the state object + its .tflock companion for
   # both environments.
+  #
+  # NOTE: SiteBuckets below now grants s3:* on resources = ["*"], which
+  # technically makes these next two statements redundant in practice
+  # (their grants are a strict subset). Kept anyway as documentation of
+  # intent -- the minimum S3 access this deploy role actually needs for
+  # the state backend itself, independent of whatever SiteBuckets ends up
+  # covering -- and because narrowing SiteBuckets back down later (e.g. if
+  # a future change makes exact site-bucket ARNs knowable) should not
+  # accidentally take the state backend access with it.
   statement {
     sid    = "TerraformStateBucketList"
     effect = "Allow"
@@ -134,26 +143,22 @@ data "aws_iam_policy_document" "gha_deploy" {
   # later, per environment), so this is scoped by action rather than by
   # resource ARN -- full S3 admin is acceptable for a single-operator
   # portfolio project, per the phase-0 spec, as long as it stays within S3.
-  # s3:Get*/s3:Put* (not just the GetBucket*/PutBucket* subset this
-  # started as) -- confirmed necessary the hard way: the provider's own
-  # post-create read of aws_s3_bucket calls s3:GetAccelerateConfiguration,
-  # which doesn't match a "GetBucket*" prefix despite being a per-bucket
-  # setting (S3's action naming isn't fully consistent here). Rather than
-  # enumerate every such exception as they surface one apply at a time,
-  # this widens to the full Get*/Put* surface already implied by the
-  # "full S3 admin is acceptable ... as long as it stays within S3" call
-  # above.
+  #
+  # s3:* rather than the Get*/Put*/List*/CreateBucket/DeleteBucket/*Object
+  # subset this grew into piece by piece -- confirmed the hard way (via
+  # s3:GetAccelerateConfiguration, which doesn't match a "GetBucket*"
+  # prefix despite being a per-bucket setting) that S3's action naming
+  # isn't consistent enough to enumerate safely, and the same gap would
+  # exist on the delete side too (e.g. s3:DeleteBucketPolicy doesn't match
+  # Put*/Get*/List*/DeleteBucket either). Since resources is already
+  # unrestricted within S3 ("full S3 admin is acceptable ... as long as it
+  # stays within S3" above), going the rest of the way to s3:* removes an
+  # entire category of future one-apply-at-a-time surprises for zero
+  # additional blast radius.
   statement {
-    sid    = "SiteBuckets"
-    effect = "Allow"
-    actions = [
-      "s3:*Object",
-      "s3:Get*",
-      "s3:Put*",
-      "s3:CreateBucket",
-      "s3:DeleteBucket",
-      "s3:List*",
-    ]
+    sid       = "SiteBuckets"
+    effect    = "Allow"
+    actions   = ["s3:*"]
     resources = ["*"]
   }
 
@@ -193,25 +198,23 @@ data "aws_iam_policy_document" "gha_deploy" {
   # name prefix (not "*") -- more sensitive than the S3/CloudFront/etc.
   # wildcards above, since these are real app tables, not per-environment
   # buckets created fresh each time.
+  #
+  # dynamodb:* rather than an enumerated action list: three straight
+  # rounds of "one AccessDenied at a time" (DescribeContinuousBackups here,
+  # plus the same pattern on IAM/SQS/S3 below) made clear that Terraform
+  # providers call a long tail of Describe*/List* actions during normal
+  # create/read/update/delete that aren't obvious from the resource's own
+  # arguments, and enumerating them by hitting each one is not a
+  # sustainable way to build this policy. The resource ARN pattern below
+  # is what actually bounds the blast radius (only bloggerbear-* tables,
+  # never "*") -- widening the action list within that boundary costs
+  # nothing security-wise, since anything DynamoDB lets you do to a table
+  # was already reachable via the enumerated actions this replaces, minus
+  # the ones that kept surfacing as gaps.
   statement {
-    sid    = "DynamoDBAppTables"
-    effect = "Allow"
-    actions = [
-      "dynamodb:CreateTable",
-      "dynamodb:DeleteTable",
-      "dynamodb:DescribeTable",
-      "dynamodb:UpdateTable",
-      "dynamodb:TagResource",
-      "dynamodb:UntagResource",
-      "dynamodb:UpdateTimeToLive",
-      "dynamodb:DescribeTimeToLive",
-      "dynamodb:ListTagsOfResource",
-      # The provider's post-create read of aws_dynamodb_table always
-      # calls DescribeContinuousBackups (point-in-time recovery status),
-      # regardless of whether the config sets point_in_time_recovery --
-      # confirmed the hard way on the first real apply.
-      "dynamodb:DescribeContinuousBackups",
-    ]
+    sid       = "DynamoDBAppTables"
+    effect    = "Allow"
+    actions   = ["dynamodb:*"]
     resources = ["arn:aws:dynamodb:ap-southeast-2:*:table/bloggerbear-*"]
   }
 
@@ -223,38 +226,34 @@ data "aws_iam_policy_document" "gha_deploy" {
   # resource-based policy statement that lets API Gateway invoke a
   # function; both the Phase 2 admin API and the Phase 4 public API
   # permissions fall under this same bloggerbear-* scoped statement.
+  # lambda:* rather than an enumerated list -- see DynamoDBAppTables above
+  # for why. Scoped to the bloggerbear-* function name prefix, same as
+  # before.
   statement {
-    sid    = "LambdaFunctions"
-    effect = "Allow"
-    actions = [
-      "lambda:CreateFunction",
-      "lambda:DeleteFunction",
-      "lambda:GetFunction",
-      "lambda:UpdateFunctionCode",
-      "lambda:UpdateFunctionConfiguration",
-      "lambda:TagResource",
-      "lambda:ListVersionsByFunction",
-      "lambda:GetPolicy",
-      "lambda:AddPermission",
-      "lambda:RemovePermission",
-    ]
+    sid       = "LambdaFunctions"
+    effect    = "Allow"
+    actions   = ["lambda:*"]
     resources = ["arn:aws:lambda:ap-southeast-2:*:function:bloggerbear-*"]
   }
 
   # Phase 1: the CloudWatch log groups Lambda creates on first invocation
   # (and that Terraform may come to manage directly for retention).
-  # Scoped to the /aws/lambda/bloggerbear-* log group prefix.
+  # Scoped to the /aws/lambda/bloggerbear-* log group prefix. Not
+  # currently exercised by any resource in infra/environments (no
+  # aws_cloudwatch_log_group targets this pattern yet -- Lambda creates
+  # these itself on first invocation, outside Terraform), so this
+  # statement is unproven against a real apply; widened to logs:* and
+  # given both ARN forms (with and without the trailing `:*`) alongside
+  # WafLogGroups below for the same reason, rather than leaving an
+  # unexercised guess in place to fail the same way WafLogGroups did.
   statement {
-    sid    = "LambdaLogGroups"
-    effect = "Allow"
-    actions = [
-      "logs:CreateLogGroup",
-      "logs:DeleteLogGroup",
-      "logs:PutRetentionPolicy",
-      "logs:DescribeLogGroups",
-      "logs:TagResource",
+    sid     = "LambdaLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*",
+      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*:*",
     ]
-    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*"]
   }
 
   # Phase 1 (extended in Phase 3): IAM for the Lambda execution role, plus
@@ -271,28 +270,24 @@ data "aws_iam_policy_document" "gha_deploy" {
   # extended later (more roles, more actions), preserve this scoping:
   # widen the resource pattern only as far as this naming convention
   # requires, never to a bare "*".
+  #
+  # iam:* rather than an enumerated action list -- three separate rounds
+  # of AccessDenied (ListRolePolicies, then ListAttachedRolePolicies, then
+  # ListInstanceProfilesForRole -- all provider-internal reads during
+  # create/refresh/delete that aren't obvious from this config's own
+  # arguments) made the enumerate-as-you-go approach clearly unsustainable.
+  # This is still safe: the security property this policy protects is
+  # resource scoping (this role can only ever touch these three exact role
+  # names, never an arbitrary one), not action counting -- iam:* on roles/
+  # policies OUTSIDE this resource list remains fully denied, and PassRole
+  # (the specific action that would let a compromised role hand off a
+  # more-privileged role to a service) was already granted before this
+  # change, so nothing here increases what this role could actually do
+  # beyond these three roles.
   statement {
-    sid    = "LambdaExecRole"
-    effect = "Allow"
-    actions = [
-      "iam:CreateRole",
-      "iam:DeleteRole",
-      "iam:GetRole",
-      "iam:PutRolePolicy",
-      "iam:DeleteRolePolicy",
-      "iam:GetRolePolicy",
-      "iam:TagRole",
-      "iam:PassRole",
-      # The provider's post-create read of aws_iam_role always calls
-      # ListRolePolicies (inline policies) AND ListAttachedRolePolicies
-      # (managed policy attachments) to drift-detect both, regardless of
-      # whether this config manages either -- confirmed the hard way,
-      # across two separate applies (ListRolePolicies surfaced first,
-      # ListAttachedRolePolicies only showed up once a destroy actually
-      # reached these roles).
-      "iam:ListRolePolicies",
-      "iam:ListAttachedRolePolicies",
-    ]
+    sid     = "LambdaExecRole"
+    effect  = "Allow"
+    actions = ["iam:*"]
     resources = [
       "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
       "arn:aws:iam::*:role/bloggerbear-*-states-exec",
@@ -319,36 +314,27 @@ data "aws_iam_policy_document" "gha_deploy" {
 
   # Phase 3: the Step Functions state machine that wraps the daily_cycle
   # Lambda invocation for retries + a DLQ on failure. Scoped to the
-  # bloggerbear-* state machine name prefix.
+  # bloggerbear-* state machine name prefix. states:* rather than an
+  # enumerated list -- see DynamoDBAppTables above for why (this also
+  # preemptively covers states:ListTagsForResource, which Step Functions
+  # needs separately from DescribeStateMachine to drift-detect tags and
+  # which the enumerated list below never had, so would have failed the
+  # same way on the next apply).
   statement {
-    sid    = "StepFunctions"
-    effect = "Allow"
-    actions = [
-      "states:CreateStateMachine",
-      "states:DeleteStateMachine",
-      "states:DescribeStateMachine",
-      "states:UpdateStateMachine",
-      "states:TagResource",
-    ]
+    sid       = "StepFunctions"
+    effect    = "Allow"
+    actions   = ["states:*"]
     resources = ["arn:aws:states:ap-southeast-2:*:stateMachine:bloggerbear-*"]
   }
 
   # Phase 3: the dead-letter queue the state machine sends failed
   # executions to. Scoped to the bloggerbear-* queue name prefix.
+  # sqs:* rather than an enumerated list -- see DynamoDBAppTables above for
+  # why (ListQueueTags was the specific gap that surfaced here).
   statement {
-    sid    = "SQS"
-    effect = "Allow"
-    actions = [
-      "sqs:CreateQueue",
-      "sqs:DeleteQueue",
-      "sqs:GetQueueAttributes",
-      "sqs:SetQueueAttributes",
-      "sqs:TagQueue",
-      # The provider's post-create read of aws_sqs_queue always calls
-      # ListQueueTags to drift-detect tags, regardless of whether the
-      # config sets any -- confirmed the hard way on a destroy.
-      "sqs:ListQueueTags",
-    ]
+    sid       = "SQS"
+    effect    = "Allow"
+    actions   = ["sqs:*"]
     resources = ["arn:aws:sqs:ap-southeast-2:*:bloggerbear-*"]
   }
 
@@ -365,16 +351,12 @@ data "aws_iam_policy_document" "gha_deploy" {
   # own scheduler:* grant. Scoped to the same default schedule group and
   # bloggerbear-* name prefix as scheduler_manage's grant above, not to a
   # bare "*".
+  # scheduler:* rather than an enumerated list -- see DynamoDBAppTables
+  # above for why.
   statement {
-    sid    = "SchedulerStaticSchedules"
-    effect = "Allow"
-    actions = [
-      "scheduler:CreateSchedule",
-      "scheduler:GetSchedule",
-      "scheduler:UpdateSchedule",
-      "scheduler:DeleteSchedule",
-      "scheduler:TagResource",
-    ]
+    sid       = "SchedulerStaticSchedules"
+    effect    = "Allow"
+    actions   = ["scheduler:*"]
     resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-*"]
   }
 
@@ -384,20 +366,12 @@ data "aws_iam_policy_document" "gha_deploy" {
   # real apply -- Phase 6 built the module but the deploy policy was never
   # updated to match, so every SNS call failed AccessDenied. Scoped to the
   # bloggerbear-* topic name prefix.
+  # sns:* rather than an enumerated list -- see DynamoDBAppTables above for
+  # why.
   statement {
-    sid    = "SNSAlerts"
-    effect = "Allow"
-    actions = [
-      "sns:CreateTopic",
-      "sns:DeleteTopic",
-      "sns:GetTopicAttributes",
-      "sns:SetTopicAttributes",
-      "sns:TagResource",
-      "sns:ListTagsForResource",
-      "sns:Subscribe",
-      "sns:Unsubscribe",
-      "sns:GetSubscriptionAttributes",
-    ]
+    sid       = "SNSAlerts"
+    effect    = "Allow"
+    actions   = ["sns:*"]
     resources = ["arn:aws:sns:ap-southeast-2:*:bloggerbear-*"]
   }
 
@@ -405,15 +379,12 @@ data "aws_iam_policy_document" "gha_deploy" {
   # failure alarms (module.observability's aws_cloudwatch_metric_alarm.*),
   # each publishing to the SNS topic above. Same "missing since Phase 6"
   # gap as SNSAlerts. Scoped to the bloggerbear-* alarm name prefix.
+  # cloudwatch:* rather than an enumerated list -- see DynamoDBAppTables
+  # above for why.
   statement {
-    sid    = "CloudWatchAlarms"
-    effect = "Allow"
-    actions = [
-      "cloudwatch:PutMetricAlarm",
-      "cloudwatch:DescribeAlarms",
-      "cloudwatch:DeleteAlarms",
-      "cloudwatch:TagResource",
-    ]
+    sid       = "CloudWatchAlarms"
+    effect    = "Allow"
+    actions   = ["cloudwatch:*"]
     resources = ["arn:aws:cloudwatch:ap-southeast-2:*:alarm:bloggerbear-*"]
   }
 
@@ -421,15 +392,13 @@ data "aws_iam_policy_document" "gha_deploy" {
   # aws_cloudwatch_dashboard.pipeline). Separate statement from
   # CloudWatchAlarms above since dashboard ARNs are a different shape --
   # no region segment. Same "missing since Phase 6" gap.
+  # cloudwatch:* rather than an enumerated list -- see DynamoDBAppTables
+  # above for why. Separate statement from CloudWatchAlarms since
+  # dashboard ARNs are a different shape (no region segment).
   statement {
-    sid    = "CloudWatchDashboard"
-    effect = "Allow"
-    actions = [
-      "cloudwatch:PutDashboard",
-      "cloudwatch:GetDashboard",
-      "cloudwatch:DeleteDashboards",
-      "cloudwatch:ListDashboards",
-    ]
+    sid       = "CloudWatchDashboard"
+    effect    = "Allow"
+    actions   = ["cloudwatch:*"]
     resources = ["arn:aws:cloudwatch::*:dashboard/bloggerbear-*"]
   }
 
@@ -443,17 +412,18 @@ data "aws_iam_policy_document" "gha_deploy" {
   # log-stream scoping (unlike LambdaLogGroups above, which predates this
   # fix and hasn't been proven against a real apply yet since no
   # aws_cloudwatch_log_group resource currently targets it).
+  # logs:* rather than an enumerated list -- see DynamoDBAppTables above
+  # for why. Both ARN forms (with and without the trailing `:*`) listed
+  # since it's unclear which of the widened action set expects which
+  # shape, and listing both costs nothing.
   statement {
-    sid    = "WafLogGroups"
-    effect = "Allow"
-    actions = [
-      "logs:CreateLogGroup",
-      "logs:DeleteLogGroup",
-      "logs:PutRetentionPolicy",
-      "logs:DescribeLogGroups",
-      "logs:TagResource",
+    sid     = "WafLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*",
+      "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*:*",
     ]
-    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*:*"]
   }
 
   # Phase 0/6: the CloudWatch Logs resource policy that lets the WAF

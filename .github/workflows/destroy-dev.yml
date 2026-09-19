@@ -23,6 +23,14 @@ jobs:
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
+    # Same TF_VAR_admin_allowed_cidrs wiring as terraform.yml's apply-dev
+    # job (see its own comment for the full rationale) -- kept consistent
+    # here even though a plain `terraform destroy` doesn't strictly need
+    # the real value (it tears down from state, not from a freshly
+    # computed plan), so that Terraform's config evaluation sees the same
+    # inputs either job would.
+    env:
+      TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
     steps:
       - name: Check confirmation input
         run: |
