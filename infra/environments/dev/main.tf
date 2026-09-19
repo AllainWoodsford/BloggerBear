@@ -190,15 +190,25 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["${aws_s3_bucket.content.arn}/*"]
   }
 
-  # Foundation-model ARNs don't carry an account ID -- this is the exact
-  # ARN pattern for on-demand Bedrock model invocation. See
-  # var.bedrock_model_id below re: confirming a working model ID in this
-  # region before Phase 1 can run end-to-end.
+  # Every Claude model AWS offers in ap-southeast-2 requires routing through
+  # a cross-region inference profile rather than direct on-demand invocation
+  # (confirmed via `aws bedrock list-foundation-models` -- none there are
+  # ON_DEMAND) -- and that's true of other providers' models too, not just
+  # Anthropic's, so var.bedrock_model_id may be any provider's model ID or
+  # inference profile. Invoking via an inference profile needs permission on
+  # BOTH the profile resource itself (account-scoped, region = where the
+  # profile is defined) AND the underlying foundation-model ARNs it can fan
+  # out to (which may span regions beyond ap-southeast-2 for an AU/APAC/
+  # global profile, hence the region wildcard below) -- foundation-model
+  # ARNs never carry an account ID, so that one can't be scoped further.
   statement {
-    sid       = "BedrockInvoke"
-    effect    = "Allow"
-    actions   = ["bedrock:InvokeModel"]
-    resources = ["arn:aws:bedrock:ap-southeast-2::foundation-model/*"]
+    sid     = "BedrockInvoke"
+    effect  = "Allow"
+    actions = ["bedrock:InvokeModel"]
+    resources = [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+    ]
   }
 
   statement {

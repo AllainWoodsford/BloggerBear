@@ -99,6 +99,15 @@ jobs:
     concurrency:
       group: deploy-dev
       cancel-in-progress: false
+    # TF_VAR_admin_allowed_cidrs: repo-level secret (not a variable) so the
+    # operator's real public IP never lands in terraform.tfvars / git
+    # history -- see infra/environments/dev/variables.tf's admin_allowed_cidrs
+    # description. Must be valid Terraform list-of-strings syntax, e.g.
+    # ["203.0.113.7/32"]. Terraform env vars are its lowest-precedence value
+    # source, which is exactly why terraform.tfvars must NOT also set this
+    # variable (that would silently win over this).
+    env:
+      TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
