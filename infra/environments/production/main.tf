@@ -178,26 +178,74 @@ resource "aws_s3_bucket_public_access_block" "content" {
 
 # -----------------------------------------------------------------------
 # Lambda deployment package -- both functions ship from the same zip
-# (one `lambdas/` source tree with a shared `common/` package). Excludes
-# are a reasonable assumption about the Python workstream's layout (dev
-# tooling, test suite, cache dirs); double-check against the actual
-# lambdas/ contents once that work has landed, since it was being written
-# concurrently with this file.
-# -----------------------------------------------------------------------
+# (one `lambdas/` source tree with a shared `common/` package).
+#
+# Bugfix: this used to zip lambdas/ directly, which meant NONE of
+# requirements.txt's third-party dependencies (requests, beautifulsoup4 --
+# every adapter's HTTP client: common/adapters/github_trending.py,
+# hacker_news.py, crypto_feed.py all import requests) ever made it into
+# the deployment package -- the Lambda Python 3.11 runtime does not
+# include them. Confirmed the hard way: the very first real invocation of
+# research_tick (any topic, any adapter) failed at import time with
+# "No module named 'requests'", meaning no adapter-based pipeline could
+# ever have produced a Finding, regardless of triggering/timing. Never
+# caught by the test suite because pytest imports these handlers in an
+# environment where requirements.txt (including requirements-dev.txt) IS
+# installed -- there's no test that runs against a deployment package
+# built the way Terraform actually builds it.
+#
+# Fixed by staging lambdas/ source + `pip install -t` of its dependencies
+# into one combined build directory first (terraform_data.lambda_package
+# below), then zipping THAT -- archive_file itself has no way to merge a
+# source directory with pip-installed packages into one zip, so the
+# staging step happens as a local-exec provisioner. local-exec assumes a
+# Linux/bash environment (python3 + pip on PATH) -- true for the CI
+# runner (ubuntu-latest) that always performs the real apply, per this
+# project's "Terraform apply is never manual/ad hoc" rule.
+locals {
+  lambda_source_files = fileset("${path.module}/../../../lambdas", "**/*.py")
+  # Hashes every tracked .py file's content into one value, so this
+  # (and therefore a package rebuild) changes whenever any handler or
+  # common/ module changes -- not just requirements.txt.
+  lambda_source_hash = sha256(join("", [
+    for f in local.lambda_source_files : filesha256("${path.module}/../../../lambdas/${f}")
+  ]))
+}
+
+resource "terraform_data" "lambda_package" {
+  triggers_replace = {
+    requirements_hash = filesha256("${path.module}/../../../lambdas/requirements.txt")
+    source_hash       = local.lambda_source_hash
+  }
+
+  provisioner "local-exec" {
+    # No interpreter override -- Terraform's own default (/bin/sh -c on
+    # Unix) is enough since nothing here pipes commands together
+    # (pipefail, which needs bash, was never actually necessary).
+    # Forcing /bin/bash specifically broke local runs on Windows: the
+    # Terraform binary is native Windows, so it can't resolve a
+    # Git-Bash-only path like /bin/bash when spawning a child process,
+    # even from inside a Git Bash shell -- confirmed the hard way testing
+    # this exact change locally before pushing it.
+    command = <<-EOT
+      set -eu
+      build_dir="${path.module}/lambda-build/package"
+      rm -rf "$build_dir"
+      mkdir -p "$build_dir"
+      cp -r "${path.module}/../../../lambdas/." "$build_dir/"
+      rm -rf "$build_dir/tests" "$build_dir/__pycache__" "$build_dir/.pytest_cache" "$build_dir/.ruff_cache"
+      rm -f "$build_dir/requirements.txt" "$build_dir/requirements-dev.txt" "$build_dir/pyproject.toml"
+      python3 -m pip install --upgrade --no-cache-dir -r "${path.module}/../../../lambdas/requirements.txt" -t "$build_dir"
+    EOT
+  }
+}
+
 data "archive_file" "lambdas" {
   type        = "zip"
-  source_dir  = "${path.module}/../../../lambdas"
+  source_dir  = "${path.module}/lambda-build/package"
   output_path = "${path.module}/lambda-build/lambdas.zip"
 
-  excludes = [
-    "tests",
-    "requirements.txt",
-    "requirements-dev.txt",
-    "pyproject.toml",
-    "__pycache__",
-    ".pytest_cache",
-    ".ruff_cache",
-  ]
+  depends_on = [terraform_data.lambda_package]
 }
 
 # -----------------------------------------------------------------------
