@@ -426,20 +426,39 @@ data "aws_iam_policy_document" "gha_deploy" {
     ]
   }
 
-  # Phase 0/6: the CloudWatch Logs resource policy that lets the WAF
-  # service itself write into the log groups above
-  # (aws_cloudwatch_log_resource_policy.waf_logs). These three actions
-  # operate on the account/region's log delivery configuration as a
-  # whole, not a specific log group -- AWS doesn't support resource-level
-  # scoping for them, same reasoning as the CloudFront/WAF/Route53/ACM
-  # statements above using resources = ["*"].
+  # A handful of actions that flatly don't support resource-level scoping
+  # in AWS's IAM model, confirmed the hard way: granting them via a
+  # service-level wildcard already scoped to a matching resource ARN
+  # (e.g. iam:* on the exact role ARN, logs:* on the exact log-group ARN,
+  # cloudwatch:* on the exact alarm ARN) still isn't enough -- AWS denies
+  # them regardless unless the statement's resource is bare "*". Same
+  # reasoning as the CloudFront/WAF/Route53/ACM statements above, just
+  # discovered per-action instead of per-service:
+  #   - logs:PutResourcePolicy/DeleteResourcePolicy/DescribeResourcePolicies
+  #     (aws_cloudwatch_log_resource_policy.waf_logs) -- operate on the
+  #     account/region's log delivery configuration as a whole, not a
+  #     specific log group.
+  #   - logs:DescribeLogGroups (aws_cloudwatch_log_group.waf_admin/
+  #     waf_public_api's own post-create read) -- lists across log groups
+  #     by prefix, not a single-resource operation, despite WafLogGroups
+  #     above already granting logs:* scoped to the exact log-group ARN.
+  #   - iam:ListInstanceProfilesForRole (aws_iam_role's delete path) --
+  #     same story: LambdaExecRole above already grants iam:* scoped to
+  #     the exact role ARN, and this action still isn't covered by it.
+  #   - cloudwatch:ListTagsForResource (aws_cloudwatch_metric_alarm's
+  #     post-create read, to drift-detect tags) -- same story again,
+  #     despite CloudWatchAlarms above granting cloudwatch:* scoped to
+  #     the exact alarm ARN.
   statement {
-    sid    = "WafLogResourcePolicy"
+    sid    = "NotResourceScopable"
     effect = "Allow"
     actions = [
       "logs:PutResourcePolicy",
       "logs:DeleteResourcePolicy",
       "logs:DescribeResourcePolicies",
+      "logs:DescribeLogGroups",
+      "iam:ListInstanceProfilesForRole",
+      "cloudwatch:ListTagsForResource",
     ]
     resources = ["*"]
   }
@@ -448,10 +467,9 @@ data "aws_iam_policy_document" "gha_deploy" {
   # (debug_permissions) that queries CloudTrail after the apply for every
   # AWS API call this role made, to help audit/tighten this policy without
   # guessing -- see that workflow file's own comment. Read-only, and like
-  # WafLogResourcePolicy above, cloudtrail:LookupEvents isn't
+  # NotResourceScopable above, cloudtrail:LookupEvents isn't
   # resource-scopable (it queries account/region-wide event history, not
-  # a specific resource), so resources = ["*"] is the only option, same
-  # reasoning as CloudFront/WAF/Route53/ACM/WafLogResourcePolicy.
+  # a specific resource), so resources = ["*"] is the only option.
   statement {
     sid       = "DebugPermissionsLookup"
     effect    = "Allow"
