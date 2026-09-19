@@ -1,15 +1,20 @@
-"""Generic Amazon Bedrock (Claude) invocation helper.
+"""Generic Amazon Bedrock invocation helper.
 
 Shared by both Lambda handlers. Keep this file free of any prompt content --
 prompt text is owned by whichever handler needs it, not by this module.
+
+Uses Bedrock's Converse API rather than the per-provider InvokeModel body
+schema (e.g. Anthropic's "anthropic_version"/messages shape) specifically so
+`model_id` isn't locked to one model family: Converse normalizes the
+request/response shape across every provider it supports (Anthropic, Amazon
+Nova, Meta, Mistral, Cohere, ...), so swapping var.bedrock_model_id to a
+different provider's model ID or cross-region inference profile works
+without a code change here, as long as Bedrock's Converse API supports that
+model.
 """
 from __future__ import annotations
 
-import json
-
 import boto3
-
-BEDROCK_ANTHROPIC_VERSION = "bedrock-2023-05-31"
 
 _bedrock_runtime_client = None
 
@@ -22,23 +27,16 @@ def _get_client():
 
 
 def invoke_claude(prompt: str, model_id: str, max_tokens: int = 1024) -> str:
-    """Invoke a Claude model on Bedrock with a single user-turn prompt.
+    """Invoke a Bedrock model with a single user-turn prompt via Converse.
 
     Returns the concatenated text of every text content block in the
-    response (Bedrock's Anthropic Messages-style response shape).
+    response message.
     """
     client = _get_client()
-    body = {
-        "anthropic_version": BEDROCK_ANTHROPIC_VERSION,
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    response = client.invoke_model(
+    response = client.converse(
         modelId=model_id,
-        body=json.dumps(body),
-        contentType="application/json",
-        accept="application/json",
+        messages=[{"role": "user", "content": [{"text": prompt}]}],
+        inferenceConfig={"maxTokens": max_tokens},
     )
-    payload = json.loads(response["body"].read())
-    blocks = payload.get("content", [])
-    return "".join(block.get("text", "") for block in blocks if block.get("type") == "text")
+    blocks = response["output"]["message"]["content"]
+    return "".join(block.get("text", "") for block in blocks if "text" in block)

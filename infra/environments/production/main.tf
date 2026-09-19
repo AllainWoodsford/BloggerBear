@@ -258,11 +258,18 @@ data "aws_iam_policy_document" "lambda_exec" {
   # ARN pattern for on-demand Bedrock model invocation. See
   # var.bedrock_model_id below re: confirming a working model ID in this
   # region before Phase 1 can run end-to-end.
+  # See the identical statement + comment in infra/environments/dev/main.tf
+  # for why both resource ARNs below are needed (cross-region inference
+  # profile required for every Claude model in ap-southeast-2, and likely
+  # other providers too -- var.bedrock_model_id isn't Anthropic-specific).
   statement {
-    sid       = "BedrockInvoke"
-    effect    = "Allow"
-    actions   = ["bedrock:InvokeModel"]
-    resources = ["arn:aws:bedrock:ap-southeast-2::foundation-model/*"]
+    sid     = "BedrockInvoke"
+    effect  = "Allow"
+    actions = ["bedrock:InvokeModel"]
+    resources = [
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+    ]
   }
 
   statement {
