@@ -329,11 +329,13 @@ Spec: `docs/specs/phase-0-foundations.md`
   CI-CD stack at a glance. Caught and fixed a second instance of the
   same dark-mode contrast bug from the prior PR (white text on
   `var(--accent)`, ~2.4:1 against WCAG AA's 4.5:1 minimum) on the new
-  CTA's hover state before shipping, and added an automated regression
-  check (`no background: var(--accent) anywhere in styles.css`) so a
-  third instance doesn't slip through unnoticed. Verified with a
-  third extended functional test — 24/24 new checks plus the prior
-  29/22/6 regression checks, all still passing.
+  CTA's hover state before shipping, and manually re-checked that
+  `background: var(--accent)` doesn't appear anywhere else in
+  styles.css so a third instance doesn't slip through unnoticed (no
+  automated test enforces this -- it's not wired into CI, just a
+  check run during this PR). Verified with a third extended manual
+  pass — 24/24 new checks plus the prior 29/22/6 regression checks,
+  all still passing.
 
 ## Phase 5 — Feedback loop
 

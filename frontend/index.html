@@ -90,9 +90,11 @@
         Back to top: header is only sticky on narrow (phone-width)
         viewports now (see styles.css); on wider screens it scrolls
         away like the rest of the page, so this is the way back up
-        without hunting for it. Plain #top fragment link, no JS -- the
-        target is header's own id="top". Harmless/inert on a page
-        that's already short enough not to need it.
+        without hunting for it. href="#top" is just a no-JS fallback --
+        app.js's click handler (initBackToTop) intercepts the click and
+        scrolls instead, because this is a hash-routed SPA and letting
+        the browser actually set location.hash="top" would fire app.js's
+        own hashchange listener and route to "Page not found."
       -->
       <a class="back-to-top" href="#top">Back to top ↑</a>
     </div>
