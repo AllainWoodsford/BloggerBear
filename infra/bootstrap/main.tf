@@ -471,6 +471,13 @@ data "aws_iam_policy_document" "gha_deploy" {
   #     internally (CloudWatch Logs' log-delivery API), not to
   #     wafv2:PutLoggingConfiguration itself (already granted via
   #     wafv2:* above).
+  #   - states:ValidateStateMachineDefinition (aws_sfn_state_machine.
+  #     daily_cycle's own pre-create validation) -- there's no state
+  #     machine ARN yet to scope to at validation time, so AWS represents
+  #     this action's resource as a bare stateMachine:* wildcard
+  #     regardless of what name the machine being validated will actually
+  #     get, which StepFunctions above (scoped to
+  #     stateMachine:bloggerbear-*) never matches.
   statement {
     sid    = "NotResourceScopable"
     effect = "Allow"
@@ -486,6 +493,7 @@ data "aws_iam_policy_document" "gha_deploy" {
       "logs:UpdateLogDelivery",
       "logs:DeleteLogDelivery",
       "logs:ListLogDeliveries",
+      "states:ValidateStateMachineDefinition",
     ]
     resources = ["*"]
   }
