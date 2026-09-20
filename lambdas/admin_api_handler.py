@@ -105,6 +105,17 @@ def _list_topics(event: dict) -> dict:
     return _response(200, {"topics": list_topics()})
 
 
+def _model_candidates_error(value) -> str | None:
+    """Validate a topic's optional `model_id_candidates` (PR 4 of 5): None
+    (unset) or a list of non-empty strings. Returns an error message, or
+    None if valid. An empty list is valid and means "no rotation"."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(c, str) and c for c in value):
+        return "'model_id_candidates' must be a list of non-empty strings if provided"
+    return None
+
+
 def _create_topic(event: dict) -> dict:
     try:
         body = _parse_body(event)
@@ -162,6 +173,12 @@ def _create_topic(event: dict) -> dict:
         not isinstance(fallback_model_id, str) or not fallback_model_id
     ):
         return _error(400, "'fallback_model_id' must be a non-empty string if provided")
+    # PR 4 of 5: optional rotation -- resolve_model picks one of these at
+    # random per run, ahead of model_id (see common/model_routing.py).
+    model_id_candidates = body.get("model_id_candidates")
+    candidates_error = _model_candidates_error(model_id_candidates)
+    if candidates_error:
+        return _error(400, candidates_error)
 
     if get_topic(topic_id) is not None:
         return _error(409, f"topic '{topic_id}' already exists")
@@ -176,6 +193,7 @@ def _create_topic(event: dict) -> dict:
         "daily_cadence": daily_cadence,
         "model_id": model_id,
         "fallback_model_id": fallback_model_id,
+        "model_id_candidates": model_id_candidates,
     }
     put_topic(item)
     try:
@@ -214,6 +232,7 @@ def _update_topic(event: dict) -> dict:
         "daily_cadence",
         "model_id",
         "fallback_model_id",
+        "model_id_candidates",
     ):
         if field in body:
             updated[field] = body[field]
@@ -248,6 +267,10 @@ def _update_topic(event: dict) -> dict:
         not isinstance(updated["fallback_model_id"], str) or not updated["fallback_model_id"]
     ):
         return _error(400, "'fallback_model_id' must be a non-empty string if provided")
+    if "model_id_candidates" in body:
+        candidates_error = _model_candidates_error(updated["model_id_candidates"])
+        if candidates_error:
+            return _error(400, candidates_error)
 
     research_cadence = updated.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = updated.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)

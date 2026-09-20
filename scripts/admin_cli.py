@@ -143,6 +143,49 @@ def _cmd_topics_get(args: argparse.Namespace) -> None:
     _do_request(args, "GET", f"/topics/{args.topic_id}")
 
 
+def _apply_model_flags(body: dict, args: argparse.Namespace) -> None:
+    """Add the optional per-topic model fields to a create/update body.
+
+    Unset flags are omitted entirely (so an update leaves the field alone).
+    An empty string clears the field -- sent as null for model_id/
+    fallback_model_id, and as [] for the rotation candidates -- since the
+    Admin API validates "non-empty string if provided" and accepts null/[]
+    as "unset".
+    """
+    if args.model_id is not None:
+        body["model_id"] = args.model_id or None
+    if args.fallback_model_id is not None:
+        body["fallback_model_id"] = args.fallback_model_id or None
+    if args.model_candidates is not None:
+        body["model_id_candidates"] = [
+            candidate.strip() for candidate in args.model_candidates.split(",") if candidate.strip()
+        ]
+
+
+def _add_model_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--model-id",
+        dest="model_id",
+        default=None,
+        help="Pin this topic to one Bedrock model (overrides the global default); '' clears it",
+    )
+    parser.add_argument(
+        "--fallback-model-id",
+        dest="fallback_model_id",
+        default=None,
+        help="Model to retry with if this topic's primary model call fails; '' clears it",
+    )
+    parser.add_argument(
+        "--model-candidates",
+        dest="model_candidates",
+        default=None,
+        help=(
+            "Comma-separated model IDs to rotate between -- one is picked at random per "
+            "daily run, ahead of --model-id; '' clears rotation"
+        ),
+    )
+
+
 def _cmd_topics_create(args: argparse.Namespace) -> None:
     adapter_config = {}
     if args.config_json:
@@ -165,6 +208,7 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         body["research_cadence"] = args.research_cadence
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
+    _apply_model_flags(body, args)
     _do_request(args, "POST", "/topics", body=body)
 
 
@@ -183,6 +227,7 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
         body["research_cadence"] = args.research_cadence
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
+    _apply_model_flags(body, args)
 
     if not body:
         raise CliError("topics update requires at least one field to change")
@@ -443,6 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="EventBridge Scheduler expression, e.g. 'cron(0 6 * * ? *)' (default: cron(0 6 * * ? *))",
     )
+    _add_model_flags(create_parser)
     create_parser.set_defaults(func=_cmd_topics_create)
 
     update_parser = topics_sub.add_parser("update", help="Update a topic")
@@ -467,6 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="EventBridge Scheduler expression, e.g. 'cron(0 6 * * ? *)'",
     )
+    _add_model_flags(update_parser)
     update_parser.set_defaults(func=_cmd_topics_update)
 
     delete_parser = topics_sub.add_parser("delete", help="Delete a topic")

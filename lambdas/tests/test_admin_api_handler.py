@@ -196,12 +196,78 @@ def test_create_topic_success(aws_resources):
         "daily_cadence": "cron(0 6 * * ? *)",
         "model_id": None,
         "fallback_model_id": None,
+        "model_id_candidates": None,
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert table.get_item(Key={"topic_id": "new-topic"})["Item"] == created
 
     mock_upsert.assert_called_once_with("new-topic", "rate(1 hour)", "cron(0 6 * * ? *)")
+
+
+def test_create_topic_accepts_model_id_candidates(aws_resources):
+    body = {
+        "topic_id": "rotating",
+        "name": "Rotating Topic",
+        "adapter": "github_trending",
+        "model_id_candidates": ["model-a", "model-b"],
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["model_id_candidates"] == ["model-a", "model-b"]
+
+
+@pytest.mark.parametrize("bad_value", ["model-a", ["model-a", ""], ["model-a", 3], {"a": 1}])
+def test_create_topic_rejects_invalid_model_id_candidates(aws_resources, bad_value):
+    body = {
+        "topic_id": "bad",
+        "name": "Bad",
+        "adapter": "github_trending",
+        "model_id_candidates": bad_value,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 400
+    assert "model_id_candidates" in json.loads(result["body"])["error"]
+
+
+def test_update_topic_sets_and_clears_model_id_candidates(aws_resources):
+    _put_topic()
+
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        set_result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id_candidates": ["model-a", "model-b"]},
+            ),
+            None,
+        )
+        clear_result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id_candidates": []},
+            ),
+            None,
+        )
+        bad_result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id_candidates": "model-a"},
+            ),
+            None,
+        )
+
+    assert set_result["statusCode"] == 200
+    assert json.loads(set_result["body"])["model_id_candidates"] == ["model-a", "model-b"]
+    assert clear_result["statusCode"] == 200
+    assert json.loads(clear_result["body"])["model_id_candidates"] == []
+    assert bad_result["statusCode"] == 400
 
 
 def test_create_topic_crypto_feed_forces_is_financial_true(aws_resources):
