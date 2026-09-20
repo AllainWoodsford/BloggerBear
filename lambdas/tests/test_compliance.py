@@ -48,31 +48,54 @@ def test_regex_redact_leaves_ordinary_text_untouched():
     assert compliance.regex_redact(text) == text
 
 
+def _tracked_result(text: str, *, model_id="model-id", used_fallback=False, input_tokens=10, output_tokens=5):
+    return {
+        "text": text,
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "used_fallback": used_fallback,
+    }
+
+
 def test_review_draft_financial_topic_always_routes_to_moderation():
     topic = {"topic_id": "t1", "name": "Crypto", "is_financial": True}
-    with patch("common.compliance.invoke_claude") as mock_invoke:
+    with patch("common.compliance.invoke_model_tracked") as mock_invoke:
         result = compliance.review_draft("Some perfectly fine draft.", topic, "model-id")
 
+    # No Bedrock call at all on this deterministic-routing path -- lineage_call
+    # must be None, not a fabricated entry (docs/project-plan.md §11, PR 2 of 5).
     mock_invoke.assert_not_called()
     assert result["compliant"] is False
     assert result["reasons"] == [
         "financial topic - routed to manual moderation regardless of content"
     ]
+    assert result["lineage_call"] is None
 
 
 def test_review_draft_compliant_response():
     topic = {"topic_id": "t1", "name": "GitHub Trending", "is_financial": False}
-    with patch("common.compliance.invoke_claude", return_value="COMPLIANT\n") as mock_invoke:
+    with patch(
+        "common.compliance.invoke_model_tracked", return_value=_tracked_result("COMPLIANT\n")
+    ) as mock_invoke:
         result = compliance.review_draft("Some draft text.", topic, "model-id")
 
     mock_invoke.assert_called_once()
-    assert result == {"compliant": True, "reasons": []}
+    assert result["compliant"] is True
+    assert result["reasons"] == []
+    assert result["lineage_call"] == {
+        "stage": "compliance_review",
+        "model_id": "model-id",
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "used_fallback": False,
+    }
 
 
 def test_review_draft_compliant_with_minor_concerns():
     topic = {"topic_id": "t1", "is_financial": False}
     response = "COMPLIANT\nConsider softening one claim."
-    with patch("common.compliance.invoke_claude", return_value=response):
+    with patch("common.compliance.invoke_model_tracked", return_value=_tracked_result(response)):
         result = compliance.review_draft("Draft.", topic, "model-id")
 
     assert result["compliant"] is True
@@ -82,7 +105,7 @@ def test_review_draft_compliant_with_minor_concerns():
 def test_review_draft_non_compliant_response():
     topic = {"topic_id": "t1", "is_financial": False}
     response = "NON-COMPLIANT\nContains an unsubstantiated claim.\nTone is not neutral."
-    with patch("common.compliance.invoke_claude", return_value=response):
+    with patch("common.compliance.invoke_model_tracked", return_value=_tracked_result(response)):
         result = compliance.review_draft("Draft.", topic, "model-id")
 
     assert result["compliant"] is False
@@ -95,7 +118,7 @@ def test_review_draft_non_compliant_response():
 def test_review_draft_ambiguous_response_fails_closed():
     topic = {"topic_id": "t1", "is_financial": False}
     response = "This looks fine to me overall."
-    with patch("common.compliance.invoke_claude", return_value=response):
+    with patch("common.compliance.invoke_model_tracked", return_value=_tracked_result(response)):
         result = compliance.review_draft("Draft.", topic, "model-id")
 
     assert result["compliant"] is False
@@ -104,7 +127,7 @@ def test_review_draft_ambiguous_response_fails_closed():
 
 def test_review_draft_empty_response_fails_closed():
     topic = {"topic_id": "t1", "is_financial": False}
-    with patch("common.compliance.invoke_claude", return_value=""):
+    with patch("common.compliance.invoke_model_tracked", return_value=_tracked_result("")):
         result = compliance.review_draft("Draft.", topic, "model-id")
 
     assert result["compliant"] is False
@@ -114,12 +137,36 @@ def test_review_draft_empty_response_fails_closed():
 def test_review_draft_redacts_before_calling_bedrock():
     topic = {"topic_id": "t1", "is_financial": False}
     draft = "Reach out at someone@example.com with questions."
-    with patch("common.compliance.invoke_claude", return_value="COMPLIANT") as mock_invoke:
+    with patch(
+        "common.compliance.invoke_model_tracked", return_value=_tracked_result("COMPLIANT")
+    ) as mock_invoke:
         compliance.review_draft(draft, topic, "model-id")
 
     called_prompt = mock_invoke.call_args[0][0]
     assert "someone@example.com" not in called_prompt
     assert "[REDACTED]" in called_prompt
+
+
+def test_review_draft_passes_fallback_model_id_through():
+    topic = {"topic_id": "t1", "is_financial": False}
+    with patch(
+        "common.compliance.invoke_model_tracked", return_value=_tracked_result("COMPLIANT")
+    ) as mock_invoke:
+        compliance.review_draft("Draft.", topic, "model-id", fallback_model_id="fallback-id")
+
+    assert mock_invoke.call_args.kwargs["fallback_model_id"] == "fallback-id"
+
+
+def test_review_draft_lineage_call_reflects_fallback_usage():
+    topic = {"topic_id": "t1", "is_financial": False}
+    with patch(
+        "common.compliance.invoke_model_tracked",
+        return_value=_tracked_result("COMPLIANT", model_id="fallback-id", used_fallback=True),
+    ):
+        result = compliance.review_draft("Draft.", topic, "model-id", fallback_model_id="fallback-id")
+
+    assert result["lineage_call"]["model_id"] == "fallback-id"
+    assert result["lineage_call"]["used_fallback"] is True
 
 
 # --- bedrock_redact_review (Phase 5 feedback redaction) ---------------------

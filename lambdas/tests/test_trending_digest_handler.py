@@ -57,6 +57,34 @@ def _finding(summary="Something happened.", source_refs=None, captured_at=RECENT
     }
 
 
+def _tracked_result(text, *, model_id="anthropic.claude-test-model", used_fallback=False):
+    return {
+        "text": text,
+        "model_id": model_id,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "used_fallback": used_fallback,
+    }
+
+
+_DUMMY_LINEAGE = {
+    "calls": [],
+    "total_input_tokens": 20,
+    "total_output_tokens": 10,
+    "models_used": ["anthropic.claude-test-model"],
+    "cost_aud": 0.01,
+    "cost_note": None,
+}
+
+_DUMMY_LINEAGE_CALL = {
+    "stage": "compliance_review",
+    "model_id": "anthropic.claude-test-model",
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "used_fallback": False,
+}
+
+
 def test_no_topics_returns_no_recent_findings(s3_bucket):
     with patch("trending_digest_handler.list_topics", return_value=[]):
         result = trending_digest_handler.handler({}, None)
@@ -95,10 +123,15 @@ def test_publishes_digest_when_compliant(s3_bucket):
             "trending_digest_handler.get_latest_finding",
             side_effect=lambda topic_id: findings_by_topic[topic_id],
         ),
-        patch("trending_digest_handler.invoke_claude", return_value="A synthesized digest.") as mock_invoke,
+        patch("trending_digest_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "trending_digest_handler.invoke_model_tracked",
+            return_value=_tracked_result("A synthesized digest."),
+        ) as mock_invoke,
         patch(
             "trending_digest_handler.compliance.review_draft",
-            return_value={"compliant": True, "reasons": []},
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ) as mock_review,
         patch("trending_digest_handler.put_article") as mock_put_article,
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
@@ -133,6 +166,11 @@ def test_publishes_digest_when_compliant(s3_bucket):
     ]
     mock_put_moderation.assert_not_called()
 
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 2 of 5) --
+    # same pattern as daily_cycle_handler's own compliant branch.
+    assert article_kwargs["published_by"] == "ai_only"
+    assert article_kwargs["lineage"] == _DUMMY_LINEAGE
+
     stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=article_kwargs["body_s3_key"])
     assert stored["Body"].read().decode("utf-8") == "A synthesized digest."
 
@@ -166,14 +204,18 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
             "trending_digest_handler.get_latest_finding",
             side_effect=lambda topic_id: findings_by_topic[topic_id],
         ),
+        patch("trending_digest_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
         patch(
-            "trending_digest_handler.invoke_claude", return_value="A synthesized digest."
+            "trending_digest_handler.invoke_model_tracked",
+            return_value=_tracked_result("A synthesized digest."),
         ) as mock_invoke,
         patch(
             "trending_digest_handler.compliance.review_draft",
             return_value={
                 "compliant": False,
                 "reasons": ["financial topic - routed to manual moderation regardless of content"],
+                "lineage_call": _DUMMY_LINEAGE_CALL,
             },
         ) as mock_review,
         patch("trending_digest_handler.put_article") as mock_put_article,
@@ -197,6 +239,7 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     mock_put_article.assert_called_once()
     assert mock_put_article.call_args.kwargs["status"] == "pending_moderation"
     assert mock_put_article.call_args.kwargs["published_at"] is None
+    assert mock_put_article.call_args.kwargs["published_by"] is None
     mock_put_moderation.assert_called_once()
     moderation_kwargs = mock_put_moderation.call_args.kwargs
     assert moderation_kwargs["topic_id"] == "digest"

@@ -397,7 +397,11 @@ def _publish_article(event: dict) -> dict:
         return _error(404, f"article '{article_id}' not found")
 
     published_at = datetime.now(UTC).isoformat()
-    update_article_status(article_id, "published", published_at=published_at)
+    # published_by="humans": an operator action produced this publish,
+    # regardless of the article's prior status -- lineage (tokens/models/
+    # cost) is untouched, it was already fixed at draft time and this
+    # route never regenerates content (docs/project-plan.md §11, PR 2 of 5).
+    update_article_status(article_id, "published", published_at=published_at, published_by="humans")
     _render_published_page(article, published_at=published_at)
 
     moderation_item = get_moderation_item_by_article_id(article_id)
@@ -488,7 +492,12 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     published_at = datetime.now(UTC).isoformat() if article_status == "published" else None
     if article_status == "published":
         article = get_article(article_id)
-        update_article_status(article_id, article_status, published_at=published_at)
+        # published_by="humans": this only ever reaches "published" via an
+        # operator's moderation-approve action (docs/project-plan.md §11,
+        # PR 2 of 5) -- lineage is untouched, fixed at draft time.
+        update_article_status(
+            article_id, article_status, published_at=published_at, published_by="humans"
+        )
         if article is not None:
             _render_published_page(article, published_at=published_at)
     else:
