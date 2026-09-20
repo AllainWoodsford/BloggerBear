@@ -42,12 +42,11 @@ import boto3
 
 from common.compliance import bedrock_redact_review, regex_redact
 from common.dynamo import (
-    count_pending_moderation_for_topic,
     get_article,
     get_latest_finding,
     increment_view_count,
-    list_articles_by_status,
     list_musings,
+    list_pending_moderation_for_topic,
     list_published_articles,
     list_topics,
     put_feedback,
@@ -175,24 +174,17 @@ def _topic_activity(event: dict) -> dict:
     topic_id = _path_param(event, "topic_id")
     researching = False
     pipeline_items = []
-    pending_review_count = count_pending_moderation_for_topic(topic_id)
+    pending_items = list_pending_moderation_for_topic(topic_id)
+    pending_review_count = len(pending_items)
 
-    pending_articles = list_articles_by_status("pending_moderation", topic_id)
-    pending_articles.sort(key=lambda article: article.get("created_at") or "", reverse=True)
-    for article in pending_articles:
+    pending_items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    for pending_item in pending_items:
+        article = get_article(pending_item.get("article_id")) or {}
         pipeline_items.append(
             {
                 "status": "pending_review",
                 "label": "Pending review",
                 "title": article.get("title") or "",
-            }
-        )
-    for _ in range(max(pending_review_count - len(pending_articles), 0)):
-        pipeline_items.append(
-            {
-                "status": "pending_review",
-                "label": "Pending review",
-                "title": "",
             }
         )
 

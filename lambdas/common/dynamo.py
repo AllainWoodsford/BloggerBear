@@ -295,6 +295,13 @@ def list_pending_moderation() -> list[dict]:
     return items
 
 
+def list_pending_moderation_for_topic(topic_id: str) -> list[dict]:
+    """Return every pending ModerationQueue item for a topic."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
+    return _paginated_scan(table, filter_expression)
+
+
 def count_pending_moderation_for_topic(topic_id: str) -> int:
     """Return how many ModerationQueue items are `status == "pending"` for `topic_id`.
 
@@ -306,9 +313,7 @@ def count_pending_moderation_for_topic(topic_id: str) -> int:
     pattern as list_prompt_refinements above, just returning len() instead
     of the items.
     """
-    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
-    return len(_paginated_scan(table, filter_expression))
+    return len(list_pending_moderation_for_topic(topic_id))
 
 
 def list_all_moderation_items() -> list[dict]:
