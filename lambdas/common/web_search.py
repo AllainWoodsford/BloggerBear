@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from common.http_retry import get_json_with_backoff
+from common.relevance import matches_keywords, normalize_keywords
 
 DEFAULT_PROVIDER = "gdelt"
 REQUEST_USER_AGENT = "BloggerBearResearchBot/1.0 (+https://github.com/AllainWoodsford/BloggerBear)"
@@ -127,8 +128,10 @@ def search_web(
     results from the last `max_age_hours`, newest first.
 
     `title_keywords`, if given, keeps only results whose title contains at
-    least one of them (case-insensitive) -- a cheap relevance filter for
-    backends that match on full page text and so return tangential pages.
+    least one of them as a whole word, case-insensitive (see
+    common/relevance.py: a trailing "*" makes a keyword a prefix match) -- a
+    cheap relevance filter for backends that match on full page text and so
+    return tangential pages.
     Raises on backend failure (network, rate limit exhausted, bad response);
     an empty list means the search worked and found nothing.
     """
@@ -139,7 +142,7 @@ def search_web(
 
     raw_results = provider_cls().search(query, max_results=max_results, max_age_hours=max_age_hours)
 
-    keywords = [keyword.lower() for keyword in title_keywords or [] if keyword]
+    keywords = normalize_keywords(title_keywords)
     seen_urls: set[str] = set()
     seen_titles: set[str] = set()
     results: list[dict] = []
@@ -147,7 +150,7 @@ def search_web(
         title, url = result.get("title") or "", result.get("url") or ""
         if not title or not url:
             continue
-        if keywords and not any(keyword in title.lower() for keyword in keywords):
+        if not matches_keywords(title, keywords):
             continue
         url_key = _url_key(url)
         normalized_title = _normalized_title(title)

@@ -67,6 +67,7 @@ import requests
 
 from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse_goal
 from common.http_retry import get_json_with_backoff
+from common.relevance import research_relevance_rule, topic_label
 from common.web_search import search_web
 
 from .base import Adapter
@@ -128,8 +129,10 @@ WEB_NEW_RESULTS_THRESHOLD = 5
 DEFAULT_WEB_QUERY = "(bitcoin OR ethereum OR cryptocurrency OR crypto)"
 # Search backends match full page text, so a title filter drops the
 # tangential pages (an "Interpol tool" story that mentions crypto in passing).
+# Matched as whole words (common/relevance.py), so "eth" can't match "together";
+# a trailing "*" is a prefix match ("crypto*" covers "cryptocurrency").
 CRYPTO_TITLE_KEYWORDS = [
-    "bitcoin", "btc", "ethereum", "ether", "eth", "crypto", "coin", "token",
+    "bitcoin", "btc", "ethereum", "ether", "eth", "crypto*", "coin*", "token*",
     "blockchain", "defi", "altcoin", "stablecoin", "solana", "xrp", "binance",
     "coinbase", "etf", "web3", "nft",
 ]  # fmt: skip
@@ -694,10 +697,10 @@ class CryptoFeedAdapter(Adapter):
         if goal is None or "market_anchors" not in new_state:
             return None  # legacy snapshot: the generic prompt is all it supports
 
-        topic_label = topic.get("name") or topic.get("topic_id")
+        topic_name = topic_label(topic)
         compact_state = json.dumps(new_state, separators=(",", ":"))[:SUMMARY_STATE_MAX_CHARS]
         header = (
-            f'You are monitoring the topic "{topic_label}" for a research digest. '
+            f'You are monitoring the topic "{topic_name}" for a research digest. '
             f"Current Market Anchors: {_anchor_summary(new_state)}.\n\n"
             f"What changed: {diff_summary}\n\n"
         )
@@ -714,6 +717,7 @@ class CryptoFeedAdapter(Adapter):
                 "in the last 24 hours.\n\n"
                 f"News items (JSON; only headlines and source names are available, not "
                 f"article bodies): {compact_state}\n\n"
+                f"{research_relevance_rule(topic_name)}\n\n"
                 "List the distinct stories and themes with their source, note where sources "
                 "agree or conflict, and describe the overall sentiment the headlines convey."
                 + closing

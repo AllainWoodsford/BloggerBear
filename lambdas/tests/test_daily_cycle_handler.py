@@ -538,8 +538,8 @@ def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
 
 
 def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_bucket):
-    """Regression check: with neither Phase 5 addition present, prompts are
-    built exactly as they were pre-Phase-5."""
+    """Regression check: with neither Phase 5 addition present, the prompts are
+    exactly the base prompt plus the topic-relevance guardrails."""
     ideation_response = "Angle one\nAngle two\nAngle three"
     invoke_responses = [ideation_response, "Draft body text.", "Some Title"]
 
@@ -576,12 +576,26 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
         "'GitHub Trending', propose exactly 3 distinct, specific candidate "
         "article angles. Reply with exactly one angle per line, no "
         "numbering, no extra commentary.\n\n"
+        "CRITICAL RELEVANCE RULE:\n"
+        "You are a strict domain-specific writer. Every proposed angle MUST remain deeply "
+        "relevant to the core theme of 'GitHub Trending'. If the raw data findings contain "
+        "fringe, accidental, or off-topic subjects (e.g., pop culture, unrelated hobbies, "
+        "speculative fiction, or internet noise), you MUST either completely ignore those "
+        "findings or aggressively reframe them strictly through the functional lens of "
+        "'GitHub Trending'. Do not wander off-topic.\n\n"
         f"Findings:\n{daily_cycle_handler._format_findings_summaries(FINDINGS)}"
     )
     expected_draft = (
         "Write a full article draft in markdown (a few paragraphs) for a "
         "blog about 'GitHub Trending', on this angle: Angle one\n\n"
         f"Base it on these recent findings:\n{daily_cycle_handler._format_findings_summaries(FINDINGS)}"
+        "\n\nCRITICAL RELEVANCE BOUNDARY:\n"
+        "The primary mandate of this publication is to provide high-signal commentary on "
+        "'GitHub Trending'. Maintain absolute thematic integrity. Under no circumstances should "
+        "you dive into literal or surface-level interpretations of noisy data inputs (for "
+        "example, interpreting a technical 'cookbook' repository as literal culinary recipes, "
+        "or general interest forum posts as core domain facts). Every paragraph must deliver "
+        "value directly aligned with the expectation of a reader subscribing to 'GitHub Trending'."
     )
 
     assert ideation_prompt == expected_ideation
@@ -708,3 +722,90 @@ def test_unparseable_finding_dates_fall_back_to_todays_goal_and_all_findings():
 
     assert goal is goal_for_date(datetime.now(UTC).date())
     assert kept == findings
+
+
+# --- topic relevance guardrails ---------------------------------------------------
+
+NOISE_FINDINGS = [
+    _finding_at(
+        "2026-09-20T01:00:00+00:00",
+        "A trending post about a backyard pizza oven repository",
+        "https://example/pizza",
+    ),
+    _finding_at(
+        "2026-09-20T02:00:00+00:00", "An alien classification article climbs the front page", "https://example/ufo"
+    ),
+]
+
+
+def _topic_named(name, topic_id="some-topic"):
+    return {
+        "topic_id": topic_id,
+        "name": name,
+        "adapter": "hacker_news",
+        "adapter_config": {},
+        "is_financial": False,
+    }
+
+
+@pytest.mark.parametrize("name", ["Security & Hacker News", "Urban Beekeeping", "Quantum Computing"])
+def test_ideation_and_drafting_are_anchored_to_whichever_topic_is_active(s3_bucket, name):
+    _, mock_invoke, _ = _run_crypto(_topic_named(name), NOISE_FINDINGS)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    assert "CRITICAL RELEVANCE RULE:" in ideation_prompt
+    assert f"core theme of '{name}'" in ideation_prompt
+    assert f"functional lens of '{name}'" in ideation_prompt
+    assert "CRITICAL RELEVANCE BOUNDARY:" in draft_prompt
+    assert f"high-signal commentary on '{name}'" in draft_prompt
+    assert f"subscribing to '{name}'" in draft_prompt
+
+
+def test_the_ideation_rule_precedes_the_noisy_findings_and_the_draft_boundary_follows_them(s3_bucket):
+    _, mock_invoke, _ = _run_crypto(_topic_named("Security & Hacker News"), NOISE_FINDINGS)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    assert ideation_prompt.index("CRITICAL RELEVANCE RULE") < ideation_prompt.index("pizza oven")
+    assert ideation_prompt.index("Reply with exactly one angle per line") < ideation_prompt.index(
+        "CRITICAL RELEVANCE RULE"
+    )
+    assert draft_prompt.index("pizza oven") < draft_prompt.index("CRITICAL RELEVANCE BOUNDARY")
+
+
+def test_a_topic_without_a_name_is_addressed_by_its_id(s3_bucket):
+    topic = {**_topic_named(None, topic_id="raw-topic-id")}
+
+    _, mock_invoke, _ = _run_crypto(topic, NOISE_FINDINGS)
+
+    assert "core theme of 'raw-topic-id'" in mock_invoke.call_args_list[0].args[0]
+    assert "commentary on 'raw-topic-id'" in mock_invoke.call_args_list[1].args[0]
+
+
+def test_editorial_goals_stay_and_are_kept_inside_the_topic(s3_bucket):
+    topic = {**FINANCIAL_TOPIC, "adapter_config": {"editorial_goal": "TREND_INVENTOR"}}
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Anchors diverge", "https://example/f")]
+
+    _, mock_invoke, _ = _run_crypto(topic, findings)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    mandate = EDITORIAL_MANDATES[EditorialGoal.TREND_INVENTOR]
+    assert ideation_prompt.index("CRITICAL RELEVANCE RULE") < ideation_prompt.index(
+        f"Editorial Mandate: {mandate}"
+    )
+    assert "Apply this mandate strictly within the theme of 'Crypto Markets'" in ideation_prompt
+    assert ideation_prompt.index("Editorial Mandate") < ideation_prompt.index("Data Payload:")
+    assert "Reply with exactly one angle per line" in ideation_prompt
+    assert draft_prompt.index("CRITICAL RELEVANCE BOUNDARY") < draft_prompt.index("Article style:")
+    assert ARTICLE_STYLES[EditorialGoal.TREND_INVENTOR] in draft_prompt
+
+
+def test_the_guardrails_sit_alongside_financial_and_feedback_guidance(s3_bucket):
+    _, mock_invoke, _ = _run_crypto(FINANCIAL_TOPIC, [_finding_at(datetime.now(UTC).isoformat(), "F", "https://e/f")])
+
+    for call in mock_invoke.call_args_list[:2]:
+        assert "Financial-topic guidance (mandatory):" in call.args[0]
+    assert "CRITICAL RELEVANCE RULE" in mock_invoke.call_args_list[0].args[0]
+    assert "CRITICAL RELEVANCE BOUNDARY" in mock_invoke.call_args_list[1].args[0]
