@@ -261,7 +261,7 @@ def _anomaly_5d(prices: list[list[float]], volumes: list[list[float]]) -> dict:
 
     return {
         "has_spike": has_spike,
-        "direction": "up" if move > 0 else "down",
+        "direction": "up" if move > 0 else "down" if move < 0 else None,
         "max_deviation_percent": round(abs(move), 1),
         "context": context,
     }

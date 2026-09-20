@@ -1,3 +1,4 @@
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
 import boto3
@@ -5,6 +6,12 @@ import pytest
 from moto import mock_aws
 
 import daily_cycle_handler
+from common.editorial_goals import (
+    ARTICLE_STYLES,
+    EDITORIAL_MANDATES,
+    EditorialGoal,
+    goal_for_date,
+)
 
 
 def _tracked_result(
@@ -579,3 +586,125 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
 
     assert ideation_prompt == expected_ideation
     assert draft_prompt == expected_draft
+
+
+# --- editorial goals (crypto feed) --------------------------------------------
+
+
+def _finding_at(captured_at, summary, url):
+    return {
+        "topic_id": "crypto",
+        "captured_at": captured_at,
+        "summary": summary,
+        "source_refs": [{"url": url, "title": summary}],
+    }
+
+
+def _run_crypto(topic, findings):
+    responses = ["Angle one\nAngle two\nAngle three", "Draft body text.", "Some Title"]
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=topic),
+        patch("daily_cycle_handler.list_recent_findings", return_value=findings),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in responses],
+        ) as mock_invoke,
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+    ):
+        result = daily_cycle_handler.handler({"topic_id": topic["topic_id"]}, None)
+    return result, mock_invoke, mock_put_article
+
+
+def test_crypto_topic_prompts_carry_todays_goal_and_only_todays_findings(s3_bucket):
+    now = datetime.now(UTC)
+    findings = [
+        _finding_at(now.isoformat(), "Today's finding", "https://example/today"),
+        _finding_at((now - timedelta(days=1)).isoformat(), "Yesterday's finding", "https://example/old"),
+    ]
+    goal = goal_for_date(now.date())
+
+    _, mock_invoke, mock_put_article = _run_crypto(FINANCIAL_TOPIC, findings)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    assert "assigned daily editorial vector for 'Crypto Markets'" in ideation_prompt
+    assert f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}" in ideation_prompt
+    assert "Reply with exactly one angle per line" in ideation_prompt  # the parser depends on it
+    assert "Data Payload:\n- Today's finding" in ideation_prompt
+    assert f"Article style: {ARTICLE_STYLES[goal]}" in draft_prompt
+    assert "Yesterday's finding" not in ideation_prompt + draft_prompt
+    # source_refs must trace only the findings the draft was actually based on
+    assert mock_put_article.call_args.kwargs["source_refs"] == [
+        {"url": "https://example/today", "title": "Today's finding"}
+    ]
+
+
+def test_with_nothing_captured_today_the_goal_follows_the_newest_findings_own_day(s3_bucket):
+    newest_day = date(2026, 9, 12)
+    findings = [
+        _finding_at("2026-09-12T08:00:00+00:00", "Newest", "https://example/newest"),
+        _finding_at("2026-09-11T08:00:00+00:00", "Older", "https://example/older"),
+    ]
+    goal = goal_for_date(newest_day)
+
+    _, mock_invoke, mock_put_article = _run_crypto(FINANCIAL_TOPIC, findings)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    assert f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}" in ideation_prompt
+    assert "Older" not in ideation_prompt
+    assert [r["url"] for r in mock_put_article.call_args.kwargs["source_refs"]] == [
+        "https://example/newest"
+    ]
+
+
+@pytest.mark.parametrize("goal", list(EditorialGoal))
+def test_a_pinned_goal_drives_the_mandate_and_style(s3_bucket, goal):
+    topic = {**FINANCIAL_TOPIC, "adapter_config": {"editorial_goal": goal.value}}
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Finding", "https://example/f")]
+
+    _, mock_invoke, _ = _run_crypto(topic, findings)
+
+    assert EDITORIAL_MANDATES[goal] in mock_invoke.call_args_list[0].args[0]
+    assert ARTICLE_STYLES[goal] in mock_invoke.call_args_list[1].args[0]
+
+
+def test_topics_without_a_goal_are_untouched_by_the_goal_logic(s3_bucket):
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Repo news", "https://example/r")]
+    old = _finding_at("2026-01-01T00:00:00+00:00", "Old repo news", "https://example/o")
+
+    _, mock_invoke, mock_put_article = _run_crypto(NON_FINANCIAL_TOPIC, [*findings, old])
+
+    prompts = mock_invoke.call_args_list[0].args[0] + mock_invoke.call_args_list[1].args[0]
+    assert "Editorial Mandate" not in prompts and "Article style" not in prompts
+    assert "Old repo news" in prompts  # no day filtering for goal-less topics
+    assert len(mock_put_article.call_args.kwargs["source_refs"]) == 2
+
+
+def test_captured_date_treats_naive_timestamps_as_utc_and_tolerates_garbage():
+    assert daily_cycle_handler._captured_date({"captured_at": "2026-09-12T23:30:00"}) == date(2026, 9, 12)
+    assert daily_cycle_handler._captured_date(
+        {"captured_at": "2026-09-12T23:30:00-05:00"}
+    ) == date(2026, 9, 13)
+    assert daily_cycle_handler._captured_date({"captured_at": "not a date"}) is None
+    assert daily_cycle_handler._captured_date({}) is None
+
+
+def test_unparseable_finding_dates_fall_back_to_todays_goal_and_all_findings():
+    findings = [{"captured_at": "garbage", "summary": "s", "source_refs": []}]
+
+    goal, kept = daily_cycle_handler._select_goal_and_findings(FINANCIAL_TOPIC, findings)
+
+    assert goal is goal_for_date(datetime.now(UTC).date())
+    assert kept == findings
