@@ -924,11 +924,48 @@ def test_the_standing_goal_and_the_crypto_daily_vector_are_layered_not_replaced(
     assert "Financial-topic guidance (mandatory):" in draft_prompt
 
 
-def test_a_crypto_topic_with_no_goal_of_its_own_uses_the_crypto_adapter_default(s3_bucket):
+@pytest.mark.parametrize(
+    "daily_goal", ["ALTCOIN_DEEP_DIVE", "WEB_AGGREGATOR", "TREND_INVENTOR"]
+)
+def test_a_crypto_topic_with_no_goal_of_its_own_uses_the_crypto_adapter_default(
+    s3_bucket, daily_goal
+):
+    topic = {**FINANCIAL_TOPIC, "adapter_config": {"editorial_goal": daily_goal}}
     findings = [_finding_at(datetime.now(UTC).isoformat(), "Anchors diverge", "https://example/a")]
 
-    _, mock_invoke, _ = _run_crypto(FINANCIAL_TOPIC, findings)
+    _, mock_invoke, _ = _run_crypto(topic, findings)
 
-    assert "Adapter-Specific Standard Goal: Prioritize structural changes in asset cap" in (
-        mock_invoke.call_args_list[0].args[0]
-    )
+    for call in mock_invoke.call_args_list[:2]:
+        assert "Adapter-Specific Standard Goal: Prioritize structural changes in asset cap" in (
+            call.args[0]
+        )
+
+
+def test_on_a_market_news_day_the_crypto_standing_goal_is_skipped(s3_bucket):
+    topic = {**FINANCIAL_TOPIC, "adapter_config": {"editorial_goal": "MARKET_NEWS"}}
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Stocks rally", "https://example/s")]
+
+    _, mock_invoke, _ = _run_crypto(topic, findings)
+
+    for call in mock_invoke.call_args_list[:2]:
+        prompt = call.args[0]
+        assert "Asset cap" not in prompt and "asset cap distributions" not in prompt
+        assert "Global Default Goal: Execute independent web research" in prompt
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    assert f"Editorial Mandate: {EDITORIAL_MANDATES[EditorialGoal.MARKET_NEWS]}" in ideation_prompt
+    assert ARTICLE_STYLES[EditorialGoal.MARKET_NEWS] in mock_invoke.call_args_list[1].args[0]
+    # still a financial topic: the mandatory guidance is unaffected
+    assert "Financial-topic guidance (mandatory):" in ideation_prompt
+
+
+def test_a_topic_specific_focus_still_wins_on_a_market_news_day(s3_bucket):
+    topic = {
+        **FINANCIAL_TOPIC,
+        "adapter_config": {"editorial_goal": "MARKET_NEWS"},
+        "editorial_goals": {"primary_focus": "Track institutional flows."},
+    }
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Stocks rally", "https://example/s")]
+
+    _, mock_invoke, _ = _run_crypto(topic, findings)
+
+    assert "Topic-Specific Focus: Track institutional flows." in mock_invoke.call_args_list[0].args[0]

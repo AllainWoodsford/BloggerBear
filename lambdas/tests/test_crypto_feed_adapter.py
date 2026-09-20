@@ -90,6 +90,16 @@ def _web_result(n, published_at="2026-09-20T12:00:00+00:00"):
     }
 
 
+def _market_result(n, title=None, published_at="2026-09-20T12:00:00+00:00"):
+    return {
+        "title": title or f"Stocks rally as inflation cools {n}",
+        "url": f"https://markets.example/{n}",
+        "source": "markets.example",
+        "published_at": published_at,
+        "snippet": None,
+    }
+
+
 def _fake_get(markets, failing=(), history=None):
     def fake(url, **kwargs):
         if url == MARKETS_URL:
@@ -316,9 +326,11 @@ def test_history_requests_ask_for_a_year_of_daily_data():
     assert call.kwargs["params"] == {"vs_currency": "usd", "days": 365, "interval": "daily"}
 
 
-def test_without_a_pin_the_goal_follows_the_date_rotation():
-    with patch("common.adapters.crypto_feed.search_web", return_value=[_web_result(1)]):
-        state, _ = _fetch(_topic())  # stubbed: today's goal may be the web aggregator
+def test_without_a_pin_the_goal_follows_the_daily_draw():
+    # search is stubbed with one crypto and one market headline, whichever web goal is drawn
+    headlines = [_web_result(1), _market_result(2)]
+    with patch("common.adapters.crypto_feed.search_web", return_value=headlines):
+        state, _ = _fetch(_topic())
 
     assert state["editorial_goal"] == goal_for_date(datetime.now(UTC).date()).value
 
@@ -798,3 +810,129 @@ def test_a_full_fetch_uses_the_key_for_every_request_when_it_works(monkeypatch):
 
     assert len(state["analyzed_pool"]) == POOL_SIZE
     assert all(_keyed(call.kwargs) for call in mock_get.call_args_list)
+
+
+# --- MARKET_NEWS day: general finance news, nothing to do with crypto ---------------------
+
+MARKET_NEWS_TOPIC = _topic(editorial_goal="MARKET_NEWS")
+
+
+def _fetch_market_news(results, topic=MARKET_NEWS_TOPIC):
+    with (
+        patch(GET) as mock_get,
+        patch("common.adapters.crypto_feed.search_web", return_value=results) as mock_search,
+    ):
+        state = CryptoFeedAdapter().fetch_state(topic)
+    return state, mock_get, mock_search
+
+
+def test_a_market_news_day_makes_no_coingecko_call_and_carries_no_crypto_data():
+    state, mock_get, _ = _fetch_market_news([_market_result(1), _market_result(2)])
+
+    mock_get.assert_not_called()
+    assert state["editorial_goal"] == "MARKET_NEWS"
+    assert state["market_anchors"] == {}  # key kept so the snapshot format is unchanged
+    assert "analyzed_pool" not in state
+    assert len(state["web_results"]) == 2
+
+
+def test_market_news_searches_finance_terms_and_filters_titles_to_finance():
+    _, _, mock_search = _fetch_market_news([_market_result(1)])
+
+    call = mock_search.call_args
+    assert '"stock market"' in call.args[0] and "inflation" in call.args[0]
+    assert "bitcoin" not in call.args[0].lower()
+    assert "stock*" in call.kwargs["title_keywords"]
+    assert call.kwargs["max_age_hours"] == 24
+    assert call.kwargs["max_results"] == 30  # over-fetch: crypto is excluded afterwards
+
+
+def test_market_news_drops_crypto_headlines_but_keeps_ordinary_etf_news():
+    results = [
+        _market_result(1, "Bitcoin rallies as stocks climb"),
+        _market_result(2, "Ethereum ETF sees record market inflows"),
+        _market_result(3, "Coinbase earnings beat estimates"),
+        _market_result(4, "Bond ETF inflows hit a record as yields fall"),
+        _market_result(5, "Stocks rally as inflation cools"),
+    ]
+
+    state, _, _ = _fetch_market_news(results)
+
+    assert [r["url"] for r in state["web_results"]] == [
+        "https://markets.example/4",
+        "https://markets.example/5",
+    ]
+
+
+def test_market_news_queries_can_be_overridden_and_are_kept_separate_from_crypto_queries():
+    topic = _topic(
+        editorial_goal="MARKET_NEWS",
+        market_news_queries=["oil prices"],
+        web_search_queries=["ignored for market news"],
+    )
+
+    _, _, mock_search = _fetch_market_news([_market_result(1)], topic=topic)
+
+    assert [c.args[0] for c in mock_search.call_args_list] == ["oil prices"]
+
+
+def test_market_news_fails_loudly_when_only_crypto_headlines_come_back():
+    with pytest.raises(RuntimeError, match="no general financial-market news"):
+        _fetch_market_news([_market_result(1, "Bitcoin and stocks both rise")])
+
+
+def test_the_crypto_web_aggregator_is_unchanged_and_still_uses_crypto_filters():
+    with (
+        patch(GET, side_effect=_fake_get(_markets())),
+        patch("common.adapters.crypto_feed.search_web", return_value=[_web_result(1)]) as mock_search,
+    ):
+        state = CryptoFeedAdapter().fetch_state(_topic(editorial_goal="WEB_AGGREGATOR"))
+
+    assert "bitcoin" in mock_search.call_args.kwargs["title_keywords"]
+    assert mock_search.call_args.kwargs["max_results"] == 15
+    assert set(state["market_anchors"]) == {"bitcoin", "ethereum"}
+
+
+def _market_news_state(day="2026-09-20", urls=()):
+    return {
+        "fetched_at": f"{day}T12:00:00+00:00",
+        "editorial_goal": "MARKET_NEWS",
+        "market_anchors": {},
+        "web_results": [{"title": f"Story {u}", "url": f"https://x/{u}"} for u in urls],
+    }
+
+
+def test_market_news_material_diff_follows_new_headlines_not_crypto_prices():
+    adapter = CryptoFeedAdapter()
+    old = _market_news_state(urls=[1, 2, 3])
+
+    assert adapter.material_diff(old, _market_news_state(urls=[1, 2, 3, 4, 5])) == (
+        False,
+        "no material change",
+    )
+    changed, summary = adapter.material_diff(old, _market_news_state(urls=range(1, 9)))
+    assert changed is True and summary.startswith("5 new news items")
+    changed, summary = adapter.material_diff(_market_news_state(day="2026-09-19"), old)
+    assert changed is True and "new daily analysis" in summary
+
+
+def test_market_news_prompt_has_no_crypto_anchors_and_says_crypto_is_out_of_scope():
+    topic = {"topic_id": "c", "name": "Finance", "adapter": "crypto_feed"}
+
+    prompt = CryptoFeedAdapter().build_summary_prompt(
+        topic, "the diff", _market_news_state(urls=[1, 2])
+    )
+
+    assert "Current Market Anchors" not in prompt
+    assert "synthesis of 2 general financial-market (not crypto) news items" in prompt
+    assert "RELEVANCE RULE: this digest covers 'Finance' and nothing else" in prompt
+    assert "do not give financial or investment advice" in prompt
+    # the crypto adapter's own standing goal would contradict a non-crypto day
+    assert "asset cap distributions" not in prompt
+    assert "Global Default Goal" in prompt
+
+
+def test_market_news_source_refs_are_just_the_articles():
+    refs = CryptoFeedAdapter().source_refs(_market_news_state(urls=[1, 2]))
+
+    assert [r["url"] for r in refs] == ["https://x/1", "https://x/2"]
