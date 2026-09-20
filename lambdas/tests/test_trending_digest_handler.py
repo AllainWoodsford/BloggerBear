@@ -102,6 +102,8 @@ def test_publishes_digest_when_compliant(s3_bucket):
         ) as mock_review,
         patch("trending_digest_handler.put_article") as mock_put_article,
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
+        patch("trending_digest_handler.render_and_publish_article_page") as mock_render_page,
+        patch("trending_digest_handler.generate_and_store_article_musing") as mock_musing,
     ):
         result = trending_digest_handler.handler({}, None)
 
@@ -134,6 +136,23 @@ def test_publishes_digest_when_compliant(s3_bucket):
     stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=article_kwargs["body_s3_key"])
     assert stored["Body"].read().decode("utf-8") == "A synthesized digest."
 
+    # Bugfix regression check: a digest article that publishes cleanly on
+    # the first pass must also get a static page and a musing, same as
+    # daily_cycle_handler.py's own compliant branch -- previously missed
+    # entirely.
+    mock_render_page.assert_called_once()
+    render_kwargs = mock_render_page.call_args.kwargs
+    assert render_kwargs["article_id"] == article_kwargs["article_id"]
+    assert render_kwargs["topic_name"] == "Trending Everywhere"
+    assert render_kwargs["body_markdown"] == "A synthesized digest."
+
+    mock_musing.assert_called_once()
+    musing_kwargs = mock_musing.call_args.kwargs
+    assert musing_kwargs["article_id"] == article_kwargs["article_id"]
+    assert musing_kwargs["topic_id"] == "digest"
+    assert musing_kwargs["topic_name"] == "Trending Everywhere"
+    assert musing_kwargs["compliant"] is True
+
 
 def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     findings_by_topic = {
@@ -159,6 +178,8 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
         ) as mock_review,
         patch("trending_digest_handler.put_article") as mock_put_article,
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
+        patch("trending_digest_handler.render_and_publish_article_page") as mock_render_page,
+        patch("trending_digest_handler.generate_and_store_article_musing") as mock_musing,
     ):
         result = trending_digest_handler.handler({}, None)
 
@@ -182,6 +203,10 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     assert moderation_kwargs["reasons"] == [
         "financial topic - routed to manual moderation regardless of content"
     ]
+    # Not published on this pass -- nothing to render a static page for or
+    # muse about yet (see the compliant-path test for when these do fire).
+    mock_render_page.assert_not_called()
+    mock_musing.assert_not_called()
 
     # The standing disclaimer must be appended to the stored draft body
     # (even though it's pending moderation, not yet published) --
