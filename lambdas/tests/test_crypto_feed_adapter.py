@@ -6,13 +6,18 @@ from datetime import UTC, date, datetime
 from unittest.mock import patch
 
 import pytest
+import requests
 
 from common.adapters.crypto_feed import (
     HISTORY_CONCURRENCY,
-    HISTORY_URL,
-    MARKETS_URL,
+    HISTORY_PATH,
+    KEYED_MAX_ATTEMPTS,
+    MARKETS_PATH,
     MIN_POOL_SIZE,
     POOL_SIZE,
+    PRO_BASE_URL,
+    PUBLIC_BASE_URL,
+    CoinGeckoClient,
     CryptoFeedAdapter,
     _anomaly_5d,
     _format_usd,
@@ -27,6 +32,14 @@ from common.editorial_goals import EditorialGoal, goal_for_date
 
 DAY_MS = 86_400_000
 TODAY = datetime.now(UTC).date()
+MARKETS_URL = PUBLIC_BASE_URL + MARKETS_PATH
+HISTORY_URL = PUBLIC_BASE_URL + HISTORY_PATH
+
+
+@pytest.fixture(autouse=True)
+def _no_api_key_by_default(monkeypatch):
+    monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
+    monkeypatch.delenv("COINGECKO_API_PLAN", raising=False)
 
 
 def _market(coin_id, price, rank, c24=6.0, c7=10.0, c30=15.0, c1y=50.0, name=None):
@@ -598,3 +611,160 @@ def test_no_prompt_for_a_legacy_or_unknown_goal_snapshot():
 def test_every_goal_has_a_prompt():
     for goal in EditorialGoal:
         assert _prompt(goal.value, urls=[1])
+
+
+# --- CoinGecko API key + keyless fallback --------------------------------------
+
+SECRET = "CG-super-secret-key"
+GET = "common.adapters.crypto_feed.get_json_with_backoff"
+
+
+def _http_error(status):
+    response = requests.Response()
+    response.status_code = status
+    return requests.HTTPError(f"{status} error", response=response)
+
+
+def _keyed(kwargs):
+    return any(name.startswith("x-cg-") for name in kwargs["headers"])
+
+
+def test_without_a_key_requests_go_to_the_public_api_with_no_key_header():
+    with patch(GET, return_value=[]) as mock_get:
+        CoinGeckoClient().get_json("/coins/markets", params={"a": 1})
+
+    url = mock_get.call_args.args[0]
+    assert url == PUBLIC_BASE_URL + "/coins/markets"
+    assert not _keyed(mock_get.call_args.kwargs)
+    assert mock_get.call_count == 1
+
+
+def test_a_demo_key_is_sent_as_a_header_on_the_public_host_never_in_the_url():
+    with patch(GET, return_value=[]) as mock_get:
+        CoinGeckoClient(api_key=SECRET).get_json("/coins/markets", params={"a": 1})
+
+    call = mock_get.call_args
+    assert call.args[0] == PUBLIC_BASE_URL + "/coins/markets"
+    assert call.kwargs["headers"]["x-cg-demo-api-key"] == SECRET
+    assert call.kwargs["max_attempts"] == KEYED_MAX_ATTEMPTS
+    assert SECRET not in call.args[0] and SECRET not in str(call.kwargs["params"])
+
+
+def test_a_pro_key_uses_the_pro_host_and_header():
+    with patch(GET, return_value=[]) as mock_get:
+        CoinGeckoClient(api_key=SECRET, plan="pro").get_json("/coins/markets")
+
+    call = mock_get.call_args
+    assert call.args[0] == PRO_BASE_URL + "/coins/markets"
+    assert call.kwargs["headers"]["x-cg-pro-api-key"] == SECRET
+
+
+def test_from_env_reads_key_and_plan_and_treats_blank_or_unknown_values_safely(monkeypatch):
+    monkeypatch.setenv("COINGECKO_API_KEY", "  ")
+    assert CoinGeckoClient.from_env().uses_key is False
+
+    monkeypatch.setenv("COINGECKO_API_KEY", SECRET)
+    monkeypatch.setenv("COINGECKO_API_PLAN", "PRO")
+    with patch(GET, return_value=[]) as mock_get:
+        CoinGeckoClient.from_env().get_json("/x")
+    assert mock_get.call_args.args[0].startswith(PRO_BASE_URL)
+
+    monkeypatch.setenv("COINGECKO_API_PLAN", "nonsense")
+    with patch(GET, return_value=[]) as mock_get:
+        CoinGeckoClient.from_env().get_json("/x")
+    assert mock_get.call_args.args[0].startswith(PUBLIC_BASE_URL)
+    assert "x-cg-demo-api-key" in mock_get.call_args.kwargs["headers"]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [_http_error(429), _http_error(503), requests.ConnectionError("down"), requests.Timeout("slow")],
+    ids=["rate-limited", "server-error", "connection", "timeout"],
+)
+def test_a_failed_keyed_request_falls_back_to_the_public_api(failure):
+    client = CoinGeckoClient(api_key=SECRET)
+    outcomes = [failure, {"ok": True}]
+
+    def fake(url, **kwargs):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    with patch(GET, side_effect=fake) as mock_get:
+        result = client.get_json("/coins/markets")
+
+    assert result == {"ok": True}
+    assert _keyed(mock_get.call_args_list[0].kwargs)
+    assert not _keyed(mock_get.call_args_list[1].kwargs)
+    assert client.uses_key is True  # transient trouble doesn't disable the key
+
+
+def test_a_rejected_key_is_dropped_for_the_rest_of_the_run():
+    client = CoinGeckoClient(api_key=SECRET)
+
+    def fake(url, **kwargs):
+        if _keyed(kwargs):
+            raise _http_error(401)
+        return {"ok": True}
+
+    with patch(GET, side_effect=fake) as mock_get:
+        assert client.get_json("/a") == {"ok": True}
+        assert client.get_json("/b") == {"ok": True}
+        assert client.get_json("/c") == {"ok": True}
+
+    keyed_calls = [c for c in mock_get.call_args_list if _keyed(c.kwargs)]
+    assert len(keyed_calls) == 1  # one wasted request, not one per call
+    assert client.uses_key is False
+
+
+def test_if_the_public_fallback_also_fails_its_error_is_raised():
+    client = CoinGeckoClient(api_key=SECRET)
+
+    with patch(GET, side_effect=_http_error(429)):
+        with pytest.raises(requests.HTTPError):
+            client.get_json("/coins/markets")
+
+
+def test_the_key_never_appears_in_logs(capsys):
+    client = CoinGeckoClient(api_key=SECRET)
+
+    def fake(url, **kwargs):
+        if _keyed(kwargs):
+            raise _http_error(401)
+        return {}
+
+    with patch(GET, side_effect=fake):
+        client.get_json("/coins/markets")
+
+    output = capsys.readouterr().out
+    assert "API key rejected" in output
+    assert SECRET not in output
+
+
+def test_a_full_fetch_still_succeeds_when_the_key_is_rejected(monkeypatch, capsys):
+    monkeypatch.setenv("COINGECKO_API_KEY", SECRET)
+    markets = _markets()
+    public = _fake_get(markets)
+
+    def fake(url, **kwargs):
+        if _keyed(kwargs):
+            raise _http_error(401)
+        return public(url, **kwargs)
+
+    with patch(GET, side_effect=fake):
+        state = CryptoFeedAdapter().fetch_state(DEEP_DIVE)
+
+    assert len(state["analyzed_pool"]) == POOL_SIZE
+    assert SECRET not in capsys.readouterr().out
+
+
+def test_a_full_fetch_uses_the_key_for_every_request_when_it_works(monkeypatch):
+    monkeypatch.setenv("COINGECKO_API_KEY", SECRET)
+    public = _fake_get(_markets())
+
+    with patch(GET, side_effect=lambda url, **kwargs: public(url, **kwargs)) as mock_get:
+        state = CryptoFeedAdapter().fetch_state(DEEP_DIVE)
+
+    assert len(state["analyzed_pool"]) == POOL_SIZE
+    assert all(_keyed(call.kwargs) for call in mock_get.call_args_list)
