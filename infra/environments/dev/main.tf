@@ -462,8 +462,17 @@ resource "aws_lambda_function" "research_tick" {
   filename         = data.archive_file.lambdas.output_path
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
+  # The CoinGecko key goes to research_tick alone (the only Lambda that runs
+  # the crypto adapter) rather than into the shared local, which every Lambda
+  # receives. No key set -> no variables added -> the adapter stays keyless.
   environment {
-    variables = local.lambda_env_variables
+    variables = merge(
+      local.lambda_env_variables,
+      var.coingecko_api_key == "" ? {} : {
+        COINGECKO_API_KEY  = var.coingecko_api_key
+        COINGECKO_API_PLAN = var.coingecko_api_plan
+      },
+    )
   }
 }
 
