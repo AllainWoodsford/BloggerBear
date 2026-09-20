@@ -5,3 +5,8 @@
 # crypto_feed.py's module docstring for why that split exists) can never
 # drift apart.
 CRYPTO_FEED_ADAPTER_KEY = "crypto_feed"
+
+# Adapter registry key for common/adapters/web_search.py's WebSearchAdapter --
+# the generic, reusable "search the web for these queries" adapter any
+# research topic can be configured with (see common/web_search.py).
+WEB_SEARCH_ADAPTER_KEY = "web_search"
