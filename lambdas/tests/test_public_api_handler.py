@@ -23,6 +23,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     monkeypatch.setenv("FEEDBACK_TABLE", "Feedback")
     monkeypatch.setenv("MUSINGS_TABLE", "Musings")
+    monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
@@ -83,6 +84,12 @@ def aws_resources(aws_env):
             AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        dynamodb.create_table(
+            TableName="ModerationQueue",
+            KeySchema=[{"AttributeName": "queue_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "queue_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
 
         s3 = boto3.client("s3", region_name=REGION)
         s3.create_bucket(
@@ -139,6 +146,28 @@ def _put_musing(
             "topic_id": topic_id,
             "text": text,
             "mood": mood,
+            "created_at": created_at,
+        }
+    )
+
+
+def _put_moderation_item(
+    queue_id="queue-1",
+    *,
+    article_id="article-1",
+    topic_id="github-trending",
+    status="pending",
+    reasons=None,
+    created_at="2026-09-12T00:00:00+00:00",
+):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    table.put_item(
+        Item={
+            "queue_id": queue_id,
+            "article_id": article_id,
+            "topic_id": topic_id,
+            "reasons": reasons if reasons is not None else ["needs review"],
+            "status": status,
             "created_at": created_at,
         }
     )
@@ -282,7 +311,11 @@ def test_topic_activity_false_when_no_findings(aws_resources):
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
     assert result["statusCode"] == 200
-    assert json.loads(result["body"]) == {"topic_id": "github-trending", "researching": False}
+    assert json.loads(result["body"]) == {
+        "topic_id": "github-trending",
+        "researching": False,
+        "pending_review_count": 0,
+    }
 
 
 def test_topic_activity_true_when_finding_exists(aws_resources):
@@ -291,16 +324,51 @@ def test_topic_activity_true_when_finding_exists(aws_resources):
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
     assert result["statusCode"] == 200
-    assert json.loads(result["body"]) == {"topic_id": "github-trending", "researching": True}
+    assert json.loads(result["body"]) == {
+        "topic_id": "github-trending",
+        "researching": True,
+        "pending_review_count": 0,
+    }
 
 
-def test_topic_activity_never_leaks_raw_finding_content(aws_resources):
-    _put_finding()
+def test_topic_activity_counts_only_pending_items_for_this_topic(aws_resources):
+    _put_moderation_item("queue-1", topic_id="github-trending", status="pending")
+    _put_moderation_item("queue-2", topic_id="github-trending", status="pending")
+    # Belongs to a different topic -- must not be counted.
+    _put_moderation_item("queue-3", topic_id="other-topic", status="pending")
+    # Already resolved -- must not be counted.
+    _put_moderation_item("queue-4", topic_id="github-trending", status="approved")
 
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
     body = json.loads(result["body"])
-    assert set(body.keys()) == {"topic_id", "researching"}
+    assert body["pending_review_count"] == 2
+
+    other_event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "other-topic"})
+    other_result = public_api_handler.handler(other_event, None)
+    assert json.loads(other_result["body"])["pending_review_count"] == 1
+
+
+def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resources):
+    _put_finding()
+    _put_moderation_item(
+        "queue-1",
+        article_id="secret-article",
+        topic_id="github-trending",
+        status="pending",
+        reasons=["unsubstantiated claim about star counts"],
+    )
+
+    event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert set(body.keys()) == {"topic_id", "researching", "pending_review_count"}
+    # Nothing from the pending ModerationQueue item -- not its article_id,
+    # not its reasons, not its queue_id -- appears anywhere in the response.
+    body_text = result["body"]
+    assert "secret-article" not in body_text
+    assert "unsubstantiated" not in body_text
+    assert "queue-1" not in body_text
 
 
 # --- Musings --------------------------------------------------------------

@@ -302,6 +302,102 @@ a {
   margin: 0 0 1em;
 }
 
+/* --- Articles in the Pipeline ----------------------------------------
+   A "terminal window" treatment for in-progress work (pending-review /
+   researching) -- reuses the site's existing --bg/--fg/--border/--muted
+   tokens rather than a hardcoded terminal-green palette, so it stays
+   consistent (and correctly themed in both light and dark mode) instead
+   of looking like a jarring, unrelated widget bolted onto the page. */
+
+.pipeline-box {
+  margin: 0 0 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+.pipeline-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.pipeline-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.pipeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px 14px;
+}
+
+.pipeline-list li {
+  padding: 4px 0;
+  color: var(--muted);
+}
+
+/* Paw prints instead of default bullet dots -- a ::before pseudo-element
+   with the emoji as content, not a background-image asset. */
+.pipeline-list li::before {
+  content: "\1F43E";
+  margin-right: 8px;
+}
+
+/* Decorative CSS-only spinner: a rotating ring, no image asset, no
+   animation library. aria-hidden in the markup, not just visually
+   decorative -- see app.js's renderPipelineSection. */
+.pipeline-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--muted);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: pipeline-spin 0.9s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes pipeline-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A small bear-themed touch alongside the spinner -- a gentle bob, not a
+   custom illustration (this repo has no bear artwork/sprite to animate). */
+.pipeline-bear {
+  display: inline-block;
+  animation: pipeline-bob 1.6s ease-in-out infinite;
+}
+
+@keyframes pipeline-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+/* WCAG 2.3.3 / respecting a user's OS-level motion preference -- both
+   animations above freeze on their resting frame instead of looping. */
+@media (prefers-reduced-motion: reduce) {
+  .pipeline-spinner {
+    animation: none;
+  }
+
+  .pipeline-bear {
+    animation: none;
+  }
+}
+
 .sources-footer {
   margin-top: 32px;
   padding-top: 16px;

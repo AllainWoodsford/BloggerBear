@@ -237,6 +237,22 @@ def list_pending_moderation() -> list[dict]:
     return items
 
 
+def count_pending_moderation_for_topic(topic_id: str) -> int:
+    """Return how many ModerationQueue items are `status == "pending"` for `topic_id`.
+
+    Deliberately returns only a count, never the items themselves --
+    public_api_handler.py's GET /topics/{topic_id}/activity surfaces this
+    to anonymous visitors (an "N pending review" indicator), and a pending
+    article hasn't cleared compliance review yet, so its title/content/
+    reasons must never leak through this path. Same Scan + combined-filter
+    pattern as list_prompt_refinements above, just returning len() instead
+    of the items.
+    """
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
+    return len(_paginated_scan(table, filter_expression))
+
+
 def list_all_moderation_items() -> list[dict]:
     """Return every ModerationQueue item regardless of status.
 
