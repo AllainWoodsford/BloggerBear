@@ -338,8 +338,21 @@ a {
 }
 
 .pipeline-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
   padding: 4px 0;
+  color: var(--fg);
+}
+
+.pipeline-status {
+  flex: 0 0 11rem;
+}
+
+.pipeline-item-title {
   color: var(--muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Paw prints instead of default bullet dots -- a ::before pseudo-element

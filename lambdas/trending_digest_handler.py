@@ -63,6 +63,7 @@ from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import get_latest_finding, list_topics, put_article, put_moderation_item
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
+from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
 
 DIGEST_LOOKBACK_HOURS = 48
@@ -128,6 +129,7 @@ def _run_trending_digest() -> dict:
     source_refs = []
     for contribution in contributions:
         source_refs.extend(contribution["finding"].get("source_refs") or [])
+    source_refs = dedupe_source_refs(source_refs)
 
     # AI lineage/cost tracking (docs/project-plan.md §11, PR 2 of 5) --
     # same pattern as daily_cycle_handler.py's own lineage assembly.
