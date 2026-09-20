@@ -382,3 +382,101 @@ into four pieces below, any of which could be scoped/built independently.
   untracked).
 - An AI reviewer for the moderation queue (would produce
   `humans_and_ai`).
+
+### Rolling research, whole-day article input, and a fresh-data review before publish
+
+**Status: proposed, not implemented.** Written up from a review of how the
+research and authoring pipelines behave today (checked against the code and
+the dev environment), so the design starts from what actually happens.
+
+**Motivation -- what happens today**
+- *Hourly tick* (`research_tick_handler`): every tick re-fetches the source
+  (a fresh web search on the news days), but stores a snapshot only when
+  `material_diff` says something changed, and a snapshot is only ever stored
+  as part of a Finding, which needs a Bedrock summary. Otherwise the fresh
+  data is discarded. For the crypto topic a Finding is written on the first
+  observation, a new UTC day, a goal change, or (news days) 5+ new headlines
+  (price moves were removed as a trigger). Each summary is written from that
+  tick's data alone; earlier findings are not fed in, so old and new research
+  meet only when the article is written.
+- *Analysis days* (altcoin deep-dive, trend inventor): the 10-coin pool and
+  its history are fixed for the UTC day by design (seeded pool, once-a-day
+  history), so later ticks re-fetch markets only to discard them -- in effect
+  the same coins are "watched" all day.
+- *Daily cycle* (`daily_cycle_handler`, cron 06:00 UTC): runs once a day and
+  reads only the 5 newest Findings (`list_recent_findings`); for the crypto
+  topic those are further limited to findings captured *today* (UTC), so that
+  the day's goal matches its data. At 06:00 UTC that is at most the first six
+  hours of the day's research, and research found after 06:00 is never used
+  by any article.
+- *No check on drift.* Nothing re-verifies the sources before an article is
+  composed. The compliance review is a deterministic route to manual
+  moderation for financial topics (no model call at all) and a PII/harm
+  review for others; neither tests whether the article's claims are still
+  true. Drafts are written from finding summaries, not source text, and only
+  headlines are available from the current news search.
+
+**Goal**
+Articles change rarely, so research should *accumulate* cheaply all day and
+be *synthesised and re-checked once*, just before the article is composed --
+instead of paying for an hourly summary and then writing from a fraction of
+the day's research.
+
+**(A) Accumulate on every tick, summarise only when material**
+- Store each tick's snapshot (S3) plus a small index record (topic,
+  captured_at, snapshot key, TTL) *without* a Bedrock call, decoupled from
+  Findings. A Finding (summary) is still written only on a material change,
+  so the diff-first rule (§2 rule 2: no Bedrock before diffing) is unchanged.
+- Storage shape is a design decision: an `Observations` table/item type is
+  preferred over summary-less Findings, so existing Finding readers (daily
+  cycle, trending digest, stats) never see an item without a summary.
+- Optionally feed the previous Finding's summary into the next tick's
+  summary prompt ("what we already knew") so summaries build on old research
+  rather than restarting each time.
+
+**(B) Give the article the whole window, not the newest five**
+- The daily cycle reads all Findings and observations for the window since
+  the previous article (or the last 24h), not the 5 newest.
+- The crypto goal-per-day rule needs an explicit window definition, because
+  the goal changes at 00:00 UTC while the article is written at 06:00 UTC.
+  Options: write from the just-completed UTC day (run the daily cycle shortly
+  after 00:00 UTC), keep 06:00 and use "today so far + yesterday's remainder"
+  grouped by goal, or move the article to end-of-day. To be decided in the
+  design pass.
+
+**(C) Fresh-data adversarial review before composing/publishing**
+- After the draft, before publish or the moderation hand-off, re-run the
+  adapter's fetch for *current* data (prices for the crypto analysis days; a
+  fresh search for the news days) through the existing adapter contract; no
+  new source-specific logic in the core pipeline (§2 rule 5).
+- An adversarial reviewer step compares the draft's claims and the
+  accumulated findings against the fresh data and lists claims that are stale,
+  contradicted, or unsupported, each with evidence and a severity.
+- Outcomes: minor drift -> one automatic revision pass; major drift -> route
+  to moderation. For financial topics (always manual moderation) the review
+  notes are attached to the ModerationQueue item for the human. If the fresh
+  fetch fails, record "review unavailable" and treat the article as needing
+  review; never silently pass.
+- Limitation to keep in mind: a model re-reading its own draft cannot detect
+  real-world drift; the fresh fetch is what makes the review meaningful.
+  News reviews are headline-level until a provider with article text is added.
+- The review is a lineage stage (`adversarial_review`, and `revision` if it
+  rewrites), so its cost appears in per-article lineage and the Stats page.
+
+**(D) Cost and quality**
+- Fewer per-tick summaries (only on material change) offset the added review
+  call (+1 model call per article, +1 if it revises).
+- Quality: articles draw on the whole day's research and are checked against
+  current data instead of being written from the first six hours.
+
+**Open questions**
+- Article window and cron time (see B).
+- Observation storage shape, TTL and pruning (see A).
+- What severity threshold sends a non-financial article to moderation.
+- Whether the previous-summary context (A) should apply to all adapters or
+  only opt-in ones (`uses_previous_state` already exists for adapters).
+
+**Deferred**
+- Article-body fetching for news (needs a search provider that returns text).
+- Any change to hourly cadence itself; ticks stay hourly, the change is what
+  they store and when a model is called.
