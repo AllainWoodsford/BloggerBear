@@ -13,6 +13,14 @@ from abc import ABC, abstractmethod
 class Adapter(ABC):
     """Base contract every domain adapter must implement."""
 
+    # Opt-in: an adapter whose fetch is expensive but partly reusable within
+    # a day (e.g. slow-changing history) sets this True and declares
+    # `fetch_state(self, topic_config, previous_state=None)`. The research
+    # tick then passes the last recorded snapshot (None on the first tick)
+    # so the adapter can carry forward what it already fetched. Adapters
+    # that leave this False keep the plain `fetch_state(topic_config)`.
+    uses_previous_state: bool = False
+
     @abstractmethod
     def fetch_state(self, topic_config: dict) -> dict:
         """Fetch and return a normalized snapshot of the source's current state.
@@ -39,3 +47,16 @@ class Adapter(ABC):
         referenced by `new_state`, for citation in the resulting Finding.
         """
         raise NotImplementedError
+
+    def build_summary_prompt(
+        self, topic: dict, diff_summary: str, new_state: dict
+    ) -> str | None:
+        """Optionally return the exact Bedrock prompt used to summarize a
+        material change, for sources whose state needs domain-specific
+        framing (e.g. a rotating editorial focus). Return None -- the
+        default -- to use the research tick's generic prompt.
+
+        Lives on the adapter rather than in research_tick_handler.py so that
+        handler stays topic-agnostic (docs/project-plan.md §2 rule 5, §6).
+        """
+        return None
