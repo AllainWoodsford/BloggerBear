@@ -131,8 +131,16 @@ jobs:
     # ["203.0.113.7/32"]. Terraform env vars are its lowest-precedence value
     # source, which is exactly why terraform.tfvars must NOT also set this
     # variable (that would silently win over this).
+    # TF_VAR_alert_email: same reasoning as TF_VAR_admin_allowed_cidrs above
+    # -- a repo-level secret rather than terraform.tfvars, so the operator's
+    # real email never lands in git history. See
+    # infra/environments/dev/variables.tf's alert_email description. Unset
+    # (empty secret) is fine -- every alarm/subscription it gates is
+    # count-gated on `var.alert_email != ""`, so nothing is created without
+    # it, same fail-closed-to-"off" pattern as admin_allowed_cidrs' `[]`.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
+      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
