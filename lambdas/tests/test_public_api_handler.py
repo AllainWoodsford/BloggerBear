@@ -173,7 +173,12 @@ def _put_moderation_item(
     )
 
 
-def _put_finding(topic_id="github-trending", captured_at="2026-09-12T00:00:00+00:00"):
+def _put_finding(
+    topic_id="github-trending",
+    captured_at="2026-09-12T00:00:00+00:00",
+    *,
+    source_refs=None,
+):
     table = boto3.resource("dynamodb", region_name=REGION).Table("Findings")
     table.put_item(
         Item={
@@ -182,7 +187,7 @@ def _put_finding(topic_id="github-trending", captured_at="2026-09-12T00:00:00+00
             "expires_at": 9999999999,
             "summary": "Something happened.",
             "raw_snapshot_s3_key": "snapshots/x.json",
-            "source_refs": [],
+            "source_refs": source_refs or [],
         }
     )
 
@@ -197,6 +202,7 @@ def _put_article(
     body_s3_key=None,
     source_refs=None,
     body_text="Full article body text.",
+    created_at="2026-09-12T00:00:00+00:00",
 ):
     body_s3_key = body_s3_key or f"articles/{article_id}.md"
     s3 = boto3.client("s3", region_name=REGION)
@@ -209,7 +215,7 @@ def _put_article(
         "title": title,
         "body_s3_key": body_s3_key,
         "status": status,
-        "created_at": "2026-09-12T00:00:00+00:00",
+        "created_at": created_at,
         "published_at": published_at,
         "source_refs": source_refs or [],
     }
@@ -319,7 +325,7 @@ def test_topic_activity_false_when_no_findings(aws_resources):
 
 
 def test_topic_activity_true_when_finding_exists(aws_resources):
-    _put_finding()
+    _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
 
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
@@ -328,12 +334,34 @@ def test_topic_activity_true_when_finding_exists(aws_resources):
         "topic_id": "github-trending",
         "researching": True,
         "pending_review_count": 0,
+        "pipeline_items": [
+            {"status": "researching", "label": "Researching", "title": "example/x"}
+        ],
     }
 
 
 def test_topic_activity_counts_only_pending_items_for_this_topic(aws_resources):
+    _put_article(
+        "article-1",
+        status="pending_moderation",
+        published_at=None,
+        title="Pending One",
+    )
+    _put_article(
+        "article-2",
+        status="pending_moderation",
+        published_at=None,
+        title="Pending Two",
+        created_at="2026-09-13T00:00:00+00:00",
+    )
     _put_moderation_item("queue-1", topic_id="github-trending", status="pending")
-    _put_moderation_item("queue-2", topic_id="github-trending", status="pending")
+    _put_moderation_item(
+        "queue-2",
+        article_id="article-2",
+        topic_id="github-trending",
+        status="pending",
+        created_at="2026-09-13T00:00:00+00:00",
+    )
     # Belongs to a different topic -- must not be counted.
     _put_moderation_item("queue-3", topic_id="other-topic", status="pending")
     # Already resolved -- must not be counted.
@@ -343,6 +371,10 @@ def test_topic_activity_counts_only_pending_items_for_this_topic(aws_resources):
     result = public_api_handler.handler(event, None)
     body = json.loads(result["body"])
     assert body["pending_review_count"] == 2
+    assert body["pipeline_items"][:2] == [
+        {"status": "pending_review", "label": "Pending review", "title": "Pending Two"},
+        {"status": "pending_review", "label": "Pending review", "title": "Pending One"},
+    ]
 
     other_event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "other-topic"})
     other_result = public_api_handler.handler(other_event, None)
@@ -350,7 +382,7 @@ def test_topic_activity_counts_only_pending_items_for_this_topic(aws_resources):
 
 
 def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resources):
-    _put_finding()
+    _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
     _put_moderation_item(
         "queue-1",
         article_id="secret-article",
@@ -362,7 +394,7 @@ def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resour
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
     body = json.loads(result["body"])
-    assert set(body.keys()) == {"topic_id", "researching", "pending_review_count"}
+    assert set(body.keys()) == {"topic_id", "researching", "pending_review_count", "pipeline_items"}
     # Nothing from the pending ModerationQueue item -- not its article_id,
     # not its reasons, not its queue_id -- appears anywhere in the response.
     body_text = result["body"]
@@ -469,6 +501,22 @@ def test_get_article_detail_success(aws_resources):
     assert body["published_at"] == "2026-09-12T00:00:00+00:00"
     assert body["source_refs"] == refs
     assert body["view_count"] == 0
+
+
+def test_get_article_detail_dedupes_duplicate_source_refs(aws_resources):
+    _put_article(
+        source_refs=[
+            {"url": "https://example.com", "title": "Example", "accessed_at": "2026-09-12T00:00:00+00:00"},
+            {"url": "https://example.com", "title": "Example", "accessed_at": "2026-09-12T00:00:00+00:00"},
+        ]
+    )
+
+    event = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert body["source_refs"] == [
+        {"url": "https://example.com", "title": "Example", "accessed_at": "2026-09-12T00:00:00+00:00"}
+    ]
 
 
 def test_get_article_detail_defaults_view_count_when_absent(aws_resources):

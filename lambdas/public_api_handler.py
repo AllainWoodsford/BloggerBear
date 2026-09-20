@@ -46,12 +46,14 @@ from common.dynamo import (
     get_article,
     get_latest_finding,
     increment_view_count,
+    list_articles_by_status,
     list_musings,
     list_published_articles,
     list_topics,
     put_feedback,
     update_article_net_votes,
 )
+from common.source_refs import dedupe_source_refs
 
 _RSS_ITEM_LIMIT = 50
 _RSS_DESCRIPTION_MAX_CHARS = 300
@@ -159,27 +161,66 @@ def _topic_activity(event: dict) -> dict:
     Pipeline" indicator (see app.js's renderPipelineSection) for anything
     sitting in moderation.
 
-    Deliberately returns ONLY derived values -- `researching` is a bare
-    boolean (never a raw Finding/CandidateIdeas item) and
-    `pending_review_count` is a bare int (never a ModerationQueue item's
-    title/reasons/queue_id). Findings summaries, CandidateIdeas angles, and
-    anything pending moderation are all pre-publication content that stays
-    admin-only (see admin_api_handler.py's own routes for those); this must
-    never echo any of it back to an unauthenticated caller -- only "is
-    something happening" and "how many," never "what."
+    Returns the coarse-grained `researching`/`pending_review_count` fields
+    the frontend already uses, plus a small `pipeline_items` list for the
+    pipeline box's right-hand titles. Pending-review items expose only an
+    article title already stored in DynamoDB; researching exposes only the
+    latest source title/url already visible once an article is eventually
+    published. No bodies, moderation reasons, queue ids, or finding
+    summaries are returned here.
     No topic-existence check, matching _list_articles above -- an unknown
     topic_id just yields `researching: false, pending_review_count: 0`, not
     a 404.
     """
     topic_id = _path_param(event, "topic_id")
-    researching = get_latest_finding(topic_id) is not None
+    researching = False
+    pipeline_items = []
     pending_review_count = count_pending_moderation_for_topic(topic_id)
+
+    pending_articles = list_articles_by_status("pending_moderation", topic_id)
+    pending_articles.sort(key=lambda article: article.get("created_at") or "", reverse=True)
+    for article in pending_articles:
+        pipeline_items.append(
+            {
+                "status": "pending_review",
+                "label": "Pending review",
+                "title": article.get("title") or "",
+            }
+        )
+    for _ in range(max(pending_review_count - len(pending_articles), 0)):
+        pipeline_items.append(
+            {
+                "status": "pending_review",
+                "label": "Pending review",
+                "title": "",
+            }
+        )
+
+    latest_finding = get_latest_finding(topic_id)
+    if latest_finding is not None:
+        researching = True
+        research_ref = next(
+            (
+                ref
+                for ref in dedupe_source_refs(latest_finding.get("source_refs"))
+                if ref.get("title") or ref.get("url")
+            ),
+            None,
+        )
+        pipeline_items.append(
+            {
+                "status": "researching",
+                "label": "Researching",
+                "title": (research_ref or {}).get("title") or (research_ref or {}).get("url") or "",
+            }
+        )
     return _response(
         200,
         {
             "topic_id": topic_id,
             "researching": researching,
             "pending_review_count": pending_review_count,
+            "pipeline_items": pipeline_items,
         },
     )
 
@@ -219,7 +260,7 @@ def _get_article_detail(event: dict) -> dict:
             "title": article["title"],
             "body": body,
             "published_at": article.get("published_at"),
-            "source_refs": article.get("source_refs", []),
+            "source_refs": dedupe_source_refs(article.get("source_refs")),
             "view_count": int(article.get("view_count", 0)),
         },
     )
