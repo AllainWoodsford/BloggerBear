@@ -7,6 +7,10 @@ Flow (see docs/project-plan.md §4 "Daily Authoring Cycle" and §5 data
 model):
 1. Load topic.
 2. Load recent findings; bail out if there's nothing to write about yet.
+   Topics with a daily editorial goal (the crypto feed -- see
+   common/editorial_goals.py) resolve today's goal here and keep only the
+   findings that belong to it; its mandate and article style are folded into
+   steps 3 and 5. Every other topic is unaffected.
 3. Ideate: ask Bedrock for 3 candidate angles, store them as CandidateIdeas.
 4. Select: deterministically pick the first candidate (no scoring model yet).
 5. Draft: ask Bedrock for a title and a full article draft.
@@ -19,7 +23,7 @@ model):
 import os
 import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import boto3
 
@@ -34,6 +38,12 @@ from common.dynamo import (
     put_article,
     put_candidate_idea,
     put_moderation_item,
+)
+from common.editorial_goals import (
+    ARTICLE_STYLES,
+    EDITORIAL_MANDATES,
+    EditorialGoal,
+    resolve_goal_for_topic,
 )
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
@@ -68,6 +78,13 @@ def _run_daily_cycle(topic_id: str) -> dict:
     if not findings:
         return {"status": "no_findings", "topic_id": topic_id}
 
+    # Topics with a daily editorial goal (the crypto feed) get the day's
+    # goal and only the findings that belong to it; every other topic gets
+    # (None, findings) back unchanged.
+    editorial_goal, findings = _select_goal_and_findings(topic, findings)
+    if editorial_goal is not None:
+        print(f"daily_cycle_handler: editorial_goal={editorial_goal.value} topic_id={topic_id}")
+
     model_id, fallback_model_id = resolve_model(topic)
     summaries_block = _format_findings_summaries(findings)
 
@@ -79,7 +96,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
     few_shot_excerpt = _get_few_shot_excerpt(topic_id)
 
     angles, ideate_call = _ideate(
-        topic, summaries_block, model_id, fallback_model_id, guidance=guidance
+        topic, summaries_block, model_id, fallback_model_id, guidance=guidance, goal=editorial_goal
     )
     selected = _select_and_store_candidates(topic_id, angles)
 
@@ -91,6 +108,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
         fallback_model_id,
         guidance=guidance,
         few_shot_excerpt=few_shot_excerpt,
+        goal=editorial_goal,
     )
     title, title_call = _draft_title(selected["angle"], model_id, fallback_model_id)
 
@@ -127,6 +145,46 @@ def _run_daily_cycle(topic_id: str) -> dict:
         model_id=model_id,
         lineage=lineage,
     )
+
+
+def _captured_date(finding: dict) -> date | None:
+    """The UTC date a Finding was captured on, or None if unparseable."""
+    try:
+        captured = datetime.fromisoformat(finding.get("captured_at") or "")
+    except ValueError:
+        return None
+    if captured.tzinfo is None:
+        captured = captured.replace(tzinfo=UTC)  # findings are stored in UTC
+    return captured.astimezone(UTC).date()
+
+
+def _select_goal_and_findings(
+    topic: dict, findings: list[dict]
+) -> tuple[EditorialGoal | None, list[dict]]:
+    """Resolve the topic's editorial goal and keep only the findings it applies to.
+
+    The goal is a function of the UTC date, and the research tick fetches the
+    data a goal needs using that same date, so findings captured *today* are
+    exactly the ones matching *today's* goal. If nothing has been captured
+    today (a failed tick, or a quiet source), the goal follows the newest
+    finding's own day instead -- so an article is never written with, say, a
+    news-digest mandate over altcoin price data. Topics without a goal are
+    returned unchanged.
+    """
+    today = datetime.now(UTC).date()
+    goal = resolve_goal_for_topic(topic, today)
+    if goal is None:
+        return None, findings
+
+    todays = [f for f in findings if _captured_date(f) == today]
+    if todays:
+        return goal, todays
+
+    newest_day = _captured_date(findings[0])
+    if newest_day is None:
+        return goal, findings
+    same_day = [f for f in findings if _captured_date(f) == newest_day]
+    return resolve_goal_for_topic(topic, newest_day), same_day
 
 
 def _format_findings_summaries(findings: list[dict]) -> str:
@@ -172,15 +230,31 @@ def _ideate(
     model_id: str,
     fallback_model_id: str | None,
     guidance: str | None = None,
+    goal: EditorialGoal | None = None,
 ) -> tuple[list[str], dict]:
-    prompt = (
-        f"Based on the following recent research findings about "
-        f"'{topic.get('name', topic.get('topic_id', ''))}', propose exactly "
-        f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
-        "Reply with exactly one angle per line, no numbering, no extra "
-        "commentary.\n\n"
-        f"Findings:\n{summaries_block}"
-    )
+    topic_name = topic.get("name", topic.get("topic_id", ""))
+    if goal is None:
+        prompt = (
+            f"Based on the following recent research findings about "
+            f"'{topic_name}', propose exactly "
+            f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
+            "Reply with exactly one angle per line, no numbering, no extra "
+            "commentary.\n\n"
+            f"Findings:\n{summaries_block}"
+        )
+    else:
+        # The day's editorial mandate replaces the open-ended framing. The
+        # one-angle-per-line reply instruction stays -- the parser below
+        # depends on it.
+        prompt = (
+            "Based on the following recent research findings and the assigned daily "
+            f"editorial vector for '{topic_name}', propose exactly "
+            f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
+            "Reply with exactly one angle per line, no numbering, no extra "
+            "commentary.\n\n"
+            f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n\n"
+            f"Data Payload:\n{summaries_block}"
+        )
     if guidance:
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
@@ -231,12 +305,15 @@ def _draft_article(
     fallback_model_id: str | None,
     guidance: str | None = None,
     few_shot_excerpt: str | None = None,
+    goal: EditorialGoal | None = None,
 ) -> tuple[str, dict]:
     prompt = (
         "Write a full article draft in markdown (a few paragraphs) for a blog "
         f"about '{topic.get('name', topic.get('topic_id', ''))}', on this angle: "
         f"{angle}\n\nBase it on these recent findings:\n{summaries_block}"
     )
+    if goal is not None:
+        prompt += f"\n\nArticle style: {ARTICLE_STYLES[goal]}"
     if guidance:
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
