@@ -35,6 +35,11 @@ common/http_retry.py's exponential backoff; a coin whose history can't be
 fetched is dropped, and the run fails only if fewer than MIN_POOL_SIZE coins
 survive.
 
+**An optional CoinGecko API key** (env `COINGECKO_API_KEY`, plan in
+`COINGECKO_API_PLAN`) raises the rate limit. See CoinGeckoClient: if the keyed
+request is throttled, errors, or the key is rejected, the same request is
+retried against the public keyless API, so the key can only ever help.
+
 This adapter contains no domain branches in the core pipeline
 (docs/project-plan.md §6): the goal rotation lives in editorial_goals.py, and
 the financial-topic safety rules (forced is_financial, mandatory moderation,
@@ -51,11 +56,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import random
 import re
 import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
+
+import requests
 
 from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse_goal
 from common.http_retry import get_json_with_backoff
@@ -63,9 +71,29 @@ from common.web_search import search_web
 
 from .base import Adapter
 
-MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
-HISTORY_URL = "https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+PUBLIC_BASE_URL = "https://api.coingecko.com/api/v3"
+PRO_BASE_URL = "https://pro-api.coingecko.com/api/v3"
+MARKETS_PATH = "/coins/markets"
+HISTORY_PATH = "/coins/{coin_id}/market_chart"
 USER_AGENT = "BloggerBearResearchBot/1.0 (+https://github.com/AllainWoodsford/BloggerBear)"
+
+# The API key comes from the environment (set by Terraform on the research-tick
+# Lambda from a CI secret), never from adapter_config: that is stored in
+# DynamoDB and readable through the admin API, so a secret there would leak.
+API_KEY_ENV = "COINGECKO_API_KEY"
+API_PLAN_ENV = "COINGECKO_API_PLAN"
+# plan -> (base URL, header the key travels in). "demo" is the free key and
+# uses the same host as the public API; "pro" is a paid key on its own host.
+API_PLANS = {
+    "demo": (PUBLIC_BASE_URL, "x-cg-demo-api-key"),
+    "pro": (PRO_BASE_URL, "x-cg-pro-api-key"),
+}
+DEFAULT_API_PLAN = "demo"
+# A keyed request still failing after this many attempts falls back to the
+# public API rather than burning the run's time budget on a throttled key.
+KEYED_MAX_ATTEMPTS = 3
+PUBLIC_MAX_ATTEMPTS = 4
+_KEY_REJECTED_STATUS_CODES = frozenset({401, 403})
 
 ANCHOR_IDS = ("bitcoin", "ethereum")
 MARKETS_PER_PAGE = 200
@@ -333,6 +361,90 @@ def _known_prices(state: dict) -> dict[str, float]:
     return prices
 
 
+def _status_code(exc: Exception) -> int | None:
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return exc.response.status_code
+    return None
+
+
+class CoinGeckoClient:
+    """GET JSON from CoinGecko with an optional API key and a keyless fallback.
+
+    The key is an optimisation, never a dependency: if the keyed request
+    still fails once its retries are spent (rate limited, a CoinGecko 5xx, a
+    network error, or the key being rejected/expired/mistyped), the same
+    request is retried against the public keyless API, so a bad or throttled
+    key degrades the adapter to its pre-key behaviour instead of failing the
+    run. A key CoinGecko *rejects* (401/403) is switched off for the rest of
+    this client's life, so a bad key costs one wasted request, not one per
+    coin. The key only ever travels in a request header -- never the URL --
+    and is never logged, so it can't leak through an exception message.
+    """
+
+    def __init__(self, api_key: str | None = None, plan: str = DEFAULT_API_PLAN):
+        self._api_key = (api_key or "").strip() or None
+        if plan not in API_PLANS:
+            print(f"crypto_feed: unknown CoinGecko plan {plan!r}, treating it as demo")
+            plan = DEFAULT_API_PLAN
+        self._base_url, self._key_header = API_PLANS[plan]
+        self._key_rejected = False
+
+    @classmethod
+    def from_env(cls) -> CoinGeckoClient:
+        plan = (os.environ.get(API_PLAN_ENV) or DEFAULT_API_PLAN).strip().lower()
+        return cls(api_key=os.environ.get(API_KEY_ENV), plan=plan)
+
+    @property
+    def uses_key(self) -> bool:
+        return self._api_key is not None and not self._key_rejected
+
+    def get_json(
+        self,
+        path: str,
+        *,
+        params: dict | None = None,
+        timeout: float = 15.0,
+        deadline: float | None = None,
+    ):
+        """Keyed first when a key is set, then keyless; raises the keyless
+        attempt's error if both fail."""
+        if self.uses_key:
+            try:
+                return get_json_with_backoff(
+                    self._base_url + path,
+                    params=params,
+                    headers={"User-Agent": USER_AGENT, self._key_header: self._api_key},
+                    timeout=timeout,
+                    max_attempts=KEYED_MAX_ATTEMPTS,
+                    base_delay=2.0,
+                    deadline=deadline,
+                )
+            except Exception as exc:  # noqa: BLE001 - any keyed failure falls back to keyless
+                status = _status_code(exc)
+                reason = f"HTTP {status}" if status else type(exc).__name__
+                if status in _KEY_REJECTED_STATUS_CODES:
+                    self._key_rejected = True
+                    print(
+                        f"crypto_feed: CoinGecko API key rejected ({reason}); "
+                        "using the public API for the rest of this run"
+                    )
+                else:
+                    print(
+                        f"crypto_feed: keyed CoinGecko request to {path} failed ({reason}); "
+                        "falling back to the public API"
+                    )
+
+        return get_json_with_backoff(
+            PUBLIC_BASE_URL + path,
+            params=params,
+            headers={"User-Agent": USER_AGENT},
+            timeout=timeout,
+            max_attempts=PUBLIC_MAX_ATTEMPTS,
+            base_delay=2.0,
+            deadline=deadline,
+        )
+
+
 class CryptoFeedAdapter(Adapter):
     """CoinGecko market data + crypto news, shaped by the day's editorial goal."""
 
@@ -345,7 +457,8 @@ class CryptoFeedAdapter(Adapter):
         now = datetime.now(UTC)
         goal = goal_for_adapter_config(adapter_config, now.date())
 
-        markets = self._fetch_markets()
+        client = CoinGeckoClient.from_env()
+        markets = self._fetch_markets(client)
         state: dict = {
             "fetched_at": now.isoformat(),
             "editorial_goal": goal.value,
@@ -356,13 +469,13 @@ class CryptoFeedAdapter(Adapter):
             state["web_results"] = self._fetch_web_results(adapter_config)
         else:
             state["analyzed_pool"] = self._build_pool(
-                markets, topic_config.get("topic_id", ""), now, previous_state
+                markets, topic_config.get("topic_id", ""), now, previous_state, client
             )
         return state
 
-    def _fetch_markets(self) -> list[dict]:
-        return get_json_with_backoff(
-            MARKETS_URL,
+    def _fetch_markets(self, client: CoinGeckoClient) -> list[dict]:
+        return client.get_json(
+            MARKETS_PATH,
             params={
                 "vs_currency": "usd",
                 "order": "market_cap_desc",
@@ -371,9 +484,6 @@ class CryptoFeedAdapter(Adapter):
                 "sparkline": "false",
                 "price_change_percentage": "24h,7d,30d,1y",
             },
-            headers={"User-Agent": USER_AGENT},
-            timeout=15.0,
-            base_delay=2.0,
         )
 
     def _anchors(self, markets: list[dict]) -> dict:
@@ -395,7 +505,12 @@ class CryptoFeedAdapter(Adapter):
         return anchors
 
     def _build_pool(
-        self, markets: list[dict], topic_id: str, now: datetime, previous_state: dict | None
+        self,
+        markets: list[dict],
+        topic_id: str,
+        now: datetime,
+        previous_state: dict | None,
+        client: CoinGeckoClient,
     ) -> list[dict]:
         target = select_altcoin_pool(markets, topic_id, now.date())
         carried = self._carried_entries(previous_state, now)
@@ -410,7 +525,7 @@ class CryptoFeedAdapter(Adapter):
                 missing.append(coin)
 
         if missing:
-            for entry in self._enrich(missing):
+            for entry in self._enrich(missing, client):
                 by_id[entry["id"]] = entry
 
         pool = [by_id[coin["id"]] for coin in target if coin["id"] in by_id]
@@ -436,8 +551,8 @@ class CryptoFeedAdapter(Adapter):
             if coin.get("metrics")
         }
 
-    def _enrich(self, coins: list[dict]) -> list[dict]:
-        histories = asyncio.run(self._fetch_histories([coin["id"] for coin in coins]))
+    def _enrich(self, coins: list[dict], client: CoinGeckoClient) -> list[dict]:
+        histories = asyncio.run(self._fetch_histories(client, [coin["id"] for coin in coins]))
 
         entries = []
         for coin in coins:
@@ -457,7 +572,9 @@ class CryptoFeedAdapter(Adapter):
             )
         return entries
 
-    async def _fetch_histories(self, coin_ids: list[str]) -> dict[str, dict | None]:
+    async def _fetch_histories(
+        self, client: CoinGeckoClient, coin_ids: list[str]
+    ) -> dict[str, dict | None]:
         """Fetch every coin's history concurrently, at most HISTORY_CONCURRENCY
         at a time. One coin failing (after its retries) yields None for that
         coin instead of failing the batch."""
@@ -468,12 +585,10 @@ class CryptoFeedAdapter(Adapter):
             async with semaphore:
                 try:
                     history = await asyncio.to_thread(
-                        get_json_with_backoff,
-                        HISTORY_URL.format(coin_id=coin_id),
+                        client.get_json,
+                        HISTORY_PATH.format(coin_id=coin_id),
                         params={"vs_currency": "usd", "days": _HISTORY_DAYS, "interval": "daily"},
-                        headers={"User-Agent": USER_AGENT},
                         timeout=_HISTORY_TIMEOUT_SECONDS,
-                        base_delay=2.0,
                         deadline=deadline,
                     )
                     return coin_id, history
