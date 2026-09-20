@@ -30,10 +30,11 @@ from datetime import UTC, datetime, timedelta
 
 import boto3
 
-from common.adapters import CRYPTO_FEED_ADAPTER_KEY
+from common.adapters import CRYPTO_FEED_ADAPTER_KEY, WEB_SEARCH_ADAPTER_KEY
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
+from common.adapters.web_search import WebSearchAdapter
 from common.bedrock import invoke_claude
 from common.dynamo import get_latest_finding, get_topic, put_finding
 
@@ -51,6 +52,7 @@ ADAPTER_REGISTRY = {
     "github_trending": GitHubTrendingAdapter,
     "hacker_news": HackerNewsAdapter,
     CRYPTO_FEED_ADAPTER_KEY: CryptoFeedAdapter,
+    WEB_SEARCH_ADAPTER_KEY: WebSearchAdapter,
 }
 
 _s3_client = None
@@ -73,7 +75,14 @@ def _load_prior_state(bucket: str, s3_key: str) -> dict:
     return json.loads(response["Body"].read())
 
 
-def _build_prompt(topic: dict, diff_summary: str, new_state: dict) -> str:
+def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> str:
+    # An adapter whose state needs domain-specific framing (e.g. the crypto
+    # feed's rotating editorial focus) supplies its own prompt; everything
+    # else gets the generic one below. Keeps this handler topic-agnostic.
+    adapter_prompt = adapter.build_summary_prompt(topic, diff_summary, new_state)
+    if adapter_prompt:
+        return adapter_prompt
+
     compact_state = json.dumps(new_state)[:COMPACT_STATE_MAX_CHARS]
     topic_label = topic.get("name") or topic.get("topic_id")
     return (
@@ -112,21 +121,28 @@ def _run_research_tick(topic_id: str) -> dict:
         return {"status": "error", "reason": f"unknown adapter: {adapter_key}"}
 
     adapter = adapter_cls()
-    new_state = adapter.fetch_state(topic)
-
     bucket = os.environ["CONTENT_BUCKET"]
 
+    # The prior snapshot is loaded before fetching (rather than after, as
+    # the diff needs it) so an adapter that opts in via `uses_previous_state`
+    # can reuse what it already fetched earlier in the day instead of
+    # re-requesting slow-changing data on every hourly tick.
     prior_finding = get_latest_finding(topic_id)
     old_state = None
     if prior_finding is not None:
         old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"])
+
+    if adapter.uses_previous_state:
+        new_state = adapter.fetch_state(topic, previous_state=old_state)
+    else:
+        new_state = adapter.fetch_state(topic)
 
     changed, diff_summary = adapter.material_diff(old_state, new_state)
     if not changed:
         return {"status": "no_change"}
 
     model_id = os.environ["BEDROCK_MODEL_ID"]
-    prompt = _build_prompt(topic, diff_summary, new_state)
+    prompt = _build_prompt(topic, diff_summary, new_state, adapter)
     summary = invoke_claude(prompt, model_id)
 
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()

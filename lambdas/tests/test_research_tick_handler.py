@@ -11,6 +11,7 @@ import research_tick_handler
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
+from common.adapters.web_search import WebSearchAdapter
 
 REGION = "ap-southeast-2"
 
@@ -193,11 +194,95 @@ def test_unknown_adapter_returns_error(aws_resources):
     assert result == {"status": "error", "reason": "unknown adapter: not_a_real_adapter"}
 
 
-def test_adapter_registry_has_all_three_phase_7_adapters():
-    # Phase 7: confirms adding domains 2 and 3 required zero changes to
-    # this handler's flow -- only new registry entries.
+def test_adapter_registry_has_every_registered_adapter():
+    # Adding a domain is a new registry entry, never a change to the flow.
     assert research_tick_handler.ADAPTER_REGISTRY == {
         "github_trending": GitHubTrendingAdapter,
         "hacker_news": HackerNewsAdapter,
         "crypto_feed": CryptoFeedAdapter,
+        "web_search": WebSearchAdapter,
     }
+
+
+def _put_topic(topic_id, adapter, adapter_config=None):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    table.put_item(
+        Item={
+            "topic_id": topic_id,
+            "name": topic_id.title(),
+            "adapter": adapter,
+            "adapter_config": adapter_config or {},
+            "is_financial": False,
+        }
+    )
+
+
+def test_an_adapter_supplied_summary_prompt_replaces_the_generic_one(aws_resources, monkeypatch):
+    state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+    monkeypatch.setattr(
+        GitHubTrendingAdapter, "build_summary_prompt", lambda self, topic, diff, new: "ADAPTER PROMPT"
+    )
+
+    with patch("research_tick_handler.invoke_claude", return_value="ok") as mock_invoke:
+        research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+
+    assert mock_invoke.call_args.args[0] == "ADAPTER PROMPT"
+
+
+def test_adapters_without_a_prompt_get_the_generic_one(aws_resources, monkeypatch):
+    state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+
+    with patch("research_tick_handler.invoke_claude", return_value="ok") as mock_invoke:
+        research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+
+    prompt = mock_invoke.call_args.args[0]
+    assert 'monitoring the topic "Python trending repos"' in prompt
+    assert "do not give financial or investment advice" in prompt
+
+
+def test_opt_in_adapters_receive_the_prior_snapshot_others_do_not(aws_resources, monkeypatch):
+    _put_topic("crypto-topic", "crypto_feed")
+    seen = []
+
+    def fake_fetch(self, topic_config, previous_state=None):
+        seen.append(previous_state)
+        return {
+            "fetched_at": f"2026-09-13T0{len(seen)}:00:00+00:00",
+            "editorial_goal": "ALTCOIN_DEEP_DIVE",
+            "market_anchors": {},
+            "analyzed_pool": [],
+        }
+
+    monkeypatch.setattr(CryptoFeedAdapter, "fetch_state", fake_fetch)
+    monkeypatch.setattr(CryptoFeedAdapter, "material_diff", lambda self, old, new: (True, "d"))
+
+    with patch("research_tick_handler.invoke_claude", return_value="ok"):
+        research_tick_handler.handler({"topic_id": "crypto-topic"}, None)
+        research_tick_handler.handler({"topic_id": "crypto-topic"}, None)
+
+    assert seen[0] is None
+    assert seen[1]["fetched_at"] == "2026-09-13T01:00:00+00:00"  # the first tick's stored snapshot
+
+
+def test_a_generic_web_search_topic_runs_end_to_end(aws_resources):
+    _put_topic("ai-news", "web_search", {"queries": ["ai regulation"], "max_age_hours": 12})
+    result_item = {
+        "title": "New AI rules",
+        "url": "https://news.example/ai",
+        "source": "news.example",
+        "published_at": "2026-09-13T00:00:00+00:00",
+        "snippet": None,
+    }
+
+    with (
+        patch("common.adapters.web_search.search_web", return_value=[result_item]),
+        patch("research_tick_handler.invoke_claude", return_value="AI summary") as mock_invoke,
+    ):
+        result = research_tick_handler.handler({"topic_id": "ai-news"}, None)
+
+    assert result == {"status": "material_change", "summary": "AI summary"}
+    assert 'monitoring the topic "Ai-News"' in mock_invoke.call_args.args[0]
+    finding = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"][0]
+    assert [ref["url"] for ref in finding["source_refs"]] == ["https://news.example/ai"]
