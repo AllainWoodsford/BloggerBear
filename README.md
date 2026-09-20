@@ -291,6 +291,16 @@ the `ADMIN_ALLOWED_CIDRS_DEV` / `ADMIN_ALLOWED_CIDRS_PROD` secrets set
 up in step 2. Still fails closed — a local apply without that env var
 set falls back to the variable's `[]` default, same as before.
 
+**Optional CoinGecko API key** (for the crypto adapter): add repo secret
+`COINGECKO_API_KEY_DEV` (and the `production`-Environment secret
+`COINGECKO_API_KEY_PROD`). CI passes it as `TF_VAR_coingecko_api_key`, and it
+lands only on the research-tick Lambda. Set `coingecko_api_plan = "pro"` in
+`terraform.tfvars` if it's a paid key (default `"demo"`, the free key). Leaving
+the secret unset is fine — the adapter uses CoinGecko's keyless public API —
+and if a set key is rate-limited or rejected at runtime, requests fall back to
+the public API automatically. Never put the key in `terraform.tfvars` or in a
+topic's `adapter_config` (that's stored in DynamoDB).
+
 ### 4. First deploy: dev (CI, triggered by you)
 
 Open a PR into `dev` touching anything (or just merge this repo's

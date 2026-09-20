@@ -90,3 +90,35 @@ variable "web_acl_arn" {
     follow-up step, not automated.
   EOT
 }
+
+variable "coingecko_api_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = <<-EOT
+    Optional CoinGecko API key for the crypto feed adapter (research_tick
+    only -- no other Lambda receives it). Raises the rate limit the
+    keyless public API is far too low for. Empty (the default) means the
+    adapter uses the public API, exactly as before. If a key is set but
+    throttled or rejected at runtime, the adapter falls back to the
+    public API for that request, so a bad key degrades rather than breaks
+    anything.
+
+    Supplied in CI as `TF_VAR_coingecko_api_key` from the GitHub Actions
+    secret `COINGECKO_API_KEY_DEV` (never terraform.tfvars, so it never lands in git
+    history). It ends up as a Lambda environment variable and in Terraform
+    state, so use a key you can rotate freely (CoinGecko's free "demo" key
+    is ideal) and keep the state bucket private.
+  EOT
+}
+
+variable "coingecko_api_plan" {
+  type        = string
+  default     = "demo"
+  description = "Which CoinGecko key type coingecko_api_key is: \"demo\" (free key) or \"pro\" (paid key, uses CoinGecko's pro host). Ignored while no key is set."
+
+  validation {
+    condition     = contains(["demo", "pro"], var.coingecko_api_plan)
+    error_message = "coingecko_api_plan must be \"demo\" or \"pro\"."
+  }
+}
