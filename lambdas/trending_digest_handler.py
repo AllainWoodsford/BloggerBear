@@ -35,6 +35,13 @@ digest"):
      `daily_cycle_handler.put_article`/`put_moderation_item` directly, so
      extracting it into a shared module would silently stop those patches
      from intercepting the real call. Not worth the risk for ~25 lines.
+     On the compliant branch, also renders the static article page
+     (docs/project-plan.md §11) and generates a musing, same as
+     daily_cycle_handler.py's own compliant branch -- this is a fourth
+     publish path alongside that one and admin_api_handler.py's
+     moderation-approve/force-publish routes, and was missed when both
+     features were first built (confirmed the hard way: a digest article
+     published cleanly here never got a static page or a musing).
 
 Never raises unhandled -- like the other handlers in this codebase, runs
 under a top-level try/except that logs the real exception and returns an
@@ -51,9 +58,11 @@ import boto3
 
 from common import compliance
 from common.bedrock import invoke_claude
+from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import get_latest_finding, list_topics, put_article, put_moderation_item
+from common.musings import generate_and_store_article_musing
+from common.static_pages import render_and_publish_article_page
 
-DIGEST_TOPIC_ID = "digest"
 DIGEST_LOOKBACK_HOURS = 48
 
 _DIGEST_PROMPT_TEMPLATE = """You are writing a short cross-topic "trending everywhere" digest for a \
@@ -115,6 +124,7 @@ def _run_trending_digest() -> dict:
         draft_text=draft_text,
         source_refs=source_refs,
         review=review,
+        model_id=model_id,
     )
 
 
@@ -157,6 +167,7 @@ def _publish_or_moderate_digest(
     draft_text: str,
     source_refs: list[dict],
     review: dict,
+    model_id: str,
 ) -> dict:
     article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
@@ -184,6 +195,33 @@ def _publish_or_moderate_digest(
     )
 
     if compliant:
+        # Bugfix: this handler predates both static article publishing
+        # (docs/project-plan.md §11) and the Musings feature -- neither
+        # ever got wired in here, even though this is a fourth publish
+        # path alongside daily_cycle_handler's compliant branch and
+        # admin_api_handler's moderation-approve/force-publish routes.
+        # Confirmed the hard way: a digest article published cleanly here
+        # never got a static page or a musing, silently diverging from
+        # every other publish path. compliant=True here for the same
+        # reason daily_cycle_handler's own compliant branch passes it --
+        # this published on the first pass, no moderation needed.
+        render_and_publish_article_page(
+            article_id=article_id,
+            title=title,
+            body_markdown=draft_text,
+            topic_name=DIGEST_TOPIC_NAME,
+            published_at=now,
+            source_refs=source_refs,
+            view_count=0,
+        )
+        generate_and_store_article_musing(
+            article_id=article_id,
+            topic_id=DIGEST_TOPIC_ID,
+            topic_name=DIGEST_TOPIC_NAME,
+            title=title,
+            compliant=True,
+            model_id=model_id,
+        )
         return {"status": "published", "article_id": article_id, "compliant": True}
 
     put_moderation_item(

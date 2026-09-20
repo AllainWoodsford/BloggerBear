@@ -25,6 +25,7 @@ from datetime import UTC, datetime
 import boto3
 
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
+from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     delete_topic,
     get_article,
@@ -316,8 +317,18 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
     compliant=False -- the more measured/thoughtful mood, not the
     published-cleanly proud one.
     """
-    topic = get_topic(article["topic_id"])
-    topic_name = (topic or {}).get("name", article["topic_id"])
+    # Bugfix: get_topic("digest") returns None -- the cross-topic digest
+    # (trending_digest_handler.py) isn't a real Topics-table row -- so
+    # without this special case, a digest article reaching this function
+    # (approved out of moderation, or force-published) would render with
+    # the raw topic_id "digest" as its display name instead of the
+    # friendly one, inconsistent with what a digest article gets when
+    # trending_digest_handler.py publishes it directly on the first pass.
+    if article["topic_id"] == DIGEST_TOPIC_ID:
+        topic_name = DIGEST_TOPIC_NAME
+    else:
+        topic = get_topic(article["topic_id"])
+        topic_name = (topic or {}).get("name", article["topic_id"])
     body_markdown = read_article_body(article["body_s3_key"])
     render_and_publish_article_page(
         article_id=article["article_id"],
