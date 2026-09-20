@@ -45,6 +45,7 @@ from common.dynamo import (
     get_article,
     get_latest_finding,
     increment_view_count,
+    list_musings,
     list_published_articles,
     list_topics,
     put_feedback,
@@ -259,6 +260,26 @@ def _submit_feedback(event: dict) -> dict:
     )
 
 
+# --- Musings --------------------------------------------------------------
+
+
+def _list_musings(event: dict) -> dict:
+    items = list_musings()
+    musings = [
+        {
+            "musing_id": m.get("musing_id"),
+            "kind": m.get("kind"),
+            "article_id": m.get("article_id"),
+            "topic_id": m.get("topic_id"),
+            "text": m.get("text"),
+            "mood": m.get("mood"),
+            "created_at": m.get("created_at"),
+        }
+        for m in items
+    ]
+    return _response(200, {"musings": musings})
+
+
 # --- RSS feed ---------------------------------------------------------------
 
 
@@ -340,6 +361,7 @@ _ROUTES = {
     "GET /articles/{article_id}": _get_article_detail,
     "POST /articles/{article_id}/view": _view_article,
     "POST /articles/{article_id}/feedback": _submit_feedback,
+    "GET /musings": _list_musings,
     "GET /rss.xml": _rss_feed,
 }
 

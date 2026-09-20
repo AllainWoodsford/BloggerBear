@@ -78,6 +78,16 @@ output "failed_executions_table_arn" {
   description = "ARN of the FailedExecutions DynamoDB table."
 }
 
+output "musings_table_name" {
+  value       = aws_dynamodb_table.musings.name
+  description = "Name of the Musings DynamoDB table."
+}
+
+output "musings_table_arn" {
+  value       = aws_dynamodb_table.musings.arn
+  description = "ARN of the Musings DynamoDB table."
+}
+
 output "table_arns" {
   value = [
     aws_dynamodb_table.topics.arn,
@@ -88,6 +98,7 @@ output "table_arns" {
     aws_dynamodb_table.feedback.arn,
     aws_dynamodb_table.prompt_refinements.arn,
     aws_dynamodb_table.failed_executions.arn,
+    aws_dynamodb_table.musings.arn,
   ]
-  description = "All 8 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 9 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
 }

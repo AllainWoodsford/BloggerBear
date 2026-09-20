@@ -84,6 +84,12 @@
   // has run.
   var DIGEST_TOPIC_ID = "digest";
 
+  // BloggerBear's musings feed -- not a topic at all (no article_count/
+  // researching fields, nothing to rank), so it's a second static nav
+  // entry alongside Trending Everywhere, always visible regardless of how
+  // many real topics get capped out of selectNavTopics below.
+  var MUSINGS_ROUTE_HASH = "#/musings";
+
   // Keeps the compact header nav usable regardless of how many topics
   // exist: at most this many real topics ever show there, ranked by
   // actual publishing activity rather than declaration order, so a
@@ -124,6 +130,12 @@
       className: "digest-link",
     });
     navEl.appendChild(digestLink);
+    var musingsLink = el("a", {
+      text: "Musings",
+      href: MUSINGS_ROUTE_HASH,
+      className: "musings-link",
+    });
+    navEl.appendChild(musingsLink);
     selectNavTopics(topics).forEach(function (topic) {
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
@@ -270,6 +282,48 @@
       })
       .catch(function () {
         showMessage("Could not load articles right now.");
+      });
+  }
+
+  // --- Musings --------------------------------------------------------
+
+  function renderMusings(musings) {
+    clearChildren(contentEl);
+    contentEl.appendChild(el("h1", { text: "Musings" }));
+
+    if (musings.length === 0) {
+      contentEl.appendChild(el("p", { text: "No musings yet -- check back after the next article." }));
+      return;
+    }
+
+    var list = el("ul", { className: "musings-list" });
+    musings.forEach(function (musing) {
+      var item = el("li", { className: "musing-item" });
+      item.appendChild(el("p", { className: "musing-text", text: musing.text }));
+
+      var meta = el("p", { className: "musing-meta" });
+      meta.appendChild(el("span", { text: formatDate(musing.created_at) }));
+      if (musing.article_id) {
+        meta.appendChild(document.createTextNode(" · "));
+        meta.appendChild(
+          el("a", { text: "read the article", href: "#/article/" + encodeURIComponent(musing.article_id) })
+        );
+      }
+      item.appendChild(meta);
+
+      list.appendChild(item);
+    });
+    contentEl.appendChild(list);
+  }
+
+  function loadMusings() {
+    showMessage("Loading musings...");
+    fetchJson(apiUrl("/musings"))
+      .then(function (data) {
+        renderMusings(data.musings || []);
+      })
+      .catch(function () {
+        showMessage("Could not load musings right now.");
       });
   }
 
@@ -692,6 +746,9 @@
     if (path === "/privacy") {
       return { name: "legal", pageKey: "privacy" };
     }
+    if (path === "/musings") {
+      return { name: "musings" };
+    }
     return { name: "not-found" };
   }
 
@@ -705,6 +762,8 @@
       loadArticle(current.articleId);
     } else if (current.name === "legal") {
       renderLegalPage(current.pageKey);
+    } else if (current.name === "musings") {
+      loadMusings();
     } else {
       showMessage("Page not found.");
     }
