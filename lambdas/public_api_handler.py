@@ -46,12 +46,15 @@ from common.dynamo import (
     get_article,
     get_latest_finding,
     increment_view_count,
+    list_all_articles,
+    list_models,
     list_musings,
     list_published_articles,
     list_topics,
     put_feedback,
     update_article_net_votes,
 )
+from common.stats import build_stats
 
 _RSS_ITEM_LIMIT = 50
 _RSS_DESCRIPTION_MAX_CHARS = 300
@@ -78,13 +81,18 @@ _CORS_HEADERS = {
 }
 
 
-def _response(status_code: int, payload, *, content_type: str = "application/json") -> dict:
+def _response(
+    status_code: int,
+    payload,
+    *,
+    content_type: str = "application/json",
+    cache_seconds: int | None = None,
+) -> dict:
     body = json.dumps(payload) if content_type == "application/json" else payload
-    return {
-        "statusCode": status_code,
-        "headers": {"Content-Type": content_type, **_CORS_HEADERS},
-        "body": body,
-    }
+    headers = {"Content-Type": content_type, **_CORS_HEADERS}
+    if cache_seconds is not None:
+        headers["Cache-Control"] = f"public, max-age={cache_seconds}"
+    return {"statusCode": status_code, "headers": headers, "body": body}
 
 
 def _error(status_code: int, message: str) -> dict:
@@ -315,6 +323,22 @@ def _list_musings(event: dict) -> dict:
     return _response(200, {"musings": musings})
 
 
+# --- Stats ------------------------------------------------------------------
+
+# Every hit scans the Articles/Topics/Models tables (fine at this project's
+# scale, same as the RSS feed) -- a short public cache keeps a popular page
+# from turning into a scan per view. The numbers move on the scale of
+# articles-per-day, so five minutes of staleness is invisible.
+_STATS_CACHE_SECONDS = 300
+
+
+def _stats(event: dict) -> dict:
+    """Aggregate AI cost/token statistics for the public Stats page --
+    aggregates only (common/stats.py), never article content or ids."""
+    stats = build_stats(list_all_articles(), list_topics(), list_models())
+    return _response(200, stats, cache_seconds=_STATS_CACHE_SECONDS)
+
+
 # --- RSS feed ---------------------------------------------------------------
 
 
@@ -397,6 +421,7 @@ _ROUTES = {
     "POST /articles/{article_id}/view": _view_article,
     "POST /articles/{article_id}/feedback": _submit_feedback,
     "GET /musings": _list_musings,
+    "GET /stats": _stats,
     "GET /rss.xml": _rss_feed,
 }
 

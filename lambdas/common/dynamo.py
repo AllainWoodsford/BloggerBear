@@ -445,6 +445,24 @@ def list_published_articles(topic_id: str | None = None) -> list[dict]:
     return items
 
 
+def list_all_articles() -> list[dict]:
+    """Return every Articles item regardless of status (Scan -- acceptable
+    at this project's scale, same as list_published_articles above).
+
+    Backs the public Stats page's aggregate cost figures (PR 5 of 5): spend
+    counts for drafted articles that went to moderation or were rejected,
+    not just published ones. Same lineage Decimal -> int/float conversion as
+    list_published_articles, for the same reason (json.dumps can't serialize
+    a raw Decimal) -- callers only ever surface aggregates, never items.
+    """
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    items = _paginated_scan(table)
+    for item in items:
+        if "lineage" in item:
+            item["lineage"] = _lineage_from_item(item["lineage"])
+    return items
+
+
 def increment_view_count(article_id: str) -> int:
     """Atomically increment an Articles item's `view_count` and return the new value.
 

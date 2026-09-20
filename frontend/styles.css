@@ -632,3 +632,161 @@ a {
 #site-notice-dismiss:hover {
   opacity: 0.9;
 }
+
+/* --- Stats page -------------------------------------------------------
+   Public cost/token statistics (app.js's renderStats). Colors are the
+   site's own custom properties throughout, so light/dark mode is inherited
+   rather than re-implemented. Marks follow the chart specs used across
+   this project: thin columns (capped at 24px in app.js) with a 4px rounded
+   data-end, a hairline recessive grid, text in text tokens (never the
+   series color), and a hit target wider than the mark. */
+
+.stats-note {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin: 0 0 20px;
+}
+
+.stats-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin: 0 0 8px;
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.stat-value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stat-sub {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.stats-chart {
+  position: relative;
+  margin: 8px 0 12px;
+}
+
+.stats-chart-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.stats-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.stats-axis-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.stats-bar {
+  fill: var(--accent);
+  opacity: 0.8;
+}
+
+.stats-hit {
+  fill: transparent;
+}
+
+.stats-day:hover .stats-bar,
+.stats-day:focus-within .stats-bar {
+  opacity: 1;
+}
+
+.stats-hit:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: -2px;
+}
+
+.chart-tooltip {
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+/* Same gotcha as .site-notice above: this display: flex would otherwise
+   beat the browser's default [hidden] { display: none }. */
+.chart-tooltip[hidden] {
+  display: none;
+}
+
+.chart-tooltip strong {
+  font-size: 0.95rem;
+}
+
+.chart-tooltip span {
+  color: var(--muted);
+}
+
+.stats-details {
+  margin: 0 0 8px;
+}
+
+.stats-details summary {
+  cursor: pointer;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.stats-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 8px;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.stats-table th,
+.stats-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.stats-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.stats-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
