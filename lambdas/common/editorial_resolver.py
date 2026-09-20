@@ -23,6 +23,7 @@ relevance guardrails (common/relevance.py) or the financial-topic safety rules
 from __future__ import annotations
 
 from common.adapters import WEB_SEARCH_ADAPTER_KEY
+from common.editorial_goals import OFF_ADAPTER_DOMAIN_GOALS, EditorialGoal
 
 # A topic created without an adapter gets independent web research.
 DEFAULT_ADAPTER = WEB_SEARCH_ADAPTER_KEY
@@ -71,11 +72,17 @@ def _clean(value) -> str | None:
     return value.strip() or None
 
 
-def resolve_editorial_goals(topic: dict) -> str:
+def resolve_editorial_goals(topic: dict, daily_goal: EditorialGoal | None = None) -> str:
     """The topic's standing editorial goal, as prompt text.
 
     Topic-specific -> adapter-specific -> global default, with the topic's
     exclusion criteria (if any) appended whichever layer applies.
+
+    `daily_goal` is the day's rotating goal, if the topic has one (the crypto
+    feed). On a day whose goal is outside the adapter's own domain (e.g. crypto's
+    general market-news day) the adapter-specific layer is skipped, since it
+    describes that domain and would contradict the day; a topic-specific focus
+    still wins.
     """
     adapter = topic.get("adapter") or DEFAULT_ADAPTER
     raw_goals = topic.get("editorial_goals")
@@ -85,7 +92,7 @@ def resolve_editorial_goals(topic: dict) -> str:
 
     if focus:
         resolved = f"Topic-Specific Focus: {focus}"
-    elif adapter in ADAPTER_DEFAULTS:
+    elif adapter in ADAPTER_DEFAULTS and daily_goal not in OFF_ADAPTER_DOMAIN_GOALS:
         resolved = f"Adapter-Specific Standard Goal: {ADAPTER_DEFAULTS[adapter]}"
     else:
         resolved = f"Global Default Goal: {GLOBAL_DEFAULT_GOAL}"
