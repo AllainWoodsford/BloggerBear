@@ -20,6 +20,7 @@ FINDINGS_TABLE, ...) -- never hardcode a table name here.
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -663,3 +664,72 @@ def list_musings(limit: int = 50) -> list[dict]:
     items = _paginated_scan(table)
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
+
+
+# --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1 of 5) --
+#
+# Owned by admin_api_handler.py (the /models, /model-config admin routes)
+# and read by common/model_routing.py's resolve_model. Models is the
+# "supported models" registry (docs/project-plan.md §11) -- populated via
+# the admin API/CLI, not Terraform, so adding/switching a model never
+# needs an apply. ModelConfig holds a single well-known row
+# (config_id = "default") for the current global default/fallback model.
+
+
+def put_model(item: dict) -> None:
+    """Write (create or overwrite) a Models item.
+
+    DynamoDB's boto3 resource rejects native `float` (it requires
+    `Decimal` for numeric attributes) -- converts the two price fields via
+    `Decimal(str(x))` rather than `Decimal(x)` directly, since the latter
+    preserves a binary float's exact (and often ugly, e.g.
+    0.00080000000000000004) representation instead of the decimal value
+    the caller actually meant.
+    """
+    table = get_table(os.environ["MODELS_TABLE"])
+    item = dict(item)
+    for price_field in ("input_price_usd_per_1k_tokens", "output_price_usd_per_1k_tokens"):
+        if price_field in item and item[price_field] is not None:
+            item[price_field] = Decimal(str(item[price_field]))
+    table.put_item(Item=item)
+
+
+def list_models() -> list[dict]:
+    """Return every Models item (Scan -- acceptable at this project's scale).
+
+    DynamoDB returns numeric attributes as Decimal, which json.dumps can't
+    serialize -- converts the two price fields back to float on the way
+    out, the mirror of put_model's Decimal(str(x)) conversion on the way in.
+    """
+    table = get_table(os.environ["MODELS_TABLE"])
+    items = _paginated_scan(table)
+    for item in items:
+        for price_field in ("input_price_usd_per_1k_tokens", "output_price_usd_per_1k_tokens"):
+            if price_field in item and item[price_field] is not None:
+                item[price_field] = float(item[price_field])
+    return items
+
+
+_MODEL_CONFIG_ID = "default"
+
+
+def get_model_config() -> dict | None:
+    """Fetch the single "default" ModelConfig row, or None if it doesn't exist
+    yet -- a fresh deploy, or an operator who's never touched this, is a
+    valid state (see common/model_routing.py's resolve_model fallback).
+    """
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    response = table.get_item(Key={"config_id": _MODEL_CONFIG_ID})
+    return response.get("Item")
+
+
+def put_model_config(*, model_id: str | None, fallback_model_id: str | None) -> dict:
+    """Write (or overwrite) the single "default" ModelConfig row and return it."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = {
+        "config_id": _MODEL_CONFIG_ID,
+        "model_id": model_id,
+        "fallback_model_id": fallback_model_id,
+    }
+    table.put_item(Item=item)
+    return item
