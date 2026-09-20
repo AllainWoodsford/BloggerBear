@@ -145,3 +145,18 @@ resource "aws_dynamodb_table" "failed_executions" {
     type = "S"
   }
 }
+
+# BloggerBear's "musings" feed -- one item per article publish (any of the
+# three publish paths, see common/musings.py) plus one every 4 days from
+# musing_feedback_handler.py's periodic reflection on reader feedback. No
+# TTL -- this is a permanent, readable feed, not a transient record.
+resource "aws_dynamodb_table" "musings" {
+  name         = "bloggerbear-${var.environment_name}-musings"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "musing_id"
+
+  attribute {
+    name = "musing_id"
+    type = "S"
+  }
+}

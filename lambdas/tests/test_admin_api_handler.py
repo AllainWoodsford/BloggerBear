@@ -691,6 +691,7 @@ def test_approve_moderation_item(aws_resources):
     with (
         patch("admin_api_handler.read_article_body", return_value="# Body") as mock_read_body,
         patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+        patch("admin_api_handler.generate_and_store_article_musing") as mock_musing,
     ):
         event = _event(
             "POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"}
@@ -720,6 +721,17 @@ def test_approve_moderation_item(aws_resources):
     assert render_kwargs["body_markdown"] == "# Body"
     assert render_kwargs["topic_name"] == "GitHub Trending"
     assert render_kwargs["published_at"] == article["published_at"]
+
+    # Reaching this path always needed a moderation-approve, so the musing
+    # is generated with compliant=False (the more measured/thoughtful
+    # mood, not the published-cleanly "proud" one).
+    mock_musing.assert_called_once()
+    musing_kwargs = mock_musing.call_args.kwargs
+    assert musing_kwargs["article_id"] == "article-1"
+    assert musing_kwargs["topic_id"] == "github-trending"
+    assert musing_kwargs["topic_name"] == "GitHub Trending"
+    assert musing_kwargs["title"] == "A Title"
+    assert musing_kwargs["compliant"] is False
 
 
 def test_reject_moderation_item(aws_resources):
@@ -775,6 +787,7 @@ def test_publish_article_sets_published_status(aws_resources):
     with (
         patch("admin_api_handler.read_article_body", return_value="# Body"),
         patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+        patch("admin_api_handler.generate_and_store_article_musing"),
     ):
         event = _event(
             "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
@@ -803,6 +816,7 @@ def test_publish_article_also_approves_pending_moderation_item(aws_resources):
     with (
         patch("admin_api_handler.read_article_body", return_value="# Body"),
         patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
     ):
         event = _event(
             "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
@@ -823,6 +837,7 @@ def test_publish_article_leaves_already_resolved_moderation_item_alone(aws_resou
     with (
         patch("admin_api_handler.read_article_body", return_value="# Body"),
         patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
     ):
         event = _event(
             "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}

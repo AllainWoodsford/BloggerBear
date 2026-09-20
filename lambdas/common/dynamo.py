@@ -600,3 +600,50 @@ def list_failed_executions() -> list[dict]:
     """Return every FailedExecutions item (Scan -- acceptable at this project's scale)."""
     table = get_table(os.environ["FAILED_EXECUTIONS_TABLE"])
     return _paginated_scan(table)
+
+
+# --- Musings ---------------------------------------------------------------
+#
+# Owned by common/musings.py (article musings, called from the three publish
+# paths) and musing_feedback_handler.py (periodic feedback musings). A single
+# site-wide reverse-chronological feed, same single-hash-key-scan pattern as
+# ModerationQueue/FailedExecutions -- small table, no GSI needed at this
+# project's scale.
+
+
+def put_musing(
+    *,
+    musing_id: str,
+    kind: str,
+    text: str,
+    mood: str,
+    created_at: str,
+    article_id: str | None = None,
+    topic_id: str | None = None,
+) -> dict:
+    """Write a Musings item and return it. `kind` is "article" or "feedback"."""
+    table = get_table(os.environ["MUSINGS_TABLE"])
+    item = {
+        "musing_id": musing_id,
+        "kind": kind,
+        "article_id": article_id,
+        "topic_id": topic_id,
+        "text": text,
+        "mood": mood,
+        "created_at": created_at,
+    }
+    table.put_item(Item=item)
+    return item
+
+
+def list_musings(limit: int = 50) -> list[dict]:
+    """Return up to `limit` Musings items, most recent first.
+
+    Scan-all (small table, same pattern as list_all_moderation_items) then
+    sort/truncate in Python -- there's no sort key to query against here,
+    just a hash key.
+    """
+    table = get_table(os.environ["MUSINGS_TABLE"])
+    items = _paginated_scan(table)
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items[:limit]

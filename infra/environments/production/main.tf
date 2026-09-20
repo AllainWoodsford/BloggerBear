@@ -490,6 +490,13 @@ locals {
     # daily_cycle_handler.py and admin_api_handler.py; harmless on every
     # other Lambda, they just never read it.
     SITE_BUCKET = module.static_site.bucket_name
+
+    # Musings: common/musings.py's target table (article musings, called
+    # from daily_cycle_handler.py and admin_api_handler.py) and
+    # musing_feedback_handler.py's periodic feedback musings (see
+    # aws_lambda_function.musing_feedback below). Harmless on every other
+    # Lambda, they just never read it.
+    MUSINGS_TABLE = module.app_data.musings_table_name
   }
 }
 
@@ -938,6 +945,16 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.trending_digest.arn]
   }
+
+  # Musings: the periodic feedback-musing job's single static schedule (see
+  # aws_scheduler_schedule.musing_feedback below) -- same pattern as
+  # InvokeWeeklyReflection/InvokeTrendingDigest above.
+  statement {
+    sid       = "InvokeMusingFeedback"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.musing_feedback.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_invoke" {
@@ -1053,6 +1070,9 @@ module "public_api" {
     # Phase 5: anonymous thumbs up/down + optional comment -- see
     # public_api_handler.py's _submit_feedback.
     "POST /articles/{article_id}/feedback",
+    # BloggerBear's musings feed -- see public_api_handler.py's
+    # _list_musings.
+    "GET /musings",
     "GET /rss.xml",
   ])
 }
@@ -1370,6 +1390,7 @@ module "observability" {
     aws_lambda_function.weekly_reflection.function_name,
     aws_lambda_function.trending_digest.function_name,
     aws_lambda_function.dlq_handler.function_name,
+    aws_lambda_function.musing_feedback.function_name,
   ]
   state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name
@@ -1426,6 +1447,56 @@ resource "aws_scheduler_schedule" "trending_digest" {
 
   target {
     arn      = aws_lambda_function.trending_digest.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
+# =========================================================================
+# Musings -- BloggerBear's short in-character reflections feed (see
+# common/musings.py, docs). Article musings are generated inline by
+# daily_cycle_handler.py/admin_api_handler.py at publish time -- no new
+# Lambda needed for that half. This eighth Lambda (same shared deployment
+# package, same aws_iam_role.lambda_exec -- it already has everything
+# musing_feedback_handler.py needs: read on Feedback, write on the new
+# Musings table via module.app_data.table_arns, and Bedrock, all granted
+# above; no new IAM role or policy resource required beyond the
+# InvokeMusingFeedback scheduler-invoke statement above) covers the other
+# half: a periodic reflection on reader feedback, on its own static
+# schedule, same "one global job, not per-topic" pattern as
+# weekly_reflection/trending_digest.
+# =========================================================================
+
+resource "aws_lambda_function" "musing_feedback" {
+  function_name = "bloggerbear-production-musing-feedback"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "musing_feedback_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 60
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+# rate(4 days): EventBridge Scheduler's rate expressions natively support a
+# "days" unit, so this needs no cron-arithmetic workaround. A fixed literal,
+# not topic-driven config, for the same reason as weekly_reflection's/
+# trending_digest's schedules above -- this isn't per-topic.
+resource "aws_scheduler_schedule" "musing_feedback" {
+  name                = "bloggerbear-production-musing-feedback"
+  group_name          = "default"
+  schedule_expression = "rate(4 days)"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.musing_feedback.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
   }
 }
