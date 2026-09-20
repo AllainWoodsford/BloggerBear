@@ -44,6 +44,7 @@ from common.dynamo import (
     update_moderation_status,
     update_prompt_refinement_status,
 )
+from common.musings import generate_and_store_article_musing
 from common.scheduler import (
     _validate_schedule_expression,
     delete_topic_schedules,
@@ -301,25 +302,39 @@ def _get_latest_finding_route(event: dict) -> dict:
 
 
 def _render_published_page(article: dict, *, published_at: str) -> None:
-    """Regenerate the static article page (docs/project-plan.md §11) for an
-    article that just became published.
+    """Regenerate the static article page (docs/project-plan.md §11) and
+    generate an article musing for an article that just became published.
 
     Shared by both admin-console publish paths below (moderation-approve
     and force-publish) -- daily_cycle_handler.py's own compliant-draft
-    branch calls common.static_pages.render_and_publish_article_page
-    directly instead, since it already has the freshly-drafted body text
-    in memory and doesn't need read_article_body's S3 round-trip.
+    branch calls common.static_pages.render_and_publish_article_page and
+    common.musings.generate_and_store_article_musing directly instead,
+    since it already has the freshly-drafted body text in memory and
+    doesn't need read_article_body's S3 round-trip. Both admin-console
+    paths reaching this function needed a moderation-approve or
+    force-publish override first, so their musing is always generated with
+    compliant=False -- the more measured/thoughtful mood, not the
+    published-cleanly proud one.
     """
     topic = get_topic(article["topic_id"])
+    topic_name = (topic or {}).get("name", article["topic_id"])
     body_markdown = read_article_body(article["body_s3_key"])
     render_and_publish_article_page(
         article_id=article["article_id"],
         title=article["title"],
         body_markdown=body_markdown,
-        topic_name=(topic or {}).get("name", article["topic_id"]),
+        topic_name=topic_name,
         published_at=published_at,
         source_refs=article.get("source_refs"),
         view_count=int(article.get("view_count", 0)),
+    )
+    generate_and_store_article_musing(
+        article_id=article["article_id"],
+        topic_id=article["topic_id"],
+        topic_name=topic_name,
+        title=article["title"],
+        compliant=False,
+        model_id=os.environ["BEDROCK_MODEL_ID"],
     )
 
 

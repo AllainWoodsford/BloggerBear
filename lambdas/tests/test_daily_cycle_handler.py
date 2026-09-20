@@ -113,6 +113,7 @@ def test_handler_publishes_when_compliant(s3_bucket):
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
         patch("daily_cycle_handler.render_and_publish_article_page") as mock_render_page,
+        patch("daily_cycle_handler.generate_and_store_article_musing") as mock_musing,
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -162,6 +163,17 @@ def test_handler_publishes_when_compliant(s3_bucket):
     assert render_kwargs["source_refs"] == article_kwargs["source_refs"]
     assert render_kwargs["view_count"] == 0
 
+    # A musing gets generated for the same compliant publish, with
+    # compliant=True (published cleanly -- the "proud" mood, not the
+    # "needed a second look" one).
+    mock_musing.assert_called_once()
+    musing_kwargs = mock_musing.call_args.kwargs
+    assert musing_kwargs["article_id"] == article_kwargs["article_id"]
+    assert musing_kwargs["topic_id"] == "github-trending"
+    assert musing_kwargs["topic_name"] == "GitHub Trending"
+    assert musing_kwargs["title"] == "A Great Title"
+    assert musing_kwargs["compliant"] is True
+
 
 def test_handler_moderates_when_non_compliant(s3_bucket):
     ideation_response = "Angle one\nAngle two\nAngle three"
@@ -181,6 +193,7 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
         patch("daily_cycle_handler.render_and_publish_article_page") as mock_render_page,
+        patch("daily_cycle_handler.generate_and_store_article_musing") as mock_musing,
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -202,6 +215,9 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
     # should exist until it's actually approved (see admin_api_handler.py's
     # _resolve_moderation_item, tested separately).
     mock_render_page.assert_not_called()
+    # Same reasoning for the musing -- nothing to reflect on publishing
+    # until it's actually published.
+    mock_musing.assert_not_called()
 
 
 def test_handler_financial_topic_routes_to_moderation_without_calling_bedrock_for_review(
@@ -324,6 +340,7 @@ def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prom
         patch("daily_cycle_handler.put_article"),
         patch("daily_cycle_handler.put_moderation_item"),
         patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -366,6 +383,7 @@ def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
         patch("daily_cycle_handler.put_article"),
         patch("daily_cycle_handler.put_moderation_item"),
         patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -403,8 +421,11 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
         patch("daily_cycle_handler.put_article"),
         patch("daily_cycle_handler.put_moderation_item"),
         patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
     ):
-        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert result["status"] == "published"
 
     ideation_prompt = mock_invoke.call_args_list[0].args[0]
     draft_prompt = mock_invoke.call_args_list[1].args[0]
