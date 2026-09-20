@@ -186,7 +186,23 @@ resource "terraform_data" "lambda_package" {
       cp -r "${path.module}/../../../lambdas/." "$build_dir/"
       rm -rf "$build_dir/tests" "$build_dir/__pycache__" "$build_dir/.pytest_cache" "$build_dir/.ruff_cache"
       rm -f "$build_dir/requirements.txt" "$build_dir/requirements-dev.txt" "$build_dir/pyproject.toml"
-      python3 -m pip install --upgrade --no-cache-dir -r "${path.module}/../../../lambdas/requirements.txt" -t "$build_dir"
+      # Bugfix: plain `python3` is real on the ubuntu-latest CI runner,
+      # but on a Windows machine where Python was installed via the `py`
+      # launcher (not a standalone python.org installer), `python3`/
+      # `python` on PATH resolve to Windows' own App Execution Alias
+      # stubs instead -- confirmed the hard way: those "ran" but failed
+      # with "Permission denied" (exit 126) the moment pip actually tried
+      # to do anything, since the stub isn't a real interpreter. `py -3`
+      # is the actual, always-real interpreter on that kind of Windows
+      # setup, but doesn't exist at all on Linux -- so try python3 first
+      # and only fall back to `py -3` if it's not genuinely runnable,
+      # rather than picking one and breaking the other platform.
+      if python3 -c "" >/dev/null 2>&1; then
+        py_cmd="python3"
+      else
+        py_cmd="py -3"
+      fi
+      $py_cmd -m pip install --upgrade --no-cache-dir -r "${path.module}/../../../lambdas/requirements.txt" -t "$build_dir"
     EOT
   }
 }
