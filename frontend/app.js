@@ -229,20 +229,71 @@
     return date.toLocaleDateString();
   }
 
-  function renderArticleList(topicId, articles, researching) {
+  // --- Articles in the Pipeline --------------------------------------
+  //
+  // A generic, content-free indicator of in-progress work for a topic --
+  // GET /topics/{topic_id}/activity deliberately returns only a count and
+  // a boolean, never a pending article's title or a Finding's content
+  // (see public_api_handler.py's _topic_activity docstring), so these
+  // list items are always one of exactly two fixed labels, never
+  // per-item text pulled from the API. That's also why they're plain
+  // text, not links -- there's nothing behind them yet to link to.
+  var PENDING_REVIEW_LABEL = "Pending review";
+  var RESEARCHING_LABEL = "Researching";
+
+  function pipelineItemsFor(activity) {
+    var items = [];
+    var pendingCount = Number(activity && activity.pending_review_count) || 0;
+    for (var i = 0; i < pendingCount; i++) {
+      items.push(PENDING_REVIEW_LABEL);
+    }
+    if (activity && activity.researching) {
+      items.push(RESEARCHING_LABEL);
+    }
+    return items;
+  }
+
+  function renderPipelineSection(items) {
+    var box = el("section", { className: "pipeline-box", attrs: { "aria-label": "Articles in the pipeline" } });
+
+    var titleBar = el("div", { className: "pipeline-titlebar" });
+    // Decorative spinner -- aria-hidden so a screen reader doesn't
+    // announce it at all; the meaningful content is the title bar text
+    // and the list items themselves, both left as plain accessible text.
+    titleBar.appendChild(el("span", { className: "pipeline-spinner", attrs: { "aria-hidden": "true" } }));
+    titleBar.appendChild(el("span", { className: "pipeline-bear", text: "🐻", attrs: { "aria-hidden": "true" } }));
+    titleBar.appendChild(el("span", { className: "pipeline-title", text: "Articles in the Pipeline" }));
+    box.appendChild(titleBar);
+
+    var list = el("ul", { className: "pipeline-list" });
+    items.forEach(function (label) {
+      list.appendChild(el("li", { text: label }));
+    });
+    box.appendChild(list);
+
+    return box;
+  }
+
+  function renderArticleList(topicId, articles, activity) {
     clearChildren(contentEl);
     var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
     contentEl.appendChild(el("h1", { text: heading }));
+
+    var pipelineItems = pipelineItemsFor(activity);
+    if (pipelineItems.length > 0) {
+      contentEl.appendChild(renderPipelineSection(pipelineItems));
+    }
 
     if (articles.length === 0) {
       // "researching" (docs/project-plan.md §11) distinguishes "nothing
       // published yet, but BloggerBear has started gathering findings for
       // this topic" from a topic with no activity at all -- see
-      // GET /topics/{topic_id}/activity in public_api_handler.py.
-      var emptyText = researching
-        ? "BloggerBear is researching this topic -- check back soon for the first article."
-        : "No published articles yet.";
-      contentEl.appendChild(el("p", { text: emptyText }));
+      // GET /topics/{topic_id}/activity in public_api_handler.py. Skip
+      // this text entirely when the pipeline box above already conveyed
+      // "something's coming" -- showing both would just be redundant.
+      if (pipelineItems.length === 0) {
+        contentEl.appendChild(el("p", { text: "No published articles yet." }));
+      }
       return;
     }
 
@@ -265,19 +316,17 @@
     fetchJson(apiUrl("/articles?topic_id=" + encodeURIComponent(topicId)))
       .then(function (data) {
         var articles = data.articles || [];
-        if (articles.length > 0) {
-          renderArticleList(topicId, articles, false);
-          return;
-        }
-        // Only worth the extra request when the list actually came back
-        // empty -- the common case (a topic with published articles)
-        // never needs to know whether research is also ongoing.
+        // Always fetch activity now, not just when articles is empty --
+        // "Articles in the Pipeline" can appear alongside already-
+        // published articles too (e.g. 3 published + 1 pending review is
+        // a perfectly normal state), unlike the old researching-only
+        // placeholder which only ever mattered on an empty list.
         fetchJson(apiUrl("/topics/" + encodeURIComponent(topicId) + "/activity"))
           .then(function (activity) {
-            renderArticleList(topicId, articles, Boolean(activity.researching));
+            renderArticleList(topicId, articles, activity);
           })
           .catch(function () {
-            renderArticleList(topicId, articles, false);
+            renderArticleList(topicId, articles, null);
           });
       })
       .catch(function () {

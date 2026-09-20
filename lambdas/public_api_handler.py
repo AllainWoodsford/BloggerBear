@@ -42,6 +42,7 @@ import boto3
 
 from common.compliance import bedrock_redact_review, regex_redact
 from common.dynamo import (
+    count_pending_moderation_for_topic,
     get_article,
     get_latest_finding,
     increment_view_count,
@@ -154,18 +155,33 @@ def _topic_activity(event: dict) -> dict:
     """Static article publishing (docs/project-plan.md §11): lets the
     frontend show a "BloggerBear is researching this topic" placeholder
     instead of a bare empty state when a topic has no published articles
-    yet but research has actually started.
+    yet but research has actually started, plus an "Articles in the
+    Pipeline" indicator (see app.js's renderPipelineSection) for anything
+    sitting in moderation.
 
-    Deliberately returns ONLY a derived boolean -- Findings summaries and
-    CandidateIdeas angles are pre-publication content and stay admin-only
-    (see admin_api_handler.py's own routes for those); this must never echo
-    a raw Finding/CandidateIdeas item back to an unauthenticated caller.
+    Deliberately returns ONLY derived values -- `researching` is a bare
+    boolean (never a raw Finding/CandidateIdeas item) and
+    `pending_review_count` is a bare int (never a ModerationQueue item's
+    title/reasons/queue_id). Findings summaries, CandidateIdeas angles, and
+    anything pending moderation are all pre-publication content that stays
+    admin-only (see admin_api_handler.py's own routes for those); this must
+    never echo any of it back to an unauthenticated caller -- only "is
+    something happening" and "how many," never "what."
     No topic-existence check, matching _list_articles above -- an unknown
-    topic_id just yields `researching: false`, not a 404.
+    topic_id just yields `researching: false, pending_review_count: 0`, not
+    a 404.
     """
     topic_id = _path_param(event, "topic_id")
     researching = get_latest_finding(topic_id) is not None
-    return _response(200, {"topic_id": topic_id, "researching": researching})
+    pending_review_count = count_pending_moderation_for_topic(topic_id)
+    return _response(
+        200,
+        {
+            "topic_id": topic_id,
+            "researching": researching,
+            "pending_review_count": pending_review_count,
+        },
+    )
 
 
 # --- Articles -------------------------------------------------------------
