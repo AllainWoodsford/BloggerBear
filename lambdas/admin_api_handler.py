@@ -27,12 +27,15 @@ import boto3
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.dynamo import (
     delete_topic,
+    get_article,
     get_latest_finding,
     get_moderation_item,
+    get_moderation_item_by_article_id,
     get_prompt_refinement,
     get_topic,
     list_all_moderation_items,
     list_candidate_ideas,
+    list_failed_executions,
     list_pending_moderation,
     list_prompt_refinements,
     list_topics,
@@ -293,6 +296,35 @@ def _get_latest_finding_route(event: dict) -> dict:
     return _response(200, finding)
 
 
+# --- Articles ---------------------------------------------------------
+
+
+def _publish_article(event: dict) -> dict:
+    """Force an Articles item to `status="published"`, regardless of its
+    current status (unlike _resolve_moderation_item below, which only acts
+    on a `pending` ModerationQueue item). Covers cases the moderation
+    approve/reject flow doesn't: publishing an article that was never
+    routed to moderation in the first place, or overriding one stuck in an
+    unwanted state.
+
+    If a ModerationQueue item exists for this article and is still
+    `pending`, it's marked `approved` too (best-effort consistency) so the
+    two records don't disagree about whether this article was reviewed.
+    """
+    article_id = _path_param(event, "article_id")
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+
+    update_article_status(article_id, "published", published_at=datetime.now(UTC).isoformat())
+
+    moderation_item = get_moderation_item_by_article_id(article_id)
+    if moderation_item is not None and moderation_item.get("status") == "pending":
+        update_moderation_status(moderation_item["queue_id"], "approved")
+
+    return _response(200, {"published": article_id})
+
+
 # --- Moderation queue -----------------------------------------------------
 
 
@@ -419,6 +451,13 @@ def _reject_prompt_refinement(event: dict) -> dict:
     return _resolve_prompt_refinement(event, new_status="rejected")
 
 
+# --- Failed executions (DLQ consumer) --------------------------------------
+
+
+def _list_failed_executions(event: dict) -> dict:
+    return _response(200, {"items": list_failed_executions()})
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -428,6 +467,7 @@ _ROUTES = {
     "POST /topics/{topic_id}/trigger": _trigger_topic,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
+    "POST /articles/{article_id}/publish": _publish_article,
     "GET /moderation-queue": _list_moderation_queue,
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,
@@ -435,6 +475,7 @@ _ROUTES = {
     "GET /prompt-refinements": _list_prompt_refinements,
     "POST /prompt-refinements/{topic_id}/{version}/approve": _approve_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/reject": _reject_prompt_refinement,
+    "GET /failed-executions": _list_failed_executions,
 }
 
 

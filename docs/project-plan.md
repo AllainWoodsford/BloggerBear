@@ -126,3 +126,44 @@ Full detail: `docs/specs/phase-0-foundations.md`.
 
 See `docs/PROGRESS.md` for the full phase 0–8 breakdown and live status —
 this section is intentionally a summary, not the tracker.
+
+## 11) Proposed Enhancements
+
+Not yet scheduled or scoped for implementation — captured here so the
+idea isn't lost, to be picked up in a dedicated follow-up PR when
+explicitly requested.
+
+### Static article publishing
+
+**Problem**: every published article is currently read through
+`public_api_handler`'s `GET /articles/{article_id}` — a Lambda invocation
+plus a DynamoDB read plus an S3 read on every single page view, for
+content that, once published, never changes. There's also no distinction
+today between "not yet published" and "doesn't exist" (the public API
+treats both as a 404, per its own doc comment), so a reader has no way to
+see that BloggerBear is actively researching/drafting something for a
+topic.
+
+**Proposed shape**:
+- At publish time (`daily_cycle_handler._publish_or_moderate`, and both
+  places an article can be force-published after the fact — the
+  moderation-approve flow and the force-publish admin route added in the
+  low-hanging-fruit PR), render the article as a static HTML page and
+  write it into the content S3 bucket alongside the existing markdown
+  body, styled consistently with `frontend/`. Serve it directly from
+  S3/CloudFront — no Lambda or API Gateway round-trip to read a published
+  article.
+- Keep topic listing and anything not yet published dynamic, via the
+  existing public API — shown as a "BloggerBear is researching this"
+  placeholder rather than a 404, using the existing Findings/CandidateIdeas
+  visibility the admin API already has.
+- Feedback (thumbs up/down + comment) and the view counter stay API-backed
+  regardless — they're inherently interactive, not something a static page
+  can serve on its own.
+
+**Key risk to design around**: three different code paths can change an
+article's status (`daily_cycle_handler`'s own publish/moderate branch, the
+moderation-approve route, and the force-publish route) — all three must
+regenerate the static page, not just flip the `Articles` table's `status`
+field, or the static page and the table's authoritative status will drift
+out of sync.

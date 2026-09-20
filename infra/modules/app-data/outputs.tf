@@ -68,6 +68,16 @@ output "prompt_refinements_table_arn" {
   description = "ARN of the PromptRefinements DynamoDB table."
 }
 
+output "failed_executions_table_name" {
+  value       = aws_dynamodb_table.failed_executions.name
+  description = "Name of the FailedExecutions DynamoDB table."
+}
+
+output "failed_executions_table_arn" {
+  value       = aws_dynamodb_table.failed_executions.arn
+  description = "ARN of the FailedExecutions DynamoDB table."
+}
+
 output "table_arns" {
   value = [
     aws_dynamodb_table.topics.arn,
@@ -77,6 +87,7 @@ output "table_arns" {
     aws_dynamodb_table.moderation_queue.arn,
     aws_dynamodb_table.feedback.arn,
     aws_dynamodb_table.prompt_refinements.arn,
+    aws_dynamodb_table.failed_executions.arn,
   ]
-  description = "All 7 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 8 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
 }

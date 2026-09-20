@@ -93,6 +93,7 @@ def handler(event, context) -> dict:
     if not topic_id:
         return {"status": "error", "reason": "event missing required 'topic_id'"}
 
+    print(f"research_tick_handler: starting run for topic_id={topic_id}")
     try:
         return _run_research_tick(topic_id)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
