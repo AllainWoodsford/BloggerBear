@@ -7,7 +7,11 @@ docs/project-plan.md §6). It is a thin adapter over common/web_search.py's
 "web aggregator" mode) call directly when they need web results as *part*
 of a richer state.
 
-adapter_config (all optional except one of `queries`/`query`):
+This is also the default adapter for a topic created without one: with no
+`queries`/`query` configured it searches on the topic's own name (see
+`default_query_for_topic`), so a bare topic still does independent web research.
+
+adapter_config (all optional; a search string defaults to the topic's name):
     queries          list of search strings (or `query`, a single string)
     max_results      total results kept across all queries (default 10, max 25)
     max_age_hours    only results newer than this (default 24)
@@ -24,6 +28,7 @@ adapter_config (all optional except one of `queries`/`query`):
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from common.relevance import keywords_from_query, normalize_keywords
@@ -44,6 +49,36 @@ def configured_queries(adapter_config: dict) -> list[str]:
     return [q for q in (queries or []) if isinstance(q, str) and q.strip()]
 
 
+_NAME_STOPWORDS = frozenset({"the", "and", "for", "with", "from", "into", "about"})
+_NAME_WORD_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9+#.-]*")
+_MAX_NAME_TERMS = 8
+
+
+def default_query_for_topic(topic_config: dict) -> str | None:
+    """A baseline search for a topic with no configured query: its name's
+    meaningful words OR-ed together, so any new topic can do independent web
+    research with no adapter_config at all. Deliberately broad -- a configured
+    `query` is always sharper -- and the topic's editorial goal and relevance
+    guardrails keep what it finds on topic. None if the name has no usable words.
+    """
+    name = topic_config.get("name")
+    if not isinstance(name, str) or not name.strip():
+        # A topic id like "security-trends" reads as words; "zero-day" in a
+        # name is a term, so only ids get their separators split.
+        name = str(topic_config.get("topic_id") or "").replace("-", " ").replace("_", " ")
+    words: list[str] = []
+    seen: set[str] = set()
+    for word in _NAME_WORD_RE.findall(name):
+        word = word.strip(".-")
+        if len(word) >= 3 and word.lower() not in _NAME_STOPWORDS and word.lower() not in seen:
+            seen.add(word.lower())
+            words.append(word)
+    words = words[:_MAX_NAME_TERMS]
+    if not words:
+        return None
+    return words[0] if len(words) == 1 else "(" + " OR ".join(words) + ")"
+
+
 class WebSearchAdapter(Adapter):
     """Runs the configured search queries and snapshots the merged results."""
 
@@ -51,7 +86,13 @@ class WebSearchAdapter(Adapter):
         adapter_config = topic_config.get("adapter_config") or {}
         queries = configured_queries(adapter_config)
         if not queries:
-            raise ValueError("web_search adapter needs adapter_config 'queries' (or 'query')")
+            fallback = default_query_for_topic(topic_config)
+            queries = [fallback] if fallback else []
+        if not queries:
+            raise ValueError(
+                "web_search adapter needs adapter_config 'queries' (or 'query'), "
+                "or a topic name to search for"
+            )
 
         max_results = min(
             int(adapter_config.get("max_results") or DEFAULT_MAX_RESULTS), MAX_RESULTS_LIMIT
