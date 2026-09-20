@@ -518,24 +518,21 @@ def test_material_diff_true_on_a_new_utc_day_and_on_a_goal_change():
     assert changed is True and "editorial goal changed to TREND_INVENTOR" in summary
 
 
-def test_material_diff_false_on_small_price_wobble():
-    changed, summary = CryptoFeedAdapter().material_diff(_state(), _state(btc=80800.0, alt=10.2))
+@pytest.mark.parametrize(
+    ("btc", "alt"),
+    [(80800.0, 10.2), (88000.0, 10.0), (72000.0, 10.0), (80000.0, 8.0), (120000.0, 30.0)],
+    ids=["wobble", "anchor-up-10pct", "anchor-down-10pct", "altcoin-down-20pct", "everything-jumps"],
+)
+def test_material_diff_ignores_price_moves_of_any_size_within_a_day(btc, alt):
+    changed, summary = CryptoFeedAdapter().material_diff(_state(), _state(btc=btc, alt=alt))
 
     assert (changed, summary) == (False, "no material change")
 
 
-def test_material_diff_true_on_a_large_anchor_move():
-    changed, summary = CryptoFeedAdapter().material_diff(_state(), _state(btc=88000.0))
+def test_a_price_move_does_not_stop_the_day_rollover_from_being_material():
+    changed, summary = CryptoFeedAdapter().material_diff(_state(day="2026-09-19"), _state(btc=80001.0))
 
-    assert changed is True
-    assert "bitcoin $80,000->$88,000 (+10.0%)" in summary
-
-
-def test_material_diff_true_on_a_large_altcoin_drop():
-    changed, summary = CryptoFeedAdapter().material_diff(_state(), _state(alt=8.0))
-
-    assert changed is True
-    assert "alt-1 $10->$8 (-20.0%)" in summary
+    assert changed is True and "new daily analysis" in summary
 
 
 def test_material_diff_needs_five_new_headlines_for_a_web_change():
