@@ -64,6 +64,18 @@ Each new domain provides an adapter implementing the same contract:
 - `material_diff(old_state, new_state) -> bool, diff_summary`
 - `source_refs(new_state) -> list[SourceRef]`
 
+Optional hooks (defaults on `Adapter` keep existing adapters unchanged):
+- `build_summary_prompt(topic, diff_summary, new_state) -> str | None` — supply a
+  domain-specific research-summary prompt instead of the generic one.
+- `uses_previous_state = True` — the research tick then calls
+  `fetch_state(topic_config, previous_state=...)`, letting an adapter reuse
+  slow-changing data it already fetched earlier in the day.
+
+Reusable capabilities live in `common/` rather than in one adapter:
+`web_search.py` (keyless web/news search behind a provider interface) and
+`http_retry.py` (exponential backoff for rate-limited APIs). The generic
+`web_search` adapter turns any topic into "watch these search queries".
+
 Core pipeline code must remain topic-agnostic.
 
 ## 7) Compliance and Safety

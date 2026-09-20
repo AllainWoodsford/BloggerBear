@@ -54,11 +54,8 @@ from common.dynamo import (
     put_feedback,
     update_article_net_votes,
 )
-
-from common.stats import build_stats
-
 from common.source_refs import dedupe_source_refs
-
+from common.stats import build_stats
 
 _RSS_ITEM_LIMIT = 50
 _RSS_DESCRIPTION_MAX_CHARS = 300

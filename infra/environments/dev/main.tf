@@ -447,13 +447,17 @@ locals {
 # why a direct reference would create a dependency cycle).
 data "aws_caller_identity" "current" {}
 
+# 120s / 512MB (was 60s / 256MB): on the first tick of each UTC day the crypto feed
+# makes a markets call plus up to ~10 CoinGecko history calls (with backoff on
+# 429s) or a web search, then a Bedrock summary of a much larger state. Later
+# ticks reuse that day history and are far cheaper.
 resource "aws_lambda_function" "research_tick" {
   function_name = "bloggerbear-dev-research-tick"
   role          = aws_iam_role.lambda_exec.arn
   handler       = "research_tick_handler.handler"
   runtime       = "python3.11"
-  timeout       = 60
-  memory_size   = 256
+  timeout       = 120
+  memory_size   = 512
 
   filename         = data.archive_file.lambdas.output_path
   source_code_hash = data.archive_file.lambdas.output_base64sha256
@@ -463,13 +467,16 @@ resource "aws_lambda_function" "research_tick" {
   }
 }
 
+# 120s / 512MB (was 60s / 256MB): headroom for the sequential Bedrock calls
+# (ideate, draft, title, review) over a larger data payload, plus a
+# fallback-model retry if the primary call fails.
 resource "aws_lambda_function" "daily_cycle" {
   function_name = "bloggerbear-dev-daily-cycle"
   role          = aws_iam_role.lambda_exec.arn
   handler       = "daily_cycle_handler.handler"
   runtime       = "python3.11"
-  timeout       = 60
-  memory_size   = 256
+  timeout       = 120
+  memory_size   = 512
 
   filename         = data.archive_file.lambdas.output_path
   source_code_hash = data.archive_file.lambdas.output_base64sha256
