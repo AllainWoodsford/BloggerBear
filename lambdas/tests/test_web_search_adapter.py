@@ -121,3 +121,38 @@ def test_source_refs_cover_every_result():
 
 def test_uses_the_generic_summary_prompt():
     assert WebSearchAdapter().build_summary_prompt({}, "diff", {"results": []}) is None
+
+
+# --- relevance defaults -------------------------------------------------------------
+
+
+def _keywords_passed(**adapter_config):
+    with patch("common.adapters.web_search.search_web", return_value=[]) as mock_search:
+        WebSearchAdapter().fetch_state(_topic(**adapter_config))
+    return [call.kwargs["title_keywords"] for call in mock_search.call_args_list]
+
+
+def test_without_title_keywords_each_query_filters_on_its_own_terms():
+    passed = _keywords_passed(queries=["(ransomware OR \"zero-day\")", "supply chain attack"])
+
+    assert passed == [["zero-day", "ransomware"], ["supply", "chain", "attack"]]
+
+
+def test_explicit_title_keywords_override_the_derived_ones():
+    assert _keywords_passed(query="ransomware", title_keywords=["breach"]) == [["breach"]]
+
+
+def test_an_empty_title_keywords_list_turns_the_filter_off():
+    assert _keywords_passed(query="ransomware", title_keywords=[]) == [None]
+
+
+def test_a_query_with_no_usable_terms_gets_no_filter():
+    assert _keywords_passed(query="a b") == [None]
+
+
+def test_no_results_is_never_material_so_no_model_call_is_wasted():
+    adapter = WebSearchAdapter()
+
+    assert adapter.material_diff(None, {"results": []}) == (False, "no relevant results to report")
+    old = {"results": [_result(1)]}
+    assert adapter.material_diff(old, {"results": []}) == (False, "no relevant results to report")

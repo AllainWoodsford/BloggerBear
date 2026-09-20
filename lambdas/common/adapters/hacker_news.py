@@ -15,11 +15,16 @@ from datetime import UTC, datetime
 
 import requests
 
+from common.relevance import matches_keywords, normalize_keywords
+
 from .base import Adapter
 
 BASE_URL = "https://hacker-news.firebaseio.com/v0"
 REQUEST_TIMEOUT_SECONDS = 10
 MAX_STORIES = 25
+# Stories examined when `adapter_config.keywords` filters the feed by topic
+# (the kept stories are still capped at MAX_STORIES).
+FILTERED_CANDIDATE_LIMIT = 60
 USER_AGENT = "BloggerBearResearchBot/1.0 (+https://github.com/AllainWoodsford/BloggerBear)"
 
 # A story's score jumping by at least this many, OR growing by at least
@@ -35,7 +40,11 @@ class HackerNewsAdapter(Adapter):
 
     def fetch_state(self, topic_config: dict) -> dict:
         adapter_config = topic_config.get("adapter_config") or {}
-        limit = int(adapter_config.get("limit") or MAX_STORIES)
+        keywords = normalize_keywords(adapter_config.get("keywords"))
+        # The top-stories feed is general-interest, so with a topic filter
+        # look at a wider slice: most of the front page won't be on topic.
+        default_limit = FILTERED_CANDIDATE_LIMIT if keywords else MAX_STORIES
+        limit = int(adapter_config.get("limit") or default_limit)
 
         ids_response = requests.get(
             f"{BASE_URL}/topstories.json",
@@ -46,6 +55,7 @@ class HackerNewsAdapter(Adapter):
         story_ids = ids_response.json()[:limit]
 
         stories = []
+        off_topic_dropped = 0
         for story_id in story_ids:
             item_response = requests.get(
                 f"{BASE_URL}/item/{story_id}.json",
@@ -60,6 +70,12 @@ class HackerNewsAdapter(Adapter):
             if not item or item.get("type") != "story":
                 continue
 
+            # Off-topic noise (a pizza-oven repo, a UFO essay) is dropped here,
+            # before it can reach a summary, when the topic configures keywords.
+            if not matches_keywords(item.get("title", ""), keywords):
+                off_topic_dropped += 1
+                continue
+
             stories.append(
                 {
                     "id": item["id"],
@@ -70,9 +86,15 @@ class HackerNewsAdapter(Adapter):
                 }
             )
 
-        return {"stories": stories, "fetched_at": datetime.now(UTC).isoformat()}
+        state = {"stories": stories, "fetched_at": datetime.now(UTC).isoformat()}
+        if keywords:
+            state["stories"] = stories[:MAX_STORIES]
+            state["off_topic_dropped"] = off_topic_dropped
+        return state
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
+        if not new_state.get("stories"):
+            return False, "no relevant stories to report"
         if old_state is None:
             return True, "initial observation: no prior snapshot to compare against"
 

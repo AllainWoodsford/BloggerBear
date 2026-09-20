@@ -76,6 +76,18 @@ Reusable capabilities live in `common/` rather than in one adapter:
 `http_retry.py` (exponential backoff for rate-limited APIs). The generic
 `web_search` adapter turns any topic into "watch these search queries".
 
+Topic relevance (`common/relevance.py`) is enforced at three points, always
+keyed to the *active* topic's name, never a hardcoded topic:
+- Collection: hacker_news / github_trending accept `adapter_config.keywords`
+  (whole-word match, trailing `*` = prefix) to drop off-topic items before they
+  reach a summary; `web_search` filters titles on `title_keywords`, defaulting
+  to each query's own terms (`[]` disables). An adapter left with nothing
+  relevant reports "no material change" instead of spending a model call.
+- Research summary (P1): the generic prompt carries a relevance rule.
+- Writing (P2/P3): ideation and drafting carry a critical relevance rule/
+  boundary that forces off-topic findings to be ignored or reframed through
+  the topic. Editorial goals (e.g. crypto) are applied inside that boundary.
+
 Core pipeline code must remain topic-agnostic.
 
 ## 7) Compliance and Safety

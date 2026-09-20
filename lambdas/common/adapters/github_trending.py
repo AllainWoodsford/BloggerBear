@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 import requests
 from bs4 import BeautifulSoup
 
+from common.relevance import matches_keywords, normalize_keywords
+
 from .base import Adapter
 
 TRENDING_URL = "https://github.com/trending"
@@ -41,11 +43,22 @@ class GitHubTrendingAdapter(Adapter):
         )
         response.raise_for_status()
 
-        repos = self._parse_repos(response.text)
-        return {
-            "repos": repos[:MAX_REPOS],
-            "fetched_at": datetime.now(UTC).isoformat(),
-        }
+        repos = self._parse_repos(response.text)[:MAX_REPOS]
+
+        # Trending is language-scoped at best, never topic-scoped, so a topic
+        # can configure `keywords` to drop repos that aren't about it (matched
+        # against the repo name and description).
+        keywords = normalize_keywords(adapter_config.get("keywords"))
+        state = {"repos": repos, "fetched_at": datetime.now(UTC).isoformat()}
+        if keywords:
+            relevant = [
+                repo
+                for repo in repos
+                if matches_keywords(f"{repo['name']} {repo['description']}", keywords)
+            ]
+            state["off_topic_dropped"] = len(repos) - len(relevant)
+            state["repos"] = relevant
+        return state
 
     @staticmethod
     def _parse_repos(html: str) -> list[dict]:
@@ -87,6 +100,8 @@ class GitHubTrendingAdapter(Adapter):
         return repos
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
+        if not new_state.get("repos"):
+            return False, "no relevant repos to report"
         if old_state is None:
             return True, "initial observation: no prior snapshot to compare against"
 

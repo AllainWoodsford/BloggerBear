@@ -599,6 +599,8 @@ def test_web_prompt_lists_the_headlines_and_admits_it_has_no_article_bodies():
     assert "synthesis of 2 crypto news items" in prompt
     assert "only headlines and source names are available" in prompt
     assert "https://x/1" in prompt
+    # headlines are the noisiest input, so the web summary carries the rule
+    assert "RELEVANCE RULE: this digest covers 'Crypto' and nothing else" in prompt
 
 
 def test_no_prompt_for_a_legacy_or_unknown_goal_snapshot():

@@ -11,8 +11,12 @@ adapter_config (all optional except one of `queries`/`query`):
     queries          list of search strings (or `query`, a single string)
     max_results      total results kept across all queries (default 10, max 25)
     max_age_hours    only results newer than this (default 24)
-    title_keywords   keep only results whose title mentions one of these
-    provider         search backend name (default: WEB_SEARCH_PROVIDER env
+    title_keywords   keep only results whose title mentions one of these (whole
+                     words; a trailing "*" is a prefix match). If omitted, each
+                     query's own topical words are used, so a page that matched
+                     the query only in passing is dropped; set [] to turn the
+                     filter off.
+    provider        search backend name (default: WEB_SEARCH_PROVIDER env
                      var, else GDELT -- see common/web_search.py)
     min_new_results  how many never-before-seen results make a tick
                      "material" (default 3)
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from common.relevance import keywords_from_query, normalize_keywords
 from common.web_search import search_web
 
 from .base import Adapter
@@ -53,14 +58,20 @@ class WebSearchAdapter(Adapter):
         )
         max_age_hours = int(adapter_config.get("max_age_hours") or DEFAULT_MAX_AGE_HOURS)
 
+        configured_keywords = adapter_config.get("title_keywords")
+
         merged: list[dict] = []
         seen_urls: set[str] = set()
         for query in queries:
+            if configured_keywords is None:
+                title_keywords = keywords_from_query(query) or None
+            else:
+                title_keywords = normalize_keywords(configured_keywords) or None
             for result in search_web(
                 query,
                 max_results=max_results,
                 max_age_hours=max_age_hours,
-                title_keywords=adapter_config.get("title_keywords"),
+                title_keywords=title_keywords,
                 provider=adapter_config.get("provider"),
             ):
                 if result["url"] not in seen_urls:
@@ -78,6 +89,8 @@ class WebSearchAdapter(Adapter):
         }
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
+        if not new_state.get("results"):
+            return False, "no relevant results to report"
         if old_state is None:
             return True, "initial observation: no prior snapshot to compare against"
 

@@ -148,3 +148,16 @@ def test_explicit_provider_argument_beats_the_env_var(monkeypatch):
 
     with _gdelt([_article("T", "https://a.com/1")]):
         assert len(search_web("q", provider="gdelt")) == 1
+
+
+def test_search_web_title_keywords_match_whole_words_only():
+    with _gdelt(
+        [
+            _article("We worked together on a new method", "https://a.com/1"),
+            _article("Spot ETH ETF flows turn positive", "https://a.com/2"),
+            _article("Cryptocurrency exchange freezes withdrawals", "https://a.com/3"),
+        ]
+    ):
+        results = search_web("q", max_results=10, title_keywords=["eth", "crypto*"])
+
+    assert [r["url"] for r in results] == ["https://a.com/2", "https://a.com/3"]
