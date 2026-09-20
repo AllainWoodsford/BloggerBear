@@ -34,6 +34,7 @@ from common.dynamo import (
     put_candidate_idea,
     put_moderation_item,
 )
+from common.musings import generate_and_store_article_musing
 from common.static_pages import render_and_publish_article_page
 
 _NUM_CANDIDATE_ANGLES = 3
@@ -103,6 +104,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
         draft_text=draft_text,
         findings=findings,
         review=review,
+        model_id=model_id,
     )
 
 
@@ -230,6 +232,7 @@ def _publish_or_moderate(
     draft_text: str,
     findings: list[dict],
     review: dict,
+    model_id: str,
 ) -> dict:
     article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
@@ -273,6 +276,14 @@ def _publish_or_moderate(
             published_at=now,
             source_refs=source_refs,
             view_count=0,
+        )
+        generate_and_store_article_musing(
+            article_id=article_id,
+            topic_id=topic_id,
+            topic_name=topic_name,
+            title=title,
+            compliant=True,
+            model_id=model_id,
         )
         return {
             "status": "published",

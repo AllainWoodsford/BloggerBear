@@ -22,6 +22,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("FINDINGS_TABLE", "Findings")
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     monkeypatch.setenv("FEEDBACK_TABLE", "Feedback")
+    monkeypatch.setenv("MUSINGS_TABLE", "Musings")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
@@ -76,6 +77,13 @@ def aws_resources(aws_env):
             BillingMode="PAY_PER_REQUEST",
         )
 
+        dynamodb.create_table(
+            TableName="Musings",
+            KeySchema=[{"AttributeName": "musing_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
         s3 = boto3.client("s3", region_name=REGION)
         s3.create_bucket(
             Bucket="bloggerbear-content-test",
@@ -110,6 +118,30 @@ def _put_topic(topic=None):
     topic = topic or TOPIC
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     table.put_item(Item=topic)
+
+
+def _put_musing(
+    musing_id="musing-1",
+    *,
+    kind="article",
+    text="I pawed at a few sources today.",
+    mood="proud",
+    created_at="2026-09-12T00:00:00+00:00",
+    article_id=None,
+    topic_id=None,
+):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Musings")
+    table.put_item(
+        Item={
+            "musing_id": musing_id,
+            "kind": kind,
+            "article_id": article_id,
+            "topic_id": topic_id,
+            "text": text,
+            "mood": mood,
+            "created_at": created_at,
+        }
+    )
 
 
 def _put_finding(topic_id="github-trending", captured_at="2026-09-12T00:00:00+00:00"):
@@ -269,6 +301,51 @@ def test_topic_activity_never_leaks_raw_finding_content(aws_resources):
     result = public_api_handler.handler(event, None)
     body = json.loads(result["body"])
     assert set(body.keys()) == {"topic_id", "researching"}
+
+
+# --- Musings --------------------------------------------------------------
+
+
+def test_list_musings_empty(aws_resources):
+    result = public_api_handler.handler(_event("GET /musings"), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"musings": []}
+
+
+def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
+    _put_musing(
+        "musing-old",
+        kind="feedback",
+        text="Quiet week.",
+        mood="curious",
+        created_at="2026-09-10T00:00:00+00:00",
+    )
+    _put_musing(
+        "musing-new",
+        kind="article",
+        text="I'm quite proud of this one.",
+        mood="proud",
+        created_at="2026-09-12T00:00:00+00:00",
+        article_id="article-1",
+        topic_id="github-trending",
+    )
+
+    result = public_api_handler.handler(_event("GET /musings"), None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    musings = body["musings"]
+    assert [m["musing_id"] for m in musings] == ["musing-new", "musing-old"]
+
+    newest = musings[0]
+    assert newest == {
+        "musing_id": "musing-new",
+        "kind": "article",
+        "article_id": "article-1",
+        "topic_id": "github-trending",
+        "text": "I'm quite proud of this one.",
+        "mood": "proud",
+        "created_at": "2026-09-12T00:00:00+00:00",
+    }
 
 
 # --- Articles listing ---------------------------------------------------
