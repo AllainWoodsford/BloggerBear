@@ -68,7 +68,22 @@ python scripts/admin_cli.py moderation reject <queue_id>
 python scripts/admin_cli.py articles publish <article_id>
 
 python scripts/admin_cli.py failed-executions list
+
+python scripts/admin_cli.py models list
+python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
+    --display-name "Claude Haiku 4.5" --provider anthropic \
+    --input-price 0.0008 --output-price 0.004
+python scripts/admin_cli.py model-config get
+python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 ```
+
+`models`/`model-config` back the AI lineage/cost-tracking enhancement's
+DynamoDB-backed model registry (docs/project-plan.md §11) -- adding a
+model or changing the global default/fallback never needs a Terraform
+apply. Resolution order (`common/model_routing.py`'s `resolve_model`):
+a topic's own `model_id`/`fallback_model_id` override, if set → the
+global `model-config` default → the Terraform-set `BEDROCK_MODEL_ID`
+env var.
 
 `articles publish` force-sets an article's status to `published` regardless
 of its current state -- unlike `moderation approve`, which only acts on an

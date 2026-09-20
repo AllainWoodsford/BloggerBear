@@ -24,6 +24,8 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("PROMPT_REFINEMENTS_TABLE", "PromptRefinements")
     monkeypatch.setenv("FAILED_EXECUTIONS_TABLE", "FailedExecutions")
+    monkeypatch.setenv("MODELS_TABLE", "Models")
+    monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("RESEARCH_TICK_FUNCTION_NAME", "research-tick-fn")
@@ -115,6 +117,18 @@ def aws_resources(aws_env):
             AttributeDefinitions=[{"AttributeName": "failure_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
+        dynamodb.create_table(
+            TableName="Models",
+            KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="ModelConfig",
+            KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         yield
 
 
@@ -179,6 +193,8 @@ def test_create_topic_success(aws_resources):
         "is_financial": False,
         "research_cadence": "rate(1 hour)",
         "daily_cadence": "cron(0 6 * * ? *)",
+        "model_id": None,
+        "fallback_model_id": None,
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
@@ -880,6 +896,106 @@ def test_list_failed_executions_returns_items(aws_resources):
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
     assert [item["failure_id"] for item in body["items"]] == ["f-1"]
+
+
+# --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1) -----
+
+
+def test_list_models_empty(aws_resources):
+    result = admin_api_handler.handler(_event("GET /models"), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"models": []}
+
+
+def test_put_model_creates_entry(aws_resources):
+    body = {
+        "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "display_name": "Claude Haiku 4.5",
+        "provider": "anthropic",
+        "input_price_usd_per_1k_tokens": 0.0008,
+        "output_price_usd_per_1k_tokens": 0.004,
+        "enabled": True,
+    }
+    result = admin_api_handler.handler(_event("POST /models", body=body), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == body
+
+    list_result = admin_api_handler.handler(_event("GET /models"), None)
+    listed = json.loads(list_result["body"])["models"]
+    assert [m["model_id"] for m in listed] == [body["model_id"]]
+
+
+def test_put_model_defaults_enabled_true(aws_resources):
+    body = {
+        "model_id": "amazon.nova-2",
+        "display_name": "Amazon Nova 2",
+        "provider": "amazon",
+        "input_price_usd_per_1k_tokens": 0.0003,
+        "output_price_usd_per_1k_tokens": 0.0012,
+    }
+    result = admin_api_handler.handler(_event("POST /models", body=body), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "model_id",
+        "display_name",
+        "provider",
+        "input_price_usd_per_1k_tokens",
+        "output_price_usd_per_1k_tokens",
+    ],
+)
+def test_put_model_missing_required_field_returns_400(aws_resources, missing_field):
+    body = {
+        "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "display_name": "Claude Haiku 4.5",
+        "provider": "anthropic",
+        "input_price_usd_per_1k_tokens": 0.0008,
+        "output_price_usd_per_1k_tokens": 0.004,
+    }
+    del body[missing_field]
+    result = admin_api_handler.handler(_event("POST /models", body=body), None)
+    assert result["statusCode"] == 400
+
+
+def test_put_model_negative_price_returns_400(aws_resources):
+    body = {
+        "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "display_name": "Claude Haiku 4.5",
+        "provider": "anthropic",
+        "input_price_usd_per_1k_tokens": -0.1,
+        "output_price_usd_per_1k_tokens": 0.004,
+    }
+    result = admin_api_handler.handler(_event("POST /models", body=body), None)
+    assert result["statusCode"] == 400
+
+
+def test_get_model_config_defaults_when_unset(aws_resources):
+    result = admin_api_handler.handler(_event("GET /model-config"), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {
+        "config_id": "default",
+        "model_id": None,
+        "fallback_model_id": None,
+    }
+
+
+def test_put_model_config_roundtrip(aws_resources):
+    body = {"model_id": "amazon.nova-2", "fallback_model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0"}
+    result = admin_api_handler.handler(_event("PUT /model-config", body=body), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"config_id": "default", **body}
+
+    get_result = admin_api_handler.handler(_event("GET /model-config"), None)
+    assert json.loads(get_result["body"]) == {"config_id": "default", **body}
+
+
+def test_put_model_config_invalid_type_returns_400(aws_resources):
+    result = admin_api_handler.handler(_event("PUT /model-config", body={"model_id": 123}), None)
+    assert result["statusCode"] == 400
 
 
 # --- Prompt refinements -----------------------------------------------

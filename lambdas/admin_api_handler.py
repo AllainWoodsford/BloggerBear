@@ -30,6 +30,7 @@ from common.dynamo import (
     delete_topic,
     get_article,
     get_latest_finding,
+    get_model_config,
     get_moderation_item,
     get_moderation_item_by_article_id,
     get_prompt_refinement,
@@ -37,9 +38,12 @@ from common.dynamo import (
     list_all_moderation_items,
     list_candidate_ideas,
     list_failed_executions,
+    list_models,
     list_pending_moderation,
     list_prompt_refinements,
     list_topics,
+    put_model,
+    put_model_config,
     put_topic,
     update_article_status,
     update_moderation_status,
@@ -145,6 +149,20 @@ def _create_topic(event: dict) -> dict:
     except ValueError as exc:
         return _error(400, str(exc))
 
+    # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
+    # of 5): optional per-topic model overrides, read by
+    # common/model_routing.py's resolve_model. Both None by default --
+    # falls through to the global ModelConfig default, then the
+    # Terraform-set BEDROCK_MODEL_ID env var, same as before this existed.
+    model_id = body.get("model_id")
+    if model_id is not None and (not isinstance(model_id, str) or not model_id):
+        return _error(400, "'model_id' must be a non-empty string if provided")
+    fallback_model_id = body.get("fallback_model_id")
+    if fallback_model_id is not None and (
+        not isinstance(fallback_model_id, str) or not fallback_model_id
+    ):
+        return _error(400, "'fallback_model_id' must be a non-empty string if provided")
+
     if get_topic(topic_id) is not None:
         return _error(409, f"topic '{topic_id}' already exists")
 
@@ -156,6 +174,8 @@ def _create_topic(event: dict) -> dict:
         "is_financial": is_financial,
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
+        "model_id": model_id,
+        "fallback_model_id": fallback_model_id,
     }
     put_topic(item)
     try:
@@ -192,6 +212,8 @@ def _update_topic(event: dict) -> dict:
         "is_financial",
         "research_cadence",
         "daily_cadence",
+        "model_id",
+        "fallback_model_id",
     ):
         if field in body:
             updated[field] = body[field]
@@ -218,6 +240,14 @@ def _update_topic(event: dict) -> dict:
         not isinstance(updated["daily_cadence"], str) or not updated["daily_cadence"]
     ):
         return _error(400, "'daily_cadence' must be a non-empty string")
+    if "model_id" in body and updated["model_id"] is not None and (
+        not isinstance(updated["model_id"], str) or not updated["model_id"]
+    ):
+        return _error(400, "'model_id' must be a non-empty string if provided")
+    if "fallback_model_id" in body and updated["fallback_model_id"] is not None and (
+        not isinstance(updated["fallback_model_id"], str) or not updated["fallback_model_id"]
+    ):
+        return _error(400, "'fallback_model_id' must be a non-empty string if provided")
 
     research_cadence = updated.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = updated.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
@@ -516,6 +546,80 @@ def _list_failed_executions(event: dict) -> dict:
     return _response(200, {"items": list_failed_executions()})
 
 
+# --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1) ------
+#
+# The "supported models" registry (docs/project-plan.md §11) -- adding or
+# switching a model happens here, via the admin API/CLI, never via a
+# Terraform apply. common/model_routing.py's resolve_model is what
+# actually reads these at call time.
+
+
+def _list_models(event: dict) -> dict:
+    return _response(200, {"models": list_models()})
+
+
+def _put_model(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+
+    model_id = body.get("model_id")
+    display_name = body.get("display_name")
+    provider = body.get("provider")
+    input_price = body.get("input_price_usd_per_1k_tokens")
+    output_price = body.get("output_price_usd_per_1k_tokens")
+    enabled = body.get("enabled", True)
+
+    if not isinstance(model_id, str) or not model_id:
+        return _error(400, "'model_id' is required and must be a non-empty string")
+    if not isinstance(display_name, str) or not display_name:
+        return _error(400, "'display_name' is required and must be a non-empty string")
+    if not isinstance(provider, str) or not provider:
+        return _error(400, "'provider' is required and must be a non-empty string")
+    if not isinstance(input_price, int | float) or isinstance(input_price, bool) or input_price < 0:
+        return _error(400, "'input_price_usd_per_1k_tokens' is required and must be a non-negative number")
+    if not isinstance(output_price, int | float) or isinstance(output_price, bool) or output_price < 0:
+        return _error(400, "'output_price_usd_per_1k_tokens' is required and must be a non-negative number")
+    if not isinstance(enabled, bool):
+        return _error(400, "'enabled' must be a boolean if provided")
+
+    item = {
+        "model_id": model_id,
+        "display_name": display_name,
+        "provider": provider,
+        "input_price_usd_per_1k_tokens": input_price,
+        "output_price_usd_per_1k_tokens": output_price,
+        "enabled": enabled,
+    }
+    put_model(item)
+    return _response(200, item)
+
+
+def _get_model_config(event: dict) -> dict:
+    config = get_model_config() or {"config_id": "default", "model_id": None, "fallback_model_id": None}
+    return _response(200, config)
+
+
+def _put_model_config_route(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+
+    model_id = body.get("model_id")
+    if model_id is not None and (not isinstance(model_id, str) or not model_id):
+        return _error(400, "'model_id' must be a non-empty string if provided")
+    fallback_model_id = body.get("fallback_model_id")
+    if fallback_model_id is not None and (
+        not isinstance(fallback_model_id, str) or not fallback_model_id
+    ):
+        return _error(400, "'fallback_model_id' must be a non-empty string if provided")
+
+    item = put_model_config(model_id=model_id, fallback_model_id=fallback_model_id)
+    return _response(200, item)
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -534,6 +638,10 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/approve": _approve_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/reject": _reject_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
+    "GET /models": _list_models,
+    "POST /models": _put_model,
+    "GET /model-config": _get_model_config,
+    "PUT /model-config": _put_model_config_route,
 }
 
 

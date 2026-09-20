@@ -497,6 +497,14 @@ locals {
     # aws_lambda_function.musing_feedback below). Harmless on every other
     # Lambda, they just never read it.
     MUSINGS_TABLE = module.app_data.musings_table_name
+
+    # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
+    # of 5): the "supported models" registry and the single-row global
+    # default/fallback model config, both read/written by
+    # common/bedrock.py's resolve_model and admin_api_handler.py's
+    # /models, /model-config routes. Harmless on every other Lambda.
+    MODELS_TABLE       = module.app_data.models_table_name
+    MODEL_CONFIG_TABLE = module.app_data.model_config_table_name
   }
 }
 
@@ -646,6 +654,15 @@ module "admin_api" {
     # _list_failed_executions and scripts/admin_cli.py's
     # `failed-executions list` subcommand.
     "GET /failed-executions",
+    # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
+    # of 5): the DynamoDB-backed model registry and global default/
+    # fallback model config -- see admin_api_handler.py's _list_models/
+    # _put_model/_get_model_config/_put_model_config and
+    # scripts/admin_cli.py's `models`/`model-config` subcommands.
+    "GET /models",
+    "POST /models",
+    "GET /model-config",
+    "PUT /model-config",
   ])
 }
 
