@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 import boto3
@@ -39,8 +40,13 @@ GITHUB_TOPIC = {"topic_id": "github-trending", "name": "GitHub Trending", "is_fi
 HN_TOPIC = {"topic_id": "hacker-news", "name": "Hacker News", "is_financial": False}
 CRYPTO_TOPIC = {"topic_id": "crypto", "name": "Crypto Markets", "is_financial": True}
 
-RECENT = "2026-09-14T00:00:00+00:00"
-STALE = "2026-01-01T00:00:00+00:00"
+# Computed relative to the real clock (not hardcoded) so this test doesn't
+# silently go stale itself once enough real time has passed -- RECENT must
+# stay within trending_digest_handler.DIGEST_LOOKBACK_HOURS, STALE well
+# outside it, regardless of what "now" is when the suite runs.
+_NOW = datetime.now(UTC)
+RECENT = (_NOW - timedelta(hours=1)).isoformat()
+STALE = (_NOW - timedelta(days=30)).isoformat()
 
 
 def _finding(summary="Something happened.", source_refs=None, captured_at=RECENT):

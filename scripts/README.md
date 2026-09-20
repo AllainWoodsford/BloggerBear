@@ -64,7 +64,52 @@ python scripts/admin_cli.py topics findings github-trending
 python scripts/admin_cli.py moderation list
 python scripts/admin_cli.py moderation approve <queue_id>
 python scripts/admin_cli.py moderation reject <queue_id>
+
+python scripts/admin_cli.py articles publish <article_id>
+
+python scripts/admin_cli.py failed-executions list
 ```
+
+`articles publish` force-sets an article's status to `published` regardless
+of its current state -- unlike `moderation approve`, which only acts on an
+item still sitting `pending` in the moderation queue. Use it to publish
+something that was never routed to moderation in the first place, or to
+override a stuck/undesired status. If a moderation queue item exists for
+the article and is still `pending`, it's marked `approved` too so the two
+records don't disagree.
+
+`failed-executions list` shows every daily_cycle Step Functions execution
+that exhausted its retries and landed on the pipeline dead-letter queue
+(see `lambdas/dlq_handler.py`) -- each item records the topic, the error,
+and the raw message, for manual follow-up. There's no automatic replay; to
+retry a topic after fixing whatever caused the failure, use
+`topics trigger <topic_id> --pipeline daily_cycle` again.
+
+### Testing the DLQ consumer manually
+
+`dlq_handler.py` is only exercised for real when a `daily_cycle` execution
+actually fails both of its Step Functions retries -- to verify it works
+without waiting for (or forcing) a real failure, send it a synthetic
+message shaped like what the state machine's `Catch` state produces:
+
+```bash
+QUEUE_URL=$(terraform -chdir=infra/environments/dev output -raw pipeline_dlq_url)
+aws sqs send-message \
+  --queue-url "$QUEUE_URL" \
+  --message-body '{"topic_id": "test-topic", "error": {"Error": "States.TaskFailed", "Cause": "synthetic test message"}}'
+```
+
+Then confirm it landed:
+
+```bash
+python scripts/admin_cli.py failed-executions list
+```
+
+and check `aws logs tail /aws/lambda/bloggerbear-dev-dlq-handler --since 5m`
+for the `dlq_handler: daily_cycle failed for topic_id=test-topic: ...` log
+line. If `pipeline_dlq_url` isn't an existing Terraform output yet, get the
+queue URL instead with
+`aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`.
 
 Responses are pretty-printed JSON on stdout. A non-2xx response prints the
 error body to stderr and exits non-zero.

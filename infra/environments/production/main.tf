@@ -437,6 +437,10 @@ locals {
     # automatically, no separate IAM change needed.
     FEEDBACK_TABLE           = module.app_data.feedback_table_name
     PROMPT_REFINEMENTS_TABLE = module.app_data.prompt_refinements_table_name
+
+    # dlq_handler.py's target table (see aws_lambda_function.dlq_handler
+    # below) -- harmless on every other Lambda, they just never read it.
+    FAILED_EXECUTIONS_TABLE = module.app_data.failed_executions_table_name
   }
 }
 
@@ -563,6 +567,12 @@ module "admin_api" {
     # out when it's actually finished, since there's no dedicated job-
     # status system. See admin_api_handler.py's _get_latest_finding_route.
     "GET /topics/{topic_id}/findings/latest",
+    # Force-publish override -- publishes an article regardless of its
+    # current status, unlike the moderation approve/reject routes below
+    # which only act on a pending ModerationQueue item. See
+    # admin_api_handler.py's _publish_article and scripts/admin_cli.py's
+    # `articles publish` subcommand.
+    "POST /articles/{article_id}/publish",
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
@@ -576,6 +586,10 @@ module "admin_api" {
     "GET /prompt-refinements",
     "POST /prompt-refinements/{topic_id}/{version}/approve",
     "POST /prompt-refinements/{topic_id}/{version}/reject",
+    # DLQ-consumer visibility -- see admin_api_handler.py's
+    # _list_failed_executions and scripts/admin_cli.py's
+    # `failed-executions list` subcommand.
+    "GET /failed-executions",
   ])
 }
 
@@ -670,6 +684,29 @@ resource "aws_sqs_queue" "pipeline_dlq" {
   name = "bloggerbear-production-pipeline-dlq"
 }
 
+# dlq_handler.py (below) consumes this queue via an event source mapping --
+# grants it the three SQS permissions Lambda's poller needs on top of the
+# DynamoDB/S3/Bedrock/Logs access aws_iam_role_policy.lambda_exec already
+# grants every pipeline Lambda.
+data "aws_iam_policy_document" "lambda_consume_dlq" {
+  statement {
+    sid    = "ConsumePipelineDlq"
+    effect = "Allow"
+    actions = [
+      "sqs:ReceiveMessage",
+      "sqs:DeleteMessage",
+      "sqs:GetQueueAttributes",
+    ]
+    resources = [aws_sqs_queue.pipeline_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_consume_dlq" {
+  name   = "bloggerbear-production-lambda-consume-dlq"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_consume_dlq.json
+}
+
 data "aws_iam_policy_document" "states_assume" {
   statement {
     effect  = "Allow"
@@ -751,6 +788,45 @@ resource "aws_sfn_state_machine" "daily_cycle" {
       }
     }
   })
+}
+
+# DLQ consumer -- an eighth Lambda (from the same shared deployment package
+# above, sharing the same aws_iam_role.lambda_exec plus the
+# lambda_consume_dlq policy above) that turns each pipeline_dlq message
+# into a FailedExecutions record for admin visibility (see
+# lambdas/dlq_handler.py and scripts/admin_cli.py's `failed-executions
+# list` subcommand). Before this existed, the queue had no consumer at
+# all -- only the CloudWatch alarm on queue depth (see
+# infra/modules/observability's pipeline_dlq_messages alarm).
+resource "aws_lambda_function" "dlq_handler" {
+  function_name = "bloggerbear-production-dlq-handler"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "dlq_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+# No second-level DLQ configured on this mapping -- a message that fails
+# dlq_handler itself (e.g. a genuine DynamoDB outage, not the malformed-body
+# case dlq_handler already handles defensively) will simply be retried by
+# SQS against pipeline_dlq indefinitely, per its own default visibility-
+# timeout/redrive behavior, rather than escalating anywhere further. Adding
+# a DLQ-for-the-DLQ is out of scope for a single-operator project at this
+# scale -- a stuck message here would still surface via
+# infra/modules/observability's pipeline_dlq_messages alarm (queue depth
+# never reaches zero) and this Lambda's own Errors alarm.
+resource "aws_lambda_event_source_mapping" "dlq_handler" {
+  event_source_arn = aws_sqs_queue.pipeline_dlq.arn
+  function_name    = aws_lambda_function.dlq_handler.function_name
+  batch_size       = 10
 }
 
 # -----------------------------------------------------------------------
@@ -1233,6 +1309,7 @@ module "observability" {
     aws_lambda_function.public_api.function_name,
     aws_lambda_function.weekly_reflection.function_name,
     aws_lambda_function.trending_digest.function_name,
+    aws_lambda_function.dlq_handler.function_name,
   ]
   state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name

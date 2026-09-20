@@ -130,3 +130,18 @@ resource "aws_dynamodb_table" "prompt_refinements" {
     type = "S"
   }
 }
+
+# Admin-visibility record of daily_cycle Step Functions executions that
+# exhausted their retries and landed on pipeline_dlq -- one item per
+# dlq_handler.py invocation (see lambdas/dlq_handler.py). No TTL -- these
+# are meant to persist for later review, not expire like Findings.
+resource "aws_dynamodb_table" "failed_executions" {
+  name         = "bloggerbear-${var.environment_name}-failed-executions"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "failure_id"
+
+  attribute {
+    name = "failure_id"
+    type = "S"
+  }
+}

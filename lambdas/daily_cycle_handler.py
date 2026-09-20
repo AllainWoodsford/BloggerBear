@@ -47,6 +47,7 @@ def handler(event: dict, context) -> dict:
     if not topic_id:
         return {"status": "error", "error": "event missing required 'topic_id'"}
 
+    print(f"daily_cycle_handler: starting run for topic_id={topic_id}")
     try:
         return _run_daily_cycle(topic_id)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
