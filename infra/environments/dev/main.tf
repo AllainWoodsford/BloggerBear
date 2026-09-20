@@ -157,15 +157,28 @@ resource "terraform_data" "lambda_package" {
   }
 
   provisioner "local-exec" {
-    # No interpreter override -- Terraform's own default (/bin/sh -c on
-    # Unix) is enough since nothing here pipes commands together
-    # (pipefail, which needs bash, was never actually necessary).
-    # Forcing /bin/bash specifically broke local runs on Windows: the
-    # Terraform binary is native Windows, so it can't resolve a
-    # Git-Bash-only path like /bin/bash when spawning a child process,
-    # even from inside a Git Bash shell -- confirmed the hard way testing
-    # this exact change locally before pushing it.
-    command = <<-EOT
+    # Bugfix: no interpreter override used to mean Terraform's own
+    # platform default -- /bin/sh -c on Unix (fine, this script is plain
+    # POSIX sh), but cmd.exe /C on Windows, which cannot parse this
+    # script's POSIX syntax at all (confirmed the hard way: a local
+    # Windows apply failed with "Environment variable -eu not defined",
+    # cmd.exe trying and failing to interpret `set -eu` as its own `set`
+    # builtin). A prior attempt to fix this by hardcoding
+    # interpreter = ["/bin/bash", "-c"] made things worse, not better: a
+    # native Windows Terraform binary can't resolve a bare POSIX absolute
+    # path like /bin/bash at all, even from inside a Git Bash shell,
+    # since Windows process creation doesn't understand "/"-rooted paths
+    # the way Unix does. The actual fix is a *bare command name*,
+    # ["bash", "-c"] with no leading path -- this resolves via each
+    # platform's normal PATH lookup instead: Git Bash's bash.exe on
+    # Windows (already on PATH in any Git Bash session, which a
+    # Terraform child process inherits), and /usr/bin/bash on the
+    # ubuntu-latest CI runner (both bash's are always on PATH on their
+    # respective platforms). Confirmed locally in an isolated throwaway
+    # terraform_data resource before touching this one: bare "bash"
+    # correctly resolved to Git Bash's bash.exe and ran the script.
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
       set -eu
       build_dir="${path.module}/lambda-build/package"
       rm -rf "$build_dir"
