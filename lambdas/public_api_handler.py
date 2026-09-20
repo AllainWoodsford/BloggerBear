@@ -43,6 +43,7 @@ import boto3
 from common.compliance import bedrock_redact_review, regex_redact
 from common.dynamo import (
     get_article,
+    get_latest_finding,
     increment_view_count,
     list_published_articles,
     list_topics,
@@ -116,6 +117,24 @@ def _read_body_from_s3(body_s3_key: str) -> str:
 def _list_topics(event: dict) -> dict:
     public_topics = [{"topic_id": t["topic_id"], "name": t["name"]} for t in list_topics()]
     return _response(200, {"topics": public_topics})
+
+
+def _topic_activity(event: dict) -> dict:
+    """Static article publishing (docs/project-plan.md §11): lets the
+    frontend show a "BloggerBear is researching this topic" placeholder
+    instead of a bare empty state when a topic has no published articles
+    yet but research has actually started.
+
+    Deliberately returns ONLY a derived boolean -- Findings summaries and
+    CandidateIdeas angles are pre-publication content and stay admin-only
+    (see admin_api_handler.py's own routes for those); this must never echo
+    a raw Finding/CandidateIdeas item back to an unauthenticated caller.
+    No topic-existence check, matching _list_articles above -- an unknown
+    topic_id just yields `researching: false`, not a 404.
+    """
+    topic_id = _path_param(event, "topic_id")
+    researching = get_latest_finding(topic_id) is not None
+    return _response(200, {"topic_id": topic_id, "researching": researching})
 
 
 # --- Articles -------------------------------------------------------------
@@ -286,6 +305,7 @@ def _rss_feed(event: dict) -> dict:
 
 _ROUTES = {
     "GET /topics": _list_topics,
+    "GET /topics/{topic_id}/activity": _topic_activity,
     "GET /articles": _list_articles,
     "GET /articles/{article_id}": _get_article_detail,
     "POST /articles/{article_id}/view": _view_article,

@@ -49,6 +49,7 @@ from common.scheduler import (
     delete_topic_schedules,
     upsert_topic_schedules,
 )
+from common.static_pages import read_article_body, render_and_publish_article_page
 
 _DEFAULT_RESEARCH_CADENCE = "rate(1 hour)"
 _DEFAULT_DAILY_CADENCE = "cron(0 6 * * ? *)"
@@ -299,6 +300,29 @@ def _get_latest_finding_route(event: dict) -> dict:
 # --- Articles ---------------------------------------------------------
 
 
+def _render_published_page(article: dict, *, published_at: str) -> None:
+    """Regenerate the static article page (docs/project-plan.md §11) for an
+    article that just became published.
+
+    Shared by both admin-console publish paths below (moderation-approve
+    and force-publish) -- daily_cycle_handler.py's own compliant-draft
+    branch calls common.static_pages.render_and_publish_article_page
+    directly instead, since it already has the freshly-drafted body text
+    in memory and doesn't need read_article_body's S3 round-trip.
+    """
+    topic = get_topic(article["topic_id"])
+    body_markdown = read_article_body(article["body_s3_key"])
+    render_and_publish_article_page(
+        article_id=article["article_id"],
+        title=article["title"],
+        body_markdown=body_markdown,
+        topic_name=(topic or {}).get("name", article["topic_id"]),
+        published_at=published_at,
+        source_refs=article.get("source_refs"),
+        view_count=int(article.get("view_count", 0)),
+    )
+
+
 def _publish_article(event: dict) -> dict:
     """Force an Articles item to `status="published"`, regardless of its
     current status (unlike _resolve_moderation_item below, which only acts
@@ -316,7 +340,9 @@ def _publish_article(event: dict) -> dict:
     if article is None:
         return _error(404, f"article '{article_id}' not found")
 
-    update_article_status(article_id, "published", published_at=datetime.now(UTC).isoformat())
+    published_at = datetime.now(UTC).isoformat()
+    update_article_status(article_id, "published", published_at=published_at)
+    _render_published_page(article, published_at=published_at)
 
     moderation_item = get_moderation_item_by_article_id(article_id)
     if moderation_item is not None and moderation_item.get("status") == "pending":
@@ -404,7 +430,13 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
 
     article_id = item["article_id"]
     published_at = datetime.now(UTC).isoformat() if article_status == "published" else None
-    update_article_status(article_id, article_status, published_at=published_at)
+    if article_status == "published":
+        article = get_article(article_id)
+        update_article_status(article_id, article_status, published_at=published_at)
+        if article is not None:
+            _render_published_page(article, published_at=published_at)
+    else:
+        update_article_status(article_id, article_status, published_at=published_at)
     update_moderation_status(queue_id, new_status)
 
     action_key = "approved" if new_status == "approved" else "rejected"

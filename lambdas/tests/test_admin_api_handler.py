@@ -686,9 +686,17 @@ def test_moderation_queue_stats_aggregates_across_all_statuses(aws_resources):
 def test_approve_moderation_item(aws_resources):
     _put_article()
     _put_moderation_item()
+    _put_topic()
 
-    event = _event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"})
-    result = admin_api_handler.handler(event, None)
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body") as mock_read_body,
+        patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+    ):
+        event = _event(
+            "POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"}
+        )
+        result = admin_api_handler.handler(event, None)
+
     assert result["statusCode"] == 200
     assert json.loads(result["body"]) == {"approved": "queue-1", "article_id": "article-1"}
 
@@ -700,6 +708,18 @@ def test_approve_moderation_item(aws_resources):
     queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
     queue_item = queue_table.get_item(Key={"queue_id": "queue-1"})["Item"]
     assert queue_item["status"] == "approved"
+
+    # Static article publishing (docs/project-plan.md §11): approving a
+    # moderation-queue item must regenerate the static page too, or it
+    # would drift out of sync with the Articles table.
+    mock_read_body.assert_called_once_with("articles/article-1.md")
+    mock_render_page.assert_called_once()
+    render_kwargs = mock_render_page.call_args.kwargs
+    assert render_kwargs["article_id"] == "article-1"
+    assert render_kwargs["title"] == "A Title"
+    assert render_kwargs["body_markdown"] == "# Body"
+    assert render_kwargs["topic_name"] == "GitHub Trending"
+    assert render_kwargs["published_at"] == article["published_at"]
 
 
 def test_reject_moderation_item(aws_resources):
@@ -750,9 +770,17 @@ def test_reject_already_actioned_returns_409(aws_resources):
 
 def test_publish_article_sets_published_status(aws_resources):
     _put_article(status="pending_moderation")
+    _put_topic()
 
-    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
-    result = admin_api_handler.handler(event, None)
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+    ):
+        event = _event(
+            "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
+        )
+        result = admin_api_handler.handler(event, None)
+
     assert result["statusCode"] == 200
     assert json.loads(result["body"]) == {"published": "article-1"}
 
@@ -761,13 +789,25 @@ def test_publish_article_sets_published_status(aws_resources):
     assert article["status"] == "published"
     assert article["published_at"] is not None
 
+    # Static article publishing (docs/project-plan.md §11): force-publish
+    # must regenerate the static page, same as the moderation-approve path.
+    mock_render_page.assert_called_once()
+    assert mock_render_page.call_args.kwargs["article_id"] == "article-1"
+
 
 def test_publish_article_also_approves_pending_moderation_item(aws_resources):
     _put_article(status="pending_moderation")
     _put_moderation_item(status="pending")
+    _put_topic()
 
-    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
-    result = admin_api_handler.handler(event, None)
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+    ):
+        event = _event(
+            "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
+        )
+        result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 200
 
     queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
@@ -778,9 +818,16 @@ def test_publish_article_also_approves_pending_moderation_item(aws_resources):
 def test_publish_article_leaves_already_resolved_moderation_item_alone(aws_resources):
     _put_article(status="rejected")
     _put_moderation_item(status="rejected")
+    _put_topic()
 
-    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
-    result = admin_api_handler.handler(event, None)
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+    ):
+        event = _event(
+            "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
+        )
+        result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 200
 
     queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
