@@ -282,6 +282,23 @@ def get_article(article_id: str) -> dict | None:
     return response.get("Item")
 
 
+def get_moderation_item_by_article_id(article_id: str) -> dict | None:
+    """Fetch the ModerationQueue item for `article_id`, or None if there isn't one.
+
+    The ModerationQueue table's only key is `queue_id` (no article_id GSI),
+    so this is a Scan + FilterExpression -- same pattern as
+    list_pending_moderation above, acceptable at this project's scale.
+    Backs the force-publish admin route's best-effort moderation-status
+    consistency (see admin_api_handler.py's _publish_article): at most one
+    ModerationQueue item should ever exist per article_id, so the first
+    match is returned.
+    """
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    response = table.scan(FilterExpression=Attr("article_id").eq(article_id))
+    items = response.get("Items", [])
+    return items[0] if items else None
+
+
 def update_article_status(article_id: str, status: str, published_at: str | None = None) -> None:
     """Update an Articles item's `status` (and optionally `published_at`)."""
     table = get_table(os.environ["ARTICLES_TABLE"])
@@ -542,3 +559,44 @@ def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
     positively_voted = [item for item in items if int(item.get("net_votes", 0)) > 0]
     positively_voted.sort(key=lambda item: int(item.get("net_votes", 0)), reverse=True)
     return positively_voted[:limit]
+
+
+# --- FailedExecutions (DLQ consumer) -------------------------------------
+#
+# Owned by the dlq_handler worker. A FailedExecutions item is written once
+# per message `dlq_handler.py` receives from the pipeline_dlq SQS queue --
+# i.e. once per daily_cycle Step Functions execution that exhausted its
+# retries (see aws_sfn_state_machine.daily_cycle's Catch state in
+# infra/environments/*/main.tf). This is purely an admin-visibility record
+# ("what failed and why") -- it does not drive any automatic replay.
+
+
+def put_failed_execution(
+    failure_id: str,
+    topic_id: str | None,
+    error: dict | str | None,
+    raw_message: str,
+    created_at: str,
+) -> dict:
+    """Write a FailedExecutions item and return it.
+
+    `topic_id` and `error` may be None/malformed if the DLQ message body
+    didn't parse as expected -- `raw_message` (the untouched SQS message
+    body) is always kept so a human can inspect it either way.
+    """
+    table = get_table(os.environ["FAILED_EXECUTIONS_TABLE"])
+    item = {
+        "failure_id": failure_id,
+        "topic_id": topic_id,
+        "error": error,
+        "raw_message": raw_message,
+        "created_at": created_at,
+    }
+    table.put_item(Item=item)
+    return item
+
+
+def list_failed_executions() -> list[dict]:
+    """Return every FailedExecutions item (Scan -- acceptable at this project's scale)."""
+    table = get_table(os.environ["FAILED_EXECUTIONS_TABLE"])
+    return _paginated_scan(table)

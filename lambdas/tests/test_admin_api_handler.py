@@ -23,6 +23,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("PROMPT_REFINEMENTS_TABLE", "PromptRefinements")
+    monkeypatch.setenv("FAILED_EXECUTIONS_TABLE", "FailedExecutions")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("RESEARCH_TICK_FUNCTION_NAME", "research-tick-fn")
@@ -106,6 +107,12 @@ def aws_resources(aws_env):
                 {"AttributeName": "topic_id", "AttributeType": "S"},
                 {"AttributeName": "version", "AttributeType": "S"},
             ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="FailedExecutions",
+            KeySchema=[{"AttributeName": "failure_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "failure_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         yield
@@ -736,6 +743,81 @@ def test_reject_already_actioned_returns_409(aws_resources):
     event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
     result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 409
+
+
+# --- Articles (force-publish) ------------------------------------------
+
+
+def test_publish_article_sets_published_status(aws_resources):
+    _put_article(status="pending_moderation")
+
+    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"published": "article-1"}
+
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    article = table.get_item(Key={"article_id": "article-1"})["Item"]
+    assert article["status"] == "published"
+    assert article["published_at"] is not None
+
+
+def test_publish_article_also_approves_pending_moderation_item(aws_resources):
+    _put_article(status="pending_moderation")
+    _put_moderation_item(status="pending")
+
+    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+
+    queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    queue_item = queue_table.get_item(Key={"queue_id": "queue-1"})["Item"]
+    assert queue_item["status"] == "approved"
+
+
+def test_publish_article_leaves_already_resolved_moderation_item_alone(aws_resources):
+    _put_article(status="rejected")
+    _put_moderation_item(status="rejected")
+
+    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+
+    queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    queue_item = queue_table.get_item(Key={"queue_id": "queue-1"})["Item"]
+    assert queue_item["status"] == "rejected"
+
+
+def test_publish_unknown_article_returns_404(aws_resources):
+    event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "nope"})
+    result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 404
+
+
+# --- Failed executions (DLQ consumer) -----------------------------------
+
+
+def test_list_failed_executions_empty(aws_resources):
+    result = admin_api_handler.handler(_event("GET /failed-executions"), None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"items": []}
+
+
+def test_list_failed_executions_returns_items(aws_resources):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("FailedExecutions")
+    table.put_item(
+        Item={
+            "failure_id": "f-1",
+            "topic_id": "github-trending",
+            "error": {"Error": "States.TaskFailed", "Cause": "boom"},
+            "raw_message": '{"topic_id": "github-trending"}',
+            "created_at": "2026-09-19T21:00:00+00:00",
+        }
+    )
+    result = admin_api_handler.handler(_event("GET /failed-executions"), None)
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert [item["failure_id"] for item in body["items"]] == ["f-1"]
 
 
 # --- Prompt refinements -----------------------------------------------

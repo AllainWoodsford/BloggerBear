@@ -303,6 +303,13 @@ def _cmd_topics_findings(args: argparse.Namespace) -> None:
     _do_request(args, "GET", f"/topics/{args.topic_id}/findings/latest")
 
 
+# --- articles subcommands ------------------------------------------------
+
+
+def _cmd_articles_publish(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/articles/{args.article_id}/publish")
+
+
 # --- moderation subcommands ---------------------------------------------
 
 
@@ -320,6 +327,13 @@ def _cmd_moderation_reject(args: argparse.Namespace) -> None:
 
 def _cmd_moderation_stats(args: argparse.Namespace) -> None:
     _do_request(args, "GET", "/moderation-queue/stats")
+
+
+# --- failed-executions subcommands -----------------------------------------
+
+
+def _cmd_failed_executions_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/failed-executions")
 
 
 # --- refinements subcommands -----------------------------------------------
@@ -455,6 +469,16 @@ def build_parser() -> argparse.ArgumentParser:
     findings_parser.add_argument("topic_id")
     findings_parser.set_defaults(func=_cmd_topics_findings)
 
+    articles_parser = subparsers.add_parser("articles", help="Manage articles")
+    articles_sub = articles_parser.add_subparsers(dest="action", required=True)
+
+    publish_parser = articles_sub.add_parser(
+        "publish",
+        help="Force-publish an article regardless of its current status",
+    )
+    publish_parser.add_argument("article_id")
+    publish_parser.set_defaults(func=_cmd_articles_publish)
+
     moderation_parser = subparsers.add_parser("moderation", help="Manage the moderation queue")
     moderation_sub = moderation_parser.add_subparsers(dest="action", required=True)
 
@@ -473,6 +497,15 @@ def build_parser() -> argparse.ArgumentParser:
     moderation_sub.add_parser(
         "stats", help="Summarize what compliance review has flagged, across all history"
     ).set_defaults(func=_cmd_moderation_stats)
+
+    failed_executions_parser = subparsers.add_parser(
+        "failed-executions", help="View daily_cycle executions that exhausted their retries"
+    )
+    failed_executions_sub = failed_executions_parser.add_subparsers(dest="action", required=True)
+
+    failed_executions_sub.add_parser(
+        "list", help="List failed daily_cycle executions recorded by the DLQ consumer"
+    ).set_defaults(func=_cmd_failed_executions_list)
 
     refinements_parser = subparsers.add_parser("refinements", help="Manage prompt refinements")
     refinements_sub = refinements_parser.add_subparsers(dest="action", required=True)
