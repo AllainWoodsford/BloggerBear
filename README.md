@@ -130,7 +130,10 @@ lambdas/                    Python 3.11, one shared deployment package
   common/
     adapters/                  base.py (contract) + one module per domain:
                                 github_trending.py, hacker_news.py,
-                                crypto_feed.py
+                                crypto_feed.py, web_search.py
+    editorial_goals.py          daily rotating editorial goal (crypto)
+    web_search.py               reusable web/news search (provider-based)
+    http_retry.py               GET-JSON with exponential backoff
     bedrock.py                 the one place invoke_model is called
     compliance.py               PII redaction, compliance review,
                                 financial-topic guidance/disclaimer
