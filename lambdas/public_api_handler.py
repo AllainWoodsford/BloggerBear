@@ -115,7 +115,37 @@ def _read_body_from_s3(body_s3_key: str) -> str:
 
 
 def _list_topics(event: dict) -> dict:
-    public_topics = [{"topic_id": t["topic_id"], "name": t["name"]} for t in list_topics()]
+    """Per-topic article_count/latest_published_at/researching, for the
+    frontend's home-page article counts and its capped top-nav ranking
+    (most-recently-published topics first, falling back to
+    actively-researched-but-not-yet-published ones -- see app.js's
+    renderNav). One list_published_articles() scan grouped by topic_id
+    here, rather than one Scan per topic; get_latest_finding is only
+    called for topics with zero published articles, since a topic that's
+    already publishing doesn't need a "is it researching" lookup.
+    """
+    published_by_topic: dict[str, list[dict]] = {}
+    for article in list_published_articles():
+        published_by_topic.setdefault(article["topic_id"], []).append(article)
+
+    public_topics = []
+    for t in list_topics():
+        topic_id = t["topic_id"]
+        articles = published_by_topic.get(topic_id, [])
+        article_count = len(articles)
+        latest_published_at = (
+            max((a.get("published_at") or "" for a in articles), default="") or None
+        )
+        researching = article_count == 0 and get_latest_finding(topic_id) is not None
+        public_topics.append(
+            {
+                "topic_id": topic_id,
+                "name": t["name"],
+                "article_count": article_count,
+                "latest_published_at": latest_published_at,
+                "researching": researching,
+            }
+        )
     return _response(200, {"topics": public_topics})
 
 

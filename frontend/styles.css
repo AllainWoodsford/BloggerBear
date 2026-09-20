@@ -287,6 +287,11 @@ a {
   font-size: 0.85rem;
 }
 
+.topic-article-count {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .article-meta {
   color: var(--muted);
   font-size: 0.9rem;
@@ -441,6 +446,15 @@ a {
   background: var(--bg);
   color: var(--fg);
   border-bottom: 1px solid var(--border);
+}
+
+/* Bugfix: [hidden]'s default UA-stylesheet `display: none` has the same
+   specificity as the class selector above, and author CSS always wins
+   that tie regardless of source order -- without this, app.js's
+   `notice.hidden = true` set the attribute correctly but had zero visual
+   effect, so the "Got it" button never actually dismissed anything. */
+.site-notice[hidden] {
+  display: none;
 }
 
 .site-notice p {
