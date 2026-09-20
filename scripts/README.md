@@ -54,6 +54,14 @@ python scripts/admin_cli.py topics get github-trending
 python scripts/admin_cli.py topics create --topic-id github-trending \
     --name "GitHub Trending" --adapter github_trending \
     --config-json '{"language": "python"}'
+# --adapter is optional: a topic with none does independent web research
+# (web_search, searching on the topic's name). Give it a topic-specific goal:
+python scripts/admin_cli.py topics create --topic-id security-trends \
+    --name "Cybersecurity & Infrastructure Threats" \
+    --config-json '{"query": "zero-day vulnerabilities exploit wild 2026", "max_results": 15}' \
+    --editorial-goals-json '{"primary_focus": "Identify unpatched zero-day exploits actively observed in production.", "exclusion_criteria": "Ignore marketing press releases or compliance frameworks."}'
+# replaces the whole editorial_goals block; '{}' clears it (back to the default goal)
+python scripts/admin_cli.py topics update security-trends --editorial-goals-json '{}'
 python scripts/admin_cli.py topics update github-trending --name "Renamed" --financial
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick

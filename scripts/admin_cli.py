@@ -186,6 +186,13 @@ def _add_model_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_editorial_goals_json(text: str):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CliError(f"--editorial-goals-json is not valid JSON: {exc}") from exc
+
+
 def _cmd_topics_create(args: argparse.Namespace) -> None:
     adapter_config = {}
     if args.config_json:
@@ -197,13 +204,17 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
     body = {
         "topic_id": args.topic_id,
         "name": args.name,
-        "adapter": args.adapter,
         "adapter_config": adapter_config,
         "is_financial": args.financial,
     }
     # Omitted entirely (not sent as null) when not passed, so the Admin
-    # API's own defaults (_DEFAULT_RESEARCH_CADENCE / _DEFAULT_DAILY_CADENCE)
-    # apply -- matching create_topic's own body.get(..., default) behavior.
+    # API's own defaults (the web_search adapter, _DEFAULT_RESEARCH_CADENCE /
+    # _DEFAULT_DAILY_CADENCE) apply -- matching create_topic's own
+    # body.get(..., default) behavior.
+    if args.adapter is not None:
+        body["adapter"] = args.adapter
+    if args.editorial_goals_json is not None:
+        body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
     if args.daily_cadence is not None:
@@ -221,6 +232,8 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
             body["adapter_config"] = json.loads(args.adapter_config_json)
         except json.JSONDecodeError as exc:
             raise CliError(f"--adapter-config-json is not valid JSON: {exc}") from exc
+    if args.editorial_goals_json is not None:
+        body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
     if args.financial is not None:
         body["is_financial"] = args.financial
     if args.research_cadence is not None:
@@ -473,8 +486,22 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser = topics_sub.add_parser("create", help="Create a topic")
     create_parser.add_argument("--topic-id", required=True, dest="topic_id")
     create_parser.add_argument("--name", required=True)
-    create_parser.add_argument("--adapter", required=True)
+    create_parser.add_argument(
+        "--adapter",
+        default=None,
+        help="Adapter key (default: web_search -- independent web research on the topic's name)",
+    )
     create_parser.add_argument("--config-json", dest="config_json", default=None)
+    create_parser.add_argument(
+        "--editorial-goals-json",
+        dest="editorial_goals_json",
+        default=None,
+        help=(
+            "Topic-specific goal, e.g. "
+            "'{\"primary_focus\": \"...\", \"exclusion_criteria\": \"...\"}'; "
+            "omit to inherit the adapter/global default"
+        ),
+    )
     create_parser.add_argument("--financial", action="store_true", default=False)
     create_parser.add_argument(
         "--research-cadence",
@@ -495,6 +522,12 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("topic_id")
     update_parser.add_argument("--name", default=None)
     update_parser.add_argument("--adapter-config-json", dest="adapter_config_json", default=None)
+    update_parser.add_argument(
+        "--editorial-goals-json",
+        dest="editorial_goals_json",
+        default=None,
+        help="Replaces the topic's whole editorial_goals block; '{}' clears it (back to the default)",
+    )
     update_parser.add_argument(
         "--financial", dest="financial", action="store_true", default=None
     )

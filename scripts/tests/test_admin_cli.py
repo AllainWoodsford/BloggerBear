@@ -488,3 +488,44 @@ def test_topics_update_empty_string_clears_model_fields():
         "ap-southeast-2",
         body={"model_id": None, "fallback_model_id": None, "model_id_candidates": []},
     )
+
+
+def test_topics_create_without_an_adapter_omits_it_so_the_api_default_applies():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(["topics", "create", "--topic-id", "bare", "--name", "Bare Topic"])
+
+    body = m.call_args.kwargs["body"]
+    assert "adapter" not in body
+    assert "editorial_goals" not in body
+
+
+def test_topics_create_passes_editorial_goals_through():
+    goals = {"primary_focus": "Track zero-days", "exclusion_criteria": "No marketing"}
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics", "create", "--topic-id", "sec", "--name", "Security",
+                "--editorial-goals-json", json.dumps(goals),
+            ]
+        )  # fmt: skip
+
+    assert m.call_args.kwargs["body"]["editorial_goals"] == goals
+
+
+def test_topics_update_sets_and_clears_editorial_goals():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "sec", "--editorial-goals-json", '{"primary_focus": "New"}'])
+        assert m.call_args.kwargs["body"] == {"editorial_goals": {"primary_focus": "New"}}
+
+        _run(["topics", "update", "sec", "--editorial-goals-json", "{}"])
+        assert m.call_args.kwargs["body"] == {"editorial_goals": {}}
+
+
+def test_topics_editorial_goals_invalid_json_exits_nonzero(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "update", "sec", "--editorial-goals-json", "{not json"])
+
+    assert exc_info.value.code != 0
+    assert "--editorial-goals-json is not valid JSON" in capsys.readouterr().err
+    m.assert_not_called()

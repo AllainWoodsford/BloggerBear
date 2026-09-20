@@ -13,7 +13,9 @@ model):
    steps 3 and 5. Every other topic is unaffected.
 3. Ideate: ask Bedrock for 3 candidate angles, store them as CandidateIdeas.
    Ideation and drafting (step 5) both carry a relevance guardrail keyed to
-   the active topic's name (common/relevance.py), so off-topic noise in the
+   the active topic's name (common/relevance.py) and the topic's standing
+   editorial goal (topic -> adapter -> global default; see
+   common/editorial_resolver.py), so off-topic noise in the
    findings is ignored or reframed rather than written up.
 4. Select: deterministically pick the first candidate (no scoring model yet).
 5. Draft: ask Bedrock for a title and a full article draft.
@@ -47,6 +49,11 @@ from common.editorial_goals import (
     EDITORIAL_MANDATES,
     EditorialGoal,
     resolve_goal_for_topic,
+)
+from common.editorial_resolver import (
+    DRAFT_ALIGNMENT_DIRECTIVE,
+    MANDATE_ALIGNMENT_RULE,
+    resolve_editorial_goals,
 )
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
@@ -245,7 +252,14 @@ def _ideate(
     # community feeds and web search can be off-topic noise, and it is the
     # active topic's name (never a hardcoded topic) that anchors what counts
     # as on-topic.
-    relevance_rule = ideation_relevance_rule(topic_name)
+    # The topic's standing editorial goal (topic -> adapter -> global default,
+    # see common/editorial_resolver.py) comes first, and the relevance rule
+    # then holds every angle to both the topic and that goal.
+    standing_goal = (
+        f"ACTIVE EDITORIAL MANDATE:\n{resolve_editorial_goals(topic)}\n\n"
+        f"{ideation_relevance_rule(topic_name)}\n"
+        f"{MANDATE_ALIGNMENT_RULE}"
+    )
     if goal is None:
         prompt = (
             f"Based on the following recent research findings about "
@@ -253,23 +267,24 @@ def _ideate(
             f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
-            f"{relevance_rule}\n\n"
+            f"{standing_goal}\n\n"
             f"Findings:\n{summaries_block}"
         )
     else:
-        # The day's editorial mandate shapes the angles; the relevance rule
-        # keeps it inside the topic. The one-angle-per-line reply instruction
-        # stays -- the parser below depends on it.
+        # The day's rotating editorial mandate shapes the angles within the
+        # standing goal above; the relevance rule keeps it inside the topic.
+        # The one-angle-per-line reply instruction stays -- the parser below
+        # depends on it.
         prompt = (
             "Based on the following recent research findings and the assigned daily "
             f"editorial vector for '{topic_name}', propose exactly "
             f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
-            f"{relevance_rule}\n\n"
+            f"{standing_goal}\n\n"
             f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n"
-            f"Apply this mandate strictly within the theme of '{topic_name}': it decides the "
-            "shape of each angle, never the subject.\n\n"
+            f"Apply this mandate strictly within the theme of '{topic_name}' and the Active "
+            "Editorial Mandate above: it decides the shape of each angle, never the subject.\n\n"
             f"Data Payload:\n{summaries_block}"
         )
     if guidance:
@@ -329,9 +344,11 @@ def _draft_article(
     # slip through, and the draft must not follow noisy data off-topic.
     prompt = (
         "Write a full article draft in markdown (a few paragraphs) for a blog "
-        f"about '{topic_name}', on this angle: "
-        f"{angle}\n\nBase it on these recent findings:\n{summaries_block}"
+        f"about '{topic_name}', on this angle: {angle}\n\n"
+        f"CORE EDITORIAL DIRECTION:\n{resolve_editorial_goals(topic)}\n\n"
+        f"Base it on these recent findings:\n{summaries_block}"
         f"\n\n{draft_relevance_boundary(topic_name)}"
+        f"\n\n{DRAFT_ALIGNMENT_DIRECTIVE}"
     )
     if goal is not None:
         prompt += f"\n\nArticle style: {ARTICLE_STYLES[goal]}"
