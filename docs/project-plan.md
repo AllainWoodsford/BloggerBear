@@ -219,3 +219,97 @@ ACM to see it).
 one domain name (the bare root domain) — whether `www.bloggerbear.com`
 should also resolve (and if so, whether as a second alias + redirect, or
 left unsupported) hasn't been decided and would need scoping if wanted.
+
+### AI lineage, cost tracking, pluggable model routing, and a public Stats page
+
+**Problem**: today there's exactly one model (`var.bedrock_model_id`, a
+Terraform variable) for every Bedrock call across every handler, changing
+it needs a full apply, and nothing records which model(s) or how many
+tokens actually went into producing a given article, or who/what
+ultimately approved it. This is a large, multi-part enhancement — broken
+into four pieces below, any of which could be scoped/built independently.
+
+**(A) Per-article lineage and cost metadata**
+- Track total token spend across *every* Bedrock call that contributed to
+  one finished article, not just the final draft -- currently that's
+  ideation (`_ideate`), drafting (`_draft_article`), title generation
+  (`_draft_title`), and compliance review (`compliance.review_draft`),
+  per `daily_cycle_handler.py` (and the equivalent calls in
+  `trending_digest_handler.py`'s synthesis path). `common/bedrock.py`'s
+  `invoke_claude` doesn't currently return token-usage data at all --
+  it'd need to start surfacing the Bedrock response's usage block
+  (input/output token counts) for this to be possible.
+- Record which model(s) were used (e.g. "all Claude Haiku 4.5") as
+  lineage metadata on the `Articles` item -- if every call for an article
+  used the same model, that's simple; once (C) below exists, an article
+  could genuinely span more than one model and the lineage needs to
+  reflect that per-model breakdown, not just a single value.
+- Compute an approximate cost in **AUD** from the token counts (needs a
+  per-model USD/AUD pricing table and a currency-conversion figure kept
+  somewhere -- likely hardcoded/updated periodically rather than calling
+  a live FX API, given this project's cost-consciousness elsewhere).
+- Missing/blank lineage data (e.g. every article published before this
+  feature existed) must render as an explicit "no data" in the UI, not a
+  blank space or an error.
+- **Open question**: does musing generation (`common/musings.py`, itself
+  a Bedrock call) count toward the *article's* lineage/cost, or does it
+  get tracked as its own separate cost line? Leaning toward separate,
+  since a musing isn't part of producing the article itself, but not
+  decided.
+
+**(B) Where this shows up**
+- A **footer block** on every article (both the static S3-rendered page
+  and the DynamoDB-backed dynamic view) with the fuller lineage stats --
+  the static page must have this **hard-baked into its HTML at render
+  time** (`common/static_pages.py`), not fetched via an API call, per
+  this project's whole reason for static pages existing in the first
+  place (docs/project-plan.md's own "Static article publishing" entry
+  above). The dynamic view (admin/API-backed) reads the same metadata
+  from wherever it's stored.
+- A **compact one-line summary** near the existing gray-text published
+  date (both on the topic screen's article list and the article detail
+  page): something like `models [...] · tokens [by model] · approved by
+  [Humans | Humans & AI | AI only] · approx. $X.XX AUD`.
+
+**(C) Pluggable AI model adapters, with fallback and per-topic routing**
+- A "supported models" registry, most likely a new DynamoDB table rather
+  than a Terraform variable, so adding/switching models doesn't need an
+  apply -- e.g. `topic_id`/global default → model ID, editable via the
+  admin API/CLI the same way everything else in this project is admin-
+  managed.
+- Different model families need different Bedrock Converse API request
+  shapes (Claude vs. Amazon Nova, etc.) -- `common/bedrock.py` would need
+  to grow into a small adapter layer, one adapter per model family,
+  behind a single common "call this model" interface every handler
+  already uses via `invoke_claude`, so the handlers themselves don't need
+  to know which model family they're talking to.
+- **Fallback**: if the selected/primary model's call fails, try a
+  configured fallback model instead (try/catch), and record in the
+  lineage which one actually ended up producing the content, including
+  whether a fallback occurred.
+- **Rotation**: the daily cycle might deliberately vary the model used
+  for a topic run over time -- e.g. "run the next few days' articles for
+  this topic on a different model" -- whether that's an admin-set,
+  time-bounded override on the topic, or genuinely random per-run
+  selection from an allowed set, isn't decided; either way it needs to
+  land in that run's article lineage.
+
+**(D) Published-by attribution**
+- Lineage should also record who/what approved and published each
+  article: `Humans` (moderation-approve or force-publish by an operator),
+  `AI only` (the fully-automatic compliant `daily_cycle_handler` path,
+  today's only automatic path), with `Humans & AI` reserved for a future
+  state once an AI reviewer/approver for the moderation queue exists
+  (explicitly a later, separate piece of work, not part of this
+  enhancement) -- the schema should have room for that third value now
+  even though nothing produces it yet.
+
+**(E) A new public Stats page**
+- A public-facing dashboard (new "Stats" page/route in `frontend/`)
+  charting costing data over time -- broken down by AWS service and/or
+  by content produced and storage. Explicitly the least-scoped part of
+  this enhancement (the user's own framing was "if that would be
+  interesting") -- worth a dedicated design pass of its own (what it
+  actually charts, where the underlying numbers come from -- Cost
+  Explorer API vs. the per-article lineage data summed up vs. both --
+  before implementation, rather than guessing at a shape here.
