@@ -336,6 +336,40 @@ def _cmd_failed_executions_list(args: argparse.Namespace) -> None:
     _do_request(args, "GET", "/failed-executions")
 
 
+# --- models / model-config subcommands --------------------------------------
+
+
+def _cmd_models_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/models")
+
+
+def _cmd_models_add(args: argparse.Namespace) -> None:
+    body = {
+        "model_id": args.model_id,
+        "display_name": args.display_name,
+        "provider": args.provider,
+        "input_price_usd_per_1k_tokens": args.input_price,
+        "output_price_usd_per_1k_tokens": args.output_price,
+        "enabled": args.enabled,
+    }
+    _do_request(args, "POST", "/models", body=body)
+
+
+def _cmd_model_config_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/model-config")
+
+
+def _cmd_model_config_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    if args.model_id is not None:
+        body["model_id"] = args.model_id
+    if args.fallback_model_id is not None:
+        body["fallback_model_id"] = args.fallback_model_id
+    if not body:
+        raise CliError("model-config set requires --model-id and/or --fallback-model-id")
+    _do_request(args, "PUT", "/model-config", body=body)
+
+
 # --- refinements subcommands -----------------------------------------------
 
 
@@ -506,6 +540,51 @@ def build_parser() -> argparse.ArgumentParser:
     failed_executions_sub.add_parser(
         "list", help="List failed daily_cycle executions recorded by the DLQ consumer"
     ).set_defaults(func=_cmd_failed_executions_list)
+
+    models_parser = subparsers.add_parser("models", help="Manage the AI model registry")
+    models_sub = models_parser.add_subparsers(dest="action", required=True)
+
+    models_sub.add_parser("list", help="List the supported-models registry").set_defaults(
+        func=_cmd_models_list
+    )
+
+    models_add_parser = models_sub.add_parser(
+        "add", help="Add or update a model in the registry"
+    )
+    models_add_parser.add_argument("--model-id", required=True, dest="model_id")
+    models_add_parser.add_argument("--display-name", required=True, dest="display_name")
+    models_add_parser.add_argument("--provider", required=True)
+    models_add_parser.add_argument(
+        "--input-price", required=True, type=float, dest="input_price",
+        help="USD per 1k input tokens",
+    )
+    models_add_parser.add_argument(
+        "--output-price", required=True, type=float, dest="output_price",
+        help="USD per 1k output tokens",
+    )
+    models_add_parser.add_argument(
+        "--disabled", dest="enabled", action="store_false", default=True,
+        help="Register the model as disabled (default: enabled)",
+    )
+    models_add_parser.set_defaults(func=_cmd_models_add)
+
+    model_config_parser = subparsers.add_parser(
+        "model-config", help="Manage the global default/fallback model"
+    )
+    model_config_sub = model_config_parser.add_subparsers(dest="action", required=True)
+
+    model_config_sub.add_parser(
+        "get", help="Show the current global default/fallback model"
+    ).set_defaults(func=_cmd_model_config_get)
+
+    model_config_set_parser = model_config_sub.add_parser(
+        "set", help="Set the global default and/or fallback model"
+    )
+    model_config_set_parser.add_argument("--model-id", dest="model_id", default=None)
+    model_config_set_parser.add_argument(
+        "--fallback-model-id", dest="fallback_model_id", default=None
+    )
+    model_config_set_parser.set_defaults(func=_cmd_model_config_set)
 
     refinements_parser = subparsers.add_parser("refinements", help="Manage prompt refinements")
     refinements_sub = refinements_parser.add_subparsers(dest="action", required=True)
