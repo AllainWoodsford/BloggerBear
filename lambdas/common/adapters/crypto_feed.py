@@ -3,8 +3,8 @@
 Bitcoin and Ethereum are the structural *market anchors*: every snapshot
 carries their price and multi-timeframe change, and everything else is read
 relative to them. What else a snapshot carries depends on the day's
-editorial goal (common/editorial_goals.py -- a pure function of the UTC date,
-so this adapter and the daily cycle always agree on it):
+editorial goal (common/editorial_goals.py -- drawn at random each day, but
+seeded by the UTC date, so this adapter and the daily cycle always agree on it):
 
   ALTCOIN_DEEP_DIVE / TREND_INVENTOR
       a pool of 10 altcoins sampled from the top 200 by market cap (never
@@ -14,6 +14,10 @@ so this adapter and the daily cycle always agree on it):
       volume surge).
   WEB_AGGREGATOR
       5-15 crypto news items from the last 24h, via common/web_search.py.
+  MARKET_NEWS
+      5-15 *general financial-market* news items from the last 24h with no
+      crypto in them (crypto headlines are filtered out). No CoinGecko call
+      and no anchors that day: `market_anchors` is empty.
 
 **The pool is random but stable within a UTC day** -- seeded by (topic, date).
 The research tick runs hourly; an unseeded sample would pick 10 different
@@ -41,14 +45,14 @@ request is throttled, errors, or the key is rejected, the same request is
 retried against the public keyless API, so the key can only ever help.
 
 This adapter contains no domain branches in the core pipeline
-(docs/project-plan.md §6): the goal rotation lives in editorial_goals.py, and
+(docs/project-plan.md §6): the daily goal draw lives in editorial_goals.py, and
 the financial-topic safety rules (forced is_financial, mandatory moderation,
 drafting guidance, disclaimer) remain in admin_api_handler.py and
 common/compliance.py, unchanged.
 
 adapter_config (all optional): `editorial_goal` pins one goal instead of
-rotating; `web_search_queries` / `web_search_provider` override the
-web-aggregator's search. The old `coin_ids` setting is no longer used --
+the daily draw; `web_search_queries` / `market_news_queries` /
+`web_search_provider` override the news searches. The old `coin_ids` setting is no longer used --
 the anchors are always Bitcoin and Ethereum.
 """
 
@@ -68,7 +72,7 @@ import requests
 from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse_goal
 from common.editorial_resolver import resolve_editorial_goals
 from common.http_retry import get_json_with_backoff
-from common.relevance import research_relevance_rule, topic_label
+from common.relevance import matches_keywords, research_relevance_rule, topic_label
 from common.web_search import search_web
 
 from .base import Adapter
@@ -137,6 +141,22 @@ CRYPTO_TITLE_KEYWORDS = [
     "blockchain", "defi", "altcoin", "stablecoin", "solana", "xrp", "binance",
     "coinbase", "etf", "web3", "nft",
 ]  # fmt: skip
+
+# MARKET_NEWS day: general finance headlines with no crypto in them. GDELT
+# needs multi-word phrases quoted, and the title filter keeps only headlines
+# that are actually about markets/economy; anything crypto-flavoured is then
+# excluded (bare "etf" isn't -- most ETF news is equities/bonds).
+MARKET_NEWS_QUERY = (
+    '("stock market" OR equities OR "interest rates" OR inflation OR "central bank" '
+    'OR earnings OR "bond yields" OR "oil prices" OR economy)'
+)
+MARKET_NEWS_TITLE_KEYWORDS = [
+    "stock*", "market*", "equit*", "shares", "wall street", "s&p", "nasdaq", "dow",
+    "rate", "rates", "inflation", "fed", "federal reserve", "central bank", "ecb",
+    "earnings", "economy", "economic", "gdp", "jobs", "unemployment", "recession",
+    "bond*", "yield*", "treasur*", "oil", "commodit*", "tariff*", "ipo", "dollar",
+]  # fmt: skip
+CRYPTO_EXCLUSION_KEYWORDS = [k for k in CRYPTO_TITLE_KEYWORDS if k != "etf"]
 
 SUMMARY_STATE_MAX_CHARS = 9000
 
@@ -461,16 +481,23 @@ class CryptoFeedAdapter(Adapter):
         now = datetime.now(UTC)
         goal = goal_for_adapter_config(adapter_config, now.date())
 
+        state: dict = {"fetched_at": now.isoformat(), "editorial_goal": goal.value}
+
+        if goal is EditorialGoal.MARKET_NEWS:
+            # A general finance-news day has nothing to do with crypto: no
+            # CoinGecko call and no BTC/ETH anchors (the key stays, empty, so
+            # the snapshot keeps the current format), so a crypto price move
+            # can't make this day's snapshot look "material" either.
+            state["market_anchors"] = {}
+            state["web_results"] = self._fetch_web_results(adapter_config, goal)
+            return state
+
         client = CoinGeckoClient.from_env()
         markets = self._fetch_markets(client)
-        state: dict = {
-            "fetched_at": now.isoformat(),
-            "editorial_goal": goal.value,
-            "market_anchors": self._anchors(markets),
-        }
+        state["market_anchors"] = self._anchors(markets)
 
         if goal is EditorialGoal.WEB_AGGREGATOR:
-            state["web_results"] = self._fetch_web_results(adapter_config)
+            state["web_results"] = self._fetch_web_results(adapter_config, goal)
         else:
             state["analyzed_pool"] = self._build_pool(
                 markets, topic_config.get("topic_id", ""), now, previous_state, client
@@ -602,27 +629,43 @@ class CryptoFeedAdapter(Adapter):
 
         return dict(await asyncio.gather(*(fetch_one(coin_id) for coin_id in coin_ids)))
 
-    def _fetch_web_results(self, adapter_config: dict) -> list[dict]:
+    def _fetch_web_results(self, adapter_config: dict, goal: EditorialGoal) -> list[dict]:
+        """News for the web-based goals: crypto headlines for WEB_AGGREGATOR,
+        general finance headlines (crypto excluded) for MARKET_NEWS."""
+        if goal is EditorialGoal.MARKET_NEWS:
+            config_key, default_query = "market_news_queries", MARKET_NEWS_QUERY
+            title_keywords, exclude_keywords = MARKET_NEWS_TITLE_KEYWORDS, CRYPTO_EXCLUSION_KEYWORDS
+            label = "general financial-market"
+        else:
+            config_key, default_query = "web_search_queries", DEFAULT_WEB_QUERY
+            title_keywords, exclude_keywords = CRYPTO_TITLE_KEYWORDS, []
+            label = "crypto"
+
         queries = [
-            q for q in (adapter_config.get("web_search_queries") or []) if isinstance(q, str) and q
-        ] or [DEFAULT_WEB_QUERY]
+            q for q in (adapter_config.get(config_key) or []) if isinstance(q, str) and q
+        ] or [default_query]
+        # Excluding crypto happens after the search caps its results, so ask for
+        # extra to still end up with a full set.
+        fetch_count = WEB_MAX_RESULTS * 2 if exclude_keywords else WEB_MAX_RESULTS
 
         merged: list[dict] = []
         seen_urls: set[str] = set()
         for query in queries:
             for result in search_web(
                 query,
-                max_results=WEB_MAX_RESULTS,
+                max_results=fetch_count,
                 max_age_hours=WEB_MAX_AGE_HOURS,
-                title_keywords=CRYPTO_TITLE_KEYWORDS,
+                title_keywords=title_keywords,
                 provider=adapter_config.get("web_search_provider"),
             ):
+                if exclude_keywords and matches_keywords(result["title"], exclude_keywords):
+                    continue
                 if result["url"] not in seen_urls:
                     seen_urls.add(result["url"])
                     merged.append(result)
 
         if not merged:
-            raise RuntimeError("web search returned no crypto news items from the last 24h")
+            raise RuntimeError(f"web search returned no {label} news items from the last 24h")
         merged.sort(key=lambda r: r.get("published_at") or "", reverse=True)
         return merged[:WEB_MAX_RESULTS]
 
@@ -700,10 +743,12 @@ class CryptoFeedAdapter(Adapter):
 
         topic_name = topic_label(topic)
         compact_state = json.dumps(new_state, separators=(",", ":"))[:SUMMARY_STATE_MAX_CHARS]
+        anchors = _anchor_summary(new_state)  # empty on a MARKET_NEWS day: no crypto data
         header = (
-            f'You are monitoring the topic "{topic_name}" for a research digest. '
-            f"Current Market Anchors: {_anchor_summary(new_state)}.\n\n"
-            f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic)}\n\n"
+            f'You are monitoring the topic "{topic_name}" for a research digest.'
+            + (f" Current Market Anchors: {anchors}." if anchors else "")
+            + "\n\n"
+            f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic, goal)}\n\n"
             f"What changed: {diff_summary}\n\n"
         )
         closing = (
@@ -711,11 +756,16 @@ class CryptoFeedAdapter(Adapter):
             "data shows, and do not give financial or investment advice."
         )
 
-        if goal is EditorialGoal.WEB_AGGREGATOR:
+        if goal in (EditorialGoal.WEB_AGGREGATOR, EditorialGoal.MARKET_NEWS):
             count = len(new_state.get("web_results") or [])
+            kind = (
+                "general financial-market (not crypto)"
+                if goal is EditorialGoal.MARKET_NEWS
+                else "crypto"
+            )
             return (
                 header
-                + f"Today's Analysis Focus: A synthesis of {count} crypto news items published "
+                + f"Today's Analysis Focus: A synthesis of {count} {kind} news items published "
                 "in the last 24 hours.\n\n"
                 f"News items (JSON; only headlines and source names are available, not "
                 f"article bodies): {compact_state}\n\n"

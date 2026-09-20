@@ -256,7 +256,7 @@ def _ideate(
     # see common/editorial_resolver.py) comes first, and the relevance rule
     # then holds every angle to both the topic and that goal.
     standing_goal = (
-        f"ACTIVE EDITORIAL MANDATE:\n{resolve_editorial_goals(topic)}\n\n"
+        f"ACTIVE EDITORIAL MANDATE:\n{resolve_editorial_goals(topic, goal)}\n\n"
         f"{ideation_relevance_rule(topic_name)}\n"
         f"{MANDATE_ALIGNMENT_RULE}"
     )
@@ -345,7 +345,7 @@ def _draft_article(
     prompt = (
         "Write a full article draft in markdown (a few paragraphs) for a blog "
         f"about '{topic_name}', on this angle: {angle}\n\n"
-        f"CORE EDITORIAL DIRECTION:\n{resolve_editorial_goals(topic)}\n\n"
+        f"CORE EDITORIAL DIRECTION:\n{resolve_editorial_goals(topic, goal)}\n\n"
         f"Base it on these recent findings:\n{summaries_block}"
         f"\n\n{draft_relevance_boundary(topic_name)}"
         f"\n\n{DRAFT_ALIGNMENT_DIRECTIVE}"

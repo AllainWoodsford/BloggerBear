@@ -85,8 +85,11 @@ top of whichever applies. A topic created without an adapter defaults to
 `web_search`, which searches on the topic's name when no query is configured.
 The resolved goal is mirrored into the research summary (P1), ideation (P2) and
 drafting (P3) prompts. It is separate from, and layered with, the crypto feed's
-daily rotating goal (`common/editorial_goals.py`), and never relaxes the relevance
-guardrails below or the financial-topic safety rules.
+daily goal (`common/editorial_goals.py`: one of four -- altcoin deep-dive, crypto
+news aggregator, trend inventor, general market news -- drawn at random each UTC
+day, stable within the day), and never relaxes the relevance guardrails below or
+the financial-topic safety rules. On a market-news day the crypto adapter's own
+standing goal is skipped, since it would contradict a non-crypto day.
 
 Topic relevance (`common/relevance.py`) is enforced at three points, always
 keyed to the *active* topic's name, never a hardcoded topic:

@@ -131,7 +131,7 @@ lambdas/                    Python 3.11, one shared deployment package
     adapters/                  base.py (contract) + one module per domain:
                                 github_trending.py, hacker_news.py,
                                 crypto_feed.py, web_search.py
-    editorial_goals.py          daily rotating editorial goal (crypto)
+    editorial_goals.py          daily random editorial goal (crypto)
     relevance.py                topic-relevance guardrails + keyword matching
     web_search.py               reusable web/news search (provider-based)
     http_retry.py               GET-JSON with exponential backoff

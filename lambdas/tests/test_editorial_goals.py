@@ -6,7 +6,8 @@ from datetime import date, timedelta
 from common.editorial_goals import (
     ARTICLE_STYLES,
     EDITORIAL_MANDATES,
-    GOAL_ROTATION,
+    GOAL_POOL,
+    OFF_ADAPTER_DOMAIN_GOALS,
     EditorialGoal,
     goal_for_adapter_config,
     goal_for_date,
@@ -15,26 +16,39 @@ from common.editorial_goals import (
 )
 
 DAY = date(2026, 9, 20)
+YEAR = [DAY + timedelta(days=offset) for offset in range(730)]
 
 
-def test_rotation_advances_one_goal_per_day_and_repeats_every_three_days():
-    goals = [goal_for_date(DAY + timedelta(days=offset)) for offset in range(6)]
-
-    assert set(goals[:3]) == set(EditorialGoal)  # all three appear in any 3 consecutive days
-    assert goals[:3] == goals[3:]
-    for offset in range(3):
-        current = GOAL_ROTATION.index(goals[offset])
-        assert goals[offset + 1] is GOAL_ROTATION[(current + 1) % 3]
-
-
-def test_rotation_is_even_over_time():
-    counts = Counter(goal_for_date(DAY + timedelta(days=offset)) for offset in range(300))
-
-    assert set(counts.values()) == {100}
+def test_the_pool_holds_every_goal_once():
+    assert sorted(GOAL_POOL, key=lambda g: g.value) == sorted(EditorialGoal, key=lambda g: g.value)
+    assert len(GOAL_POOL) == 4
 
 
 def test_goal_is_a_pure_function_of_the_date():
+    # stable for the whole day: hourly ticks and the daily cycle must always agree
     assert goal_for_date(DAY) is goal_for_date(date(2026, 9, 20))
+    assert [goal_for_date(d) for d in YEAR] == [goal_for_date(d) for d in YEAR]
+
+
+def test_every_goal_comes_up_and_the_draw_is_roughly_uniform():
+    counts = Counter(goal_for_date(d) for d in YEAR)
+
+    assert set(counts) == set(EditorialGoal)
+    for goal in EditorialGoal:
+        assert 0.20 < counts[goal] / len(YEAR) < 0.30  # ~25% each
+
+
+def test_the_draw_is_random_not_a_repeating_cycle():
+    goals = [goal_for_date(d) for d in YEAR]
+
+    assert any(a is b for a, b in zip(goals, goals[1:], strict=False))  # repeats happen
+    for period in (2, 3, 4):  # and it isn't a cycle of any small period
+        assert goals[:60] != goals[period : period + 60]
+
+
+def test_market_news_is_the_only_off_adapter_domain_goal():
+    assert OFF_ADAPTER_DOMAIN_GOALS == {EditorialGoal.MARKET_NEWS}
+    assert "do not bring them in" in EDITORIAL_MANDATES[EditorialGoal.MARKET_NEWS]
 
 
 def test_parse_goal_accepts_names_case_insensitively_and_rejects_the_rest():
