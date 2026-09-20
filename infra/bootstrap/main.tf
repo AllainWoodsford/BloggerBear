@@ -236,6 +236,23 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["arn:aws:lambda:ap-southeast-2:*:function:bloggerbear-*"]
   }
 
+  # DLQ consumer (PR #43, feature/topic-logging-dlq-consumer-force-publish):
+  # aws_lambda_event_source_mapping.dlq_handler needs
+  # CreateEventSourceMapping (and, for future updates/destroys,
+  # Update/Delete/Get/List) -- confirmed the hard way, apply failed with
+  # AccessDeniedException on CreateEventSourceMapping. An event source
+  # mapping's ARN identifies it by a generated UUID, not by the function
+  # it's attached to (unlike LambdaFunctions above), so it can't be scoped
+  # to the bloggerbear-* naming convention the same way -- this is
+  # necessarily broader than the function-scoped statement above, but
+  # still confined to this account/region rather than resources = ["*"].
+  statement {
+    sid       = "LambdaEventSourceMappings"
+    effect    = "Allow"
+    actions   = ["lambda:*"]
+    resources = ["arn:aws:lambda:ap-southeast-2:*:event-source-mapping:*"]
+  }
+
   # Phase 1: the CloudWatch log groups Lambda creates on first invocation
   # (and that Terraform may come to manage directly for retention).
   # Scoped to the /aws/lambda/bloggerbear-* log group prefix. Not
