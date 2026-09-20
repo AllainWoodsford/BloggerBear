@@ -576,18 +576,29 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
         "'GitHub Trending', propose exactly 3 distinct, specific candidate "
         "article angles. Reply with exactly one angle per line, no "
         "numbering, no extra commentary.\n\n"
+        "ACTIVE EDITORIAL MANDATE:\n"
+        "Adapter-Specific Standard Goal: Focus on rapid open-source star acceleration, "
+        "architectural paradigm shifts (e.g., new framework primitives), and infrastructural "
+        "utilities.\n\n"
         "CRITICAL RELEVANCE RULE:\n"
         "You are a strict domain-specific writer. Every proposed angle MUST remain deeply "
         "relevant to the core theme of 'GitHub Trending'. If the raw data findings contain "
         "fringe, accidental, or off-topic subjects (e.g., pop culture, unrelated hobbies, "
         "speculative fiction, or internet noise), you MUST either completely ignore those "
         "findings or aggressively reframe them strictly through the functional lens of "
-        "'GitHub Trending'. Do not wander off-topic.\n\n"
+        "'GitHub Trending'. Do not wander off-topic.\n"
+        "Every proposed angle MUST also directly serve the Active Editorial Mandate above. If "
+        "raw data findings contain noisy or off-topic subjects, you MUST aggressively reframe "
+        "them through the lens of this mandate.\n\n"
         f"Findings:\n{daily_cycle_handler._format_findings_summaries(FINDINGS)}"
     )
     expected_draft = (
         "Write a full article draft in markdown (a few paragraphs) for a "
         "blog about 'GitHub Trending', on this angle: Angle one\n\n"
+        "CORE EDITORIAL DIRECTION:\n"
+        "Adapter-Specific Standard Goal: Focus on rapid open-source star acceleration, "
+        "architectural paradigm shifts (e.g., new framework primitives), and infrastructural "
+        "utilities.\n\n"
         f"Base it on these recent findings:\n{daily_cycle_handler._format_findings_summaries(FINDINGS)}"
         "\n\nCRITICAL RELEVANCE BOUNDARY:\n"
         "The primary mandate of this publication is to provide high-signal commentary on "
@@ -596,6 +607,9 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
         "example, interpreting a technical 'cookbook' repository as literal culinary recipes, "
         "or general interest forum posts as core domain facts). Every paragraph must deliver "
         "value directly aligned with the expectation of a reader subscribing to 'GitHub Trending'."
+        "\n\nMaintain absolute structural alignment with the Core Editorial Direction. Every "
+        "paragraph must deliver high-signal insight directly tailored to a reader tracking this "
+        "exact objective."
     )
 
     assert ideation_prompt == expected_ideation
@@ -701,7 +715,9 @@ def test_topics_without_a_goal_are_untouched_by_the_goal_logic(s3_bucket):
     _, mock_invoke, mock_put_article = _run_crypto(NON_FINANCIAL_TOPIC, [*findings, old])
 
     prompts = mock_invoke.call_args_list[0].args[0] + mock_invoke.call_args_list[1].args[0]
-    assert "Editorial Mandate" not in prompts and "Article style" not in prompts
+    # no rotating daily goal (its "Editorial Mandate:" line / article style) --
+    # only the standing goal's uppercase ACTIVE EDITORIAL MANDATE block
+    assert "Editorial Mandate:" not in prompts and "Article style" not in prompts
     assert "Old repo news" in prompts  # no day filtering for goal-less topics
     assert len(mock_put_article.call_args.kwargs["source_refs"]) == 2
 
@@ -809,3 +825,110 @@ def test_the_guardrails_sit_alongside_financial_and_feedback_guidance(s3_bucket)
         assert "Financial-topic guidance (mandatory):" in call.args[0]
     assert "CRITICAL RELEVANCE RULE" in mock_invoke.call_args_list[0].args[0]
     assert "CRITICAL RELEVANCE BOUNDARY" in mock_invoke.call_args_list[1].args[0]
+
+
+# --- hierarchical editorial goals (standing objective) -----------------------------
+
+FOCUS = "Identify unpatched zero-day exploits actively being observed in production environments."
+EXCLUSIONS = "Ignore generalized marketing press releases or compliance frameworks."
+
+
+def _topic_with(adapter, **goals):
+    topic = {**_topic_named("Cybersecurity & Infrastructure Threats"), "adapter": adapter}
+    if goals:
+        topic["editorial_goals"] = goals
+    return topic
+
+
+def _positions(prompt, markers):
+    return [prompt.index(marker) for marker in markers]
+
+
+def test_a_topic_specific_goal_reaches_ideation_and_drafting(s3_bucket):
+    topic = _topic_with("web_search", primary_focus=FOCUS, exclusion_criteria=EXCLUSIONS)
+
+    _, mock_invoke, _ = _run_crypto(topic, NOISE_FINDINGS)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    block = f"Topic-Specific Focus: {FOCUS}\nStrict Constraints: {EXCLUSIONS}"
+    assert f"ACTIVE EDITORIAL MANDATE:\n{block}" in ideation_prompt
+    assert f"CORE EDITORIAL DIRECTION:\n{block}" in draft_prompt
+    assert "Global Default Goal" not in ideation_prompt + draft_prompt
+
+
+def test_a_bare_topic_inherits_independent_web_research(s3_bucket):
+    _, mock_invoke, _ = _run_crypto(_topic_with("web_search"), NOISE_FINDINGS)
+
+    for call in mock_invoke.call_args_list[:2]:
+        assert "Global Default Goal: Execute independent web research" in call.args[0]
+
+
+def test_an_adapter_default_applies_when_the_topic_sets_no_goal(s3_bucket):
+    _, mock_invoke, _ = _run_crypto(_topic_with("github_trending"), NOISE_FINDINGS)
+
+    assert "Adapter-Specific Standard Goal: Focus on rapid open-source star" in (
+        mock_invoke.call_args_list[0].args[0]
+    )
+
+
+def test_the_mandate_rule_and_topic_relevance_rule_both_apply_in_the_right_order(s3_bucket):
+    _, mock_invoke, _ = _run_crypto(_topic_with("web_search", primary_focus=FOCUS), NOISE_FINDINGS)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    ideation_order = [
+        "Reply with exactly one angle per line",
+        "ACTIVE EDITORIAL MANDATE:",
+        "CRITICAL RELEVANCE RULE",
+        "Every proposed angle MUST also directly serve the Active Editorial Mandate",
+        "Findings:",
+    ]
+    positions = _positions(ideation_prompt, ideation_order)
+    assert positions == sorted(positions)
+    draft_order = [
+        "on this angle:",
+        "CORE EDITORIAL DIRECTION:",
+        "Base it on these recent findings:",
+        "CRITICAL RELEVANCE BOUNDARY",
+        "Maintain absolute structural alignment with the Core Editorial Direction",
+    ]
+    positions = _positions(draft_prompt, draft_order)
+    assert positions == sorted(positions)
+
+
+def test_the_standing_goal_and_the_crypto_daily_vector_are_layered_not_replaced(s3_bucket):
+    topic = {
+        **FINANCIAL_TOPIC,
+        "adapter_config": {"editorial_goal": "WEB_AGGREGATOR"},
+        "editorial_goals": {
+            "primary_focus": "Track institutional flows.",
+            "exclusion_criteria": "No price calls.",
+        },
+    }
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Headline digest", "https://example/h")]
+
+    _, mock_invoke, _ = _run_crypto(topic, findings)
+
+    ideation_prompt = mock_invoke.call_args_list[0].args[0]
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    standing = "Topic-Specific Focus: Track institutional flows.\nStrict Constraints: No price calls."
+    assert standing in ideation_prompt
+    assert f"Editorial Mandate: {EDITORIAL_MANDATES[EditorialGoal.WEB_AGGREGATOR]}" in ideation_prompt
+    assert "and the Active Editorial Mandate above" in ideation_prompt
+    assert ideation_prompt.index("ACTIVE EDITORIAL MANDATE") < ideation_prompt.index("Editorial Mandate:")
+    assert "CORE EDITORIAL DIRECTION:\nTopic-Specific Focus" in draft_prompt
+    assert f"Article style: {ARTICLE_STYLES[EditorialGoal.WEB_AGGREGATOR]}" in draft_prompt
+    # financial safety rules are untouched by any editorial goal
+    assert "Financial-topic guidance (mandatory):" in ideation_prompt
+    assert "Financial-topic guidance (mandatory):" in draft_prompt
+
+
+def test_a_crypto_topic_with_no_goal_of_its_own_uses_the_crypto_adapter_default(s3_bucket):
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Anchors diverge", "https://example/a")]
+
+    _, mock_invoke, _ = _run_crypto(FINANCIAL_TOPIC, findings)
+
+    assert "Adapter-Specific Standard Goal: Prioritize structural changes in asset cap" in (
+        mock_invoke.call_args_list[0].args[0]
+    )

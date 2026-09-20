@@ -49,6 +49,11 @@ from common.dynamo import (
     update_moderation_status,
     update_prompt_refinement_status,
 )
+from common.editorial_resolver import (
+    DEFAULT_ADAPTER,
+    normalize_editorial_goals,
+    validate_editorial_goals,
+)
 from common.musings import generate_and_store_article_musing
 from common.scheduler import (
     _validate_schedule_expression,
@@ -124,18 +129,27 @@ def _create_topic(event: dict) -> dict:
 
     topic_id = body.get("topic_id")
     name = body.get("name")
-    adapter = body.get("adapter")
+    # A topic with no adapter does independent web research: it defaults to
+    # the reusable web_search adapter and, with no query configured, searches
+    # on its own name (see common/editorial_resolver.py for its default goal).
+    adapter = body["adapter"] if "adapter" in body else DEFAULT_ADAPTER
 
     if not isinstance(topic_id, str) or not topic_id:
         return _error(400, "'topic_id' is required and must be a non-empty string")
     if not isinstance(name, str) or not name:
         return _error(400, "'name' is required and must be a non-empty string")
     if not isinstance(adapter, str) or not adapter:
-        return _error(400, "'adapter' is required and must be a non-empty string")
+        return _error(
+            400, f"'adapter' must be a non-empty string if provided (default: '{DEFAULT_ADAPTER}')"
+        )
 
     adapter_config = body.get("adapter_config", {})
     if not isinstance(adapter_config, dict):
         return _error(400, "'adapter_config' must be an object if provided")
+
+    editorial_goals_error = validate_editorial_goals(body.get("editorial_goals"))
+    if editorial_goals_error:
+        return _error(400, editorial_goals_error)
 
     is_financial = body.get("is_financial", False)
     if not isinstance(is_financial, bool):
@@ -195,6 +209,10 @@ def _create_topic(event: dict) -> dict:
         "fallback_model_id": fallback_model_id,
         "model_id_candidates": model_id_candidates,
     }
+    # Only stored when provided, so a topic without one simply inherits its
+    # adapter's/the global default goal (common/editorial_resolver.py).
+    if body.get("editorial_goals") is not None:
+        item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
     put_topic(item)
     try:
         upsert_topic_schedules(topic_id, research_cadence, daily_cadence)
@@ -227,6 +245,7 @@ def _update_topic(event: dict) -> dict:
         "name",
         "adapter",
         "adapter_config",
+        "editorial_goals",
         "is_financial",
         "research_cadence",
         "daily_cadence",
@@ -243,6 +262,12 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "'adapter' must be a non-empty string")
     if "adapter_config" in body and not isinstance(updated["adapter_config"], dict):
         return _error(400, "'adapter_config' must be an object")
+    if "editorial_goals" in body:
+        editorial_goals_error = validate_editorial_goals(body["editorial_goals"])
+        if editorial_goals_error:
+            return _error(400, editorial_goals_error)
+        # A whole-block replace, like adapter_config; {} or null clears it.
+        updated["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
     if "is_financial" in body and not isinstance(updated["is_financial"], bool):
         return _error(400, "'is_financial' must be a boolean")
     # Phase 7: same forced-True guarantee as _create_topic above -- applies

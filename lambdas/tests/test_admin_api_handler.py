@@ -333,7 +333,13 @@ def test_create_topic_invalid_cadence_expression_returns_400(aws_resources):
         {"name": "Missing topic_id", "adapter": "x"},
         {"topic_id": "", "name": "Empty topic_id", "adapter": "x"},
         {"topic_id": "t", "adapter": "x"},
-        {"topic_id": "t", "name": "n"},
+        {"topic_id": "t", "name": "n", "adapter": ""},
+        {"topic_id": "t", "name": "n", "adapter": 123},
+        {"topic_id": "t", "name": "n", "editorial_goals": "not-an-object"},
+        {"topic_id": "t", "name": "n", "editorial_goals": {"primary_focus": ""}},
+        {"topic_id": "t", "name": "n", "editorial_goals": {"primary_focus": 5}},
+        {"topic_id": "t", "name": "n", "editorial_goals": {"tone": "witty"}},
+        {"topic_id": "t", "name": "n", "editorial_goals": {"primary_focus": "x" * 1001}},
         {"topic_id": "t", "name": "n", "adapter": "x", "adapter_config": "not-a-dict"},
         {"topic_id": "t", "name": "n", "adapter": "x", "is_financial": "not-a-bool"},
         {"topic_id": "t", "name": "n", "adapter": "x", "research_cadence": 123},
@@ -1249,3 +1255,90 @@ def test_unhandled_exception_returns_500(aws_resources):
 
     assert result["statusCode"] == 500
     assert "error" in json.loads(result["body"])
+
+
+# --- editorial goals + default adapter ------------------------------------------------
+
+
+def _create(body):
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        return admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+
+def _update(topic_id, body):
+    event = _event("PUT /topics/{topic_id}", path_params={"topic_id": topic_id}, body=body)
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        return admin_api_handler.handler(event, None)
+
+
+def test_a_topic_created_without_an_adapter_defaults_to_web_search(aws_resources):
+    result = _create({"topic_id": "bare-topic", "name": "Bare Topic"})
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["adapter"] == "web_search"
+    assert "editorial_goals" not in created  # inherits the adapter/global default goal
+
+
+def test_create_topic_stores_a_stripped_editorial_goals_block(aws_resources):
+    goals = {
+        "primary_focus": "  Identify unpatched zero-day exploits seen in production.  ",
+        "exclusion_criteria": "Ignore marketing press releases.",
+    }
+    result = _create({"topic_id": "sec", "name": "Security", "editorial_goals": goals})
+
+    assert result["statusCode"] == 201
+    stored = boto3.resource("dynamodb", region_name=REGION).Table("Topics").get_item(
+        Key={"topic_id": "sec"}
+    )["Item"]
+    assert stored["editorial_goals"] == {
+        "primary_focus": "Identify unpatched zero-day exploits seen in production.",
+        "exclusion_criteria": "Ignore marketing press releases.",
+    }
+
+
+def test_a_partial_editorial_goals_block_is_allowed(aws_resources):
+    result = _create(
+        {"topic_id": "sec", "name": "Security", "editorial_goals": {"exclusion_criteria": "No PR."}}
+    )
+
+    assert json.loads(result["body"])["editorial_goals"] == {"exclusion_criteria": "No PR."}
+
+
+def test_update_topic_replaces_and_clears_editorial_goals(aws_resources):
+    _put_topic()
+
+    result = _update("github-trending", {"editorial_goals": {"primary_focus": "  Watch AI infra.  "}})
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["editorial_goals"] == {"primary_focus": "Watch AI infra."}
+
+    result = _update("github-trending", {"editorial_goals": {}})
+    assert json.loads(result["body"])["editorial_goals"] == {}
+
+    _update("github-trending", {"editorial_goals": {"primary_focus": "Again"}})
+    result = _update("github-trending", {"editorial_goals": None})
+    assert json.loads(result["body"])["editorial_goals"] == {}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["nope", ["a"], {"primary_focus": ""}, {"primary_focus": "  "}, {"tone": "x"}, {"exclusion_criteria": 1}],
+)
+def test_update_topic_rejects_invalid_editorial_goals_without_writing(aws_resources, bad):
+    _put_topic()
+
+    result = _update("github-trending", {"editorial_goals": bad})
+
+    assert result["statusCode"] == 400
+    stored = boto3.resource("dynamodb", region_name=REGION).Table("Topics").get_item(
+        Key={"topic_id": "github-trending"}
+    )["Item"]
+    assert "editorial_goals" not in stored
+
+
+def test_updating_other_fields_leaves_editorial_goals_alone(aws_resources):
+    _put_topic({**TOPIC, "editorial_goals": {"primary_focus": "Keep me"}})
+
+    result = _update("github-trending", {"name": "Renamed"})
+
+    assert json.loads(result["body"])["editorial_goals"] == {"primary_focus": "Keep me"}

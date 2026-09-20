@@ -603,6 +603,34 @@ def test_web_prompt_lists_the_headlines_and_admits_it_has_no_article_bodies():
     assert "RELEVANCE RULE: this digest covers 'Crypto' and nothing else" in prompt
 
 
+def test_the_research_prompt_carries_the_crypto_adapter_default_goal():
+    topic = {"topic_id": "c", "name": "Crypto", "adapter": "crypto_feed"}
+
+    prompt = CryptoFeedAdapter().build_summary_prompt(topic, "the diff", _state(goal="ALTCOIN_DEEP_DIVE"))
+
+    assert "OPERATIONAL EDITORIAL GOAL:\nAdapter-Specific Standard Goal: Prioritize structural" in prompt
+    assert prompt.index("OPERATIONAL EDITORIAL GOAL") < prompt.index("What changed:")
+
+
+def test_a_topic_specific_goal_overrides_the_crypto_default_in_every_goal_mode():
+    topic = {
+        "topic_id": "c",
+        "name": "Crypto",
+        "adapter": "crypto_feed",
+        "editorial_goals": {
+            "primary_focus": "Track stablecoin supply.",
+            "exclusion_criteria": "No memecoins.",
+        },
+    }
+
+    for goal in EditorialGoal:
+        prompt = CryptoFeedAdapter().build_summary_prompt(
+            topic, "the diff", _state(goal=goal.value, urls=[1])
+        )
+        assert "Topic-Specific Focus: Track stablecoin supply.\nStrict Constraints: No memecoins." in prompt
+        assert "Adapter-Specific Standard Goal" not in prompt
+
+
 def test_no_prompt_for_a_legacy_or_unknown_goal_snapshot():
     adapter = CryptoFeedAdapter()
 
