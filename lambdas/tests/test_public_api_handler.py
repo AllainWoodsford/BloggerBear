@@ -19,6 +19,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("TOPICS_TABLE", "Topics")
+    monkeypatch.setenv("FINDINGS_TABLE", "Findings")
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     monkeypatch.setenv("FEEDBACK_TABLE", "Feedback")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
@@ -42,6 +43,18 @@ def aws_resources(aws_env):
             TableName="Topics",
             KeySchema=[{"AttributeName": "topic_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "topic_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="Findings",
+            KeySchema=[
+                {"AttributeName": "topic_id", "KeyType": "HASH"},
+                {"AttributeName": "captured_at", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "topic_id", "AttributeType": "S"},
+                {"AttributeName": "captured_at", "AttributeType": "S"},
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
         dynamodb.create_table(
@@ -99,6 +112,20 @@ def _put_topic(topic=None):
     table.put_item(Item=topic)
 
 
+def _put_finding(topic_id="github-trending", captured_at="2026-09-12T00:00:00+00:00"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Findings")
+    table.put_item(
+        Item={
+            "topic_id": topic_id,
+            "captured_at": captured_at,
+            "expires_at": 9999999999,
+            "summary": "Something happened.",
+            "raw_snapshot_s3_key": "snapshots/x.json",
+            "source_refs": [],
+        }
+    )
+
+
 def _put_article(
     article_id="article-1",
     *,
@@ -154,6 +181,34 @@ def test_list_topics_hides_internal_fields(aws_resources):
         "daily_cadence",
     ):
         assert leaked_field not in topic
+
+
+# --- Topic activity (docs/project-plan.md §11) ---------------------------
+
+
+def test_topic_activity_false_when_no_findings(aws_resources):
+    event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"topic_id": "github-trending", "researching": False}
+
+
+def test_topic_activity_true_when_finding_exists(aws_resources):
+    _put_finding()
+
+    event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {"topic_id": "github-trending", "researching": True}
+
+
+def test_topic_activity_never_leaks_raw_finding_content(aws_resources):
+    _put_finding()
+
+    event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert set(body.keys()) == {"topic_id", "researching"}
 
 
 # --- Articles listing ---------------------------------------------------

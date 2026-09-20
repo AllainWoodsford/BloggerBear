@@ -176,13 +176,20 @@
     return date.toLocaleDateString();
   }
 
-  function renderArticleList(topicId, articles) {
+  function renderArticleList(topicId, articles, researching) {
     clearChildren(contentEl);
     var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
     contentEl.appendChild(el("h1", { text: heading }));
 
     if (articles.length === 0) {
-      contentEl.appendChild(el("p", { text: "No published articles yet." }));
+      // "researching" (docs/project-plan.md §11) distinguishes "nothing
+      // published yet, but BloggerBear has started gathering findings for
+      // this topic" from a topic with no activity at all -- see
+      // GET /topics/{topic_id}/activity in public_api_handler.py.
+      var emptyText = researching
+        ? "BloggerBear is researching this topic -- check back soon for the first article."
+        : "No published articles yet.";
+      contentEl.appendChild(el("p", { text: emptyText }));
       return;
     }
 
@@ -204,7 +211,21 @@
     showMessage("Loading articles...");
     fetchJson(apiUrl("/articles?topic_id=" + encodeURIComponent(topicId)))
       .then(function (data) {
-        renderArticleList(topicId, data.articles || []);
+        var articles = data.articles || [];
+        if (articles.length > 0) {
+          renderArticleList(topicId, articles, false);
+          return;
+        }
+        // Only worth the extra request when the list actually came back
+        // empty -- the common case (a topic with published articles)
+        // never needs to know whether research is also ongoing.
+        fetchJson(apiUrl("/topics/" + encodeURIComponent(topicId) + "/activity"))
+          .then(function (activity) {
+            renderArticleList(topicId, articles, Boolean(activity.researching));
+          })
+          .catch(function () {
+            renderArticleList(topicId, articles, false);
+          });
       })
       .catch(function () {
         showMessage("Could not load articles right now.");

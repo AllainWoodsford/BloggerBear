@@ -13,6 +13,7 @@ ENV = {
     "ARTICLES_TABLE": "Articles",
     "MODERATION_QUEUE_TABLE": "ModerationQueue",
     "CONTENT_BUCKET": "bloggerbear-content-test",
+    "SITE_BUCKET": "bloggerbear-site-test",
     "BEDROCK_MODEL_ID": "anthropic.claude-test-model",
 }
 
@@ -111,6 +112,7 @@ def test_handler_publishes_when_compliant(s3_bucket):
         ) as mock_put_candidate,
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
+        patch("daily_cycle_handler.render_and_publish_article_page") as mock_render_page,
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -147,6 +149,19 @@ def test_handler_publishes_when_compliant(s3_bucket):
     )
     assert stored["Body"].read().decode("utf-8") == "# Draft body\n\nSome article content."
 
+    # Static article publishing (docs/project-plan.md §11): the compliant
+    # branch must render the static page immediately, using the
+    # already-in-memory draft text rather than re-reading it from S3.
+    mock_render_page.assert_called_once()
+    render_kwargs = mock_render_page.call_args.kwargs
+    assert render_kwargs["article_id"] == article_kwargs["article_id"]
+    assert render_kwargs["title"] == "A Great Title"
+    assert render_kwargs["body_markdown"] == "# Draft body\n\nSome article content."
+    assert render_kwargs["topic_name"] == "GitHub Trending"
+    assert render_kwargs["published_at"] == article_kwargs["published_at"]
+    assert render_kwargs["source_refs"] == article_kwargs["source_refs"]
+    assert render_kwargs["view_count"] == 0
+
 
 def test_handler_moderates_when_non_compliant(s3_bucket):
     ideation_response = "Angle one\nAngle two\nAngle three"
@@ -165,6 +180,7 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
+        patch("daily_cycle_handler.render_and_publish_article_page") as mock_render_page,
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -181,6 +197,11 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
     assert moderation_kwargs["article_id"] == result["article_id"]
     assert moderation_kwargs["topic_id"] == "github-trending"
     assert moderation_kwargs["reasons"] == ["unsubstantiated claim"]
+
+    # A pending_moderation article isn't public yet -- no static page
+    # should exist until it's actually approved (see admin_api_handler.py's
+    # _resolve_moderation_item, tested separately).
+    mock_render_page.assert_not_called()
 
 
 def test_handler_financial_topic_routes_to_moderation_without_calling_bedrock_for_review(
@@ -302,6 +323,7 @@ def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prom
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article"),
         patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -343,6 +365,7 @@ def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article"),
         patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
     ):
         result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
@@ -379,6 +402,7 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article"),
         patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
     ):
         daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
 
