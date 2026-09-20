@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -737,6 +738,13 @@ def test_approve_moderation_item(aws_resources):
     assert render_kwargs["body_markdown"] == "# Body"
     assert render_kwargs["topic_name"] == "GitHub Trending"
     assert render_kwargs["published_at"] == article["published_at"]
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5):
+    # lineage was never set on this fixture (this article predates the
+    # feature, or was drafted before lineage support existed) -- passed
+    # through as-is, not fabricated. published_by is "humans" since this
+    # path always needed a moderation-approve.
+    assert render_kwargs["lineage"] is None
+    assert render_kwargs["published_by"] == "humans"
 
     # Reaching this path always needed a moderation-approve, so the musing
     # is generated with compliant=False (the more measured/thoughtful
@@ -822,6 +830,52 @@ def test_publish_article_sets_published_status(aws_resources):
     # must regenerate the static page, same as the moderation-approve path.
     mock_render_page.assert_called_once()
     assert mock_render_page.call_args.kwargs["article_id"] == "article-1"
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5):
+    # force-publish is always "humans" too -- an operator invoked it.
+    assert mock_render_page.call_args.kwargs["published_by"] == "humans"
+
+
+def test_publish_article_passes_through_existing_lineage(aws_resources):
+    """lineage was fixed at draft time -- force-publish must pass through
+    whatever's already stored on the article, never fabricate or drop it."""
+    lineage = {
+        "calls": [
+            {
+                "stage": "draft",
+                "model_id": "model-a",
+                "input_tokens": Decimal(10),
+                "output_tokens": Decimal(5),
+                "used_fallback": False,
+            }
+        ],
+        "total_input_tokens": Decimal(10),
+        "total_output_tokens": Decimal(5),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.02"),
+        "cost_note": None,
+    }
+    _put_article(status="pending_moderation")
+    _put_topic()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage",
+        ExpressionAttributeValues={":lineage": lineage},
+    )
+
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _event(
+            "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
+        )
+        admin_api_handler.handler(event, None)
+
+    render_kwargs = mock_render_page.call_args.kwargs
+    assert render_kwargs["lineage"]["models_used"] == ["model-a"]
+    assert render_kwargs["lineage"]["cost_aud"] == 0.02
 
 
 def test_publish_article_also_approves_pending_moderation_item(aws_resources):

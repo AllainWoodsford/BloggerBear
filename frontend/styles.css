@@ -417,6 +417,53 @@ a {
   margin: 0;
 }
 
+/* Compact one-line AI lineage summary (models / tokens / approved by /
+   cost) -- muted like .article-date, on its own line under the date on
+   both the article list and the article page, and baked into the static
+   article pages (common/static_pages.py) with the same class. */
+.lineage-summary {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.article-meta + .lineage-summary {
+  margin: -14px 0 20px;
+}
+
+/* Full lineage stats footer -- same treatment as .sources-footer, with a
+   definition list for the label/value rows. */
+.lineage-footer {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.lineage-footer h2 {
+  font-size: 1rem;
+  margin: 0 0 8px;
+  color: var(--fg);
+}
+
+.lineage-footer dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+}
+
+.lineage-footer dt {
+  font-weight: 600;
+}
+
+.lineage-footer dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .feedback {
   margin-top: 32px;
   padding-top: 16px;

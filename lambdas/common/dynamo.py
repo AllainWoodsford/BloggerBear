@@ -434,6 +434,14 @@ def list_published_articles(topic_id: str | None = None) -> list[dict]:
             ExclusiveStartKey=response["LastEvaluatedKey"],
         )
         items.extend(response.get("Items", []))
+    # Same Decimal -> float/int conversion get_article applies -- needed
+    # here too now that public_api_handler's _list_articles projects a
+    # slim lineage summary (models_used/cost_aud/published_by) onto each
+    # item (docs/project-plan.md §11, PR 3 of 5); json.dumps can't
+    # serialize a raw Decimal.
+    for item in items:
+        if "lineage" in item:
+            item["lineage"] = _lineage_from_item(item["lineage"])
     return items
 
 

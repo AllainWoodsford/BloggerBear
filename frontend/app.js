@@ -229,6 +229,135 @@
     return date.toLocaleDateString();
   }
 
+  // --- AI lineage display (docs/project-plan.md §11) ------------------------
+  //
+  // Mirrors lambdas/common/static_pages.py's server-side rendering of the
+  // same data (that one is baked into the static article pages at publish
+  // time; this is the client-rendered equivalent for the SPA's own views) --
+  // keep the wording/format of the two in sync. Any article published
+  // before lineage tracking existed comes back with lineage/published_by
+  // as explicit nulls, and every helper below renders that as a plainly
+  // worded "No data" rather than a blank gap that would look like a bug.
+
+  var PUBLISHED_BY_LABELS = {
+    ai_only: "AI only",
+    humans: "Humans",
+    humans_and_ai: "Humans & AI",
+  };
+
+  function formatCount(value) {
+    return Number(value || 0).toLocaleString("en-US");
+  }
+
+  function publishedByLabel(publishedBy) {
+    if (publishedBy === null || publishedBy === undefined) {
+      return "No data";
+    }
+    return PUBLISHED_BY_LABELS[publishedBy] || String(publishedBy);
+  }
+
+  function costLabel(costAud, costNote) {
+    if (typeof costAud === "number") {
+      return "~$" + costAud.toFixed(2) + " AUD";
+    }
+    return costNote || "No data";
+  }
+
+  // "model: X in / Y out" per model actually used, summed across every call
+  // that used it (an article can span more than one model, e.g. a fallback
+  // kicking in partway through).
+  function perModelTokenText(lineage) {
+    var totals = {};
+    var order = [];
+    ((lineage && lineage.calls) || []).forEach(function (call) {
+      var modelId = call.model_id || "";
+      if (!Object.prototype.hasOwnProperty.call(totals, modelId)) {
+        totals[modelId] = { input: 0, output: 0 };
+        order.push(modelId);
+      }
+      totals[modelId].input += Number(call.input_tokens || 0);
+      totals[modelId].output += Number(call.output_tokens || 0);
+    });
+    if (order.length === 0) {
+      return "No data";
+    }
+    return order
+      .map(function (modelId) {
+        return modelId + ": " + formatCount(totals[modelId].input) + " in / " + formatCount(totals[modelId].output) + " out";
+      })
+      .join(", ");
+  }
+
+  // Compact one-line summary. The article page has the full lineage.calls
+  // detail (per-model tokens); the topic listing only gets a slim projection
+  // (totals, not per-call -- see public_api_handler.py's _list_articles), so
+  // `tokensText` is passed in by whichever caller has the right level of
+  // detail rather than computed here.
+  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costAud, costNote, hasLineage) {
+    if (!hasLineage && (publishedBy === null || publishedBy === undefined)) {
+      return "No data";
+    }
+    var models = modelsUsed && modelsUsed.length > 0 ? modelsUsed.join(", ") : "no data";
+    return (
+      "models [" + models + "] · tokens [" + tokensText + "] · approved by " +
+      publishedByLabel(publishedBy) + " · " + (hasLineage ? costLabel(costAud, costNote) : "No data")
+    );
+  }
+
+  function articleDetailSummaryText(article) {
+    var lineage = article.lineage;
+    var hasLineage = lineage !== null && lineage !== undefined;
+    return lineageSummaryText(
+      hasLineage ? lineage.models_used : null,
+      hasLineage ? perModelTokenText(lineage) : "no data",
+      article.published_by,
+      hasLineage ? lineage.cost_aud : null,
+      hasLineage ? lineage.cost_note : null,
+      hasLineage
+    );
+  }
+
+  function articleListSummaryText(article) {
+    var hasLineage = article.models_used !== null && article.models_used !== undefined;
+    var tokensText = "no data";
+    if (hasLineage && article.total_input_tokens !== null && article.total_input_tokens !== undefined) {
+      tokensText = formatCount(article.total_input_tokens) + " in / " + formatCount(article.total_output_tokens) + " out";
+    }
+    return lineageSummaryText(
+      article.models_used,
+      tokensText,
+      article.published_by,
+      article.cost_aud,
+      article.cost_note,
+      hasLineage
+    );
+  }
+
+  // The fuller footer block, same shape as the static page's
+  // <footer class="lineage-footer"> -- always rendered, even when empty.
+  function renderLineageFooter(lineage, publishedBy) {
+    var hasLineage = lineage !== null && lineage !== undefined;
+    var models = hasLineage && lineage.models_used && lineage.models_used.length > 0
+      ? lineage.models_used.join(", ")
+      : "No data";
+
+    var footer = el("footer", { className: "lineage-footer", attrs: { "aria-label": "Article lineage" } });
+    footer.appendChild(el("h2", { text: "Lineage" }));
+
+    var list = el("dl");
+    [
+      ["Models", models],
+      ["Tokens", hasLineage ? perModelTokenText(lineage) : "No data"],
+      ["Approved by", publishedByLabel(publishedBy)],
+      ["Approx. cost", hasLineage ? costLabel(lineage.cost_aud, lineage.cost_note) : "No data"],
+    ].forEach(function (row) {
+      list.appendChild(el("dt", { text: row[0] }));
+      list.appendChild(el("dd", { text: row[1] }));
+    });
+    footer.appendChild(list);
+    return footer;
+  }
+
   // --- Articles in the Pipeline --------------------------------------
   //
   // A generic, content-free indicator of in-progress work for a topic --
@@ -306,6 +435,7 @@
       });
       item.appendChild(link);
       item.appendChild(el("span", { className: "article-date", text: " " + formatDate(article.published_at) }));
+      item.appendChild(el("div", { className: "lineage-summary", text: articleListSummaryText(article) }));
       list.appendChild(item);
     });
     contentEl.appendChild(list);
@@ -388,6 +518,7 @@
     meta.appendChild(document.createTextNode(" · "));
     meta.appendChild(el("span", { className: "view-count", text: article.view_count + " views" }));
     contentEl.appendChild(meta);
+    contentEl.appendChild(el("p", { className: "lineage-summary", text: articleDetailSummaryText(article) }));
 
     var body = el("div", { className: "article-body" });
     // Render body as plain text paragraphs, split on blank lines, rather
@@ -430,6 +561,7 @@
       contentEl.appendChild(sourcesSection);
     }
 
+    contentEl.appendChild(renderLineageFooter(article.lineage, article.published_by));
     contentEl.appendChild(renderFeedback(article.article_id));
   }
 

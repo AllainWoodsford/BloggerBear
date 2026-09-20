@@ -199,6 +199,19 @@ def _list_articles(event: dict) -> dict:
             "article_id": a["article_id"],
             "title": a["title"],
             "published_at": a.get("published_at"),
+            # Slim lineage projection for the topic listing's compact
+            # one-line summary (docs/project-plan.md §11, PR 3 of 5) --
+            # deliberately NOT the full lineage.calls breakdown, since
+            # that's detail-page-only territory (fetching the full
+            # per-call token detail for every article in a list would be
+            # wasteful); everything here already comes from the same
+            # Scan list_published_articles already did, no extra reads.
+            "models_used": (a.get("lineage") or {}).get("models_used"),
+            "total_input_tokens": (a.get("lineage") or {}).get("total_input_tokens"),
+            "total_output_tokens": (a.get("lineage") or {}).get("total_output_tokens"),
+            "cost_aud": (a.get("lineage") or {}).get("cost_aud"),
+            "cost_note": (a.get("lineage") or {}).get("cost_note"),
+            "published_by": a.get("published_by"),
         }
         for a in articles
     ]
@@ -221,6 +234,12 @@ def _get_article_detail(event: dict) -> dict:
             "published_at": article.get("published_at"),
             "source_refs": article.get("source_refs", []),
             "view_count": int(article.get("view_count", 0)),
+            # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of
+            # 5) -- explicit None (not omitted) on an article published
+            # before this feature existed, so the frontend's "no data"
+            # detection has something concrete to check against.
+            "lineage": article.get("lineage"),
+            "published_by": article.get("published_by"),
         },
     )
 

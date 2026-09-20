@@ -242,6 +242,8 @@ def _publish_or_moderate_digest(
             published_at=now,
             source_refs=source_refs,
             view_count=0,
+            lineage=lineage,
+            published_by="ai_only",
         )
         generate_and_store_article_musing(
             article_id=article_id,
