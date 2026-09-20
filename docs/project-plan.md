@@ -167,3 +167,55 @@ moderation-approve route, and the force-publish route) — all three must
 regenerate the static page, not just flip the `Articles` table's `status`
 field, or the static page and the table's authoritative status will drift
 out of sync.
+
+### Custom domain (bloggerbear.com) via Route 53 + ACM
+
+**Problem**: the production site is only ever reachable at its
+`*.cloudfront.net` default domain. A real domain, `bloggerbear.com`, has
+now been purchased through GoDaddy but isn't wired up to anything yet.
+
+**Good news, not a gap**: `infra/modules/static-site` already has the
+entire custom-domain path built and switched on for production —
+`infra/environments/production/main.tf`'s `module "static_site"` block
+already sets `enable_custom_domain = true`, and the module already
+contains the ACM certificate (DNS-validated, requested in `us-east-1` per
+AWS's CloudFront requirement), the Route 53 validation/alias records, and
+the `aliases` entry on the CloudFront distribution itself. This has been
+a known, explicitly-flagged open item since Phase 0
+(`infra/environments/production/variables.tf`'s `domain_name`/
+`hosted_zone_id` are documented as "Required (non-empty) before the first
+production apply") — it was simply waiting on a real, purchased domain,
+which now exists.
+
+**No CSR, no manual certificate handling.** GoDaddy's traditional
+"download a CSR, submit it to a CA, install the signed cert" flow does
+not apply here at all — ACM issues and auto-renews the certificate
+entirely via DNS validation, which Terraform already automates end to
+end (it writes the validation record into Route 53 itself and waits for
+ACM to see it).
+
+**Proposed shape / remaining steps**:
+1. Create a Route 53 Hosted Zone for `bloggerbear.com` (one-time,
+   arguably belongs in `infra/bootstrap` alongside the state bucket and
+   OIDC role, matching that file's existing "applied once, manually,
+   locally" pattern for foundational resources — or created directly via
+   `aws route53 create-hosted-zone`/console, since a hosted zone is
+   rarely-changing infrastructure not worth re-creating per environment).
+2. In GoDaddy's dashboard, change `bloggerbear.com`'s nameservers from
+   GoDaddy's defaults to the 4 NS values that hosted zone generates
+   (Domain Settings → Nameservers → Custom). GoDaddy remains the
+   registrar of record; Route 53 becomes the authoritative DNS host.
+   DNS propagation is usually fast but can take up to ~48h.
+3. Set `domain_name = "bloggerbear.com"` and `hosted_zone_id = "<the new
+   zone's ID>"` in `infra/environments/production/terraform.tfvars` (or
+   as CI-supplied variables) — neither value is sensitive the way
+   `admin_allowed_cidrs`/`alert_email` are, so `terraform.tfvars` is fine.
+4. Run the normal production release process (§8) — Terraform requests
+   the ACM cert, validates it via Route 53, attaches it to the
+   distribution, and creates the alias records, with no other code
+   changes needed.
+
+**Open question**: the module's `aliases` list currently takes exactly
+one domain name (the bare root domain) — whether `www.bloggerbear.com`
+should also resolve (and if so, whether as a second alias + redirect, or
+left unsupported) hasn't been decided and would need scoping if wanted.
