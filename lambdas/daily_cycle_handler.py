@@ -34,6 +34,7 @@ from common.dynamo import (
     put_candidate_idea,
     put_moderation_item,
 )
+from common.static_pages import render_and_publish_article_page
 
 _NUM_CANDIDATE_ANGLES = 3
 _LIST_MARKER_RE = re.compile(r"^[\s\d.\-\)]+")
@@ -97,6 +98,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
 
     return _publish_or_moderate(
         topic_id=topic_id,
+        topic_name=topic.get("name", topic_id),
         title=title,
         draft_text=draft_text,
         findings=findings,
@@ -223,6 +225,7 @@ def _draft_title(angle: str, model_id: str) -> str:
 def _publish_or_moderate(
     *,
     topic_id: str,
+    topic_name: str,
     title: str,
     draft_text: str,
     findings: list[dict],
@@ -258,6 +261,19 @@ def _publish_or_moderate(
     )
 
     if compliant:
+        # Static article publishing (docs/project-plan.md §11): render the
+        # public-facing static page the moment this article actually
+        # becomes published -- not before, since a pending_moderation
+        # article isn't public yet and shouldn't have a live page.
+        render_and_publish_article_page(
+            article_id=article_id,
+            title=title,
+            body_markdown=draft_text,
+            topic_name=topic_name,
+            published_at=now,
+            source_refs=source_refs,
+            view_count=0,
+        )
         return {
             "status": "published",
             "topic_id": topic_id,
