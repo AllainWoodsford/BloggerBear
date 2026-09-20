@@ -255,6 +255,18 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["${aws_s3_bucket.content.arn}/*"]
   }
 
+  # Static article publishing (docs/project-plan.md §11): lets
+  # common/static_pages.py write a rendered article page into the site
+  # bucket -- scoped to the articles/ prefix only, not the whole bucket,
+  # since the rest of it holds the deployed frontend/ SPA files
+  # (aws_s3_object.frontend below) that Lambda has no business touching.
+  statement {
+    sid       = "SitePublishing"
+    effect    = "Allow"
+    actions   = ["s3:PutObject"]
+    resources = ["arn:aws:s3:::${module.static_site.bucket_name}/articles/*"]
+  }
+
   # Every Claude model AWS offers in ap-southeast-2 requires routing through
   # a cross-region inference profile rather than direct on-demand invocation
   # (confirmed via `aws bedrock list-foundation-models` -- none there are
@@ -375,6 +387,14 @@ locals {
     # dlq_handler.py's target table (see aws_lambda_function.dlq_handler
     # below) -- harmless on every other Lambda, they just never read it.
     FAILED_EXECUTIONS_TABLE = module.app_data.failed_executions_table_name
+
+    # Static article publishing (docs/project-plan.md §11): where
+    # common/static_pages.py writes each rendered article page --
+    # module.static_site's EXISTING Phase 0 bucket (see the "Frontend
+    # static files" section below), not a new bucket. Consumed by
+    # daily_cycle_handler.py and admin_api_handler.py; harmless on every
+    # other Lambda, they just never read it.
+    SITE_BUCKET = module.static_site.bucket_name
   }
 }
 
@@ -929,6 +949,11 @@ module "public_api" {
 
   routes = toset([
     "GET /topics",
+    # Static article publishing (docs/project-plan.md §11): a derived
+    # boolean only -- never raw Findings/CandidateIdeas -- so the frontend
+    # can show a "researching this topic" placeholder. See
+    # public_api_handler.py's _topic_activity.
+    "GET /topics/{topic_id}/activity",
     "GET /articles",
     "GET /articles/{article_id}",
     "POST /articles/{article_id}/view",
@@ -1097,12 +1122,18 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
 locals {
   frontend_dir = "${path.module}/../../../frontend"
   frontend_files = {
-    "index.html"           = "text/html"
-    "error.html"           = "text/html"
-    "about.html"           = "text/html"
-    "styles.css"           = "text/css"
-    "normalize.css"        = "text/css"
-    "app.js"               = "application/javascript"
+    "index.html"    = "text/html"
+    "error.html"    = "text/html"
+    "about.html"    = "text/html"
+    "styles.css"    = "text/css"
+    "normalize.css" = "text/css"
+    "app.js"        = "application/javascript"
+    # Static article publishing (docs/project-plan.md §11): the external
+    # script the pages rendered by common/static_pages.py load -- must be
+    # a real file at the bucket root, not inline, per the CSP comment on
+    # aws_cloudfront_response_headers_policy.security (script-src 'self',
+    # no unsafe-inline).
+    "article-widgets.js"   = "application/javascript"
     "robots.txt"           = "text/plain"
     "logo.svg"             = "image/svg+xml"
     "logo.webp"            = "image/webp"
