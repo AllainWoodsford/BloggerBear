@@ -443,3 +443,48 @@ def test_success_response_prints_pretty_json(capsys):
         _run(["topics", "list"])
     out = capsys.readouterr().out
     assert json.loads(out) == {"topics": []}
+
+
+# --- per-topic model flags (rotation, PR 4 of 5) ----------------------------
+
+
+def test_topics_create_sends_model_flags_only_when_passed():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics", "create", "--topic-id", "t", "--name", "T", "--adapter", "github_trending",
+                "--model-id", "model-a",
+                "--fallback-model-id", "model-b",
+                "--model-candidates", "model-a, model-b ,model-c",
+            ]
+        )
+    body = m.call_args.kwargs["body"]
+    assert body["model_id"] == "model-a"
+    assert body["fallback_model_id"] == "model-b"
+    assert body["model_id_candidates"] == ["model-a", "model-b", "model-c"]
+
+
+def test_topics_create_omits_model_fields_when_not_passed():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(["topics", "create", "--topic-id", "t", "--name", "T", "--adapter", "github_trending"])
+    body = m.call_args.kwargs["body"]
+    assert "model_id" not in body
+    assert "fallback_model_id" not in body
+    assert "model_id_candidates" not in body
+
+
+def test_topics_update_empty_string_clears_model_fields():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "topics", "update", "t",
+                "--model-id", "", "--fallback-model-id", "", "--model-candidates", "",
+            ]
+        )
+    m.assert_called_once_with(
+        "PUT",
+        "https://api.example.com",
+        "/topics/t",
+        "ap-southeast-2",
+        body={"model_id": None, "fallback_model_id": None, "model_id_candidates": []},
+    )
