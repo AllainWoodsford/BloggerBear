@@ -160,3 +160,37 @@ resource "aws_dynamodb_table" "musings" {
     type = "S"
   }
 }
+
+# AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1 of
+# 5): a DynamoDB-backed "supported models" registry, so switching or
+# adding a model never needs a Terraform apply -- populated via the admin
+# API/CLI (common/dynamo.py's put_model), not hardcoded here. No TTL --
+# permanent configuration, not rolling data.
+resource "aws_dynamodb_table" "models" {
+  name         = "bloggerbear-${var.environment_name}-models"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "model_id"
+
+  attribute {
+    name = "model_id"
+    type = "S"
+  }
+}
+
+# Single well-known row (config_id = "default") holding the current
+# global default/fallback model IDs -- lets an operator change the
+# default model without a Terraform apply. Absence of this row (or of
+# this table having any row at all) is a valid, expected state -- model
+# resolution falls back to var.bedrock_model_id (see common/bedrock.py's
+# resolve_model), never fails closed just because nobody's configured
+# this yet.
+resource "aws_dynamodb_table" "model_config" {
+  name         = "bloggerbear-${var.environment_name}-model-config"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "config_id"
+
+  attribute {
+    name = "config_id"
+    type = "S"
+  }
+}

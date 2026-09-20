@@ -20,6 +20,7 @@ FINDINGS_TABLE, ...) -- never hardcode a table name here.
 from __future__ import annotations
 
 import os
+from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
@@ -126,6 +127,49 @@ def put_candidate_idea(
     return item
 
 
+def _lineage_to_item(lineage: dict | None) -> dict | None:
+    """Convert a lineage dict's numeric fields to Decimal for DynamoDB
+    storage -- token counts and the nullable cost_aud float, both at the
+    top level and inside each `calls` entry. Mirrors put_model's
+    Decimal(str(x)) conversion (DynamoDB's boto3 resource rejects native
+    float, and Decimal(x) on a binary float preserves its ugly exact
+    representation instead of the decimal value meant)."""
+    if lineage is None:
+        return None
+    converted = dict(lineage)
+    converted["total_input_tokens"] = Decimal(lineage["total_input_tokens"])
+    converted["total_output_tokens"] = Decimal(lineage["total_output_tokens"])
+    if lineage.get("cost_aud") is not None:
+        converted["cost_aud"] = Decimal(str(lineage["cost_aud"]))
+    converted["calls"] = [
+        {
+            **call,
+            "input_tokens": Decimal(call["input_tokens"]),
+            "output_tokens": Decimal(call["output_tokens"]),
+        }
+        for call in lineage.get("calls", [])
+    ]
+    return converted
+
+
+def _lineage_from_item(lineage: dict | None) -> dict | None:
+    """Inverse of _lineage_to_item -- Decimal back to int/float after a
+    read, the mirror of list_models'/get_model's price-field conversion
+    (json.dumps can't serialize Decimal)."""
+    if lineage is None:
+        return None
+    converted = dict(lineage)
+    converted["total_input_tokens"] = int(lineage["total_input_tokens"])
+    converted["total_output_tokens"] = int(lineage["total_output_tokens"])
+    if lineage.get("cost_aud") is not None:
+        converted["cost_aud"] = float(lineage["cost_aud"])
+    converted["calls"] = [
+        {**call, "input_tokens": int(call["input_tokens"]), "output_tokens": int(call["output_tokens"])}
+        for call in lineage.get("calls", [])
+    ]
+    return converted
+
+
 def put_article(
     *,
     article_id: str,
@@ -136,8 +180,20 @@ def put_article(
     created_at: str,
     published_at: str | None = None,
     source_refs: list[dict] | None = None,
+    lineage: dict | None = None,
+    published_by: str | None = None,
 ) -> dict:
-    """Write an Articles item and return it."""
+    """Write an Articles item and return it.
+
+    `lineage` (docs/project-plan.md §11, PR 2 of 5) is fixed once at draft
+    time and never changes afterward, regardless of the article's eventual
+    publish path -- see common/costing.py's build_lineage for its shape.
+    `published_by` is nullable ("ai_only" immediately on a compliant
+    publish, None while pending_moderation, set to "humans" later via
+    update_article_status if/when an operator approves or force-publishes
+    it) -- stored explicitly as None rather than omitted, so "no data" is
+    unambiguous to a reader rather than relying on key-absence.
+    """
     table = get_table(os.environ["ARTICLES_TABLE"])
     item = {
         "article_id": article_id,
@@ -148,9 +204,11 @@ def put_article(
         "created_at": created_at,
         "published_at": published_at,
         "source_refs": source_refs or [],
+        "lineage": _lineage_to_item(lineage),
+        "published_by": published_by,
     }
     table.put_item(Item=item)
-    return item
+    return {**item, "lineage": lineage}
 
 
 def put_moderation_item(
@@ -295,7 +353,10 @@ def get_article(article_id: str) -> dict | None:
     """Fetch an Articles item by `article_id`, or None if it doesn't exist."""
     table = get_table(os.environ["ARTICLES_TABLE"])
     response = table.get_item(Key={"article_id": article_id})
-    return response.get("Item")
+    item = response.get("Item")
+    if item is not None and "lineage" in item:
+        item["lineage"] = _lineage_from_item(item["lineage"])
+    return item
 
 
 def get_moderation_item_by_article_id(article_id: str) -> dict | None:
@@ -315,14 +376,31 @@ def get_moderation_item_by_article_id(article_id: str) -> dict | None:
     return items[0] if items else None
 
 
-def update_article_status(article_id: str, status: str, published_at: str | None = None) -> None:
-    """Update an Articles item's `status` (and optionally `published_at`)."""
+def update_article_status(
+    article_id: str,
+    status: str,
+    published_at: str | None = None,
+    published_by: str | None = None,
+) -> None:
+    """Update an Articles item's `status` (and optionally `published_at`/
+    `published_by`).
+
+    `published_by` (docs/project-plan.md §11, PR 2 of 5): pass "humans"
+    from the moderation-approve/force-publish admin routes, the moment an
+    article actually becomes published via one of those paths -- it was
+    created with published_by=None (not yet decided) while sitting in
+    pending_moderation. Never overwrites `lineage`, which is fixed at
+    draft time regardless of publish path.
+    """
     table = get_table(os.environ["ARTICLES_TABLE"])
     update_expression = "SET #status = :status"
     expression_attribute_values = {":status": status}
     if published_at is not None:
         update_expression += ", published_at = :published_at"
         expression_attribute_values[":published_at"] = published_at
+    if published_by is not None:
+        update_expression += ", published_by = :published_by"
+        expression_attribute_values[":published_by"] = published_by
     table.update_item(
         Key={"article_id": article_id},
         UpdateExpression=update_expression,
@@ -663,3 +741,90 @@ def list_musings(limit: int = 50) -> list[dict]:
     items = _paginated_scan(table)
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return items[:limit]
+
+
+# --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1 of 5) --
+#
+# Owned by admin_api_handler.py (the /models, /model-config admin routes)
+# and read by common/model_routing.py's resolve_model. Models is the
+# "supported models" registry (docs/project-plan.md §11) -- populated via
+# the admin API/CLI, not Terraform, so adding/switching a model never
+# needs an apply. ModelConfig holds a single well-known row
+# (config_id = "default") for the current global default/fallback model.
+
+
+def put_model(item: dict) -> None:
+    """Write (create or overwrite) a Models item.
+
+    DynamoDB's boto3 resource rejects native `float` (it requires
+    `Decimal` for numeric attributes) -- converts the two price fields via
+    `Decimal(str(x))` rather than `Decimal(x)` directly, since the latter
+    preserves a binary float's exact (and often ugly, e.g.
+    0.00080000000000000004) representation instead of the decimal value
+    the caller actually meant.
+    """
+    table = get_table(os.environ["MODELS_TABLE"])
+    item = dict(item)
+    for price_field in ("input_price_usd_per_1k_tokens", "output_price_usd_per_1k_tokens"):
+        if price_field in item and item[price_field] is not None:
+            item[price_field] = Decimal(str(item[price_field]))
+    table.put_item(Item=item)
+
+
+def list_models() -> list[dict]:
+    """Return every Models item (Scan -- acceptable at this project's scale).
+
+    DynamoDB returns numeric attributes as Decimal, which json.dumps can't
+    serialize -- converts the two price fields back to float on the way
+    out, the mirror of put_model's Decimal(str(x)) conversion on the way in.
+    """
+    table = get_table(os.environ["MODELS_TABLE"])
+    items = _paginated_scan(table)
+    for item in items:
+        for price_field in ("input_price_usd_per_1k_tokens", "output_price_usd_per_1k_tokens"):
+            if price_field in item and item[price_field] is not None:
+                item[price_field] = float(item[price_field])
+    return items
+
+
+def get_model(model_id: str) -> dict | None:
+    """Fetch a single Models item by model_id, or None if it isn't registered.
+
+    Same Decimal -> float conversion as list_models, for the same reason
+    (json.dumps can't serialize Decimal) -- needed by common/costing.py's
+    per-model pricing lookup (PR 2 of 5).
+    """
+    table = get_table(os.environ["MODELS_TABLE"])
+    response = table.get_item(Key={"model_id": model_id})
+    item = response.get("Item")
+    if item is None:
+        return None
+    for price_field in ("input_price_usd_per_1k_tokens", "output_price_usd_per_1k_tokens"):
+        if price_field in item and item[price_field] is not None:
+            item[price_field] = float(item[price_field])
+    return item
+
+
+_MODEL_CONFIG_ID = "default"
+
+
+def get_model_config() -> dict | None:
+    """Fetch the single "default" ModelConfig row, or None if it doesn't exist
+    yet -- a fresh deploy, or an operator who's never touched this, is a
+    valid state (see common/model_routing.py's resolve_model fallback).
+    """
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    response = table.get_item(Key={"config_id": _MODEL_CONFIG_ID})
+    return response.get("Item")
+
+
+def put_model_config(*, model_id: str | None, fallback_model_id: str | None) -> dict:
+    """Write (or overwrite) the single "default" ModelConfig row and return it."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = {
+        "config_id": _MODEL_CONFIG_ID,
+        "model_id": model_id,
+        "fallback_model_id": fallback_model_id,
+    }
+    table.put_item(Item=item)
+    return item

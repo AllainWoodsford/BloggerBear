@@ -88,6 +88,26 @@ output "musings_table_arn" {
   description = "ARN of the Musings DynamoDB table."
 }
 
+output "models_table_name" {
+  value       = aws_dynamodb_table.models.name
+  description = "Name of the Models DynamoDB table."
+}
+
+output "models_table_arn" {
+  value       = aws_dynamodb_table.models.arn
+  description = "ARN of the Models DynamoDB table."
+}
+
+output "model_config_table_name" {
+  value       = aws_dynamodb_table.model_config.name
+  description = "Name of the ModelConfig DynamoDB table."
+}
+
+output "model_config_table_arn" {
+  value       = aws_dynamodb_table.model_config.arn
+  description = "ARN of the ModelConfig DynamoDB table."
+}
+
 output "table_arns" {
   value = [
     aws_dynamodb_table.topics.arn,
@@ -99,6 +119,8 @@ output "table_arns" {
     aws_dynamodb_table.prompt_refinements.arn,
     aws_dynamodb_table.failed_executions.arn,
     aws_dynamodb_table.musings.arn,
+    aws_dynamodb_table.models.arn,
+    aws_dynamodb_table.model_config.arn,
   ]
-  description = "All 9 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 11 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
 }

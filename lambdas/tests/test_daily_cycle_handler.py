@@ -6,6 +6,36 @@ from moto import mock_aws
 
 import daily_cycle_handler
 
+
+def _tracked_result(
+    text, *, model_id="anthropic.claude-test-model", used_fallback=False, input_tokens=10, output_tokens=5
+):
+    return {
+        "text": text,
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "used_fallback": used_fallback,
+    }
+
+
+_DUMMY_LINEAGE = {
+    "calls": [],
+    "total_input_tokens": 30,
+    "total_output_tokens": 15,
+    "models_used": ["anthropic.claude-test-model"],
+    "cost_aud": 0.01,
+    "cost_note": None,
+}
+
+_DUMMY_LINEAGE_CALL = {
+    "stage": "compliance_review",
+    "model_id": "anthropic.claude-test-model",
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "used_fallback": False,
+}
+
 ENV = {
     "TOPICS_TABLE": "Topics",
     "FINDINGS_TABLE": "Findings",
@@ -102,10 +132,15 @@ def test_handler_publishes_when_compliant(s3_bucket):
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
         patch(
             "daily_cycle_handler.compliance.review_draft",
-            return_value={"compliant": True, "reasons": []},
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ) as mock_review,
         patch(
             "daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea
@@ -141,6 +176,14 @@ def test_handler_publishes_when_compliant(s3_bucket):
         {"url": "https://github.com/example/x", "title": "example/x"},
         {"url": "https://github.com/example/y", "title": "example/y"},
     ]
+
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 2 of 5):
+    # published_by="ai_only" on a compliant, fully-automatic publish, and
+    # the lineage dict from build_lineage (mocked above) passed through
+    # untouched.
+    assert article_kwargs["published_by"] == "ai_only"
+    assert article_kwargs["lineage"]["models_used"] == ["anthropic.claude-test-model"]
+    assert article_kwargs["lineage"]["total_input_tokens"] == 30
 
     mock_put_moderation.assert_not_called()
 
@@ -184,10 +227,19 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses),
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ),
         patch(
             "daily_cycle_handler.compliance.review_draft",
-            return_value={"compliant": False, "reasons": ["unsubstantiated claim"]},
+            return_value={
+                "compliant": False,
+                "reasons": ["unsubstantiated claim"],
+                "lineage_call": _DUMMY_LINEAGE_CALL,
+            },
         ),
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article") as mock_put_article,
@@ -204,6 +256,13 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
     article_kwargs = mock_put_article.call_args.kwargs
     assert article_kwargs["status"] == "pending_moderation"
     assert article_kwargs["published_at"] is None
+    # Not yet decided who publishes it -- see admin_api_handler.py's
+    # moderation-approve/force-publish routes, which set "humans" later.
+    assert article_kwargs["published_by"] is None
+    # Lineage (tokens/models/cost) is still recorded even though this
+    # didn't publish -- it describes how the draft was written, not
+    # whether it ended up live (docs/project-plan.md §11, PR 2 of 5).
+    assert article_kwargs["lineage"]["models_used"] == ["anthropic.claude-test-model"]
 
     mock_put_moderation.assert_called_once()
     moderation_kwargs = mock_put_moderation.call_args.kwargs
@@ -231,7 +290,12 @@ def test_handler_financial_topic_routes_to_moderation_without_calling_bedrock_fo
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
@@ -265,7 +329,12 @@ def test_handler_financial_topic_folds_guidance_into_prompts_and_appends_disclai
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item"),
@@ -331,10 +400,15 @@ def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prom
             return_value=refinement,
         ),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
         patch(
             "daily_cycle_handler.compliance.review_draft",
-            return_value={"compliant": True, "reasons": []},
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ),
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article"),
@@ -374,10 +448,15 @@ def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=top_articles) as mock_top,
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
         patch(
             "daily_cycle_handler.compliance.review_draft",
-            return_value={"compliant": True, "reasons": []},
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ),
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article"),
@@ -412,10 +491,15 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
-        patch("daily_cycle_handler.invoke_claude", side_effect=invoke_responses) as mock_invoke,
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
         patch(
             "daily_cycle_handler.compliance.review_draft",
-            return_value={"compliant": True, "reasons": []},
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ),
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article"),

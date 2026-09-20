@@ -57,9 +57,11 @@ from datetime import UTC, datetime, timedelta
 import boto3
 
 from common import compliance
-from common.bedrock import invoke_claude
+from common.bedrock import invoke_model_tracked
+from common.costing import build_lineage
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import get_latest_finding, list_topics, put_article, put_moderation_item
+from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.static_pages import render_and_publish_article_page
 
@@ -105,19 +107,32 @@ def _run_trending_digest() -> dict:
     # financial topic.
     any_financial = any(compliance.is_financial_topic(c["topic"]) for c in contributions)
 
-    model_id = os.environ["BEDROCK_MODEL_ID"]
-    draft_text = _synthesize_digest(contributions, model_id, financial=any_financial)
+    # No single topic drives the digest -- resolve_model(None) uses the
+    # global default (ModelConfig's "default" row, or BEDROCK_MODEL_ID),
+    # same precedence chain as any per-topic call minus the topic-override
+    # step (docs/project-plan.md §11, PR 1 of 5).
+    model_id, fallback_model_id = resolve_model(None)
+    draft_text, synthesis_call = _synthesize_digest(
+        contributions, model_id, fallback_model_id, financial=any_financial
+    )
     if any_financial:
         draft_text = compliance.append_financial_disclaimer(draft_text)
     title = f"Trending Everywhere -- {datetime.now(UTC).strftime('%Y-%m-%d')}"
 
     # A minimal synthetic "topic" -- review_draft only ever reads
     # is_financial off of it.
-    review = compliance.review_draft(draft_text, {"is_financial": any_financial}, model_id)
+    review = compliance.review_draft(
+        draft_text, {"is_financial": any_financial}, model_id, fallback_model_id=fallback_model_id
+    )
 
     source_refs = []
     for contribution in contributions:
         source_refs.extend(contribution["finding"].get("source_refs") or [])
+
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 2 of 5) --
+    # same pattern as daily_cycle_handler.py's own lineage assembly.
+    calls = [call for call in (synthesis_call, review["lineage_call"]) if call is not None]
+    lineage = build_lineage(calls)
 
     return _publish_or_moderate_digest(
         title=title,
@@ -125,6 +140,7 @@ def _run_trending_digest() -> dict:
         source_refs=source_refs,
         review=review,
         model_id=model_id,
+        lineage=lineage,
     )
 
 
@@ -150,7 +166,9 @@ def _recent_contributions() -> list[dict]:
     return contributions
 
 
-def _synthesize_digest(contributions: list[dict], model_id: str, *, financial: bool) -> str:
+def _synthesize_digest(
+    contributions: list[dict], model_id: str, fallback_model_id: str | None, *, financial: bool
+) -> tuple[str, dict]:
     topic_blocks = "\n\n".join(
         f"## {c['topic'].get('name', c['topic']['topic_id'])}\n{c['finding'].get('summary', '')}"
         for c in contributions
@@ -158,7 +176,15 @@ def _synthesize_digest(contributions: list[dict], model_id: str, *, financial: b
     prompt = _DIGEST_PROMPT_TEMPLATE.format(topic_blocks=topic_blocks)
     if financial:
         prompt += f"\n\n{_DIGEST_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
-    return invoke_claude(prompt, model_id)
+    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    lineage_call = {
+        "stage": "draft",
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+    }
+    return result["text"], lineage_call
 
 
 def _publish_or_moderate_digest(
@@ -168,6 +194,7 @@ def _publish_or_moderate_digest(
     source_refs: list[dict],
     review: dict,
     model_id: str,
+    lineage: dict,
 ) -> dict:
     article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
@@ -192,6 +219,8 @@ def _publish_or_moderate_digest(
         created_at=now,
         published_at=now if compliant else None,
         source_refs=source_refs,
+        lineage=lineage,
+        published_by="ai_only" if compliant else None,
     )
 
     if compliant:
