@@ -292,3 +292,77 @@ def test_a_generic_web_search_topic_runs_end_to_end(aws_resources):
     assert "this digest covers 'Ai-News' and nothing else" in mock_invoke.call_args.args[0]
     finding = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"][0]
     assert [ref["url"] for ref in finding["source_refs"]] == ["https://news.example/ai"]
+
+
+# --- hierarchical editorial goals in the research summary --------------------------
+
+
+def _summary_prompt(topic_id, adapter, adapter_config=None, editorial_goals=None):
+    _put_topic(topic_id, adapter, adapter_config)
+    if editorial_goals is not None:
+        table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+        item = table.get_item(Key={"topic_id": topic_id})["Item"]
+        table.put_item(Item={**item, "editorial_goals": editorial_goals})
+    result_item = {
+        "title": "Zero-day exploited in the wild",
+        "url": "https://news.example/z",
+        "source": "news.example",
+        "published_at": "2026-09-13T00:00:00+00:00",
+        "snippet": None,
+    }
+    with (
+        patch("common.adapters.web_search.search_web", return_value=[result_item]),
+        patch("research_tick_handler.invoke_claude", return_value="ok") as mock_invoke,
+    ):
+        research_tick_handler.handler({"topic_id": topic_id}, None)
+    return mock_invoke.call_args.args[0]
+
+
+def test_a_topic_specific_goal_drives_the_research_summary(aws_resources):
+    prompt = _summary_prompt(
+        "sec",
+        "web_search",
+        {"query": "zero-day"},
+        editorial_goals={"primary_focus": "Track zero-days.", "exclusion_criteria": "No marketing."},
+    )
+
+    assert (
+        "OPERATIONAL EDITORIAL GOAL:\nTopic-Specific Focus: Track zero-days.\n"
+        "Strict Constraints: No marketing."
+    ) in prompt
+    assert "Global Default Goal" not in prompt
+    assert "why it is highly relevant based on the Operational Editorial Goal above" in prompt
+
+
+def test_a_bare_topic_summarises_through_independent_web_research(aws_resources):
+    prompt = _summary_prompt("bare", "web_search", {"query": "zero-day"})
+
+    assert "OPERATIONAL EDITORIAL GOAL:\nGlobal Default Goal: Execute independent web research" in prompt
+
+
+def test_the_goal_block_precedes_the_data_and_the_safety_lines_survive(aws_resources):
+    prompt = _summary_prompt("bare", "web_search", {"query": "zero-day"})
+
+    assert prompt.index("OPERATIONAL EDITORIAL GOAL") < prompt.index("What changed:")
+    assert prompt.index("What changed:") < prompt.index("Current state")
+    assert "RELEVANCE RULE: this digest covers" in prompt
+    assert "do not give financial or investment advice" in prompt
+
+
+def test_a_topic_without_a_configured_query_researches_its_own_name(aws_resources):
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item={
+            "topic_id": "sec-threats",
+            "name": "Cybersecurity & Infrastructure Threats",
+            "adapter": "web_search",
+            "adapter_config": {},
+            "is_financial": False,
+        }
+    )
+    with (
+        patch("common.adapters.web_search.search_web", return_value=[]) as mock_search,
+        patch("research_tick_handler.invoke_claude", return_value="ok"),
+    ):
+        research_tick_handler.handler({"topic_id": "sec-threats"}, None)
+
+    assert mock_search.call_args.args[0] == "(Cybersecurity OR Infrastructure OR Threats)"

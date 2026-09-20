@@ -49,7 +49,7 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
 ## 5) Data Model (DynamoDB)
 | Table | PK/SK | Purpose |
 |---|---|---|
-| Topics | `topic_id` | Topic config, cadence, adapter list |
+| Topics | `topic_id` | Topic config, cadence, adapter, optional `editorial_goals` |
 | Findings | `topic_id` / `captured_at` | Research summaries and source hashes |
 | CandidateIdeas | `topic_id` / `created_at` | Daily generated article ideas |
 | Articles | `article_id` | Draft/compliance/publish lifecycle |
@@ -75,6 +75,18 @@ Reusable capabilities live in `common/` rather than in one adapter:
 `web_search.py` (keyless web/news search behind a provider interface) and
 `http_retry.py` (exponential backoff for rate-limited APIs). The generic
 `web_search` adapter turns any topic into "watch these search queries".
+
+Editorial goals (`common/editorial_resolver.py`) say what a topic's research and
+writing are *for*, resolved through a fallback tree so a new topic needs no code:
+topic-specific (`editorial_goals.primary_focus` on the Topic) -> adapter-specific
+(`ADAPTER_DEFAULTS`) -> global default (independent web research and synthesis of
+5-10 relevant items). The Topic's `editorial_goals.exclusion_criteria` layer on
+top of whichever applies. A topic created without an adapter defaults to
+`web_search`, which searches on the topic's name when no query is configured.
+The resolved goal is mirrored into the research summary (P1), ideation (P2) and
+drafting (P3) prompts. It is separate from, and layered with, the crypto feed's
+daily rotating goal (`common/editorial_goals.py`), and never relaxes the relevance
+guardrails below or the financial-topic safety rules.
 
 Topic relevance (`common/relevance.py`) is enforced at three points, always
 keyed to the *active* topic's name, never a hardcoded topic:

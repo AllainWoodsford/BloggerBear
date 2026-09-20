@@ -37,6 +37,7 @@ from common.adapters.hacker_news import HackerNewsAdapter
 from common.adapters.web_search import WebSearchAdapter
 from common.bedrock import invoke_claude
 from common.dynamo import get_latest_finding, get_topic, put_finding
+from common.editorial_resolver import resolve_editorial_goals
 from common.relevance import research_relevance_rule, topic_label
 
 FINDING_TTL_DAYS = 14
@@ -89,12 +90,13 @@ def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> s
     return (
         f'You are monitoring the topic "{topic_name}" for a research '
         "digest. A material change was just detected in its source data.\n\n"
+        f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic)}\n\n"
         f"What changed: {diff_summary}\n\n"
         f"Current state (compact JSON, may be truncated): {compact_state}\n\n"
         f"{research_relevance_rule(topic_name)}\n\n"
-        "Summarize what changed and why it might be interesting to a reader "
-        "following this topic. Be concise (2-4 sentences). Do not speculate "
-        "beyond what the data shows, and do not give financial or "
+        "Summarize what changed and why it is highly relevant based on the "
+        "Operational Editorial Goal above. Be concise (2-4 sentences). Do not "
+        "speculate beyond what the data shows, and do not give financial or "
         "investment advice."
     )
 

@@ -66,6 +66,7 @@ from decimal import Decimal
 import requests
 
 from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse_goal
+from common.editorial_resolver import resolve_editorial_goals
 from common.http_retry import get_json_with_backoff
 from common.relevance import research_relevance_rule, topic_label
 from common.web_search import search_web
@@ -702,6 +703,7 @@ class CryptoFeedAdapter(Adapter):
         header = (
             f'You are monitoring the topic "{topic_name}" for a research digest. '
             f"Current Market Anchors: {_anchor_summary(new_state)}.\n\n"
+            f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic)}\n\n"
             f"What changed: {diff_summary}\n\n"
         )
         closing = (
