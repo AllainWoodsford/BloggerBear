@@ -170,7 +170,15 @@ def test_list_topics_hides_internal_fields(aws_resources):
     result = public_api_handler.handler(_event("GET /topics"), None)
     assert result["statusCode"] == 200
     body = json.loads(result["body"])
-    assert body["topics"] == [{"topic_id": "github-trending", "name": "GitHub Trending"}]
+    assert body["topics"] == [
+        {
+            "topic_id": "github-trending",
+            "name": "GitHub Trending",
+            "article_count": 0,
+            "latest_published_at": None,
+            "researching": False,
+        }
+    ]
 
     topic = body["topics"][0]
     for leaked_field in (
@@ -181,6 +189,58 @@ def test_list_topics_hides_internal_fields(aws_resources):
         "daily_cadence",
     ):
         assert leaked_field not in topic
+
+
+def test_list_topics_article_count_and_latest_published_at(aws_resources):
+    _put_topic()
+    _put_article("article-1", published_at="2026-09-10T00:00:00+00:00")
+    _put_article("article-2", published_at="2026-09-15T00:00:00+00:00")
+    _put_article("article-3", published_at="2026-09-12T00:00:00+00:00")
+
+    result = public_api_handler.handler(_event("GET /topics"), None)
+    body = json.loads(result["body"])
+    assert body["topics"] == [
+        {
+            "topic_id": "github-trending",
+            "name": "GitHub Trending",
+            "article_count": 3,
+            "latest_published_at": "2026-09-15T00:00:00+00:00",
+            "researching": False,
+        }
+    ]
+
+
+def test_list_topics_researching_when_zero_articles_but_findings_exist(aws_resources):
+    _put_topic()
+    _put_finding()
+
+    result = public_api_handler.handler(_event("GET /topics"), None)
+    body = json.loads(result["body"])
+    assert body["topics"][0]["article_count"] == 0
+    assert body["topics"][0]["researching"] is True
+
+
+def test_list_topics_not_researching_with_articles_even_if_findings_exist(aws_resources):
+    # A topic that's already publishing shouldn't bother reporting
+    # "researching" -- that flag exists only to cover the zero-articles gap.
+    _put_topic()
+    _put_finding()
+    _put_article("article-1")
+
+    result = public_api_handler.handler(_event("GET /topics"), None)
+    body = json.loads(result["body"])
+    assert body["topics"][0]["article_count"] == 1
+    assert body["topics"][0]["researching"] is False
+
+
+def test_list_topics_only_counts_published_articles(aws_resources):
+    _put_topic()
+    _put_article("article-1", status="published")
+    _put_article("article-2", status="pending_moderation", published_at=None)
+
+    result = public_api_handler.handler(_event("GET /topics"), None)
+    body = json.loads(result["body"])
+    assert body["topics"][0]["article_count"] == 1
 
 
 # --- Topic activity (docs/project-plan.md §11) ---------------------------

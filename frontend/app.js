@@ -84,6 +84,38 @@
   // has run.
   var DIGEST_TOPIC_ID = "digest";
 
+  // Keeps the compact header nav usable regardless of how many topics
+  // exist: at most this many real topics ever show there, ranked by
+  // actual publishing activity rather than declaration order, so a
+  // 10-topic account doesn't turn the header into a wall of links. The
+  // full, uncapped list still lives on the home page (renderHome).
+  var NAV_TOPIC_LIMIT = 3;
+
+  function selectNavTopics(topics) {
+    var withArticles = topics
+      .filter(function (t) {
+        return t.article_count > 0;
+      })
+      .sort(function (a, b) {
+        return (b.latest_published_at || "").localeCompare(a.latest_published_at || "");
+      });
+
+    var remaining = NAV_TOPIC_LIMIT - withArticles.length;
+    var researchingOnly = [];
+    if (remaining > 0) {
+      researchingOnly = topics
+        .filter(function (t) {
+          return t.article_count === 0 && t.researching;
+        })
+        .sort(function (a, b) {
+          return a.name.localeCompare(b.name);
+        })
+        .slice(0, remaining);
+    }
+
+    return withArticles.slice(0, NAV_TOPIC_LIMIT).concat(researchingOnly);
+  }
+
   function renderNav(topics) {
     clearChildren(navEl);
     var digestLink = el("a", {
@@ -92,7 +124,7 @@
       className: "digest-link",
     });
     navEl.appendChild(digestLink);
-    topics.forEach(function (topic) {
+    selectNavTopics(topics).forEach(function (topic) {
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
     });
@@ -147,9 +179,18 @@
       var item = el("li");
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       item.appendChild(link);
+      item.appendChild(document.createTextNode(" "));
+      item.appendChild(el("span", { className: "topic-article-count", text: topicCountLabel(topic) }));
       list.appendChild(item);
     });
     contentEl.appendChild(list);
+  }
+
+  function topicCountLabel(topic) {
+    if (topic.article_count > 0) {
+      return topic.article_count === 1 ? "(1 article)" : "(" + topic.article_count + " articles)";
+    }
+    return topic.researching ? "(researching)" : "(no articles yet)";
   }
 
   function loadHome() {
