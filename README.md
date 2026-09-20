@@ -132,6 +132,7 @@ lambdas/                    Python 3.11, one shared deployment package
                                 github_trending.py, hacker_news.py,
                                 crypto_feed.py, web_search.py
     editorial_goals.py          daily rotating editorial goal (crypto)
+    relevance.py                topic-relevance guardrails + keyword matching
     web_search.py               reusable web/news search (provider-based)
     http_retry.py               GET-JSON with exponential backoff
     bedrock.py                 the one place invoke_model is called

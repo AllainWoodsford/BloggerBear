@@ -143,3 +143,42 @@ def test_source_refs_one_per_repo():
         {"url": "https://github.com/a/b", "title": "a/b", "accessed_at": "2026-09-13T00:00:00+00:00"},
         {"url": "https://github.com/c/d", "title": "c/d", "accessed_at": "2026-09-13T00:00:00+00:00"},
     ]
+
+
+# --- topic relevance filtering -----------------------------------------------------
+
+MIXED_TRENDING = [
+    ("acme/vuln-scanner", "Find known vulnerabilities in your dependencies", 900, "Go"),
+    ("bob/pizza-oven-tracker", "Track your backyard pizza oven temperature", 800, "Python"),
+    ("carol/cookbook", "A collection of recipes for cooking", 700, "Ruby"),
+    ("dave/cookbook-sec", "Exploit development cookbook for red teams", 600, "C"),
+]
+
+
+def _fetch_trending(adapter_config):
+    with patch(
+        "common.adapters.github_trending.requests.get",
+        return_value=_mock_response(_fixture_html(MIXED_TRENDING)),
+    ):
+        return GitHubTrendingAdapter().fetch_state({"adapter_config": adapter_config})
+
+
+def test_keywords_filter_repos_by_name_and_description():
+    state = _fetch_trending({"keywords": ["vulnerabilities", "exploit"]})
+
+    assert [r["name"] for r in state["repos"]] == ["acme/vuln-scanner", "dave/cookbook-sec"]
+    assert state["off_topic_dropped"] == 2
+
+
+def test_without_keywords_all_repos_are_kept():
+    state = _fetch_trending({})
+
+    assert len(state["repos"]) == 4
+    assert "off_topic_dropped" not in state
+
+
+def test_no_relevant_repos_is_never_material():
+    adapter = GitHubTrendingAdapter()
+    empty = {"repos": [], "off_topic_dropped": 4}
+
+    assert adapter.material_diff(None, empty) == (False, "no relevant repos to report")

@@ -12,6 +12,9 @@ model):
    findings that belong to it; its mandate and article style are folded into
    steps 3 and 5. Every other topic is unaffected.
 3. Ideate: ask Bedrock for 3 candidate angles, store them as CandidateIdeas.
+   Ideation and drafting (step 5) both carry a relevance guardrail keyed to
+   the active topic's name (common/relevance.py), so off-topic noise in the
+   findings is ignored or reframed rather than written up.
 4. Select: deterministically pick the first candidate (no scoring model yet).
 5. Draft: ask Bedrock for a title and a full article draft.
 6. Compliance review (common.compliance.review_draft).
@@ -47,6 +50,11 @@ from common.editorial_goals import (
 )
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
+from common.relevance import (
+    draft_relevance_boundary,
+    ideation_relevance_rule,
+    topic_label,
+)
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
 
@@ -232,7 +240,12 @@ def _ideate(
     guidance: str | None = None,
     goal: EditorialGoal | None = None,
 ) -> tuple[list[str], dict]:
-    topic_name = topic.get("name", topic.get("topic_id", ""))
+    topic_name = topic_label(topic)
+    # The relevance rule sits before the data in both variants: findings from
+    # community feeds and web search can be off-topic noise, and it is the
+    # active topic's name (never a hardcoded topic) that anchors what counts
+    # as on-topic.
+    relevance_rule = ideation_relevance_rule(topic_name)
     if goal is None:
         prompt = (
             f"Based on the following recent research findings about "
@@ -240,19 +253,23 @@ def _ideate(
             f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
+            f"{relevance_rule}\n\n"
             f"Findings:\n{summaries_block}"
         )
     else:
-        # The day's editorial mandate replaces the open-ended framing. The
-        # one-angle-per-line reply instruction stays -- the parser below
-        # depends on it.
+        # The day's editorial mandate shapes the angles; the relevance rule
+        # keeps it inside the topic. The one-angle-per-line reply instruction
+        # stays -- the parser below depends on it.
         prompt = (
             "Based on the following recent research findings and the assigned daily "
             f"editorial vector for '{topic_name}', propose exactly "
             f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
-            f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n\n"
+            f"{relevance_rule}\n\n"
+            f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n"
+            f"Apply this mandate strictly within the theme of '{topic_name}': it decides the "
+            "shape of each angle, never the subject.\n\n"
             f"Data Payload:\n{summaries_block}"
         )
     if guidance:
@@ -307,10 +324,14 @@ def _draft_article(
     few_shot_excerpt: str | None = None,
     goal: EditorialGoal | None = None,
 ) -> tuple[str, dict]:
+    topic_name = topic_label(topic)
+    # The boundary backs up the ideation rule: an imperfect angle can still
+    # slip through, and the draft must not follow noisy data off-topic.
     prompt = (
         "Write a full article draft in markdown (a few paragraphs) for a blog "
-        f"about '{topic.get('name', topic.get('topic_id', ''))}', on this angle: "
+        f"about '{topic_name}', on this angle: "
         f"{angle}\n\nBase it on these recent findings:\n{summaries_block}"
+        f"\n\n{draft_relevance_boundary(topic_name)}"
     )
     if goal is not None:
         prompt += f"\n\nArticle style: {ARTICLE_STYLES[goal]}"
