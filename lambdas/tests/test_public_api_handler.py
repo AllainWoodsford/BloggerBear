@@ -25,6 +25,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("FEEDBACK_TABLE", "Feedback")
     monkeypatch.setenv("MUSINGS_TABLE", "Musings")
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
+    monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
@@ -83,6 +84,12 @@ def aws_resources(aws_env):
             TableName="Musings",
             KeySchema=[{"AttributeName": "musing_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="Models",
+            KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         dynamodb.create_table(
@@ -415,6 +422,63 @@ def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
         "mood": "proud",
         "created_at": "2026-09-12T00:00:00+00:00",
     }
+
+
+# --- Stats ---------------------------------------------------------------
+
+
+def test_stats_empty(aws_resources):
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["currency"] == "AUD"
+    assert body["totals"]["articles"] == 0
+    assert body["by_model"] == []
+    assert len(body["daily"]) == 30
+
+
+def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):
+    _put_topic()
+    boto3.resource("dynamodb", region_name=REGION).Table("Models").put_item(
+        Item={
+            "model_id": "model-a",
+            "display_name": "Model A",
+            "input_price_usd_per_1k_tokens": Decimal("1.0"),
+            "output_price_usd_per_1k_tokens": Decimal("2.0"),
+        }
+    )
+    lineage = {
+        "calls": [{"stage": "draft", "model_id": "model-a", "input_tokens": 1000, "output_tokens": 500}],
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "models_used": ["model-a"],
+        "cost_aud": None,
+        "cost_note": None,
+    }
+    articles = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    for article_id, status in (("a-pub", "published"), ("a-pending", "pending_moderation")):
+        _put_article(article_id, status=status)
+        articles.update_item(
+            Key={"article_id": article_id},
+            UpdateExpression="SET lineage = :l",
+            ExpressionAttributeValues={":l": lineage},
+        )
+
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    assert result["statusCode"] == 200
+    assert result["headers"]["Cache-Control"] == "public, max-age=300"
+    body = json.loads(result["body"])
+    assert body["totals"]["articles"] == 2
+    assert body["totals"]["published"] == 1
+    assert body["totals"]["input_tokens"] == 2000
+    assert body["by_model"][0]["model_id"] == "model-a"
+    assert body["by_model"][0]["display_name"] == "Model A"
+    assert body["by_topic"][0]["name"] == "GitHub Trending"
+    # Aggregates only -- never an article id or title.
+    assert "a-pub" not in result["body"]
+    assert "A Title" not in result["body"]
 
 
 # --- Articles listing ---------------------------------------------------

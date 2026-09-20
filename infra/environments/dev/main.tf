@@ -1026,6 +1026,9 @@ module "public_api" {
     # BloggerBear's musings feed -- see public_api_handler.py's
     # _list_musings.
     "GET /musings",
+    # Aggregate AI cost/token statistics -- see public_api_handler.py's
+    # _stats and common/stats.py. Aggregates only, never article content.
+    "GET /stats",
     "GET /rss.xml",
   ])
 }
