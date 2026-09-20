@@ -188,6 +188,8 @@ def test_publishes_digest_when_compliant(s3_bucket):
     musing_kwargs = mock_musing.call_args.kwargs
     assert musing_kwargs["article_id"] == article_kwargs["article_id"]
     assert musing_kwargs["topic_id"] == "digest"
+    assert musing_kwargs["topic_name"] == "Trending Everywhere"
+    assert musing_kwargs["compliant"] is True
 
 
 def test_publishes_digest_with_deduped_source_refs(s3_bucket):
@@ -225,8 +227,6 @@ def test_publishes_digest_with_deduped_source_refs(s3_bucket):
     assert mock_put_article.call_args.kwargs["source_refs"] == [
         {"url": "https://github.com/x", "title": "x"}
     ]
-    assert musing_kwargs["topic_name"] == "Trending Everywhere"
-    assert musing_kwargs["compliant"] is True
 
 
 def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):

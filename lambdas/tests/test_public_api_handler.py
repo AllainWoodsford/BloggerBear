@@ -321,6 +321,7 @@ def test_topic_activity_false_when_no_findings(aws_resources):
         "topic_id": "github-trending",
         "researching": False,
         "pending_review_count": 0,
+        "pipeline_items": [],
     }
 
 
