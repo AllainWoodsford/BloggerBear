@@ -205,6 +205,12 @@ def test_handler_publishes_when_compliant(s3_bucket):
     assert render_kwargs["published_at"] == article_kwargs["published_at"]
     assert render_kwargs["source_refs"] == article_kwargs["source_refs"]
     assert render_kwargs["view_count"] == 0
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5): the
+    # static page gets the same lineage put_article was called with, and
+    # published_by="ai_only" since this is the compliant, published-
+    # cleanly branch.
+    assert render_kwargs["lineage"] == article_kwargs["lineage"]
+    assert render_kwargs["published_by"] == "ai_only"
 
     # A musing gets generated for the same compliant publish, with
     # compliant=True (published cleanly -- the "proud" mood, not the

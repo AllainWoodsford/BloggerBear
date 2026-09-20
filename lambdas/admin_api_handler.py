@@ -368,6 +368,12 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         published_at=published_at,
         source_refs=article.get("source_refs"),
         view_count=int(article.get("view_count", 0)),
+        # lineage was fixed at draft time and never changes -- reread from
+        # the already-stored article, not recomputed here. published_by is
+        # hardcoded "humans": both routes reaching this function (approve,
+        # force-publish) required an operator action.
+        lineage=article.get("lineage"),
+        published_by="humans",
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],

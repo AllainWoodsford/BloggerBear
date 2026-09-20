@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from decimal import Decimal
 
 import boto3
 import pytest
@@ -447,9 +448,62 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
     body = json.loads(result["body"])
     assert body["topic_id"] == "github-trending"
     assert [a["article_id"] for a in body["articles"]] == ["article-new", "article-old"]
-    # Listing shape: no body field.
+    # Listing shape: no body field, but a slim lineage projection.
     for article in body["articles"]:
-        assert set(article.keys()) == {"article_id", "title", "published_at"}
+        assert set(article.keys()) == {
+            "article_id",
+            "title",
+            "published_at",
+            "models_used",
+            "total_input_tokens",
+            "total_output_tokens",
+            "cost_aud",
+            "cost_note",
+            "published_by",
+        }
+        # None of the fixtures above set lineage/published_by -- explicit
+        # None (not omitted), same "no data" contract as the detail route.
+        assert article["models_used"] is None
+        assert article["total_input_tokens"] is None
+        assert article["total_output_tokens"] is None
+        assert article["cost_aud"] is None
+        assert article["cost_note"] is None
+        assert article["published_by"] is None
+
+
+def test_list_articles_projects_lineage_summary_when_present(aws_resources):
+    lineage = {
+        "calls": [
+            {
+                "stage": "draft",
+                "model_id": "model-a",
+                "input_tokens": Decimal(10),
+                "output_tokens": Decimal(5),
+            }
+        ],
+        "total_input_tokens": Decimal(10),
+        "total_output_tokens": Decimal(5),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.05"),
+        "cost_note": None,
+    }
+    _put_article("article-1", published_at="2026-09-12T00:00:00+00:00", title="Has lineage")
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage, published_by = :published_by",
+        ExpressionAttributeValues={":lineage": lineage, ":published_by": "ai_only"},
+    )
+
+    event = _event("GET /articles", query_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    article = body["articles"][0]
+    assert article["models_used"] == ["model-a"]
+    assert article["total_input_tokens"] == 10
+    assert article["total_output_tokens"] == 5
+    assert article["cost_aud"] == 0.05
+    assert article["published_by"] == "ai_only"
 
 
 # --- Article detail -------------------------------------------------------
@@ -469,6 +523,45 @@ def test_get_article_detail_success(aws_resources):
     assert body["published_at"] == "2026-09-12T00:00:00+00:00"
     assert body["source_refs"] == refs
     assert body["view_count"] == 0
+    # No lineage/published_by set on this fixture -- explicit None, not
+    # omitted, so the frontend's "no data" detection has something to
+    # check (docs/project-plan.md §11, PR 3 of 5).
+    assert body["lineage"] is None
+    assert body["published_by"] is None
+
+
+def test_get_article_detail_includes_lineage_when_present(aws_resources):
+    lineage = {
+        "calls": [
+            {
+                "stage": "draft",
+                "model_id": "model-a",
+                "input_tokens": Decimal(100),
+                "output_tokens": Decimal(50),
+                "used_fallback": False,
+            }
+        ],
+        "total_input_tokens": Decimal(100),
+        "total_output_tokens": Decimal(50),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.12"),
+        "cost_note": None,
+    }
+    _put_article()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage, published_by = :published_by",
+        ExpressionAttributeValues={":lineage": lineage, ":published_by": "humans"},
+    )
+
+    event = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert body["published_by"] == "humans"
+    assert body["lineage"]["models_used"] == ["model-a"]
+    assert body["lineage"]["cost_aud"] == 0.12
+    assert body["lineage"]["calls"][0]["input_tokens"] == 100
 
 
 def test_get_article_detail_defaults_view_count_when_absent(aws_resources):
