@@ -2,6 +2,23 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit, urlunsplit
+
+
+def _normalized_url(url: str) -> str:
+    """Normalize trivial URL variants so equivalent sources dedupe cleanly."""
+    parts = urlsplit(url)
+    normalized_path = parts.path.rstrip("/")
+    return urlunsplit(
+        (
+            parts.scheme.lower(),
+            parts.netloc.lower(),
+            normalized_path,
+            parts.query,
+            parts.fragment,
+        )
+    )
+
 
 def dedupe_source_refs(source_refs: list[dict] | None) -> list[dict]:
     """Return source refs in first-seen order, deduplicated by URL/title.
@@ -20,7 +37,7 @@ def dedupe_source_refs(source_refs: list[dict] | None) -> list[dict]:
         url = ref.get("url") or ""
         title = ref.get("title") or ""
         if url:
-            key = ("url", url)
+            key = ("url", _normalized_url(url))
         elif title:
             key = ("title", title)
         else:
