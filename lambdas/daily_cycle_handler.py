@@ -24,7 +24,8 @@ from datetime import UTC, datetime
 import boto3
 
 from common import compliance
-from common.bedrock import invoke_claude
+from common.bedrock import invoke_model_tracked
+from common.costing import build_lineage
 from common.dynamo import (
     get_latest_approved_prompt_refinement,
     get_top_voted_articles,
@@ -34,6 +35,7 @@ from common.dynamo import (
     put_candidate_idea,
     put_moderation_item,
 )
+from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.static_pages import render_and_publish_article_page
 
@@ -65,7 +67,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
     if not findings:
         return {"status": "no_findings", "topic_id": topic_id}
 
-    model_id = os.environ["BEDROCK_MODEL_ID"]
+    model_id, fallback_model_id = resolve_model(topic)
     summaries_block = _format_findings_summaries(findings)
 
     # Phase 5: fold in any admin-approved prompt refinement and a few-shot
@@ -75,18 +77,21 @@ def _run_daily_cycle(topic_id: str) -> dict:
     guidance = _get_approved_guidance(topic_id)
     few_shot_excerpt = _get_few_shot_excerpt(topic_id)
 
-    angles = _ideate(topic, summaries_block, model_id, guidance=guidance)
+    angles, ideate_call = _ideate(
+        topic, summaries_block, model_id, fallback_model_id, guidance=guidance
+    )
     selected = _select_and_store_candidates(topic_id, angles)
 
-    draft_text = _draft_article(
+    draft_text, draft_call = _draft_article(
         topic,
         selected["angle"],
         summaries_block,
         model_id,
+        fallback_model_id,
         guidance=guidance,
         few_shot_excerpt=few_shot_excerpt,
     )
-    title = _draft_title(selected["angle"], model_id)
+    title, title_call = _draft_title(selected["angle"], model_id, fallback_model_id)
 
     # Phase 7: deterministically guarantee the standing "not financial
     # advice" disclaimer on every financial-topic draft, regardless of
@@ -95,7 +100,21 @@ def _run_daily_cycle(topic_id: str) -> dict:
     if compliance.is_financial_topic(topic):
         draft_text = compliance.append_financial_disclaimer(draft_text)
 
-    review = compliance.review_draft(draft_text, topic, model_id)
+    review = compliance.review_draft(
+        draft_text, topic, model_id, fallback_model_id=fallback_model_id
+    )
+
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 2 of 5): every
+    # Bedrock call that actually contributed to this article, not just the
+    # final draft -- review["lineage_call"] is None on the financial-topic
+    # early-return path (no call was made there), filtered out below rather
+    # than fabricated.
+    calls = [
+        call
+        for call in (ideate_call, draft_call, title_call, review["lineage_call"])
+        if call is not None
+    ]
+    lineage = build_lineage(calls)
 
     return _publish_or_moderate(
         topic_id=topic_id,
@@ -105,6 +124,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
         findings=findings,
         review=review,
         model_id=model_id,
+        lineage=lineage,
     )
 
 
@@ -146,8 +166,12 @@ def _get_few_shot_excerpt(topic_id: str) -> str | None:
 
 
 def _ideate(
-    topic: dict, summaries_block: str, model_id: str, guidance: str | None = None
-) -> list[str]:
+    topic: dict,
+    summaries_block: str,
+    model_id: str,
+    fallback_model_id: str | None,
+    guidance: str | None = None,
+) -> tuple[list[str], dict]:
     prompt = (
         f"Based on the following recent research findings about "
         f"'{topic.get('name', topic.get('topic_id', ''))}', propose exactly "
@@ -160,7 +184,8 @@ def _ideate(
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
         prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
-    response = invoke_claude(prompt, model_id)
+    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    response = result["text"]
 
     angles = []
     for line in response.strip().splitlines():
@@ -173,7 +198,14 @@ def _ideate(
         # model's response didn't parse as expected.
         angles = [response.strip() or "untitled angle"]
 
-    return angles[:_NUM_CANDIDATE_ANGLES]
+    lineage_call = {
+        "stage": "ideation",
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+    }
+    return angles[:_NUM_CANDIDATE_ANGLES], lineage_call
 
 
 def _select_and_store_candidates(topic_id: str, angles: list[str]) -> dict:
@@ -195,9 +227,10 @@ def _draft_article(
     angle: str,
     summaries_block: str,
     model_id: str,
+    fallback_model_id: str | None,
     guidance: str | None = None,
     few_shot_excerpt: str | None = None,
-) -> str:
+) -> tuple[str, dict]:
     prompt = (
         "Write a full article draft in markdown (a few paragraphs) for a blog "
         f"about '{topic.get('name', topic.get('topic_id', ''))}', on this angle: "
@@ -213,15 +246,31 @@ def _draft_article(
             "topic, for style reference only (do not repeat its content):\n"
             f"{few_shot_excerpt}"
         )
-    return invoke_claude(prompt, model_id)
+    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    lineage_call = {
+        "stage": "draft",
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+    }
+    return result["text"], lineage_call
 
 
-def _draft_title(angle: str, model_id: str) -> str:
+def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tuple[str, dict]:
     prompt = (
         "Write a short, engaging article title (no surrounding quotes, no "
         f"markdown) for an article with this angle: {angle}"
     )
-    return invoke_claude(prompt, model_id).strip()
+    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    lineage_call = {
+        "stage": "title",
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+    }
+    return result["text"].strip(), lineage_call
 
 
 def _publish_or_moderate(
@@ -233,6 +282,7 @@ def _publish_or_moderate(
     findings: list[dict],
     review: dict,
     model_id: str,
+    lineage: dict,
 ) -> dict:
     article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
@@ -261,6 +311,8 @@ def _publish_or_moderate(
         created_at=now,
         published_at=now if compliant else None,
         source_refs=source_refs,
+        lineage=lineage,
+        published_by="ai_only" if compliant else None,
     )
 
     if compliant:

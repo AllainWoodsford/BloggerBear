@@ -8,7 +8,7 @@ than feedback (Feedback's own PII pipeline is Phase 5, out of scope here).
 
 import re
 
-from common.bedrock import invoke_claude
+from common.bedrock import invoke_claude, invoke_model_tracked
 
 # A handful of conservative, obvious-PII patterns -- not a PII-detection
 # library. Applied in order, most specific first, with a bare long-digit-run
@@ -96,20 +96,34 @@ def regex_redact(text: str) -> str:
     return redacted
 
 
-def review_draft(draft_text: str, topic: dict, model_id: str) -> dict:
-    """Run the compliance review for a draft and return {compliant, reasons}.
+def review_draft(
+    draft_text: str, topic: dict, model_id: str, *, fallback_model_id: str | None = None
+) -> dict:
+    """Run the compliance review for a draft and return
+    {compliant, reasons, lineage_call}.
 
     Financial topics are routed to manual moderation unconditionally -- this
     is a deterministic routing rule, not something an LLM call could
-    override, per the hard constraint in project-plan.md §2.
+    override, per the hard constraint in project-plan.md §2. No Bedrock
+    call is made on that path, so `lineage_call` is None there -- don't
+    fabricate a call that didn't happen (docs/project-plan.md §11, PR 2
+    of 5: per-article lineage must reflect calls that actually occurred).
     """
     if is_financial_topic(topic):
-        return {"compliant": False, "reasons": [_FINANCIAL_REASON]}
+        return {"compliant": False, "reasons": [_FINANCIAL_REASON], "lineage_call": None}
 
     redacted_draft = regex_redact(draft_text)
     prompt = _REVIEW_PROMPT_TEMPLATE.format(draft=redacted_draft)
-    response = invoke_claude(prompt, model_id)
-    return _parse_compliance_response(response)
+    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    parsed = _parse_compliance_response(result["text"])
+    parsed["lineage_call"] = {
+        "stage": "compliance_review",
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+    }
+    return parsed
 
 
 def _parse_compliance_response(response: str) -> dict:
