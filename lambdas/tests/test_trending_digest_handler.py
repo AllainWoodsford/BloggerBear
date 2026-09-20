@@ -183,6 +183,9 @@ def test_publishes_digest_when_compliant(s3_bucket):
     assert render_kwargs["article_id"] == article_kwargs["article_id"]
     assert render_kwargs["topic_name"] == "Trending Everywhere"
     assert render_kwargs["body_markdown"] == "A synthesized digest."
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5).
+    assert render_kwargs["lineage"] == article_kwargs["lineage"]
+    assert render_kwargs["published_by"] == "ai_only"
 
     mock_musing.assert_called_once()
     musing_kwargs = mock_musing.call_args.kwargs

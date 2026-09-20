@@ -438,6 +438,32 @@ def list_articles_by_status(status: str, topic_id: str | None = None) -> list[di
             ExclusiveStartKey=response["LastEvaluatedKey"],
         )
         items.extend(response.get("Items", []))
+    # Same Decimal -> float/int conversion get_article applies -- needed
+    # here too now that public_api_handler's _list_articles projects a
+    # slim lineage summary (models_used/cost_aud/published_by) onto each
+    # item (docs/project-plan.md §11, PR 3 of 5); json.dumps can't
+    # serialize a raw Decimal.
+    for item in items:
+        if "lineage" in item:
+            item["lineage"] = _lineage_from_item(item["lineage"])
+    return items
+
+
+def list_all_articles() -> list[dict]:
+    """Return every Articles item regardless of status (Scan -- acceptable
+    at this project's scale, same as list_published_articles above).
+
+    Backs the public Stats page's aggregate cost figures (PR 5 of 5): spend
+    counts for drafted articles that went to moderation or were rejected,
+    not just published ones. Same lineage Decimal -> int/float conversion as
+    list_published_articles, for the same reason (json.dumps can't serialize
+    a raw Decimal) -- callers only ever surface aggregates, never items.
+    """
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    items = _paginated_scan(table)
+    for item in items:
+        if "lineage" in item:
+            item["lineage"] = _lineage_from_item(item["lineage"])
     return items
 
 

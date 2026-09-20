@@ -313,3 +313,33 @@ into four pieces below, any of which could be scoped/built independently.
   actually charts, where the underlying numbers come from -- Cost
   Explorer API vs. the per-article lineage data summed up vs. both --
   before implementation, rather than guessing at a shape here.
+
+**Status (implemented in five PRs)**
+- (A)/(C): #56 -- `Models`/`ModelConfig` DynamoDB registry (no Terraform
+  apply to change models), `resolve_model` precedence, and
+  `invoke_model_tracked` with token capture and fallback. No per-family
+  adapter classes were needed: `common/bedrock.py` already used Bedrock's
+  Converse API, which normalizes the request/response shape across
+  providers.
+- (A)/(D): #57 -- per-article `lineage` (every Bedrock call that went into
+  an article) with AUD cost, and `published_by` (`ai_only` / `humans`;
+  `humans_and_ai` reserved) across all four publish paths.
+- (B): #59 -- lineage footer baked into static pages, compact one-line
+  summary on article pages and lists, explicit "No data" fallback.
+- (C) rotation: #60 -- per-topic `model_id_candidates`, one picked at
+  random per run.
+- (E): first pass, this PR -- a public `#/stats` page fed by
+  `GET /stats`, aggregated purely from article lineage priced against the
+  current Models registry (estimated AI spend, per day / model / topic).
+  Chosen over AWS Cost Explorer for this pass: it needs no extra IAM or
+  paid API calls, and it answers "what has the AI cost" directly.
+
+**Deferred**
+- Per-AWS-service spend and storage costs (Cost Explorer) -- the Stats
+  page labels itself as an AI-spend estimate, not billing.
+- Date-range filters on the Stats page (fixed last-30-days chart for now).
+- A separate cost tracker for musings (`common/musings.py` calls are
+  deliberately not part of an article's lineage, and are currently
+  untracked).
+- An AI reviewer for the moderation queue (would produce
+  `humans_and_ai`).

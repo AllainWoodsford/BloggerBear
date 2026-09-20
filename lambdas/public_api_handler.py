@@ -45,6 +45,8 @@ from common.dynamo import (
     get_article,
     get_latest_finding,
     increment_view_count,
+    list_all_articles,
+    list_models,
     list_musings,
     list_pending_moderation_for_topic,
     list_published_articles,
@@ -52,7 +54,11 @@ from common.dynamo import (
     put_feedback,
     update_article_net_votes,
 )
+
+from common.stats import build_stats
+
 from common.source_refs import dedupe_source_refs
+
 
 _RSS_ITEM_LIMIT = 50
 _RSS_DESCRIPTION_MAX_CHARS = 300
@@ -79,13 +85,18 @@ _CORS_HEADERS = {
 }
 
 
-def _response(status_code: int, payload, *, content_type: str = "application/json") -> dict:
+def _response(
+    status_code: int,
+    payload,
+    *,
+    content_type: str = "application/json",
+    cache_seconds: int | None = None,
+) -> dict:
     body = json.dumps(payload) if content_type == "application/json" else payload
-    return {
-        "statusCode": status_code,
-        "headers": {"Content-Type": content_type, **_CORS_HEADERS},
-        "body": body,
-    }
+    headers = {"Content-Type": content_type, **_CORS_HEADERS}
+    if cache_seconds is not None:
+        headers["Cache-Control"] = f"public, max-age={cache_seconds}"
+    return {"statusCode": status_code, "headers": headers, "body": body}
 
 
 def _error(status_code: int, message: str) -> dict:
@@ -232,6 +243,19 @@ def _list_articles(event: dict) -> dict:
             "article_id": a["article_id"],
             "title": a["title"],
             "published_at": a.get("published_at"),
+            # Slim lineage projection for the topic listing's compact
+            # one-line summary (docs/project-plan.md §11, PR 3 of 5) --
+            # deliberately NOT the full lineage.calls breakdown, since
+            # that's detail-page-only territory (fetching the full
+            # per-call token detail for every article in a list would be
+            # wasteful); everything here already comes from the same
+            # Scan list_published_articles already did, no extra reads.
+            "models_used": (a.get("lineage") or {}).get("models_used"),
+            "total_input_tokens": (a.get("lineage") or {}).get("total_input_tokens"),
+            "total_output_tokens": (a.get("lineage") or {}).get("total_output_tokens"),
+            "cost_aud": (a.get("lineage") or {}).get("cost_aud"),
+            "cost_note": (a.get("lineage") or {}).get("cost_note"),
+            "published_by": a.get("published_by"),
         }
         for a in articles
     ]
@@ -254,6 +278,12 @@ def _get_article_detail(event: dict) -> dict:
             "published_at": article.get("published_at"),
             "source_refs": dedupe_source_refs(article.get("source_refs")),
             "view_count": int(article.get("view_count", 0)),
+            # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of
+            # 5) -- explicit None (not omitted) on an article published
+            # before this feature existed, so the frontend's "no data"
+            # detection has something concrete to check against.
+            "lineage": article.get("lineage"),
+            "published_by": article.get("published_by"),
         },
     )
 
@@ -327,6 +357,22 @@ def _list_musings(event: dict) -> dict:
         for m in items
     ]
     return _response(200, {"musings": musings})
+
+
+# --- Stats ------------------------------------------------------------------
+
+# Every hit scans the Articles/Topics/Models tables (fine at this project's
+# scale, same as the RSS feed) -- a short public cache keeps a popular page
+# from turning into a scan per view. The numbers move on the scale of
+# articles-per-day, so five minutes of staleness is invisible.
+_STATS_CACHE_SECONDS = 300
+
+
+def _stats(event: dict) -> dict:
+    """Aggregate AI cost/token statistics for the public Stats page --
+    aggregates only (common/stats.py), never article content or ids."""
+    stats = build_stats(list_all_articles(), list_topics(), list_models())
+    return _response(200, stats, cache_seconds=_STATS_CACHE_SECONDS)
 
 
 # --- RSS feed ---------------------------------------------------------------
@@ -411,6 +457,7 @@ _ROUTES = {
     "POST /articles/{article_id}/view": _view_article,
     "POST /articles/{article_id}/feedback": _submit_feedback,
     "GET /musings": _list_musings,
+    "GET /stats": _stats,
     "GET /rss.xml": _rss_feed,
 }
 

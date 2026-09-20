@@ -75,15 +75,22 @@ python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5
     --input-price 0.0008 --output-price 0.004
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# Per-topic: pin one model, set a fallback, or rotate between several
+# (one picked at random per daily run). '' clears a value.
+python scripts/admin_cli.py topics update github-trending     --model-candidates "model-id-a,model-id-b" --fallback-model-id "model-id-a"
+python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
 `models`/`model-config` back the AI lineage/cost-tracking enhancement's
 DynamoDB-backed model registry (docs/project-plan.md §11) -- adding a
 model or changing the global default/fallback never needs a Terraform
 apply. Resolution order (`common/model_routing.py`'s `resolve_model`):
-a topic's own `model_id`/`fallback_model_id` override, if set → the
-global `model-config` default → the Terraform-set `BEDROCK_MODEL_ID`
-env var.
+a topic's `model_id_candidates` rotation list (one picked at random per
+run, so all of one article's Bedrock calls use the same model and its
+lineage stays coherent), if set → the topic's own `model_id` override →
+the global `model-config` default → the Terraform-set `BEDROCK_MODEL_ID`
+env var. `fallback_model_id` resolves independently (topic → global).
 
 `articles publish` force-sets an article's status to `published` regardless
 of its current state -- unlike `moderation approve`, which only acts on an

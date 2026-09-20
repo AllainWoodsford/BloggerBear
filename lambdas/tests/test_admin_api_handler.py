@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -195,12 +196,78 @@ def test_create_topic_success(aws_resources):
         "daily_cadence": "cron(0 6 * * ? *)",
         "model_id": None,
         "fallback_model_id": None,
+        "model_id_candidates": None,
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert table.get_item(Key={"topic_id": "new-topic"})["Item"] == created
 
     mock_upsert.assert_called_once_with("new-topic", "rate(1 hour)", "cron(0 6 * * ? *)")
+
+
+def test_create_topic_accepts_model_id_candidates(aws_resources):
+    body = {
+        "topic_id": "rotating",
+        "name": "Rotating Topic",
+        "adapter": "github_trending",
+        "model_id_candidates": ["model-a", "model-b"],
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["model_id_candidates"] == ["model-a", "model-b"]
+
+
+@pytest.mark.parametrize("bad_value", ["model-a", ["model-a", ""], ["model-a", 3], {"a": 1}])
+def test_create_topic_rejects_invalid_model_id_candidates(aws_resources, bad_value):
+    body = {
+        "topic_id": "bad",
+        "name": "Bad",
+        "adapter": "github_trending",
+        "model_id_candidates": bad_value,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 400
+    assert "model_id_candidates" in json.loads(result["body"])["error"]
+
+
+def test_update_topic_sets_and_clears_model_id_candidates(aws_resources):
+    _put_topic()
+
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        set_result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id_candidates": ["model-a", "model-b"]},
+            ),
+            None,
+        )
+        clear_result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id_candidates": []},
+            ),
+            None,
+        )
+        bad_result = admin_api_handler.handler(
+            _event(
+                "PUT /topics/{topic_id}",
+                path_params={"topic_id": TOPIC["topic_id"]},
+                body={"model_id_candidates": "model-a"},
+            ),
+            None,
+        )
+
+    assert set_result["statusCode"] == 200
+    assert json.loads(set_result["body"])["model_id_candidates"] == ["model-a", "model-b"]
+    assert clear_result["statusCode"] == 200
+    assert json.loads(clear_result["body"])["model_id_candidates"] == []
+    assert bad_result["statusCode"] == 400
 
 
 def test_create_topic_crypto_feed_forces_is_financial_true(aws_resources):
@@ -737,6 +804,13 @@ def test_approve_moderation_item(aws_resources):
     assert render_kwargs["body_markdown"] == "# Body"
     assert render_kwargs["topic_name"] == "GitHub Trending"
     assert render_kwargs["published_at"] == article["published_at"]
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5):
+    # lineage was never set on this fixture (this article predates the
+    # feature, or was drafted before lineage support existed) -- passed
+    # through as-is, not fabricated. published_by is "humans" since this
+    # path always needed a moderation-approve.
+    assert render_kwargs["lineage"] is None
+    assert render_kwargs["published_by"] == "humans"
 
     # Reaching this path always needed a moderation-approve, so the musing
     # is generated with compliant=False (the more measured/thoughtful
@@ -822,6 +896,52 @@ def test_publish_article_sets_published_status(aws_resources):
     # must regenerate the static page, same as the moderation-approve path.
     mock_render_page.assert_called_once()
     assert mock_render_page.call_args.kwargs["article_id"] == "article-1"
+    # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5):
+    # force-publish is always "humans" too -- an operator invoked it.
+    assert mock_render_page.call_args.kwargs["published_by"] == "humans"
+
+
+def test_publish_article_passes_through_existing_lineage(aws_resources):
+    """lineage was fixed at draft time -- force-publish must pass through
+    whatever's already stored on the article, never fabricate or drop it."""
+    lineage = {
+        "calls": [
+            {
+                "stage": "draft",
+                "model_id": "model-a",
+                "input_tokens": Decimal(10),
+                "output_tokens": Decimal(5),
+                "used_fallback": False,
+            }
+        ],
+        "total_input_tokens": Decimal(10),
+        "total_output_tokens": Decimal(5),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.02"),
+        "cost_note": None,
+    }
+    _put_article(status="pending_moderation")
+    _put_topic()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage",
+        ExpressionAttributeValues={":lineage": lineage},
+    )
+
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _event(
+            "POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}
+        )
+        admin_api_handler.handler(event, None)
+
+    render_kwargs = mock_render_page.call_args.kwargs
+    assert render_kwargs["lineage"]["models_used"] == ["model-a"]
+    assert render_kwargs["lineage"]["cost_aud"] == 0.02
 
 
 def test_publish_article_also_approves_pending_moderation_item(aws_resources):
