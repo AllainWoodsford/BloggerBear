@@ -192,6 +192,43 @@ def test_publishes_digest_when_compliant(s3_bucket):
     assert musing_kwargs["compliant"] is True
 
 
+def test_publishes_digest_with_deduped_source_refs(s3_bucket):
+    findings_by_topic = {
+        "github-trending": _finding(
+            "Repo X is trending.", source_refs=[{"url": "https://github.com/x", "title": "x"}]
+        ),
+        "hacker-news": _finding(
+            "Story Y cited repo X.", source_refs=[{"url": "https://github.com/x", "title": "x"}]
+        ),
+    }
+
+    with (
+        patch("trending_digest_handler.list_topics", return_value=[GITHUB_TOPIC, HN_TOPIC]),
+        patch(
+            "trending_digest_handler.get_latest_finding",
+            side_effect=lambda topic_id: findings_by_topic[topic_id],
+        ),
+        patch("trending_digest_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "trending_digest_handler.invoke_model_tracked",
+            return_value=_tracked_result("A synthesized digest."),
+        ),
+        patch(
+            "trending_digest_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("trending_digest_handler.put_article") as mock_put_article,
+        patch("trending_digest_handler.render_and_publish_article_page"),
+        patch("trending_digest_handler.generate_and_store_article_musing"),
+    ):
+        trending_digest_handler.handler({}, None)
+
+    assert mock_put_article.call_args.kwargs["source_refs"] == [
+        {"url": "https://github.com/x", "title": "x"}
+    ]
+
+
 def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     findings_by_topic = {
         "github-trending": _finding("Repo X is trending."),

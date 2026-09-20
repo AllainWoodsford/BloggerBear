@@ -295,6 +295,13 @@ def list_pending_moderation() -> list[dict]:
     return items
 
 
+def list_pending_moderation_for_topic(topic_id: str) -> list[dict]:
+    """Return every pending ModerationQueue item for a topic."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
+    return _paginated_scan(table, filter_expression)
+
+
 def count_pending_moderation_for_topic(topic_id: str) -> int:
     """Return how many ModerationQueue items are `status == "pending"` for `topic_id`.
 
@@ -306,9 +313,7 @@ def count_pending_moderation_for_topic(topic_id: str) -> int:
     pattern as list_prompt_refinements above, just returning len() instead
     of the items.
     """
-    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
-    return len(_paginated_scan(table, filter_expression))
+    return len(list_pending_moderation_for_topic(topic_id))
 
 
 def list_all_moderation_items() -> list[dict]:
@@ -412,17 +417,16 @@ def update_article_status(
 # --- Public API ---------------------------------------------------------
 
 
-def list_published_articles(topic_id: str | None = None) -> list[dict]:
-    """Return every Articles item with `status == "published"`.
+def list_articles_by_status(status: str, topic_id: str | None = None) -> list[dict]:
+    """Return every Articles item with the given status.
 
     If `topic_id` is given, further filters to that topic. The Articles
     table's only key is `article_id` (no sort key, no topic_id GSI -- see
     infra/modules/app-data/main.tf), so this is a Scan + FilterExpression,
-    same pattern as `list_pending_moderation` above -- acceptable at this
-    project's scale.
+    acceptable at this project's scale.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("status").eq("published")
+    filter_expression = Attr("status").eq(status)
     if topic_id is not None:
         filter_expression = filter_expression & Attr("topic_id").eq(topic_id)
 
@@ -435,6 +439,11 @@ def list_published_articles(topic_id: str | None = None) -> list[dict]:
         )
         items.extend(response.get("Items", []))
     return items
+
+
+def list_published_articles(topic_id: str | None = None) -> list[dict]:
+    """Return every Articles item with `status == "published"`."""
+    return list_articles_by_status("published", topic_id)
 
 
 def increment_view_count(article_id: str) -> int:

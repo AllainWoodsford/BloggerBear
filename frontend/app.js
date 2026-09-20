@@ -231,24 +231,26 @@
 
   // --- Articles in the Pipeline --------------------------------------
   //
-  // A generic, content-free indicator of in-progress work for a topic --
-  // GET /topics/{topic_id}/activity deliberately returns only a count and
-  // a boolean, never a pending article's title or a Finding's content
-  // (see public_api_handler.py's _topic_activity docstring), so these
-  // list items are always one of exactly two fixed labels, never
-  // per-item text pulled from the API. That's also why they're plain
-  // text, not links -- there's nothing behind them yet to link to.
   var PENDING_REVIEW_LABEL = "Pending review";
   var RESEARCHING_LABEL = "Researching";
 
   function pipelineItemsFor(activity) {
+    if (activity && Array.isArray(activity.pipeline_items) && activity.pipeline_items.length > 0) {
+      return activity.pipeline_items.map(function (item) {
+        return {
+          label: item.label || (item.status === "pending_review" ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
+          title: item.title || "",
+        };
+      });
+    }
+
     var items = [];
     var pendingCount = Number(activity && activity.pending_review_count) || 0;
     for (var i = 0; i < pendingCount; i++) {
-      items.push(PENDING_REVIEW_LABEL);
+      items.push({ label: PENDING_REVIEW_LABEL, title: "" });
     }
     if (activity && activity.researching) {
-      items.push(RESEARCHING_LABEL);
+      items.push({ label: RESEARCHING_LABEL, title: "" });
     }
     return items;
   }
@@ -266,8 +268,13 @@
     box.appendChild(titleBar);
 
     var list = el("ul", { className: "pipeline-list" });
-    items.forEach(function (label) {
-      list.appendChild(el("li", { text: label }));
+    items.forEach(function (item) {
+      var row = el("li");
+      row.appendChild(el("span", { className: "pipeline-status", text: item.label }));
+      if (item.title) {
+        row.appendChild(el("span", { className: "pipeline-item-title", text: item.title }));
+      }
+      list.appendChild(row);
     });
     box.appendChild(list);
 

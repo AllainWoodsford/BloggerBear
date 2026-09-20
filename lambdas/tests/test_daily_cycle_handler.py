@@ -218,6 +218,50 @@ def test_handler_publishes_when_compliant(s3_bucket):
     assert musing_kwargs["compliant"] is True
 
 
+def test_handler_dedupes_duplicate_source_refs_before_publishing(s3_bucket):
+    findings = [
+        {
+            "topic_id": "github-trending",
+            "captured_at": "2026-09-12T00:00:00+00:00",
+            "summary": "Repo X jumped.",
+            "source_refs": [{"url": "https://github.com/example/x", "title": "example/x"}],
+        },
+        {
+            "topic_id": "github-trending",
+            "captured_at": "2026-09-11T00:00:00+00:00",
+            "summary": "Repo X stayed hot.",
+            "source_refs": [{"url": "https://github.com/example/x", "title": "example/x"}],
+        },
+    ]
+    invoke_responses = ["Angle one", "Draft body text.", "Some Title"]
+
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=findings),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ),
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert mock_put_article.call_args.kwargs["source_refs"] == [
+        {"url": "https://github.com/example/x", "title": "example/x"}
+    ]
+
+
 def test_handler_moderates_when_non_compliant(s3_bucket):
     ideation_response = "Angle one\nAngle two\nAngle three"
     invoke_responses = [ideation_response, "Draft body text.", "Some Title"]

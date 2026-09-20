@@ -37,6 +37,7 @@ from common.dynamo import (
 )
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
+from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
 
 _NUM_CANDIDATE_ANGLES = 3
@@ -299,6 +300,7 @@ def _publish_or_moderate(
     source_refs = []
     for finding in findings:
         source_refs.extend(finding.get("source_refs") or [])
+    source_refs = dedupe_source_refs(source_refs)
 
     compliant = review["compliant"]
 

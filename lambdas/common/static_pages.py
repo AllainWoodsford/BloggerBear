@@ -28,6 +28,8 @@ from html import escape
 import boto3
 import markdown
 
+from .source_refs import dedupe_source_refs
+
 _s3_client = None
 
 
@@ -78,6 +80,7 @@ def render_and_publish_article_page(
     actual backstop here, not output sanitization.
     """
     body_html = markdown.markdown(body_markdown)
+    source_refs = dedupe_source_refs(source_refs)
 
     source_refs_html = ""
     if source_refs:
