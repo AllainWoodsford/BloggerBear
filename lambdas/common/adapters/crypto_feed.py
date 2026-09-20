@@ -23,7 +23,9 @@ seeded by the UTC date, so this adapter and the daily cycle always agree on it):
 The research tick runs hourly; an unseeded sample would pick 10 different
 coins every hour, so every tick would look like a material change and burn a
 Bedrock call and a Finding. Seeded, the day's pool only changes when the
-date does, and ticks within a day only fire on a real price move.
+date does. A snapshot is material on the first observation, a new UTC day, a
+goal change, or (on the news days) 5+ new headlines -- price moves are not a
+trigger, so the analysis days produce one Finding a day.
 
 **History is fetched once per UTC day, not once per tick.** It is daily data,
 and CoinGecko's public API answers 429 well below what 10 history calls an
@@ -114,11 +116,6 @@ HISTORY_CONCURRENCY = 2
 HISTORY_TIME_BUDGET_SECONDS = 85.0
 _HISTORY_TIMEOUT_SECONDS = 15.0
 _HISTORY_DAYS = 365
-
-# A price moving by at least this many percentage points since the last
-# snapshot counts as a material change (crypto is volatile enough that a
-# much smaller threshold would fire on ordinary noise).
-PRICE_MOVE_THRESHOLD_PERCENT = 5.0
 
 # 5-day anomaly read: a daily move at least this large is a "spike" (higher
 # than for the anchors' typical moves, since altcoins are far more volatile);
@@ -374,15 +371,6 @@ def _anchor_summary(state: dict) -> str:
         change_text = f" ({change:+.2f}% 24h)" if change is not None else ""
         parts.append(f"{anchor.get('name', coin_id)} {_format_usd(anchor['price'])}{change_text}")
     return ", ".join(parts)
-
-
-def _known_prices(state: dict) -> dict[str, float]:
-    prices = {cid: a["price"] for cid, a in (state.get("market_anchors") or {}).items()}
-    for coin in state.get("analyzed_pool") or []:
-        price = (coin.get("metrics") or {}).get("price_now")
-        if price is not None:
-            prices[coin["id"]] = price
-    return prices
 
 
 def _status_code(exc: Exception) -> int | None:
@@ -685,20 +673,9 @@ class CryptoFeedAdapter(Adapter):
         if old_state.get("editorial_goal") != goal:
             return True, f"editorial goal changed to {goal}"
 
-        old_prices, new_prices = _known_prices(old_state), _known_prices(new_state)
-        moves = []
-        for coin_id in sorted(set(old_prices) & set(new_prices)):
-            old_price, new_price = old_prices[coin_id], new_prices[coin_id]
-            if not old_price:
-                continue
-            change = (new_price - old_price) / old_price * 100
-            if abs(change) >= PRICE_MOVE_THRESHOLD_PERCENT:
-                moves.append(
-                    f"{coin_id} {_format_usd(old_price)}->{_format_usd(new_price)} ({change:+.1f}%)"
-                )
-        if moves:
-            return True, "price moves: " + ", ".join(moves)
-
+        # Price moves are deliberately not a trigger: on the analysis days the
+        # snapshot is a once-a-day read, and on the news days it is the headlines
+        # that matter. Within a day only a burst of new headlines counts.
         old_urls = {r["url"] for r in old_state.get("web_results") or []}
         fresh = [r for r in new_state.get("web_results") or [] if r["url"] not in old_urls]
         if len(fresh) >= WEB_NEW_RESULTS_THRESHOLD:
