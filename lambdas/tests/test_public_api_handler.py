@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from decimal import Decimal
 
 import boto3
 import pytest
@@ -24,6 +25,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("FEEDBACK_TABLE", "Feedback")
     monkeypatch.setenv("MUSINGS_TABLE", "Musings")
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
+    monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
@@ -82,6 +84,12 @@ def aws_resources(aws_env):
             TableName="Musings",
             KeySchema=[{"AttributeName": "musing_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="Models",
+            KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         dynamodb.create_table(
@@ -449,6 +457,63 @@ def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
     }
 
 
+# --- Stats ---------------------------------------------------------------
+
+
+def test_stats_empty(aws_resources):
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["currency"] == "AUD"
+    assert body["totals"]["articles"] == 0
+    assert body["by_model"] == []
+    assert len(body["daily"]) == 30
+
+
+def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):
+    _put_topic()
+    boto3.resource("dynamodb", region_name=REGION).Table("Models").put_item(
+        Item={
+            "model_id": "model-a",
+            "display_name": "Model A",
+            "input_price_usd_per_1k_tokens": Decimal("1.0"),
+            "output_price_usd_per_1k_tokens": Decimal("2.0"),
+        }
+    )
+    lineage = {
+        "calls": [{"stage": "draft", "model_id": "model-a", "input_tokens": 1000, "output_tokens": 500}],
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "models_used": ["model-a"],
+        "cost_aud": None,
+        "cost_note": None,
+    }
+    articles = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    for article_id, status in (("a-pub", "published"), ("a-pending", "pending_moderation")):
+        _put_article(article_id, status=status)
+        articles.update_item(
+            Key={"article_id": article_id},
+            UpdateExpression="SET lineage = :l",
+            ExpressionAttributeValues={":l": lineage},
+        )
+
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    assert result["statusCode"] == 200
+    assert result["headers"]["Cache-Control"] == "public, max-age=300"
+    body = json.loads(result["body"])
+    assert body["totals"]["articles"] == 2
+    assert body["totals"]["published"] == 1
+    assert body["totals"]["input_tokens"] == 2000
+    assert body["by_model"][0]["model_id"] == "model-a"
+    assert body["by_model"][0]["display_name"] == "Model A"
+    assert body["by_topic"][0]["name"] == "GitHub Trending"
+    # Aggregates only -- never an article id or title.
+    assert "a-pub" not in result["body"]
+    assert "A Title" not in result["body"]
+
+
 # --- Articles listing ---------------------------------------------------
 
 
@@ -480,9 +545,62 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
     body = json.loads(result["body"])
     assert body["topic_id"] == "github-trending"
     assert [a["article_id"] for a in body["articles"]] == ["article-new", "article-old"]
-    # Listing shape: no body field.
+    # Listing shape: no body field, but a slim lineage projection.
     for article in body["articles"]:
-        assert set(article.keys()) == {"article_id", "title", "published_at"}
+        assert set(article.keys()) == {
+            "article_id",
+            "title",
+            "published_at",
+            "models_used",
+            "total_input_tokens",
+            "total_output_tokens",
+            "cost_aud",
+            "cost_note",
+            "published_by",
+        }
+        # None of the fixtures above set lineage/published_by -- explicit
+        # None (not omitted), same "no data" contract as the detail route.
+        assert article["models_used"] is None
+        assert article["total_input_tokens"] is None
+        assert article["total_output_tokens"] is None
+        assert article["cost_aud"] is None
+        assert article["cost_note"] is None
+        assert article["published_by"] is None
+
+
+def test_list_articles_projects_lineage_summary_when_present(aws_resources):
+    lineage = {
+        "calls": [
+            {
+                "stage": "draft",
+                "model_id": "model-a",
+                "input_tokens": Decimal(10),
+                "output_tokens": Decimal(5),
+            }
+        ],
+        "total_input_tokens": Decimal(10),
+        "total_output_tokens": Decimal(5),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.05"),
+        "cost_note": None,
+    }
+    _put_article("article-1", published_at="2026-09-12T00:00:00+00:00", title="Has lineage")
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage, published_by = :published_by",
+        ExpressionAttributeValues={":lineage": lineage, ":published_by": "ai_only"},
+    )
+
+    event = _event("GET /articles", query_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    article = body["articles"][0]
+    assert article["models_used"] == ["model-a"]
+    assert article["total_input_tokens"] == 10
+    assert article["total_output_tokens"] == 5
+    assert article["cost_aud"] == 0.05
+    assert article["published_by"] == "ai_only"
 
 
 # --- Article detail -------------------------------------------------------
@@ -502,6 +620,45 @@ def test_get_article_detail_success(aws_resources):
     assert body["published_at"] == "2026-09-12T00:00:00+00:00"
     assert body["source_refs"] == refs
     assert body["view_count"] == 0
+    # No lineage/published_by set on this fixture -- explicit None, not
+    # omitted, so the frontend's "no data" detection has something to
+    # check (docs/project-plan.md §11, PR 3 of 5).
+    assert body["lineage"] is None
+    assert body["published_by"] is None
+
+
+def test_get_article_detail_includes_lineage_when_present(aws_resources):
+    lineage = {
+        "calls": [
+            {
+                "stage": "draft",
+                "model_id": "model-a",
+                "input_tokens": Decimal(100),
+                "output_tokens": Decimal(50),
+                "used_fallback": False,
+            }
+        ],
+        "total_input_tokens": Decimal(100),
+        "total_output_tokens": Decimal(50),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.12"),
+        "cost_note": None,
+    }
+    _put_article()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage, published_by = :published_by",
+        ExpressionAttributeValues={":lineage": lineage, ":published_by": "humans"},
+    )
+
+    event = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert body["published_by"] == "humans"
+    assert body["lineage"]["models_used"] == ["model-a"]
+    assert body["lineage"]["cost_aud"] == 0.12
+    assert body["lineage"]["calls"][0]["input_tokens"] == 100
 
 
 def test_get_article_detail_dedupes_duplicate_source_refs(aws_resources):

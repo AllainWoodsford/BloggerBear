@@ -40,6 +40,104 @@ def _get_s3_client():
     return _s3_client
 
 
+_PUBLISHED_BY_LABELS = {
+    "ai_only": "AI only",
+    "humans": "Humans",
+    "humans_and_ai": "Humans & AI",
+}
+
+
+def _published_by_label(published_by: str | None) -> str:
+    if published_by is None:
+        return "No data"
+    return _PUBLISHED_BY_LABELS.get(published_by, published_by)
+
+
+def _format_cost_label(lineage: dict) -> str:
+    cost_aud = lineage.get("cost_aud")
+    if cost_aud is not None:
+        return f"~${cost_aud:.2f} AUD"
+    return lineage.get("cost_note") or "No data"
+
+
+def _per_model_token_breakdown_text(lineage: dict) -> str:
+    """Plain-text "model: X in / Y out" per model actually used, summed
+    across every call that used it (a single article can span more than
+    one model, e.g. a fallback kicking in partway through). Unescaped --
+    callers escape at the point they embed it in HTML, so the compact
+    summary line (which escapes its whole string once) and the footer
+    block don't double-escape."""
+    totals: dict[str, dict[str, int]] = {}
+    order: list[str] = []
+    for call in lineage.get("calls") or []:
+        model_id = call.get("model_id", "")
+        if model_id not in totals:
+            totals[model_id] = {"input": 0, "output": 0}
+            order.append(model_id)
+        totals[model_id]["input"] += int(call.get("input_tokens", 0))
+        totals[model_id]["output"] += int(call.get("output_tokens", 0))
+    if not order:
+        return "No data"
+    return ", ".join(
+        f"{model_id}: {totals[model_id]['input']:,} in / {totals[model_id]['output']:,} out"
+        for model_id in order
+    )
+
+
+def _per_model_token_breakdown_html(lineage: dict) -> str:
+    return escape(_per_model_token_breakdown_text(lineage))
+
+
+def _render_lineage_summary_line_html(lineage: dict | None, published_by: str | None) -> str:
+    """Compact one-line lineage summary for next to the existing gray-text
+    published date -- the terse counterpart to the fuller footer block
+    above. Same "No data" wording when there's nothing to show."""
+    if lineage is None and published_by is None:
+        return "No data"
+
+    models_used = (lineage or {}).get("models_used") or []
+    models_text = ", ".join(models_used) if models_used else "no data"
+    tokens_text = _per_model_token_breakdown_text(lineage) if lineage is not None else "no data"
+    cost_text = _format_cost_label(lineage) if lineage is not None else "No data"
+    approved_text = _published_by_label(published_by)
+
+    return escape(
+        f"models [{models_text}] · tokens [{tokens_text}] · "
+        f"approved by {approved_text} · {cost_text}"
+    )
+
+
+def _render_lineage_footer_html(lineage: dict | None, published_by: str | None) -> str:
+    """Render the "Lineage" footer block (docs/project-plan.md §11, PR 3 of
+    5) -- always present, even when there's nothing to show, so an
+    article published before this feature existed reads as an explicit
+    "No data" rather than a rendering gap that looks like a bug.
+    """
+    if lineage is None:
+        models_html = "No data"
+        tokens_html = "No data"
+        cost_html = "No data"
+    else:
+        models_used = lineage.get("models_used") or []
+        models_html = escape(", ".join(models_used)) if models_used else "No data"
+        tokens_html = _per_model_token_breakdown_html(lineage)
+        cost_html = escape(_format_cost_label(lineage))
+
+    approved_html = escape(_published_by_label(published_by))
+
+    return (
+        '<footer class="lineage-footer" aria-label="Article lineage">'
+        "<h2>Lineage</h2>"
+        "<dl>"
+        f"<dt>Models</dt><dd>{models_html}</dd>"
+        f"<dt>Tokens</dt><dd>{tokens_html}</dd>"
+        f"<dt>Approved by</dt><dd>{approved_html}</dd>"
+        f"<dt>Approx. cost</dt><dd>{cost_html}</dd>"
+        "</dl>"
+        "</footer>"
+    )
+
+
 def read_article_body(body_s3_key: str) -> str:
     """Read an article's raw markdown body from the content bucket.
 
@@ -64,6 +162,8 @@ def render_and_publish_article_page(
     published_at: str | None,
     source_refs: list[dict] | None = None,
     view_count: int = 0,
+    lineage: dict | None = None,
+    published_by: str | None = None,
 ) -> str:
     """Render `article_id` as a static HTML page and upload it to the site
     bucket. Returns the S3 key it was written to.
@@ -100,6 +200,8 @@ def render_and_publish_article_page(
         )
 
     published_label = escape(published_at) if published_at else "unpublished"
+    lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
+    lineage_footer_html = _render_lineage_footer_html(lineage, published_by)
 
     page_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -124,8 +226,10 @@ def render_and_publish_article_page(
 &#183;
 <span data-role="topic-name">{escape(topic_name or "")}</span>
 </p>
+<p class="lineage-summary">{lineage_summary_line_html}</p>
 <div class="article-body">{body_html}</div>
 {source_refs_html}
+{lineage_footer_html}
 <section class="feedback" data-role="feedback">
 <h2>Feedback</h2>
 <div class="feedback-buttons">

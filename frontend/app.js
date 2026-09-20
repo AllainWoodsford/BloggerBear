@@ -90,6 +90,10 @@
   // many real topics get capped out of selectNavTopics below.
   var MUSINGS_ROUTE_HASH = "#/musings";
 
+  // Public cost/token statistics page -- same category as Musings/Trending
+  // Everywhere: not a topic, always visible in the nav.
+  var STATS_ROUTE_HASH = "#/stats";
+
   // Keeps the compact header nav usable regardless of how many topics
   // exist: at most this many real topics ever show there, ranked by
   // actual publishing activity rather than declaration order, so a
@@ -136,6 +140,7 @@
       className: "musings-link",
     });
     navEl.appendChild(musingsLink);
+    navEl.appendChild(el("a", { text: "Stats", href: STATS_ROUTE_HASH, className: "stats-link" }));
     selectNavTopics(topics).forEach(function (topic) {
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
@@ -229,6 +234,135 @@
     return date.toLocaleDateString();
   }
 
+  // --- AI lineage display (docs/project-plan.md §11) ------------------------
+  //
+  // Mirrors lambdas/common/static_pages.py's server-side rendering of the
+  // same data (that one is baked into the static article pages at publish
+  // time; this is the client-rendered equivalent for the SPA's own views) --
+  // keep the wording/format of the two in sync. Any article published
+  // before lineage tracking existed comes back with lineage/published_by
+  // as explicit nulls, and every helper below renders that as a plainly
+  // worded "No data" rather than a blank gap that would look like a bug.
+
+  var PUBLISHED_BY_LABELS = {
+    ai_only: "AI only",
+    humans: "Humans",
+    humans_and_ai: "Humans & AI",
+  };
+
+  function formatCount(value) {
+    return Number(value || 0).toLocaleString("en-US");
+  }
+
+  function publishedByLabel(publishedBy) {
+    if (publishedBy === null || publishedBy === undefined) {
+      return "No data";
+    }
+    return PUBLISHED_BY_LABELS[publishedBy] || String(publishedBy);
+  }
+
+  function costLabel(costAud, costNote) {
+    if (typeof costAud === "number") {
+      return "~$" + costAud.toFixed(2) + " AUD";
+    }
+    return costNote || "No data";
+  }
+
+  // "model: X in / Y out" per model actually used, summed across every call
+  // that used it (an article can span more than one model, e.g. a fallback
+  // kicking in partway through).
+  function perModelTokenText(lineage) {
+    var totals = {};
+    var order = [];
+    ((lineage && lineage.calls) || []).forEach(function (call) {
+      var modelId = call.model_id || "";
+      if (!Object.prototype.hasOwnProperty.call(totals, modelId)) {
+        totals[modelId] = { input: 0, output: 0 };
+        order.push(modelId);
+      }
+      totals[modelId].input += Number(call.input_tokens || 0);
+      totals[modelId].output += Number(call.output_tokens || 0);
+    });
+    if (order.length === 0) {
+      return "No data";
+    }
+    return order
+      .map(function (modelId) {
+        return modelId + ": " + formatCount(totals[modelId].input) + " in / " + formatCount(totals[modelId].output) + " out";
+      })
+      .join(", ");
+  }
+
+  // Compact one-line summary. The article page has the full lineage.calls
+  // detail (per-model tokens); the topic listing only gets a slim projection
+  // (totals, not per-call -- see public_api_handler.py's _list_articles), so
+  // `tokensText` is passed in by whichever caller has the right level of
+  // detail rather than computed here.
+  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costAud, costNote, hasLineage) {
+    if (!hasLineage && (publishedBy === null || publishedBy === undefined)) {
+      return "No data";
+    }
+    var models = modelsUsed && modelsUsed.length > 0 ? modelsUsed.join(", ") : "no data";
+    return (
+      "models [" + models + "] · tokens [" + tokensText + "] · approved by " +
+      publishedByLabel(publishedBy) + " · " + (hasLineage ? costLabel(costAud, costNote) : "No data")
+    );
+  }
+
+  function articleDetailSummaryText(article) {
+    var lineage = article.lineage;
+    var hasLineage = lineage !== null && lineage !== undefined;
+    return lineageSummaryText(
+      hasLineage ? lineage.models_used : null,
+      hasLineage ? perModelTokenText(lineage) : "no data",
+      article.published_by,
+      hasLineage ? lineage.cost_aud : null,
+      hasLineage ? lineage.cost_note : null,
+      hasLineage
+    );
+  }
+
+  function articleListSummaryText(article) {
+    var hasLineage = article.models_used !== null && article.models_used !== undefined;
+    var tokensText = "no data";
+    if (hasLineage && article.total_input_tokens !== null && article.total_input_tokens !== undefined) {
+      tokensText = formatCount(article.total_input_tokens) + " in / " + formatCount(article.total_output_tokens) + " out";
+    }
+    return lineageSummaryText(
+      article.models_used,
+      tokensText,
+      article.published_by,
+      article.cost_aud,
+      article.cost_note,
+      hasLineage
+    );
+  }
+
+  // The fuller footer block, same shape as the static page's
+  // <footer class="lineage-footer"> -- always rendered, even when empty.
+  function renderLineageFooter(lineage, publishedBy) {
+    var hasLineage = lineage !== null && lineage !== undefined;
+    var models = hasLineage && lineage.models_used && lineage.models_used.length > 0
+      ? lineage.models_used.join(", ")
+      : "No data";
+
+    var footer = el("footer", { className: "lineage-footer", attrs: { "aria-label": "Article lineage" } });
+    footer.appendChild(el("h2", { text: "Lineage" }));
+
+    var list = el("dl");
+    [
+      ["Models", models],
+      ["Tokens", hasLineage ? perModelTokenText(lineage) : "No data"],
+      ["Approved by", publishedByLabel(publishedBy)],
+      ["Approx. cost", hasLineage ? costLabel(lineage.cost_aud, lineage.cost_note) : "No data"],
+    ].forEach(function (row) {
+      list.appendChild(el("dt", { text: row[0] }));
+      list.appendChild(el("dd", { text: row[1] }));
+    });
+    footer.appendChild(list);
+    return footer;
+  }
+
   // --- Articles in the Pipeline --------------------------------------
   //
   var PENDING_REVIEW_LABEL = "Pending review";
@@ -313,6 +447,7 @@
       });
       item.appendChild(link);
       item.appendChild(el("span", { className: "article-date", text: " " + formatDate(article.published_at) }));
+      item.appendChild(el("div", { className: "lineage-summary", text: articleListSummaryText(article) }));
       list.appendChild(item);
     });
     contentEl.appendChild(list);
@@ -383,6 +518,363 @@
       });
   }
 
+  // --- Stats ------------------------------------------------------------------
+  //
+  // Public cost/token statistics (docs/project-plan.md §11, PR 5 of 5), from
+  // GET /stats -- aggregates only, never article content. One chart: spend
+  // per day, the one thing here whose job is "change over time". Everything
+  // else is a stat tile or a table -- a table IS the right form for the
+  // by-model / by-topic breakdowns (comparison of exact values), and it is
+  // also the accessible alternative to the chart, so the chart has a "View
+  // as table" twin rather than being the only way to reach its numbers.
+  //
+  // The chart is built with SVG *presentation attributes* (x/y/width plus
+  // classes), never `style` attributes -- the CloudFront CSP is
+  // `style-src 'self'` with no 'unsafe-inline' (see infra/modules/static-
+  // site), which blocks inline style attributes. Colors come from
+  // styles.css classes using the site's own custom properties, so light/
+  // dark mode is inherited rather than re-implemented here.
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  function svgEl(tag, attrs) {
+    var node = document.createElementNS(SVG_NS, tag);
+    for (var name in attrs || {}) {
+      if (Object.prototype.hasOwnProperty.call(attrs, name)) {
+        node.setAttribute(name, attrs[name]);
+      }
+    }
+    return node;
+  }
+
+  function formatAud(value) {
+    if (value === null || value === undefined) {
+      return "unpriced";
+    }
+    if (value === 0) {
+      return "$0";
+    }
+    return "$" + Number(value).toFixed(Math.abs(value) >= 1 ? 2 : 3);
+  }
+
+  // Y-axis ticks: like formatAud but without the noisy trailing zero on
+  // the 3-decimal small-value form ($0.200 -> $0.20).
+  function formatAxisAud(value) {
+    if (value === 0) {
+      return "$0";
+    }
+    return "$" + Number(value).toFixed(3).replace(/0$/, "");
+  }
+
+  function formatShortDate(isoDate) {
+    var date = new Date(isoDate + "T00:00:00Z");
+    if (isNaN(date.getTime())) {
+      return isoDate;
+    }
+    return date.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+  }
+
+  // Round a value up to a clean 1/2/5 x 10^n ceiling, for a readable y-axis.
+  function niceCeil(value) {
+    if (!(value > 0)) {
+      return 1;
+    }
+    var exponent = Math.pow(10, Math.floor(Math.log(value) / Math.LN10));
+    var fraction = value / exponent;
+    var nice = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+    return nice * exponent;
+  }
+
+  // A column with a 4px rounded data-end (top) and a square baseline.
+  function columnPath(x, y, width, height) {
+    var radius = Math.min(4, width / 2, height);
+    return (
+      "M" + x + "," + (y + height) +
+      " V" + (y + radius) +
+      " Q" + x + "," + y + " " + (x + radius) + "," + y +
+      " H" + (x + width - radius) +
+      " Q" + (x + width) + "," + y + " " + (x + width) + "," + (y + radius) +
+      " V" + (y + height) + " Z"
+    );
+  }
+
+  function statTile(label, value, sub) {
+    var tile = el("div", { className: "stat-tile" });
+    tile.appendChild(el("span", { className: "stat-label", text: label }));
+    tile.appendChild(el("span", { className: "stat-value", text: value }));
+    if (sub) {
+      tile.appendChild(el("span", { className: "stat-sub", text: sub }));
+    }
+    return tile;
+  }
+
+  // rows: arrays of strings, first column left-aligned, the rest numeric.
+  function statsTable(headers, rows) {
+    var wrap = el("div", { className: "stats-table-wrap" });
+    var table = el("table", { className: "stats-table" });
+    var headRow = el("tr");
+    headers.forEach(function (header, index) {
+      headRow.appendChild(
+        el("th", { text: header, className: index === 0 ? "" : "num", attrs: { scope: "col" } })
+      );
+    });
+    table.appendChild(el("thead")).appendChild(headRow);
+    var body = el("tbody");
+    rows.forEach(function (row) {
+      var tr = el("tr");
+      row.forEach(function (cell, index) {
+        tr.appendChild(el("td", { text: cell, className: index === 0 ? "" : "num" }));
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function articleCountText(count) {
+    return count === 1 ? "1 article" : count + " articles";
+  }
+
+  function renderSpendChart(daily) {
+    // viewBox width follows the container (1 SVG unit = 1 CSS px), so axis
+    // text stays a readable 11px instead of scaling down with the chart on
+    // a phone; columns get thinner instead. Sized once per render.
+    var width = Math.max(320, Math.min(720, contentEl.clientWidth || 640));
+    var height = 220;
+    var left = 52;
+    var right = 8;
+    var top = 10;
+    var bottom = 26;
+    var plotWidth = width - left - right;
+    var plotHeight = height - top - bottom;
+
+    var maxCost = 0;
+    daily.forEach(function (day) {
+      maxCost = Math.max(maxCost, day.cost_aud);
+    });
+    var ceiling = niceCeil(maxCost);
+    var slot = plotWidth / daily.length;
+    var barWidth = Math.min(24, slot - 2);
+
+    var wrap = el("div", { className: "stats-chart" });
+    var tooltip = el("div", { className: "chart-tooltip", attrs: { role: "status" } });
+    tooltip.hidden = true;
+    wrap.appendChild(tooltip);
+
+    var svg = svgEl("svg", {
+      viewBox: "0 0 " + width + " " + height,
+      class: "stats-chart-svg",
+      role: "group",
+      "aria-label": "Estimated AI spend per day in AUD, last " + daily.length + " days",
+    });
+
+    [0, 0.5, 1].forEach(function (fraction) {
+      var y = top + plotHeight * (1 - fraction);
+      svg.appendChild(svgEl("line", { x1: left, x2: width - right, y1: y, y2: y, class: "stats-grid" }));
+      var label = svgEl("text", { x: left - 6, y: y + 4, "text-anchor": "end", class: "stats-axis-label" });
+      label.textContent = formatAxisAud(ceiling * fraction);
+      svg.appendChild(label);
+    });
+
+    [0, Math.floor((daily.length - 1) / 2), daily.length - 1].forEach(function (index) {
+      var label = svgEl("text", {
+        x: left + index * slot + slot / 2,
+        y: height - 8,
+        "text-anchor": index === 0 ? "start" : index === daily.length - 1 ? "end" : "middle",
+        class: "stats-axis-label",
+      });
+      label.textContent = formatShortDate(daily[index].date);
+      svg.appendChild(label);
+    });
+
+    function showTooltip(day, target, barTopY) {
+      clearChildren(tooltip);
+      tooltip.appendChild(el("strong", { text: formatAud(day.cost_aud) + " AUD" }));
+      tooltip.appendChild(
+        el("span", { text: formatShortDate(day.date) + " · " + articleCountText(day.articles) })
+      );
+      tooltip.hidden = false;
+      var wrapBox = wrap.getBoundingClientRect();
+      var targetBox = target.getBoundingClientRect();
+      var half = tooltip.offsetWidth / 2;
+      var center = targetBox.left + targetBox.width / 2 - wrapBox.left;
+      tooltip.style.left = Math.min(Math.max(center, half), wrapBox.width - half) + "px";
+      // Sit just above the hovered bar (SVG units -> rendered pixels) so the
+      // tooltip never covers the mark it describes; clamp inside the chart.
+      var scale = wrapBox.width / width;
+      tooltip.style.top = Math.max(0, barTopY * scale - tooltip.offsetHeight - 6) + "px";
+    }
+
+    function hideTooltip() {
+      tooltip.hidden = true;
+    }
+
+    daily.forEach(function (day, index) {
+      var group = svgEl("g", { class: "stats-day" });
+      var barHeight = (day.cost_aud / ceiling) * plotHeight;
+      var barTopY = top + plotHeight - barHeight;
+      if (barHeight > 0) {
+        group.appendChild(
+          svgEl("path", {
+            d: columnPath(
+              left + index * slot + (slot - barWidth) / 2,
+              top + plotHeight - barHeight,
+              barWidth,
+              barHeight
+            ),
+            class: "stats-bar",
+          })
+        );
+      }
+      // Full-height hit target, wider than the mark itself (the 2px gap
+      // between bars included), so hover/focus never needs pixel aim.
+      var hit = svgEl("rect", {
+        x: left + index * slot,
+        y: top,
+        width: slot,
+        height: plotHeight,
+        class: "stats-hit",
+        tabindex: "0",
+        "aria-label":
+          formatShortDate(day.date) + ": " + formatAud(day.cost_aud) + " AUD, " + articleCountText(day.articles),
+      });
+      hit.addEventListener("pointerenter", function () {
+        showTooltip(day, hit, barTopY);
+      });
+      hit.addEventListener("focus", function () {
+        showTooltip(day, hit, barTopY);
+      });
+      hit.addEventListener("pointerleave", hideTooltip);
+      hit.addEventListener("blur", hideTooltip);
+      group.appendChild(hit);
+      svg.appendChild(group);
+    });
+
+    wrap.appendChild(svg);
+    return wrap;
+  }
+
+  function renderStats(stats) {
+    clearChildren(contentEl);
+    contentEl.appendChild(el("h1", { text: "Stats" }));
+    contentEl.appendChild(el("p", { className: "stats-note", text: stats.cost_basis }));
+
+    var totals = stats.totals;
+    var spendSub = "AUD, all time";
+    if (totals.unpriced_calls > 0) {
+      spendSub +=
+        " (lower bound: " + totals.unpriced_calls + " unpriced call" + (totals.unpriced_calls === 1 ? "" : "s") + ")";
+    }
+    var tiles = el("div", { className: "stats-tiles" });
+    tiles.appendChild(statTile("Estimated AI spend", formatAud(totals.cost_aud), spendSub));
+    tiles.appendChild(
+      statTile("Articles drafted", formatCount(totals.articles), formatCount(totals.published) + " published")
+    );
+    tiles.appendChild(
+      statTile(
+        "Average cost per article",
+        totals.avg_cost_aud === null ? "No data" : formatAud(totals.avg_cost_aud),
+        "AUD, articles with cost data"
+      )
+    );
+    tiles.appendChild(
+      statTile(
+        "Tokens",
+        formatCount(totals.input_tokens + totals.output_tokens),
+        formatCount(totals.input_tokens) + " in / " + formatCount(totals.output_tokens) + " out"
+      )
+    );
+    contentEl.appendChild(tiles);
+
+    var daily = stats.daily || [];
+    var activeDays = daily.filter(function (day) {
+      return day.cost_aud > 0 || day.articles > 0;
+    });
+    contentEl.appendChild(el("h2", { text: "Estimated spend per day", className: "section-heading" }));
+    if (activeDays.length === 0) {
+      contentEl.appendChild(el("p", { text: "No spend recorded in the last " + daily.length + " days yet." }));
+    } else {
+      contentEl.appendChild(renderSpendChart(daily));
+      var details = el("details", { className: "stats-details" });
+      details.appendChild(el("summary", { text: "View as table" }));
+      details.appendChild(
+        statsTable(
+          ["Date", "Articles", "Tokens in", "Tokens out", "Est. cost (AUD)"],
+          activeDays.map(function (day) {
+            return [
+              formatShortDate(day.date),
+              formatCount(day.articles),
+              formatCount(day.input_tokens),
+              formatCount(day.output_tokens),
+              formatAud(day.cost_aud),
+            ];
+          })
+        )
+      );
+      contentEl.appendChild(details);
+    }
+
+    contentEl.appendChild(el("h2", { text: "By model", className: "section-heading" }));
+    if ((stats.by_model || []).length === 0) {
+      contentEl.appendChild(el("p", { text: "No model usage recorded yet." }));
+    } else {
+      contentEl.appendChild(
+        statsTable(
+          ["Model", "Calls", "Tokens in", "Tokens out", "Est. cost (AUD)"],
+          stats.by_model.map(function (row) {
+            var cost = formatAud(row.cost_aud);
+            if (row.cost_aud !== null && row.unpriced_calls > 0) {
+              cost += " (+" + row.unpriced_calls + " unpriced)";
+            }
+            return [
+              row.display_name,
+              formatCount(row.calls),
+              formatCount(row.input_tokens),
+              formatCount(row.output_tokens),
+              cost,
+            ];
+          })
+        )
+      );
+    }
+
+    contentEl.appendChild(el("h2", { text: "By topic", className: "section-heading" }));
+    if ((stats.by_topic || []).length === 0) {
+      contentEl.appendChild(el("p", { text: "No topic usage recorded yet." }));
+    } else {
+      contentEl.appendChild(
+        statsTable(
+          ["Topic", "Articles", "Tokens in", "Tokens out", "Est. cost (AUD)"],
+          stats.by_topic.map(function (row) {
+            return [
+              row.name,
+              formatCount(row.articles),
+              formatCount(row.input_tokens),
+              formatCount(row.output_tokens),
+              formatAud(row.cost_aud),
+            ];
+          })
+        )
+      );
+    }
+
+    if (stats.generated_at) {
+      contentEl.appendChild(
+        el("p", { className: "stats-note", text: "Updated " + new Date(stats.generated_at).toLocaleString() })
+      );
+    }
+  }
+
+  function loadStats() {
+    showMessage("Loading stats...");
+    fetchJson(apiUrl("/stats"))
+      .then(renderStats)
+      .catch(function () {
+        showMessage("Could not load stats right now.");
+      });
+  }
+
   // --- Article detail -----------------------------------------------------
 
   function renderArticle(article) {
@@ -395,6 +887,7 @@
     meta.appendChild(document.createTextNode(" · "));
     meta.appendChild(el("span", { className: "view-count", text: article.view_count + " views" }));
     contentEl.appendChild(meta);
+    contentEl.appendChild(el("p", { className: "lineage-summary", text: articleDetailSummaryText(article) }));
 
     var body = el("div", { className: "article-body" });
     // Render body as plain text paragraphs, split on blank lines, rather
@@ -437,6 +930,7 @@
       contentEl.appendChild(sourcesSection);
     }
 
+    contentEl.appendChild(renderLineageFooter(article.lineage, article.published_by));
     contentEl.appendChild(renderFeedback(article.article_id));
   }
 
@@ -805,6 +1299,9 @@
     if (path === "/musings") {
       return { name: "musings" };
     }
+    if (path === "/stats") {
+      return { name: "stats" };
+    }
     return { name: "not-found" };
   }
 
@@ -820,6 +1317,8 @@
       renderLegalPage(current.pageKey);
     } else if (current.name === "musings") {
       loadMusings();
+    } else if (current.name === "stats") {
+      loadStats();
     } else {
       showMessage("Page not found.");
     }

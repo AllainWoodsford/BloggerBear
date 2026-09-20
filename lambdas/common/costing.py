@@ -20,6 +20,20 @@ from common.dynamo import get_model
 USD_TO_AUD_RATE = 1.50
 
 
+def call_cost_usd(call: dict, model: dict | None) -> float | None:
+    """USD cost of one tracked call given its model's registry entry, or
+    None if that model isn't registered / has no input price. The single
+    formula behind both per-article lineage cost (below) and the public
+    Stats page's aggregation (common/stats.py, PR 5 of 5), which passes in
+    entries from one list_models() scan instead of a get_model per call.
+    """
+    if model is None or model.get("input_price_usd_per_1k_tokens") is None:
+        return None
+    input_price = model["input_price_usd_per_1k_tokens"]
+    output_price = model.get("output_price_usd_per_1k_tokens") or 0.0
+    return (call["input_tokens"] / 1000) * input_price + (call["output_tokens"] / 1000) * output_price
+
+
 def calculate_lineage_cost_aud(calls: list[dict]) -> tuple[float | None, str | None]:
     """Sum a list of tracked-call dicts' cost in AUD, or (None, note) if
     any contributing model's pricing isn't registered.
@@ -31,14 +45,10 @@ def calculate_lineage_cost_aud(calls: list[dict]) -> tuple[float | None, str | N
     """
     total_usd = 0.0
     for call in calls:
-        model_id = call["model_id"]
-        model = get_model(model_id)
-        if model is None or model.get("input_price_usd_per_1k_tokens") is None:
-            return None, f"pricing not available for {model_id}"
-        input_price = model["input_price_usd_per_1k_tokens"]
-        output_price = model.get("output_price_usd_per_1k_tokens") or 0.0
-        total_usd += (call["input_tokens"] / 1000) * input_price
-        total_usd += (call["output_tokens"] / 1000) * output_price
+        call_usd = call_cost_usd(call, get_model(call["model_id"]))
+        if call_usd is None:
+            return None, f"pricing not available for {call['model_id']}"
+        total_usd += call_usd
     return total_usd * USD_TO_AUD_RATE, None
 
 

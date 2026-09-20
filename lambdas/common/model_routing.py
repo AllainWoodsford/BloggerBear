@@ -4,7 +4,15 @@ docs/project-plan.md §11).
 Resolves which Bedrock model (and optional fallback) a given call should
 use, without ever requiring a Terraform apply to change it:
 
-    topic-level override  ->  ModelConfig "default" row  ->  env var
+    topic rotation candidates  ->  topic-level override
+        ->  ModelConfig "default" row  ->  env var
+
+A topic's `model_id_candidates` list (PR 4 of 5) enables rotation: one
+candidate is picked at random per resolve_model call. Callers resolve
+once per run, so every Bedrock call that goes into one article uses the
+same picked model -- an article's lineage stays coherent, and the
+variation happens *between* runs, which is the point (e.g. try a
+different model on a topic for a while and compare the results).
 
 Each step is optional -- a topic with no override, or a ModelConfig table
 with no "default" row yet (fresh deploy, or nobody's configured it),
@@ -16,6 +24,7 @@ final safety net and always works.
 from __future__ import annotations
 
 import os
+import random
 
 from common.dynamo import get_model_config
 
@@ -33,7 +42,11 @@ def resolve_model(topic: dict | None = None) -> tuple[str, str | None]:
     fallback_model_id = None
 
     if topic:
-        model_id = topic.get("model_id") or None
+        candidates = [c for c in (topic.get("model_id_candidates") or []) if c]
+        if candidates:
+            model_id = random.choice(candidates)
+        else:
+            model_id = topic.get("model_id") or None
         fallback_model_id = topic.get("fallback_model_id") or None
 
     if model_id is None or fallback_model_id is None:
