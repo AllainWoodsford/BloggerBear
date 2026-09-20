@@ -79,6 +79,25 @@ def test_render_and_publish_article_page_omits_sources_footer_when_none(s3):
     assert "sources-footer" not in html
 
 
+def test_render_and_publish_article_page_dedupes_duplicate_sources(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="a2b",
+        title="Duplicate Sources",
+        body_markdown="Body text.",
+        topic_name="Hacker News",
+        published_at="2026-09-20T00:00:00+00:00",
+        source_refs=[
+            {"url": "https://example.com/x", "title": "example/x"},
+            {"url": "https://example.com/x", "title": "example/x"},
+        ],
+        view_count=0,
+    )
+
+    stored = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/a2b.html")
+    html = stored["Body"].read().decode("utf-8")
+    assert html.count('href="https://example.com/x"') == 1
+
+
 def test_render_and_publish_article_page_escapes_title_and_body(s3):
     static_pages.render_and_publish_article_page(
         article_id="a3",
