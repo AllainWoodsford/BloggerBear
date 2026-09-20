@@ -160,3 +160,77 @@ def test_source_refs_one_per_story():
         {"url": "https://example.com/a", "title": "a", "accessed_at": "2026-09-13T00:00:00+00:00"},
         {"url": "https://example.com/b", "title": "b", "accessed_at": "2026-09-13T00:00:00+00:00"},
     ]
+
+
+# --- topic relevance filtering -----------------------------------------------------
+
+NOISY_FRONT_PAGE = [
+    _story_item(1, "Critical ransomware campaign hits hospitals", 300),
+    _story_item(2, "I built a backyard pizza oven", 250),
+    _story_item(3, "What we know about the UFO sightings", 200),
+    _story_item(4, "New zero-day in a popular VPN", 150),
+]
+
+
+def _fetch_with_config(adapter_config, items=NOISY_FRONT_PAGE):
+    responses = [
+        _mock_json_response([item["id"] for item in items]),
+        *[_mock_json_response(item) for item in items],
+    ]
+    with patch("common.adapters.hacker_news.requests.get", side_effect=responses) as mock_get:
+        state = HackerNewsAdapter().fetch_state({"adapter_config": adapter_config})
+    return state, mock_get
+
+
+def test_keywords_drop_off_topic_stories_before_they_reach_a_summary():
+    state, _ = _fetch_with_config({"keywords": ["ransomware", "zero-day", "vulnerability"]})
+
+    assert [s["title"] for s in state["stories"]] == [
+        "Critical ransomware campaign hits hospitals",
+        "New zero-day in a popular VPN",
+    ]
+    assert state["off_topic_dropped"] == 2
+
+
+def test_without_keywords_nothing_is_filtered_and_no_counter_is_added():
+    state, _ = _fetch_with_config({})
+
+    assert len(state["stories"]) == 4
+    assert "off_topic_dropped" not in state
+
+
+def test_a_keyword_filter_widens_the_candidate_pool_unless_limit_is_set():
+    ids = list(range(1, 101))
+    ids_response = _mock_json_response(ids)
+    items = [_mock_json_response(_story_item(i, f"Story {i}", 1)) for i in range(1, 61)]
+
+    with patch(
+        "common.adapters.hacker_news.requests.get", side_effect=[ids_response, *items]
+    ) as mock_get:
+        HackerNewsAdapter().fetch_state({"adapter_config": {"keywords": ["story"]}})
+    assert mock_get.call_count == 1 + 60  # 60 candidates examined, not the usual 25
+
+    ids_response = _mock_json_response(ids)
+    items = [_mock_json_response(_story_item(i, f"Story {i}", 1)) for i in range(1, 11)]
+    with patch(
+        "common.adapters.hacker_news.requests.get", side_effect=[ids_response, *items]
+    ) as mock_get:
+        HackerNewsAdapter().fetch_state({"adapter_config": {"keywords": ["story"], "limit": 10}})
+    assert mock_get.call_count == 1 + 10
+
+
+def test_kept_stories_are_capped_when_filtering():
+    items = [_story_item(i, f"Security story {i}", 1) for i in range(1, 41)]
+
+    state, _ = _fetch_with_config({"keywords": ["security"], "limit": 40}, items=items)
+
+    assert len(state["stories"]) == 25
+
+
+def test_nothing_relevant_is_never_material_so_no_model_call_is_wasted():
+    adapter = HackerNewsAdapter()
+    empty = {"stories": [], "off_topic_dropped": 25, "fetched_at": "2026-09-20T00:00:00+00:00"}
+    old = {"stories": [{"id": 1, "title": "Old", "score": 1, "url": "u"}]}
+
+    assert adapter.material_diff(None, empty) == (False, "no relevant stories to report")
+    assert adapter.material_diff(old, empty) == (False, "no relevant stories to report")

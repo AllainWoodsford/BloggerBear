@@ -240,6 +240,11 @@ def test_adapters_without_a_prompt_get_the_generic_one(aws_resources, monkeypatc
     prompt = mock_invoke.call_args.args[0]
     assert 'monitoring the topic "Python trending repos"' in prompt
     assert "do not give financial or investment advice" in prompt
+    # The research summary is anchored to the active topic, so off-topic
+    # noise in the source data is ignored rather than summarized.
+    assert "RELEVANCE RULE: this digest covers 'Python trending repos' and nothing else" in prompt
+    assert prompt.index("Current state") < prompt.index("RELEVANCE RULE")
+    assert prompt.index("RELEVANCE RULE") < prompt.index("Summarize what changed")
 
 
 def test_opt_in_adapters_receive_the_prior_snapshot_others_do_not(aws_resources, monkeypatch):
@@ -284,5 +289,6 @@ def test_a_generic_web_search_topic_runs_end_to_end(aws_resources):
 
     assert result == {"status": "material_change", "summary": "AI summary"}
     assert 'monitoring the topic "Ai-News"' in mock_invoke.call_args.args[0]
+    assert "this digest covers 'Ai-News' and nothing else" in mock_invoke.call_args.args[0]
     finding = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"][0]
     assert [ref["url"] for ref in finding["source_refs"]] == ["https://news.example/ai"]
