@@ -375,6 +375,26 @@ def test_topics_candidates_calls_get():
     )
 
 
+def test_articles_publish_calls_post():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["articles", "publish", "article-1"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/articles/article-1/publish",
+        "ap-southeast-2",
+        body=None,
+    )
+
+
+def test_failed_executions_list_calls_get():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"items": []})) as m:
+        _run(["failed-executions", "list"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/failed-executions", "ap-southeast-2", body=None
+    )
+
+
 def test_moderation_list_calls_get():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"items": []})) as m:
         _run(["moderation", "list"])
