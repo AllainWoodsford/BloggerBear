@@ -82,6 +82,12 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 # on its queue item (`review_notes`, shown by `moderation list`) without changing any
 # outcome; `off` skips it; '' clears the setting. Costs about one extra model call per article.
 python scripts/admin_cli.py pipeline-config set --review-mode off
+# How the review is doing, from the records it leaves on articles: counts by outcome and
+# topic, unavailable reasons, what enforcement WOULD have held and revised (the number that
+# decides whether turning it on is safe), readiness against the plan's starting thresholds,
+# and a sample of recent flagged claims to check by eye.
+python scripts/admin_cli.py review report
+python scripts/admin_cli.py review report --sample 25
 python scripts/admin_cli.py pipeline-config set --review-mode shadow
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --review-mode shadow
 python scripts/admin_cli.py topics delete github-trending

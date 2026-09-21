@@ -63,6 +63,7 @@ from common.fresh_review import resolve_review_mode, review_mode_error
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.musings import generate_and_store_article_musing
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
+from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
 from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
@@ -616,6 +617,26 @@ def _lineage_backfill(event: dict) -> dict:
     )
 
 
+# --- Fresh-data review report ---------------------------------------------
+
+
+def _review_report(event: dict) -> dict:
+    """How the fresh-data review is doing, from the records on the articles: outcome and
+    status counts, per-topic rates, and what enforcement *would have* held and revised,
+    so turning it on is decided from numbers. `?sample=N` sets how many recent flagged
+    claims to include (default 10, at most 50)."""
+    raw = _query_param(event, "sample")
+    sample = DEFAULT_SAMPLE_SIZE
+    if raw is not None:
+        try:
+            sample = int(raw)
+        except ValueError:
+            return _error(400, "'sample' must be a whole number")
+        if not 0 <= sample <= MAX_SAMPLE_SIZE:
+            return _error(400, f"'sample' must be between 0 and {MAX_SAMPLE_SIZE}")
+    return _response(200, build_review_report(list_all_articles(), list_topics(), sample_size=sample))
+
+
 # --- Moderation queue -----------------------------------------------------
 
 
@@ -896,6 +917,7 @@ _ROUTES = {
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
+    "GET /review/report": _review_report,
     "GET /lineage/audit": _lineage_audit,
     "POST /lineage/backfill": _lineage_backfill,
     "GET /moderation-queue": _list_moderation_queue,
