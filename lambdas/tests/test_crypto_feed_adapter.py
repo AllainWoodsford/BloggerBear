@@ -174,6 +174,9 @@ def test_round_price_keeps_precision_for_sub_dollar_coins():
 
 def test_stablecoins_are_recognised_by_id_and_by_a_flat_peg():
     assert is_stablecoin(_market("tether", 1.0, 3))
+    # gold-backed tokens move with the metal, so no peg check catches them: by id only
+    assert is_stablecoin(_market("pax-gold", 4200.0, 30, c24=1.5, c7=3.0))
+    assert is_stablecoin(_market("tether-gold", 4200.0, 25, c24=1.5, c7=3.0))
     assert is_stablecoin(_market("mystery-usd", 1.001, 40, c24=0.1, c7=0.2))
     # trades around $1 but is volatile: an altcoin, not a stablecoin
     assert not is_stablecoin(_market("volatile", 1.01, 40, c24=9.0, c7=25.0))
