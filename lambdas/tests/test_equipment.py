@@ -292,7 +292,7 @@ def test_guidance_is_capped_and_the_record_only_lists_what_was_used():
         worn("chest", "global", version="b", text="This one does not fit."),
     ]
 
-    text, used = eq.guidance_for("t1", items)
+    text, used = eq.guidance_for("t1", items, TakeAll)
 
     assert text == long_text
     assert [u["version"] for u in used] == ["a"]
@@ -300,7 +300,9 @@ def test_guidance_is_capped_and_the_record_only_lists_what_was_used():
 
 def test_an_empty_piece_is_ignored():
     text, used = eq.guidance_for(
-        "t1", [worn("helmet", "global", text="  "), worn("chest", "global", text="Real.", version="c")]
+        "t1",
+        [worn("helmet", "global", text="  "), worn("chest", "global", text="Real.", version="c")],
+        TakeAll,
     )
 
     assert text == "Real."
