@@ -492,6 +492,67 @@ def _cmd_articles_feedback_unlock(args: argparse.Namespace) -> None:
     )
 
 
+# --- inbox and review: what is waiting for you -----------------------------
+
+
+def _review_api(args: argparse.Namespace):
+    """The review inbox's view of the Admin API: the same signed requests every other command
+    makes, with failures turned into errors the inbox can report and carry on from."""
+    import review_inbox
+
+    api_url = _resolve_api_url(args)
+    region = _resolve_region(args)
+    return review_inbox.Api(
+        lambda method, path, body=None: signed_request(method, api_url, path, region, body=body)
+    )
+
+
+def _is_mock(args: argparse.Namespace) -> bool:
+    return bool(args.mock) or os.environ.get("BLOGGERBEAR_REVIEW_MOCK", "").lower() in ("1", "true", "yes")
+
+
+def _cmd_inbox(args: argparse.Namespace) -> None:
+    import review_inbox
+
+    if _is_mock(args):
+        print(review_inbox.mock_inbox_report())
+        return
+    print(review_inbox.inbox_report(_review_api(args)))
+
+
+def _cmd_approve(args: argparse.Namespace) -> None:
+    import review_inbox
+
+    mock = _is_mock(args)
+    if args.limit < 1:
+        raise CliError("--limit must be at least 1")
+    store = review_inbox.SkipStore(review_inbox_state_path(mock))
+    if args.reset_skipped:
+        print(f"Forgot {store.clear()} skipped item(s).")
+    sources = review_inbox.build_sources(None if mock else _review_api(args), args.source, mock)
+    if mock:
+        print("PRACTICE MODE: made-up items; nothing is read from or sent to AWS.")
+    try:
+        review_inbox.review(
+            sources,
+            limit=args.limit,
+            store=store,
+            skip_hours=args.skip_hours,
+            include_skipped=args.include_skipped,
+            dry_run=args.dry_run,
+        )
+    except KeyboardInterrupt:
+        print("\nStopped. Nothing you already decided is lost.")
+
+
+def review_inbox_state_path(mock: bool):
+    """Where skips are remembered. Practice mode uses its own file so it never hides real items."""
+    import review_inbox
+
+    store = review_inbox.SkipStore()
+    return store.path.with_name("review-skips-practice.json") if mock else store.path
+
+
 # --- pipeline-config subcommands ----------------------------------------
 
 
@@ -955,6 +1016,72 @@ def build_parser() -> argparse.ArgumentParser:
     )
     feedback_config_set.set_defaults(func=_cmd_feedback_config_set)
 
+
+    inbox_parser = subparsers.add_parser(
+        "inbox", help="What is waiting for you (articles, prompt changes, failed runs), at a glance"
+    )
+    inbox_parser.add_argument(
+        "--mock", action="store_true", default=False, help="Made-up numbers; no AWS needed"
+    )
+    inbox_parser.set_defaults(func=_cmd_inbox)
+
+    review_parser_cli = subparsers.add_parser(
+        "approve",
+        help=(
+            "Go through what is waiting for you, one keystroke each: y approve, r reject, "
+            "z skip, v read it all, q quit. Up to 30 at a time; run it again for the next batch"
+        ),
+    )
+    review_parser_cli.add_argument(
+        "--limit", type=int, default=30, help="How many to go through this time (default 30)"
+    )
+    review_parser_cli.add_argument(
+        "--source",
+        choices=["all", "moderation", "refinements"],
+        default="all",
+        help="Only articles (moderation) or only prompt changes (refinements). Default: both",
+    )
+    review_parser_cli.add_argument(
+        "--skip-hours",
+        dest="skip_hours",
+        type=int,
+        default=24,
+        help=(
+            "A skipped item is hidden from your next reviews for this many hours "
+            "(default 24; 0 = until cleared)"
+        ),
+    )
+    review_parser_cli.add_argument(
+        "--include-skipped",
+        dest="include_skipped",
+        action="store_true",
+        default=False,
+        help="Show items you skipped earlier too",
+    )
+    review_parser_cli.add_argument(
+        "--reset-skipped",
+        dest="reset_skipped",
+        action="store_true",
+        default=False,
+        help="Forget everything you skipped before starting",
+    )
+    review_parser_cli.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Go through the motions but change nothing",
+    )
+    review_parser_cli.add_argument(
+        "--mock",
+        action="store_true",
+        default=False,
+        help=(
+            "Practise the keys on made-up items: no AWS, nothing sent "
+            "(or set BLOGGERBEAR_REVIEW_MOCK=1)"
+        ),
+    )
+    review_parser_cli.set_defaults(func=_cmd_approve)
 
     pipeline_config_parser = subparsers.add_parser(
         "pipeline-config",
