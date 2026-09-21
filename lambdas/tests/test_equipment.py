@@ -330,3 +330,56 @@ def test_describe_lays_out_the_slots_the_rings_and_the_backpack():
     assert view["max_rings"] == eq.MAX_RINGS
     assert view["backpack_count"] == 2
     assert [i["version"] for i in view["legacy"]] == ["old"]
+
+
+# --- the bear's suggested slot --------------------------------------------------------------
+
+
+def test_the_suggested_armor_slot_is_taken_when_it_is_empty():
+    items = [worn("helmet", "global", version="h")]
+
+    assert eq.suggest_slot(items, "global", "shield") == "shield"
+
+
+def test_a_taken_suggestion_falls_back_to_the_first_empty_slot():
+    items = [worn("helmet", "global", version="h"), worn("shield", "global", version="s")]
+
+    assert eq.suggest_slot(items, "global", "shield") == "chest"
+
+
+def test_a_suggestion_that_is_not_an_armor_slot_is_ignored():
+    assert eq.suggest_slot([], "global", "ring") == "helmet"
+    assert eq.suggest_slot([], "global", "hat") == "helmet"
+    assert eq.suggest_slot([], "global", None) == "helmet"
+
+
+def test_with_no_slot_named_an_item_goes_where_the_bear_suggested():
+    target = {**benched(version="new"), "slot_hint": "boots"}
+
+    plan = eq.plan_equip([], target, scope="global")
+
+    assert plan["slot"] == "boots"
+
+
+def test_naming_a_slot_beats_the_suggestion():
+    target = {**benched(version="new"), "slot_hint": "boots"}
+
+    plan = eq.plan_equip([], target, scope="global", slot="sword")
+
+    assert plan["slot"] == "sword"
+
+
+def test_describe_decorates_every_item_it_shows():
+    items = [
+        worn("helmet", "global", version="h"),
+        worn("ring", "topic", version="r"),
+        benched(version="b"),
+        item(version="old"),
+    ]
+
+    view = eq.describe(items, decorate=lambda i: {**i, "name": "N-" + i["version"]})
+
+    assert view["armor"]["helmet"]["name"] == "N-h" and view["armor"]["chest"] is None
+    assert [i["name"] for i in view["rings"]] == ["N-r"]
+    assert [i["name"] for i in view["backpack"]] == ["N-b"]
+    assert [i["name"] for i in view["legacy"]] == ["N-old"]

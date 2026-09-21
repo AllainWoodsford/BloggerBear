@@ -94,12 +94,15 @@ def free_armor_slots(items: list[dict]) -> list[str]:
     return [slot for slot in ARMOR_SLOTS if slot not in taken]
 
 
-def suggest_slot(items: list[dict], scope: str) -> str | None:
-    """A sensible place for a new item: the first empty armor slot (global) or a ring (topic),
-    or None when that kind is full and the caller must choose what to replace."""
+def suggest_slot(items: list[dict], scope: str, hint: str | None = None) -> str | None:
+    """A sensible place for a new item: for armor (global) the slot the bear would pick (`hint`) if
+    it is empty, else the first empty one; a ring (topic). None when that kind is full and the caller
+    must choose what to replace."""
     if scope == SCOPE_TOPIC:
         return RING_SLOT if len(rings(items)) < MAX_RINGS else None
     free = free_armor_slots(items)
+    if hint in free:
+        return hint
     return free[0] if free else None
 
 
@@ -123,7 +126,7 @@ def plan_equip(
 
     if scope == SCOPE_GLOBAL:
         if slot is None:
-            slot = suggest_slot(worn, SCOPE_GLOBAL)
+            slot = suggest_slot(worn, SCOPE_GLOBAL, target.get("slot_hint"))
             if slot is None:
                 raise EquipError(409, "every armor slot is worn: choose one to replace with a slot")
         if slot not in ARMOR_SLOTS:
@@ -205,16 +208,18 @@ def guidance_for(topic_id: str, items: list[dict], rng=None) -> tuple[str | None
     return "\n".join(f"- {text}" for _, text in pieces), used
 
 
-def describe(items: list[dict]) -> dict:
-    """The whole loadout, for the admin: what each slot holds, the rings, and the backpack."""
+def describe(items: list[dict], decorate=None) -> dict:
+    """The whole loadout, for the admin: what each slot holds, the rings, and the backpack.
+    `decorate`, if given, is applied to every item shown (to add a name, say)."""
+    decorate = decorate or (lambda item: item)
     approved = [i for i in items if i.get("status") == "approved"]
-    armor = {slot: occupant(approved, slot) for slot in ARMOR_SLOTS}
     pack = backpack(approved)
+    held = occupant
     return {
-        "armor": armor,
-        "rings": rings(approved),
+        "armor": {slot: (decorate(i) if (i := held(approved, slot)) else None) for slot in ARMOR_SLOTS},
+        "rings": [decorate(i) for i in rings(approved)],
         "max_rings": MAX_RINGS,
-        "backpack": sorted(pack, key=lambda i: i.get("version") or ""),
+        "backpack": [decorate(i) for i in sorted(pack, key=lambda i: i.get("version") or "")],
         "backpack_count": len(pack),
-        "legacy": [i for i in approved if is_legacy(i)],
+        "legacy": [decorate(i) for i in approved if is_legacy(i)],
     }
