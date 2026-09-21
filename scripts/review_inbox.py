@@ -236,9 +236,14 @@ class RefinementSource(ContentSource):
                     topic=row.get("topic_id"),
                     created_at=row.get("version"),
                     why=[str(row.get("rationale") or "(no rationale given)")],
+                    facts=_gear_facts(row),
                     body=str(row.get("prompt_changes") or ""),
                     approve_note="Approving changes how future articles on this topic are written.",
-                    ref={"topic_id": row.get("topic_id"), "version": row.get("version")},
+                    ref={
+                        "topic_id": row.get("topic_id"),
+                        "version": row.get("version"),
+                        "slot_hint": row.get("slot_hint"),
+                    },
                 )
             )
             if len(items) >= limit:
@@ -261,12 +266,34 @@ class RefinementSource(ContentSource):
     def approve(self, item: Item) -> str:
         path = f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/approve"
         response = self.api.post(path, item.ref.get("placement") or None)
-        placement = (response.get("approved") or {}).get("placement") or {}
-        return "approved: " + _worn_message(placement)
+        approved = response.get("approved") or {}
+        found = _gear_line(approved.get("item"))
+        return "approved: " + found + _worn_message(approved.get("placement") or {})
 
     def reject(self, item: Item) -> str:
         self.api.post(f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/reject")
         return "rejected"
+
+
+def _gear_line(gear: dict | None) -> str:
+    """"Helm of Plain Speaking (rare, durability 17/17): " -- what the bear found, when the API says."""
+    if not gear or not gear.get("name"):
+        return ""
+    wear = f"durability {gear.get('durability')}/{gear.get('max_durability')}"
+    return f"{gear['name']} ({gear.get('rarity')}, {wear}): "
+
+
+def _gear_facts(row: dict) -> list[str]:
+    """What the bear found in a proposal, for its card. Nothing for one proposed before gear."""
+    if not row.get("rarity"):
+        return []
+    facts = [
+        f"The bear found: {row.get('name')} ({row.get('rarity')})",
+        f"Durability: {row.get('durability')}/{row.get('max_durability')}",
+    ]
+    if row.get("slot_hint"):
+        facts.append(f"The bear suggests: {row['slot_hint']}")
+    return facts
 
 
 def _short(text, limit: int = 60) -> str:
@@ -314,11 +341,23 @@ def choose_placement(item: Item, loadout: dict, key_reader: Callable[[], str], o
     armor = loadout.get("armor") or {}
     rings = loadout.get("rings") or []
     max_rings = int(loadout.get("max_rings") or 5)
+    suggested = item.ref.get("slot_hint")
+    armor_suggested = suggested in armor  # the bear thinks it is armor; anything else, a ring
     _emit("  Where should the bear wear it?", out)
-    _emit(f"    t  a ring for {item.topic} ({len(rings)} of {max_rings} rings worn)  [Enter]", out)
-    _emit("    g  an armor slot: guidance for every topic", out)
+    _emit(
+        f"    t  a ring for {item.topic} ({len(rings)} of {max_rings} rings worn)"
+        + ("" if armor_suggested else "  [Enter]"),
+        out,
+    )
+    _emit(
+        "    g  an armor slot: guidance for every topic"
+        + (f"; the bear suggests the {suggested}  [Enter]" if armor_suggested else ""),
+        out,
+    )
     _emit(f"    b  the backpack: approved but not worn ({loadout.get('backpack_count', 0)} there now)", out)
-    choice = _ask(key_reader, out, "  Choose t / g / b (c cancels): ", "tgb", default="t")
+    choice = _ask(
+        key_reader, out, "  Choose t / g / b (c cancels): ", "tgb", default="g" if armor_suggested else "t"
+    )
     if choice is None:
         return None
     if choice == "b":
@@ -336,15 +375,17 @@ def choose_placement(item: Item, loadout: dict, key_reader: Callable[[], str], o
         ring = rings[int(pick) - 1]
         return {"scope": "topic", "replace": {"topic_id": ring["topic_id"], "version": ring["version"]}}
     slots = list(armor)
-    empty = next((n for n, slot in enumerate(slots, start=1) if not armor[slot]), None)
-    hint = "  (Enter takes the first empty one)" if empty else "  (all are worn)"
+    first_empty = next((n for n, slot in enumerate(slots, start=1) if not armor[slot]), None)
+    # The bear's pick if that slot is empty, else the first empty one, else nothing is offered.
+    empty = slots.index(suggested) + 1 if armor_suggested and not armor[suggested] else first_empty
+    hint = "  (Enter takes the empty one marked *)" if empty else "  (all are worn)"
     _emit("  Which armor slot?" + hint, out)
     for number, slot in enumerate(slots, start=1):
         held = armor[slot]
         state = "empty"
         if held:
             state = f"worn: {_short(held.get('prompt_changes'), 45)}  <- it would be replaced"
-        _emit(f"    {number}  {slot}: {state}", out)
+        _emit(f"    {number}  {slot}: {state}" + ("  *" if number == empty else ""), out)
     pick = _ask(
         key_reader,
         out,

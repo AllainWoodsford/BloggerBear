@@ -605,8 +605,11 @@ def put_prompt_refinement(
     rationale: str,
     prompt_changes: str,
     status: str = "pending",
+    extra: dict | None = None,
 ) -> dict:
     """Write a PromptRefinements item and return it.
+
+    `extra` is any further fields to store with it (its gear identity: common/gear.py).
 
     `proposed_at` is set equal to `version` -- both are the same ISO-8601
     timestamp; keeping them identical is simpler than tracking two separate
@@ -620,6 +623,7 @@ def put_prompt_refinement(
         "rationale": rationale,
         "prompt_changes": prompt_changes,
         "status": status,
+        **(extra or {}),
     }
     table.put_item(Item=item)
     return item
@@ -693,6 +697,21 @@ def set_prompt_refinement_equipment(
         Key={"topic_id": topic_id, "version": version},
         UpdateExpression="SET equipped = :f, unequipped_at = :at REMOVE slot",
         ExpressionAttributeValues={":f": False, ":at": at},
+        ConditionExpression="attribute_exists(topic_id)",
+    )
+
+
+def set_prompt_refinement_fields(topic_id: str, version: str, fields: dict) -> None:
+    """Set plain fields on an existing PromptRefinements item (its gear identity, a rarity bump).
+    Refuses to create an item that does not exist."""
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    table.update_item(
+        Key={"topic_id": topic_id, "version": version},
+        UpdateExpression="SET " + ", ".join(f"#f{n} = :v{n}" for n in range(len(fields))),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
         ConditionExpression="attribute_exists(topic_id)",
     )
 

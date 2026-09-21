@@ -538,6 +538,20 @@ def test_equipment_equip_with_no_options_sends_an_empty_body():
     assert _sent(["equipment", "equip", "topic-a", VERSION]).kwargs["body"] == {}
 
 
+def test_equipment_bump_goes_one_step_up_by_default_or_to_a_named_rarity():
+    step = _sent(["equipment", "bump", "topic-a", VERSION])
+    named = _sent(["equipment", "bump", "topic-a", VERSION, "--to", "epic"])
+
+    assert step.args[2] == f"/prompt-refinements/topic-a/{ENCODED}/rarity"
+    assert step.kwargs["body"] == {}
+    assert named.kwargs["body"] == {"rarity": "epic"}
+
+
+def test_equipment_bump_refuses_a_rarity_that_cannot_be_a_bump():
+    with pytest.raises(SystemExit):
+        _run(["equipment", "bump", "topic-a", VERSION, "--to", "common"])
+
+
 def test_equipment_unequip_posts():
     call = _sent(["equipment", "unequip", "topic-a", VERSION])
 
