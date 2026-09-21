@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from common import equipment as eq
+
+
+class TakeAll:
+    """A stand-in for the random choice that takes in every piece of armor, for exact assertions."""
+
+    @staticmethod
+    def randint(low, high):
+        return high
+
+    @staticmethod
+    def sample(population, count):
+        return list(population)
 
 
 def item(topic="t1", version="v1", text="Be concise.", **fields):
@@ -187,7 +201,64 @@ def test_armor_comes_in_slot_order_not_the_order_worn():
         worn("helmet", "global", version="h", text="Helmet.", at="2026-09-02"),
     ]
 
-    assert eq.guidance_for("t1", items)[0] == "- Helmet.\n- Sword."
+    assert eq.guidance_for("t1", items, TakeAll)[0] == "- Helmet.\n- Sword."
+
+
+# --- the bear takes in only some of its armor ---------------------------------------------
+
+
+def _armor(count):
+    return [worn(slot, "global", version=slot, text=f"{slot} guidance.") for slot in eq.ARMOR_SLOTS[:count]]
+
+
+def test_the_bear_takes_in_at_least_one_piece_and_never_more_than_it_wears():
+    armor = _armor(4)
+
+    sizes = {len(eq.pick_armor(armor, random.Random(seed))) for seed in range(200)}
+
+    assert sizes == {1, 2, 3, 4}  # every count comes up; none is zero, none is over
+
+
+def test_every_piece_gets_left_out_sometimes_and_taken_in_sometimes():
+    armor = _armor(3)
+    seen = [{i["slot"] for i in eq.pick_armor(armor, random.Random(seed))} for seed in range(200)]
+
+    for slot in ("helmet", "chest", "gloves"):
+        assert any(slot in taken for taken in seen) and any(slot not in taken for taken in seen)
+
+
+def test_the_pieces_taken_come_back_in_slot_order():
+    armor = list(reversed(_armor(5)))
+
+    for seed in range(20):
+        slots = [i["slot"] for i in eq.pick_armor(armor, random.Random(seed))]
+        assert slots == sorted(slots, key=eq.ARMOR_SLOTS.index)
+
+
+def test_no_armor_means_nothing_to_pick():
+    assert eq.pick_armor([]) == []
+
+
+def test_rings_are_always_used_but_armor_is_not():
+    items = _armor(6) + [worn("ring", "topic", topic="t1", version="r", text="The ring.")]
+    armor_counts = set()
+
+    for seed in range(100):
+        text, used = eq.guidance_for("t1", items, random.Random(seed))
+        assert "The ring." in text  # every time
+        assert used[-1]["slot"] == "ring"
+        armor_counts.add(len(used) - 1)
+
+    assert armor_counts == {1, 2, 3, 4, 5, 6}  # from one piece to all of it
+
+
+def test_only_the_armor_taken_in_is_recorded_and_injected():
+    text, used = eq.guidance_for("t1", _armor(6), random.Random(3))
+
+    taken = {piece["slot"] for piece in used}
+    assert taken < set(eq.ARMOR_SLOTS) or len(taken) == 6
+    for slot in eq.ARMOR_SLOTS:
+        assert (f"{slot} guidance." in text) == (slot in taken)
 
 
 def test_a_benched_item_is_not_injected():

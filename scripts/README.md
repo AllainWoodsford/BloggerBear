@@ -245,6 +245,10 @@ python scripts/admin_cli.py equipment unequip TOPIC VERSION       # into the bac
 python scripts/admin_cli.py refinements approve TOPIC VERSION --scope backpack   # approve, do not wear
 ```
 
+Wearing is not the same as using. The topic's rings are used in every article, but the bear takes in only
+*some* of its worn armor each time: a random number of pieces, at least one, chosen at random. The article
+records which pieces it used.
+
 `--scope global` with no `--slot` takes the first empty armor slot. Approving with no choice made wears it
 as a ring for its topic (what approving always meant), or leaves it in the backpack if all five rings are
 worn. Unlike before, guidance now *stacks*: several rings for one topic, plus the armor, are all used

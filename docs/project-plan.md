@@ -1065,6 +1065,9 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
   into a taken slot benches the old item (it stays approved and can be worn again).
 - **Rings**: *topic* guidance for the item's own topic, at most 5 in all. When full, equipping needs a ring
   to replace, or the item waits in the backpack.
+- **Wearing is not using.** A topic's rings are used in every article, but the bear takes in only some of its
+  worn armor each time: a random number of pieces (at least one), chosen at random (`pick_armor`). What it used
+  is recorded on the article, and that record is what later wear is tied to.
 - **Backpack**: approved and not worn. Nothing there is injected, and it will only ever be a count in public.
 - **Compatibility.** An item approved before this has no `equipped` field. It is "legacy": the latest per
   topic keeps being injected until the topic has a ring. Once an item has been equipped or benched it has the
@@ -1072,7 +1075,7 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
   the old workflow, except that guidance now stacks (all of a topic's rings plus the armor, capped at
   4,000 characters, dropping whatever does not fit).
 - **What was worn is recorded.** `Articles.equipment_used` lists `{topic_id, version, slot}` per piece used;
-  `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
+  (only the armor actually taken in) `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
   This is the data an effectiveness measure and wear-out would need; neither is built.
 - **Admin.** `GET /equipment`, `POST /prompt-refinements/{topic_id}/{version}/equip|unequip`, and an optional
   `{scope, slot, replace}` body on approve. The displaced item is benched first, so a failure part way leaves
