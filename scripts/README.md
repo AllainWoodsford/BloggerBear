@@ -245,11 +245,34 @@ python scripts/admin_cli.py equipment unequip TOPIC VERSION       # into the bac
 python scripts/admin_cli.py refinements approve TOPIC VERSION --scope backpack   # approve, do not wear
 ```
 
+Wearing is not the same as using. The topic's rings are used in every article, but the bear takes in only
+*some* of its worn armor each time: a random number of pieces, at least one, chosen at random. The article
+records which pieces it used.
+
 `--scope global` with no `--slot` takes the first empty armor slot. Approving with no choice made wears it
 as a ring for its topic (what approving always meant), or leaves it in the backpack if all five rings are
 worn. Unlike before, guidance now *stacks*: several rings for one topic, plus the armor, are all used
 together. A change approved before this existed keeps working exactly as it did (the latest one per topic)
 until that topic has a ring of its own.
+
+**Every piece of gear has a name, a rarity and a durability.** The weekly reflection names each proposal
+when it writes it, so the card in `approve` already shows what the bear found (for example *Breastplate of
+Plain Speaking, rare, durability 17/17*, and which slot the bear suggests). Rarity is rolled by code, at
+random, never chosen by the model: common 50%, uncommon 28%, rare 14%, epic 6%, legendary 2%. The most wear an
+item can take is rolled within its rarity's range (common 6-10, uncommon 10-15, rare 15-20, epic 21-30,
+legendary 40-50), and durability starts full and can never go over that maximum. The name is
+`<slot noun> of <theme>` (Helm, Breastplate, Gauntlets, Boots, Blade, Shield, Ring), so an item moved to
+another slot is renamed with it. When the bear suggests armor, Enter in the placement question takes its
+slot (or the first empty one if that is taken).
+
+```
+python scripts/admin_cli.py equipment bump TOPIC VERSION               # one rarity step up
+python scripts/admin_cli.py equipment bump TOPIC VERSION --to epic     # or straight to one
+```
+
+A bump only goes up. It re-rolls the maximum in the new rarity's range (never lower than it was) and adds the
+extra room to the item's durability, so making a battered item rarer does not repair it. An item proposed or
+approved before this has no rarity: it is given one, once, the first time it is approved, worn or bumped.
 
 Each article records which gear was in the prompts that wrote it (`equipment_used`: topic, version and slot
 per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether

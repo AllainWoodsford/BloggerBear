@@ -345,10 +345,10 @@ def _loadout(worn_armor=None, rings=0, backpack=0):
     }
 
 
-def _prompt_change_api(loadout=None, approve_response=None):
+def _prompt_change_api(loadout=None, approve_response=None, row=None):
     return FakeApi(
         {
-            "GET /prompt-refinements?status=pending": {"refinements": [_refinement("t1", "v1")]},
+            "GET /prompt-refinements?status=pending": {"refinements": [row or _refinement("t1", "v1")]},
             "GET /equipment": loadout if loadout is not None else _loadout(),
             "POST /prompt-refinements/t1/v1/approve": approve_response or {},
         }
@@ -481,6 +481,86 @@ def test_approving_an_article_never_asks_about_gear():
     ri.review([source], store=_memory_store(), key_reader=keys("y"), out=out, now=lambda: NOW)
 
     assert "Where should the bear wear it?" not in out.getvalue()
+
+
+def _found(slot_hint, rarity="rare"):
+    """A pending proposal the weekly reflection has already named."""
+    return {
+        **_refinement("t1", "v1"),
+        "name": "Breastplate of Plain Speaking",
+        "rarity": rarity,
+        "durability": 17,
+        "max_durability": 17,
+        "slot_hint": slot_hint,
+    }
+
+
+def test_a_named_proposal_shows_what_the_bear_found():
+    api = _prompt_change_api(row=_found("chest"))
+
+    (item,) = ri.RefinementSource(api).fetch(5, set())
+
+    assert item.facts == [
+        "The bear found: Breastplate of Plain Speaking (rare)",
+        "Durability: 17/17",
+        "The bear suggests: chest",
+    ]
+    assert item.ref["slot_hint"] == "chest"
+
+
+def test_a_proposal_from_before_gear_shows_no_gear_facts():
+    (item,) = ri.RefinementSource(_prompt_change_api()).fetch(5, set())
+
+    assert item.facts == []
+
+
+def test_when_the_bear_suggests_armor_enter_takes_its_slot():
+    api = _prompt_change_api(loadout=_loadout({"helmet": "Keep it short."}), row=_found("shield"))
+
+    _, out = _approve_with(api, ENTER, ENTER)  # accept the armor suggestion, then its slot
+
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "global", "slot": "shield"})]
+    assert "the bear suggests the shield  [Enter]" in out
+    assert "shield: empty  *" in out
+
+
+def test_when_the_suggested_slot_is_taken_enter_offers_the_first_empty_one_instead():
+    api = _prompt_change_api(loadout=_loadout({"shield": "Cite sources."}), row=_found("shield"))
+
+    _, out = _approve_with(api, "g", ENTER)
+
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "global", "slot": "helmet"})]
+    assert "shield: worn: Cite sources.  <- it would be replaced" in out
+    assert "helmet: empty  *" in out
+
+
+def test_when_the_bear_suggests_a_ring_enter_takes_a_ring():
+    api = _prompt_change_api(row=_found("ring"))
+
+    _, out = _approve_with(api, ENTER)
+
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "topic"})]
+    ring_line = next(line for line in out.splitlines() if "t  a ring" in line)
+    assert ring_line.endswith("[Enter]")
+
+
+def test_approving_tells_you_what_the_bear_found_and_where_it_went():
+    response = {
+        "approved": {
+            "item": {
+                "name": "Ring of Plain Speaking",
+                "rarity": "epic",
+                "durability": 24,
+                "max_durability": 24,
+            },
+            "placement": {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None},
+        }
+    }
+    api = _prompt_change_api(approve_response=response)
+
+    _, out = _approve_with(api, "t")
+
+    assert "Ring of Plain Speaking (epic, durability 24/24): worn as a ring for its topic" in out
 
 
 def test_the_worn_message_tells_you_what_replaced_what():

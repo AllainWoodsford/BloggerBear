@@ -27,6 +27,22 @@ def aws_env(monkeypatch):
     dynamo_module._dynamodb_resource = None
 
 
+IDENTITY = {
+    "theme": "Plain Speaking",
+    "slot_hint": "chest",
+    "rarity": "rare",
+    "max_durability": 17,
+    "durability": 17,
+}
+
+
+@pytest.fixture(autouse=True)
+def named_gear():
+    """Naming a proposal is its own model call (common/gear.py, tested there): keep it off Bedrock here."""
+    with patch("weekly_reflection_handler.gear.generate_identity", return_value=dict(IDENTITY)) as mock:
+        yield mock
+
+
 @pytest.fixture
 def aws_resources(aws_env):
     with mock_aws():
@@ -270,3 +286,24 @@ def test_reflection_prompt_treats_comments_as_data_and_defangs_the_delimiter():
     # The comment cannot close the block early: there is exactly one real closing tag.
     assert prompt.count("</comments>") == 1
     assert prompt.count("<comments>") == 1
+
+
+# --- Naming a proposal as gear ----------------------------------------------
+
+
+def test_a_proposal_is_stored_with_its_gear_identity(aws_resources, named_gear):
+    _put_article("article-1", "topic-a")
+    _put_feedback("article-1", "f1", "down", comment="Be plainer.")
+
+    with patch(
+        "weekly_reflection_handler.invoke_claude",
+        return_value="RATIONALE: readers want plain words\nSUGGESTION: Use plain words.",
+    ):
+        weekly_reflection_handler.handler({}, None)
+
+    (item,) = _list_refinements()
+    assert item["status"] == "pending"
+    assert item["prompt_changes"] == "Use plain words."
+    assert (item["theme"], item["slot_hint"], item["rarity"]) == ("Plain Speaking", "chest", "rare")
+    assert (item["max_durability"], item["durability"]) == (17, 17)
+    named_gear.assert_called_once_with("topic-a", "Use plain words.", "anthropic.claude-test-model")

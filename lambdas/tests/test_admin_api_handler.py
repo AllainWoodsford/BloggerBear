@@ -1439,13 +1439,11 @@ def test_approve_prompt_refinement_success(aws_resources):
     result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 200
     # Approving with no choice made wears it as a ring for its own topic.
-    assert json.loads(result["body"]) == {
-        "approved": {
-            "topic_id": "github-trending",
-            "version": "2026-09-12T00:00:00+00:00",
-            "placement": {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None},
-        }
-    }
+    approved = json.loads(result["body"])["approved"]
+    assert approved["topic_id"] == "github-trending"
+    assert approved["version"] == "2026-09-12T00:00:00+00:00"
+    assert approved["placement"] == {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None}
+    assert approved["item"]["rarity"] in ("common", "uncommon", "rare", "epic", "legendary")
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
     item = table.get_item(
@@ -2064,3 +2062,157 @@ def test_the_equipment_view_shows_slots_rings_and_the_backpack(aws_resources):
     assert [r["version"] for r in view["rings"]] == ["ring"]
     assert view["backpack_count"] == 0
     assert [i["version"] for i in view["legacy"]] == ["bench"]  # approved before equipment: still in use
+
+
+# --- Gear: names, rarity and durability -------------------------------------------------
+
+
+def _identity(version, rarity="rare", durability=17, max_durability=17, theme="Plain Speaking", hint="chest"):
+    """Give a stored refinement a gear identity, as the weekly reflection does."""
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    table.update_item(
+        Key={"topic_id": "github-trending", "version": version},
+        UpdateExpression=(
+            "SET rarity = :r, durability = :d, max_durability = :m, theme = :t, slot_hint = :h"
+        ),
+        ExpressionAttributeValues={
+            ":r": rarity,
+            ":d": durability,
+            ":m": max_durability,
+            ":t": theme,
+            ":h": hint,
+        },
+    )
+
+
+def test_listing_shows_plain_numbers_and_the_gears_name(aws_resources):
+    _put_refinement(version="v1")
+    _identity("v1")
+
+    result = admin_api_handler.handler(_event("GET /prompt-refinements"), None)
+
+    (item,) = json.loads(result["body"])["refinements"]
+    assert item["name"] == "Breastplate of Plain Speaking"  # the bear's suggested slot
+    assert (item["rarity"], item["durability"], item["max_durability"]) == ("rare", 17, 17)
+
+
+def test_approving_something_that_predates_gear_gives_it_a_rarity_and_full_durability(aws_resources):
+    _put_refinement(version="v1")
+
+    result = _post("approve", "v1")
+
+    item = json.loads(result["body"])["approved"]["item"]
+    assert item["name"] == "Ring of Github Trending Lore"  # worn as a ring, themed from its topic
+    stored = _refinement_item("v1")
+    low, high = {
+        "common": (6, 10),
+        "uncommon": (10, 15),
+        "rare": (15, 20),
+        "epic": (21, 30),
+        "legendary": (40, 50),
+    }[stored["rarity"]]
+    assert low <= stored["max_durability"] <= high
+    assert stored["durability"] == stored["max_durability"]
+
+
+def test_an_identity_is_rolled_once_and_never_again(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _post("equip", "v1")
+    first = _refinement_item("v1")
+    _post("unequip", "v1")
+    _post("equip", "v1")
+
+    again = _refinement_item("v1")
+
+    assert (again["rarity"], again["max_durability"]) == (first["rarity"], first["max_durability"])
+
+
+def test_a_proposals_own_identity_is_kept_when_it_is_approved(aws_resources):
+    _put_refinement(version="v1")
+    _identity("v1", rarity="epic", durability=25, max_durability=25, theme="Sharper Sources", hint="shield")
+
+    result = _post("approve", "v1", {"scope": "global", "slot": "shield"})
+
+    item = json.loads(result["body"])["approved"]["item"]
+    assert item == {
+        "name": "Shield of Sharper Sources",
+        "rarity": "epic",
+        "durability": 25,
+        "max_durability": 25,
+    }
+
+
+def test_the_bears_suggested_slot_is_taken_when_it_is_empty(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _put_refinement(version="v2", status="approved")
+    _identity("v1", hint="shield")
+    _identity("v2", hint="shield")
+
+    _post("equip", "v1", {"scope": "global"})
+    _post("equip", "v2", {"scope": "global"})
+
+    assert _refinement_item("v1")["slot"] == "shield"  # the suggestion
+    assert _refinement_item("v2")["slot"] == "helmet"  # shield is taken: the first empty one
+
+
+def test_the_equipment_view_names_every_item_and_uses_plain_numbers(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", hint="boots")
+    _post("equip", "v1", {"scope": "global", "slot": "boots"})
+
+    view = json.loads(admin_api_handler.handler(_event("GET /equipment"), None)["body"])
+
+    assert view["armor"]["boots"]["name"] == "Boots of Plain Speaking"
+    assert view["armor"]["boots"]["durability"] == 17
+
+
+def test_an_admin_can_bump_the_rarity_up(aws_resources):
+    _put_refinement(version="v1")
+    _identity("v1", rarity="common", durability=6, max_durability=8)
+
+    result = _post("rarity", "v1", {"rarity": "epic"})
+
+    assert result["statusCode"] == 200
+    bumped = json.loads(result["body"])["bumped"]
+    assert bumped["was"] == "common" and bumped["rarity"] == "epic"
+    stored = _refinement_item("v1")
+    assert 21 <= stored["max_durability"] <= 30
+    assert stored["durability"] == 6 + (stored["max_durability"] - 8)  # the new room, not a repair
+    assert stored["status"] == "pending"  # bumping does not approve it
+
+
+def test_a_bump_with_no_rarity_goes_up_one_step(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", rarity="rare")
+
+    assert json.loads(_post("rarity", "v1")["body"])["bumped"]["rarity"] == "epic"
+
+
+def test_a_bump_can_not_go_down_stay_or_pass_legendary(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", rarity="rare")
+
+    assert _post("rarity", "v1", {"rarity": "common"})["statusCode"] == 409
+    assert _post("rarity", "v1", {"rarity": "rare"})["statusCode"] == 409
+    assert _post("rarity", "v1", {"rarity": "mythic"})["statusCode"] == 400
+    assert _refinement_item("v1")["rarity"] == "rare"
+    _identity("v1", rarity="legendary", durability=44, max_durability=44)
+    assert _post("rarity", "v1")["statusCode"] == 409
+
+
+def test_a_rejected_or_missing_proposal_cannot_be_bumped(aws_resources):
+    _put_refinement(version="v1", status="rejected")
+
+    assert _post("rarity", "v1")["statusCode"] == 409
+    assert _post("rarity", "nowhere")["statusCode"] == 404
+
+
+def test_bumping_something_that_predates_gear_rolls_it_an_identity_first(aws_resources):
+    _put_refinement(version="v1", status="approved")
+
+    with patch("common.gear.roll_rarity", return_value="common"):
+        result = _post("rarity", "v1", {"rarity": "legendary"})
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["bumped"]["was"] == "common"
+    assert _refinement_item("v1")["rarity"] == "legendary"

@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import random
+
 import pytest
 
 from common import equipment as eq
+
+
+class TakeAll:
+    """A stand-in for the random choice that takes in every piece of armor, for exact assertions."""
+
+    @staticmethod
+    def randint(low, high):
+        return high
+
+    @staticmethod
+    def sample(population, count):
+        return list(population)
 
 
 def item(topic="t1", version="v1", text="Be concise.", **fields):
@@ -187,7 +201,64 @@ def test_armor_comes_in_slot_order_not_the_order_worn():
         worn("helmet", "global", version="h", text="Helmet.", at="2026-09-02"),
     ]
 
-    assert eq.guidance_for("t1", items)[0] == "- Helmet.\n- Sword."
+    assert eq.guidance_for("t1", items, TakeAll)[0] == "- Helmet.\n- Sword."
+
+
+# --- the bear takes in only some of its armor ---------------------------------------------
+
+
+def _armor(count):
+    return [worn(slot, "global", version=slot, text=f"{slot} guidance.") for slot in eq.ARMOR_SLOTS[:count]]
+
+
+def test_the_bear_takes_in_at_least_one_piece_and_never_more_than_it_wears():
+    armor = _armor(4)
+
+    sizes = {len(eq.pick_armor(armor, random.Random(seed))) for seed in range(200)}
+
+    assert sizes == {1, 2, 3, 4}  # every count comes up; none is zero, none is over
+
+
+def test_every_piece_gets_left_out_sometimes_and_taken_in_sometimes():
+    armor = _armor(3)
+    seen = [{i["slot"] for i in eq.pick_armor(armor, random.Random(seed))} for seed in range(200)]
+
+    for slot in ("helmet", "chest", "gloves"):
+        assert any(slot in taken for taken in seen) and any(slot not in taken for taken in seen)
+
+
+def test_the_pieces_taken_come_back_in_slot_order():
+    armor = list(reversed(_armor(5)))
+
+    for seed in range(20):
+        slots = [i["slot"] for i in eq.pick_armor(armor, random.Random(seed))]
+        assert slots == sorted(slots, key=eq.ARMOR_SLOTS.index)
+
+
+def test_no_armor_means_nothing_to_pick():
+    assert eq.pick_armor([]) == []
+
+
+def test_rings_are_always_used_but_armor_is_not():
+    items = _armor(6) + [worn("ring", "topic", topic="t1", version="r", text="The ring.")]
+    armor_counts = set()
+
+    for seed in range(100):
+        text, used = eq.guidance_for("t1", items, random.Random(seed))
+        assert "The ring." in text  # every time
+        assert used[-1]["slot"] == "ring"
+        armor_counts.add(len(used) - 1)
+
+    assert armor_counts == {1, 2, 3, 4, 5, 6}  # from one piece to all of it
+
+
+def test_only_the_armor_taken_in_is_recorded_and_injected():
+    text, used = eq.guidance_for("t1", _armor(6), random.Random(3))
+
+    taken = {piece["slot"] for piece in used}
+    assert taken < set(eq.ARMOR_SLOTS) or len(taken) == 6
+    for slot in eq.ARMOR_SLOTS:
+        assert (f"{slot} guidance." in text) == (slot in taken)
 
 
 def test_a_benched_item_is_not_injected():
@@ -221,7 +292,7 @@ def test_guidance_is_capped_and_the_record_only_lists_what_was_used():
         worn("chest", "global", version="b", text="This one does not fit."),
     ]
 
-    text, used = eq.guidance_for("t1", items)
+    text, used = eq.guidance_for("t1", items, TakeAll)
 
     assert text == long_text
     assert [u["version"] for u in used] == ["a"]
@@ -229,7 +300,9 @@ def test_guidance_is_capped_and_the_record_only_lists_what_was_used():
 
 def test_an_empty_piece_is_ignored():
     text, used = eq.guidance_for(
-        "t1", [worn("helmet", "global", text="  "), worn("chest", "global", text="Real.", version="c")]
+        "t1",
+        [worn("helmet", "global", text="  "), worn("chest", "global", text="Real.", version="c")],
+        TakeAll,
     )
 
     assert text == "Real."
@@ -257,3 +330,56 @@ def test_describe_lays_out_the_slots_the_rings_and_the_backpack():
     assert view["max_rings"] == eq.MAX_RINGS
     assert view["backpack_count"] == 2
     assert [i["version"] for i in view["legacy"]] == ["old"]
+
+
+# --- the bear's suggested slot --------------------------------------------------------------
+
+
+def test_the_suggested_armor_slot_is_taken_when_it_is_empty():
+    items = [worn("helmet", "global", version="h")]
+
+    assert eq.suggest_slot(items, "global", "shield") == "shield"
+
+
+def test_a_taken_suggestion_falls_back_to_the_first_empty_slot():
+    items = [worn("helmet", "global", version="h"), worn("shield", "global", version="s")]
+
+    assert eq.suggest_slot(items, "global", "shield") == "chest"
+
+
+def test_a_suggestion_that_is_not_an_armor_slot_is_ignored():
+    assert eq.suggest_slot([], "global", "ring") == "helmet"
+    assert eq.suggest_slot([], "global", "hat") == "helmet"
+    assert eq.suggest_slot([], "global", None) == "helmet"
+
+
+def test_with_no_slot_named_an_item_goes_where_the_bear_suggested():
+    target = {**benched(version="new"), "slot_hint": "boots"}
+
+    plan = eq.plan_equip([], target, scope="global")
+
+    assert plan["slot"] == "boots"
+
+
+def test_naming_a_slot_beats_the_suggestion():
+    target = {**benched(version="new"), "slot_hint": "boots"}
+
+    plan = eq.plan_equip([], target, scope="global", slot="sword")
+
+    assert plan["slot"] == "sword"
+
+
+def test_describe_decorates_every_item_it_shows():
+    items = [
+        worn("helmet", "global", version="h"),
+        worn("ring", "topic", version="r"),
+        benched(version="b"),
+        item(version="old"),
+    ]
+
+    view = eq.describe(items, decorate=lambda i: {**i, "name": "N-" + i["version"]})
+
+    assert view["armor"]["helmet"]["name"] == "N-h" and view["armor"]["chest"] is None
+    assert [i["name"] for i in view["rings"]] == ["N-r"]
+    assert [i["name"] for i in view["backpack"]] == ["N-b"]
+    assert [i["name"] for i in view["legacy"]] == ["N-old"]
