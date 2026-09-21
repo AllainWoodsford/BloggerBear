@@ -81,6 +81,7 @@ from common.scheduler import (
     upsert_topic_schedules,
     validate_timezone,
 )
+from common.source_refs import dedupe_source_refs
 from common.static_pages import (
     invalidate_article_page,
     read_article_body,
@@ -525,6 +526,45 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         compliant=False,
         model_id=os.environ["BEDROCK_MODEL_ID"],
     )
+
+
+def _get_article(event: dict) -> dict:
+    """One article, in any status, for a person deciding what to do with it (the review inbox in
+    scripts/review_inbox.py): its title, topic, status, when it was made, what it cost, the sources
+    it cites, and its full text. Admin only: unlike the public API, which serves published articles
+    alone, this shows a draft that is still waiting for a decision. Nothing is changed."""
+    article_id = _path_param(event, "article_id")
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+
+    body, body_error = "", None
+    try:
+        body = read_article_body(article["body_s3_key"])
+    except Exception as exc:  # noqa: BLE001 - the rest of the article is still worth showing
+        body_error = f"could not read the article text ({type(exc).__name__})"
+
+    lineage = article.get("lineage") or {}
+    total_cost = lineage.get("total_cost_aud", lineage.get("cost_aud"))
+    payload = {
+        "article_id": article_id,
+        "topic_id": article.get("topic_id"),
+        "title": article.get("title"),
+        "status": article.get("status"),
+        "created_at": article.get("created_at"),
+        "published_at": article.get("published_at"),
+        "published_by": article.get("published_by"),
+        "body": body,
+        "source_refs": [
+            {"title": ref.get("title"), "url": ref.get("url")}
+            for ref in dedupe_source_refs(article.get("source_refs"))
+        ],
+        "models_used": lineage.get("models_used") or [],
+        "cost_aud": float(total_cost) if isinstance(total_cost, int | float) else None,
+    }
+    if body_error:
+        payload["body_error"] = body_error
+    return _response(200, payload)
 
 
 def _publish_article(event: dict) -> dict:
@@ -1062,6 +1102,7 @@ _ROUTES = {
     "POST /topics/{topic_id}/trigger": _trigger_topic,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
+    "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
     "GET /review/report": _review_report,

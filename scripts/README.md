@@ -181,6 +181,48 @@ and the raw message, for manual follow-up. There's no automatic replay; to
 retry a topic after fixing whatever caused the failure, use
 `topics trigger <topic_id> --pipeline daily_cycle` again.
 
+## What is waiting for you: `inbox` and `approve`
+
+Two things need a person, and both are covered:
+
+1. **Articles in the moderation queue.** Financial topics (crypto, the trending digest) always wait for
+   you, by design. Others land here when the compliance or fresh-data review held them, and the reasons
+   are shown. (Every article that needs a decision has a queue item, so this is all of them.)
+2. **Prompt-change proposals** from the weekly reflection. Approving one changes how future articles on
+   that topic are written.
+
+```
+python scripts/admin_cli.py inbox                 # what is waiting, at a glance
+python scripts/admin_cli.py approve               # go through it, one keystroke each
+python scripts/admin_cli.py approve --mock        # practise the keys on made-up items: no AWS
+```
+
+`approve` shows one item at a time (where it is from, its title, how long it has waited, why it needs
+you, a preview) and waits for one key, no Enter:
+
+| Key | Does |
+|---|---|
+| `y` | Approve. An article is published (page rendered, musing written); a prompt change goes live for future drafts |
+| `r` | Reject. An article stays private; a prompt change is dropped |
+| `z` | Skip: leave it exactly as it is |
+| `v` | Read the whole text, then choose |
+| `q` | Quit. Nothing you already decided is lost |
+
+- **Up to 30 a time**, oldest first, articles before prompt changes. Run it again for the next batch
+  (`--limit` changes the size; `--source moderation` or `--source refinements` picks one kind).
+- **Each choice is applied at once**, through the same signed Admin API as every other command, so a quit,
+  an error or a dropped connection never loses progress. A failure is shown and you stay on that item to
+  retry, skip or quit. Something already handled elsewhere is noted and passed.
+- **Skipped items are hidden from your next runs** for 24 hours (`--skip-hours`; a small local file,
+  `~/.bloggerbear/review-skips.json`, or `BLOGGERBEAR_REVIEW_STATE`; never sent anywhere), so a rerun gives
+  you the next batch instead of the same ones. `--include-skipped` shows them again, `--reset-skipped`
+  forgets them.
+- **Held for a reason?** If the review found something (a fabricated claim, stale figures, advice), the
+  reasons and notes are on the card, and approving asks "Approve anyway? [y/N]". Rejecting never asks.
+  A routine financial article (held only because it is a financial topic) does not ask.
+- `--dry-run` goes through the motions and changes nothing. `--mock` (or `BLOGGERBEAR_REVIEW_MOCK=1`)
+  uses made-up items and its own skip file, needs no credentials, and sends nothing anywhere.
+
 ### Testing the DLQ consumer manually
 
 `dlq_handler.py` is only exercised for real when a `daily_cycle` execution

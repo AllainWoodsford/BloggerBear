@@ -1787,3 +1787,70 @@ def test_feedback_lock_validates_its_input(aws_resources):
     assert _feedback_lock("article-1", {"locked": "yes"})["statusCode"] == 400
     assert _feedback_lock("article-1", {"locked": False, "reset_count": "yes"})["statusCode"] == 400
     assert "feedback_locked" not in _article_row()
+
+
+# --- GET /articles/{article_id}: one article, in any status, for the review inbox -----------
+
+
+def _get_article_route(article_id="article-1"):
+    event = _event("GET /articles/{article_id}", path_params={"article_id": article_id})
+    result = admin_api_handler.handler(event, None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_get_article_shows_a_draft_that_is_still_waiting_for_a_decision(aws_resources):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.put_item(
+        Item={
+            "article_id": "article-1",
+            "topic_id": "github-trending",
+            "title": "A Title",
+            "body_s3_key": "articles/article-1.md",
+            "status": "pending_moderation",
+            "created_at": "2026-09-12T00:00:00+00:00",
+            "published_at": None,
+            "source_refs": [
+                {"url": "https://example.com/a", "title": "A"},
+                {"url": "https://example.com/a", "title": "A"},
+            ],
+            "net_votes": 3,  # a Decimal in DynamoDB: must not break the response
+            "lineage": {"models_used": ["m1"], "total_cost_aud": Decimal("0.0123"), "calls": []},
+        }
+    )
+
+    with patch("admin_api_handler.read_article_body", return_value="# Body\n\nThe text."):
+        code, body = _get_article_route()
+
+    assert code == 200
+    assert body["title"] == "A Title" and body["status"] == "pending_moderation"
+    assert body["body"] == "# Body\n\nThe text."
+    assert body["source_refs"] == [{"title": "A", "url": "https://example.com/a"}]  # de-duplicated
+    assert body["models_used"] == ["m1"] and body["cost_aud"] == 0.0123
+    assert body["topic_id"] == "github-trending" and "body_error" not in body
+
+
+def test_get_article_still_answers_if_the_text_cannot_be_read(aws_resources):
+    _put_article()
+
+    with patch("admin_api_handler.read_article_body", side_effect=RuntimeError("s3 down")):
+        code, body = _get_article_route()
+
+    assert code == 200
+    assert body["title"] == "A Title" and body["body"] == ""
+    assert "could not read the article text" in body["body_error"]
+    assert "s3 down" not in body["body_error"]  # the error type only
+
+
+def test_get_article_without_lineage_has_no_cost(aws_resources):
+    _put_article()
+
+    with patch("admin_api_handler.read_article_body", return_value="x"):
+        _, body = _get_article_route()
+
+    assert body["cost_aud"] is None and body["models_used"] == []
+
+
+def test_get_article_unknown_is_404(aws_resources):
+    code, body = _get_article_route("nope")
+
+    assert code == 404 and "not found" in body["error"]
