@@ -818,3 +818,55 @@ article on their own. Whether a claim is *true and current* is the fresh-data re
 **Replay on real data** (six non-financial drafts, three runs each, Haiku 4.5): old prompt 2
 of 6 passed; this design 18 of 18 runs. Three deliberately bad drafts (an invented funding
 round, "you should invest your savings", a named person's address) were held 3 of 3 times.
+
+### Feedback comments: screening, and what protects the votes
+
+**Comments (built).** A comment is optional and is only kept if it is a civil, genuine
+piece of feedback on the article. Anything else is **dropped: not stored, not
+redacted-and-stored, not logged, not echoed back**. The vote that came with it still counts,
+and the response says only `comment_saved: true|false`, never why (`common/comment_screening.py`).
+
+| Layer | What it catches | Model? |
+|---|---|---|
+| Length | more than 1,000 characters (also the textarea's `maxlength`), and anything that isn't a string | no |
+| Text | control characters | no |
+| Attacks | prompt injection ("ignore previous instructions", "system prompt", chat-role markers, model control tokens, our own prompt delimiters); SQL (`DROP TABLE`, `UNION SELECT`, `' OR 1=1`, `;--`); script/markup; shell | no |
+| Links | any URL | no |
+| Personal information | the existing regex pass (email, card, US-shaped phone), plus Australian and `+<country>` phone numbers. If it would redact anything, the comment is dropped instead | no |
+| Everything else | a name, an address, hate, harassment, threats, rudeness, spam, off-topic, gibberish, anything unlawful or against a site's terms, instructions aimed at an AI or database | one call: `KEEP` or `DROP` |
+
+Only the exact word `KEEP` keeps a comment; anything else, and any model error, drops it (an
+optional comment is cheap to lose). The comment and article title are delimited as data, so an
+instruction in them has nowhere to go; a hostile comment never reaches the model at all.
+
+**SQL is not an actual risk here.** Comments go into DynamoDB as an attribute value through the
+parameterised API (no SQL string is ever built), and are never rendered as HTML. They are
+dropped anyway: no legitimate feedback looks like that, and a stored comment is later shown to
+a model (the weekly reflection, which now also treats comments as delimited data).
+
+**Replay against the dev model** (three runs each): 20 hostile or unwanted samples (SQL,
+injection including "note to the reviewing AI", PII, hate, insults, a threat, illegal offers,
+piracy, spam, gibberish, off-topic, oversize, control characters) dropped 60 of 60 times; the
+four real comments left so far, and four ordinary ones, kept 23 of 24 (one blunt but civil
+comment about confusing sources was dropped on one run: the model is strict by design).
+
+**Votes (not changed here).** What exists: the WAF rate limit of 500 requests per 5 minutes
+per IP across the whole public API, plus the managed common rule set. What doesn't: any limit
+per article, per visitor or per vote. Anonymous by design (the privacy policy promises no IP,
+fingerprint or identifier is stored with feedback), so a visitor can vote as often as the rate
+limit allows, and someone with several IPs without limit. What that can affect:
+
+- `net_votes` picks the **few-shot example** article for a topic's future drafts, and feeds the
+  weekly reflection's up/down tally. A prompt refinement still needs your approval.
+- It cannot change what is published, and votes are not shown publicly.
+- **Cost:** every comment that passes the code layer is one model call. At the WAF ceiling that
+  is up to 500 per 5 minutes per IP. At about 500 tokens a call on Haiku 4.5 that is
+  roughly $50 to $100 a day for one IP that sustained the ceiling with clean-looking comments (a
+  hostile-looking one never reaches the model). This is the real exposure, and the reason to tighten
+  option (1) below.
+
+Options, none built yet: (1) a tighter WAF rate rule on the feedback route only (for example 20
+per 5 minutes per IP), which costs nothing and stores nothing; (2) one vote per article per
+browser, kept in `localStorage`, which stops casual repeats but not a script; (3) a salted,
+expiring hash of the IP per article, which stops repeats properly but stores a derived
+identifier, so the privacy policy would have to say so.
