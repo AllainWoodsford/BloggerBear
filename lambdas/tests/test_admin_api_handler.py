@@ -1438,8 +1438,13 @@ def test_approve_prompt_refinement_success(aws_resources):
     )
     result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 200
+    # Approving with no choice made wears it as a ring for its own topic.
     assert json.loads(result["body"]) == {
-        "approved": {"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
+        "approved": {
+            "topic_id": "github-trending",
+            "version": "2026-09-12T00:00:00+00:00",
+            "placement": {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None},
+        }
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
@@ -1447,6 +1452,8 @@ def test_approve_prompt_refinement_success(aws_resources):
         Key={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
     )["Item"]
     assert item["status"] == "approved"
+    assert item["equipped"] is True
+    assert item["slot"] == "ring"
 
 
 def test_reject_prompt_refinement_success(aws_resources):
@@ -1854,3 +1861,206 @@ def test_get_article_unknown_is_404(aws_resources):
     code, body = _get_article_route("nope")
 
     assert code == 404 and "not found" in body["error"]
+
+
+# --- Equipment: wearing approved prompt refinements ------------------------------------
+
+
+def _refinement_item(version):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    return table.get_item(Key={"topic_id": "github-trending", "version": version})["Item"]
+
+
+def _post(action, version, body=None, topic_id="github-trending"):
+    return admin_api_handler.handler(
+        _event(
+            f"POST /prompt-refinements/{{topic_id}}/{{version}}/{action}",
+            path_params={"topic_id": topic_id, "version": version},
+            body=body,
+        ),
+        None,
+    )
+
+
+def _approved(version, text="Be brief."):
+    return _put_refinement(version=version, status="approved", prompt_changes=text)
+
+
+def test_approve_into_an_armor_slot_makes_it_global_guidance(aws_resources):
+    _put_refinement(version="v1")
+
+    result = _post("approve", "v1", {"scope": "global", "slot": "helmet"})
+
+    assert result["statusCode"] == 200
+    placement = json.loads(result["body"])["approved"]["placement"]
+    assert placement == {"equipped": True, "slot": "helmet", "scope": "global", "displaced": None}
+    item = _refinement_item("v1")
+    assert (item["equipped"], item["slot"], item["scope"]) == (True, "helmet", "global")
+
+
+def test_approve_to_the_backpack_approves_without_wearing(aws_resources):
+    _put_refinement(version="v1")
+
+    result = _post("approve", "v1", {"scope": "backpack"})
+
+    assert json.loads(result["body"])["approved"]["placement"]["equipped"] is False
+    item = _refinement_item("v1")
+    assert item["status"] == "approved" and item["equipped"] is False
+    assert "slot" not in item
+
+
+def test_approve_with_every_ring_worn_waits_in_the_backpack_by_default(aws_resources):
+    for n in range(5):
+        _put_refinement(version=f"r{n}")
+        assert _post("approve", f"r{n}")["statusCode"] == 200
+    _put_refinement(version="extra")
+
+    result = _post("approve", "extra")
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["approved"]["placement"]["equipped"] is False
+    assert _refinement_item("extra")["status"] == "approved"
+
+
+def test_approve_with_every_ring_worn_can_name_the_ring_to_replace(aws_resources):
+    for n in range(5):
+        _put_refinement(version=f"r{n}")
+        _post("approve", f"r{n}")
+    _put_refinement(version="extra")
+
+    replace = {"topic_id": "github-trending", "version": "r2"}
+    result = _post("approve", "extra", {"scope": "topic", "replace": replace})
+
+    placement = json.loads(result["body"])["approved"]["placement"]
+    assert placement["equipped"] is True
+    assert placement["displaced"] == {"topic_id": "github-trending", "version": "r2"}
+    assert _refinement_item("r2")["equipped"] is False
+    assert _refinement_item("r2")["status"] == "approved"  # benched, not rejected
+
+
+def test_an_impossible_placement_leaves_the_item_pending(aws_resources):
+    _put_refinement(version="v1")
+
+    result = _post("approve", "v1", {"scope": "global", "slot": "hat"})
+
+    assert result["statusCode"] == 400
+    assert _refinement_item("v1")["status"] == "pending"
+
+
+def test_approve_rejects_a_body_that_is_not_an_object(aws_resources):
+    _put_refinement(version="v1")
+
+    event = _event(
+        "POST /prompt-refinements/{topic_id}/{version}/approve",
+        path_params={"topic_id": "github-trending", "version": "v1"},
+    )
+    event["body"] = "[1]"
+
+    assert admin_api_handler.handler(event, None)["statusCode"] == 400
+    event["body"] = "not json"
+    assert admin_api_handler.handler(event, None)["statusCode"] == 400
+    assert _refinement_item("v1")["status"] == "pending"
+
+
+def test_rejecting_never_wears_anything(aws_resources):
+    _put_refinement(version="v1")
+
+    _post("reject", "v1")
+
+    assert "equipped" not in _refinement_item("v1")
+
+
+def test_equipping_into_an_occupied_slot_benches_the_old_item(aws_resources):
+    _approved("old")
+    _approved("new")
+    assert _post("equip", "old", {"scope": "global", "slot": "helmet"})["statusCode"] == 200
+
+    result = _post("equip", "new", {"scope": "global", "slot": "helmet"})
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])["equipped"]
+    assert body["displaced"] == {"topic_id": "github-trending", "version": "old"}
+    old, new = _refinement_item("old"), _refinement_item("new")
+    assert old["equipped"] is False and "slot" not in old
+    assert new["equipped"] is True and new["slot"] == "helmet"
+
+
+def test_equip_with_no_slot_takes_the_first_empty_armor_slot(aws_resources):
+    _approved("a")
+    _approved("b")
+    _post("equip", "a", {"scope": "global"})
+
+    _post("equip", "b", {"scope": "global"})
+
+    assert _refinement_item("a")["slot"] == "helmet"
+    assert _refinement_item("b")["slot"] == "chest"
+
+
+def test_equip_with_no_body_wears_it_as_a_ring(aws_resources):
+    _approved("a")
+
+    result = _post("equip", "a")
+
+    assert result["statusCode"] == 200
+    assert _refinement_item("a")["slot"] == "ring"
+
+
+def test_the_sixth_ring_is_refused_with_a_conflict(aws_resources):
+    for n in range(6):
+        _approved(f"r{n}")
+    for n in range(5):
+        _post("equip", f"r{n}")
+
+    result = _post("equip", "r5")
+
+    assert result["statusCode"] == 409
+    assert "equipped" not in _refinement_item("r5")
+
+
+def test_only_an_approved_refinement_can_be_worn(aws_resources):
+    _put_refinement(version="pending-one")
+    _put_refinement(version="rejected-one", status="rejected")
+
+    assert _post("equip", "pending-one")["statusCode"] == 409
+    assert _post("equip", "rejected-one")["statusCode"] == 409
+    assert _post("equip", "nowhere")["statusCode"] == 404
+
+
+def test_unequip_sends_it_to_the_backpack(aws_resources):
+    _approved("a")
+    _post("equip", "a", {"scope": "global", "slot": "sword"})
+
+    result = _post("unequip", "a")
+
+    assert result["statusCode"] == 200
+    item = _refinement_item("a")
+    assert item["equipped"] is False and "slot" not in item and item["status"] == "approved"
+    assert "unequipped_at" in item
+
+
+def test_unequipping_something_not_worn_is_a_conflict(aws_resources):
+    _approved("a")
+
+    assert _post("unequip", "a")["statusCode"] == 409
+    assert _post("unequip", "missing")["statusCode"] == 404
+
+
+def test_the_equipment_view_shows_slots_rings_and_the_backpack(aws_resources):
+    _approved("armor")
+    _approved("ring")
+    _approved("bench")
+    _put_refinement(version="pending")
+    _post("equip", "armor", {"scope": "global", "slot": "shield"})
+    _post("equip", "ring")
+    _post("unequip", "ring")
+    _post("equip", "ring")
+
+    result = admin_api_handler.handler(_event("GET /equipment"), None)
+
+    assert result["statusCode"] == 200
+    view = json.loads(result["body"])
+    assert view["armor"]["shield"]["version"] == "armor"
+    assert view["armor"]["helmet"] is None
+    assert [r["version"] for r in view["rings"]] == ["ring"]
+    assert view["backpack_count"] == 0
+    assert [i["version"] for i in view["legacy"]] == ["bench"]  # approved before equipment: still in use

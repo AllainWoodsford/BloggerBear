@@ -221,8 +221,14 @@ def put_article(
     published_by: str | None = None,
     review: dict | None = None,
     body_original_s3_key: str | None = None,
+    equipment_used: list[dict] | None = None,
 ) -> dict:
     """Write an Articles item and return it.
+
+    `equipment_used` is the gear whose guidance was in the prompts that wrote this article
+    (common/equipment.py: [{"topic_id", "version", "slot"}]); an empty list means it was written
+    with none, which is different from the field being absent (written before gear existed).
+    Never part of the public API's projection.
 
     `review` is the fresh-data review's record (common/fresh_review.py), stored only
     when a review ran; never part of the public API's projection. `body_original_s3_key`
@@ -255,6 +261,8 @@ def put_article(
         item["review"] = review
     if body_original_s3_key is not None:
         item["body_original_s3_key"] = body_original_s3_key
+    if equipment_used is not None:
+        item["equipment_used"] = equipment_used
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -653,6 +661,39 @@ def update_prompt_refinement_status(topic_id: str, version: str, status: str) ->
         UpdateExpression="SET #status = :status",
         ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues={":status": status},
+    )
+
+
+def set_prompt_refinement_equipment(
+    topic_id: str,
+    version: str,
+    *,
+    equipped: bool,
+    at: str,
+    slot: str | None = None,
+    scope: str | None = None,
+) -> None:
+    """Wear (`equipped=True`, with `slot` and `scope`) or take off a PromptRefinements item.
+
+    Taking off keeps `scope` and clears `slot`, and always leaves `equipped` set to False, which
+    is what tells an item that was benched on purpose from a legacy approval that never had the
+    field (common/equipment.py). The item must exist.
+    """
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    if equipped:
+        table.update_item(
+            Key={"topic_id": topic_id, "version": version},
+            UpdateExpression="SET equipped = :t, slot = :slot, #scope = :scope, equipped_at = :at",
+            ExpressionAttributeNames={"#scope": "scope"},
+            ExpressionAttributeValues={":t": True, ":slot": slot, ":scope": scope, ":at": at},
+            ConditionExpression="attribute_exists(topic_id)",
+        )
+        return
+    table.update_item(
+        Key={"topic_id": topic_id, "version": version},
+        UpdateExpression="SET equipped = :f, unequipped_at = :at REMOVE slot",
+        ExpressionAttributeValues={":f": False, ":at": at},
+        ConditionExpression="attribute_exists(topic_id)",
     )
 
 

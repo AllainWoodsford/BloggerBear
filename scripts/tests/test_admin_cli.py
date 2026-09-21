@@ -490,6 +490,67 @@ def test_moderation_reject_calls_post():
     )
 
 
+VERSION = "2026-09-12T00:00:00+00:00"
+ENCODED = "2026-09-12T00%3A00%3A00%2B00%3A00"  # ':' and '+' must not reach the path as they are
+
+
+def _sent(argv):
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(argv)
+    return m.call_args
+
+
+def test_refinements_approve_with_no_options_sends_no_body():
+    call = _sent(["refinements", "approve", "topic-a", VERSION])
+
+    assert call.args[2] == f"/prompt-refinements/topic-a/{ENCODED}/approve"
+    assert call.kwargs["body"] is None  # the API's own default: a ring for the topic
+
+
+def test_refinements_approve_can_choose_the_slot():
+    call = _sent(["refinements", "approve", "topic-a", VERSION, "--scope", "global", "--slot", "boots"])
+
+    assert call.kwargs["body"] == {"scope": "global", "slot": "boots"}
+
+
+def test_refinements_approve_can_go_to_the_backpack_or_replace_a_ring():
+    backpack = _sent(["refinements", "approve", "topic-a", VERSION, "--scope", "backpack"])
+    replace = _sent(["refinements", "approve", "topic-a", VERSION, "--replace", "topic-b", "v2"])
+
+    assert backpack.kwargs["body"] == {"scope": "backpack"}
+    assert replace.kwargs["body"] == {"replace": {"topic_id": "topic-b", "version": "v2"}}
+
+
+def test_equipment_list_calls_get():
+    call = _sent(["equipment", "list"])
+
+    assert call.args[:3] == ("GET", "https://api.example.com", "/equipment")
+
+
+def test_equipment_equip_posts_the_placement():
+    call = _sent(["equipment", "equip", "topic-a", VERSION, "--scope", "global", "--slot", "helmet"])
+
+    assert call.args[2] == f"/prompt-refinements/topic-a/{ENCODED}/equip"
+    assert call.kwargs["body"] == {"scope": "global", "slot": "helmet"}
+
+
+def test_equipment_equip_with_no_options_sends_an_empty_body():
+    assert _sent(["equipment", "equip", "topic-a", VERSION]).kwargs["body"] == {}
+
+
+def test_equipment_unequip_posts():
+    call = _sent(["equipment", "unequip", "topic-a", VERSION])
+
+    path = f"/prompt-refinements/topic-a/{ENCODED}/unequip"
+    assert call.args[:3] == ("POST", "https://api.example.com", path)
+
+
+def test_equipment_equip_refuses_the_backpack_scope_and_an_unknown_slot():
+    for extra in (["--scope", "backpack"], ["--slot", "hat"]):
+        with pytest.raises(SystemExit):
+            _run(["equipment", "equip", "topic-a", VERSION, *extra])
+
+
 def test_non_2xx_response_exits_nonzero_and_prints_error(capsys):
     with patch(
         "admin_cli.signed_request",

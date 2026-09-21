@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 
 import boto3
 
-from common import feedback_limits
+from common import equipment, feedback_limits
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
@@ -53,6 +53,7 @@ from common.dynamo import (
     put_pipeline_config,
     put_topic,
     set_article_feedback_lock,
+    set_prompt_refinement_equipment,
     update_article_lineage,
     update_article_status,
     update_moderation_status,
@@ -820,6 +821,43 @@ def _list_prompt_refinements(event: dict) -> dict:
     return _response(200, {"refinements": refinements})
 
 
+def _placement_body(event: dict) -> dict | None:
+    """The optional {scope, slot, replace} body of an approve / equip call: {} for no body, and
+    None when it is not a JSON object (the caller answers 400)."""
+    try:
+        body = _parse_body(event)
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def _wear(item: dict, plan: dict) -> None:
+    """Apply an equip plan. The displaced item comes off first, so a failure part way leaves a slot
+    empty rather than two items fighting over it."""
+    now = datetime.now(UTC).isoformat()
+    displaced = plan["displaced"]
+    if displaced is not None:
+        set_prompt_refinement_equipment(
+            displaced["topic_id"], displaced["version"], equipped=False, at=now
+        )
+    set_prompt_refinement_equipment(
+        item["topic_id"], item["version"], equipped=True, at=now, slot=plan["slot"], scope=plan["scope"]
+    )
+
+
+def _placement_view(item: dict, plan: dict | None) -> dict:
+    """What happened to an item, for the response and for the CLI to tell the admin."""
+    if plan is None:
+        return {"equipped": False, "slot": None, "scope": item.get("scope"), "displaced": None}
+    displaced = plan["displaced"]
+    return {
+        "equipped": True,
+        "slot": plan["slot"],
+        "scope": plan["scope"],
+        "displaced": equipment.ref(displaced) if displaced else None,
+    }
+
+
 def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
     topic_id = _path_param(event, "topic_id")
     version = _path_param(event, "version")
@@ -829,9 +867,44 @@ def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
     if item.get("status") != "pending":
         return _error(409, f"prompt refinement '{topic_id}'/'{version}' is not pending")
 
+    plan = None
+    if new_status == "approved":
+        body = _placement_body(event)
+        if body is None:
+            return _error(400, "request body must be a JSON object")
+        # Work out where it goes before changing anything, so a placement that cannot be done
+        # leaves the item pending. With no choice made it takes a ring for its own topic, which
+        # is what approving always meant; if every ring is worn it waits in the backpack.
+        scope = body.get("scope")
+        if scope != "backpack":
+            approved = list_prompt_refinements(status="approved")
+            no_choice = scope is None and not body.get("slot") and not body.get("replace")
+            try:
+                if no_choice and equipment.suggest_slot(approved, equipment.SCOPE_TOPIC) is None:
+                    plan = None
+                else:
+                    plan = equipment.plan_equip(
+                        approved,
+                        item,
+                        scope=scope or equipment.SCOPE_TOPIC,
+                        slot=body.get("slot"),
+                        replace=body.get("replace"),
+                    )
+            except equipment.EquipError as exc:
+                return _error(exc.status, exc.message)
+
     update_prompt_refinement_status(topic_id, version, new_status)
     action_key = "approved" if new_status == "approved" else "rejected"
-    return _response(200, {action_key: {"topic_id": topic_id, "version": version}})
+    payload = {"topic_id": topic_id, "version": version}
+    if new_status == "approved":
+        if plan is not None:
+            _wear(item, plan)
+        else:
+            set_prompt_refinement_equipment(
+                topic_id, version, equipped=False, at=datetime.now(UTC).isoformat()
+            )
+        payload["placement"] = _placement_view(item, plan)
+    return _response(200, {action_key: payload})
 
 
 def _approve_prompt_refinement(event: dict) -> dict:
@@ -840,6 +913,56 @@ def _approve_prompt_refinement(event: dict) -> dict:
 
 def _reject_prompt_refinement(event: dict) -> dict:
     return _resolve_prompt_refinement(event, new_status="rejected")
+
+
+def _approved_refinement_or_error(event: dict):
+    topic_id = _path_param(event, "topic_id")
+    version = _path_param(event, "version")
+    item = get_prompt_refinement(topic_id, version)
+    if item is None:
+        return None, _error(404, f"prompt refinement '{topic_id}'/'{version}' not found")
+    if item.get("status") != "approved":
+        return None, _error(409, f"prompt refinement '{topic_id}'/'{version}' is not approved")
+    return item, None
+
+
+def _equip_prompt_refinement(event: dict) -> dict:
+    item, error = _approved_refinement_or_error(event)
+    if error:
+        return error
+    body = _placement_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    approved = list_prompt_refinements(status="approved")
+    try:
+        plan = equipment.plan_equip(
+            approved,
+            item,
+            scope=body.get("scope") or item.get("scope") or equipment.SCOPE_TOPIC,
+            slot=body.get("slot"),
+            replace=body.get("replace"),
+        )
+    except equipment.EquipError as exc:
+        return _error(exc.status, exc.message)
+    _wear(item, plan)
+    placement = _placement_view(item, plan)
+    return _response(200, {"equipped": {**equipment.ref(item), **placement}})
+
+
+def _unequip_prompt_refinement(event: dict) -> dict:
+    item, error = _approved_refinement_or_error(event)
+    if error:
+        return error
+    if not equipment.is_equipped(item):
+        return _error(409, "that refinement is not equipped")
+    set_prompt_refinement_equipment(
+        item["topic_id"], item["version"], equipped=False, at=datetime.now(UTC).isoformat()
+    )
+    return _response(200, {"unequipped": equipment.ref(item)})
+
+
+def _get_equipment(event: dict) -> dict:
+    return _response(200, equipment.describe(list_prompt_refinements(status="approved")))
 
 
 # --- Failed executions (DLQ consumer) --------------------------------------
@@ -1115,6 +1238,9 @@ _ROUTES = {
     "GET /prompt-refinements": _list_prompt_refinements,
     "POST /prompt-refinements/{topic_id}/{version}/approve": _approve_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/reject": _reject_prompt_refinement,
+    "POST /prompt-refinements/{topic_id}/{version}/equip": _equip_prompt_refinement,
+    "POST /prompt-refinements/{topic_id}/{version}/unequip": _unequip_prompt_refinement,
+    "GET /equipment": _get_equipment,
     "GET /failed-executions": _list_failed_executions,
     "GET /models": _list_models,
     "POST /models": _put_model,

@@ -140,6 +140,11 @@ class ContentSource(ABC):
     def reject(self, item: Item) -> str:
         """Reject `item`. Returns a short message about what happened."""
 
+    def prepare_approve(self, item: Item, key_reader: Callable[[], str], out) -> bool:
+        """Ask whatever must be decided before approving (nothing, by default). False means the
+        person backed out: stay on the item. Called only for a real approval, never a dry run."""
+        return True
+
 
 def _oldest_first(rows: list[dict], date_field: str) -> list[dict]:
     return sorted(rows, key=lambda row: row.get(date_field) or "")
@@ -240,13 +245,116 @@ class RefinementSource(ContentSource):
                 break
         return items
 
+    def prepare_approve(self, item: Item, key_reader: Callable[[], str], out) -> bool:
+        """Approving a prompt change also decides where the bear wears it, so ask."""
+        try:
+            loadout = self.api.get("/equipment")
+        except ApiError as exc:
+            _emit(f"  ! Could not read what the bear is wearing: {exc.message}", out)
+            return False
+        placement = choose_placement(item, loadout, key_reader, out)
+        if placement is None:
+            return False
+        item.ref["placement"] = placement
+        return True
+
     def approve(self, item: Item) -> str:
-        self.api.post(f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/approve")
-        return "approved: future drafts will use it"
+        path = f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/approve"
+        response = self.api.post(path, item.ref.get("placement") or None)
+        placement = (response.get("approved") or {}).get("placement") or {}
+        return "approved: " + _worn_message(placement)
 
     def reject(self, item: Item) -> str:
         self.api.post(f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/reject")
         return "rejected"
+
+
+def _short(text, limit: int = 60) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _worn_message(placement: dict) -> str:
+    """What became of an approved prompt change, in words."""
+    if not placement.get("equipped"):
+        return "it is in the backpack, not worn, so future drafts will not use it yet"
+    slot = placement.get("slot")
+    if slot == "ring":
+        where = "as a ring for its topic"
+    else:
+        where = f"as {placement.get('scope')} guidance in the {slot} slot"
+    displaced = placement.get("displaced")
+    replaced = f" (replacing {displaced.get('topic_id')} {displaced.get('version')})" if displaced else ""
+    return f"worn {where}{replaced}; future drafts will use it"
+
+
+def _ask(key_reader: Callable[[], str], out, prompt: str, valid: str, default: str | None = None):
+    """One keystroke out of `valid`. Enter takes `default` if there is one; c (or Ctrl-C, or the
+    end of input) backs out and returns None."""
+    while True:
+        print(prompt, end="", file=out, flush=True)
+        try:
+            key = key_reader()
+        except KeyboardInterrupt:
+            key = "c"
+        print(key.strip() if key else "", file=out, flush=True)
+        if key in ("\r", "\n", " ") and default:
+            return default
+        if key in ("c", "q"):
+            return None
+        if key and key in valid:
+            return key
+        _emit(f"  Press one of: {', '.join(valid)}, or c to cancel.", out)
+
+
+def choose_placement(item: Item, loadout: dict, key_reader: Callable[[], str], out) -> dict | None:
+    """Ask where an approved prompt change goes. Returns the body for the approve call, or None
+    when the person backs out. `loadout` is GET /equipment. It says what would be replaced before
+    anything is."""
+    armor = loadout.get("armor") or {}
+    rings = loadout.get("rings") or []
+    max_rings = int(loadout.get("max_rings") or 5)
+    _emit("  Where should the bear wear it?", out)
+    _emit(f"    t  a ring for {item.topic} ({len(rings)} of {max_rings} rings worn)  [Enter]", out)
+    _emit("    g  an armor slot: guidance for every topic", out)
+    _emit(f"    b  the backpack: approved but not worn ({loadout.get('backpack_count', 0)} there now)", out)
+    choice = _ask(key_reader, out, "  Choose t / g / b (c cancels): ", "tgb", default="t")
+    if choice is None:
+        return None
+    if choice == "b":
+        return {"scope": "backpack"}
+    if choice == "t":
+        if len(rings) < max_rings:
+            return {"scope": "topic"}
+        _emit("  Every ring is worn. Replace which one?", out)
+        for number, ring in enumerate(rings, start=1):
+            _emit(f"    {number}  {ring.get('topic_id')}: {_short(ring.get('prompt_changes'))}", out)
+        numbers = "".join(str(n) for n in range(1, len(rings) + 1))
+        pick = _ask(key_reader, out, "  Replace ring number (c cancels): ", numbers)
+        if pick is None:
+            return None
+        ring = rings[int(pick) - 1]
+        return {"scope": "topic", "replace": {"topic_id": ring["topic_id"], "version": ring["version"]}}
+    slots = list(armor)
+    empty = next((n for n, slot in enumerate(slots, start=1) if not armor[slot]), None)
+    hint = "  (Enter takes the first empty one)" if empty else "  (all are worn)"
+    _emit("  Which armor slot?" + hint, out)
+    for number, slot in enumerate(slots, start=1):
+        held = armor[slot]
+        state = "empty"
+        if held:
+            state = f"worn: {_short(held.get('prompt_changes'), 45)}  <- it would be replaced"
+        _emit(f"    {number}  {slot}: {state}", out)
+    pick = _ask(
+        key_reader,
+        out,
+        "  Slot number (c cancels): ",
+        "".join(str(n) for n in range(1, len(slots) + 1)),
+        default=str(empty) if empty else None,
+    )
+    if pick is None:
+        return None
+    return {"scope": "global", "slot": slots[int(pick) - 1]}
 
 
 class MockSource(ContentSource):
@@ -571,6 +679,8 @@ def review(
                 break
             if key in ("y", "r"):
                 if key == "y" and item.caution and not _confirmed(key_reader, out):
+                    continue
+                if key == "y" and not dry_run and not source.prepare_approve(item, key_reader, out):
                     continue
                 if _apply(source, item, key, summary, store, dry_run, out):
                     break

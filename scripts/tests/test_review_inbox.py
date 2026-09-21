@@ -5,7 +5,9 @@ from __future__ import annotations
 import io
 import json
 import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -34,6 +36,7 @@ class FakeApi:
     def __init__(self, routes: dict):
         self.routes = routes
         self.calls: list[tuple[str, str]] = []
+        self.bodies: list[tuple[str, dict | None]] = []
 
     def _do(self, method: str, path: str):
         self.calls.append((method, path))
@@ -46,6 +49,7 @@ class FakeApi:
         return self._do("GET", path)
 
     def post(self, path, body=None):
+        self.bodies.append((path, body))
         return self._do("POST", path)
 
 
@@ -314,6 +318,182 @@ def test_approving_and_rejecting_a_prompt_change_call_the_refinement_routes():
 
     assert ("POST", "/prompt-refinements/t1/v1/approve") in api.calls
     assert ("POST", "/prompt-refinements/t1/v1/reject") in api.calls
+
+
+# --- where an approved prompt change is worn -------------------------------------------
+
+ENTER = chr(13)
+ARMOR = ("helmet", "chest", "gloves", "boots", "sword", "shield")
+
+
+def _loadout(worn_armor=None, rings=0, backpack=0):
+    """What GET /equipment answers: `worn_armor` maps a slot to the text worn there."""
+    worn_armor = worn_armor or {}
+    return {
+        "armor": {
+            slot: {"topic_id": "x", "version": f"v-{slot}", "prompt_changes": worn_armor[slot]}
+            if slot in worn_armor
+            else None
+            for slot in ARMOR
+        },
+        "rings": [
+            {"topic_id": f"t{n}", "version": f"r{n}", "prompt_changes": f"Ring {n} guidance."}
+            for n in range(rings)
+        ],
+        "max_rings": 5,
+        "backpack_count": backpack,
+    }
+
+
+def _prompt_change_api(loadout=None, approve_response=None):
+    return FakeApi(
+        {
+            "GET /prompt-refinements?status=pending": {"refinements": [_refinement("t1", "v1")]},
+            "GET /equipment": loadout if loadout is not None else _loadout(),
+            "POST /prompt-refinements/t1/v1/approve": approve_response or {},
+        }
+    )
+
+
+def _approve_with(api, *pressed):
+    """Press y on the one waiting prompt change, then `pressed` to answer the placement questions."""
+    out = io.StringIO()
+    summary = ri.review(
+        [ri.RefinementSource(api)],
+        store=_memory_store(),
+        key_reader=keys("y", *pressed),
+        out=out,
+        now=lambda: NOW,
+    )
+    return summary, out.getvalue()
+
+
+def _memory_store():
+    return ri.SkipStore(Path(tempfile.mkdtemp()) / "skips.json", now=lambda: NOW)
+
+
+def test_approving_a_prompt_change_asks_where_the_bear_wears_it_and_defaults_to_a_ring():
+    api = _prompt_change_api(approve_response={"approved": {"placement": {"equipped": True, "slot": "ring"}}})
+
+    summary, out = _approve_with(api, ENTER)
+
+    assert "Where should the bear wear it?" in out
+    assert "a ring for t1 (0 of 5 rings worn)" in out
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "topic"})]
+    assert summary.approved == 1
+    assert "worn as a ring for its topic" in out
+
+
+def test_a_prompt_change_can_go_to_the_backpack():
+    api = _prompt_change_api(
+        loadout=_loadout(backpack=3), approve_response={"approved": {"placement": {"equipped": False}}}
+    )
+
+    summary, out = _approve_with(api, "b")
+
+    assert "3 there now" in out
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "backpack"})]
+    assert "in the backpack, not worn" in out
+    assert summary.approved == 1
+
+
+def test_a_global_prompt_change_defaults_to_the_first_empty_armor_slot_and_names_what_is_worn():
+    api = _prompt_change_api(loadout=_loadout({"helmet": "Keep it short.", "chest": "Cite sources."}))
+
+    _, out = _approve_with(api, "g", ENTER)
+
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "global", "slot": "gloves"})]
+    assert "helmet: worn: Keep it short." in out and "gloves: empty" in out
+
+
+def test_picking_an_occupied_armor_slot_says_what_it_would_replace():
+    api = _prompt_change_api(loadout=_loadout({slot: f"Guidance for {slot}." for slot in ARMOR}))
+
+    _, out = _approve_with(api, "g", "5")
+
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "global", "slot": "sword"})]
+    assert "sword: worn: Guidance for sword.  <- it would be replaced" in out
+    assert "(all are worn)" in out
+
+
+def test_with_every_ring_worn_it_asks_which_to_replace():
+    api = _prompt_change_api(loadout=_loadout(rings=5))
+
+    _, out = _approve_with(api, "t", "3")
+
+    assert "Every ring is worn. Replace which one?" in out and "2  t1: Ring 1 guidance." in out
+    assert api.bodies == [
+        (
+            "/prompt-refinements/t1/v1/approve",
+            {"scope": "topic", "replace": {"topic_id": "t2", "version": "r2"}},
+        )
+    ]
+
+
+def test_cancelling_the_placement_leaves_the_prompt_change_untouched():
+    api = _prompt_change_api()
+
+    summary, _ = _approve_with(api, "c")  # then the loop's own keys run out, which quits
+
+    assert api.bodies == []
+    assert summary.approved == 0 and summary.quit_early
+
+
+def test_an_unknown_key_at_the_placement_question_asks_again():
+    api = _prompt_change_api()
+
+    _, out = _approve_with(api, "x", "b")
+
+    assert "Press one of: t, g, b, or c to cancel." in out
+    assert api.bodies == [("/prompt-refinements/t1/v1/approve", {"scope": "backpack"})]
+
+
+def test_if_the_loadout_cannot_be_read_you_stay_on_the_item():
+    api = _prompt_change_api(loadout=ri.ApiError(500, "boom"))
+
+    summary, out = _approve_with(api)
+
+    assert "Could not read what the bear is wearing: boom" in out
+    assert api.bodies == [] and summary.approved == 0
+
+
+def test_a_dry_run_does_not_ask_where_it_would_be_worn():
+    api = _prompt_change_api()
+
+    out = io.StringIO()
+    ri.review(
+        [ri.RefinementSource(api)],
+        store=_memory_store(),
+        key_reader=keys("y"),
+        out=out,
+        now=lambda: NOW,
+        dry_run=True,
+    )
+
+    assert "Where should the bear wear it?" not in out.getvalue()
+    assert ("GET", "/equipment") not in api.calls and api.bodies == []
+
+
+def test_approving_an_article_never_asks_about_gear():
+    source = ri.MockSource(count=1)
+
+    out = io.StringIO()
+    ri.review([source], store=_memory_store(), key_reader=keys("y"), out=out, now=lambda: NOW)
+
+    assert "Where should the bear wear it?" not in out.getvalue()
+
+
+def test_the_worn_message_tells_you_what_replaced_what():
+    placement = {
+        "equipped": True,
+        "slot": "helmet",
+        "scope": "global",
+        "displaced": {"topic_id": "t9", "version": "v9"},
+    }
+
+    assert ri._worn_message(placement) == (
+        "worn as global guidance in the helmet slot (replacing t9 v9); future drafts will use it"
+    )
 
 
 # --- remembering what you skipped -----------------------------------------------------

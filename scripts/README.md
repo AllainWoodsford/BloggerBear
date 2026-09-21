@@ -222,6 +222,38 @@ you, a preview) and waits for one key, no Enter:
   A routine financial article (held only because it is a financial topic) does not ask.
 - `--dry-run` goes through the motions and changes nothing. `--mock` (or `BLOGGERBEAR_REVIEW_MOCK=1`)
   uses made-up items and its own skip file, needs no credentials, and sends nothing anywhere.
+- **Approving a prompt change asks where the bear wears it** (see the next section): `t` (or Enter) a ring
+  for its topic, `g` an armor slot (it lists what is worn, and says what would be replaced), `b` the
+  backpack. `c` backs out and leaves it pending.
+
+## What the bear wears: `equipment`
+
+An approved prompt change is *gear*. Only worn gear is injected into the drafting prompts:
+
+- **Armor** (helmet, chest, gloves, boots, sword, shield) is *global* guidance, used for every topic. One
+  item per slot; equipping into a taken slot sends the old item to the backpack.
+- **Rings** are *topic* guidance, used only for the topic the change was proposed for. Five at most; when
+  they are all worn, equipping another means naming the ring it replaces.
+- **The backpack** is approved gear that is not worn. Nothing in it is used.
+
+```
+python scripts/admin_cli.py equipment list                        # every slot, the rings, the backpack
+python scripts/admin_cli.py equipment equip TOPIC VERSION --scope global --slot helmet
+python scripts/admin_cli.py equipment equip TOPIC VERSION         # a ring for its topic
+python scripts/admin_cli.py equipment equip TOPIC VERSION --replace OTHER_TOPIC OTHER_VERSION
+python scripts/admin_cli.py equipment unequip TOPIC VERSION       # into the backpack, no longer used
+python scripts/admin_cli.py refinements approve TOPIC VERSION --scope backpack   # approve, do not wear
+```
+
+`--scope global` with no `--slot` takes the first empty armor slot. Approving with no choice made wears it
+as a ring for its topic (what approving always meant), or leaves it in the backpack if all five rings are
+worn. Unlike before, guidance now *stacks*: several rings for one topic, plus the armor, are all used
+together. A change approved before this existed keeps working exactly as it did (the latest one per topic)
+until that topic has a ring of its own.
+
+Each article records which gear was in the prompts that wrote it (`equipment_used`: topic, version and slot
+per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
+gear helps, and share out wear. It is never shown publicly.
 
 ### Testing the DLQ consumer manually
 
