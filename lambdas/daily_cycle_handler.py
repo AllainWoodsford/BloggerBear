@@ -6,7 +6,9 @@ on a schedule is Phase 3 and is intentionally not built here.
 Flow (see docs/project-plan.md §4 "Daily Authoring Cycle" and §5 data
 model):
 1. Load topic.
-2. Load recent findings; bail out if there's nothing to write about yet.
+2. Load every finding from the last FINDINGS_WINDOW_HOURS (the whole window
+   the research loop covered, not just the newest few); bail out if there's
+   nothing new to write about.
    Topics with a daily editorial goal (the crypto feed -- see
    common/editorial_goals.py) resolve today's goal here and keep only the
    findings that belong to it; its mandate and article style are folded into
@@ -28,7 +30,7 @@ model):
 import os
 import re
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import boto3
 
@@ -65,6 +67,13 @@ from common.relevance import (
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
 
+# An article is written from everything the research loop found since the last
+# daily run, not from the few newest findings: the window is the day the run
+# covers, the count is a safety cap, and the character budget keeps a busy
+# topic's prompt bounded (the oldest findings drop out first).
+FINDINGS_WINDOW_HOURS = 24
+MAX_WINDOW_FINDINGS = 48
+SUMMARIES_MAX_CHARS = 40_000
 _NUM_CANDIDATE_ANGLES = 3
 _LIST_MARKER_RE = re.compile(r"^[\s\d.\-\)]+")
 _FEW_SHOT_EXCERPT_CHARS = 500
@@ -89,8 +98,11 @@ def _run_daily_cycle(topic_id: str) -> dict:
     if topic is None:
         return {"status": "error", "topic_id": topic_id, "error": "topic not found"}
 
-    findings = list_recent_findings(topic_id)
+    since = (datetime.now(UTC) - timedelta(hours=FINDINGS_WINDOW_HOURS)).isoformat()
+    findings = list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
     if not findings:
+        # Nothing new was found in the window: better no article than one
+        # rewritten from findings the last run already covered.
         return {"status": "no_findings", "topic_id": topic_id}
 
     # Topics with a daily editorial goal (the crypto feed) get the day's
@@ -203,7 +215,17 @@ def _select_goal_and_findings(
 
 
 def _format_findings_summaries(findings: list[dict]) -> str:
-    return "\n".join(f"- {finding.get('summary', '')}" for finding in findings)
+    """One bullet per finding, newest first, stopping at SUMMARIES_MAX_CHARS so
+    the oldest of a very busy window are the ones dropped."""
+    lines: list[str] = []
+    used = 0
+    for finding in findings:
+        line = f"- {finding.get('summary', '')}"
+        if lines and used + len(line) + 1 > SUMMARIES_MAX_CHARS:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
 
 
 def _get_approved_guidance(topic_id: str) -> str | None:

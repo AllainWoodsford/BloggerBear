@@ -385,9 +385,51 @@ into four pieces below, any of which could be scoped/built independently.
 
 ### Rolling research, whole-day article input, and a fresh-data review before publish
 
-**Status: proposed, not implemented.** Written up from a review of how the
-research and authoring pipelines behave today (checked against the code and
-the dev environment), so the design starts from what actually happens.
+**Status: (A) and (B) implemented in a simpler shape than written below (see
+"Decisions and what shipped"); (C) proposed, not implemented; DynamoDB-
+configurable cadence is the scoped next change.** Written up from a review of
+how the research and authoring pipelines behave today (checked against the
+code and the dev environment), so the design starts from what actually happens.
+
+**Design constraint: topic-agnostic.** Topics can be about anything; the
+first one built out happened to be crypto. Everything here lives in the
+generic pipeline or behind the adapter contract, so every topic gets the
+research-quality improvement and no domain's rules or vocabulary reach
+another's. Domain knowledge (what an "item" is, what a day's editorial goal
+is) stays inside each adapter; the handlers only ask the adapter.
+
+**Decisions and what shipped**
+- *Daily cycle at 9 AM Sydney time.* `daily_timezone` (default
+  `Australia/Sydney`) is stored on the topic and passed to EventBridge
+  Scheduler as `ScheduleExpressionTimezone`, so `cron(0 9 * * ? *)` follows
+  daylight saving. Only *new* topics get the new default; a topic created
+  earlier has no stored zone and stays on UTC until moved on purpose
+  (`admin_cli topics update <id> --daily-cadence "cron(0 9 * * ? *)"
+  --daily-timezone Australia/Sydney`), so an unrelated edit never shifts its
+  run. 9 AM Sydney is 22:00/23:00 UTC the day before, i.e. the end of the UTC
+  day whose findings (and, for the crypto adapter, whose editorial goal) the
+  article uses.
+- *No thresholds on novelty (A).* Any item new to the topic makes a tick
+  material (web-search `min_new_results` now defaults to 1; the crypto news
+  threshold is 1). "Leaving a list" is no longer a trigger anywhere; a jump in
+  a known item's score/stars still is, since that is a new fact.
+- *"New" is judged against everything already reported, not the last
+  snapshot.* Every stored snapshot carries `_seen` (item key -> first-seen
+  date, 7-day retention, 2000-key cap), built from the adapter's `item_keys`,
+  so an item that drops out of a feed and returns is not reported twice.
+  This replaced the proposed Observations table: a tick with nothing new
+  stores nothing and calls no model, and a tick with something new stores a
+  Finding, so there was nothing for a separate store to hold.
+- *Summaries cover only what is new and may not invent.* The generic prompt
+  asks about the "What's new" items only, treats the rest of the state as
+  background, and forbids adding facts, figures, causes or sources the data
+  does not contain.
+- *Articles read the whole window (B).* The daily cycle reads every finding
+  from the last 24h (cap 48, 40k characters, oldest dropped first) instead of
+  the 5 newest. Nothing new in the window means no article, not one rewritten
+  from findings the last run already covered.
+- *Not done:* (C) the fresh-data review; fetching a news feed alongside the
+  crypto analysis days (crypto-specific; adapter-level follow-up).
 
 **Motivation -- what happens today**
 - *Hourly tick* (`research_tick_handler`): every tick re-fetches the source
@@ -478,5 +520,30 @@ the day's research.
 
 **Deferred**
 - Article-body fetching for news (needs a search provider that returns text).
-- Any change to hourly cadence itself; ticks stay hourly, the change is what
-  they store and when a model is called.
+
+**Next change (scoped, not started): cadence configured from DynamoDB**
+Goal: change how often a topic researches by editing DynamoDB -- per topic,
+or one global default (e.g. every 2 hours to save cost) -- with no Terraform
+apply and no Admin API call.
+- *Why it is not possible today:* the cadence is stored on the Topic item but
+  EventBridge Scheduler only learns of it when the Admin API writes the
+  schedule (`common/scheduler.py`), so a bare DynamoDB edit changes nothing.
+- *Proposed design:* keep the per-topic hourly schedule as a fixed base
+  heartbeat and make the tick decide whether it is due. The topic carries
+  `research_interval_minutes` (optional); the global default lives in a
+  DynamoDB config item (alongside `model-config`, with a hard-coded fallback
+  of 60). At the start of a tick the handler compares now with the topic's
+  last-checked time (a small field on the Topic item, updated every tick, since
+  a tick that finds nothing writes no Finding) and returns `not_due` without
+  fetching anything if the interval has not elapsed. Changes apply from the
+  next tick; granularity is the heartbeat (hourly), so intervals are whole
+  hours; the cost of a skipped tick is one Lambda invocation and two reads.
+- *Alternative considered:* DynamoDB Streams into a sync Lambda that rewrites
+  the EventBridge schedules. Exact cron control, but a global-default change
+  fans out to every topic's schedule and it adds a stream, a Lambda and IAM.
+- *In scope:* the interval field and global default, the due-check, Admin API
+  and CLI fields (`--research-interval-hours`, and a command to set the
+  global default), validation, tests, and the same topic-agnostic rule -- the
+  gate lives in the handler and knows nothing of any adapter.
+- *Not in scope:* changing the daily cycle time from DynamoDB (it stays a
+  cron in a named time zone, edited through the Admin API).

@@ -87,17 +87,38 @@ def test_first_observation_is_always_material():
     assert changed is True and "initial observation" in summary
 
 
-def test_few_new_results_are_not_material_but_enough_are():
+def test_any_new_result_is_material_by_default():
     adapter = WebSearchAdapter()
     old = {"results": [_result(1), _result(2)]}
 
-    few = {"results": [_result(1), _result(2), _result(3), _result(4)]}  # 2 new < default 3
-    assert adapter.material_diff(old, few) == (False, "no material change")
+    assert adapter.material_diff(old, {"results": [_result(1), _result(2)]}) == (
+        False,
+        "no new information",
+    )
 
-    enough = {"results": [_result(i) for i in range(1, 6)]}  # 3 new
-    changed, summary = adapter.material_diff(old, enough)
+    one_new = {"results": [_result(1), _result(2), _result(3)]}
+    changed, summary = adapter.material_diff(old, one_new)
     assert changed is True
-    assert summary.startswith("3 new results: Story 3; Story 4; Story 5")
+    assert summary.startswith("1 new results: Story 3")
+
+
+def test_an_operator_configured_threshold_still_holds_back_a_few_new_results():
+    adapter = WebSearchAdapter()
+    old = {"results": [_result(1), _result(2)]}
+    new = {"results": [_result(i) for i in range(1, 5)], "min_new_results": 3}  # 2 new < 3
+
+    assert adapter.material_diff(old, new) == (False, "no new information")
+
+
+def test_a_result_already_reported_is_not_new_when_it_returns():
+    adapter = WebSearchAdapter()
+    seen = {"https://a.com/1": "2026-09-20", "https://a.com/2": "2026-09-20"}
+    old = {"results": [_result(2)], "_seen": seen}
+
+    assert adapter.material_diff(old, {"results": [_result(1), _result(2)]}) == (
+        False,
+        "no new information",
+    )
 
 
 def test_threshold_comes_from_the_snapshot_because_material_diff_cannot_see_config():

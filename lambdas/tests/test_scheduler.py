@@ -92,6 +92,54 @@ def test_upsert_topic_schedules_creates_both_schedules(scheduler_client):
     assert json.loads(daily["Target"]["Input"]) == {"topic_id": "topic-a"}
 
 
+# --- daily timezone -----------------------------------------------------------
+
+
+def test_upsert_topic_schedules_reads_the_daily_cron_in_the_given_timezone(scheduler_client):
+    scheduler.upsert_topic_schedules("topic-tz", "rate(1 hour)", "cron(0 9 * * ? *)", "Australia/Sydney")
+
+    daily = _schedule(scheduler_client, "bloggerbear-dev-topic-tz-daily-cycle")
+    assert daily["ScheduleExpression"] == "cron(0 9 * * ? *)"
+    assert daily["ScheduleExpressionTimezone"] == "Australia/Sydney"
+
+
+def test_upsert_topic_schedules_defaults_to_utc(scheduler_client):
+    scheduler.upsert_topic_schedules("topic-utc", "rate(1 hour)", "cron(0 6 * * ? *)")
+
+    daily = _schedule(scheduler_client, "bloggerbear-dev-topic-utc-daily-cycle")
+    assert daily["ScheduleExpressionTimezone"] == "UTC"
+
+
+def test_upsert_topic_schedules_update_path_can_change_the_timezone(scheduler_client):
+    scheduler.upsert_topic_schedules("topic-move", "rate(1 hour)", "cron(0 6 * * ? *)")
+
+    scheduler.upsert_topic_schedules("topic-move", "rate(1 hour)", "cron(0 9 * * ? *)", "Australia/Sydney")
+
+    daily = _schedule(scheduler_client, "bloggerbear-dev-topic-move-daily-cycle")
+    assert daily["ScheduleExpression"] == "cron(0 9 * * ? *)"
+    assert daily["ScheduleExpressionTimezone"] == "Australia/Sydney"
+
+
+@pytest.mark.parametrize("tz", ["UTC", "Australia/Sydney", "America/Argentina/Buenos_Aires", "Etc/GMT+10"])
+def test_validate_timezone_accepts_iana_names(tz):
+    scheduler.validate_timezone(tz)  # must not raise
+
+
+@pytest.mark.parametrize("tz", ["", "Sydney time", "Australia/", "/UTC", "9am", None, 5])
+def test_validate_timezone_rejects_junk(tz):
+    with pytest.raises(ValueError):
+        scheduler.validate_timezone(tz)
+
+
+def test_upsert_topic_schedules_invalid_timezone_makes_no_aws_calls(monkeypatch):
+    monkeypatch.setattr(
+        scheduler, "_get_scheduler_client", lambda: (_ for _ in ()).throw(AssertionError("no AWS calls"))
+    )
+
+    with pytest.raises(ValueError):
+        scheduler.upsert_topic_schedules("topic-a", "rate(1 hour)", "cron(0 9 * * ? *)", "not a zone")
+
+
 # --- upsert_topic_schedules: update (conflict) path -------------------------
 
 

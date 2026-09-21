@@ -209,7 +209,7 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
     }
     # Omitted entirely (not sent as null) when not passed, so the Admin
     # API's own defaults (the web_search adapter, _DEFAULT_RESEARCH_CADENCE /
-    # _DEFAULT_DAILY_CADENCE) apply -- matching create_topic's own
+    # _DEFAULT_DAILY_CADENCE / _DEFAULT_DAILY_TIMEZONE) apply -- matching create_topic's own
     # body.get(..., default) behavior.
     if args.adapter is not None:
         body["adapter"] = args.adapter
@@ -219,6 +219,8 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         body["research_cadence"] = args.research_cadence
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
+    if args.daily_timezone is not None:
+        body["daily_timezone"] = args.daily_timezone
     _apply_model_flags(body, args)
     _do_request(args, "POST", "/topics", body=body)
 
@@ -240,6 +242,8 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
         body["research_cadence"] = args.research_cadence
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
+    if args.daily_timezone is not None:
+        body["daily_timezone"] = args.daily_timezone
     _apply_model_flags(body, args)
 
     if not body:
@@ -513,7 +517,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--daily-cadence",
         dest="daily_cadence",
         default=None,
-        help="EventBridge Scheduler expression, e.g. 'cron(0 6 * * ? *)' (default: cron(0 6 * * ? *))",
+        help="EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default: cron(0 9 * * ? *))",
+    )
+    create_parser.add_argument(
+        "--daily-timezone",
+        dest="daily_timezone",
+        default=None,
+        help="IANA zone the daily cron is read in (default: Australia/Sydney)",
     )
     _add_model_flags(create_parser)
     create_parser.set_defaults(func=_cmd_topics_create)
@@ -544,7 +554,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--daily-cadence",
         dest="daily_cadence",
         default=None,
-        help="EventBridge Scheduler expression, e.g. 'cron(0 6 * * ? *)'",
+        help="EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'",
+    )
+    update_parser.add_argument(
+        "--daily-timezone",
+        dest="daily_timezone",
+        default=None,
+        help=(
+            "IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic "
+            "created before this option existed is on UTC until you set it"
+        ),
     )
     _add_model_flags(update_parser)
     update_parser.set_defaults(func=_cmd_topics_update)
