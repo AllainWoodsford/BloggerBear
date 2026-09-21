@@ -1,9 +1,12 @@
-# TODO: set before first production apply -- see
-# docs/specs/phase-0-foundations.md "Open questions" (domain name and
-# registrar not yet decided/registered). Production's static-site module
-# call has enable_custom_domain = true, so these must be non-empty before
-# that first apply succeeds.
-domain_name    = ""
+# The site's domain, bought at GoDaddy. Production's static-site module call has
+# enable_custom_domain = true, so BOTH of these must be set before the first production apply, and the
+# apply stops early with a plain-English message if hosted_zone_id is missing.
+#
+# hosted_zone_id is TODO: it does not exist until you create the zone (step 2 of
+# docs/production-runsheet.md: `terraform -chdir=infra/bootstrap apply -var domain_name=bloggerbear.com`)
+# and then copy its ID from `terraform -chdir=infra/bootstrap output hosted_zone_id`. Neither value is
+# sensitive, so it is fine here in git.
+domain_name    = "bloggerbear.com"
 hosted_zone_id = ""
 
 # bedrock_model_id is deliberately NOT set here anymore. It used to be

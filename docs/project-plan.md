@@ -213,9 +213,12 @@ out of sync.
 
 ### Custom domain (bloggerbear.com) via Route 53 + ACM
 
-**Status: not done.** The module and production wiring exist, but `domain_name` and
-`hosted_zone_id` are still empty in `infra/environments/production/terraform.tfvars`;
-the remaining steps below are manual.
+**Status: built, not yet connected.** The whole path is in Terraform and tested, `domain_name` is set
+(`bloggerbear.com`), and `www.` is served and redirected to the bare domain. What is left is manual and in order:
+create the Route 53 zone (in `infra/bootstrap`), point GoDaddy's nameservers at it, put the zone ID in
+`infra/environments/production/terraform.tfvars`, and release. **The step-by-step, with checks, is
+[docs/production-runsheet.md](docs/production-runsheet.md)**; `python scripts/domain_check.py` shows where the
+domain stands at any time. The design notes below still describe why it is shaped this way.
 
 **Problem**: the production site is only ever reachable at its
 `*.cloudfront.net` default domain. A real domain, `bloggerbear.com`, has
@@ -262,10 +265,13 @@ ACM to see it).
    distribution, and creates the alias records, with no other code
    changes needed.
 
-**Open question**: the module's `aliases` list currently takes exactly
-one domain name (the bare root domain) — whether `www.bloggerbear.com`
-should also resolve (and if so, whether as a second alias + redirect, or
-left unsupported) hasn't been decided and would need scoping if wanted.
+**Decided: `www` redirects to the bare domain.** Once DNS leaves GoDaddy nothing else can forward it, so
+production now also serves `www.<domain>`: the certificate lists it, CloudFront has it as a second alias,
+Route 53 has its A/AAAA records, and a small CloudFront Function (`infra/modules/static-site/www_redirect.js.tftpl`)
+answers it with a 301 to the bare domain, keeping the path and query string. It only acts on that exact host
+and its target is fixed, so it cannot be used as an open redirect. The hosted zone was moved out of the
+per-environment path into `infra/bootstrap` (with `prevent_destroy`) so its name servers survive a production
+rebuild.
 
 ### AI lineage, cost tracking, pluggable model routing, and a public Stats page
 

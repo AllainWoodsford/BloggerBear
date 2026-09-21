@@ -16,7 +16,15 @@
 resource "aws_dynamodb_table" "topics" {
   name         = "bloggerbear-${var.environment_name}-topics"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "topic_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "topic_id"
 
   attribute {
     name = "topic_id"
@@ -27,8 +35,16 @@ resource "aws_dynamodb_table" "topics" {
 resource "aws_dynamodb_table" "findings" {
   name         = "bloggerbear-${var.environment_name}-findings"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "topic_id"
-  range_key    = "captured_at"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key  = "topic_id"
+  range_key = "captured_at"
 
   attribute {
     name = "topic_id"
@@ -51,8 +67,16 @@ resource "aws_dynamodb_table" "findings" {
 resource "aws_dynamodb_table" "candidate_ideas" {
   name         = "bloggerbear-${var.environment_name}-candidate-ideas"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "topic_id"
-  range_key    = "created_at"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key  = "topic_id"
+  range_key = "created_at"
 
   attribute {
     name = "topic_id"
@@ -68,7 +92,15 @@ resource "aws_dynamodb_table" "candidate_ideas" {
 resource "aws_dynamodb_table" "articles" {
   name         = "bloggerbear-${var.environment_name}-articles"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "article_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "article_id"
 
   attribute {
     name = "article_id"
@@ -79,7 +111,15 @@ resource "aws_dynamodb_table" "articles" {
 resource "aws_dynamodb_table" "moderation_queue" {
   name         = "bloggerbear-${var.environment_name}-moderation-queue"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "queue_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "queue_id"
 
   attribute {
     name = "queue_id"
@@ -96,8 +136,16 @@ resource "aws_dynamodb_table" "moderation_queue" {
 resource "aws_dynamodb_table" "feedback" {
   name         = "bloggerbear-${var.environment_name}-feedback"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "article_id"
-  range_key    = "feedback_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key  = "article_id"
+  range_key = "feedback_id"
 
   attribute {
     name = "article_id"
@@ -117,8 +165,16 @@ resource "aws_dynamodb_table" "feedback" {
 resource "aws_dynamodb_table" "prompt_refinements" {
   name         = "bloggerbear-${var.environment_name}-prompt-refinements"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "topic_id"
-  range_key    = "version"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key  = "topic_id"
+  range_key = "version"
 
   attribute {
     name = "topic_id"
@@ -138,7 +194,15 @@ resource "aws_dynamodb_table" "prompt_refinements" {
 resource "aws_dynamodb_table" "failed_executions" {
   name         = "bloggerbear-${var.environment_name}-failed-executions"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "failure_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "failure_id"
 
   attribute {
     name = "failure_id"
@@ -153,7 +217,15 @@ resource "aws_dynamodb_table" "failed_executions" {
 resource "aws_dynamodb_table" "musings" {
   name         = "bloggerbear-${var.environment_name}-musings"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "musing_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "musing_id"
 
   attribute {
     name = "musing_id"
@@ -169,7 +241,15 @@ resource "aws_dynamodb_table" "musings" {
 resource "aws_dynamodb_table" "models" {
   name         = "bloggerbear-${var.environment_name}-models"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "model_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "model_id"
 
   attribute {
     name = "model_id"
@@ -187,7 +267,15 @@ resource "aws_dynamodb_table" "models" {
 resource "aws_dynamodb_table" "model_config" {
   name         = "bloggerbear-${var.environment_name}-model-config"
   billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "config_id"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "config_id"
 
   # The feedback limiter's counters (one row per rate-limit window and per day, see
   # common/feedback_limits.py) carry an expires_at; TTL clears them out. The settings rows

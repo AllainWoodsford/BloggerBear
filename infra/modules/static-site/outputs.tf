@@ -13,6 +13,11 @@ output "bucket_name" {
   description = "Name of the site content S3 bucket."
 }
 
+output "www_redirect_enabled" {
+  value       = local.www_redirect
+  description = "Whether www.<domain_name> is also served and redirected to the bare domain."
+}
+
 output "custom_domain_url" {
   value       = var.enable_custom_domain ? "https://${var.domain_name}" : null
   description = "The site's custom domain URL, when enable_custom_domain = true; null otherwise."

@@ -66,7 +66,12 @@ variable "admin_allowed_cidrs" {
 variable "domain_name" {
   type        = string
   default     = ""
-  description = "Custom domain for the production site. Required (non-empty) before the first production apply, since enable_custom_domain = true for this environment."
+  description = "Custom domain for the production site, e.g. bloggerbear.com (bare: no https://, no www, no trailing dot). Required (non-empty) before the first production apply, since enable_custom_domain = true for this environment. www.<domain_name> is served too, and redirects here."
+
+  validation {
+    condition     = var.domain_name == "" || can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}$", var.domain_name))
+    error_message = "domain_name must be a bare lowercase domain such as bloggerbear.com: no https://, no www, no trailing dot."
+  }
 }
 
 variable "alert_email" {
@@ -85,7 +90,12 @@ variable "alert_email" {
 variable "hosted_zone_id" {
   type        = string
   default     = ""
-  description = "Route 53 hosted zone ID that domain_name lives in. Required (non-empty) before the first production apply."
+  description = "Route 53 hosted zone ID that domain_name lives in (looks like Z0123456789ABC). Required (non-empty) before the first production apply. Created by infra/bootstrap: `terraform -chdir=infra/bootstrap output hosted_zone_id`."
+
+  validation {
+    condition     = var.hosted_zone_id == "" || can(regex("^Z[A-Z0-9]+$", var.hosted_zone_id))
+    error_message = "hosted_zone_id must look like Z0123456789ABC. Get it from `terraform -chdir=infra/bootstrap output hosted_zone_id`."
+  }
 }
 
 variable "coingecko_api_key" {

@@ -41,5 +41,17 @@ variable "enable_cors" {
 variable "web_acl_id" {
   type        = string
   default     = ""
-  description = "ARN of a REGIONAL-scope WAFv2 Web ACL to associate with this API's stage. Empty (default) skips the association -- same optional pattern as infra/modules/static-site's web_acl_id."
+  description = "ARN of a REGIONAL-scope WAFv2 Web ACL to associate with this API's stage. Only used when associate_web_acl = true."
+}
+
+variable "associate_web_acl" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Associate web_acl_id with the stage. This is a separate flag, set by the caller, because the ACL is
+    usually created in the same apply: its ARN is not known at plan time, and Terraform cannot decide
+    `count` from an unknown value ("Invalid count argument"). That is exactly what stopped a from-scratch
+    production apply, while an environment that already had its ACL never noticed. A caller that passes
+    web_acl_id MUST set this to true: lambdas/tests/test_terraform_wiring.py fails if it does not.
+  EOT
 }

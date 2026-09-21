@@ -26,6 +26,12 @@ variable "hosted_zone_id" {
   description = "Route 53 hosted zone ID to create the ACM validation and alias records in. Only used when enable_custom_domain = true."
 }
 
+variable "redirect_www" {
+  type        = bool
+  default     = false
+  description = "Only used when enable_custom_domain = true. Also answers on www.<domain_name> and 301-redirects it to <domain_name> (same path and query string). Adds a SAN to the certificate, a second CloudFront alias, www A/AAAA records and a small CloudFront Function. Without it, www.<domain_name> does not exist at all, so a visitor who types www gets an error."
+}
+
 variable "web_acl_id" {
   type        = string
   default     = ""

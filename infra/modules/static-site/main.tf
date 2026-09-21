@@ -136,10 +136,27 @@ resource "aws_cloudfront_response_headers_policy" "security" {
   }
 }
 
+locals {
+  # Whether www.<domain_name> is also served (and redirected to the bare domain).
+  www_redirect = var.enable_custom_domain && var.redirect_www
+  www_name     = "www.${var.domain_name}"
+}
+
+# Answers www.<domain_name> at the edge with a 301 to <domain_name>. See www_redirect.js.tftpl.
+resource "aws_cloudfront_function" "www_redirect" {
+  count = local.www_redirect ? 1 : 0
+
+  name    = "bloggerbear-${var.environment_name}-www-redirect"
+  runtime = "cloudfront-js-2.0"
+  comment = "Redirect ${local.www_name} to ${var.domain_name}"
+  publish = true
+  code    = templatefile("${path.module}/www_redirect.js.tftpl", { domain = var.domain_name })
+}
+
 resource "aws_cloudfront_distribution" "site" {
   enabled             = true
   default_root_object = "index.html"
-  aliases             = var.enable_custom_domain ? [var.domain_name] : []
+  aliases             = var.enable_custom_domain ? concat([var.domain_name], local.www_redirect ? [local.www_name] : []) : []
   web_acl_id          = var.web_acl_id != "" ? var.web_acl_id : null
 
   origin {
@@ -154,6 +171,15 @@ resource "aws_cloudfront_distribution" "site" {
     target_origin_id           = "s3-${var.environment_name}-site"
     viewer_protocol_policy     = "redirect-to-https"
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+
+    dynamic "function_association" {
+      for_each = local.www_redirect ? [1] : []
+
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.www_redirect[0].arn
+      }
+    }
 
     forwarded_values {
       query_string = false
@@ -234,12 +260,19 @@ resource "aws_s3_bucket_policy" "site" {
 resource "aws_acm_certificate" "site" {
   count = var.enable_custom_domain ? 1 : 0
 
-  provider          = aws.us_east_1
-  domain_name       = var.domain_name
-  validation_method = "DNS"
+  provider                  = aws.us_east_1
+  domain_name               = var.domain_name
+  subject_alternative_names = local.www_redirect ? [local.www_name] : []
+  validation_method         = "DNS"
 
   lifecycle {
     create_before_destroy = true
+
+    # Fail at plan time, in words, rather than deep in an ACM/Route 53 error mid-apply.
+    precondition {
+      condition     = var.domain_name != "" && can(regex("^Z[A-Z0-9]+$", var.hosted_zone_id))
+      error_message = "A custom domain needs both domain_name (e.g. bloggerbear.com) and hosted_zone_id (a Route 53 zone ID like Z0123456789ABC). Get the zone ID from `terraform -chdir=infra/bootstrap output hosted_zone_id` and set both in the environment's terraform.tfvars. See docs/production-runsheet.md."
+    }
   }
 }
 
@@ -287,6 +320,34 @@ resource "aws_route53_record" "site_aaaa" {
 
   zone_id = var.hosted_zone_id
   name    = var.domain_name
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.site.domain_name
+    zone_id                = aws_cloudfront_distribution.site.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "www_a" {
+  count = local.www_redirect ? 1 : 0
+
+  zone_id = var.hosted_zone_id
+  name    = local.www_name
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.site.domain_name
+    zone_id                = aws_cloudfront_distribution.site.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "www_aaaa" {
+  count = local.www_redirect ? 1 : 0
+
+  zone_id = var.hosted_zone_id
+  name    = local.www_name
   type    = "AAAA"
 
   alias {

@@ -30,6 +30,25 @@ variable "github_repo" {
   description = "GitHub <owner>/<repo> slug allowed to assume the deploy roles via OIDC."
 }
 
+variable "domain_name" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The site's domain (e.g. "bloggerbear.com"). When set, this creates the Route 53 hosted zone for it
+    HERE, not in an environment, on purpose: the zone's four name servers are what you type into your
+    registrar (GoDaddy), and they must not change when production is destroyed and rebuilt. A zone that
+    lived in the production environment would be deleted with it and come back with different name
+    servers, which means changing the registrar again. Empty (the default) creates nothing.
+
+    The zone has prevent_destroy, so removing it takes a deliberate edit, not a stray apply.
+  EOT
+
+  validation {
+    condition     = var.domain_name == "" || can(regex("^([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)+[a-z]{2,}$", var.domain_name))
+    error_message = "domain_name must be a bare lowercase domain such as bloggerbear.com: no https://, no www, no trailing dot."
+  }
+}
+
 variable "bedrock_budget_limit_usd" {
   type        = string
   default     = "20"
