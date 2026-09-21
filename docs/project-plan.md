@@ -1002,3 +1002,35 @@ decorative (no alt text): the grey line says the same in words.
 those agree, so a mood can't ship with a broken image. Until its art exists it shows the plain bear.
 
 A mood word that isn't plain letters is never shown as text or used to build a file name.
+
+### Scratch BloggerBear's tummy: a toy, never a gate
+
+A small inline toy around the feedback moments, for the fun of it. It is **decoration only**: it has no
+say in whether feedback is accepted (the token and proof of work do that, invisibly), it measures
+nothing about how you play, and nothing about it is sent anywhere or stored (a test forbids `fetch`,
+storage and cookies in it).
+
+**Where it appears** (`frontend/tummy.js`):
+- under **"Thanks for your feedback!"**, about one time in three (`OFFER_CHANCE`);
+- always on the **"Hold your Paws!"** panel while feedback is closed, except when the site is simply
+  broken ("Feedback is unavailable right now"), where a toy would be flippant.
+
+Both the site and the static article pages get it. It is an inline card, not a modal: nothing traps
+focus or blocks reading.
+
+**Playing.** Press the bear (a real button: Enter, Space and a tap all work), or rub it with a mouse
+(about 40px of movement is a scratch; a finger just taps, so it never fights page scrolling). Five
+scratches and the bear purrs and swaps to its happy picture.
+
+**Accessibility.** The button is named "Scratch BloggerBear's tummy"; the picture is decorative. The
+words sit in a polite live region that changes at only four points (after 1, 3, 5 and 12 scratches; it
+starts as the invitation), so a screen reader hears a few lines, not one per click. The wiggle exists only under
+`prefers-reduced-motion: no-preference` (a test checks it), so with reduced motion the bear just swaps
+picture and the words change. There is a visible keyboard focus ring.
+
+**Your art:** `frontend/bears/tummy.svg` (idle) and `tummy-happy.svg` (purring). Replace them with the
+same names; like the mood bears they are served no-cache, so a replacement shows up at once. (Two
+full-body pictures rather than the mood faces, because the tummy has to be in the picture.)
+
+**Not built, deliberately:** anything that scores how human the scratching looks, and any use of the
+game to decide whether feedback goes through. Both were rejected in the anti-bot assessment.

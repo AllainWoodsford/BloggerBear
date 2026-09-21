@@ -763,6 +763,66 @@ a {
   }
 }
 
+/* --- The bear-tummy toy (tummy.js) ----------------------------------------------
+   Decoration around feedback: inline, never a modal, never a gate. It only wiggles for a reader who
+   has not asked for reduced motion. */
+
+.tummy-game {
+  margin: 14px auto 0;
+  text-align: center;
+}
+
+.tummy-button {
+  display: inline-block;
+  padding: 4px;
+  border: 0;
+  border-radius: 12px;
+  background: none;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.tummy-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tummy-bear {
+  display: block;
+  width: 112px;
+  height: 112px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.tummy-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tummy-wiggle .tummy-bear {
+    animation: tummy-wiggle 0.35s ease-in-out;
+  }
+
+  @keyframes tummy-wiggle {
+    0% {
+      transform: rotate(0deg) scale(1);
+    }
+    25% {
+      transform: rotate(-5deg) scale(1.04);
+    }
+    60% {
+      transform: rotate(4deg) scale(1.02);
+    }
+    100% {
+      transform: rotate(0deg) scale(1);
+    }
+  }
+}
+
 .feedback-closed {
   padding: 14px 16px;
   border: 1px dashed var(--border);
