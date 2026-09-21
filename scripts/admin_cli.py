@@ -372,6 +372,10 @@ def _cmd_articles_publish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/publish")
 
 
+def _cmd_articles_unpublish(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", f"/articles/{args.article_id}/unpublish")
+
+
 # --- moderation subcommands ---------------------------------------------
 
 
@@ -611,6 +615,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish_parser.add_argument("article_id")
     publish_parser.set_defaults(func=_cmd_articles_publish)
+
+    unpublish_parser = articles_sub.add_parser(
+        "unpublish",
+        help=(
+            "Take a published article down: delete its page, mark it rejected, "
+            "remove its musings and clear the CDN cache"
+        ),
+    )
+    unpublish_parser.add_argument("article_id")
+    unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
 
     moderation_parser = subparsers.add_parser("moderation", help="Manage the moderation queue")
     moderation_sub = moderation_parser.add_subparsers(dest="action", required=True)

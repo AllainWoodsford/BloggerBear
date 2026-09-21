@@ -25,6 +25,14 @@ def _env(monkeypatch):
         monkeypatch.setenv(key, value)
 
 
+@pytest.fixture(autouse=True)
+def _no_existing_digest():
+    """By default no digest exists for today; tests of the idempotency
+    override this. (Without it every run would need an Articles table.)"""
+    with patch("trending_digest_handler.get_article", return_value=None) as mock_get_article:
+        yield mock_get_article
+
+
 @pytest.fixture
 def s3_bucket():
     with mock_aws():
@@ -299,6 +307,81 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     stored_body = stored["Body"].read().decode("utf-8")
     assert stored_body.startswith("A synthesized digest.")
     assert "not constitute financial or investment advice" in stored_body
+
+
+# --- one digest per day --------------------------------------------------------
+
+
+def _run_digest(*, compliant=False):
+    findings = {"github-trending": _finding("Repo X is trending.")}
+    with (
+        patch("trending_digest_handler.list_topics", return_value=[GITHUB_TOPIC]),
+        patch("trending_digest_handler.get_latest_finding", side_effect=lambda topic_id: findings[topic_id]),
+        patch("trending_digest_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "trending_digest_handler.invoke_model_tracked",
+            return_value=_tracked_result("A synthesized digest."),
+        ) as mock_invoke,
+        patch(
+            "trending_digest_handler.compliance.review_draft",
+            return_value={"compliant": compliant, "reasons": ["r"], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("trending_digest_handler.put_article") as mock_put_article,
+        patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
+        patch("trending_digest_handler.render_and_publish_article_page"),
+        patch("trending_digest_handler.generate_and_store_article_musing"),
+    ):
+        result = trending_digest_handler.handler({}, None)
+    return result, mock_invoke, mock_put_article, mock_put_moderation
+
+
+def _today():
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
+def test_the_digests_article_id_is_the_date(s3_bucket):
+    result, _, mock_put_article, _ = _run_digest(compliant=True)
+
+    expected = f"digest-{_today()}"
+    assert trending_digest_handler.digest_article_id(_today()) == expected
+    assert result["article_id"] == expected
+    assert mock_put_article.call_args.kwargs["article_id"] == expected
+    assert mock_put_article.call_args.kwargs["body_s3_key"] == f"articles/{expected}.md"
+
+
+def test_a_moderated_digests_queue_item_shares_the_articles_id(s3_bucket):
+    _, _, _, mock_put_moderation = _run_digest(compliant=False)
+
+    kwargs = mock_put_moderation.call_args.kwargs
+    assert kwargs["queue_id"] == kwargs["article_id"] == f"digest-{_today()}"
+
+
+@pytest.mark.parametrize("status", ["published", "pending_moderation"])
+def test_a_second_run_the_same_day_does_nothing(s3_bucket, _no_existing_digest, status):
+    _no_existing_digest.return_value = {"article_id": f"digest-{_today()}", "status": status}
+
+    result, mock_invoke, mock_put_article, mock_put_moderation = _run_digest()
+
+    assert result == {
+        "status": "already_exists",
+        "article_id": f"digest-{_today()}",
+        "article_status": status,
+    }
+    mock_invoke.assert_not_called()  # no model spend either
+    mock_put_article.assert_not_called()
+    mock_put_moderation.assert_not_called()
+    _no_existing_digest.assert_called_once_with(f"digest-{_today()}")
+
+
+def test_a_rejected_digest_is_replaced_by_the_next_run(s3_bucket, _no_existing_digest):
+    _no_existing_digest.return_value = {"article_id": f"digest-{_today()}", "status": "rejected"}
+
+    result, mock_invoke, mock_put_article, _ = _run_digest(compliant=True)
+
+    assert result["status"] == "published"
+    mock_invoke.assert_called_once()
+    assert mock_put_article.call_args.kwargs["article_id"] == f"digest-{_today()}"
 
 
 def test_unhandled_exception_returns_error_dict(s3_bucket):

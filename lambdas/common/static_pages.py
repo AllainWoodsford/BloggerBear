@@ -23,6 +23,7 @@ out of sync with whichever path actually published the article.
 from __future__ import annotations
 
 import os
+import time
 from html import escape
 
 import boto3
@@ -31,6 +32,7 @@ import markdown
 from .source_refs import dedupe_source_refs
 
 _s3_client = None
+_cloudfront_client = None
 
 
 def _get_s3_client():
@@ -38,6 +40,54 @@ def _get_s3_client():
     if _s3_client is None:
         _s3_client = boto3.client("s3")
     return _s3_client
+
+
+def _get_cloudfront_client():
+    global _cloudfront_client
+    if _cloudfront_client is None:
+        _cloudfront_client = boto3.client("cloudfront")
+    return _cloudfront_client
+
+
+def article_page_key(article_id: str) -> str:
+    """The site-bucket key an article's static page lives at."""
+    return f"articles/{article_id}.html"
+
+
+def remove_article_page(article_id: str) -> str:
+    """Delete an article's static page from the site bucket and return its key.
+
+    Deleting a page that isn't there is not an error (S3 answers 204), so this
+    is safe to repeat.
+    """
+    key = article_page_key(article_id)
+    _get_s3_client().delete_object(Bucket=os.environ["SITE_BUCKET"], Key=key)
+    return key
+
+
+def invalidate_article_page(article_id: str) -> bool:
+    """Ask CloudFront to drop its cached copy of an article's page.
+
+    Best effort, and it never raises: by the time this is called the page is
+    already gone from the origin, so a failure only means viewers may keep a
+    cached copy until CloudFront's TTL expires. Returns whether an invalidation
+    was requested (False when CLOUDFRONT_DISTRIBUTION_ID isn't configured).
+    """
+    distribution_id = os.environ.get("CLOUDFRONT_DISTRIBUTION_ID")
+    if not distribution_id:
+        return False
+    try:
+        _get_cloudfront_client().create_invalidation(
+            DistributionId=distribution_id,
+            InvalidationBatch={
+                "Paths": {"Quantity": 1, "Items": [f"/{article_page_key(article_id)}"]},
+                "CallerReference": f"unpublish-{article_id}-{time.time_ns()}",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - best effort, see docstring
+        print(f"static_pages: could not invalidate the cached page for {article_id}: {exc!r}")
+        return False
+    return True
 
 
 _PUBLISHED_BY_LABELS = {
@@ -245,7 +295,7 @@ def render_and_publish_article_page(
 </html>
 """
 
-    key = f"articles/{article_id}.html"
+    key = article_page_key(article_id)
     _get_s3_client().put_object(
         Bucket=os.environ["SITE_BUCKET"],
         Key=key,
