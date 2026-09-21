@@ -103,7 +103,7 @@
     var upButton = container.querySelector('[data-role="upvote"]');
     var downButton = container.querySelector('[data-role="downvote"]');
 
-    var honeypotEl = container.querySelector('[data-role="extra-note"]');
+    var honeypotEl = container.querySelector('[data-role="referral"]');
     // The one-use token from the feedback-status call, and when it becomes valid (see verify.js).
     var held = null;
 
@@ -159,7 +159,7 @@
       window.BloggerVerify.submit({
         apiUrl: apiUrl("").replace(/\/$/, ""),
         articleId: articleId,
-        payload: { vote: vote, comment: null, extra_note: honeypotEl ? honeypotEl.value : "" },
+        payload: { vote: vote, comment: null, referral_code: honeypotEl ? honeypotEl.value : "" },
         verification: verification,
       })
         .then(function (outcome) {

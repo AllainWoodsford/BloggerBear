@@ -1198,24 +1198,22 @@
     commentLabel.appendChild(document.createElement("br"));
     commentLabel.appendChild(commentInput);
 
-    // The honeypot: a field no person ever sees or reaches (display:none from the stylesheet, so it
-    // is out of the accessibility tree too; aria-hidden and tabindex -1 as well, in case the CSS
-    // fails). A script that fills in every input fills it in, and its submission is discarded.
-    // Named so a browser will not autofill it. The class is in styles.css: the CSP allows no
-    // inline style attribute.
-    var honeypotId = "feedback-extra-note-" + encodeURIComponent(articleId);
-    var honeypotWrap = el("div", { className: "hp-wrap", attrs: { "aria-hidden": "true" } });
+    // A decoy field no person sees or reaches. It looks like any other optional field: no class,
+    // no telling name, and a label that says nothing about what it is for. The wrapper is hidden by
+    // the standard `hidden` attribute (normalize.css hides it, so there is no rule of ours that
+    // points at it, and it stays hidden if our stylesheet fails), and aria-hidden takes the whole
+    // subtree out of the accessibility tree for screen readers. tabindex -1 keeps it out of the tab
+    // order. A script that fills in every input fills it in, and its submission is discarded.
+    var honeypotId = "feedback-referral-" + encodeURIComponent(articleId);
+    var honeypotWrap = el("div", { attrs: { hidden: "", "aria-hidden": "true" } });
     honeypotWrap.appendChild(
-      el("label", {
-        text: "Leave this field empty. It is only there to catch automated scripts.",
-        attrs: { for: honeypotId },
-      })
+      el("label", { text: "Referral code (optional)", attrs: { for: honeypotId } })
     );
     var honeypot = el("input", {
       attrs: {
         type: "text",
         id: honeypotId,
-        name: "extra_note",
+        name: "referral_code",
         tabindex: "-1",
         autocomplete: "off",
       },
@@ -1243,7 +1241,7 @@
       var payload = {
         vote: vote,
         comment: commentValue === "" ? null : commentValue,
-        extra_note: honeypot.value,
+        referral_code: honeypot.value,
       };
 
       // The token is good for one submission, so a retry (a comment that wasn't accepted) fetches

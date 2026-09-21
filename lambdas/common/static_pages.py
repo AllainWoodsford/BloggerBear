@@ -390,11 +390,9 @@ def render_and_publish_article_page(
 {lineage_footer_html}
 <section class="feedback" data-role="feedback">
 <h2>Feedback</h2>
-<div class="hp-wrap" aria-hidden="true">
-<label for="feedback-extra-note">
-Leave this field empty. It is only there to catch automated scripts.
-</label>
-<input type="text" id="feedback-extra-note" name="extra_note" data-role="extra-note"
+<div hidden aria-hidden="true">
+<label for="feedback-referral">Referral code (optional)</label>
+<input type="text" id="feedback-referral" name="referral_code" data-role="referral"
  tabindex="-1" autocomplete="off" />
 </div>
 <div class="feedback-buttons" hidden>

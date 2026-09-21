@@ -461,23 +461,47 @@ def test_static_page_feedback_buttons_start_hidden_until_the_api_says_feedback_i
     assert 'data-role="upvote"' in html and 'data-role="feedback-status"' in html
 
 
-def test_static_page_feedback_has_an_accessible_honeypot_and_loads_verify_js_first(s3):
+def _feedback_section(s3, article_id):
     static_pages.render_and_publish_article_page(
-        article_id="hp1",
+        article_id=article_id,
         title="T",
         body_markdown="Body.",
         topic_name="Topic",
         published_at="2026-09-20T00:00:00+00:00",
     )
-    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/hp1.html")["Body"].read().decode()
+    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key=f"articles/{article_id}.html")["Body"]
+    page = html.read().decode()
+    return page, page.split('<section class="feedback"', 1)[1].split("</section>", 1)[0]
 
-    wrap = html.split('<div class="hp-wrap"', 1)[1].split("</div>", 1)[0]
-    # Hidden from sight (a class, because the CSP allows no inline style), from screen readers
-    # (aria-hidden), and from the keyboard (tabindex -1); a browser must not autofill it.
-    assert 'aria-hidden="true"' in wrap.split(">", 1)[0]
-    assert 'tabindex="-1"' in wrap and 'autocomplete="off"' in wrap
-    assert 'name="extra_note"' in wrap and 'type="text"' in wrap
-    assert "<label" in wrap and "Leave this field empty" in wrap  # a fallback if CSS fails
-    assert "style=" not in html.split("<body>", 1)[1].split("</main>", 1)[0].split('hp-wrap', 1)[1][:400]
-    # verify.js is loaded before the widgets that use it.
-    assert html.index('src="/verify.js"') < html.index('src="/article-widgets.js"')
+
+def test_static_page_honeypot_is_hidden_from_people_and_screen_readers(s3):
+    _, section = _feedback_section(s3, "hp1")
+
+    # The wrapper is a bare div: hidden (the standard attribute, which needs no rule of ours and
+    # survives a stylesheet that fails to load) and aria-hidden (the whole subtree leaves the
+    # accessibility tree). The input is out of the tab order and out of autofill.
+    assert '<div hidden aria-hidden="true">' in section
+    wrapper = section.split('<div hidden aria-hidden="true">', 1)[1].split("</div>", 1)[0]
+    assert 'tabindex="-1"' in wrapper and 'autocomplete="off"' in wrapper
+    assert 'name="referral_code"' in wrapper and 'type="text"' in wrapper
+    assert "<label" in wrapper and "Referral code (optional)" in wrapper
+
+
+def test_static_page_honeypot_has_nothing_that_gives_it_away(s3):
+    page, section = _feedback_section(s3, "hp2")
+    wrapper = section.split('<div hidden aria-hidden="true">', 1)[1].split("</div>", 1)[0]
+
+    # No class or id that names its purpose, and no label that explains it.
+    assert "class=" not in wrapper
+    for giveaway in ("hp-", "honey", "trap", "bot", "spam", "captcha", "catch", "automated", "leave"):
+        assert giveaway not in wrapper.lower(), giveaway
+    for old in ("hp-wrap", "extra_note", "extra-note"):
+        assert old not in page
+    # And no rule of ours points at it: it is hidden by the standard attribute, not a class.
+    assert "style=" not in wrapper
+
+
+def test_static_page_loads_verify_js_before_the_widgets_that_use_it(s3):
+    page, _ = _feedback_section(s3, "hp3")
+
+    assert page.index('src="/verify.js"') < page.index('src="/article-widgets.js"')

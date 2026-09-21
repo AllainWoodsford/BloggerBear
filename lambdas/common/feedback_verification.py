@@ -20,7 +20,8 @@ the token.
   leading zero bits (about a second or two of browser CPU at 16). It asks nothing of the person:
   no clicking, nothing to read, nothing for a screen reader or a switch user to do. The trigger is
   the site's own counters, not anything observed about the visitor.
-* A honeypot field on the form (see public_api_handler.py) catches scripts that fill every input.
+* A decoy field on the form (the honeypot, see public_api_handler.py) catches scripts that fill
+  every input.
 
 `verification_required` (default true) switches all of this off in an emergency.
 """
