@@ -586,7 +586,9 @@ length-capped.
   the severity split, and sample the notes for false positives; tune the
   reviewer prompt and, if needed, per-adapter tolerance.
 - *PR 2 -- enforce.* The revision pass and moderation routing, behind
-  `review_mode = enforce`, then turn it on.
+  `review_mode = enforce`, then turn it on. Now scoped in full, with two
+  prerequisite steps that fell out of reading the code, under "(C) Enforcement --
+  scoped enhancement" at the end of this section.
 
 **6. Cost.** +1 model call per article, +1 if it revises: a few cents a day per
 topic at Haiku prices, and visible in the lineage.
@@ -606,3 +608,156 @@ catches stale or unsupported figures, not subtle framing errors.
 sends a non-financial article to moderation (starting point: any `major`);
 whether a flaky fetch should force moderation or publish with a note; which
 future adapters should opt in.
+
+
+---
+
+#### (C) Enforcement -- scoped enhancement (not started)
+
+**Status: scoped, not started.** This is the second half of (C): shadow mode records a
+review and changes nothing; enforcement makes the review *act*. It is deliberately
+gated on real shadow data, so it is broken into three steps in order, the first two of
+which are useful whatever is decided about the third.
+
+**What reading the code found (these shape the scope).**
+1. *Drafts are being cut off.* The draft, ideation and title calls all use
+   `invoke_model_tracked`'s default `max_tokens=1024`. The tokenized-gold article's draft
+   recorded exactly 1,024 output tokens, and its stored body stops mid-word ("...deep
+   institutional liqu") just before the appended disclaimer. `invoke_model_tracked` does
+   not surface Bedrock's `stopReason`, so nothing notices. This is a defect in its own
+   right (a truncated article can be published), and it also sets the budget any revision
+   pass needs.
+2. *The title is never reviewed.* The title comes from a separate call that sees only the
+   chosen angle, not the body, and the shadow review's input is the body. A headline
+   such as "...While Bitcoin Crashed 30%..." is exactly the kind of claim the review
+   exists to catch, and today it cannot.
+3. *Financial and non-financial topics have different stakes.* Financial articles are
+   always held for manual moderation, so for them enforcement adds *notes*, not routing.
+   For everything else the compliance review only checks safety (PII/harm), so a stale
+   figure is currently a straight publish.
+4. *The digest is not reviewed.* It summarises other topics' findings; out of scope here.
+
+**Step 0 -- fix truncated drafts (small; prerequisite, useful on its own).**
+- `invoke_model_tracked` returns `stop_reason`, and records it on the lineage call.
+- Give the draft call a budget that fits the article it asks for (order of 4,096 tokens),
+  and treat a `max_tokens` stop as a problem: retry once with a larger budget, and if it
+  still truncates, route the article to moderation with the reason "draft truncated"
+  rather than publish half an article.
+- Tests: the stop reason is surfaced; a truncated draft is retried, then held; a normal
+  draft is untouched.
+
+**Step 1 -- a review report (small; lets the decision be made from data).**
+- `GET /review/report` and `admin_cli review report`: aggregate the `review` records on
+  articles. Counts by status (`reviewed` / `unavailable` / `skipped`), by outcome, by
+  topic; claims by `problem` and `severity`; the reasons reviews were unavailable; and
+  the two numbers that matter for the decision, computed as *what enforcement would have
+  done*: the share of non-financial articles it would have **held** (any `major`, or
+  `unavailable`) and **revised** (`minor` only). A sample of recent flagged claims with
+  their article ids (no article content), for eyeballing precision.
+- A pure function over the articles the caller already fetched, like `lineage_tools`, plus
+  a route (added to Terraform for dev and production) and a CLI command. No new data.
+
+**Step 2 -- enforcement (the main change).**
+
+*Modes and scope.*
+- `review_mode` gains `enforce` (`off | shadow | enforce`). It stays `shadow` by default.
+- A per-topic override: `review_mode` on the Topic (`topics update --review-mode`),
+  resolved topic -> pipeline row -> `shadow`, the same pattern as the research interval.
+  This lets one non-financial topic go first while the rest stay in shadow.
+
+*The reviewer also sees the title.* The draft block becomes the title plus the body, so a
+claim in a headline is reviewable. (This changes the review's input slightly from shadow
+mode; note it when comparing.)
+
+*Outcomes.*
+
+| Review result | Non-financial topic | Financial topic (always moderated) |
+|---|---|---|
+| `clean` | as today (compliance, then publish or moderate) | as today |
+| `minor` only | one revision pass, then compliance | same; notes attached |
+| any `major` | **held**: routed to moderation, notes attached | notes attached |
+| `unavailable` | per `review_on_unavailable` (below); default held | note attached |
+| `skipped` | as today | as today |
+
+*The revision pass* (a tracked call, lineage stage `revision`).
+- Input: title, draft, the flagged claims with their evidence, the fresh evidence and the
+  findings, all in the same delimited, defanged data blocks as the reviewer. Instruction:
+  correct or remove only the listed claims using only facts present in the evidence or
+  findings, add no other claims, keep structure, tone and length. Reply as JSON
+  `{"title", "body"}`; anything else means the revision is rejected.
+- Its `max_tokens` is at least the draft's (see Step 0).
+- *Deterministic guards, no model involved* -- the model's word is not trusted to have
+  added nothing: the revised text may not contain a number or URL that appears in none of
+  the original draft, the findings and the evidence; its length must stay within about
+  +/-35% of the original; and its heading count must not change. A revision that breaks a
+  guard is *rejected* and the article is **held** with a note saying so.
+- The original body is kept privately (`articles/<id>.original.md`, `body_original_s3_key`
+  on the article) so a moderator can compare. One pass only; there is no second review of
+  the revision (the guards bound what it can add, and it would double the cost).
+
+*Holding.* The article follows the existing moderation path: the review contributes a
+reason ("fresh-data review: 2 major claims") and the plain-words `review_notes`; nothing
+about approve/reject changes. `compliant` becomes "compliance says fine *and* the review
+did not hold it".
+
+*When the review is unavailable.* A pipeline setting `review_on_unavailable`:
+`hold` (default -- never a silent pass) or `note` (publish, and record that the review
+could not run). The knob exists because a flaky source could otherwise flood the queue;
+the report (Step 1) shows how often it would.
+
+*Recording.* `review` on the article gains `revised`, `revision_rejected` (with why) and
+`held`. Optional and for you to decide: a "Checked against current data" row in the public
+lineage footer (clean / revised / held-then-approved), so readers can see an article was
+checked.
+
+*Data model and API changes.* Topic: `review_mode` (optional). Pipeline row:
+`review_on_unavailable`. Article: `body_original_s3_key`, the extra `review` fields.
+`PUT /pipeline-config` and `PUT /topics/{id}` accept the new settings; CLI flags to match.
+No new table, no IAM change.
+
+**Go / no-go from the shadow data** (starting points, to be argued with once there is
+data; the report in Step 1 produces every number):
+- at least about a week and 20 non-financial articles reviewed, across at least two topics;
+- `unavailable` on no more than about 10% of reviews (otherwise fix the fetch first);
+- would-hold no more than about 25% of non-financial articles (otherwise the queue
+  becomes unmanageable, which is the thing this project cannot afford);
+- on a hand-checked sample of at least 20 flagged claims, at least about 70% are real.
+If any fails: tune the reviewer prompt or the per-adapter evidence and stay in shadow.
+
+**Rollout and rollback.** Merge with the default still `shadow`. Turn `enforce` on for one
+non-financial topic first, watch the queue and the report for a few days, then the rest;
+crypto (already always moderated) last. Rollback is one setting, per topic or globally:
+`review_mode` back to `shadow`. Articles already revised or held are unaffected.
+
+**Cost and latency.** +1 call when a review is `minor` (the revision); nothing extra for
+`clean` or `major`. Worst case (fetch 45s, review, revision, compliance) stays well inside
+the 300s Lambda timeout. The report shows the real revision rate.
+
+**Risks and what covers them.**
+
+| Risk | Covered by |
+|---|---|
+| The reviewer cries wolf and floods the queue | shadow first; go/no-go on the would-hold rate; per-topic rollout; one-setting rollback |
+| A revision quietly adds a claim | deterministic number/URL/length/heading guards; a broken guard holds the article |
+| A flaky source holds every article | `review_on_unavailable`; the unavailable-rate gate |
+| Web text tries to steer the reviewer or reviser | delimited data blocks, defanged tags, fixed JSON schema, the guards above |
+| A truncated draft is reviewed and published | Step 0 |
+
+**Tests.** Step 0: stop reason surfaced, retry then hold. Step 1: each aggregate, a topic
+with no reviews, records of every status. Step 2: every cell of the outcomes table in each
+mode; per-topic override and precedence; the title is in the reviewer's input; the revision
+prompt and its JSON parse; each guard rejecting (new number, new URL, length, headings) and
+the clean path accepting; original body stored; `review_on_unavailable` both ways;
+`held`/`revised` recorded; a failing revision call holds rather than publishes; a
+non-crypto topic never sees crypto code; shadow mode is byte-for-byte unchanged.
+
+**Out of scope.** Reviewing the digest; article-body fetching for news; a second review of
+a revision; anything that publishes without a human on a financial topic.
+
+**Effort.** Step 0 and Step 1 are each a small PR. Step 2 is the largest single change in
+(C): about a day of work plus the shadow-data wait, which is the real gate.
+
+**Decisions needed from you** (recommendations in brackets): (1) unavailable review holds
+or notes [hold]; (2) a per-topic `review_mode` override [yes]; (3) a public "checked against
+current data" footer row [yes, it is honest about what the check is]; (4) re-review a
+revised draft [no, rely on the guards].
