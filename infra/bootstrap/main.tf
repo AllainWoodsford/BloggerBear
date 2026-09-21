@@ -652,6 +652,22 @@ resource "aws_iam_role_policy_attachment" "gha_prod_deploy" {
 }
 
 # -----------------------------------------------------------------------
+# The site's DNS zone (optional; see var.domain_name). Applied once, by hand, like the rest of this
+# file. After the first apply, copy `hosted_zone_name_servers` into your registrar's custom nameserver
+# settings, and put `hosted_zone_id` into infra/environments/production/terraform.tfvars.
+# -----------------------------------------------------------------------
+resource "aws_route53_zone" "site" {
+  count = var.domain_name != "" ? 1 : 0
+
+  name    = var.domain_name
+  comment = "BloggerBear public site. Delegated from the registrar; managed in infra/bootstrap so it outlives production."
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# -----------------------------------------------------------------------
 # Phase 6: Bedrock-spend budget. AWS Budgets is account-level, not a
 # per-region or per-environment resource, so this lives here alongside
 # the other account-level, one-time-applied resources (OIDC provider,

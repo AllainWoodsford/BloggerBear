@@ -13,11 +13,12 @@ Built out phase-by-phase as a portfolio project — see `docs/project-plan.md`
 (architecture/rules) and `docs/PROGRESS.md` (the live phase-by-phase
 tracker) for the full history and rationale behind every decision below.
 
-**Status: code-complete, not yet deployed.** Every phase (0 through 8) is
-implemented and tested, but `infra/bootstrap` has never been applied —
-there is no Terraform state bucket yet, so nothing in this repo has ever
-actually run against real AWS. The "Deploying this" section below is the
-run sheet for that first deploy.
+**Status: code-complete, running on dev, not yet on production.** Every phase
+(0 through 8) is implemented and tested, `infra/bootstrap` has been applied, and
+the dev environment is live and auto-deploys from `dev`. Production has not been
+released and the custom domain is not connected yet: **[docs/production-runsheet.md](docs/production-runsheet.md)**
+is the step-by-step for that, including pointing the GoDaddy domain at AWS. The
+"Deploying this" section below is the original first-time setup run sheet.
 
 ## Architecture
 
@@ -199,8 +200,10 @@ docs/
 
 ## Deploying this
 
-Nothing has been deployed yet, so this is a first-time setup run sheet,
-in order. Each step says who does it (you, locally / GitHub UI / CI).
+This is the first-time setup run sheet, in order (steps 0 to 4 are done for
+dev; for what is left before production and the domain, use
+[docs/production-runsheet.md](docs/production-runsheet.md), which is current and
+adds the DNS steps). Each step says who does it (you, locally / GitHub UI / CI).
 
 ### 0. Prerequisites (you, one-time)
 

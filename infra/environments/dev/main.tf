@@ -582,6 +582,7 @@ module "admin_api" {
   lambda_function_name = aws_lambda_function.admin_api.function_name
   authorization        = "AWS_IAM"
   web_acl_id           = aws_wafv2_web_acl.admin.arn
+  associate_web_acl    = true
 
   routes = toset([
     "GET /topics",
@@ -1070,6 +1071,7 @@ module "public_api" {
   authorization        = "NONE"
   enable_cors          = true
   web_acl_id           = aws_wafv2_web_acl.public_api.arn
+  associate_web_acl    = true
 
   routes = toset([
     "GET /topics",
