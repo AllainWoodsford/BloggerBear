@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+# Reserved snapshot key. The research tick records, in every snapshot it
+# stores, which items it has already reported (item key -> the UTC date it was
+# first seen), so "new" means new to the topic, not merely absent from the last
+# snapshot. An item that drops out of a feed and comes back is not news.
+# Adapters never write it -- they only read it through `known_keys`.
+SEEN_KEY = "_seen"
+
 
 class Adapter(ABC):
     """Base contract every domain adapter must implement."""
@@ -40,6 +47,27 @@ class Adapter(ABC):
         counts as a change.
         """
         raise NotImplementedError
+
+    def item_keys(self, state: dict) -> set[str]:
+        """Stable identifiers (a URL, an id, a repo name) for each individual
+        item in `state`. An adapter whose source is made of discrete items
+        returns them here so the research tick can remember what it has
+        already reported; the default is none, which leaves the adapter
+        comparing snapshots itself.
+        """
+        return set()
+
+    def known_keys(self, old_state: dict | None) -> set[str]:
+        """Every item key already reported for this topic, as of `old_state`
+        (the last stored snapshot; None on the first tick).
+
+        Use it in `material_diff` to decide what counts as new information:
+        an item is new only if its key is not in this set. Snapshots stored
+        before `SEEN_KEY` existed fall back to the items they contain.
+        """
+        if not old_state:
+            return set()
+        return set(old_state.get(SEEN_KEY) or {}) | self.item_keys(old_state)
 
     @abstractmethod
     def source_refs(self, new_state: dict) -> list[dict]:

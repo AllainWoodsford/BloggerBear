@@ -130,6 +130,58 @@ def test_handler_no_findings_returns_no_findings_status(s3_bucket):
     assert result == {"status": "no_findings", "topic_id": "github-trending"}
 
 
+def test_handler_reads_every_finding_from_the_last_day_not_just_the_newest_few(s3_bucket):
+    before = datetime.now(UTC)
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]) as mock_list,
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+    after = datetime.now(UTC)
+
+    kwargs = mock_list.call_args.kwargs
+    assert kwargs["limit"] == daily_cycle_handler.MAX_WINDOW_FINDINGS > 5
+    window = timedelta(hours=daily_cycle_handler.FINDINGS_WINDOW_HOURS)
+    assert before - window <= datetime.fromisoformat(kwargs["since"]) <= after - window
+
+
+def test_a_topic_with_nothing_new_in_the_window_writes_no_article(s3_bucket):
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]),
+        patch("daily_cycle_handler.invoke_model_tracked") as mock_invoke,
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert result["status"] == "no_findings"
+    mock_invoke.assert_not_called()
+    mock_put_article.assert_not_called()
+
+
+def test_format_findings_summaries_keeps_everything_when_it_fits():
+    findings = [{"summary": "newest"}, {"summary": "older"}]
+
+    assert daily_cycle_handler._format_findings_summaries(findings) == "- newest\n- older"
+
+
+def test_format_findings_summaries_drops_the_oldest_when_over_budget(monkeypatch):
+    monkeypatch.setattr(daily_cycle_handler, "SUMMARIES_MAX_CHARS", 30)
+    findings = [{"summary": "n" * 10}, {"summary": "m" * 10}, {"summary": "o" * 10}]  # newest first
+
+    block = daily_cycle_handler._format_findings_summaries(findings)
+
+    assert block == f"- {'n' * 10}\n- {'m' * 10}"
+
+
+def test_format_findings_summaries_always_keeps_the_newest_even_if_it_alone_is_over_budget(monkeypatch):
+    monkeypatch.setattr(daily_cycle_handler, "SUMMARIES_MAX_CHARS", 5)
+
+    block = daily_cycle_handler._format_findings_summaries([{"summary": "x" * 50}, {"summary": "y"}])
+
+    assert block == f"- {'x' * 50}"
+
+
 def test_handler_publishes_when_compliant(s3_bucket):
     ideation_response = "Angle one about repo X\nAngle two about repo Y\nAngle three misc"
     invoke_responses = [ideation_response, "# Draft body\n\nSome article content.", "A Great Title"]
