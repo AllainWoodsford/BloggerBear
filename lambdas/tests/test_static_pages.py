@@ -459,3 +459,25 @@ def test_static_page_feedback_buttons_start_hidden_until_the_api_says_feedback_i
     # A closed article must never flash its buttons: article-widgets.js reveals them.
     assert '<div class="feedback-buttons" hidden>' in html
     assert 'data-role="upvote"' in html and 'data-role="feedback-status"' in html
+
+
+def test_static_page_feedback_has_an_accessible_honeypot_and_loads_verify_js_first(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="hp1",
+        title="T",
+        body_markdown="Body.",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/hp1.html")["Body"].read().decode()
+
+    wrap = html.split('<div class="hp-wrap"', 1)[1].split("</div>", 1)[0]
+    # Hidden from sight (a class, because the CSP allows no inline style), from screen readers
+    # (aria-hidden), and from the keyboard (tabindex -1); a browser must not autofill it.
+    assert 'aria-hidden="true"' in wrap.split(">", 1)[0]
+    assert 'tabindex="-1"' in wrap and 'autocomplete="off"' in wrap
+    assert 'name="extra_note"' in wrap and 'type="text"' in wrap
+    assert "<label" in wrap and "Leave this field empty" in wrap  # a fallback if CSS fails
+    assert "style=" not in html.split("<body>", 1)[1].split("</main>", 1)[0].split('hp-wrap', 1)[1][:400]
+    # verify.js is loaded before the widgets that use it.
+    assert html.index('src="/verify.js"') < html.index('src="/article-widgets.js"')

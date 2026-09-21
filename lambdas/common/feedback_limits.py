@@ -52,10 +52,30 @@ DEFAULT_RATE_LIMIT_WINDOW_MINUTES = 5
 DEFAULT_DAILY_LIMIT = 100
 DEFAULT_ARTICLE_LIMIT = 50
 DEFAULT_SCREENING_LIMIT = 300
+# Verification (common/feedback_verification.py)
+DEFAULT_TOKEN_DELAY_MIN_MS = 500
+DEFAULT_TOKEN_DELAY_MAX_MS = 2000
+DEFAULT_POW_THRESHOLD_PERCENT = 70
+DEFAULT_POW_DIFFICULTY_BITS = 16
 DEFAULT_DAILY_TIMEZONE = "Australia/Sydney"
 
 MAX_LIMIT = 1_000_000
 MAX_WINDOW_MINUTES = 1440
+MAX_TOKEN_DELAY_MS = 30_000
+MAX_POW_BITS = 24
+
+# The inclusive range of each whole-number setting.
+_RANGES = {
+    "rate_limit_count": (1, MAX_LIMIT),
+    "rate_limit_window_minutes": (1, MAX_WINDOW_MINUTES),
+    "daily_limit": (1, MAX_LIMIT),
+    "article_limit": (1, MAX_LIMIT),
+    "screening_limit": (1, MAX_LIMIT),
+    "token_delay_min_ms": (0, MAX_TOKEN_DELAY_MS),
+    "token_delay_max_ms": (0, MAX_TOKEN_DELAY_MS),
+    "pow_threshold_percent": (1, 100),
+    "pow_difficulty_bits": (0, MAX_POW_BITS),
+}
 MAX_REASON_CHARS = 100
 
 # Why feedback is closed. Also the order of precedence, first to last.
@@ -105,7 +125,7 @@ def settings_error(name: str, value) -> str | None:
     valid for every setting: it means "use the default"."""
     if value is None:
         return None
-    if name == "locked_down":
+    if name in ("locked_down", "verification_required"):
         return None if isinstance(value, bool) else "must be true or false"
     if name == "lockdown_reason":
         if isinstance(value, str) and 0 < len(value.strip()) <= MAX_REASON_CHARS:
@@ -113,9 +133,9 @@ def settings_error(name: str, value) -> str | None:
         return f"must be a short text (1 to {MAX_REASON_CHARS} characters)"
     if name == "daily_timezone":
         return None if _zone(value) is not None else "must be an IANA zone such as Australia/Sydney"
-    high = MAX_WINDOW_MINUTES if name == "rate_limit_window_minutes" else MAX_LIMIT
-    if _whole_number(value, high=high) is None:
-        return f"must be a whole number from 1 to {high}"
+    low, high = _RANGES[name]
+    if _whole_number(value, low=low, high=high) is None:
+        return f"must be a whole number from {low} to {high}"
     return None
 
 
@@ -147,7 +167,38 @@ def effective_settings(row: dict | None) -> dict:
         "daily_limit": _whole_number(row.get("daily_limit")) or DEFAULT_DAILY_LIMIT,
         "article_limit": _whole_number(row.get("article_limit")) or DEFAULT_ARTICLE_LIMIT,
         "screening_limit": _whole_number(row.get("screening_limit")) or DEFAULT_SCREENING_LIMIT,
+        "verification_required": row.get("verification_required") is not False
+        and not _is_false_text(row.get("verification_required")),
+        **_verification_settings(row),
         "daily_timezone": zone_name if _zone(zone_name) is not None else DEFAULT_DAILY_TIMEZONE,
+    }
+
+
+def _is_false_text(value) -> bool:
+    """A hand-typed "false"/"no"/"off"/"0" (as text) switches verification off too."""
+    return isinstance(value, str) and value.strip().lower() in ("false", "no", "off", "0")
+
+
+def _in_range(row: dict, name: str, default: int) -> int:
+    low, high = _RANGES[name]
+    value = _whole_number(row.get(name), low=low, high=high)
+    return default if value is None else value
+
+
+def _verification_settings(row: dict) -> dict:
+    """The token delay window and proof-of-work settings, each in range or its default. A
+    minimum above the maximum is not a window, so both fall back together."""
+    low = _in_range(row, "token_delay_min_ms", DEFAULT_TOKEN_DELAY_MIN_MS)
+    high = _in_range(row, "token_delay_max_ms", DEFAULT_TOKEN_DELAY_MAX_MS)
+    if low > high:
+        low, high = DEFAULT_TOKEN_DELAY_MIN_MS, DEFAULT_TOKEN_DELAY_MAX_MS
+    return {
+        "token_delay_min_ms": low,
+        "token_delay_max_ms": high,
+        "pow_threshold_percent": _in_range(
+            row, "pow_threshold_percent", DEFAULT_POW_THRESHOLD_PERCENT
+        ),
+        "pow_difficulty_bits": _in_range(row, "pow_difficulty_bits", DEFAULT_POW_DIFFICULTY_BITS),
     }
 
 
@@ -275,6 +326,16 @@ def _screen_key(day_key: str) -> str:
     return day_key.replace("feedback-day#", "feedback-screen#")
 
 
+def current_settings() -> dict:
+    """The settings in force right now. Raises if the config table cannot be read."""
+    return effective_settings(get_feedback_config())
+
+
+def unavailable_status() -> dict:
+    """The closed status for "the limiter or the verification key could not be reached"."""
+    return _closed(UNAVAILABLE, effective_settings(None))
+
+
 def take_screening_slot(now: datetime | None = None) -> bool:
     """Take one of today's model checks for a comment (`screening_limit`, default 300 a day).
 
@@ -302,6 +363,18 @@ def _give_back(taken: list) -> None:
             refund()
         except Exception as exc:  # noqa: BLE001 - a failed refund only costs one count
             print(f"feedback_limits: could not give back a count: {exc!r}")
+
+
+def load_percent(settings: dict, now: datetime | None = None) -> int:
+    """How close the site is to its daily or rate limit, as a percentage (the higher of the two).
+    Site-wide counters only: nothing about any visitor. Verification uses it to ask for more
+    work from the browser when the site is busy (see common/feedback_verification.py)."""
+    now = now or datetime.now(UTC)
+    day_key, _ = _day(settings, now)
+    window_key, _ = _window(settings, now)
+    day = get_feedback_counter(day_key) * 100 // settings["daily_limit"]
+    window = get_feedback_counter(window_key) * 100 // settings["rate_limit_count"]
+    return max(day, window)
 
 
 def usage(now: datetime | None = None) -> dict:

@@ -955,6 +955,11 @@ _FEEDBACK_SETTINGS = (
     "daily_limit",
     "article_limit",
     "screening_limit",
+    "verification_required",
+    "token_delay_min_ms",
+    "token_delay_max_ms",
+    "pow_threshold_percent",
+    "pow_difficulty_bits",
     "daily_timezone",
 )
 
@@ -984,6 +989,13 @@ def _put_feedback_config_route(event: dict) -> dict:
     - `article_limit`: at most this many on one article, then it is locked.
     - `screening_limit`: at most this many comments a day are sent to the model check (rejected
       feedback does not count against the limits above, so this is what bounds its cost).
+    - `verification_required` (true/false, default true): whether a submission must carry the
+      token from the feedback-status call. Turn it off only in an emergency.
+    - `token_delay_min_ms` / `token_delay_max_ms`: how long after a token is issued it becomes
+      valid, at random between the two (default 500 to 2000).
+    - `pow_threshold_percent` and `pow_difficulty_bits`: when the site is this full (of its daily
+      or rate limit), tokens need proof of work of this many bits (default 70 and 16; 0 bits
+      never asks for it).
     - `daily_timezone` (IANA name): where a day starts.
 
     A setting that isn't in the body is left as it is.

@@ -449,13 +449,30 @@ def _cmd_feedback_config_set(args: argparse.Namespace) -> None:
         body["article_limit"] = _parse_whole("--article-limit", args.article_limit)
     if args.screening_limit is not None:
         body["screening_limit"] = _parse_whole("--screening-limit", args.screening_limit)
+    if args.verification_required is not None:
+        body["verification_required"] = _parse_bool(
+            "--verification-required", args.verification_required
+        )
+    if args.token_delay_min_ms is not None:
+        body["token_delay_min_ms"] = _parse_whole("--token-delay-min-ms", args.token_delay_min_ms)
+    if args.token_delay_max_ms is not None:
+        body["token_delay_max_ms"] = _parse_whole("--token-delay-max-ms", args.token_delay_max_ms)
+    if args.pow_threshold_percent is not None:
+        body["pow_threshold_percent"] = _parse_whole(
+            "--pow-threshold-percent", args.pow_threshold_percent
+        )
+    if args.pow_difficulty_bits is not None:
+        body["pow_difficulty_bits"] = _parse_whole(
+            "--pow-difficulty-bits", args.pow_difficulty_bits
+        )
     if args.daily_timezone is not None:
         body["daily_timezone"] = args.daily_timezone or None
     if not body:
         raise CliError(
             "feedback-config set needs at least one of --locked-down, --lockdown-reason, "
             "--rate-limit, --rate-window-minutes, --daily-limit, --article-limit, "
-            "--screening-limit, --daily-timezone"
+            "--screening-limit, --verification-required, --token-delay-min-ms, "
+            "--token-delay-max-ms, --pow-threshold-percent, --pow-difficulty-bits, --daily-timezone"
         )
     _do_request(args, "PUT", "/feedback-config", body=body)
 
@@ -893,6 +910,42 @@ def build_parser() -> argparse.ArgumentParser:
             "At most this many comments a day are sent to the model check (default 300). "
             "Rejected feedback does not count against the other limits, so this bounds its cost"
         ),
+    )
+    feedback_config_set.add_argument(
+        "--verification-required",
+        dest="verification_required",
+        default=None,
+        help=(
+            "true (the default) requires the token from the feedback-status call on every "
+            "submission; false switches that off, in an emergency; '' clears it"
+        ),
+    )
+    feedback_config_set.add_argument(
+        "--token-delay-min-ms",
+        dest="token_delay_min_ms",
+        default=None,
+        help="A token becomes valid at least this many ms after it is issued (default 500)",
+    )
+    feedback_config_set.add_argument(
+        "--token-delay-max-ms",
+        dest="token_delay_max_ms",
+        default=None,
+        help="...and at most this many (default 2000); each token gets a random time between",
+    )
+    feedback_config_set.add_argument(
+        "--pow-threshold-percent",
+        dest="pow_threshold_percent",
+        default=None,
+        help=(
+            "When the site is this percent full (of its daily or rate limit), tokens need proof "
+            "of work (default 70)"
+        ),
+    )
+    feedback_config_set.add_argument(
+        "--pow-difficulty-bits",
+        dest="pow_difficulty_bits",
+        default=None,
+        help="How much work: leading zero bits, about a second or two at 16 (default 16); 0 = never",
     )
     feedback_config_set.add_argument(
         "--daily-timezone",

@@ -821,6 +821,16 @@ def test_feedback_config_set_every_setting():
                 "50",
                 "--screening-limit",
                 "300",
+                "--verification-required",
+                "true",
+                "--token-delay-min-ms",
+                "500",
+                "--token-delay-max-ms",
+                "2000",
+                "--pow-threshold-percent",
+                "70",
+                "--pow-difficulty-bits",
+                "16",
                 "--daily-timezone",
                 "Australia/Sydney",
             ]
@@ -834,6 +844,11 @@ def test_feedback_config_set_every_setting():
         "daily_limit": 100,
         "article_limit": 50,
         "screening_limit": 300,
+        "verification_required": True,
+        "token_delay_min_ms": 500,
+        "token_delay_max_ms": 2000,
+        "pow_threshold_percent": 70,
+        "pow_difficulty_bits": 16,
         "daily_timezone": "Australia/Sydney",
     }
 
