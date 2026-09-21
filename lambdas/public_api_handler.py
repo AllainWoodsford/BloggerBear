@@ -40,7 +40,7 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common.compliance import bedrock_redact_review, regex_redact
+from common.comment_screening import screen_comment
 from common.dynamo import (
     get_article,
     get_latest_finding,
@@ -330,10 +330,11 @@ def _view_article(event: dict) -> dict:
 
 # --- Feedback -------------------------------------------------------------
 #
-# project-plan.md §7: regex redaction, then a Bedrock redaction review pass,
-# before anything is written -- raw comment text is never persisted, logged,
-# or echoed back, even transiently. `comment` is optional; a missing/empty
-# one, or one the Bedrock pass can't confirm is safe, is stored as None.
+# A comment is optional and is screened before anything is written (see
+# common/comment_screening.py): PII, hate, rudeness, spam, links, prompt-injection or SQL/script
+# shapes, and anything unlawful are DROPPED -- not stored, not redacted-and-stored, not logged,
+# not echoed back. The vote that came with it still counts. The response says whether the
+# comment was kept, and nothing about why.
 
 
 def _submit_feedback(event: dict) -> dict:
@@ -346,17 +347,20 @@ def _submit_feedback(event: dict) -> dict:
         payload = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
         return _error(400, "invalid JSON body")
+    if not isinstance(payload, dict):
+        return _error(400, "the body must be a JSON object")
 
     vote = payload.get("vote")
     if vote not in ("up", "down"):
         return _error(400, "'vote' must be 'up' or 'down'")
 
-    final_comment = None
-    raw_comment = payload.get("comment")
-    if raw_comment:
-        redacted_comment = regex_redact(raw_comment)
-        model_id = os.environ["BEDROCK_MODEL_ID"]
-        final_comment = bedrock_redact_review(redacted_comment, model_id)
+    screened = screen_comment(
+        payload.get("comment"), article.get("title") or "", os.environ["BEDROCK_MODEL_ID"]
+    )
+    final_comment = screened["comment"]
+    if screened["dropped_because"]:
+        # The reason code only: the comment itself is never logged.
+        print(f"public_api_handler: dropped a feedback comment ({screened['dropped_because']})")
 
     feedback_id = str(uuid.uuid4())
     created_at = datetime.now(UTC).isoformat()
@@ -365,7 +369,14 @@ def _submit_feedback(event: dict) -> dict:
 
     return _response(
         201,
-        {"status": "recorded", "article_id": article_id, "feedback_id": feedback_id},
+        {
+            "status": "recorded",
+            "article_id": article_id,
+            "feedback_id": feedback_id,
+            # The vote is always recorded; this says whether the comment was kept. Nothing about
+            # why it wasn't, so a probe learns nothing about the rules.
+            "comment_saved": final_comment is not None,
+        },
     )
 
 
