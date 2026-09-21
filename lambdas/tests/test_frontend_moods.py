@@ -65,10 +65,11 @@ def test_every_backend_mood_has_a_bear_picture():
     assert (BEARS / "default.svg").is_file()
 
 
-def test_every_picture_is_a_mood_or_the_default():
+def test_every_picture_is_a_mood_the_default_or_the_tummy_toys():
     names = {path.stem for path in BEARS.glob("*.svg")}
 
-    assert names == set(musings.MOODS) | {"default"}
+    # The two tummy pictures belong to the tummy-scratch toy (tummy.js), not to a mood.
+    assert names == set(musings.MOODS) | {"default", "tummy", "tummy-happy"}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")

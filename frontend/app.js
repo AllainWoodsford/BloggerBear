@@ -1168,6 +1168,15 @@
     if (retry) {
       box.appendChild(el("p", { className: "feedback-closed-retry", text: retry }));
     }
+    // Something to do while feedback is closed (see tummy.js). Not when the site is simply broken
+    // ("unavailable"): a toy would be flippant. It is decoration, so it can never get in the way.
+    if (window.BloggerTummy && (!status || status.reason !== "unavailable")) {
+      try {
+        window.BloggerTummy.mount(box);
+      } catch (ignore) {
+        // decoration only
+      }
+    }
     return box;
   }
 
@@ -1323,6 +1332,15 @@
             return; // closed: the reason is already showing
           }
           status.textContent = "Thanks for your feedback!";
+          // Now and then, a treat: a bear to scratch (tummy.js). Decoration, so a problem with it
+          // must never look like a problem with the feedback.
+          try {
+            if (window.BloggerTummy && window.BloggerTummy.shouldOffer(Math.random())) {
+              window.BloggerTummy.mount(holder);
+            }
+          } catch (ignore) {
+            // decoration only
+          }
         })
         .catch(function () {
           status.textContent = "Could not submit feedback right now. Please try again.";

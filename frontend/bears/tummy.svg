@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Placeholder art for the tummy-scratch toy, idle: replace this file with your own (keep the name). -->
+  <ellipse cx="32" cy="46" rx="17" ry="15" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <ellipse cx="32" cy="48" rx="11" ry="10.5" fill="#ecd5ae"/>
+  <path d="M29 47 q3 3 6 0" stroke="#c9a877" stroke-width="1.6"/>
+  <ellipse cx="14" cy="43" rx="5" ry="8" fill="#a67c52" stroke="#5a3a1e" stroke-width="2" transform="rotate(20 14 43)"/>
+  <ellipse cx="50" cy="43" rx="5" ry="8" fill="#a67c52" stroke="#5a3a1e" stroke-width="2" transform="rotate(-20 50 43)"/>
+  <ellipse cx="22" cy="60" rx="7" ry="3.6" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <ellipse cx="42" cy="60" rx="7" ry="3.6" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <circle cx="20" cy="12" r="5" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <circle cx="44" cy="12" r="5" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <circle cx="32" cy="22" r="14" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <ellipse cx="32" cy="27" rx="7" ry="5.4" fill="#ecd5ae"/>
+  <ellipse cx="32" cy="24.6" rx="2.4" ry="1.8" fill="#3b2416"/>
+  <circle cx="26" cy="19" r="1.7" fill="#3b2416"/>
+  <circle cx="38" cy="19" r="1.7" fill="#3b2416"/>
+  <path d="M29.5 29 q2.5 1.8 5 0" stroke="#3b2416" stroke-width="1.5"/>
+</svg>
