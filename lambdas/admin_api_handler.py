@@ -111,11 +111,20 @@ def _get_lambda_client():
     return _lambda_client
 
 
+def _json_number(value):
+    """json.dumps' fallback: DynamoDB hands every number back as a Decimal, which JSON cannot carry.
+    Whole numbers become ints and the rest floats, so no route can fail with a 500 because some stored
+    item happens to hold a number (a topic's research_interval_hours did exactly that on GET /topics)."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _response(status_code: int, payload: dict) -> dict:
     return {
         "statusCode": status_code,
         "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(payload),
+        "body": json.dumps(payload, default=_json_number),
     }
 
 
