@@ -819,6 +819,8 @@ def test_feedback_config_set_every_setting():
                 "100",
                 "--article-limit",
                 "50",
+                "--screening-limit",
+                "300",
                 "--daily-timezone",
                 "Australia/Sydney",
             ]
@@ -831,6 +833,7 @@ def test_feedback_config_set_every_setting():
         "rate_limit_window_minutes": 5,
         "daily_limit": 100,
         "article_limit": 50,
+        "screening_limit": 300,
         "daily_timezone": "Australia/Sydney",
     }
 

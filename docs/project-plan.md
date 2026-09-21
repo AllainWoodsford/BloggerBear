@@ -823,8 +823,9 @@ round, "you should invest your savings", a named person's address) were held 3 o
 
 **Comments (built).** A comment is optional and is only kept if it is a civil, genuine
 piece of feedback on the article. Anything else is **dropped: not stored, not
-redacted-and-stored, not logged, not echoed back**. The vote that came with it still counts,
-and the response says only `comment_saved: true|false`, never why (`common/comment_screening.py`).
+redacted-and-stored, not logged, not echoed back**, and neither is the submission it came with: the
+vote is not recorded and nothing is counted against the feedback limits below. The response is a bare
+`422`, never why (`common/comment_screening.py`). The reader can resubmit without the comment.
 
 | Layer | What it catches | Model? |
 |---|---|---|
@@ -873,9 +874,9 @@ identifier, so the privacy policy would have to say so.
 
 ### Feedback limits: when BloggerBear is not taking feedback
 
-Every submission (a vote, with or without a comment) is one piece of feedback. Whether BloggerBear
-takes it is decided by four checks, in this order; the first that is closed is the reason the reader
-sees (`common/feedback_limits.py`).
+Every **accepted** submission (a vote, with or without a comment) is one piece of feedback. Whether
+BloggerBear takes it is decided by four checks, in this order; the first that is closed is the reason
+the reader sees (`common/feedback_limits.py`).
 
 | # | Check | Default | Reopens |
 |---|---|---|---|
@@ -901,13 +902,25 @@ itself can't be read (it fails closed, because these limits are what stop a floo
 up a model bill). A refused submission is refused before anything is screened or stored, so a closed
 site costs no model call.
 
+**Rejected feedback counts for nothing.** The order of a submission is: (1) is feedback open, a read
+only; (2) screen the comment, if there is one; (3) only if it is kept, count it against the article,
+the day and the rate limit, and store it. A comment that is rejected, by the rules or by the model,
+rejects the whole submission: nothing stored, the vote not recorded, nothing counted, so junk cannot
+use up the room real feedback needs (a hundred rude comments do not lock the day).
+
+**But rejected comments still cost a model check**, and the limits above no longer bound that, so there
+is a separate budget: `screening_limit` (default 300 a day, resetting with the day). A comment is only
+sent to the model while checks are left; after that it is rejected unchecked, and a vote with no
+comment still works. A comment stopped by the rules (SQL, injection, PII, links, oversize) costs no
+check. At the default that is at most 300 model calls a day, a few cents.
+
 **Where it lives.** The settings are the `feedback` row of the config table
 (`bloggerbear-<env>-model-config`, beside `pipeline`): `locked_down`, `lockdown_reason`,
-`rate_limit_count`, `rate_limit_window_minutes`, `daily_limit`, `article_limit`, `daily_timezone`.
-Change them with `admin_cli feedback-config set --rate-limit 20 --rate-window-minutes 5 --daily-limit
-100 --article-limit 50 --locked-down true --lockdown-reason "..."` (`get` shows them, the defaults in
+`rate_limit_count`, `rate_limit_window_minutes`, `daily_limit`, `article_limit`, `screening_limit`,
+`daily_timezone`. Change them with `admin_cli feedback-config set --rate-limit 20 --rate-window-minutes
+5 --daily-limit 100 --article-limit 50 --screening-limit 300 --locked-down true --lockdown-reason "..."` (`get` shows them, the defaults in
 force, and today's and this window's usage), or edit the row in DynamoDB; a missing or invalid value
-takes its default. The counters are rows in the same table (`feedback-window#...`, `feedback-day#...`)
+takes its default. The counters are rows in the same table (`feedback-window#...`, `feedback-day#...`, `feedback-screen#...`)
 with an `expires_at` the table's TTL now clears.
 
 **How it is enforced.** Each count is a conditional DynamoDB update ("add one, only if still under the
@@ -915,8 +928,8 @@ limit"), so two submissions at the edge cannot both get in, and a submission ref
 gives back the counts it took. The windows are fixed, not sliding: a burst straddling two windows can
 briefly reach twice the limit.
 
-**Worth knowing.** The limits are site-wide, so they protect the bill (at most 100 comments a day reach
-the model, well under a dollar) but not the feature: anyone can use up the 100, and a comment that is
-later dropped by screening still counted. A dropped or refused submission still costs nothing. If that
-becomes a problem the answer is a per-visitor limit, which needs a stored identifier the privacy
-policy currently promises not to keep.
+**Worth knowing.** The limits are site-wide, so they protect the bill (at most 300 model checks a day,
+a few cents) but not the feature: anyone can send 100 *acceptable* votes and use up the day, and
+rejected feedback can no longer do that. A refused submission costs nothing. If the first becomes a
+problem the answer is a per-visitor limit, which needs a stored identifier the privacy policy
+currently promises not to keep.

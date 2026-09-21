@@ -1020,6 +1020,7 @@ _FEEDBACK_CONFIG_NUMBERS = (
     "rate_limit_window_minutes",
     "daily_limit",
     "article_limit",
+    "screening_limit",
 )
 
 

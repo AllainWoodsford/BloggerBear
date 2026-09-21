@@ -43,6 +43,7 @@ INJECTION = "prompt_injection"
 SQL = "sql"
 MARKUP = "script_or_markup"
 SHELL = "shell_command"
+MODEL_BUDGET = "screening_budget"
 MODEL_DROPPED = "model_dropped"
 MODEL_ERROR = "model_error"
 
@@ -175,12 +176,16 @@ def rule_drop_reason(comment) -> str | None:
     return None
 
 
-def screen_comment(raw_comment, article_title: str, model_id: str) -> dict:
+def screen_comment(raw_comment, article_title: str, model_id: str, may_call_model=None) -> dict:
     """Decide what happens to a submitted comment.
 
     Returns {"comment": str | None, "dropped_because": str | None}: the text to store (the
     comment as written, trimmed -- never a redacted or rewritten version), or None with a
     short code for why it was dropped. Never raises.
+
+    `may_call_model`, if given, is asked once the rules have passed and before the model is
+    called: it returns False when today's model checks are used up (see
+    feedback_limits.take_screening_slot), and the comment is then dropped unchecked.
     """
     if raw_comment is None or (isinstance(raw_comment, str) and not raw_comment.strip()):
         return {"comment": None, "dropped_because": None}  # no comment at all: nothing to drop
@@ -190,6 +195,8 @@ def screen_comment(raw_comment, article_title: str, model_id: str) -> dict:
         return {"comment": None, "dropped_because": reason}
 
     text = raw_comment.strip()
+    if may_call_model is not None and not may_call_model():
+        return {"comment": None, "dropped_because": MODEL_BUDGET}
     prompt = _SCREEN_PROMPT.format(
         title=_defang((article_title or "")[:MAX_TITLE_CHARS]), comment=_defang(text)
     )
