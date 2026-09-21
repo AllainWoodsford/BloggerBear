@@ -132,7 +132,7 @@ def test_the_browsers_answer_is_accepted_by_the_servers_check(bits):
 def test_it_fetches_a_token_waits_out_its_delay_and_sends_it_with_the_payload():
     out = run(
         {
-            "payload": {"vote": "down", "comment": "Please add a chart.", "extra_note": ""},
+            "payload": {"vote": "down", "comment": "Please add a chart.", "referral_code": ""},
             "responses": [open_status("tok-1", wait_ms=800), CREATED],
         }
     )
@@ -147,7 +147,7 @@ def test_it_fetches_a_token_waits_out_its_delay_and_sends_it_with_the_payload():
             "body": {
                 "vote": "down",
                 "comment": "Please add a chart.",
-                "extra_note": "",
+                "referral_code": "",
                 "token": "tok-1",
             },
         },
@@ -309,11 +309,11 @@ def test_every_other_response_is_handed_straight_back(status):
 def test_the_payload_is_not_changed_by_sending():
     out = run(
         {
-            "payload": {"vote": "up", "comment": None, "extra_note": ""},
+            "payload": {"vote": "up", "comment": None, "referral_code": ""},
             "responses": [open_status(wait_ms=0), refused("used"), open_status("t2", wait_ms=0), CREATED],
         }
     )
 
     assert [{k: v for k, v in e["body"].items() if k not in ("token",)} for e in POSTS(out)] == [
-        {"vote": "up", "comment": None, "extra_note": ""}
+        {"vote": "up", "comment": None, "referral_code": ""}
     ] * 2

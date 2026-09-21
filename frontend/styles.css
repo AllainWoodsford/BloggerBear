@@ -707,13 +707,8 @@ a {
 
 /* Feedback closed (a locked article, a pause, the daily or rate limit): the form is replaced by
    this, with the reason. The static article pages start their buttons hidden and reveal them once
-   the API says feedback is open, so the hidden attribute has to win over display: flex. */
-/* The feedback honeypot (see app.js / article-widgets.js): out of sight and out of the accessibility
-   tree. display:none rather than an off-screen trick, which a screen reader can still reach. */
-.hp-wrap {
-  display: none;
-}
-
+   the API says feedback is open, so the hidden attribute has to win over display: flex. (The decoy
+   field on the same form is hidden with that same attribute and needs no rule of its own.) */
 .feedback-buttons[hidden] {
   display: none;
 }
