@@ -1056,7 +1056,7 @@ the sources are the two above.
 
 ### Equipment: approved prompt changes as gear the bear wears
 
-**Status: PRs 1 to 3 of 4 (the model, the injection, gear identity, and wear).** An approved prompt refinement is *worn* rather than
+**Status: all four PRs (the model, the injection, gear identity, wear, and the Stats-page paper doll).** An approved prompt refinement is *worn* rather than
 merely approved; only worn gear is injected into the ideation and drafting prompts. `common/equipment.py` is
 the pure rules; the state lives on the PromptRefinements items (`equipped`, `slot`, `scope`, `equipped_at`,
 `unequipped_at`).
@@ -1132,9 +1132,32 @@ feedback path right after a submission is stored.
   wants.
 - The wear step never raises into the feedback path, and says nothing to the reader.
 
-**Still to come.**
-- **PR 4, the Stats page.** The paper doll, with per-slot and per-rarity art, accessible hover/focus tooltips
-  showing the guidance in use, and the bag count.
+**PR 4 of 4 (the Stats page): what BloggerBear is wearing.** A section of `#/stats`, from a new public
+`GET /equipment` (cached 60 seconds).
+
+- **The paper doll.** Six armor slots down either side of the bear (empty ones drawn dashed), the worn rings in
+  a row beneath (they appear as they are worn, at most five), and the backpack as **a count only**: the endpoint
+  never returns what is in it, or anything about a proposal beyond what is shown on the gear.
+- **Hover, focus or tap a piece** for its tooltip: **name, rarity, what the guidance says, its slot, the topic
+  it is tied to (rings) or "Every topic" (armor), and its durability as a percentage with a bar.** The tooltip
+  and the slot's outline are colour-coded like a game: orange legendary, purple epic, blue rare, green uncommon,
+  grey common. Durability runs green, yellow, orange, red as it falls (75%+, 50%, 25%, below), and the words
+  ("Good condition" ... "About to break") always say it too, so colour is never the only signal.
+- **Accessible.** Each piece is a real `<button>` whose `aria-describedby` is its tooltip, so a screen reader
+  hears the same thing without opening anything. The tooltip follows WCAG 1.4.13: it appears on hover, keyboard
+  focus and tap, stays while the pointer is over it, and Escape dismisses it (a click holds it open). On a phone
+  it is a panel along the bottom of the screen. The same facts are in "View the gear as a list". Rarity and
+  condition colours are held to contrast minimums in light mode, dark mode and the always-dark tooltip by tests.
+- **Art.** `frontend/gear.js` describes each picture as plain data (path, circle, rect; class names only, so no
+  style attribute the CSP would block): a silhouette per slot, and rarity adds to it (nothing for common, a gem
+  for uncommon, a ring around it for rare, sparkles for epic, rays and a double ring for legendary). Colours all
+  come from `styles.css`. Replace the pictures by editing the specs; the bear in the middle is
+  `bears/default.svg`.
+- **What is shown is screened again.** The guidance text is a person-approved but anonymous-comment-derived
+  string, so before it goes public it gets the same code rules as a comment (links, personal information,
+  injection, SQL, markup) and is withheld ("The details of this guidance are not shown") if any applies; it is
+  capped at 280 characters. The theme in the name is re-checked the same way.
+- The gear loads separately from the numbers, so a failure there never hides the rest of the Stats page.
 
 Settled with the owner: "equip only in part" means the bear takes in a random subset of its worn armor for each
-article (PR 1), and wear comes from a non-rejected comment downvote.
+article (PR 1), and wear comes from a stored downvote (1 point), repaired by a stored upvote.
