@@ -350,8 +350,9 @@ _CLOSED_STATUS = {
 }
 
 
-# The form's decoy field. Named so a browser will not autofill it (not "email", "url", "name"...).
-HONEYPOT_FIELD = "extra_note"
+# The form's decoy field. It should look like any other optional field: nothing in its name says
+# what it is for, and a browser has no autofill for it (not "email", "phone", "name", "company"...).
+HONEYPOT_FIELD = "referral_code"
 
 
 def _closed_response(status: dict) -> dict:

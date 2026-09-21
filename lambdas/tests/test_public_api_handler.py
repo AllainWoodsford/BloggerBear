@@ -1108,7 +1108,7 @@ def test_the_honeypot_gets_a_fake_success_and_nothing_is_stored_or_counted(aws_r
     monkeypatch.setattr("common.comment_screening.invoke_claude", _unexpected_call)
     token = _issue_token()
 
-    result, body = _post({"vote": "up", "token": token, "extra_note": "buy cheap pills"})
+    result, body = _post({"vote": "up", "token": token, "referral_code": "buy cheap pills"})
 
     assert result["statusCode"] == 201 and body["status"] == "recorded"
     _nothing_was_recorded_or_counted()
@@ -1120,7 +1120,7 @@ def test_the_honeypot_gets_a_fake_success_and_nothing_is_stored_or_counted(aws_r
 def test_an_empty_honeypot_is_a_person(aws_resources, value):
     _put_article()
 
-    result, _ = _post({"vote": "up", "token": _issue_token(), "extra_note": value})
+    result, _ = _post({"vote": "up", "token": _issue_token(), "referral_code": value})
 
     assert result["statusCode"] == 201
     assert len(_feedback_items()) == 1
@@ -1129,7 +1129,7 @@ def test_an_empty_honeypot_is_a_person(aws_resources, value):
 def test_the_honeypot_is_checked_even_for_a_closed_site_or_a_missing_token(aws_resources):
     _put_article()
 
-    result, _ = _post({"vote": "up", "extra_note": "x"})
+    result, _ = _post({"vote": "up", "referral_code": "x"})
 
     assert result["statusCode"] == 201
     _nothing_was_recorded_or_counted()
