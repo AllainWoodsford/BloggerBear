@@ -63,6 +63,11 @@ python scripts/admin_cli.py topics create --topic-id security-trends \
 # replaces the whole editorial_goals block; '{}' clears it (back to the default goal)
 python scripts/admin_cli.py topics update security-trends --editorial-goals-json '{}'
 python scripts/admin_cli.py topics update github-trending --name "Renamed" --financial
+# New topics run their daily article at 9 AM Australia/Sydney (follows daylight
+# saving). A topic created before --daily-timezone existed is still on UTC until
+# you move it -- an unrelated update never changes its run time:
+python scripts/admin_cli.py topics update github-trending \
+    --daily-cadence "cron(0 9 * * ? *)" --daily-timezone Australia/Sydney
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait

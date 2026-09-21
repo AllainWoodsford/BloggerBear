@@ -92,6 +92,10 @@ class HackerNewsAdapter(Adapter):
             state["off_topic_dropped"] = off_topic_dropped
         return state
 
+    def item_keys(self, state: dict) -> set[str]:
+        # Strings, not ints: the seen-set round-trips through JSON object keys.
+        return {str(s["id"]) for s in state.get("stories", [])}
+
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         if not new_state.get("stories"):
             return False, "no relevant stories to report"
@@ -101,7 +105,10 @@ class HackerNewsAdapter(Adapter):
         old_stories = {s["id"]: s for s in old_state.get("stories", [])}
         new_stories = {s["id"]: s for s in new_state.get("stories", [])}
 
-        entered = sorted(set(new_stories) - set(old_stories))
+        # New = never reported for this topic before, not merely absent from the
+        # last snapshot. A story leaving the list is context, not news.
+        known = self.known_keys(old_state)
+        entered = sorted(i for i in new_stories if str(i) not in known)
         left = sorted(set(old_stories) - set(new_stories))
 
         score_jumps = []
@@ -116,8 +123,8 @@ class HackerNewsAdapter(Adapter):
             if is_big_absolute_jump or is_big_relative_jump:
                 score_jumps.append((story_id, old_score, new_score, delta))
 
-        if not entered and not left and not score_jumps:
-            return False, "no material change"
+        if not entered and not score_jumps:
+            return False, "no new information"
 
         parts = []
         if entered:

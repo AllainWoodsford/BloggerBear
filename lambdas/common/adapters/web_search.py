@@ -23,7 +23,8 @@ adapter_config (all optional; a search string defaults to the topic's name):
     provider        search backend name (default: WEB_SEARCH_PROVIDER env
                      var, else GDELT -- see common/web_search.py)
     min_new_results  how many never-before-seen results make a tick
-                     "material" (default 3)
+                     "material" (default 1: any new result counts;
+                     raise it to trade freshness for fewer summaries)
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from .base import Adapter
 DEFAULT_MAX_RESULTS = 10
 MAX_RESULTS_LIMIT = 25
 DEFAULT_MAX_AGE_HOURS = 24
-DEFAULT_MIN_NEW_RESULTS = 3
+DEFAULT_MIN_NEW_RESULTS = 1
 
 
 def configured_queries(adapter_config: dict) -> list[str]:
@@ -129,17 +130,20 @@ class WebSearchAdapter(Adapter):
             "fetched_at": datetime.now(UTC).isoformat(),
         }
 
+    def item_keys(self, state: dict) -> set[str]:
+        return {r["url"] for r in state.get("results", [])}
+
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         if not new_state.get("results"):
             return False, "no relevant results to report"
         if old_state is None:
             return True, "initial observation: no prior snapshot to compare against"
 
-        old_urls = {r["url"] for r in old_state.get("results", [])}
-        fresh = [r for r in new_state.get("results", []) if r["url"] not in old_urls]
+        known = self.known_keys(old_state)
+        fresh = [r for r in new_state.get("results", []) if r["url"] not in known]
         threshold = new_state.get("min_new_results", DEFAULT_MIN_NEW_RESULTS)
-        if len(fresh) < threshold:
-            return False, "no material change"
+        if not fresh or len(fresh) < threshold:
+            return False, "no new information"
 
         titles = "; ".join(r["title"] for r in fresh[:5])
         return True, f"{len(fresh)} new results: {titles}"

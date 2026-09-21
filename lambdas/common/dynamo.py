@@ -94,11 +94,19 @@ def get_latest_finding(topic_id: str) -> dict | None:
 # --- CandidateIdeas / Articles / ModerationQueue (daily-cycle worker) -------
 
 
-def list_recent_findings(topic_id: str, limit: int = 5) -> list[dict]:
-    """Return up to `limit` most recent Findings items for a topic."""
+def list_recent_findings(topic_id: str, limit: int = 5, since: str | None = None) -> list[dict]:
+    """Return up to `limit` most recent Findings items for a topic, newest first.
+
+    `since` is an ISO-8601 UTC timestamp; when given, only Findings captured at
+    or after it are returned (the sort key is the same ISO string, so this is a
+    range condition on it).
+    """
     table = get_table(os.environ["FINDINGS_TABLE"])
+    condition = Key("topic_id").eq(topic_id)
+    if since is not None:
+        condition = condition & Key("captured_at").gte(since)
     response = table.query(
-        KeyConditionExpression=Key("topic_id").eq(topic_id),
+        KeyConditionExpression=condition,
         ScanIndexForward=False,
         Limit=limit,
     )

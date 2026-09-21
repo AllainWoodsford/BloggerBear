@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 import boto3
 
@@ -26,6 +27,13 @@ _scheduler_client = None
 _VALID_EXPRESSION_PREFIXES = ("rate(", "cron(", "at(")
 
 _SCHEDULE_GROUP_NAME = "default"
+
+# An IANA zone name ("UTC", "Australia/Sydney", "America/Argentina/Buenos_Aires").
+# EventBridge Scheduler does the real check; this only rejects obvious junk so
+# a typo fails the admin request rather than the AWS call.
+_TIMEZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-]*(/[A-Za-z0-9_+\-]+)*$")
+
+DEFAULT_TIMEZONE = "UTC"
 
 
 def _get_scheduler_client():
@@ -48,15 +56,30 @@ def _validate_schedule_expression(expr: str) -> None:
         )
 
 
+def validate_timezone(tz: str) -> None:
+    """Raise ValueError unless `tz` looks like an IANA time-zone name."""
+    if not isinstance(tz, str) or not _TIMEZONE_RE.match(tz):
+        raise ValueError(f"timezone {tz!r} must be an IANA zone name such as 'Australia/Sydney'")
+
+
 def _schedule_name(topic_id: str, suffix: str) -> str:
     return f"bloggerbear-{os.environ['ENVIRONMENT_NAME']}-{topic_id}-{suffix}"
 
 
-def _upsert_schedule(client, *, name: str, schedule_expression: str, target_arn: str, topic_id: str) -> None:
+def _upsert_schedule(
+    client,
+    *,
+    name: str,
+    schedule_expression: str,
+    target_arn: str,
+    topic_id: str,
+    timezone: str = DEFAULT_TIMEZONE,
+) -> None:
     kwargs = {
         "Name": name,
         "GroupName": _SCHEDULE_GROUP_NAME,
         "ScheduleExpression": schedule_expression,
+        "ScheduleExpressionTimezone": timezone,
         "FlexibleTimeWindow": {"Mode": "OFF"},
         "Target": {
             "Arn": target_arn,
@@ -70,14 +93,24 @@ def _upsert_schedule(client, *, name: str, schedule_expression: str, target_arn:
         client.update_schedule(**kwargs)
 
 
-def upsert_topic_schedules(topic_id: str, research_cadence: str, daily_cadence: str) -> None:
+def upsert_topic_schedules(
+    topic_id: str,
+    research_cadence: str,
+    daily_cadence: str,
+    daily_timezone: str = DEFAULT_TIMEZONE,
+) -> None:
     """Create (or update, if they already exist) a topic's two schedules.
 
-    Validates both cadence expressions before making any AWS calls, so a
-    bad value never leaves one schedule created and the other not.
+    `daily_timezone` is the zone the daily cadence's `cron(...)` is read in
+    (so "9 AM Australia/Sydney" follows daylight saving); the hourly research
+    schedule is a `rate(...)` and has no wall-clock time to interpret.
+
+    Validates both cadence expressions and the zone before making any AWS
+    calls, so a bad value never leaves one schedule created and the other not.
     """
     _validate_schedule_expression(research_cadence)
     _validate_schedule_expression(daily_cadence)
+    validate_timezone(daily_timezone)
 
     client = _get_scheduler_client()
     _upsert_schedule(
@@ -93,6 +126,7 @@ def upsert_topic_schedules(topic_id: str, research_cadence: str, daily_cadence: 
         schedule_expression=daily_cadence,
         target_arn=os.environ["STATE_MACHINE_ARN"],
         topic_id=topic_id,
+        timezone=daily_timezone,
     )
 
 

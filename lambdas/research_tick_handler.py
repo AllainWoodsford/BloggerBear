@@ -5,13 +5,19 @@ Iterating over every Topic on a schedule is Phase 3 (EventBridge Scheduler)
 -- do not add a topic-iteration loop here.
 
 Flow (per docs/project-plan.md §4 "Hourly Research Tick" and §2 rule 2 --
-diff-first, no Bedrock call unless something material changed):
+diff-first, no Bedrock call unless there is something new):
   1. Load the Topic.
   2. Instantiate its adapter and fetch current state.
   3. Load the prior state (if any) from the last Finding's S3 snapshot.
-  4. Diff. If unchanged, stop -- no Bedrock call.
-  5. If changed, summarize with Bedrock, store the raw snapshot in S3, and
-     write a new Finding.
+  4. Diff. If the source has nothing new, stop -- no Bedrock call.
+  5. If it does, summarize *only what is new* with Bedrock, store the raw
+     snapshot in S3, and write a new Finding.
+
+"New" means new to the topic. Every stored snapshot carries the set of items
+already reported (`SEEN_KEY`, pruned to SEEN_RETENTION_DAYS), and adapters judge
+novelty against it, so an item that drops out of a feed and returns is not
+reported again. This handler and that mechanism know nothing about any one
+domain: what an "item" is comes from the adapter's `item_keys`.
 
 Bugfix: this used to be the one handler in the codebase without a
 top-level try/except -- on an hourly, unattended EventBridge Scheduler
@@ -26,11 +32,12 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import boto3
 
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY, WEB_SEARCH_ADAPTER_KEY
+from common.adapters.base import SEEN_KEY
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
@@ -42,6 +49,10 @@ from common.relevance import research_relevance_rule, topic_label
 
 FINDING_TTL_DAYS = 14
 COMPACT_STATE_MAX_CHARS = 4000
+# How long an item stays "already reported", and a hard cap so a very chatty
+# source can't grow the snapshot without bound.
+SEEN_RETENTION_DAYS = 7
+SEEN_MAX_KEYS = 2000
 
 # Maps a Topic's `adapter` field to the concrete Adapter implementation.
 # Adding a new domain means adding one line here plus a new adapter module --
@@ -77,6 +88,28 @@ def _load_prior_state(bucket: str, s3_key: str) -> dict:
     return json.loads(response["Body"].read())
 
 
+def _merge_seen(adapter, old_state: dict | None, new_state: dict, today: date) -> dict[str, str]:
+    """The seen-set to store with `new_state`: what was already reported (minus
+    anything older than SEEN_RETENTION_DAYS) plus every item in `new_state`,
+    each keyed to the date it was first seen."""
+    today_iso = today.isoformat()
+    cutoff = (today - timedelta(days=SEEN_RETENTION_DAYS)).isoformat()
+
+    previous = (old_state or {}).get(SEEN_KEY)
+    if previous is None:
+        # A snapshot stored before the seen-set existed: what it held was reported.
+        previous = dict.fromkeys(adapter.item_keys(old_state), today_iso) if old_state else {}
+
+    seen = {key: first_seen for key, first_seen in previous.items() if first_seen >= cutoff}
+    for key in adapter.item_keys(new_state):
+        seen.setdefault(key, today_iso)
+
+    if len(seen) > SEEN_MAX_KEYS:
+        newest = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)[:SEEN_MAX_KEYS]
+        seen = dict(newest)
+    return seen
+
+
 def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> str:
     # An adapter whose state needs domain-specific framing (e.g. the crypto
     # feed's rotating editorial focus) supplies its own prompt; everything
@@ -89,15 +122,19 @@ def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> s
     topic_name = topic_label(topic)
     return (
         f'You are monitoring the topic "{topic_name}" for a research '
-        "digest. A material change was just detected in its source data.\n\n"
+        "digest. New information was just found in its source data.\n\n"
         f"OPERATIONAL EDITORIAL GOAL:\n{resolve_editorial_goals(topic)}\n\n"
-        f"What changed: {diff_summary}\n\n"
-        f"Current state (compact JSON, may be truncated): {compact_state}\n\n"
+        f"What's new: {diff_summary}\n\n"
+        "Current state (compact JSON, may be truncated; background for context "
+        f"only): {compact_state}\n\n"
         f"{research_relevance_rule(topic_name)}\n\n"
-        "Summarize what changed and why it is highly relevant based on the "
-        "Operational Editorial Goal above. Be concise (2-4 sentences). Do not "
-        "speculate beyond what the data shows, and do not give financial or "
-        "investment advice."
+        'Summarize only what is new (the items under "What\'s new") and why it is '
+        "highly relevant based on the Operational Editorial Goal above. Do not "
+        "restate items that are not listed as new. Use only facts, figures and "
+        "sources present in the data given: never add causes, quotes, numbers or "
+        "detail that it does not contain, and if it does not say something, do "
+        "not say it. Be concise (2-4 sentences). Do not speculate beyond what "
+        "the data shows, and do not give financial or investment advice."
     )
 
 
@@ -152,11 +189,18 @@ def _run_research_tick(topic_id: str) -> dict:
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()
     snapshot_key = _snapshot_key(topic_id, captured_at)
 
+    # The seen-set goes on a copy for storage only: it never reaches the summary
+    # prompt above or an adapter's source_refs below; it exists for the next tick.
+    snapshot = dict(new_state)
+    seen = _merge_seen(adapter, old_state, new_state, datetime.now(UTC).date())
+    if seen:
+        snapshot[SEEN_KEY] = seen
+
     s3 = _get_s3_client()
     s3.put_object(
         Bucket=bucket,
         Key=snapshot_key,
-        Body=json.dumps(new_state).encode("utf-8"),
+        Body=json.dumps(snapshot).encode("utf-8"),
         ContentType="application/json",
     )
 

@@ -24,7 +24,7 @@ The research tick runs hourly; an unseeded sample would pick 10 different
 coins every hour, so every tick would look like a material change and burn a
 Bedrock call and a Finding. Seeded, the day's pool only changes when the
 date does. A snapshot is material on the first observation, a new UTC day, a
-goal change, or (on the news days) 5+ new headlines -- price moves are not a
+goal change, or (on the news days) any headline not already reported -- price moves are not a
 trigger, so the analysis days produce one Finding a day.
 
 **History is fetched once per UTC day, not once per tick.** It is daily data,
@@ -125,9 +125,10 @@ VOLUME_SURGE_RATIO = 2.0
 
 WEB_MAX_RESULTS = 15
 WEB_MAX_AGE_HOURS = 24
-# New web headlines needed within a day before another Finding is worth a
-# Bedrock call (headlines turn over constantly; a couple aren't material).
-WEB_NEW_RESULTS_THRESHOLD = 5
+# Headlines not yet reported that make a tick worth a Finding. One: novelty is
+# already judged against everything reported (Adapter.known_keys), so a headline
+# that is genuinely new is information worth recording.
+WEB_NEW_RESULTS_THRESHOLD = 1
 DEFAULT_WEB_QUERY = "(bitcoin OR ethereum OR cryptocurrency OR crypto)"
 # Search backends match full page text, so a title filter drops the
 # tangential pages (an "Interpol tool" story that mentions crypto in passing).
@@ -659,6 +660,9 @@ class CryptoFeedAdapter(Adapter):
 
     # --- diffing ----------------------------------------------------------
 
+    def item_keys(self, state: dict) -> set[str]:
+        return {r["url"] for r in state.get("web_results") or []}
+
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         if old_state is None:
             return True, "initial observation: no prior snapshot to compare against"
@@ -676,8 +680,11 @@ class CryptoFeedAdapter(Adapter):
         # Price moves are deliberately not a trigger: on the analysis days the
         # snapshot is a once-a-day read, and on the news days it is the headlines
         # that matter. Within a day only a burst of new headlines counts.
-        old_urls = {r["url"] for r in old_state.get("web_results") or []}
-        fresh = [r for r in new_state.get("web_results") or [] if r["url"] not in old_urls]
+        # Novelty is judged against every headline already reported (the
+        # carried seen-set), so a story that drops out of the search results
+        # and returns later is not reported twice.
+        known = self.known_keys(old_state)
+        fresh = [r for r in new_state.get("web_results") or [] if r["url"] not in known]
         if len(fresh) >= WEB_NEW_RESULTS_THRESHOLD:
             return True, f"{len(fresh)} new news items: " + "; ".join(r["title"] for r in fresh[:5])
 

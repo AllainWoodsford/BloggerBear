@@ -91,7 +91,27 @@ def test_material_diff_false_on_pure_reorder():
     changed, summary = adapter.material_diff(old_state, new_state)
 
     assert changed is False
-    assert summary == "no material change"
+    assert summary == "no new information"
+
+
+def test_material_diff_a_repo_already_reported_is_not_new_when_it_returns():
+    repo_a = {"name": "a/b", "url": "ua", "stars": 10, "language": None, "description": ""}
+    repo_b = {"name": "c/d", "url": "uc", "stars": 20, "language": None, "description": ""}
+    old_state = {"repos": [repo_a], "_seen": {"a/b": "2026-09-20", "c/d": "2026-09-20"}}
+    new_state = {"repos": [repo_a, repo_b]}  # c/d left the list earlier and is back
+
+    assert GitHubTrendingAdapter().material_diff(old_state, new_state) == (False, "no new information")
+
+
+def test_material_diff_a_repo_leaving_the_list_is_not_news_but_a_new_one_is():
+    repo_a = {"name": "a/b", "url": "ua", "stars": 10, "language": None, "description": ""}
+    repo_b = {"name": "c/d", "url": "uc", "stars": 20, "language": None, "description": ""}
+    repo_c = {"name": "e/f", "url": "ue", "stars": 5, "language": None, "description": ""}
+    adapter = GitHubTrendingAdapter()
+
+    assert adapter.material_diff({"repos": [repo_a, repo_b]}, {"repos": [repo_a]})[0] is False
+    changed, summary = adapter.material_diff({"repos": [repo_a, repo_b]}, {"repos": [repo_a, repo_c]})
+    assert changed is True and "entered: e/f" in summary and "left: c/d" in summary
 
 
 def test_material_diff_true_when_repo_set_changes():
