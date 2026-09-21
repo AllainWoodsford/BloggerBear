@@ -383,3 +383,76 @@ def test_describe_decorates_every_item_it_shows():
     assert [i["name"] for i in view["rings"]] == ["N-r"]
     assert [i["name"] for i in view["backpack"]] == ["N-b"]
     assert [i["name"] for i in view["legacy"]] == ["N-old"]
+
+
+# --- wear: worn-out gear and its replacement ----------------------------------------------
+
+
+def spare_item(version, *, reason="parked", scope="topic", topic="t1", durability=8):
+    return item(
+        topic, version, equipped=False, unequipped_reason=reason, scope=scope, durability=durability
+    )
+
+
+def test_gear_with_no_durability_left_cannot_be_worn():
+    dead = {**benched(version="dead"), "durability": 0}
+
+    with pytest.raises(eq.EquipError) as caught:
+        eq.plan_equip([], dead, scope="topic")
+
+    assert caught.value.status == 409 and "repair" in caught.value.message
+
+
+def test_gear_with_durability_or_none_at_all_can_be_worn():
+    eq.plan_equip([], {**benched(version="a"), "durability": 1}, scope="topic")
+    eq.plan_equip([], benched(version="b"), scope="topic")  # predates gear: no durability
+
+
+def test_the_best_parked_ring_for_the_topic_replaces_a_worn_out_ring():
+    retired = worn("ring", "topic", version="gone")
+    items = [
+        retired,
+        spare_item("low", durability=3),
+        spare_item("high", durability=9),
+        spare_item("other-topic", topic="t2", durability=10),
+    ]
+
+    assert eq.pick_replacement(items, retired)["version"] == "high"
+
+
+def test_a_tie_on_durability_goes_to_the_newer_spare():
+    retired = worn("ring", "topic", version="gone")
+    items = [spare_item("2026-09-01", durability=5), spare_item("2026-09-05", durability=5)]
+
+    assert eq.pick_replacement(items, retired)["version"] == "2026-09-05"
+
+
+@pytest.mark.parametrize("reason", ["benched", "shelved", "displaced", "worn_out", None])
+def test_only_parked_spares_may_be_put_on_automatically(reason):
+    retired = worn("ring", "topic", version="gone")
+
+    assert eq.pick_replacement([spare_item("s", reason=reason)], retired) is None
+
+
+def test_a_spare_with_nothing_left_or_no_durability_is_passed_over():
+    retired = worn("ring", "topic", version="gone")
+    no_durability = {k: v for k, v in spare_item("legacy").items() if k != "durability"}
+
+    assert eq.pick_replacement([spare_item("empty", durability=0), no_durability], retired) is None
+
+
+def test_armor_is_replaced_by_global_spares_and_rings_by_ring_spares():
+    ring, helmet = worn("ring", "topic", version="r"), worn("helmet", "global", version="h")
+    global_spare = spare_item("g", scope="global", topic="elsewhere")
+    ring_spare = spare_item("t")
+
+    assert eq.pick_replacement([global_spare, ring_spare], ring)["version"] == "t"
+    assert eq.pick_replacement([global_spare, ring_spare], helmet)["version"] == "g"
+
+
+def test_the_retired_piece_and_pending_or_rejected_items_are_never_its_own_replacement():
+    retired = {**spare_item("gone"), "unequipped_reason": "parked"}  # even if it was somehow parked
+    rejected = {**spare_item("r"), "status": "rejected"}
+    pending = {**spare_item("p"), "status": "pending"}
+
+    assert eq.pick_replacement([retired, rejected, pending], {**retired, "slot": "ring"}) is None

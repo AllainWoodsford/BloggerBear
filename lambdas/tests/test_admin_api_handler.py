@@ -2216,3 +2216,109 @@ def test_bumping_something_that_predates_gear_rolls_it_an_identity_first(aws_res
     assert result["statusCode"] == 200
     assert json.loads(result["body"])["bumped"]["was"] == "common"
     assert _refinement_item("v1")["rarity"] == "legendary"
+
+
+# --- Gear: wear, repair, and why something is in the backpack ------------------------------
+
+
+def _set(version, **fields):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    names = {f"#{k}": k for k in fields}
+    table.update_item(
+        Key={"topic_id": "github-trending", "version": version},
+        UpdateExpression="SET " + ", ".join(f"#{k} = :{k}" for k in fields),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={f":{k}": v for k, v in fields.items()},
+    )
+
+
+def test_a_repair_restores_durability_to_full(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", durability=3, max_durability=17)
+
+    result = _post("repair", "v1")
+
+    assert result["statusCode"] == 200
+    repaired = json.loads(result["body"])["repaired"]
+    assert (repaired["was"], repaired["durability"], repaired["max_durability"]) == (3, 17, 17)
+    assert _refinement_item("v1")["durability"] == 17
+
+
+def test_a_repair_can_restore_some_of_it_but_never_past_the_maximum(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", durability=3, max_durability=17)
+
+    assert json.loads(_post("repair", "v1", {"amount": 4})["body"])["repaired"]["durability"] == 7
+    assert json.loads(_post("repair", "v1", {"amount": 500})["body"])["repaired"]["durability"] == 17
+
+
+def test_repairing_gear_that_is_already_full_is_a_conflict(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1")
+
+    assert _post("repair", "v1")["statusCode"] == 409
+
+
+@pytest.mark.parametrize("amount", [0, -3, 1.5, "2", True])
+def test_a_repair_amount_must_be_a_positive_whole_number(aws_resources, amount):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", durability=3)
+
+    assert _post("repair", "v1", {"amount": amount})["statusCode"] == 400
+    assert _refinement_item("v1")["durability"] == 3
+
+
+def test_only_approved_gear_can_be_repaired(aws_resources):
+    _put_refinement(version="v1")
+
+    assert _post("repair", "v1")["statusCode"] == 409
+    assert _post("repair", "nowhere")["statusCode"] == 404
+
+
+def test_repairing_worn_out_gear_leaves_it_in_the_backpack_to_be_worn_again_by_choice(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", durability=0, max_durability=17)
+    _set("v1", equipped=False, unequipped_reason="worn_out")
+
+    _post("repair", "v1")
+
+    stored = _refinement_item("v1")
+    assert stored["durability"] == 17 and stored["equipped"] is False  # repaired, not re-equipped
+    assert _post("equip", "v1")["statusCode"] == 200  # the admin puts it back on
+
+
+def test_gear_that_is_worn_out_cannot_be_worn_until_it_is_repaired(aws_resources):
+    _put_refinement(version="v1", status="approved")
+    _identity("v1", durability=0, max_durability=17)
+
+    result = _post("equip", "v1")
+
+    assert result["statusCode"] == 409 and "repair" in json.loads(result["body"])["error"]
+    assert "equipped" not in _refinement_item("v1")
+
+
+def test_the_reason_something_is_in_the_backpack_is_recorded(aws_resources):
+    for version in ("bench", "old", "new"):
+        _put_refinement(version=version, status="approved")
+    _post("equip", "bench")
+    _post("unequip", "bench")
+    _post("equip", "old", {"scope": "global", "slot": "helmet"})
+    _post("equip", "new", {"scope": "global", "slot": "helmet"})  # pushes "old" out
+
+    assert _refinement_item("bench")["unequipped_reason"] == "benched"
+    assert _refinement_item("old")["unequipped_reason"] == "displaced"
+
+
+def test_an_item_approved_with_no_room_is_parked_and_one_shelved_by_choice_is_not(aws_resources):
+    for n in range(5):
+        _put_refinement(version=f"r{n}")
+        _post("approve", f"r{n}")
+    _put_refinement(version="no-room")
+    _put_refinement(version="chosen")
+
+    _post("approve", "no-room")
+    _post("approve", "chosen", {"scope": "backpack"})
+
+    parked, shelved = _refinement_item("no-room"), _refinement_item("chosen")
+    assert (parked["unequipped_reason"], parked["scope"]) == ("parked", "topic")
+    assert shelved["unequipped_reason"] == "shelved"
