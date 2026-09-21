@@ -56,23 +56,31 @@ def put_finding(
     summary: str,
     raw_snapshot_s3_key: str,
     source_refs: list[dict],
+    research_call: dict | None = None,
 ) -> None:
     """Write a Finding item to the Findings table.
 
     `expires_at` is an epoch-seconds int -- Terraform configures this
     attribute name as the table's TTL attribute.
+
+    `research_call` is the Bedrock call that produced `summary` --
+    {"model_id", "input_tokens", "output_tokens", "used_fallback"} -- kept on
+    the Finding so the research spend can be tallied into whichever article the
+    Finding ends up feeding (common/costing.py's build_research_lineage). A
+    Finding written before research tracking has none.
     """
     table = get_table(os.environ["FINDINGS_TABLE"])
-    table.put_item(
-        Item={
-            "topic_id": topic_id,
-            "captured_at": captured_at,
-            "expires_at": expires_at,
-            "summary": summary,
-            "raw_snapshot_s3_key": raw_snapshot_s3_key,
-            "source_refs": source_refs,
-        }
-    )
+    item = {
+        "topic_id": topic_id,
+        "captured_at": captured_at,
+        "expires_at": expires_at,
+        "summary": summary,
+        "raw_snapshot_s3_key": raw_snapshot_s3_key,
+        "source_refs": source_refs,
+    }
+    if research_call is not None:
+        item["research_call"] = research_call
+    table.put_item(Item=item)
 
 
 def get_latest_finding(topic_id: str) -> dict | None:
@@ -144,20 +152,36 @@ def _lineage_to_item(lineage: dict | None) -> dict | None:
     representation instead of the decimal value meant)."""
     if lineage is None:
         return None
-    converted = dict(lineage)
-    converted["total_input_tokens"] = Decimal(lineage["total_input_tokens"])
-    converted["total_output_tokens"] = Decimal(lineage["total_output_tokens"])
-    if lineage.get("cost_aud") is not None:
-        converted["cost_aud"] = Decimal(str(lineage["cost_aud"]))
-    converted["calls"] = [
-        {
-            **call,
-            "input_tokens": Decimal(call["input_tokens"]),
-            "output_tokens": Decimal(call["output_tokens"]),
-        }
-        for call in lineage.get("calls", [])
-    ]
-    return converted
+    return _floats_to_decimal(lineage)
+
+
+def _floats_to_decimal(value):
+    """Recursively swap every float for Decimal(str(x)), leaving ints, strings,
+    bools and None alone. Recursive because a lineage nests numbers at several
+    depths (its own calls, and the `research` block's calls and totals)."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _floats_to_decimal(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_floats_to_decimal(item) for item in value]
+    return value
+
+
+# Lineage fields that are money (float); every other number in a lineage is a count.
+_LINEAGE_COST_KEYS = frozenset({"cost_aud", "total_cost_aud"})
+
+
+def _decimal_to_number(value, key=None):
+    """Recursive inverse of _floats_to_decimal: Decimal back to float for the
+    cost fields and to int for every count."""
+    if isinstance(value, Decimal):
+        return float(value) if key in _LINEAGE_COST_KEYS else int(value)
+    if isinstance(value, dict):
+        return {k: _decimal_to_number(item, k) for k, item in value.items()}
+    if isinstance(value, list):
+        return [_decimal_to_number(item, key) for item in value]
+    return value
 
 
 def _lineage_from_item(lineage: dict | None) -> dict | None:
@@ -166,16 +190,20 @@ def _lineage_from_item(lineage: dict | None) -> dict | None:
     (json.dumps can't serialize Decimal)."""
     if lineage is None:
         return None
-    converted = dict(lineage)
-    converted["total_input_tokens"] = int(lineage["total_input_tokens"])
-    converted["total_output_tokens"] = int(lineage["total_output_tokens"])
-    if lineage.get("cost_aud") is not None:
-        converted["cost_aud"] = float(lineage["cost_aud"])
-    converted["calls"] = [
-        {**call, "input_tokens": int(call["input_tokens"]), "output_tokens": int(call["output_tokens"])}
-        for call in lineage.get("calls", [])
-    ]
-    return converted
+    return _decimal_to_number(lineage)
+
+
+def update_article_lineage(article_id: str, lineage: dict) -> None:
+    """Replace an existing Articles item's `lineage` (used by the lineage
+    backfill, which recomputes cost once pricing is known). Refuses to create
+    an article that doesn't exist."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="SET lineage = :lineage",
+        ConditionExpression="attribute_exists(article_id)",
+        ExpressionAttributeValues={":lineage": _lineage_to_item(lineage)},
+    )
 
 
 def put_article(

@@ -383,6 +383,17 @@ def _cmd_articles_unpublish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/unpublish")
 
 
+# --- lineage subcommands ------------------------------------------------
+
+
+def _cmd_lineage_audit(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/lineage/audit")
+
+
+def _cmd_lineage_backfill(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/lineage/backfill", body={"apply": args.apply})
+
+
 # --- moderation subcommands ---------------------------------------------
 
 
@@ -642,6 +653,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unpublish_parser.add_argument("article_id")
     unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
+
+    lineage_parser = subparsers.add_parser("lineage", help="Audit and repair article lineage/cost data")
+    lineage_sub = lineage_parser.add_subparsers(dest="action", required=True)
+    lineage_sub.add_parser(
+        "audit",
+        help="Show articles with no lineage or no cost, and models with no known price",
+    ).set_defaults(func=_cmd_lineage_audit)
+    backfill_parser = lineage_sub.add_parser(
+        "backfill",
+        help=(
+            "Recompute each article's cost from its recorded tokens at today's prices "
+            "(a dry run unless --apply)"
+        ),
+    )
+    backfill_parser.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="Write the recomputed lineage (default: only report what would change)",
+    )
+    backfill_parser.set_defaults(func=_cmd_lineage_backfill)
 
     moderation_parser = subparsers.add_parser("moderation", help="Manage the moderation queue")
     moderation_sub = moderation_parser.add_subparsers(dest="action", required=True)
