@@ -701,9 +701,71 @@ def test_pipeline_config_set_with_nothing_to_set_is_refused(capsys):
             _run(["pipeline-config", "set"])
     assert exc_info.value.code != 0
     m.assert_not_called()
-    assert "needs --research-interval-hours and/or --review-mode" in capsys.readouterr().err
+    assert "needs --research-interval-hours, --review-mode and/or --review-on-unavailable" in (
+        capsys.readouterr().err
+    )
 
 
-def test_pipeline_config_review_mode_rejects_a_value_that_does_not_exist_yet():
+def test_pipeline_config_review_mode_rejects_a_value_that_does_not_exist():
     with pytest.raises(SystemExit):
+        _run(["pipeline-config", "set", "--review-mode", "bogus"])
+
+
+def test_pipeline_config_can_turn_enforcement_on():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["pipeline-config", "set", "--review-mode", "enforce"])
+    assert m.call_args.kwargs["body"] == {"review_mode": "enforce"}
+
+
+def test_pipeline_config_sets_and_clears_what_to_do_when_a_review_cannot_run():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--review-on-unavailable", "note"])
+    assert m.call_args.kwargs["body"] == {"review_on_unavailable": "note"}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--review-on-unavailable", ""])
+    assert m.call_args.kwargs["body"] == {"review_on_unavailable": None}
+
+
+def test_pipeline_config_rejects_an_unavailable_action_that_does_not_exist():
+    with pytest.raises(SystemExit):
+        _run(["pipeline-config", "set", "--review-on-unavailable", "publish"])
+
+
+def test_pipeline_config_can_send_all_three_settings_at_once():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "pipeline-config", "set", "--research-interval-hours", "2",
+                "--review-mode", "enforce", "--review-on-unavailable", "hold",
+            ]
+        )
+    assert m.call_args.kwargs["body"] == {
+        "research_interval_hours": 2,
+        "review_mode": "enforce",
+        "review_on_unavailable": "hold",
+    }
+
+
+def test_topics_update_sets_and_clears_a_topics_own_review_mode():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--review-mode", "enforce"])
+    assert m.call_args.kwargs["body"] == {"review_mode": "enforce"}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--review-mode", ""])
+    assert m.call_args.kwargs["body"] == {"review_mode": None}
+
+
+def test_topics_create_accepts_a_review_mode():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            ["topics", "create", "--topic-id", "t", "--name", "T", "--adapter", "github_trending",
+             "--review-mode", "shadow"]
+        )
+    assert m.call_args.kwargs["body"]["review_mode"] == "shadow"
+
+
+def test_a_topic_review_mode_that_does_not_exist_is_refused_by_the_cli():
+    with pytest.raises(SystemExit):
+        _run(["topics", "update", "my-topic", "--review-mode", "bogus"])
