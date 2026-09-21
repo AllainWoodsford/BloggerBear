@@ -103,6 +103,10 @@
     var upButton = container.querySelector('[data-role="upvote"]');
     var downButton = container.querySelector('[data-role="downvote"]');
 
+    var honeypotEl = container.querySelector('[data-role="extra-note"]');
+    // The one-use token from the feedback-status call, and when it becomes valid (see verify.js).
+    var held = null;
+
     var buttonsEl = container.querySelector(".feedback-buttons");
     var feedbackSection = container.querySelector('[data-role="feedback"]');
 
@@ -136,6 +140,7 @@
         if (status && status.open === false) {
           showClosed(status);
         } else {
+          held = window.BloggerVerify.hold(status && status.verification);
           showButtons();
         }
       })
@@ -147,12 +152,27 @@
       setDisabled(true);
       if (statusEl) statusEl.textContent = "Submitting...";
 
-      fetch(apiUrl("/articles/" + encodeURIComponent(articleId) + "/feedback"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vote: vote, comment: null }),
+      // The token is good for one submission. verify.js waits out its not-before moment, does the
+      // proof of work if the site is busy, and sends: nothing for the person to do.
+      var verification = held;
+      held = null;
+      window.BloggerVerify.submit({
+        apiUrl: apiUrl("").replace(/\/$/, ""),
+        articleId: articleId,
+        payload: { vote: vote, comment: null, extra_note: honeypotEl ? honeypotEl.value : "" },
+        verification: verification,
       })
+        .then(function (outcome) {
+          if (outcome.closed) {
+            showClosed(outcome.closed);
+            return null;
+          }
+          return outcome.response;
+        })
         .then(function (response) {
+          if (response === null) {
+            return; // closed while we were sending: the reason is showing
+          }
           if (!response.ok) {
             // 423 / 429 / 503 come with the reason: show it rather than inviting a retry.
             return response

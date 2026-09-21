@@ -1198,6 +1198,33 @@
     commentLabel.appendChild(document.createElement("br"));
     commentLabel.appendChild(commentInput);
 
+    // The honeypot: a field no person ever sees or reaches (display:none from the stylesheet, so it
+    // is out of the accessibility tree too; aria-hidden and tabindex -1 as well, in case the CSS
+    // fails). A script that fills in every input fills it in, and its submission is discarded.
+    // Named so a browser will not autofill it. The class is in styles.css: the CSP allows no
+    // inline style attribute.
+    var honeypotId = "feedback-extra-note-" + encodeURIComponent(articleId);
+    var honeypotWrap = el("div", { className: "hp-wrap", attrs: { "aria-hidden": "true" } });
+    honeypotWrap.appendChild(
+      el("label", {
+        text: "Leave this field empty. It is only there to catch automated scripts.",
+        attrs: { for: honeypotId },
+      })
+    );
+    var honeypot = el("input", {
+      attrs: {
+        type: "text",
+        id: honeypotId,
+        name: "extra_note",
+        tabindex: "-1",
+        autocomplete: "off",
+      },
+    });
+    honeypotWrap.appendChild(honeypot);
+
+    // The one-use token from the feedback-status call, and when it becomes valid (see verify.js).
+    var held = null;
+
     var buttonRow = el("div", { className: "feedback-buttons" });
     buttonRow.appendChild(upButton);
     buttonRow.appendChild(downButton);
@@ -1213,14 +1240,34 @@
       status.textContent = "Submitting...";
 
       var commentValue = commentInput.value.trim();
-      var payload = { vote: vote, comment: commentValue === "" ? null : commentValue };
+      var payload = {
+        vote: vote,
+        comment: commentValue === "" ? null : commentValue,
+        extra_note: honeypot.value,
+      };
 
-      fetch(apiUrl("/articles/" + encodeURIComponent(articleId) + "/feedback"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+      // The token is good for one submission, so a retry (a comment that wasn't accepted) fetches
+      // a new one. It waits out the token's not-before moment, and does the proof of work if the
+      // site is busy, then sends. Nothing for the person to do.
+      var verification = held;
+      held = null;
+      window.BloggerVerify.submit({
+        apiUrl: apiUrl("").replace(/\/$/, ""),
+        articleId: articleId,
+        payload: payload,
+        verification: verification,
       })
+        .then(function (outcome) {
+          if (outcome.closed) {
+            showClosed(outcome.closed);
+            return null;
+          }
+          return outcome.response;
+        })
         .then(function (response) {
+          if (response === null) {
+            return null; // closed while we were sending: the reason is showing
+          }
           if (response.status === 422) {
             // The comment wasn't accepted, so nothing was submitted or counted: the vote wasn't
             // recorded either. Nothing about why. Keep what they typed so they can change it.
@@ -1274,6 +1321,7 @@
       holder.appendChild(buttonRow);
       holder.appendChild(commentHint);
       holder.appendChild(commentLabel);
+      holder.appendChild(honeypotWrap);
       holder.appendChild(status);
     }
 
@@ -1287,6 +1335,7 @@
         if (result && result.open === false) {
           showClosed(result);
         } else {
+          held = window.BloggerVerify.hold(result && result.verification);
           showForm();
         }
       })

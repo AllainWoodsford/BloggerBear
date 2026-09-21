@@ -933,3 +933,44 @@ a few cents) but not the feature: anyone can send 100 *acceptable* votes and use
 rejected feedback can no longer do that. A refused submission costs nothing. If the first becomes a
 problem the answer is a per-visitor limit, which needs a stored identifier the privacy policy
 currently promises not to keep.
+
+### Feedback verification: making automated submissions cost more
+
+**Why not a game.** A "spec" for gamified CAPTCHAs (drag the honey to the bear, hold the button, tap in
+order) was assessed and mostly not taken up. Each is bypassable by a script that fakes human timing or
+by a vision model; drag, hold and order-tapping fail WCAG 2.2 (2.5.7 Dragging Movements, 2.1.1
+Keyboard, 1.1.1 for SVG-only numbers); the "jitter and speed arc" checks are behavioural telemetry, which
+sits badly with a privacy policy that promises no identifier or fingerprint; a random 15% trigger adds no
+security; and the honeypot markup it gave uses an inline `style`, which our CSP (`style-src 'self'`)
+blocks. What was taken from it: a signed token, a minimum time, escalation when it matters, and a
+honeypot. Third-party CAPTCHAs (Turnstile, hCaptcha) stay a last resort: they need a CSP change and a
+privacy-page change.
+
+**What a submission now carries** (`common/feedback_verification.py`, `frontend/verify.js`):
+
+| Layer | What it does | What it costs a person |
+|---|---|---|
+| **Signed token** | `GET .../feedback-status` hands out an HMAC-signed token for that article; `POST .../feedback` must send it back. A blind POST, a forged or edited token, a token for another article, an expired one, or a reused one is refused (`403`). Single use: the random value inside is recorded once when used, and expires with the token | nothing |
+| **Not before** | The token is issued instantly but is valid only from a random moment 0.5 to 2 seconds later (`token_delay_min_ms`/`token_delay_max_ms`), enforced by the server. Nothing sleeps: a script that fetches and posts at once is refused, a person (who took far longer than 2 seconds) never notices. A fast client is told how long to wait and quietly retries | nothing |
+| **Proof of work, when busy** | When the site is at or past `pow_threshold_percent` (70) of its daily or rate limit, tokens need a number so that SHA-256(token + ":" + number) starts with `pow_difficulty_bits` (16) zero bits: about a second or two of browser CPU. Triggered by the site's own counters, never by watching a visitor | nothing to read or click; nothing for a screen reader or a switch user to do |
+| **Honeypot** | A field named `extra_note`, hidden by a stylesheet class (`display:none`, so also out of the accessibility tree; `aria-hidden`, `tabindex="-1"`, `autocomplete="off"` as well, and a "leave this empty" label in case CSS fails). A script that fills every input fills it: it is told it worked, and nothing is stored, counted, or spent | nothing |
+| **WAF rate rule** | At most 20 submissions per 5 minutes per IP on the feedback route only, on top of the general 500. WAF counts the address and forgets it | nothing unless one address sends 20 in 5 minutes |
+
+**Where it sits in a submission**: honeypot, then "is feedback open" (a closed site says why with or
+without a token), then the token, then screening the comment, then counting and storing. A refused token
+costs no model call and counts for nothing. A rejected comment spends its token, so the page fetches a
+fresh one to retry.
+
+**The key.** The signing key is created on first use and kept in the config table (row
+`verification-secret`), readable only by whoever can read that table. Deleting the row rotates it; tokens
+already out stop working (they live two hours at most). `verification_required` (default true) switches the
+whole thing off in an emergency: `admin_cli feedback-config set --verification-required false`. If the key
+or the used-token record cannot be reached, verification fails closed.
+
+**What none of it stops.** Anyone can read the API, fetch a token, wait a second, and post; and one person
+with many addresses can still use up the daily 100. These layers make each automated submission cost a
+request, a wait, and (when busy) CPU, and remove the cheap attacks. Only a per-visitor identifier fixes
+the rest, and the privacy policy rules that out.
+
+**Settings** (the `feedback` row, with the limits above): `verification_required`, `token_delay_min_ms`,
+`token_delay_max_ms`, `pow_threshold_percent`, `pow_difficulty_bits` (0 = never ask for work).

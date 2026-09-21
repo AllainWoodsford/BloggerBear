@@ -20,6 +20,7 @@ FINDINGS_TABLE, ...) -- never hardcode a table name here.
 from __future__ import annotations
 
 import os
+import secrets
 from decimal import Decimal
 
 import boto3
@@ -1021,6 +1022,10 @@ _FEEDBACK_CONFIG_NUMBERS = (
     "daily_limit",
     "article_limit",
     "screening_limit",
+    "token_delay_min_ms",
+    "token_delay_max_ms",
+    "pow_threshold_percent",
+    "pow_difficulty_bits",
 )
 
 
@@ -1152,6 +1157,52 @@ def set_article_feedback_lock(article_id: str, locked: bool, *, reset_count: boo
         ConditionExpression="attribute_exists(article_id)",
         ExpressionAttributeValues=values,
     )
+
+
+
+# --- Feedback verification (see common/feedback_verification.py) -----------------------------
+
+_VERIFICATION_SECRET_ID = "verification-secret"
+
+
+def get_verification_secret() -> str:
+    """The key that signs feedback tokens, created on first use.
+
+    It lives in the config table (row `verification-secret`), so nothing has to be provisioned
+    and it is only readable by whoever can read that table. Two Lambdas racing to create it
+    cannot end up with different keys: the write is conditional, and the loser reads the winner's.
+    Deleting the row rotates the key (tokens already issued stop working, and they only live an
+    hour or two).
+    """
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": _VERIFICATION_SECRET_ID}).get("Item")
+    if item and item.get("secret"):
+        return item["secret"]
+    try:
+        table.put_item(
+            Item={"config_id": _VERIFICATION_SECRET_ID, "secret": secrets.token_hex(32)},
+            ConditionExpression="attribute_not_exists(config_id)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        pass
+    return table.get_item(Key={"config_id": _VERIFICATION_SECRET_ID}, ConsistentRead=True)["Item"][
+        "secret"
+    ]
+
+
+def consume_verification_nonce(nonce: str, expires_at: int) -> bool:
+    """Mark a token's random value as used. Returns False if it already was, so a token is good
+    for exactly one submission. The row expires with the token (`expires_at`, cleared by TTL) and
+    holds nothing about the visitor."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.put_item(
+            Item={"config_id": f"nonce#{nonce}", "expires_at": expires_at},
+            ConditionExpression="attribute_not_exists(config_id)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
 
 
 def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
