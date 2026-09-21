@@ -748,6 +748,12 @@ a {
   min-height: 1.2em;
 }
 
+/* The footer is three centred rows -- Explore (the site sections), Legal, and
+   RSS / Back to top -- with a paw print between every two links (a real
+   <span class="paw" aria-hidden="true"> in the HTML, not CSS content, so it
+   wraps with the text and screen readers never hear it). Each link and the paw
+   after it share a nowrap span (.footer-item), so a wrapped line always starts
+   with a link, never a paw. */
 .site-footer {
   max-width: var(--max-width);
   width: 100%;
@@ -756,50 +762,42 @@ a {
   border-top: 1px solid var(--border);
   font-size: 0.85rem;
   color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px 20px;
+  text-align: center;
 }
 
 .footer-nav,
 .legal-nav,
 .footer-links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
+  margin: 0 0 4px;
 }
 
-/* Phone: the footer's three groups (Explore = the site sections, Legal, and
-   RSS / Back to top) stack, and each group is a two-column grid of
-   tap-sized links instead of one long wrapping line. */
+.footer-nav a,
+.legal-nav a,
+.footer-links a {
+  display: inline-block;
+  padding: 6px 0;
+}
+
+.footer-item {
+  white-space: nowrap;
+}
+
+.paw {
+  margin: 0 0.6em 0 0.15em;
+  user-select: none;
+}
+
+/* Phone: a bigger type size and tap-sized links (44px). */
 @media (max-width: 640px) {
   .site-footer {
-    display: block;
     font-size: 0.95rem;
-  }
-
-  .footer-nav,
-  .legal-nav,
-  .footer-links {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0 16px;
-    margin-bottom: 12px;
   }
 
   .footer-nav a,
   .legal-nav a,
   .footer-links a {
-    display: flex;
-    align-items: center;
-    min-height: 44px;
+    padding: 11px 0;
   }
-}
-
-.footer-links {
-  align-items: baseline;
 }
 
 .footer-nav a,
