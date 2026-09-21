@@ -122,6 +122,7 @@ module "static_site" {
   force_destroy        = false
   domain_name          = var.domain_name
   hosted_zone_id       = var.hosted_zone_id
+  redirect_www         = true
   web_acl_id           = aws_wafv2_web_acl.this.arn
 }
 
@@ -136,6 +137,7 @@ module "app_data" {
   source = "../../modules/app-data"
 
   environment_name = "production"
+  protect_data     = true
 }
 
 # -----------------------------------------------------------------------
@@ -174,6 +176,38 @@ resource "aws_s3_bucket_public_access_block" "content" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+}
+
+# Every article body lives here, and a bad write or delete would otherwise be permanent. Versioning
+# keeps the previous copy; the rule below drops old copies after 30 days so it does not grow forever.
+resource "aws_s3_bucket_versioning" "content" {
+  bucket = aws_s3_bucket.content.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "content" {
+  bucket = aws_s3_bucket.content.id
+
+  # Versioning has to be on before a lifecycle rule can refer to noncurrent versions.
+  depends_on = [aws_s3_bucket_versioning.content]
+
+  rule {
+    id     = "expire-old-versions"
+    status = "Enabled"
+
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -648,6 +682,7 @@ module "admin_api" {
   lambda_function_name = aws_lambda_function.admin_api.function_name
   authorization        = "AWS_IAM"
   web_acl_id           = aws_wafv2_web_acl.admin.arn
+  associate_web_acl    = true
 
   routes = toset([
     "GET /topics",
@@ -1134,6 +1169,7 @@ module "public_api" {
   authorization        = "NONE"
   enable_cors          = true
   web_acl_id           = aws_wafv2_web_acl.public_api.arn
+  associate_web_acl    = true
 
   routes = toset([
     "GET /topics",

@@ -52,6 +52,15 @@ python scripts/admin_cli.py equipment list   # what the bear is wearing
 | **Seeding a topic** | The run sheet in the repo's top-level `README.md` ("Deploying this", step 6). |
 | **How it all fits together** | `docs/project-plan.md`. |
 
+## Checking the custom domain
+
+```bash
+python scripts/domain_check.py      # is bloggerbear.com wired up yet? Read-only, needs no AWS login
+```
+
+It looks the domain up in public DNS and asks the site a few questions, and says at each line what is wrong and
+what to do about it. See [../docs/production-runsheet.md](../docs/production-runsheet.md) for the steps it checks.
+
 ## If a command fails
 
 - **403 from the API:** your IP is not on the admin allowlist, or your AWS credentials are missing or

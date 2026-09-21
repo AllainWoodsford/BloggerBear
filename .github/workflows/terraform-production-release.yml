@@ -35,7 +35,7 @@ jobs:
     # the crypto adapter then uses CoinGecko's keyless public API.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_PROD }}
-      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD }}
+      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD || vars.ALERT_EMAIL_PROD }}
       TF_VAR_coingecko_api_key: ${{ secrets.COINGECKO_API_KEY_PROD }}
     steps:
       - name: Checkout
