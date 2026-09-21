@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import boto3
 
+from common.model_pricing import canonical_model_id
+
 _bedrock_runtime_client = None
 
 
@@ -84,11 +86,14 @@ def invoke_model_tracked(
     meant to catch it, same as every other Bedrock call in this codebase.
     """
     client = _get_client()
+    # The model is *invoked* by the id it was configured with (often a full
+    # inference-profile ARN) but *recorded* by its canonical id, so lineage and
+    # the price lookup see the same readable id whatever form the config took.
     try:
         result = _invoke_once(client, prompt, model_id, max_tokens)
-        return {**result, "model_id": model_id, "used_fallback": False}
+        return {**result, "model_id": canonical_model_id(model_id), "used_fallback": False}
     except Exception:
         if not fallback_model_id:
             raise
         result = _invoke_once(client, prompt, fallback_model_id, max_tokens)
-        return {**result, "model_id": fallback_model_id, "used_fallback": True}
+        return {**result, "model_id": canonical_model_id(fallback_model_id), "used_fallback": True}

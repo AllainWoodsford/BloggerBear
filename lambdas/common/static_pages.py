@@ -110,6 +110,28 @@ def _format_cost_label(lineage: dict) -> str:
     return lineage.get("cost_note") or "No data"
 
 
+def _model_name(lineage: dict, model_id: str) -> str:
+    """A model's readable name (recorded in the lineage at build time), else its id."""
+    return (lineage.get("model_labels") or {}).get(model_id) or model_id
+
+
+def _research_text(research: dict) -> str:
+    """One line for the research tally: findings summarised and their tokens."""
+    tracked = research.get("tracked_findings", 0)
+    untracked = research.get("untracked_findings", 0)
+    if not tracked:
+        if untracked:
+            return f"Not tracked ({untracked} finding(s) predate research tracking)"
+        return "No research calls"
+    text = (
+        f"{tracked} finding(s): {int(research.get('input_tokens', 0)):,} in / "
+        f"{int(research.get('output_tokens', 0)):,} out"
+    )
+    if untracked:
+        text += f" (+{untracked} earlier finding(s) not tracked)"
+    return text
+
+
 def _per_model_token_breakdown_text(lineage: dict) -> str:
     """Plain-text "model: X in / Y out" per model actually used, summed
     across every call that used it (a single article can span more than
@@ -129,7 +151,8 @@ def _per_model_token_breakdown_text(lineage: dict) -> str:
     if not order:
         return "No data"
     return ", ".join(
-        f"{model_id}: {totals[model_id]['input']:,} in / {totals[model_id]['output']:,} out"
+        f"{_model_name(lineage, model_id)}: "
+        f"{totals[model_id]['input']:,} in / {totals[model_id]['output']:,} out"
         for model_id in order
     )
 
@@ -146,7 +169,9 @@ def _render_lineage_summary_line_html(lineage: dict | None, published_by: str | 
         return "No data"
 
     models_used = (lineage or {}).get("models_used") or []
-    models_text = ", ".join(models_used) if models_used else "no data"
+    models_text = (
+        ", ".join(_model_name(lineage or {}, m) for m in models_used) if models_used else "no data"
+    )
     tokens_text = _per_model_token_breakdown_text(lineage) if lineage is not None else "no data"
     cost_text = _format_cost_label(lineage) if lineage is not None else "No data"
     approved_text = _published_by_label(published_by)
@@ -169,11 +194,26 @@ def _render_lineage_footer_html(lineage: dict | None, published_by: str | None) 
         cost_html = "No data"
     else:
         models_used = lineage.get("models_used") or []
-        models_html = escape(", ".join(models_used)) if models_used else "No data"
+        models_html = (
+            escape(", ".join(_model_name(lineage, m) for m in models_used)) if models_used else "No data"
+        )
         tokens_html = _per_model_token_breakdown_html(lineage)
         cost_html = escape(_format_cost_label(lineage))
 
     approved_html = escape(_published_by_label(published_by))
+
+    # The research the article's findings cost (tallied hourly, bundled in when
+    # the article is written). Absent on an article made before research tracking.
+    research_rows = ""
+    research = (lineage or {}).get("research")
+    if research is not None:
+        total = lineage.get("total_cost_aud")
+        total_text = f"~${total:.2f} AUD" if total is not None else "No data"
+        research_rows = (
+            f"<dt>Research tokens</dt><dd>{escape(_research_text(research))}</dd>"
+            f"<dt>Research cost</dt><dd>{escape(_format_cost_label(research))}</dd>"
+            f"<dt>Total cost</dt><dd>{escape(total_text)}</dd>"
+        )
 
     return (
         '<footer class="lineage-footer" aria-label="Article lineage">'
@@ -183,6 +223,7 @@ def _render_lineage_footer_html(lineage: dict | None, published_by: str | None) 
         f"<dt>Tokens</dt><dd>{tokens_html}</dd>"
         f"<dt>Approved by</dt><dd>{approved_html}</dd>"
         f"<dt>Approx. cost</dt><dd>{cost_html}</dd>"
+        f"{research_rows}"
         "</dl>"
         "</footer>"
     )

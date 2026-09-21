@@ -383,6 +383,38 @@ into four pieces below, any of which could be scoped/built independently.
 - An AI reviewer for the moderation queue (would produce
   `humans_and_ai`).
 
+### Lineage cost fixes and the research tally
+
+**Status: implemented.** Found from the site: most articles showed "No data" for
+models/tokens/cost. Two causes. (1) Articles drafted before lineage tracking merged
+have no token counts and cannot be recovered; they read "No data" honestly. (2) Every
+*new* article's cost was blank too: the Models registry was never seeded, and the
+model id recorded was the full inference-profile ARN, which could not match a registry
+row keyed by profile id.
+
+- *Canonical ids.* `common/model_pricing.py` reduces an ARN to the profile id it names.
+  The model is still invoked by the configured id; the recorded id and price key are
+  canonical. Lineage also stores `model_labels` (id -> readable name) for display.
+- *Fallback prices.* A small built-in table (keyed by base model id, so every geo profile
+  of a model matches) prices a model when the registry has no row; the registry always
+  wins, so a price is corrected without a deploy. A model with neither is logged and
+  left unpriced -- never guessed.
+- *Research is a running tally, bundled into the article.* Each Finding records the
+  Bedrock call behind its summary (`research_call`: model, tokens). When an article is
+  written, the daily cycle sums the calls of every Finding in its window (before any
+  goal filtering, so nothing is dropped) into `lineage.research` -- findings, tokens,
+  models, per-call detail, cost -- and `total_cost_aud` = authoring + research.
+  Windows are disjoint (they start at the topic's `last_article_at`), so each research
+  call lands in one article. Findings written before this have no call and are counted
+  as `untracked_findings`, with a note, rather than passing as free. The digest carries
+  no research block (it summarises other topics' findings, which their own articles
+  already count). The article page and Stats page show research tokens/cost and the total.
+- *Audit and backfill.* `lineage audit` reports gaps; `lineage backfill [--apply]`
+  recomputes cost from stored tokens and canonicalises old ARN ids.
+- *Not done:* the research tick still uses `BEDROCK_MODEL_ID` directly rather than the
+  per-topic/global model resolution the daily cycle uses (unchanged behaviour; the
+  recorded model is whatever it actually called).
+
 ### Rolling research, whole-day article input, and a fresh-data review before publish
 
 **Status: (A) and (B) implemented in a simpler shape than written below (see

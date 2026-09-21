@@ -86,10 +86,18 @@ python scripts/admin_cli.py articles unpublish <article_id>
 
 python scripts/admin_cli.py failed-executions list
 
+# Lineage/cost data: where it is missing, and repair. `backfill` is a dry run
+# unless --apply; it only rewrites `lineage` (tokens are kept), and is safe to repeat.
+python scripts/admin_cli.py lineage audit
+python scripts/admin_cli.py lineage backfill
+python scripts/admin_cli.py lineage backfill --apply
+
 python scripts/admin_cli.py models list
 python scripts/admin_cli.py models add --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0" \
     --display-name "Claude Haiku 4.5" --provider anthropic \
-    --input-price 0.0008 --output-price 0.004
+    --input-price 0.001 --output-price 0.005
+# (USD per 1K tokens. Confirm against the Bedrock price page for your region -- a
+# geographic inference profile can cost more than the provider's list price.)
 python scripts/admin_cli.py model-config get
 python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -126,6 +134,13 @@ bring it back. An article still waiting in moderation is refused (use
 safe to repeat. `cache_invalidated: false` in the response means CloudFront
 wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.
+
+`lineage audit` lists articles with no lineage, articles whose cost is blank, and
+models in use that nothing can price. `lineage backfill` recomputes each article's
+cost from the token counts it recorded, at today's prices (registry first, then the
+built-in fallback in `common/model_pricing.py`), and rewrites older ARN-form model
+ids to their canonical ids. An article drafted before lineage tracking has no token
+counts and can't be recovered -- the audit lists those rather than guessing.
 
 `failed-executions list` shows every daily_cycle Step Functions execution
 that exhausted its retries and landed on the pipeline dead-letter queue

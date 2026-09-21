@@ -247,15 +247,29 @@ def test_only_a_literal_true_forces_a_run(s3_bucket):
     assert mock_list.call_args.kwargs["since"] == topic["last_article_at"]
 
 
-def _run_a_full_cycle(compliant=True, record_side_effect=None):
+def _run_a_full_cycle(
+    compliant=True,
+    record_side_effect=None,
+    findings=FINDINGS,
+    lineage_calls=None,
+    topic=NON_FINANCIAL_TOPIC,
+):
+    """Run a whole cycle with everything external mocked. `lineage_calls`, if given,
+    collects the (args, kwargs) build_lineage was called with."""
     responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
+
+    def _build_lineage(*args, **kwargs):
+        if lineage_calls is not None:
+            lineage_calls.append((args, kwargs))
+        return _DUMMY_LINEAGE
+
     with (
-        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
-        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_topic", return_value=topic),
+        patch("daily_cycle_handler.list_recent_findings", return_value=findings),
         patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
-        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch("daily_cycle_handler.build_lineage", side_effect=_build_lineage),
         patch(
             "daily_cycle_handler.invoke_model_tracked",
             side_effect=[_tracked_result(r) for r in responses],
@@ -289,6 +303,66 @@ def test_an_article_records_when_the_run_began_whether_published_or_moderated(
     topic_id, stamp = mock_set.call_args.args
     assert topic_id == "github-trending"
     assert before <= datetime.fromisoformat(stamp) <= after
+
+
+def _research_finding(captured_at, input_tokens=400, output_tokens=100):
+    return {
+        "captured_at": captured_at,
+        "summary": "A research summary.",
+        "source_refs": [],
+        "research_call": {
+            "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "used_fallback": False,
+        },
+    }
+
+
+def test_the_articles_lineage_carries_the_research_tally_of_its_whole_window(s3_bucket):
+    window = [
+        _research_finding("2026-09-21T03:00:00+00:00"),
+        _research_finding("2026-09-21T02:00:00+00:00"),
+    ]
+    calls = []
+
+    with patch("common.costing.get_model", return_value=None):
+        result, _ = _run_a_full_cycle(findings=window, lineage_calls=calls)
+
+    assert result["status"] == "published"
+    ((_, kwargs),) = calls
+    research = kwargs["research"]
+    assert research["tracked_findings"] == 2 and research["untracked_findings"] == 0
+    assert (research["input_tokens"], research["output_tokens"]) == (800, 200)
+    assert research["cost_aud"] is not None  # priced from the built-in table: registry empty
+
+
+def test_findings_written_before_research_tracking_are_counted_as_untracked(s3_bucket):
+    calls = []
+
+    _run_a_full_cycle(findings=FINDINGS, lineage_calls=calls)  # FINDINGS carry no research_call
+
+    ((_, kwargs),) = calls
+    assert kwargs["research"]["untracked_findings"] == len(FINDINGS)
+    assert kwargs["research"]["tracked_findings"] == 0
+
+
+def test_the_research_tally_covers_findings_the_crypto_goal_filter_sets_aside(s3_bucket):
+    """A finding from an earlier UTC day is dropped from the article's content by the
+    daily-goal filter, but its Bedrock call still cost money and is still counted."""
+    today = datetime.now(UTC)
+    window = [
+        _research_finding(today.isoformat()),
+        _research_finding((today - timedelta(days=1)).isoformat()),
+    ]
+    crypto_topic = {**NON_FINANCIAL_TOPIC, "adapter": "crypto_feed", "is_financial": True}
+    calls = []
+
+    with patch("common.costing.get_model", return_value=None):
+        _run_a_full_cycle(findings=window, lineage_calls=calls, topic=crypto_topic)
+
+    ((_, kwargs),) = calls
+    assert kwargs["research"]["findings"] == 2 and kwargs["research"]["tracked_findings"] == 2
 
 
 def test_failing_to_record_the_last_article_does_not_fail_the_run(s3_bucket):
