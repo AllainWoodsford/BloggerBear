@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import random
 import threading
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -40,6 +41,14 @@ HISTORY_URL = PUBLIC_BASE_URL + HISTORY_PATH
 def _no_api_key_by_default(monkeypatch):
     monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
     monkeypatch.delenv("COINGECKO_API_PLAN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_news_search():
+    """Analysis days now also search for headlines. No test may reach the network by
+    accident: the default is a search that finds nothing (tests that care patch it)."""
+    with patch("common.adapters.crypto_feed.search_web", return_value=[]):
+        yield
 
 
 def _market(coin_id, price, rank, c24=6.0, c7=10.0, c30=15.0, c1y=50.0, name=None):
@@ -116,11 +125,27 @@ def _history_calls(mock_get):
     return [c for c in mock_get.call_args_list if c.args[0] != MARKETS_URL]
 
 
-def _fetch(topic, markets=None, previous_state=None, failing=()):
-    with patch(
-        "common.adapters.crypto_feed.get_json_with_backoff",
-        side_effect=_fake_get(markets or _markets(), failing),
-    ) as mock_get:
+POOL_SEED = 7
+
+
+def _pinned_draw(seed=POOL_SEED):
+    """The adapter's pool draw is unseeded on purpose; tests pin it so a run is
+    repeatable. `select_altcoin_pool(markets, rng=random.Random(seed))` gives the
+    coins such a pinned run will draw."""
+    return patch("common.adapters.crypto_feed.random.SystemRandom", lambda: random.Random(seed))
+
+
+def _fetch(topic, markets=None, previous_state=None, failing=(), headlines=(), seed=POOL_SEED):
+    """One analysis-day tick with CoinGecko and the headline search stubbed. By default
+    the search finds nothing (which must not sink the tick)."""
+    with (
+        patch(
+            "common.adapters.crypto_feed.get_json_with_backoff",
+            side_effect=_fake_get(markets or _markets(), failing),
+        ) as mock_get,
+        patch("common.adapters.crypto_feed.search_web", return_value=list(headlines)),
+        _pinned_draw(seed),
+    ):
         state = CryptoFeedAdapter().fetch_state(topic, previous_state=previous_state)
     return state, mock_get
 
@@ -180,24 +205,63 @@ def test_altcoin_candidates_exclude_anchors_pegs_funds_and_wrapped_or_staked_ass
 
 
 def test_pool_has_ten_altcoins_and_never_an_anchor_or_stablecoin():
-    pool = select_altcoin_pool(_markets(), "crypto", TODAY)
+    pool = select_altcoin_pool(_markets())
 
     ids = {coin["id"] for coin in pool}
     assert len(pool) == POOL_SIZE == len(ids)
     assert not ids & {"bitcoin", "ethereum", "tether", "wrapped-bitcoin"}
 
 
-def test_pool_is_stable_within_a_day_and_differs_across_days_and_topics():
+def test_the_same_generator_gives_the_same_draw_and_different_ones_differ():
     markets = _markets(altcoins=60)
-    first = [c["id"] for c in select_altcoin_pool(markets, "crypto", date(2026, 9, 20))]
 
-    assert first == [c["id"] for c in select_altcoin_pool(markets, "crypto", date(2026, 9, 20))]
-    assert first != [c["id"] for c in select_altcoin_pool(markets, "crypto", date(2026, 9, 21))]
-    assert first != [c["id"] for c in select_altcoin_pool(markets, "other", date(2026, 9, 20))]
+    first = [c["id"] for c in select_altcoin_pool(markets, rng=random.Random(1))]
+
+    assert first == [c["id"] for c in select_altcoin_pool(markets, rng=random.Random(1))]
+    assert first != [c["id"] for c in select_altcoin_pool(markets, rng=random.Random(2))]
+
+
+def test_the_default_draw_is_unseeded_so_repeated_calls_differ():
+    """No date or topic seeds it: every call is a fresh draw."""
+    markets = _markets(altcoins=60)
+
+    draws = {tuple(sorted(c["id"] for c in select_altcoin_pool(markets))) for _ in range(12)}
+
+    assert len(draws) > 1  # 12 identical draws of 10 from 60 is astronomically unlikely
+
+
+def test_the_default_draw_uses_the_systems_generator_not_a_seeded_one():
+    with patch("common.adapters.crypto_feed.random.SystemRandom") as system_random:
+        system_random.return_value = random.Random(3)
+        select_altcoin_pool(_markets())
+
+    system_random.assert_called_once_with()
+
+
+def test_coins_already_analysed_today_are_left_out_while_enough_others_remain():
+    markets = _markets(altcoins=40)
+    seen = {c["id"] for c in select_altcoin_pool(markets, rng=random.Random(1))}
+
+    pool = select_altcoin_pool(markets, exclude_ids=seen, rng=random.Random(2))
+
+    assert len(pool) == POOL_SIZE
+    assert not {c["id"] for c in pool} & seen
+
+
+def test_the_exclusion_lapses_rather_than_shrinking_the_pool_when_unseen_coins_run_out():
+    markets = _markets(altcoins=14)
+    eligible = {c["id"] for c in select_altcoin_pool(markets, rng=random.Random(1))} | {
+        c["id"] for c in select_altcoin_pool(markets, rng=random.Random(2))
+    }
+    seen = set(list(eligible)[:8])  # only 6 of the 14 remain unseen: fewer than a pool
+
+    pool = select_altcoin_pool(markets, exclude_ids=seen, rng=random.Random(3))
+
+    assert len(pool) == POOL_SIZE  # full again, repeats allowed
 
 
 def test_pool_shrinks_when_fewer_than_ten_altcoins_are_eligible():
-    assert len(select_altcoin_pool(_markets(altcoins=6), "crypto", TODAY)) == 6
+    assert len(select_altcoin_pool(_markets(altcoins=6))) == 6
 
 
 # --- per-coin metrics -------------------------------------------------------
@@ -303,7 +367,7 @@ def test_fetch_state_builds_the_snapshot_structure_for_an_altcoin_goal():
     assert set(state["market_anchors"]) == {"bitcoin", "ethereum"}
     assert state["market_anchors"]["bitcoin"]["price"] == 80000.0
     assert state["market_anchors"]["bitcoin"]["change_1y"] == 50.0
-    assert "web_results" not in state
+    assert state["web_results"] == []  # the search found nothing; the tick went on without it
 
     pool = state["analyzed_pool"]
     assert len(pool) == POOL_SIZE
@@ -336,7 +400,7 @@ def test_without_a_pin_the_goal_follows_the_daily_draw():
 
 
 def test_a_coin_with_failed_history_is_dropped_but_the_pool_survives():
-    target = select_altcoin_pool(_markets(), "crypto", TODAY)
+    target = select_altcoin_pool(_markets(), rng=random.Random(POOL_SEED))
     failing = {coin["id"] for coin in target[:3]}
 
     state, _ = _fetch(DEEP_DIVE, failing=failing)
@@ -347,7 +411,7 @@ def test_a_coin_with_failed_history_is_dropped_but_the_pool_survives():
 
 
 def test_the_run_fails_when_too_few_coins_have_history():
-    target = select_altcoin_pool(_markets(), "crypto", TODAY)
+    target = select_altcoin_pool(_markets(), rng=random.Random(POOL_SEED))
     failing = {coin["id"] for coin in target[: POOL_SIZE - MIN_POOL_SIZE + 1]}
 
     with pytest.raises(RuntimeError, match=f"need at least {MIN_POOL_SIZE}"):
@@ -376,19 +440,28 @@ def test_history_requests_are_concurrent_but_never_exceed_the_limit():
             active["now"] -= 1
         return _history()
 
-    with patch("common.adapters.crypto_feed.get_json_with_backoff", side_effect=fake):
+    with (
+        patch("common.adapters.crypto_feed.get_json_with_backoff", side_effect=fake),
+        patch("common.adapters.crypto_feed.search_web", return_value=[]),
+    ):
         CryptoFeedAdapter().fetch_state(DEEP_DIVE)
 
     assert active["peak"] == HISTORY_CONCURRENCY
 
 
-# --- fetch_state: per-day history carry-forward -------------------------------
+# --- fetch_state: history carried for a coin drawn again the same day ---------------
+#
+# Each tick draws a fresh pool, skipping coins already analysed today, so a coin is only
+# drawn twice in a day once the unseen ones run out. These tests use exactly one pool's
+# worth of altcoins so that happens on the second tick.
+
+ONE_POOL = POOL_SIZE
 
 
-def test_later_ticks_the_same_day_reuse_history_and_refresh_current_prices():
-    first, _ = _fetch(DEEP_DIVE)
+def test_a_coin_drawn_again_the_same_day_reuses_history_and_refreshes_its_price():
+    first, _ = _fetch(DEEP_DIVE, markets=_markets(altcoins=ONE_POOL))
 
-    repriced = _markets()
+    repriced = _markets(altcoins=ONE_POOL)
     for coin in repriced:
         coin["current_price"] = coin["current_price"] * 1.5
     second, mock_get = _fetch(DEEP_DIVE, markets=repriced, previous_state=first)
@@ -403,17 +476,17 @@ def test_later_ticks_the_same_day_reuse_history_and_refresh_current_prices():
 
 
 def test_a_partly_failed_first_tick_only_refetches_the_missing_coins():
-    first, _ = _fetch(DEEP_DIVE)
-    partial = {**first, "analyzed_pool": first["analyzed_pool"][:7]}
+    first, _ = _fetch(DEEP_DIVE, markets=_markets(altcoins=ONE_POOL))
+    partial = {**first, "analyzed_pool": first["analyzed_pool"][:7], "analyzed_today": []}
 
-    second, mock_get = _fetch(DEEP_DIVE, previous_state=partial)
+    second, mock_get = _fetch(DEEP_DIVE, markets=_markets(altcoins=ONE_POOL), previous_state=partial)
 
     assert len(_history_calls(mock_get)) == 3
     assert len(second["analyzed_pool"]) == POOL_SIZE
 
 
 def test_nothing_carries_over_from_a_previous_day_or_a_legacy_snapshot():
-    first, _ = _fetch(DEEP_DIVE)
+    first, _ = _fetch(DEEP_DIVE, markets=_markets(altcoins=ONE_POOL))
 
     yesterday = {**first, "fetched_at": "2020-01-01T00:00:00+00:00"}
     _, mock_get = _fetch(DEEP_DIVE, previous_state=yesterday)
@@ -947,3 +1020,178 @@ def test_market_news_source_refs_are_just_the_articles():
     refs = CryptoFeedAdapter().source_refs(_market_news_state(urls=[1, 2]))
 
     assert [r["url"] for r in refs] == ["https://x/1", "https://x/2"]
+
+
+# --- a fresh random pool every tick, and headlines on analysis days ----------------------------
+
+
+def _pool_ids(state):
+    return {coin["id"] for coin in state["analyzed_pool"]}
+
+
+def test_successive_ticks_the_same_day_analyse_different_coins():
+    markets = _markets(altcoins=40)
+    first, _ = _fetch(DEEP_DIVE, markets=markets, seed=1)
+
+    second, _ = _fetch(DEEP_DIVE, markets=markets, previous_state=first, seed=2)
+
+    assert len(_pool_ids(second)) == POOL_SIZE
+    assert not _pool_ids(first) & _pool_ids(second)  # nothing analysed twice while others remain
+
+
+def test_the_snapshot_records_every_coin_analysed_so_far_today():
+    markets = _markets(altcoins=40)
+    first, _ = _fetch(DEEP_DIVE, markets=markets, seed=1)
+    second, _ = _fetch(DEEP_DIVE, markets=markets, previous_state=first, seed=2)
+
+    assert set(first["analyzed_today"]) == _pool_ids(first)
+    assert set(second["analyzed_today"]) == _pool_ids(first) | _pool_ids(second)
+    assert second["analyzed_today"] == sorted(second["analyzed_today"])
+
+
+def test_a_coin_that_lost_its_history_is_not_counted_as_analysed():
+    markets = _markets(altcoins=40)
+    target = select_altcoin_pool(markets, rng=random.Random(POOL_SEED))
+    failing = {target[0]["id"]}
+
+    state, _ = _fetch(DEEP_DIVE, markets=markets, failing=failing)
+
+    assert target[0]["id"] not in state["analyzed_today"]
+
+
+def test_a_new_utc_day_or_a_legacy_snapshot_starts_with_nothing_analysed():
+    markets = _markets(altcoins=40)
+    first, _ = _fetch(DEEP_DIVE, markets=markets, seed=1)
+
+    yesterday, _ = _fetch(
+        DEEP_DIVE,
+        markets=markets,
+        previous_state={**first, "fetched_at": "2020-01-01T00:00:00+00:00"},
+        seed=1,
+    )
+    legacy, _ = _fetch(
+        DEEP_DIVE, markets=markets, previous_state={"coins": [], "fetched_at": first["fetched_at"]}, seed=1
+    )
+
+    # the same seed draws the same coins again: nothing was excluded
+    assert _pool_ids(yesterday) == _pool_ids(first) == _pool_ids(legacy)
+
+
+def test_a_previous_snapshot_without_the_list_still_excludes_its_own_pool():
+    markets = _markets(altcoins=40)
+    first, _ = _fetch(DEEP_DIVE, markets=markets, seed=1)
+    without_list = {k: v for k, v in first.items() if k != "analyzed_today"}
+
+    second, _ = _fetch(DEEP_DIVE, markets=markets, previous_state=without_list, seed=1)
+
+    assert not _pool_ids(first) & _pool_ids(second)
+
+
+def test_analysis_days_carry_the_latest_headlines():
+    headlines = [_web_result(1, "2026-09-20T08:00:00+00:00"), _web_result(2, "2026-09-20T10:00:00+00:00")]
+
+    state, _ = _fetch(DEEP_DIVE, headlines=headlines)
+
+    assert [r["url"] for r in state["web_results"]] == ["https://news.example/2", "https://news.example/1"]
+    assert len(state["analyzed_pool"]) == POOL_SIZE  # market data is unaffected
+
+
+def test_a_headline_search_that_errors_does_not_sink_an_analysis_tick(capsys):
+    with (
+        patch(GET, side_effect=_fake_get(_markets())),
+        patch("common.adapters.crypto_feed.search_web", side_effect=RuntimeError("gdelt down")),
+        _pinned_draw(),
+    ):
+        state = CryptoFeedAdapter().fetch_state(DEEP_DIVE)
+
+    assert state["web_results"] == [] and len(state["analyzed_pool"]) == POOL_SIZE
+    assert "no headlines this tick (gdelt down)" in capsys.readouterr().out
+
+
+def test_analysis_day_headlines_use_the_crypto_query_not_the_market_news_one():
+    default_query = "(bitcoin OR ethereum OR cryptocurrency OR crypto)"
+    seen_queries = []
+
+    def search(query, **kwargs):
+        seen_queries.append(query)
+        return [_web_result(1)]
+
+    with (
+        patch(GET, side_effect=_fake_get(_markets())),
+        patch("common.adapters.crypto_feed.search_web", side_effect=search),
+        _pinned_draw(),
+    ):
+        CryptoFeedAdapter().fetch_state(DEEP_DIVE)
+
+    assert seen_queries == [default_query]
+
+
+def test_the_market_news_day_still_makes_no_coingecko_call_or_pool():
+    state, mock_get, _ = _fetch_market_news([_market_result(1)])
+
+    assert "analyzed_pool" not in state and "analyzed_today" not in state
+    mock_get.assert_not_called()
+
+
+def test_a_freshly_sampled_pool_is_new_information_even_when_prices_barely_moved():
+    adapter = CryptoFeedAdapter()
+    old = _state()
+    new = _state()
+    new["analyzed_pool"] = [{"id": "alt-2", "name": "Alt 2", "metrics": {"price_now": 10.0}}]
+
+    changed, summary = adapter.material_diff(old, new)
+
+    assert changed is True and summary == "1 newly sampled coins: Alt 2"
+
+
+def test_only_the_coins_not_in_the_last_pool_count_as_newly_sampled():
+    adapter = CryptoFeedAdapter()
+    old = _state()
+    new = _state()
+    new["analyzed_pool"].append({"id": "alt-9", "name": "Alt 9", "metrics": {"price_now": 3.0}})
+
+    changed, summary = adapter.material_diff(old, new)
+
+    assert changed is True and summary == "1 newly sampled coins: Alt 9"
+
+
+def test_the_same_pool_with_no_new_headlines_is_still_not_material():
+    assert CryptoFeedAdapter().material_diff(_state(), _state(btc=90000.0, alt=12.0)) == (
+        False,
+        "no material change",
+    )
+
+
+def test_new_coins_and_new_headlines_are_both_reported():
+    adapter = CryptoFeedAdapter()
+    old = _state(urls=[1])
+    new = _state(urls=[1, 2])
+    new["analyzed_pool"] = [{"id": "alt-2", "name": "Alt 2", "metrics": {"price_now": 10.0}}]
+
+    changed, summary = adapter.material_diff(old, new)
+
+    assert changed is True
+    assert summary == "1 newly sampled coins: Alt 2; 1 new news items: Story 2"
+
+
+def _analysis_prompt(state, goal="ALTCOIN_DEEP_DIVE"):
+    topic = {"topic_id": "crypto", "name": "Finance, Crypto & Investing", "adapter": "crypto_feed"}
+    return CryptoFeedAdapter().build_summary_prompt(topic, "the diff", {**state, "editorial_goal": goal})
+
+
+def test_an_analysis_prompt_tells_the_model_how_to_use_headlines_only_when_there_are_some():
+    with_news = _analysis_prompt(_state(urls=[1]))
+    without = _analysis_prompt(_state())
+
+    assert "latest crypto news headlines" in with_news
+    assert "attribute it rather than adding any detail the headline does not contain" in with_news
+    assert "latest crypto news headlines" not in without
+
+
+def test_the_bookkeeping_list_is_kept_out_of_the_summary_prompt():
+    state = {**_state(), "analyzed_today": ["alt-1", "alt-secret-marker"]}
+
+    prompt = _analysis_prompt(state)
+
+    assert "alt-secret-marker" not in prompt and "analyzed_today" not in prompt
+    assert "Raw Analysis Metrics" in prompt
