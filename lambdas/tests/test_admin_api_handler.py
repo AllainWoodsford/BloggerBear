@@ -2322,3 +2322,43 @@ def test_an_item_approved_with_no_room_is_parked_and_one_shelved_by_choice_is_no
     parked, shelved = _refinement_item("no-room"), _refinement_item("chosen")
     assert (parked["unequipped_reason"], parked["scope"]) == ("parked", "topic")
     assert shelved["unequipped_reason"] == "shelved"
+
+
+# --- Numbers stored in DynamoDB come back as Decimal: no route may 500 on them ---------------
+
+
+def test_a_topic_with_its_own_research_interval_can_be_listed_and_fetched(aws_resources):
+    """Regression: GET /topics answered 500 ("Decimal is not JSON serializable") as soon as any topic held
+    a research_interval_hours, which blocked `admin_cli topics list` and every `topics get`."""
+    _put_topic({**TOPIC, "topic_id": "slow-topic", "research_interval_hours": 6})
+    _put_topic()
+
+    listed = admin_api_handler.handler(_event("GET /topics"), None)
+    fetched = admin_api_handler.handler(
+        _event("GET /topics/{topic_id}", path_params={"topic_id": "slow-topic"}), None
+    )
+
+    assert listed["statusCode"] == 200 and fetched["statusCode"] == 200
+    by_id = {t["topic_id"]: t for t in json.loads(listed["body"])["topics"]}
+    assert by_id["slow-topic"]["research_interval_hours"] == 6
+    assert isinstance(by_id["slow-topic"]["research_interval_hours"], int)
+    assert json.loads(fetched["body"])["research_interval_hours"] == 6
+
+
+def test_decimals_are_written_as_whole_numbers_or_floats():
+    payload = {
+        "whole": Decimal("6"),
+        "fraction": Decimal("0.25"),
+        "big": Decimal("1000000"),
+        "n": [Decimal("2")],
+    }
+
+    body = admin_api_handler._response(200, payload)["body"]
+
+    assert json.loads(body) == {"whole": 6, "fraction": 0.25, "big": 1000000, "n": [2]}
+    assert '"whole": 6,' in body and "6.0" not in body
+
+
+def test_something_that_is_not_a_number_still_fails_loudly():
+    with pytest.raises(TypeError):
+        admin_api_handler._response(200, {"when": object()})
