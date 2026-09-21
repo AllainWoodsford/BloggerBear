@@ -8,6 +8,9 @@ actually *worn* -- and so injected into the ideation and drafting prompts:
   backpack.
 - **Rings** hold *topic* guidance, applied only to the topic the item was proposed for. Up to
   MAX_RINGS in all; when they are full, equipping another means naming the ring it replaces.
+- Wearing is not the same as using. Every ring for the topic is used in each article, but the bear
+  takes in only some of its worn armor, chosen at random each time (`pick_armor`): between one piece
+  and all of it. What was used is recorded on the article.
 - The **backpack** is every approved refinement that is not worn. It is only a count anywhere
   public; nothing in it is injected.
 
@@ -21,6 +24,8 @@ of its own. Once an item has been equipped or unequipped it has the field and is
 """
 
 from __future__ import annotations
+
+import random
 
 ARMOR_SLOTS = ("helmet", "chest", "gloves", "boots", "sword", "shield")
 RING_SLOT = "ring"
@@ -148,19 +153,29 @@ def _clean_ref(value) -> dict:
     return {"topic_id": value.get("topic_id"), "version": value.get("version")}
 
 
-def guidance_for(topic_id: str, items: list[dict]) -> tuple[str | None, list[dict]]:
+def pick_armor(armor: list[dict], rng=None) -> list[dict]:
+    """The armor the bear takes in for one article: a random number of the worn pieces, at least
+    one, chosen at random, returned in slot order. Rings are not part of this: they always apply."""
+    if not armor:
+        return []
+    rng = rng or random
+    return sorted(rng.sample(armor, rng.randint(1, len(armor))), key=_slot_order)
+
+
+def guidance_for(topic_id: str, items: list[dict], rng=None) -> tuple[str | None, list[dict]]:
     """The guidance to inject for a topic, and a record of what it came from.
 
-    Worn armor (global) comes first in slot order, then the topic's rings, oldest first. One item
-    is used verbatim; several become a bullet list. Returns (None, []) when nothing applies, and
-    callers must then leave their prompts exactly as they were.
+    Some of the worn armor (global; see `pick_armor`, in slot order) comes first, then all of the
+    topic's rings, oldest first. One item is used verbatim; several become a bullet list. Returns
+    (None, []) when nothing applies, and callers must then leave their prompts exactly as they were.
+    `rng` is for tests; it needs `randint` and `sample`.
 
     The record is a list of {"topic_id", "version", "slot"}, one per piece actually used -- it is
     stored on the article so later analysis and wear can be tied to the gear that wrote it.
     """
     worn = equipped_items(items)
-    chosen = sorted(
-        [i for i in worn if i.get("scope") == SCOPE_GLOBAL and i.get("slot") in ARMOR_SLOTS], key=_slot_order
+    chosen = pick_armor(
+        [i for i in worn if i.get("scope") == SCOPE_GLOBAL and i.get("slot") in ARMOR_SLOTS], rng
     )
     topic_rings = [i for i in rings(worn) if i.get("topic_id") == topic_id]
     chosen += topic_rings
