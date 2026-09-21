@@ -850,7 +850,7 @@ piracy, spam, gibberish, off-topic, oversize, control characters) dropped 60 of 
 four real comments left so far, and four ordinary ones, kept 23 of 24 (one blunt but civil
 comment about confusing sources was dropped on one run: the model is strict by design).
 
-**Votes (not changed here).** What exists: the WAF rate limit of 500 requests per 5 minutes
+**Votes (as they were before the feedback limits below).** What existed: the WAF rate limit of 500 requests per 5 minutes
 per IP across the whole public API, plus the managed common rule set. What doesn't: any limit
 per article, per visitor or per vote. Anonymous by design (the privacy policy promises no IP,
 fingerprint or identifier is stored with feedback), so a visitor can vote as often as the rate
@@ -870,3 +870,53 @@ per 5 minutes per IP), which costs nothing and stores nothing; (2) one vote per 
 browser, kept in `localStorage`, which stops casual repeats but not a script; (3) a salted,
 expiring hash of the IP per article, which stops repeats properly but stores a derived
 identifier, so the privacy policy would have to say so.
+
+### Feedback limits: when BloggerBear is not taking feedback
+
+Every submission (a vote, with or without a comment) is one piece of feedback. Whether BloggerBear
+takes it is decided by four checks, in this order; the first that is closed is the reason the reader
+sees (`common/feedback_limits.py`).
+
+| # | Check | Default | Reopens |
+|---|---|---|---|
+| 1 | **The article**: `feedback_locked` (true/false) on its Articles row, or `feedback_count` at `article_limit` | 50 per article | when you set `feedback_locked` false (and, if it was full, reset `feedback_count` or raise the limit) |
+| 2 | **Site lockdown**: `locked_down` (boolean), optional public `lockdown_reason` | off | when you turn it off |
+| 3 | **Daily limit**: `daily_limit` per day | 100 | the start of the next day in `daily_timezone` (Australia/Sydney) |
+| 4 | **Rate limit**: `rate_limit_count` per `rate_limit_window_minutes` | 20 per 5 minutes | when the window ends |
+
+**The article lock supersedes everything**: a locked article says "This article is locked" whatever
+the site-wide state is. An article that reaches its limit gets `feedback_locked` set to true, so the
+flag in the table always says so. It is a plain boolean on the article: flip it in DynamoDB, or use
+`articles feedback-lock <id>` / `feedback-unlock <id> [--reset-count]`. A hand-typed `"true"` (as text)
+also locks: a typo must not leave feedback open.
+
+**What the reader sees.** Where the form was, `Hold your Paws! 🐾 / BloggerBear is not taking
+feedback right now. / Reason: Rate limit / Try again in about 4 minutes.` The reasons are: "This
+article is locked", "This article has reached its feedback limit", "Feedback is paused" (or your
+`lockdown_reason`), "Daily limit reached", "Rate limit", and "Feedback is unavailable right now". The
+form is never shown for a closed article (the SPA shows nothing until `GET
+/articles/{id}/feedback-status` answers; a static article page starts with its buttons hidden). A
+submission is refused server-side too: 423 for a lock or pause, 429 for a limit, 503 if the limiter
+itself can't be read (it fails closed, because these limits are what stop a flood of comments running
+up a model bill). A refused submission is refused before anything is screened or stored, so a closed
+site costs no model call.
+
+**Where it lives.** The settings are the `feedback` row of the config table
+(`bloggerbear-<env>-model-config`, beside `pipeline`): `locked_down`, `lockdown_reason`,
+`rate_limit_count`, `rate_limit_window_minutes`, `daily_limit`, `article_limit`, `daily_timezone`.
+Change them with `admin_cli feedback-config set --rate-limit 20 --rate-window-minutes 5 --daily-limit
+100 --article-limit 50 --locked-down true --lockdown-reason "..."` (`get` shows them, the defaults in
+force, and today's and this window's usage), or edit the row in DynamoDB; a missing or invalid value
+takes its default. The counters are rows in the same table (`feedback-window#...`, `feedback-day#...`)
+with an `expires_at` the table's TTL now clears.
+
+**How it is enforced.** Each count is a conditional DynamoDB update ("add one, only if still under the
+limit"), so two submissions at the edge cannot both get in, and a submission refused by a later check
+gives back the counts it took. The windows are fixed, not sliding: a burst straddling two windows can
+briefly reach twice the limit.
+
+**Worth knowing.** The limits are site-wide, so they protect the bill (at most 100 comments a day reach
+the model, well under a dollar) but not the feature: anyone can use up the 100, and a comment that is
+later dropped by screening still counted. A dropped or refused submission still costs nothing. If that
+becomes a problem the answer is a per-visitor limit, which needs a stored identifier the privacy
+policy currently promises not to keep.

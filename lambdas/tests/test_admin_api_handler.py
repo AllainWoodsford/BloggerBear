@@ -1598,3 +1598,167 @@ def test_updating_other_fields_leaves_editorial_goals_alone(aws_resources):
     result = _update("github-trending", {"name": "Renamed"})
 
     assert json.loads(result["body"])["editorial_goals"] == {"primary_focus": "Keep me"}
+
+
+# --- Feedback limits -----------------------------------------------------------------------
+
+
+def _feedback_config(method_route, body=None):
+    return admin_api_handler.handler(_event(method_route, body=body), None)
+
+
+def test_feedback_config_get_shows_defaults_and_usage(aws_resources):
+    result = _feedback_config("GET /feedback-config")
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["config_id"] == "feedback"
+    assert body["rate_limit_count"] is None  # nothing stored...
+    assert body["effective"] == {  # ...so the defaults are in force
+        "locked_down": False,
+        "lockdown_reason": None,
+        "rate_limit_count": 20,
+        "rate_limit_window_minutes": 5,
+        "daily_limit": 100,
+        "article_limit": 50,
+        "daily_timezone": "Australia/Sydney",
+    }
+    assert body["usage"]["today"] == 0 and body["usage"]["this_window"] == 0
+
+
+def test_feedback_config_put_sets_and_clears_settings(aws_resources):
+    result = _feedback_config(
+        "PUT /feedback-config",
+        {
+            "locked_down": True,
+            "lockdown_reason": "  Back soon  ",
+            "rate_limit_count": 5,
+            "rate_limit_window_minutes": 10,
+            "daily_limit": 30,
+            "article_limit": 8,
+            "daily_timezone": "UTC",
+        },
+    )
+
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["effective"] == {
+        "locked_down": True,
+        "lockdown_reason": "Back soon",
+        "rate_limit_count": 5,
+        "rate_limit_window_minutes": 10,
+        "daily_limit": 30,
+        "article_limit": 8,
+        "daily_timezone": "UTC",
+    }
+
+    # null clears one setting back to its default; the others are untouched.
+    cleared = json.loads(_feedback_config("PUT /feedback-config", {"rate_limit_count": None})["body"])
+    assert cleared["rate_limit_count"] is None
+    assert cleared["effective"]["rate_limit_count"] == 20
+    assert cleared["effective"]["daily_limit"] == 30
+
+
+def test_feedback_config_put_a_setting_not_sent_is_left_alone(aws_resources):
+    _feedback_config("PUT /feedback-config", {"daily_limit": 30})
+
+    body = json.loads(_feedback_config("PUT /feedback-config", {"article_limit": 9})["body"])
+
+    assert body["daily_limit"] == 30 and body["article_limit"] == 9
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"rate_limit_count": 0},
+        {"rate_limit_count": "20"},
+        {"rate_limit_count": 2.5},
+        {"rate_limit_count": True},
+        {"rate_limit_window_minutes": 5000},
+        {"daily_limit": -1},
+        {"article_limit": 10**9},
+        {"locked_down": "true"},
+        {"lockdown_reason": ""},
+        {"lockdown_reason": "x" * 101},
+        {"daily_timezone": "Mars/Olympus"},
+    ],
+)
+def test_feedback_config_put_rejects_invalid_values(aws_resources, body):
+    result = _feedback_config("PUT /feedback-config", body)
+
+    assert result["statusCode"] == 400
+    # Nothing was stored.
+    assert json.loads(_feedback_config("GET /feedback-config")["body"])["effective"][
+        "daily_limit"
+    ] == 100
+
+
+def test_feedback_config_put_needs_at_least_one_setting(aws_resources):
+    assert _feedback_config("PUT /feedback-config", {})["statusCode"] == 400
+    assert _feedback_config("PUT /feedback-config", {"unknown": 1})["statusCode"] == 400
+
+
+def test_feedback_config_put_a_non_object_body_is_a_400(aws_resources):
+    event = {"routeKey": "PUT /feedback-config", "body": json.dumps([1])}
+
+    assert admin_api_handler.handler(event, None)["statusCode"] == 400
+
+
+def _feedback_lock(article_id, body):
+    return admin_api_handler.handler(
+        _event(
+            "PUT /articles/{article_id}/feedback-lock",
+            path_params={"article_id": article_id},
+            body=body,
+        ),
+        None,
+    )
+
+
+def _article_row(article_id="article-1"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    return table.get_item(Key={"article_id": article_id})["Item"]
+
+
+def test_feedback_lock_and_unlock_an_article(aws_resources):
+    _put_article()
+
+    locked = _feedback_lock("article-1", {"locked": True})
+    assert locked["statusCode"] == 200
+    assert json.loads(locked["body"]) == {
+        "article_id": "article-1",
+        "feedback_locked": True,
+        "feedback_count": 0,
+    }
+    assert _article_row()["feedback_locked"] is True
+
+    unlocked = _feedback_lock("article-1", {"locked": False})
+    assert json.loads(unlocked["body"])["feedback_locked"] is False
+    assert _article_row()["feedback_locked"] is False
+
+
+def test_feedback_unlock_can_reset_the_count(aws_resources):
+    _put_article()
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET feedback_locked = :t, feedback_count = :n",
+        ExpressionAttributeValues={":t": True, ":n": 50},
+    )
+
+    result = _feedback_lock("article-1", {"locked": False, "reset_count": True})
+
+    assert json.loads(result["body"]) == {
+        "article_id": "article-1",
+        "feedback_locked": False,
+        "feedback_count": 0,
+    }
+
+
+def test_feedback_lock_validates_its_input(aws_resources):
+    _put_article()
+
+    assert _feedback_lock("nope", {"locked": True})["statusCode"] == 404
+    assert _feedback_lock("article-1", {})["statusCode"] == 400
+    assert _feedback_lock("article-1", {"locked": "yes"})["statusCode"] == 400
+    assert _feedback_lock("article-1", {"locked": False, "reset_count": "yes"})["statusCode"] == 400
+    assert "feedback_locked" not in _article_row()

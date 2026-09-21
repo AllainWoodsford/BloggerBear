@@ -1109,9 +1109,52 @@
   // Matches MAX_COMMENT_CHARS in lambdas/common/comment_screening.py.
   var MAX_COMMENT_LENGTH = 1000;
 
+  // When BloggerBear isn't taking feedback (an article that is locked or full, a pause, the daily
+  // limit, the rate limit) the form is replaced by this, with the reason. The API decides; this
+  // only shows it (common/feedback_limits.py).
+  function formatRetry(isoString) {
+    var then = new Date(isoString).getTime();
+    if (!isoString || isNaN(then)) {
+      return "";
+    }
+    var minutes = Math.ceil((then - Date.now()) / 60000);
+    if (minutes <= 1) {
+      return "Try again in a moment.";
+    }
+    if (minutes < 60) {
+      return "Try again in about " + minutes + " minutes.";
+    }
+    var hours = Math.round(minutes / 60);
+    return "Try again in about " + hours + (hours === 1 ? " hour." : " hours.");
+  }
+
+  function renderFeedbackClosed(status) {
+    var box = el("div", { className: "feedback-closed", attrs: { role: "status" } });
+    var headline = el("p", { className: "feedback-closed-headline" });
+    headline.appendChild(document.createTextNode("Hold your Paws! "));
+    headline.appendChild(el("span", { text: "\uD83D\uDC3E", attrs: { "aria-hidden": "true" } }));
+    box.appendChild(headline);
+    box.appendChild(el("p", { text: "BloggerBear is not taking feedback right now." }));
+    box.appendChild(
+      el("p", {
+        className: "feedback-closed-reason",
+        text: "Reason: " + ((status && status.label) || "Feedback is unavailable right now"),
+      })
+    );
+    var retry = status ? formatRetry(status.retry_at) : "";
+    if (retry) {
+      box.appendChild(el("p", { className: "feedback-closed-retry", text: retry }));
+    }
+    return box;
+  }
+
   function renderFeedback(articleId) {
     var section = el("section", { className: "feedback" });
     section.appendChild(el("h2", { text: "Feedback" }));
+    // Holds the form or, when feedback is closed, the reason instead. Empty until the API has
+    // said which, so a closed article never flashes a form.
+    var holder = el("div", { className: "feedback-holder" });
+    section.appendChild(holder);
 
     // aria-live="polite" + aria-atomic="true": screen readers announce
     // "Submitting...", then "Thanks for your feedback!" (or the error
@@ -1179,13 +1222,29 @@
       })
         .then(function (response) {
           if (!response.ok) {
-            throw new Error("request failed: " + response.status);
+            // 423 (locked / paused), 429 (a limit) and 503 (the limiter is unavailable) come
+            // with the reason: swap the form for it rather than inviting a retry.
+            return response
+              .json()
+              .catch(function () {
+                return {};
+              })
+              .then(function (body) {
+                if (body && body.feedback && body.feedback.open === false) {
+                  showClosed(body.feedback);
+                  return null;
+                }
+                throw new Error("request failed: " + response.status);
+              });
           }
           return response.json().catch(function () {
             return {};
           });
         })
         .then(function (result) {
+          if (result === null) {
+            return; // closed: the reason is already showing
+          }
           // The vote always counts. A comment that was screened out is simply not saved; the
           // API says so, and nothing about why.
           if (commentValue !== "" && result.comment_saved === false) {
@@ -1207,10 +1266,31 @@
       submitVote("down");
     });
 
-    section.appendChild(buttonRow);
-    section.appendChild(commentHint);
-    section.appendChild(commentLabel);
-    section.appendChild(status);
+    function showForm() {
+      clearChildren(holder);
+      holder.appendChild(buttonRow);
+      holder.appendChild(commentHint);
+      holder.appendChild(commentLabel);
+      holder.appendChild(status);
+    }
+
+    function showClosed(closedStatus) {
+      clearChildren(holder);
+      holder.appendChild(renderFeedbackClosed(closedStatus));
+    }
+
+    fetchJson(apiUrl("/articles/" + encodeURIComponent(articleId) + "/feedback-status"))
+      .then(function (result) {
+        if (result && result.open === false) {
+          showClosed(result);
+        } else {
+          showForm();
+        }
+      })
+      .catch(function () {
+        // Can't tell: show the form. The API refuses a submission that isn't allowed anyway.
+        showForm();
+      });
     return section;
   }
 

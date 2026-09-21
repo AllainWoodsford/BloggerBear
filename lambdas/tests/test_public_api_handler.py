@@ -26,6 +26,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("MUSINGS_TABLE", "Musings")
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("MODELS_TABLE", "Models")
+    monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
@@ -84,6 +85,12 @@ def aws_resources(aws_env):
             TableName="Musings",
             KeySchema=[{"AttributeName": "musing_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="ModelConfig",
+            KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         dynamodb.create_table(
@@ -509,6 +516,210 @@ def test_activity_exposes_only_a_timestamp_from_the_topic(aws_resources):
     )["body"]
     assert "do-not-leak" not in body
     assert set(_researching_item(json.loads(body)).keys()) == {"status", "label", "title", "checked_at"}
+
+
+
+# --- Feedback limits: lockdown, rate limit, daily limit, per-article limit --------------------
+
+
+def _set_feedback_config(**settings):
+    from common import dynamo
+
+    dynamo.put_feedback_config(settings)
+
+
+def _feedback_status(article_id="article-1"):
+    event = _event(
+        "GET /articles/{article_id}/feedback-status", path_params={"article_id": article_id}
+    )
+    result = public_api_handler.handler(event, None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_feedback_status_is_open_by_default(aws_resources):
+    _put_article()
+
+    code, body = _feedback_status()
+
+    assert code == 200
+    assert body == {"open": True, "reason": None, "label": None, "retry_at": None}
+
+
+def test_feedback_status_of_an_unknown_or_unpublished_article_is_404(aws_resources):
+    _put_article("draft", status="pending_moderation", published_at=None)
+
+    assert _feedback_status("nope")[0] == 404
+    assert _feedback_status("draft")[0] == 404
+
+
+def test_feedback_status_reports_why_it_is_closed(aws_resources):
+    _put_article()
+    _set_feedback_config(locked_down=True, lockdown_reason="Sharpening pencils")
+
+    code, body = _feedback_status()
+
+    assert code == 200
+    assert body["open"] is False and body["reason"] == "lockdown"
+    assert body["label"] == "Sharpening pencils"
+
+
+def test_feedback_status_counts_nothing(aws_resources):
+    _put_article()
+
+    for _ in range(30):
+        _feedback_status()
+
+    assert int(_get_article_item().get("feedback_count", 0)) == 0
+    assert _feedback_items() == []
+    assert _feedback_status()[1]["open"] is True  # 30 looks are not 30 pieces of feedback
+
+
+def test_a_locked_article_refuses_feedback_with_423_and_stores_nothing(aws_resources, monkeypatch):
+    _put_article()
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET feedback_locked = :t",
+        ExpressionAttributeValues={":t": True},
+    )
+    monkeypatch.setattr("common.comment_screening.invoke_claude", _unexpected_call)
+
+    result, body = _submit("up", comment="A perfectly reasonable comment.")
+
+    assert result["statusCode"] == 423
+    assert body["feedback"]["open"] is False and body["feedback"]["reason"] == "article_locked"
+    assert _feedback_items() == []
+    assert "net_votes" not in _get_article_item()  # the vote did not count either
+
+
+def test_the_article_lock_supersedes_a_site_wide_lockdown_in_the_reason(aws_resources):
+    _put_article()
+    _set_feedback_config(locked_down=True)
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET feedback_locked = :t",
+        ExpressionAttributeValues={":t": True},
+    )
+
+    _, body = _submit("up")
+
+    assert body["feedback"]["reason"] == "article_locked"
+
+
+def test_the_site_wide_lockdown_refuses_feedback_with_its_reason(aws_resources):
+    _put_article()
+    _set_feedback_config(locked_down=True, lockdown_reason="Back soon")
+
+    result, body = _submit("down")
+
+    assert result["statusCode"] == 423
+    assert body["feedback"]["label"] == "Back soon"
+    assert _feedback_items() == []
+
+
+def test_the_rate_limit_refuses_with_429_and_a_time_to_try_again(aws_resources):
+    _put_article()
+    _set_feedback_config(rate_limit_count=2, rate_limit_window_minutes=5)
+
+    codes = [_submit("up")[0]["statusCode"] for _ in range(3)]
+    result, body = _submit("up")
+
+    assert codes == [201, 201, 429]
+    assert result["statusCode"] == 429
+    assert body["feedback"]["reason"] == "rate_limit"
+    assert body["feedback"]["retry_at"]
+    assert len(_feedback_items()) == 2
+    assert int(_get_article_item()["net_votes"]) == 2
+
+
+def test_the_daily_limit_refuses_with_429(aws_resources):
+    _put_article()
+    _set_feedback_config(daily_limit=1)
+
+    assert _submit("up")[0]["statusCode"] == 201
+    result, body = _submit("up")
+
+    assert result["statusCode"] == 429
+    assert body["feedback"]["reason"] == "daily_limit"
+
+
+def test_an_article_locks_after_its_limit_and_says_so(aws_resources):
+    _put_article()
+    _set_feedback_config(article_limit=2)
+
+    assert [_submit("up")[0]["statusCode"] for _ in range(2)] == [201, 201]
+    result, body = _submit("up")
+
+    assert result["statusCode"] == 423
+    assert body["feedback"]["reason"] == "article_limit"
+    assert _get_article_item()["feedback_locked"] is True  # the flag is now visible in the table
+    assert _feedback_status()[1]["reason"] == "article_limit"
+    # Another article is unaffected.
+    _put_article("article-2")
+    assert _submit_to("article-2")["statusCode"] == 201
+
+
+def _submit_to(article_id):
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": article_id},
+        body={"vote": "up"},
+    )
+    return public_api_handler.handler(event, None)
+
+
+def test_a_closed_site_never_calls_the_screening_model(aws_resources, monkeypatch):
+    _put_article()
+    _set_feedback_config(locked_down=True)
+    monkeypatch.setattr("common.comment_screening.invoke_claude", _unexpected_call)
+
+    result, _ = _submit("up", comment="Please add a chart of the star growth.")
+
+    assert result["statusCode"] == 423  # refused before any model call could be made
+
+
+def test_a_dropped_comment_still_counts_as_a_piece_of_feedback(aws_resources, monkeypatch):
+    _put_article()
+    _set_feedback_config(article_limit=1)
+    _model_says(monkeypatch, "DROP")
+
+    result, body = _submit("up", comment="you are all idiots")
+
+    assert result["statusCode"] == 201 and body["comment_saved"] is False
+    assert int(_get_article_item()["feedback_count"]) == 1
+    assert _submit("up")[0]["statusCode"] == 423  # the (dropped) comment used the article's place
+
+
+def test_an_invalid_vote_does_not_use_up_anything(aws_resources):
+    _put_article()
+
+    result, _ = _submit("sideways")
+
+    assert result["statusCode"] == 400
+    assert "feedback_count" not in _get_article_item()
+
+
+def test_a_missing_article_is_404_before_any_limit(aws_resources):
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": "nope"},
+        body={"vote": "up"},
+    )
+
+    assert public_api_handler.handler(event, None)["statusCode"] == 404
+
+
+def test_if_the_limiter_cannot_be_read_feedback_is_refused_with_503(aws_resources, monkeypatch):
+    _put_article()
+    monkeypatch.setattr(
+        "common.feedback_limits.get_feedback_config",
+        lambda: (_ for _ in ()).throw(RuntimeError("dynamodb down")),
+    )
+
+    result, body = _submit("up", comment="x")
+
+    assert result["statusCode"] == 503
+    assert body["feedback"]["reason"] == "unavailable"
+    assert _feedback_items() == []
 
 
 # --- Musings --------------------------------------------------------------

@@ -404,6 +404,74 @@ def _cmd_articles_unpublish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/unpublish")
 
 
+# --- feedback subcommands -----------------------------------------------
+
+
+def _parse_whole(flag: str, text: str):
+    """A whole-number flag value, or '' meaning "clear it, back to the default" (sent as null)."""
+    if text == "":
+        return None
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise CliError(f"{flag} must be a whole number (or ''): {text!r}") from exc
+
+
+def _parse_bool(flag: str, text: str):
+    if text == "":
+        return None
+    if text.lower() in ("true", "yes", "on"):
+        return True
+    if text.lower() in ("false", "no", "off"):
+        return False
+    raise CliError(f"{flag} must be true or false (or ''): {text!r}")
+
+
+def _cmd_feedback_config_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/feedback-config")
+
+
+def _cmd_feedback_config_set(args: argparse.Namespace) -> None:
+    body: dict = {}
+    if args.locked_down is not None:
+        body["locked_down"] = _parse_bool("--locked-down", args.locked_down)
+    if args.lockdown_reason is not None:
+        body["lockdown_reason"] = args.lockdown_reason or None
+    if args.rate_limit is not None:
+        body["rate_limit_count"] = _parse_whole("--rate-limit", args.rate_limit)
+    if args.rate_window_minutes is not None:
+        body["rate_limit_window_minutes"] = _parse_whole(
+            "--rate-window-minutes", args.rate_window_minutes
+        )
+    if args.daily_limit is not None:
+        body["daily_limit"] = _parse_whole("--daily-limit", args.daily_limit)
+    if args.article_limit is not None:
+        body["article_limit"] = _parse_whole("--article-limit", args.article_limit)
+    if args.daily_timezone is not None:
+        body["daily_timezone"] = args.daily_timezone or None
+    if not body:
+        raise CliError(
+            "feedback-config set needs at least one of --locked-down, --lockdown-reason, "
+            "--rate-limit, --rate-window-minutes, --daily-limit, --article-limit, --daily-timezone"
+        )
+    _do_request(args, "PUT", "/feedback-config", body=body)
+
+
+def _cmd_articles_feedback_lock(args: argparse.Namespace) -> None:
+    _do_request(
+        args, "PUT", f"/articles/{args.article_id}/feedback-lock", body={"locked": True}
+    )
+
+
+def _cmd_articles_feedback_unlock(args: argparse.Namespace) -> None:
+    _do_request(
+        args,
+        "PUT",
+        f"/articles/{args.article_id}/feedback-lock",
+        body={"locked": False, "reset_count": bool(args.reset_count)},
+    )
+
+
 # --- pipeline-config subcommands ----------------------------------------
 
 
@@ -742,6 +810,86 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unpublish_parser.add_argument("article_id")
     unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
+
+    feedback_lock_parser = articles_sub.add_parser(
+        "feedback-lock",
+        help="Stop taking feedback on one article (its feedback_locked flag, set to true)",
+    )
+    feedback_lock_parser.add_argument("article_id")
+    feedback_lock_parser.set_defaults(func=_cmd_articles_feedback_lock)
+
+    feedback_unlock_parser = articles_sub.add_parser(
+        "feedback-unlock",
+        help=(
+            "Take feedback on one article again (feedback_locked false). An article locked "
+            "because it reached its limit also needs --reset-count, or it stays at the limit"
+        ),
+    )
+    feedback_unlock_parser.add_argument("article_id")
+    feedback_unlock_parser.add_argument(
+        "--reset-count",
+        dest="reset_count",
+        action="store_true",
+        default=False,
+        help="Also zero the article's feedback count, so it has its full allowance again",
+    )
+    feedback_unlock_parser.set_defaults(func=_cmd_articles_feedback_unlock)
+
+    feedback_config_parser = subparsers.add_parser(
+        "feedback-config",
+        help="When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-article limit",
+    )
+    feedback_config_sub = feedback_config_parser.add_subparsers(dest="action", required=True)
+    feedback_config_sub.add_parser(
+        "get", help="Show the feedback settings, the ones in force, and today's usage"
+    ).set_defaults(func=_cmd_feedback_config_get)
+    feedback_config_set = feedback_config_sub.add_parser(
+        "set", help="Set feedback settings (any of them; a setting not sent is unchanged)"
+    )
+    feedback_config_set.add_argument(
+        "--locked-down",
+        dest="locked_down",
+        default=None,
+        help="true stops taking feedback site-wide (the page says so); false reopens; '' clears",
+    )
+    feedback_config_set.add_argument(
+        "--lockdown-reason",
+        dest="lockdown_reason",
+        default=None,
+        help="What the page says while locked down (up to 100 characters); '' clears it",
+    )
+    feedback_config_set.add_argument(
+        "--rate-limit",
+        dest="rate_limit",
+        default=None,
+        help="At most this many pieces of feedback per rate window (default 20); '' clears it",
+    )
+    feedback_config_set.add_argument(
+        "--rate-window-minutes",
+        dest="rate_window_minutes",
+        default=None,
+        help="The rate window, in minutes (default 5); '' clears it",
+    )
+    feedback_config_set.add_argument(
+        "--daily-limit",
+        dest="daily_limit",
+        default=None,
+        help="At most this many a day, resetting at the start of the day (default 100)",
+    )
+    feedback_config_set.add_argument(
+        "--article-limit",
+        dest="article_limit",
+        default=None,
+        help="At most this many on one article before it is locked (default 50)",
+    )
+    feedback_config_set.add_argument(
+        "--daily-timezone",
+        dest="daily_timezone",
+        default=None,
+        help="Where a day starts, an IANA zone (default Australia/Sydney)",
+    )
+    feedback_config_set.set_defaults(func=_cmd_feedback_config_set)
+
 
     pipeline_config_parser = subparsers.add_parser(
         "pipeline-config",

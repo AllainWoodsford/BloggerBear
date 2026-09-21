@@ -390,7 +390,7 @@ def render_and_publish_article_page(
 {lineage_footer_html}
 <section class="feedback" data-role="feedback">
 <h2>Feedback</h2>
-<div class="feedback-buttons">
+<div class="feedback-buttons" hidden>
 <button type="button" data-role="upvote" aria-label="Upvote this article">Upvote</button>
 <button type="button" data-role="downvote" aria-label="Downvote this article">Downvote</button>
 </div>
