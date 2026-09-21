@@ -27,6 +27,7 @@ import boto3
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
+    delete_musings_for_article,
     delete_topic,
     get_article,
     get_latest_finding,
@@ -62,7 +63,12 @@ from common.scheduler import (
     upsert_topic_schedules,
     validate_timezone,
 )
-from common.static_pages import read_article_body, render_and_publish_article_page
+from common.static_pages import (
+    invalidate_article_page,
+    read_article_body,
+    remove_article_page,
+    render_and_publish_article_page,
+)
 
 _DEFAULT_RESEARCH_CADENCE = "rate(1 hour)"
 # New topics get their daily article at 9 AM Sydney time (the scheduler reads the
@@ -481,6 +487,51 @@ def _publish_article(event: dict) -> dict:
     return _response(200, {"published": article_id})
 
 
+def _unpublish_article(event: dict) -> dict:
+    """Take a published article down -- the inverse of _publish_article.
+
+    Deletes its static page, marks the article and its moderation-queue item
+    `rejected` (the existing vocabulary; the public API only lists `published`
+    articles, so it disappears from every listing), removes the musings written
+    about it, and asks CloudFront to drop its cached page. The article's markdown
+    body in the content bucket is kept, so it can be force-published again.
+
+    Ordered so a failure part-way is repaired by simply running it again: the
+    page is deleted first, and an already-`rejected` article is allowed through
+    to redo the (idempotent) cleanup. An article still waiting in moderation is
+    refused -- that is what `moderation reject` is for.
+    """
+    article_id = _path_param(event, "article_id")
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+    if article.get("status") not in ("published", "rejected"):
+        return _error(
+            409,
+            f"article '{article_id}' is '{article.get('status')}', not published; "
+            "use the moderation reject route for one still awaiting review",
+        )
+
+    remove_article_page(article_id)
+    update_article_status(article_id, "rejected")
+
+    moderation_item = get_moderation_item_by_article_id(article_id)
+    if moderation_item is not None and moderation_item.get("status") != "rejected":
+        update_moderation_status(moderation_item["queue_id"], "rejected")
+
+    musings_removed = delete_musings_for_article(article_id)
+    cache_invalidated = invalidate_article_page(article_id)
+
+    return _response(
+        200,
+        {
+            "unpublished": article_id,
+            "musings_removed": musings_removed,
+            "cache_invalidated": cache_invalidated,
+        },
+    )
+
+
 # --- Moderation queue -----------------------------------------------------
 
 
@@ -709,6 +760,7 @@ _ROUTES = {
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
     "POST /articles/{article_id}/publish": _publish_article,
+    "POST /articles/{article_id}/unpublish": _unpublish_article,
     "GET /moderation-queue": _list_moderation_queue,
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,

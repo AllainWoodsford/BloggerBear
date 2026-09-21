@@ -105,3 +105,39 @@ def test_an_adapter_that_exposes_no_items_knows_nothing_and_keeps_its_own_diff()
             return Adapter.item_keys(self, state)
 
     assert _Plain().known_keys({"keys": ["a"]}) == set()
+
+
+# --- delete_musings_for_article -----------------------------------------------
+
+
+@pytest.fixture
+def musings_table(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("MUSINGS_TABLE", "Musings")
+    dynamo._dynamodb_resource = None
+    with mock_aws():
+        boto3.client("dynamodb", region_name=REGION).create_table(
+            TableName="Musings",
+            KeySchema=[{"AttributeName": "musing_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table = boto3.resource("dynamodb", region_name=REGION).Table("Musings")
+        for musing_id, article_id in (("m1", "a1"), ("m2", "a1"), ("m3", "a2"), ("m4", None)):
+            table.put_item(Item={"musing_id": musing_id, "article_id": article_id, "text": "t"})
+        yield table
+
+
+def test_delete_musings_for_article_removes_only_that_articles(musings_table):
+    removed = dynamo.delete_musings_for_article("a1")
+
+    assert removed == 2
+    left = sorted(item["musing_id"] for item in musings_table.scan()["Items"])
+    assert left == ["m3", "m4"]
+
+
+def test_delete_musings_for_an_article_with_none_is_a_no_op(musings_table):
+    assert dynamo.delete_musings_for_article("nope") == 0
+    assert len(musings_table.scan()["Items"]) == 4

@@ -233,3 +233,93 @@ def test_render_and_publish_article_page_escapes_title_and_body(s3):
     html = stored["Body"].read().decode("utf-8")
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# --- taking a page down ---------------------------------------------------------
+
+
+def _publish(article_id):
+    static_pages.render_and_publish_article_page(
+        article_id=article_id,
+        title="A Title",
+        body_markdown="Body",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+
+
+def test_article_page_key_is_the_one_publishing_writes(s3):
+    _publish("a9")
+
+    assert static_pages.article_page_key("a9") == "articles/a9.html"
+    s3.head_object(Bucket=ENV["SITE_BUCKET"], Key=static_pages.article_page_key("a9"))
+
+
+def test_remove_article_page_deletes_only_that_page(s3):
+    _publish("a1")
+    _publish("a2")
+
+    key = static_pages.remove_article_page("a1")
+
+    assert key == "articles/a1.html"
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket=ENV["SITE_BUCKET"])["Contents"]]
+    assert keys == ["articles/a2.html"]
+
+
+def test_remove_article_page_is_safe_to_repeat(s3):
+    _publish("a1")
+
+    static_pages.remove_article_page("a1")
+    static_pages.remove_article_page("a1")  # already gone: not an error
+
+
+def test_invalidate_article_page_asks_cloudfront_to_drop_that_path(monkeypatch):
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    monkeypatch.setattr(static_pages, "_get_cloudfront_client", lambda: client)
+    monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E123")
+
+    assert static_pages.invalidate_article_page("a1") is True
+
+    kwargs = client.create_invalidation.call_args.kwargs
+    assert kwargs["DistributionId"] == "E123"
+    assert kwargs["InvalidationBatch"]["Paths"] == {"Quantity": 1, "Items": ["/articles/a1.html"]}
+    assert kwargs["InvalidationBatch"]["CallerReference"].startswith("unpublish-a1-")
+
+
+def test_invalidate_article_page_uses_a_fresh_caller_reference_each_time(monkeypatch):
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    monkeypatch.setattr(static_pages, "_get_cloudfront_client", lambda: client)
+    monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E123")
+
+    static_pages.invalidate_article_page("a1")
+    static_pages.invalidate_article_page("a1")
+
+    calls = client.create_invalidation.call_args_list
+    refs = [c.kwargs["InvalidationBatch"]["CallerReference"] for c in calls]
+    assert refs[0] != refs[1]  # a repeated reference is rejected if its path set differs
+
+
+def test_invalidate_article_page_without_a_distribution_does_nothing(monkeypatch):
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    monkeypatch.setattr(static_pages, "_get_cloudfront_client", lambda: client)
+    monkeypatch.delenv("CLOUDFRONT_DISTRIBUTION_ID", raising=False)
+
+    assert static_pages.invalidate_article_page("a1") is False
+    client.create_invalidation.assert_not_called()
+
+
+def test_invalidate_article_page_never_raises(monkeypatch):
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    client.create_invalidation.side_effect = RuntimeError("AccessDenied")
+    monkeypatch.setattr(static_pages, "_get_cloudfront_client", lambda: client)
+    monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E123")
+
+    assert static_pages.invalidate_article_page("a1") is False

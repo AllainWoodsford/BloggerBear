@@ -773,6 +773,18 @@ def put_musing(
     return item
 
 
+def delete_musings_for_article(article_id: str) -> int:
+    """Delete every Musings item written about `article_id`; return how many.
+
+    Scan + filter, like list_musings: the table has only a hash key and is small.
+    """
+    table = get_table(os.environ["MUSINGS_TABLE"])
+    doomed = [m for m in _paginated_scan(table) if m.get("article_id") == article_id]
+    for musing in doomed:
+        table.delete_item(Key={"musing_id": musing["musing_id"]})
+    return len(doomed)
+
+
 def list_musings(limit: int = 50) -> list[dict]:
     """Return up to `limit` Musings items, most recent first.
 
