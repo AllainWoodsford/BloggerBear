@@ -547,6 +547,16 @@ def test_equipment_bump_goes_one_step_up_by_default_or_to_a_named_rarity():
     assert named.kwargs["body"] == {"rarity": "epic"}
 
 
+def test_equipment_repair_restores_all_of_it_by_default_or_some_of_it():
+    full = _sent(["equipment", "repair", "topic-a", VERSION])
+    some = _sent(["equipment", "repair", "topic-a", VERSION, "--amount", "4"])
+
+    path = f"/prompt-refinements/topic-a/{ENCODED}/repair"
+    assert full.args[:3] == ("POST", "https://api.example.com", path)
+    assert full.kwargs["body"] == {}
+    assert some.kwargs["body"] == {"amount": 4}
+
+
 def test_equipment_bump_refuses_a_rarity_that_cannot_be_a_bump():
     with pytest.raises(SystemExit):
         _run(["equipment", "bump", "topic-a", VERSION, "--to", "common"])
