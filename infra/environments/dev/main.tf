@@ -490,15 +490,16 @@ resource "aws_lambda_function" "research_tick" {
   }
 }
 
-# 120s / 512MB (was 60s / 256MB): headroom for the sequential Bedrock calls
-# (ideate, draft, title, review) over a larger data payload, plus a
+# 300s / 512MB (was 120s, and 60s before that): headroom for the sequential Bedrock
+# calls (ideate, draft, title, fresh-data review, compliance review) over a larger
+# data payload, the review's fetch of current data (time-boxed at 45s), and a
 # fallback-model retry if the primary call fails.
 resource "aws_lambda_function" "daily_cycle" {
   function_name = "bloggerbear-dev-daily-cycle"
   role          = aws_iam_role.lambda_exec.arn
   handler       = "daily_cycle_handler.handler"
   runtime       = "python3.11"
-  timeout       = 120
+  timeout       = 300
   memory_size   = 512
 
   filename         = data.archive_file.lambdas.output_path

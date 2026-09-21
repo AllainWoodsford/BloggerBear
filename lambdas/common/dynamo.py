@@ -218,8 +218,12 @@ def put_article(
     source_refs: list[dict] | None = None,
     lineage: dict | None = None,
     published_by: str | None = None,
+    review: dict | None = None,
 ) -> dict:
     """Write an Articles item and return it.
+
+    `review` is the fresh-data review's record (common/fresh_review.py), stored only
+    when a review ran; never part of the public API's projection.
 
     `lineage` (docs/project-plan.md §11, PR 2 of 5) is fixed once at draft
     time and never changes afterward, regardless of the article's eventual
@@ -243,6 +247,8 @@ def put_article(
         "lineage": _lineage_to_item(lineage),
         "published_by": published_by,
     }
+    if review is not None:
+        item["review"] = review
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -255,8 +261,13 @@ def put_moderation_item(
     reasons: list[str],
     created_at: str,
     status: str = "pending",
+    review_notes: list[str] | None = None,
 ) -> dict:
-    """Write a ModerationQueue item and return it."""
+    """Write a ModerationQueue item and return it.
+
+    `review_notes` are the fresh-data review's findings in plain words, so whoever
+    reads `moderation list` sees why an article may be stale. Stored only if non-empty.
+    """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     item = {
         "queue_id": queue_id,
@@ -266,6 +277,8 @@ def put_moderation_item(
         "status": status,
         "created_at": created_at,
     }
+    if review_notes:
+        item["review_notes"] = review_notes
     table.put_item(Item=item)
     return item
 
@@ -943,23 +956,39 @@ def get_pipeline_config() -> dict | None:
     return item
 
 
-def put_pipeline_config(*, research_interval_hours: int | None) -> dict:
-    """Set (or, with None, clear) the global research interval and return the row.
+_UNSET = object()
 
-    Updates only that attribute, so settings added to this row later are not
-    wiped by an edit to this one.
+
+def put_pipeline_config(*, research_interval_hours=_UNSET, review_mode=_UNSET) -> dict:
+    """Update pipeline-wide settings and return the row.
+
+    Only the settings passed are touched (a value sets it, None clears it), so
+    editing one never wipes another or one added later.
     """
-    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
-    if research_interval_hours is None:
+    updates = {
+        "research_interval_hours": research_interval_hours,
+        "review_mode": review_mode,
+    }
+    sets, removes, values = [], [], {}
+    for index, (name, value) in enumerate(updates.items()):
+        if value is _UNSET:
+            continue
+        if value is None:
+            removes.append(name)
+        else:
+            sets.append(f"{name} = :v{index}")
+            values[f":v{index}"] = value
+
+    if sets or removes:
+        expression = ""
+        if sets:
+            expression += "SET " + ", ".join(sets)
+        if removes:
+            expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
+        kwargs = {"ExpressionAttributeValues": values} if values else {}
+        table = get_table(os.environ["MODEL_CONFIG_TABLE"])
         table.update_item(
-            Key={"config_id": _PIPELINE_CONFIG_ID},
-            UpdateExpression="REMOVE research_interval_hours",
-        )
-    else:
-        table.update_item(
-            Key={"config_id": _PIPELINE_CONFIG_ID},
-            UpdateExpression="SET research_interval_hours = :hours",
-            ExpressionAttributeValues={":hours": research_interval_hours},
+            Key={"config_id": _PIPELINE_CONFIG_ID}, UpdateExpression=expression, **kwargs
         )
     return get_pipeline_config() or {"config_id": _PIPELINE_CONFIG_ID}
 
