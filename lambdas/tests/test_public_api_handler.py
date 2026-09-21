@@ -344,7 +344,13 @@ def test_topic_activity_true_when_finding_exists(aws_resources):
         "researching": True,
         "pending_review_count": 0,
         "pipeline_items": [
-            {"status": "researching", "label": "Researching", "title": "example/x"}
+            {
+                "status": "researching",
+                "label": "Researching",
+                "title": "example/x",
+                # No topic row in this test, so the time falls back to the finding's.
+                "checked_at": "2026-09-12T00:00:00+00:00",
+            }
         ],
     }
 
@@ -410,6 +416,99 @@ def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resour
     assert "secret-article" not in body_text
     assert "unsubstantiated" not in body_text
     assert "queue-1" not in body_text
+
+
+
+# --- "Researching: <title>" names what is new, and when the source was last checked ------
+
+
+def _activity(topic_id="github-trending"):
+    event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": topic_id})
+    return json.loads(public_api_handler.handler(event, None)["body"])
+
+
+def _researching_item(body):
+    return next(item for item in body["pipeline_items"] if item["status"] == "researching")
+
+
+def _refs(*titles):
+    return [{"url": f"https://example.com/{t.lower()}", "title": t} for t in titles]
+
+
+def test_researching_names_the_source_that_is_new_since_the_previous_finding(aws_resources):
+    # Every finding leads with the same two anchors; only the third changes.
+    _put_finding(
+        captured_at="2026-09-21T07:27:08+00:00", source_refs=_refs("Bitcoin", "Ethereum", "Dogecoin")
+    )
+    _put_finding(
+        captured_at="2026-09-21T08:27:08+00:00", source_refs=_refs("Bitcoin", "Ethereum", "Monad")
+    )
+
+    assert _researching_item(_activity())["title"] == "Monad"
+
+
+def test_researching_falls_back_to_the_first_source_when_nothing_is_new(aws_resources):
+    same = _refs("affaan-m /ECC", "BuilderIO /agent-native")
+    _put_finding(captured_at="2026-09-21T05:25:27+00:00", source_refs=same)
+    _put_finding(captured_at="2026-09-21T07:25:27+00:00", source_refs=same)
+
+    assert _researching_item(_activity())["title"] == "affaan-m /ECC"
+
+
+def test_researching_uses_the_first_source_when_there_is_only_one_finding(aws_resources):
+    _put_finding(source_refs=_refs("Bitcoin", "Ethereum"))
+
+    assert _researching_item(_activity())["title"] == "Bitcoin"
+
+
+def test_researching_compares_urls_before_titles(aws_resources):
+    # Same title, different page: it is a different source.
+    _put_finding(
+        captured_at="2026-09-21T07:00:00+00:00",
+        source_refs=[{"url": "https://a.example/1", "title": "Update"}],
+    )
+    _put_finding(
+        captured_at="2026-09-21T08:00:00+00:00",
+        source_refs=[
+            {"url": "https://a.example/1", "title": "Update"},
+            {"url": "https://b.example/2", "title": "Update"},
+        ],
+    )
+
+    assert _researching_item(_activity())["title"] == "Update"
+
+
+def test_researching_reports_when_the_topic_was_last_checked(aws_resources):
+    _put_topic({**TOPIC, "last_research_at": "2026-09-21T08:48:14.739989+00:00"})
+    _put_finding(captured_at="2026-09-21T06:00:00+00:00", source_refs=_refs("Bitcoin"))
+
+    # The check time, not the (older) time of the finding.
+    assert _researching_item(_activity())["checked_at"] == "2026-09-21T08:48:14.739989+00:00"
+
+
+def test_researching_falls_back_to_the_findings_time_when_the_topic_has_no_last_check(aws_resources):
+    _put_topic({key: value for key, value in TOPIC.items() if key != "last_research_at"})
+    _put_finding(captured_at="2026-09-21T06:00:00+00:00", source_refs=_refs("Bitcoin"))
+
+    assert _researching_item(_activity())["checked_at"] == "2026-09-21T06:00:00+00:00"
+
+
+def test_activity_exposes_only_a_timestamp_from_the_topic(aws_resources):
+    _put_topic(
+        {
+            **TOPIC,
+            "last_research_at": "2026-09-21T08:48:14+00:00",
+            "adapter_config": {"secret": "do-not-leak"},
+            "editorial_goals": {"primary_focus": "do-not-leak"},
+        }
+    )
+    _put_finding(source_refs=_refs("Bitcoin"))
+
+    body = public_api_handler.handler(
+        _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"}), None
+    )["body"]
+    assert "do-not-leak" not in body
+    assert set(_researching_item(json.loads(body)).keys()) == {"status", "label", "title", "checked_at"}
 
 
 # --- Musings --------------------------------------------------------------
