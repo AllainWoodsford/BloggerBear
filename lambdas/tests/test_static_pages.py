@@ -323,3 +323,63 @@ def test_invalidate_article_page_never_raises(monkeypatch):
     monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E123")
 
     assert static_pages.invalidate_article_page("a1") is False
+
+
+# --- article body headings, and the site navigation ---------------------------------
+
+
+def test_body_headings_sit_below_the_page_h1():
+    html = static_pages.render_body_html("# Top\n\n## Next\n\n### Deeper\n\nText.")
+    assert "<h1" not in html
+    assert ">Top</h2>" in html
+    assert ">Next</h3>" in html
+    assert ">Deeper</h4>" in html
+
+
+def test_body_headings_stop_at_h6():
+    assert ">Deep</h6>" in static_pages.render_body_html("##### Deep")
+    assert ">Deeper</h6>" in static_pages.render_body_html("###### Deeper")
+
+
+def test_body_tables_and_lists_render_as_html():
+    html = static_pages.render_body_html(
+        "| Coin | Price |\n| --- | ---: |\n| BTC | 1 |\n\n- one\n- two\n\n1. first\n2. second"
+    )
+    assert "<table>" in html and "<th>Coin</th>" in html and "<td>BTC</td>" in html
+    assert "<ul>" in html and "<ol>" in html
+
+
+def test_rendered_page_has_one_h1_and_real_body_headings(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="h1",
+        title="The Title",
+        body_markdown="# A body title\n\n## A section\n\nText.",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/h1.html")["Body"].read().decode()
+    assert html.count("<h1") == 1
+    assert ">A body title</h2>" in html
+    assert ">A section</h3>" in html
+    assert "## A section" not in html
+
+
+def test_rendered_page_links_the_site_sections_in_header_and_footer(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="nav1",
+        title="T",
+        body_markdown="Body.",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/nav1.html")["Body"].read().decode()
+    header = html.split("<header", 1)[1].split("</header>", 1)[0]
+    footer = html.split('<footer class="site-footer">', 1)[1].split("</footer>", 1)[0]
+    for region in (header, footer):
+        assert 'href="/#/topic/digest">Trending Everywhere</a>' in region
+        assert 'href="/#/musings">Musings</a>' in region
+        assert 'href="/#/stats">Stats</a>' in region
+    assert 'aria-label="Site sections"' in header
+    assert 'aria-label="Explore"' in footer and 'aria-label="Legal"' in footer
+    assert 'href="/#/privacy"' in footer and 'href="/about.html"' in footer
+    assert 'class="skip-link"' in html

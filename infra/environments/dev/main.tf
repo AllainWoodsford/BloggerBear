@@ -1245,6 +1245,7 @@ locals {
     "styles.css"    = "text/css"
     "normalize.css" = "text/css"
     "app.js"        = "application/javascript"
+    "markdown.js"   = "application/javascript"
     # Static article publishing (docs/project-plan.md §11): the external
     # script the pages rendered by common/static_pages.py load -- must be
     # a real file at the bucket root, not inline, per the CSP comment on

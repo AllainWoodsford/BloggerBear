@@ -252,6 +252,37 @@ def read_article_body(body_s3_key: str) -> str:
     return response["Body"].read().decode("utf-8")
 
 
+# The article title is the page's one <h1>, so a "#" in the body becomes an <h2> (and "##" an
+# <h3>, ...): screen-reader users navigate by heading level. "tables" and "sane_lists" cover
+# the markdown the drafts actually use; "toc" is what applies the base level (and gives each
+# heading an id to link to).
+_BODY_HEADING_BASE_LEVEL = 2
+_MARKDOWN_EXTENSIONS = ["tables", "sane_lists", "toc"]
+_MARKDOWN_EXTENSION_CONFIGS = {"toc": {"baselevel": _BODY_HEADING_BASE_LEVEL}}
+
+
+def render_body_html(body_markdown: str) -> str:
+    """An article body's markdown as HTML, with its headings below the page's <h1>."""
+    return markdown.markdown(
+        body_markdown,
+        extensions=_MARKDOWN_EXTENSIONS,
+        extension_configs=_MARKDOWN_EXTENSION_CONFIGS,
+    )
+
+
+# The site's own sections, as absolute links because a static article page lives at
+# /articles/<id>.html, not at the SPA's root. Mirrors index.html's header and footer.
+_SITE_SECTIONS = (
+    ("/#/topic/digest", "Trending Everywhere"),
+    ("/#/musings", "Musings"),
+    ("/#/stats", "Stats"),
+)
+
+
+def _site_sections_links_html() -> str:
+    return "".join(f'<a href="{href}">{escape(label)}</a>' for href, label in _SITE_SECTIONS)
+
+
 def render_and_publish_article_page(
     *,
     article_id: str,
@@ -279,7 +310,7 @@ def render_and_publish_article_page(
     <script> surviving into the body could never execute; that CSP is the
     actual backstop here, not output sanitization.
     """
-    body_html = markdown.markdown(body_markdown)
+    body_html = render_body_html(body_markdown)
     source_refs = dedupe_source_refs(source_refs)
 
     source_refs_html = ""
@@ -302,6 +333,7 @@ def render_and_publish_article_page(
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
+    site_sections_html = _site_sections_links_html()
 
     page_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -314,8 +346,10 @@ def render_and_publish_article_page(
 <link rel="icon" href="/logo.svg" type="image/svg+xml" />
 </head>
 <body>
+<a class="skip-link" href="#content">Skip to content</a>
 <header id="top">
 <a class="site-title" href="/">BloggerBear</a>
+<nav id="nav-site" aria-label="Site sections">{site_sections_html}</nav>
 </header>
 <main id="content" data-article-id="{escape(article_id)}">
 <h1>{escape(title)}</h1>
@@ -339,6 +373,16 @@ def render_and_publish_article_page(
 <p class="feedback-status" data-role="feedback-status" aria-live="polite" aria-atomic="true"></p>
 </section>
 </main>
+<footer class="site-footer">
+<nav class="footer-nav" aria-label="Explore">{site_sections_html}</nav>
+<nav class="legal-nav" aria-label="Legal">
+<a href="/">Home</a>
+<a href="/about.html">About</a>
+<a href="/#/terms">Terms of Service</a>
+<a href="/#/privacy">Privacy Policy</a>
+</nav>
+<div class="footer-links"><a class="back-to-top" href="#top">Back to top &#8593;</a></div>
+</footer>
 <script src="/config.js"></script>
 <script src="/article-widgets.js" defer></script>
 </body>
