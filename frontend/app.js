@@ -840,6 +840,16 @@
   function renderStats(stats) {
     clearChildren(contentEl);
     contentEl.appendChild(el("h1", { text: "Stats" }));
+
+    // The page opens with what BloggerBear is wearing; the cost and usage numbers follow.
+    // Its own request, so a slow or failed one never holds up the numbers.
+    var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
+    gearHeading(gearSection);
+    gearSection.appendChild(el("p", { text: "Loading..." }));
+    contentEl.appendChild(gearSection);
+    loadGear(gearSection);
+
+    contentEl.appendChild(el("h2", { text: "Spend and usage", className: "section-heading" }));
     contentEl.appendChild(el("p", { className: "stats-note", text: stats.cost_basis }));
 
     var totals = stats.totals;
@@ -880,13 +890,6 @@
       );
     }
     contentEl.appendChild(tiles);
-
-    // What BloggerBear is wearing: its own request, so a slow or failed one never holds up the numbers.
-    var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
-    gearHeading(gearSection);
-    gearSection.appendChild(el("p", { text: "Loading..." }));
-    contentEl.appendChild(gearSection);
-    loadGear(gearSection);
 
     var daily = stats.daily || [];
     var activeDays = daily.filter(function (day) {
