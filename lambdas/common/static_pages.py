@@ -279,8 +279,30 @@ _SITE_SECTIONS = (
 )
 
 
-def _site_sections_links_html() -> str:
-    return "".join(f'<a href="{href}">{escape(label)}</a>' for href, label in _SITE_SECTIONS)
+# A paw print after every footer link but the last. The link and its paw sit in one nowrap span,
+# so a wrapped line never starts with a paw; the paw is hidden from screen readers. Mirrors
+# index.html.
+_PAW_HTML = '<span class="paw" aria-hidden="true">&#128062;</span>'
+
+
+def _links_html(links, paws: bool = False) -> str:
+    anchors = [f'<a href="{href}">{escape(label)}</a>' for href, label in links]
+    if not paws:
+        return "".join(anchors)
+    items = [f'<span class="footer-item">{anchor}{_PAW_HTML}</span>' for anchor in anchors[:-1]]
+    return " ".join([*items, anchors[-1]])
+
+
+def _site_sections_links_html(paws: bool = False) -> str:
+    return _links_html(_SITE_SECTIONS, paws)
+
+
+_LEGAL_LINKS = (
+    ("/", "Home"),
+    ("/about.html", "About"),
+    ("/#/terms", "Terms of Service"),
+    ("/#/privacy", "Privacy Policy"),
+)
 
 
 def render_and_publish_article_page(
@@ -334,6 +356,8 @@ def render_and_publish_article_page(
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
     site_sections_html = _site_sections_links_html()
+    footer_sections_html = _site_sections_links_html(paws=True)
+    footer_legal_html = _links_html(_LEGAL_LINKS, paws=True)
 
     page_html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -374,13 +398,8 @@ def render_and_publish_article_page(
 </section>
 </main>
 <footer class="site-footer">
-<nav class="footer-nav" aria-label="Explore">{site_sections_html}</nav>
-<nav class="legal-nav" aria-label="Legal">
-<a href="/">Home</a>
-<a href="/about.html">About</a>
-<a href="/#/terms">Terms of Service</a>
-<a href="/#/privacy">Privacy Policy</a>
-</nav>
+<nav class="footer-nav" aria-label="Explore">{footer_sections_html}</nav>
+<nav class="legal-nav" aria-label="Legal">{footer_legal_html}</nav>
 <div class="footer-links"><a class="back-to-top" href="#top">Back to top &#8593;</a></div>
 </footer>
 <script src="/config.js"></script>
@@ -395,12 +414,13 @@ def render_and_publish_article_page(
         Key=key,
         Body=page_html.encode("utf-8"),
         ContentType="text/html",
+        # Revalidate on every load (a cheap conditional request): a re-rendered page (a republish,
+        # a template fix) shows up straight away instead of after CloudFront's 24-hour default.
+        CacheControl="no-cache",
     )
-    # No CloudFront invalidation on republish -- a known, accepted gap.
-    # Overwriting the S3 object is enough for a first-ever publish (the
-    # common case); a rare republish of the same article_id (e.g.
-    # force-publish correcting a bad moderation call) can keep serving a
-    # cached copy until CloudFront's TTL naturally expires. Not worth the
-    # extra IAM permission + API call for how infrequently that happens on
-    # this single-operator project.
+    # No CloudFront invalidation on republish: the page is stored with
+    # Cache-Control: no-cache, so CloudFront and browsers revalidate it on
+    # each request and a republish of the same article_id (e.g. force-publish
+    # correcting a bad moderation call) shows up without an invalidation.
+    # (unpublish still invalidates: see invalidate_article_page.)
     return key

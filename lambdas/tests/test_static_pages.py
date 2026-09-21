@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -383,3 +386,61 @@ def test_rendered_page_links_the_site_sections_in_header_and_footer(s3):
     assert 'aria-label="Explore"' in footer and 'aria-label="Legal"' in footer
     assert 'href="/#/privacy"' in footer and 'href="/about.html"' in footer
     assert 'class="skip-link"' in html
+
+
+# --- footer paw separators, and cache headers -----------------------------------------
+
+
+def _footer_navs(html):
+    """Each footer group's inner HTML, in order: Explore, Legal (and RSS / Back to top if any)."""
+    footer = html.split('<footer class="site-footer">', 1)[1].split("</footer>", 1)[0]
+    return footer
+
+
+def test_static_page_footer_has_a_paw_between_every_pair_of_links(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="paw1",
+        title="T",
+        body_markdown="Body.",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/paw1.html")["Body"].read().decode()
+    footer = _footer_navs(html)
+
+    explore = footer.split('aria-label="Explore">', 1)[1].split("</nav>", 1)[0]
+    legal = footer.split('aria-label="Legal">', 1)[1].split("</nav>", 1)[0]
+    assert explore.count("<a ") == 3 and explore.count('class="paw"') == 2
+    assert legal.count("<a ") == 4 and legal.count('class="paw"') == 3
+    # Decorative: hidden from screen readers, and glued to the link before it.
+    assert explore.count('aria-hidden="true"') == explore.count('class="paw"')
+    assert '<span class="footer-item"><a ' in explore
+    # The header's site-section pills have no paws.
+    header = html.split("<header", 1)[1].split("</header>", 1)[0]
+    assert "paw" not in header
+
+
+def test_static_pages_are_stored_with_a_revalidate_cache_header(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="cache1",
+        title="T",
+        body_markdown="Body.",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+    stored = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/cache1.html")
+
+    assert stored["CacheControl"] == "no-cache"
+    assert stored["ContentType"] == "text/html"
+
+
+def test_the_site_html_footers_have_a_paw_between_every_pair_of_links():
+    frontend = Path(__file__).resolve().parents[2] / "frontend"
+    for name in ("index.html", "about.html", "error.html"):
+        footer = _footer_navs((frontend / name).read_text(encoding="utf-8"))
+        # Every group: one paw fewer than it has links; the paw is hidden and glued to a link.
+        for group in re.split(r"</nav>|</div>", footer):
+            links = len(re.findall(r"<a[ >]", group))
+            paws = len(re.findall(r'<span class="paw" aria-hidden="true">&#128062;</span>', group))
+            assert paws == max(links - 1, 0), (name, group)
+        assert '<span class="footer-item"><a ' in footer
