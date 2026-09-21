@@ -456,6 +456,11 @@ data "aws_iam_policy_document" "gha_deploy" {
   # for why. Both ARN forms (with and without the trailing `:*`) listed
   # since it's unclear which of the widened action set expects which
   # shape, and listing both costs nothing.
+  #
+  # us-east-1 as well as ap-southeast-2: a WAF ACL attached to CloudFront has to live in us-east-1
+  # (scope CLOUDFRONT), and its log group must be in the same region. Production's shared ACL logs to
+  # aws-waf-logs-bloggerbear-shared there. Dev has no CloudFront ACL, so it never needed this, and the
+  # first production apply stopped on `logs:CreateLogGroup` in us-east-1.
   statement {
     sid     = "WafLogGroups"
     effect  = "Allow"
@@ -463,6 +468,8 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = [
       "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*",
       "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*:*",
+      "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*",
+      "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*:*",
     ]
   }
 

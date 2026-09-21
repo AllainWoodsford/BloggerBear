@@ -238,3 +238,49 @@ def test_the_template_only_interpolates_the_domain():
     source = (INFRA / "modules" / "static-site" / "www_redirect.js.tftpl").read_text(encoding="utf-8")
 
     assert set(re.findall(r"\$\{([^}]*)\}", source)) == {"domain"}
+
+
+# --- what the deploy role is allowed to create -------------------------------------------------------
+
+
+def _deploy_policy_log_group_patterns() -> set[tuple[str, str]]:
+    """(region, name pattern) for every log group ARN the CI deploy role may manage."""
+    bootstrap = _read("bootstrap", "main.tf")
+    patterns = set()
+    for match in re.finditer(r'"arn:aws:logs:([a-z0-9-]+):\*:log-group:([^"]*?)(?::\*)?"', bootstrap):
+        patterns.add((match.group(1), match.group(2)))
+    return patterns
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env):
+    """A log group in another region needs its own ARN in the deploy role's policy. Production's shared
+    CloudFront WAF logs to us-east-1; only ap-southeast-2 was allowed, so its first apply was refused
+    with AccessDenied on logs:CreateLogGroup. Dev could not have shown it (no CloudFront ACL)."""
+    import fnmatch
+
+    text = _read("environments", env, "main.tf")
+    allowed = _deploy_policy_log_group_patterns()
+    found = 0
+    for match in re.finditer(r'^resource "aws_cloudwatch_log_group" "[^"]+" \{\n(.*?)^\}', text, re.S | re.M):
+        body = match.group(1)
+        region = (
+            "us-east-1" if re.search(r"^\s*provider\s*=\s*aws\.us_east_1", body, re.M) else "ap-southeast-2"
+        )
+        name = re.sub(r"\$\{[^}]*\}", "x", re.search(r'^\s*name\s*=\s*"([^"]+)"', body, re.M).group(1))
+        found += 1
+        assert any(r == region and fnmatch.fnmatch(name, pattern) for r, pattern in allowed), (
+            f"{env}: log group {name!r} in {region} is not covered by the deploy role's policy "
+            "(infra/bootstrap/main.tf, WafLogGroups / LambdaLogGroups)"
+        )
+    assert found >= 2
+
+
+def test_the_shared_cloudfront_waf_log_group_really_is_in_us_east_1():
+    production = _read("environments", "production", "main.tf")
+    block = re.search(
+        r'resource "aws_cloudwatch_log_group" "waf_shared" \{\n(.*?)^\}', production, re.S | re.M
+    ).group(1)
+
+    assert "provider = aws.us_east_1" in block
+    assert ("us-east-1", "aws-waf-logs-bloggerbear-*") in _deploy_policy_log_group_patterns()
