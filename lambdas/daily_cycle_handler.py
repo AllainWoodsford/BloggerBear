@@ -80,6 +80,14 @@ from common.static_pages import render_and_publish_article_page
 FINDINGS_WINDOW_HOURS = 24
 MAX_WINDOW_FINDINGS = 48
 SUMMARIES_MAX_CHARS = 40_000
+# An article draft is a few paragraphs to a few pages; the 1,024-token default cut real
+# drafts off mid-word (a stored body ended "...deep institutional liqu"). Room for a
+# long draft, and one automatic retry with more if a reply still runs out.
+DRAFT_MAX_TOKENS = 4096
+DRAFT_RETRY_MAX_TOKENS = 8192
+TRUNCATED_DRAFT_REASON = (
+    "draft truncated: the model ran out of output tokens before finishing the article"
+)
 _NUM_CANDIDATE_ANGLES = 3
 _LIST_MARKER_RE = re.compile(r"^[\s\d.\-\)]+")
 _FEW_SHOT_EXCERPT_CHARS = 500
@@ -192,6 +200,12 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     )
     title, title_call = _draft_title(selected["angle"], model_id, fallback_model_id)
 
+    # A draft that ran out of tokens even after the retry is half an article: never
+    # publish it. It goes to a human, whatever the compliance review says.
+    hold_reasons = [TRUNCATED_DRAFT_REASON] if draft_call.get("stop_reason") == "max_tokens" else []
+    if hold_reasons:
+        print(f"daily_cycle_handler: holding a truncated draft for topic_id={topic_id}")
+
     # Fresh-data review (docs/project-plan.md §11, "(C)"): compare the draft's claims with
     # what the source says *now*. Shadow mode: recorded, never acted on. Placed before the
     # disclaimer is appended so it reviews the article's own text.
@@ -232,6 +246,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         model_id=model_id,
         lineage=lineage,
         fresh_review_record=fresh_record,
+        hold_reasons=hold_reasons,
     )
     _record_article_written(topic_id, run_started)
     return result
@@ -509,14 +524,24 @@ def _draft_article(
             "topic, for style reference only (do not repeat its content):\n"
             f"{few_shot_excerpt}"
         )
-    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    result = invoke_model_tracked(
+        prompt,
+        model_id,
+        fallback_model_id=fallback_model_id,
+        max_tokens=DRAFT_MAX_TOKENS,
+        retry_max_tokens=DRAFT_RETRY_MAX_TOKENS,
+    )
     lineage_call = {
         "stage": "draft",
         "model_id": result["model_id"],
         "input_tokens": result["input_tokens"],
         "output_tokens": result["output_tokens"],
         "used_fallback": result["used_fallback"],
+        # "max_tokens" here means the draft is cut off even after the retry.
+        "stop_reason": result.get("stop_reason"),
     }
+    if result.get("attempts", 1) > 1:
+        lineage_call["attempts"] = result["attempts"]
     return result["text"], lineage_call
 
 
@@ -547,7 +572,15 @@ def _publish_or_moderate(
     model_id: str,
     lineage: dict,
     fresh_review_record: dict | None = None,
+    hold_reasons: list[str] | None = None,
 ) -> dict:
+    """Store the article and either publish it or send it to moderation.
+
+    `hold_reasons` are reasons to keep it from publishing regardless of the compliance
+    verdict (today: a truncated draft). Any of them sends it to moderation, listed ahead
+    of the compliance reasons, so a person sees why.
+    """
+    hold_reasons = list(hold_reasons or [])
     article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
     body_s3_key = f"articles/{article_id}.md"
@@ -565,7 +598,8 @@ def _publish_or_moderate(
         source_refs.extend(finding.get("source_refs") or [])
     source_refs = dedupe_source_refs(source_refs)
 
-    compliant = review["compliant"]
+    compliant = review["compliant"] and not hold_reasons
+    reasons = hold_reasons + list(review["reasons"])
 
     put_article(
         article_id=article_id,
@@ -616,7 +650,7 @@ def _publish_or_moderate(
         queue_id=str(uuid.uuid4()),
         article_id=article_id,
         topic_id=topic_id,
-        reasons=review["reasons"],
+        reasons=reasons,
         created_at=now,
         **_review_notes_kwargs(fresh_review_record),
     )
@@ -625,5 +659,5 @@ def _publish_or_moderate(
         "topic_id": topic_id,
         "article_id": article_id,
         "compliant": False,
-        "reasons": review["reasons"],
+        "reasons": reasons,
     }

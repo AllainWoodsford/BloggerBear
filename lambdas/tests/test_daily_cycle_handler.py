@@ -16,7 +16,14 @@ from common.editorial_goals import (
 
 
 def _tracked_result(
-    text, *, model_id="anthropic.claude-test-model", used_fallback=False, input_tokens=10, output_tokens=5
+    text,
+    *,
+    model_id="anthropic.claude-test-model",
+    used_fallback=False,
+    input_tokens=10,
+    output_tokens=5,
+    stop_reason="end_turn",
+    attempts=1,
 ):
     return {
         "text": text,
@@ -24,6 +31,8 @@ def _tracked_result(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "used_fallback": used_fallback,
+        "stop_reason": stop_reason,
+        "attempts": attempts,
     }
 
 
@@ -1291,11 +1300,26 @@ def _run_with_review(
     compliant=True,
     topic=NON_FINANCIAL_TOPIC,
     findings=FINDINGS,
+    draft_stop_reason="end_turn",
+    draft_attempts=1,
+    model_calls=None,
 ):
     """A whole cycle with the review turned on (unless `config` says otherwise) and the
-    reviewer itself mocked. Returns the result and everything the review touched."""
-    responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
+    reviewer itself mocked. Returns the result and everything the review touched.
+
+    `draft_stop_reason` is why the draft call stopped ("max_tokens" = cut off);
+    `model_calls`, if given, collects the keyword arguments of each drafting call."""
+    responses = [
+        _tracked_result("Angle one\nAngle two\nAngle three"),
+        _tracked_result("# Draft body", stop_reason=draft_stop_reason, attempts=draft_attempts),
+        _tracked_result("A Title"),
+    ]
     lineage_calls = []
+
+    def model(prompt, model_id, **kwargs):
+        if model_calls is not None:
+            model_calls.append(kwargs)
+        return responses.pop(0)
 
     def build_lineage(calls, **kwargs):
         lineage_calls.append(calls)
@@ -1313,15 +1337,12 @@ def _run_with_review(
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("m", "fallback-m")),
         patch("daily_cycle_handler.build_lineage", side_effect=build_lineage),
-        patch(
-            "daily_cycle_handler.invoke_model_tracked",
-            side_effect=[_tracked_result(r) for r in responses],
-        ),
+        patch("daily_cycle_handler.invoke_model_tracked", side_effect=model),
         patch(
             "daily_cycle_handler.compliance.review_draft",
             return_value={
                 "compliant": compliant,
-                "reasons": ["needs a look"],
+                "reasons": [] if compliant else ["needs a look"],
                 "lineage_call": _DUMMY_LINEAGE_CALL,
             },
         ),
@@ -1518,3 +1539,89 @@ def test_the_snapshot_comes_from_the_whole_window_not_just_the_goals_findings(s3
     _, mock_run, _, _, _ = _run_with_review(findings=[newest], topic=crypto_topic)
 
     assert mock_run.call_args.kwargs["latest_state"] == {"today": True}
+
+
+# --- a draft that ran out of tokens ---------------------------------------------------------------------
+
+
+def _draft_lineage_call(lineage_calls):
+    return next(call for call in lineage_calls[0] if call["stage"] == "draft")
+
+
+def test_the_draft_is_given_room_for_an_article_and_one_automatic_retry(s3_bucket):
+    calls = []
+
+    _run_with_review(model_calls=calls)
+
+    ideate, draft, title = calls
+    assert draft["max_tokens"] == daily_cycle_handler.DRAFT_MAX_TOKENS == 4096
+    assert draft["retry_max_tokens"] == daily_cycle_handler.DRAFT_RETRY_MAX_TOKENS == 8192
+    assert "max_tokens" not in ideate and "max_tokens" not in title  # short outputs keep the default
+
+
+def test_a_complete_draft_is_published_as_before(s3_bucket):
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(draft_stop_reason="end_turn")
+
+    assert result["status"] == "published"
+    assert mock_put_article.call_args.kwargs["status"] == "published"
+    mock_put_moderation.assert_not_called()
+
+
+def test_a_draft_cut_off_even_after_the_retry_is_never_published(s3_bucket):
+    """Even when the compliance review is happy with what text there is."""
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(
+        draft_stop_reason="max_tokens", compliant=True
+    )
+
+    assert result["status"] == "pending_moderation" and result["compliant"] is False
+    assert result["reasons"] == [daily_cycle_handler.TRUNCATED_DRAFT_REASON]
+    assert mock_put_article.call_args.kwargs["status"] == "pending_moderation"
+    assert mock_put_article.call_args.kwargs["published_at"] is None
+    assert mock_put_article.call_args.kwargs["published_by"] is None
+    assert mock_put_moderation.call_args.kwargs["reasons"] == [daily_cycle_handler.TRUNCATED_DRAFT_REASON]
+
+
+def test_the_truncated_reason_comes_first_ahead_of_the_compliance_reasons(s3_bucket):
+    result, _, _, mock_put_moderation, _ = _run_with_review(draft_stop_reason="max_tokens", compliant=False)
+
+    expected = [daily_cycle_handler.TRUNCATED_DRAFT_REASON, "needs a look"]
+    assert result["reasons"] == expected
+    assert mock_put_moderation.call_args.kwargs["reasons"] == expected
+
+
+def test_a_truncated_financial_draft_says_so_too(s3_bucket):
+    result, _, _, mock_put_moderation, _ = _run_with_review(
+        draft_stop_reason="max_tokens", topic=FINANCIAL_TOPIC, compliant=False
+    )
+
+    assert result["reasons"][0] == daily_cycle_handler.TRUNCATED_DRAFT_REASON
+    assert mock_put_moderation.call_args.kwargs["reasons"][0] == daily_cycle_handler.TRUNCATED_DRAFT_REASON
+
+
+def test_the_truncated_body_is_still_stored_so_a_person_can_see_what_there_is(s3_bucket):
+    _, _, mock_put_article, _, _ = _run_with_review(draft_stop_reason="max_tokens")
+
+    key = mock_put_article.call_args.kwargs["body_s3_key"]
+    body = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=key)["Body"].read().decode("utf-8")
+    assert body.startswith("# Draft body")
+
+
+def test_the_drafts_stop_reason_is_recorded_in_its_lineage(s3_bucket):
+    _, _, _, _, lineage_calls = _run_with_review(draft_stop_reason="end_turn")
+
+    call = _draft_lineage_call(lineage_calls)
+    assert call["stop_reason"] == "end_turn" and "attempts" not in call
+
+
+def test_a_draft_that_needed_the_retry_but_finished_is_published_and_the_retry_is_recorded(s3_bucket):
+    result, _, _, _, lineage_calls = _run_with_review(draft_stop_reason="end_turn", draft_attempts=2)
+
+    assert result["status"] == "published"
+    assert _draft_lineage_call(lineage_calls)["attempts"] == 2
+
+
+def test_a_truncated_drafts_lineage_says_so(s3_bucket):
+    _, _, _, _, lineage_calls = _run_with_review(draft_stop_reason="max_tokens", draft_attempts=2)
+
+    call = _draft_lineage_call(lineage_calls)
+    assert call["stop_reason"] == "max_tokens" and call["attempts"] == 2
