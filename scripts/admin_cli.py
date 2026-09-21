@@ -427,6 +427,16 @@ def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
     _do_request(args, "PUT", "/pipeline-config", body=body)
 
 
+# --- review subcommands -------------------------------------------------
+
+
+def _cmd_review_report(args: argparse.Namespace) -> None:
+    path = "/review/report"
+    if args.sample is not None:
+        path += f"?sample={args.sample}"
+    _do_request(args, "GET", path)
+
+
 # --- lineage subcommands ------------------------------------------------
 
 
@@ -773,6 +783,25 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)
+
+    review_parser = subparsers.add_parser(
+        "review", help="How the fresh-data review of drafts is doing"
+    )
+    review_sub = review_parser.add_subparsers(dest="action", required=True)
+    review_report_parser = review_sub.add_parser(
+        "report",
+        help=(
+            "Counts by outcome and topic, and what enforcement would have held and "
+            "revised, from the records stored on articles"
+        ),
+    )
+    review_report_parser.add_argument(
+        "--sample",
+        type=int,
+        default=None,
+        help="How many recent flagged claims to include for checking by eye (default 10, max 50)",
+    )
+    review_report_parser.set_defaults(func=_cmd_review_report)
 
     lineage_parser = subparsers.add_parser("lineage", help="Audit and repair article lineage/cost data")
     lineage_sub = lineage_parser.add_subparsers(dest="action", required=True)

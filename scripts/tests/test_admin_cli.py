@@ -769,3 +769,22 @@ def test_topics_create_accepts_a_review_mode():
 def test_a_topic_review_mode_that_does_not_exist_is_refused_by_the_cli():
     with pytest.raises(SystemExit):
         _run(["topics", "update", "my-topic", "--review-mode", "bogus"])
+
+
+def test_review_report_gets_the_report_route():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["review", "report"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/review/report", "ap-southeast-2", body=None
+    )
+
+
+def test_review_report_passes_the_sample_size_through():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["review", "report", "--sample", "25"])
+    assert m.call_args.args[2] == "/review/report?sample=25"
+
+
+def test_review_report_rejects_a_non_numeric_sample():
+    with pytest.raises(SystemExit):
+        _run(["review", "report", "--sample", "lots"])
