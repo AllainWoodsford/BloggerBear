@@ -705,6 +705,39 @@ a {
   color: var(--fg);
 }
 
+/* Feedback closed (a locked article, a pause, the daily or rate limit): the form is replaced by
+   this, with the reason. The static article pages start their buttons hidden and reveal them once
+   the API says feedback is open, so the hidden attribute has to win over display: flex. */
+.feedback-buttons[hidden] {
+  display: none;
+}
+
+.feedback-closed {
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.feedback-closed p {
+  margin: 0 0 6px;
+}
+
+.feedback-closed-headline {
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.feedback-closed-reason {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.feedback-closed-retry {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .feedback-buttons {
   display: flex;
   gap: 8px;

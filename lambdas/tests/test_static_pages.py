@@ -444,3 +444,18 @@ def test_the_site_html_footers_have_a_paw_between_every_pair_of_links():
             paws = len(re.findall(r'<span class="paw" aria-hidden="true">&#128062;</span>', group))
             assert paws == max(links - 1, 0), (name, group)
         assert '<span class="footer-item"><a ' in footer
+
+
+def test_static_page_feedback_buttons_start_hidden_until_the_api_says_feedback_is_open(s3):
+    static_pages.render_and_publish_article_page(
+        article_id="fb1",
+        title="T",
+        body_markdown="Body.",
+        topic_name="Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+    )
+    html = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/fb1.html")["Body"].read().decode()
+
+    # A closed article must never flash its buttons: article-widgets.js reveals them.
+    assert '<div class="feedback-buttons" hidden>' in html
+    assert 'data-role="upvote"' in html and 'data-role="feedback-status"' in html

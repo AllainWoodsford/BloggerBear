@@ -788,3 +788,122 @@ def test_review_report_passes_the_sample_size_through():
 def test_review_report_rejects_a_non_numeric_sample():
     with pytest.raises(SystemExit):
         _run(["review", "report", "--sample", "lots"])
+
+
+# --- feedback-config and article feedback locks -------------------------------------------
+
+
+def test_feedback_config_get():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["feedback-config", "get"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/feedback-config", "ap-southeast-2", body=None
+    )
+
+
+def test_feedback_config_set_every_setting():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "feedback-config",
+                "set",
+                "--locked-down",
+                "true",
+                "--lockdown-reason",
+                "Back soon",
+                "--rate-limit",
+                "20",
+                "--rate-window-minutes",
+                "5",
+                "--daily-limit",
+                "100",
+                "--article-limit",
+                "50",
+                "--daily-timezone",
+                "Australia/Sydney",
+            ]
+        )
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/feedback-config")
+    assert m.call_args.kwargs["body"] == {
+        "locked_down": True,
+        "lockdown_reason": "Back soon",
+        "rate_limit_count": 20,
+        "rate_limit_window_minutes": 5,
+        "daily_limit": 100,
+        "article_limit": 50,
+        "daily_timezone": "Australia/Sydney",
+    }
+
+
+def test_feedback_config_set_only_sends_what_was_given():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["feedback-config", "set", "--rate-limit", "10"])
+    assert m.call_args.kwargs["body"] == {"rate_limit_count": 10}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["feedback-config", "set", "--locked-down", "false"])
+    assert m.call_args.kwargs["body"] == {"locked_down": False}
+
+
+def test_feedback_config_set_an_empty_string_clears_a_setting():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "feedback-config",
+                "set",
+                "--rate-limit",
+                "",
+                "--locked-down",
+                "",
+                "--lockdown-reason",
+                "",
+                "--daily-timezone",
+                "",
+            ]
+        )
+    assert m.call_args.kwargs["body"] == {
+        "rate_limit_count": None,
+        "locked_down": None,
+        "lockdown_reason": None,
+        "daily_timezone": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--rate-limit", "many"],
+        ["--daily-limit", "2.5"],
+        ["--locked-down", "maybe"],
+    ],
+)
+def test_feedback_config_set_bad_values_are_refused_before_any_request(args, capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["feedback-config", "set", *args])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+
+
+def test_feedback_config_set_with_nothing_to_set_is_refused(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["feedback-config", "set"])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "at least one of" in capsys.readouterr().err
+
+
+def test_articles_feedback_lock_and_unlock():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["articles", "feedback-lock", "art-1"])
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/articles/art-1/feedback-lock")
+    assert m.call_args.kwargs["body"] == {"locked": True}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["articles", "feedback-unlock", "art-1"])
+    assert m.call_args.kwargs["body"] == {"locked": False, "reset_count": False}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["articles", "feedback-unlock", "art-1", "--reset-count"])
+    assert m.call_args.kwargs["body"] == {"locked": False, "reset_count": True}

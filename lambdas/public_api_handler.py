@@ -40,6 +40,7 @@ from xml.sax.saxutils import escape
 
 import boto3
 
+from common import feedback_limits
 from common.comment_screening import screen_comment
 from common.dynamo import (
     get_article,
@@ -337,6 +338,28 @@ def _view_article(event: dict) -> dict:
 # comment was kept, and nothing about why.
 
 
+# Why feedback is closed -> the HTTP status of the refusal: a lock or pause is 423, a limit that
+# reopens by itself is 429, the limiter being unreadable is 503.
+_CLOSED_STATUS = {
+    feedback_limits.ARTICLE_LOCKED: 423,
+    feedback_limits.ARTICLE_LIMIT: 423,
+    feedback_limits.LOCKDOWN: 423,
+    feedback_limits.DAILY_LIMIT: 429,
+    feedback_limits.RATE_LIMIT: 429,
+    feedback_limits.UNAVAILABLE: 503,
+}
+
+
+def _feedback_status(event: dict) -> dict:
+    """Is feedback open for this article, and if not, why? The page hides its form and shows the
+    reason instead. Read-only: it counts nothing."""
+    article_id = _path_param(event, "article_id")
+    article = _get_published_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+    return _response(200, feedback_limits.status_for(article))
+
+
 def _submit_feedback(event: dict) -> dict:
     article_id = _path_param(event, "article_id")
     article = _get_published_article(article_id)
@@ -353,6 +376,16 @@ def _submit_feedback(event: dict) -> dict:
     vote = payload.get("vote")
     if vote not in ("up", "down"):
         return _error(400, "'vote' must be 'up' or 'down'")
+
+    # One piece of feedback against the article, the day and the rate limit (see
+    # common/feedback_limits.py). Refused before anything is screened or written, so a closed
+    # site costs no model call and stores nothing.
+    status = feedback_limits.acquire(article)
+    if not status["open"]:
+        return _response(
+            _CLOSED_STATUS.get(status["reason"], 423),
+            {"error": "feedback is closed", "feedback": status},
+        )
 
     screened = screen_comment(
         payload.get("comment"), article.get("title") or "", os.environ["BEDROCK_MODEL_ID"]
@@ -496,6 +529,7 @@ _ROUTES = {
     "GET /articles": _list_articles,
     "GET /articles/{article_id}": _get_article_detail,
     "POST /articles/{article_id}/view": _view_article,
+    "GET /articles/{article_id}/feedback-status": _feedback_status,
     "POST /articles/{article_id}/feedback": _submit_feedback,
     "GET /musings": _list_musings,
     "GET /stats": _stats,
