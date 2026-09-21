@@ -707,3 +707,22 @@ def test_pipeline_config_set_with_nothing_to_set_is_refused(capsys):
 def test_pipeline_config_review_mode_rejects_a_value_that_does_not_exist_yet():
     with pytest.raises(SystemExit):
         _run(["pipeline-config", "set", "--review-mode", "enforce"])
+
+
+def test_review_report_gets_the_report_route():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["review", "report"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/review/report", "ap-southeast-2", body=None
+    )
+
+
+def test_review_report_passes_the_sample_size_through():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["review", "report", "--sample", "25"])
+    assert m.call_args.args[2] == "/review/report?sample=25"
+
+
+def test_review_report_rejects_a_non_numeric_sample():
+    with pytest.raises(SystemExit):
+        _run(["review", "report", "--sample", "lots"])

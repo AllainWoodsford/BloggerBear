@@ -610,6 +610,9 @@ module "admin_api" {
     # models with no known price; `backfill` recomputes cost from stored tokens
     # (a dry run unless {"apply": true}). See admin_api_handler.py's _lineage_*
     # and `admin_cli lineage`.
+    # How the fresh-data review is doing (counts, and what enforcement would have held).
+    # See admin_api_handler.py's _review_report and `admin_cli review report`.
+    "GET /review/report",
     "GET /lineage/audit",
     "POST /lineage/backfill",
     "GET /moderation-queue",
