@@ -4,6 +4,8 @@ A local operator CLI for the Phase 2 Admin API. This is a plain script you
 run on your own machine -- it is **not** deployed to Lambda or anywhere
 else.
 
+**New here, or just need the export commands?** See [QUICKSTART.md](QUICKSTART.md).
+
 ## Why a CLI, not a web page
 
 The Admin API requires AWS SigV4 (IAM) auth and is additionally restricted
