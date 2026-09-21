@@ -408,7 +408,13 @@ def _cmd_pipeline_config_get(args: argparse.Namespace) -> None:
 
 
 def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
-    body = {"research_interval_hours": _parse_interval_hours(args.research_interval_hours)}
+    body: dict = {}
+    if args.research_interval_hours is not None:
+        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+    if args.review_mode is not None:
+        body["review_mode"] = args.review_mode or None  # '' clears it (back to the default)
+    if not body:
+        raise CliError("pipeline-config set needs --research-interval-hours and/or --review-mode")
     _do_request(args, "PUT", "/pipeline-config", body=body)
 
 
@@ -702,20 +708,31 @@ def build_parser() -> argparse.ArgumentParser:
     unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
 
     pipeline_config_parser = subparsers.add_parser(
-        "pipeline-config", help="Pipeline-wide settings (the default research interval)"
+        "pipeline-config",
+        help="Pipeline-wide settings (the default research interval, the draft review mode)",
     )
     pipeline_config_sub = pipeline_config_parser.add_subparsers(dest="action", required=True)
     pipeline_config_sub.add_parser("get", help="Show the pipeline-wide settings").set_defaults(
         func=_cmd_pipeline_config_get
     )
     pipeline_config_set = pipeline_config_sub.add_parser(
-        "set", help="Set the default research interval for topics that don't set their own"
+        "set", help="Set pipeline-wide settings (send either or both; a setting not sent is unchanged)"
     )
     pipeline_config_set.add_argument(
         "--research-interval-hours",
         dest="research_interval_hours",
-        required=True,
+        default=None,
         help="Whole hours between real research runs (1-168); '' clears it (back to 1)",
+    )
+    pipeline_config_set.add_argument(
+        "--review-mode",
+        dest="review_mode",
+        default=None,
+        choices=["off", "shadow", ""],
+        help=(
+            "Fresh-data review of drafts: 'shadow' runs and records it without changing any "
+            "outcome (the default), 'off' skips it; '' clears it (back to the default)"
+        ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)
 

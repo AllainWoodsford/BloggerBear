@@ -36,12 +36,8 @@ from datetime import UTC, date, datetime, timedelta
 
 import boto3
 
-from common.adapters import CRYPTO_FEED_ADAPTER_KEY, WEB_SEARCH_ADAPTER_KEY
 from common.adapters.base import SEEN_KEY
-from common.adapters.crypto_feed import CryptoFeedAdapter
-from common.adapters.github_trending import GitHubTrendingAdapter
-from common.adapters.hacker_news import HackerNewsAdapter
-from common.adapters.web_search import WebSearchAdapter
+from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.dynamo import (
     get_latest_finding,
@@ -60,20 +56,6 @@ COMPACT_STATE_MAX_CHARS = 4000
 # source can't grow the snapshot without bound.
 SEEN_RETENTION_DAYS = 7
 SEEN_MAX_KEYS = 2000
-
-# Maps a Topic's `adapter` field to the concrete Adapter implementation.
-# Adding a new domain means adding one line here plus a new adapter module --
-# no change to the flow below (docs/project-plan.md §2 rule 5). Phase 7
-# added hacker_news and crypto_feed (the latter's registry key comes from
-# common/adapters -- see that module for why it's shared rather than a
-# literal here) without touching a single line of the handler function
-# below, confirming that promise.
-ADAPTER_REGISTRY = {
-    "github_trending": GitHubTrendingAdapter,
-    "hacker_news": HackerNewsAdapter,
-    CRYPTO_FEED_ADAPTER_KEY: CryptoFeedAdapter,
-    WEB_SEARCH_ADAPTER_KEY: WebSearchAdapter,
-}
 
 _s3_client = None
 

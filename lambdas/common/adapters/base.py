@@ -7,6 +7,7 @@ outside of the small registry lookup.
 """
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 
 # Reserved snapshot key. The research tick records, in every snapshot it
@@ -15,6 +16,20 @@ from abc import ABC, abstractmethod
 # snapshot. An item that drops out of a feed and comes back is not news.
 # Adapters never write it -- they only read it through `known_keys`.
 SEEN_KEY = "_seen"
+
+# The most fresh evidence, as text, handed to the fresh-data reviewer.
+REVIEW_EVIDENCE_MAX_CHARS = 6000
+
+
+def render_review_evidence(payload: dict, max_chars: int = REVIEW_EVIDENCE_MAX_CHARS) -> str:
+    """Compact JSON text for the reviewer. Keys starting with "_" are internal
+    bookkeeping (like SEEN_KEY) and never shown; the text is capped, and says so."""
+    shown = {key: value for key, value in payload.items() if not str(key).startswith("_")}
+    text = json.dumps(shown, separators=(",", ":"), default=str)
+    if len(text) > max_chars:
+        return text[:max_chars] + "...[truncated]"
+    return text
+
 
 
 class Adapter(ABC):
@@ -47,6 +62,23 @@ class Adapter(ABC):
         counts as a change.
         """
         raise NotImplementedError
+
+    def review_evidence(self, topic_config: dict, latest_state: dict | None) -> str | None:
+        """Current data for the fresh-data review (docs/project-plan.md §11): what the
+        source says *now*, as text, for comparing an article's claims against.
+
+        `latest_state` is the topic's most recent stored snapshot (None if it cannot be
+        loaded), so an adapter can re-check *what it was looking at*. The default
+        re-runs the adapter's normal fetch; an adapter whose fetch samples something
+        new every time (the crypto feed's random pool) overrides this to look at the
+        same things again. Return None to opt the topic out of the review. Raising is
+        fine: the caller treats any failure as "review unavailable", never as a pass.
+        """
+        if self.uses_previous_state:
+            state = self.fetch_state(topic_config, previous_state=latest_state)
+        else:
+            state = self.fetch_state(topic_config)
+        return render_review_evidence(state)
 
     def item_keys(self, state: dict) -> set[str]:
         """Stable identifiers (a URL, an id, a repo name) for each individual
