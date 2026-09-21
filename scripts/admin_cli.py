@@ -298,6 +298,12 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
     topic_id = args.topic_id
     pipeline = args.pipeline
 
+    body: dict = {"pipeline": pipeline}
+    if args.force:
+        if pipeline != "daily_cycle":
+            raise CliError("--force only applies to --pipeline daily_cycle")
+        body["force"] = True
+
     # Captured before firing the trigger so "finished" can mean "produced
     # something new", not just "produced something" -- a topic already
     # sitting on findings/candidates from a previous run would otherwise
@@ -310,7 +316,7 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
         else:
             baseline_candidate_count = _candidate_count(args, topic_id)
 
-    _do_request(args, "POST", f"/topics/{topic_id}/trigger", body={"pipeline": pipeline})
+    _do_request(args, "POST", f"/topics/{topic_id}/trigger", body=body)
 
     if not args.wait:
         return
@@ -350,8 +356,9 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
         else:
             print(
                 f"No new candidates after {_DAILY_CYCLE_TIMEOUT_SECONDS}s. This can mean there "
-                "were no recent Findings to draft from yet (run research_tick first and confirm "
-                "it produced a Finding), or a real failure -- check the logs:\n"
+                "were no Findings newer than the topic's last article (run research_tick first "
+                "and confirm it produced a Finding, or pass --force to rewrite from the "
+                "whole last-24h window), or a real failure -- check the logs:\n"
                 "  aws logs tail /aws/lambda/<daily-cycle function name> --since 5m",
                 file=sys.stderr,
             )
@@ -586,6 +593,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Don't poll for completion after triggering -- just fire the request and "
             "return immediately (the old behavior). Default is to wait and report when "
             "the pipeline has actually finished, since the trigger itself is asynchronous."
+        ),
+    )
+    trigger_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "daily_cycle only: write an article from the whole last-24h window even if "
+            "the topic already has one since (the default is to write only from findings "
+            "newer than its last article, so a repeat run with nothing new is a no-op)"
         ),
     )
     trigger_parser.set_defaults(func=_cmd_topics_trigger)

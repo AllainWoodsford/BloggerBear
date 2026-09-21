@@ -425,9 +425,15 @@ is) stays inside each adapter; the handlers only ask the adapter.
   background, and forbids adding facts, figures, causes or sources the data
   does not contain.
 - *Articles read the whole window (B).* The daily cycle reads every finding
-  from the last 24h (cap 48, 40k characters, oldest dropped first) instead of
-  the 5 newest. Nothing new in the window means no article, not one rewritten
-  from findings the last run already covered.
+  since the topic's previous article, at most 24h back (cap 48, 40k
+  characters, oldest dropped first), instead of the 5 newest. The topic
+  records `last_article_at` (the run's *start* time, written only after an
+  article exists and never allowed to fail the run, since a retry would write
+  a duplicate), so a second run with nothing found since the first -- a manual
+  run followed by the scheduled one -- writes nothing rather than rewriting the
+  same findings. A topic with no `last_article_at` yet uses the plain 24h
+  window. `topics trigger --pipeline daily_cycle --force` ignores it for an
+  intentional regenerate.
 - *Not done:* (C) the fresh-data review; fetching a news feed alongside the
   crypto analysis days (crypto-specific; adapter-level follow-up).
 

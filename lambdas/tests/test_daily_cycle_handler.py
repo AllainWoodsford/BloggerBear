@@ -159,6 +159,157 @@ def test_a_topic_with_nothing_new_in_the_window_writes_no_article(s3_bucket):
     mock_put_article.assert_not_called()
 
 
+# --- the window starts at the topic's last article ----------------------------
+
+_RUN = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
+_DAY_BEFORE = (_RUN - timedelta(hours=24)).isoformat()
+
+
+def _recent_topic(hours_ago=2, **extra):
+    stamp = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
+    return {**NON_FINANCIAL_TOPIC, "last_article_at": stamp, **extra}
+
+
+def test_window_is_the_last_day_when_the_topic_has_no_previous_article():
+    assert daily_cycle_handler._window_start({}, _RUN, force=False) == _DAY_BEFORE
+
+
+def test_window_starts_at_the_last_article_when_that_is_within_the_day():
+    last = _RUN - timedelta(hours=3)
+
+    since = daily_cycle_handler._window_start({"last_article_at": last.isoformat()}, _RUN, force=False)
+
+    assert since == last.isoformat()
+
+
+def test_window_never_reaches_back_past_a_day_even_if_the_last_article_is_older():
+    last = _RUN - timedelta(days=5)
+
+    since = daily_cycle_handler._window_start({"last_article_at": last.isoformat()}, _RUN, force=False)
+
+    assert since == _DAY_BEFORE
+
+
+def test_force_ignores_the_last_article():
+    last = _RUN - timedelta(hours=3)
+
+    since = daily_cycle_handler._window_start({"last_article_at": last.isoformat()}, _RUN, force=True)
+
+    assert since == _DAY_BEFORE
+
+
+@pytest.mark.parametrize("bad", ["not a date", 12345, ""])
+def test_an_unreadable_last_article_falls_back_to_the_last_day(bad):
+    since = daily_cycle_handler._window_start({"last_article_at": bad}, _RUN, force=False)
+
+    assert since == _DAY_BEFORE
+
+
+def test_a_naive_last_article_timestamp_is_read_as_utc():
+    last = (_RUN - timedelta(hours=2)).replace(tzinfo=None)
+
+    since = daily_cycle_handler._window_start({"last_article_at": last.isoformat()}, _RUN, force=False)
+
+    assert since == last.replace(tzinfo=UTC).isoformat()
+
+
+def test_handler_passes_the_window_start_to_the_findings_query(s3_bucket):
+    topic = _recent_topic()
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=topic),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]) as mock_list,
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert mock_list.call_args.kwargs["since"] == topic["last_article_at"]
+
+
+def test_a_forced_run_reads_the_whole_window(s3_bucket):
+    before = datetime.now(UTC)
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=_recent_topic()),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]) as mock_list,
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending", "force": True}, None)
+
+    since = datetime.fromisoformat(mock_list.call_args.kwargs["since"])
+    assert since <= before - timedelta(hours=24) + timedelta(seconds=5)
+
+
+def test_only_a_literal_true_forces_a_run(s3_bucket):
+    topic = _recent_topic()
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=topic),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]) as mock_list,
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending", "force": "true"}, None)
+
+    assert mock_list.call_args.kwargs["since"] == topic["last_article_at"]
+
+
+def _run_a_full_cycle(compliant=True, record_side_effect=None):
+    responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in responses],
+        ),
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": compliant, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article"),
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+        patch(
+            "daily_cycle_handler.set_topic_last_article_at", side_effect=record_side_effect
+        ) as mock_set,
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+    return result, mock_set
+
+
+@pytest.mark.parametrize("compliant,status", [(True, "published"), (False, "pending_moderation")])
+def test_an_article_records_when_the_run_began_whether_published_or_moderated(
+    s3_bucket, compliant, status
+):
+    before = datetime.now(UTC)
+    result, mock_set = _run_a_full_cycle(compliant=compliant)
+    after = datetime.now(UTC)
+
+    assert result["status"] == status
+    topic_id, stamp = mock_set.call_args.args
+    assert topic_id == "github-trending"
+    assert before <= datetime.fromisoformat(stamp) <= after
+
+
+def test_failing_to_record_the_last_article_does_not_fail_the_run(s3_bucket):
+    # An error here would make Step Functions retry and write a duplicate article.
+    result, mock_set = _run_a_full_cycle(record_side_effect=RuntimeError("throttled"))
+
+    assert result["status"] == "published"
+    mock_set.assert_called_once()
+
+
+def test_no_article_means_nothing_is_recorded(s3_bucket):
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]),
+        patch("daily_cycle_handler.set_topic_last_article_at") as mock_set,
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    mock_set.assert_not_called()
+
+
 def test_format_findings_summaries_keeps_everything_when_it_fits():
     findings = [{"summary": "newest"}, {"summary": "older"}]
 

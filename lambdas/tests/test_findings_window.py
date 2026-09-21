@@ -68,6 +68,44 @@ def test_since_still_honours_the_limit_and_the_topic(findings_table):
     ] == "other"
 
 
+@pytest.fixture
+def topics_table(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("TOPICS_TABLE", "Topics")
+    dynamo._dynamodb_resource = None
+    with mock_aws():
+        boto3.client("dynamodb", region_name=REGION).create_table(
+            TableName="Topics",
+            KeySchema=[{"AttributeName": "topic_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "topic_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+        table.put_item(Item={"topic_id": "t", "name": "T", "adapter": "web_search"})
+        yield table
+
+
+def test_set_topic_last_article_at_changes_only_that_field(topics_table):
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00")
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item == {
+        "topic_id": "t",
+        "name": "T",
+        "adapter": "web_search",
+        "last_article_at": "2026-09-21T09:00:00+00:00",
+    }
+
+
+def test_set_topic_last_article_at_does_not_create_a_missing_topic(topics_table):
+    with pytest.raises(topics_table.meta.client.exceptions.ConditionalCheckFailedException):
+        dynamo.set_topic_last_article_at("deleted", "2026-09-21T09:00:00+00:00")
+
+    assert "Item" not in topics_table.get_item(Key={"topic_id": "deleted"})
+
+
 # --- the adapter contract behind "what counts as new" -----------------------
 
 
