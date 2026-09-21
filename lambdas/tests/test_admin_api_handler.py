@@ -636,6 +636,62 @@ def test_trigger_daily_cycle_invokes_lambda(aws_resources):
     )
 
 
+def test_trigger_daily_cycle_can_be_forced(aws_resources):
+    _put_topic()
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "github-trending"},
+            body={"pipeline": "daily_cycle", "force": True},
+        )
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 202
+    mock_client.invoke.assert_called_once_with(
+        FunctionName="daily-cycle-fn",
+        InvocationType="Event",
+        Payload=json.dumps({"topic_id": "github-trending", "force": True}).encode("utf-8"),
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"pipeline": "research_tick", "force": True},
+        {"pipeline": "daily_cycle", "force": "yes"},
+    ],
+)
+def test_trigger_rejects_force_on_the_wrong_pipeline_or_a_non_boolean(aws_resources, body):
+    _put_topic()
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "github-trending"},
+            body=body,
+        )
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 400
+    mock_client.invoke.assert_not_called()
+
+
+def test_trigger_force_false_sends_the_default_payload(aws_resources):
+    _put_topic()
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "github-trending"},
+            body={"pipeline": "daily_cycle", "force": False},
+        )
+        admin_api_handler.handler(event, None)
+
+    payload = json.loads(mock_client.invoke.call_args.kwargs["Payload"])
+    assert payload == {"topic_id": "github-trending"}
+
+
 def test_trigger_invalid_pipeline_returns_400(aws_resources):
     _put_topic()
     event = _event(
