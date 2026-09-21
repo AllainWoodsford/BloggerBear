@@ -78,6 +78,11 @@ def test_defaults_when_nothing_is_configured():
         "daily_limit": 100,
         "article_limit": 50,
         "screening_limit": 300,
+        "verification_required": True,
+        "token_delay_min_ms": 500,
+        "token_delay_max_ms": 2000,
+        "pow_threshold_percent": 70,
+        "pow_difficulty_bits": 16,
         "daily_timezone": "Australia/Sydney",
     }
 
@@ -89,6 +94,11 @@ def test_configured_values_are_used():
         daily_limit=7,
         article_limit=2,
         screening_limit=11,
+        token_delay_min_ms=100,
+        token_delay_max_ms=300,
+        pow_threshold_percent=40,
+        pow_difficulty_bits=12,
+        verification_required=False,
         locked_down=True,
         lockdown_reason="  Back soon  ",
         daily_timezone="UTC",
@@ -102,6 +112,11 @@ def test_configured_values_are_used():
         "daily_limit": 7,
         "article_limit": 2,
         "screening_limit": 11,
+        "verification_required": False,
+        "token_delay_min_ms": 100,
+        "token_delay_max_ms": 300,
+        "pow_threshold_percent": 40,
+        "pow_difficulty_bits": 12,
         "daily_timezone": "UTC",
     }
 

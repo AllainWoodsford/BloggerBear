@@ -27,6 +27,10 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
+    # A fresh signing key per test (it is cached in the module and the table is new each time).
+    from common import feedback_verification
+
+    feedback_verification._secret_cache = None
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("SITE_URL", "https://example.cloudfront.net")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "model-id")
@@ -92,6 +96,11 @@ def aws_resources(aws_env):
             KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
+        )
+        # Tokens are valid at once in these tests (the real default waits 0.5 to 2 seconds); the
+        # verification tests below set their own delays.
+        boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig").put_item(
+            Item={"config_id": "feedback", "token_delay_min_ms": 0, "token_delay_max_ms": 0}
         )
         dynamodb.create_table(
             TableName="Models",
@@ -542,7 +551,13 @@ def test_feedback_status_is_open_by_default(aws_resources):
     code, body = _feedback_status()
 
     assert code == 200
-    assert body == {"open": True, "reason": None, "label": None, "retry_at": None}
+    assert {k: body[k] for k in ("open", "reason", "label", "retry_at")} == {
+        "open": True,
+        "reason": None,
+        "label": None,
+        "retry_at": None,
+    }
+    assert body["verification"]["token"]  # the form's one-use token comes with it
 
 
 def test_feedback_status_of_an_unknown_or_unpublished_article_is_404(aws_resources):
@@ -662,7 +677,7 @@ def _submit_to(article_id):
     event = _event(
         "POST /articles/{article_id}/feedback",
         path_params={"article_id": article_id},
-        body={"vote": "up"},
+        body={"vote": "up", "token": _issue_token(article_id)},
     )
     return public_api_handler.handler(event, None)
 
@@ -900,6 +915,240 @@ def test_a_closed_site_does_not_use_a_screening_check(aws_resources, monkeypatch
 
     assert result["statusCode"] == 423
     assert _counters() == {}
+
+
+
+# --- Verification: the token, the honeypot ------------------------------------------------------
+
+
+def _post(body, article_id="article-1"):
+    event = _event(
+        "POST /articles/{article_id}/feedback",
+        path_params={"article_id": article_id},
+        body=body,
+    )
+    result = public_api_handler.handler(event, None)
+    return result, json.loads(result["body"])
+
+
+def _status_body(article_id="article-1"):
+    event = _event(
+        "GET /articles/{article_id}/feedback-status", path_params={"article_id": article_id}
+    )
+    return json.loads(public_api_handler.handler(event, None)["body"])
+
+
+def test_feedback_status_hands_out_a_token_when_open(aws_resources):
+    _put_article()
+
+    body = _status_body()
+
+    assert body["open"] is True
+    verification = body["verification"]
+    assert verification["token"].startswith("v1.")
+    assert verification["wait_ms"] == 0 and verification["pow_bits"] == 0  # the test config
+
+
+def test_feedback_status_hands_out_no_token_when_closed(aws_resources):
+    _put_article()
+    _set_feedback_config(locked_down=True)
+
+    body = _status_body()
+
+    assert body["open"] is False and "verification" not in body
+
+
+def test_feedback_status_hands_out_no_token_when_verification_is_off(aws_resources):
+    _put_article()
+    _set_feedback_config(verification_required=False)
+
+    assert "verification" not in _status_body()
+
+
+def test_feedback_status_is_unavailable_if_the_signing_key_cannot_be_read(aws_resources, monkeypatch):
+    _put_article()
+    monkeypatch.setattr(
+        "common.feedback_verification.get_verification_secret",
+        lambda: (_ for _ in ()).throw(RuntimeError("dynamodb down")),
+    )
+
+    body = _status_body()
+
+    assert body["open"] is False and body["reason"] == "unavailable"
+
+
+def test_a_submission_without_a_token_is_refused_with_403(aws_resources, monkeypatch):
+    _put_article()
+    monkeypatch.setattr("common.comment_screening.invoke_claude", _unexpected_call)
+
+    result, body = _post({"vote": "up", "comment": "A perfectly reasonable comment."})
+
+    assert result["statusCode"] == 403
+    assert body == {
+        "error": "verification failed",
+        "verification": {"reason": "missing", "retry_after_ms": None},
+    }
+    _nothing_was_recorded_or_counted()  # refused before anything is screened or counted
+
+
+def test_a_forged_or_wrong_article_token_is_refused(aws_resources):
+    _put_article()
+    _put_article("article-2")
+
+    forged = _post({"vote": "up", "token": "v1.eyJhIjoiYXJ0aWNsZS0xIn0.AAAA"})[1]
+    other = _post({"vote": "up", "token": _issue_token("article-2")})[1]
+
+    assert forged["verification"]["reason"] == "invalid"
+    assert other["verification"]["reason"] == "wrong_article"
+    _nothing_was_recorded_or_counted()
+
+
+def test_a_token_works_once_and_a_replay_is_refused(aws_resources):
+    _put_article()
+    token = _issue_token()
+
+    first, _ = _post({"vote": "up", "token": token})
+    replay, body = _post({"vote": "up", "token": token})
+
+    assert first["statusCode"] == 201
+    assert replay["statusCode"] == 403 and body["verification"]["reason"] == "used"
+    assert int(_get_article_item()["feedback_count"]) == 1  # the replay counted for nothing
+
+
+def test_a_token_too_early_is_refused_and_says_how_long_to_wait(aws_resources):
+    _put_article()
+    _set_feedback_config(token_delay_min_ms=30_000, token_delay_max_ms=30_000)
+    token = _issue_token()
+
+    result, body = _post({"vote": "up", "token": token})
+
+    assert result["statusCode"] == 403
+    assert body["verification"]["reason"] == "too_early"
+    assert 20_000 < body["verification"]["retry_after_ms"] <= 30_000
+    _nothing_was_recorded_or_counted()
+
+
+def test_a_token_refused_as_too_early_is_not_spent(aws_resources, monkeypatch):
+    _put_article()
+    _set_feedback_config(token_delay_min_ms=1, token_delay_max_ms=1)
+    token = _issue_token()
+    assert _post({"vote": "up", "token": token})[0]["statusCode"] in (201, 403)
+
+    # A fresh token, with the clock moved past its delay by the test itself.
+    from datetime import UTC, datetime, timedelta
+
+    from common import feedback_verification
+
+    real_now = datetime.now(UTC)
+    _set_feedback_config(token_delay_min_ms=5_000, token_delay_max_ms=5_000)
+    late = _issue_token()
+    assert _post({"vote": "up", "token": late})[1]["verification"]["reason"] == "too_early"
+    monkeypatch.setattr(
+        feedback_verification,
+        "datetime",
+        type("D", (), {"now": staticmethod(lambda tz=None: real_now + timedelta(seconds=10))}),
+    )
+
+    result, _ = _post({"vote": "up", "token": late})
+
+    assert result["statusCode"] == 201  # the very same token, once it was old enough
+
+
+def test_a_closed_site_says_so_even_without_a_token(aws_resources):
+    _put_article()
+    _set_feedback_config(locked_down=True, lockdown_reason="Back soon")
+
+    result, body = _post({"vote": "up"})
+
+    assert result["statusCode"] == 423
+    assert body["feedback"]["label"] == "Back soon"
+
+
+def test_with_verification_off_a_submission_needs_no_token(aws_resources):
+    _put_article()
+    _set_feedback_config(verification_required=False)
+
+    result, _ = _post({"vote": "up"})
+
+    assert result["statusCode"] == 201
+
+
+def test_work_is_required_when_the_site_is_busy_and_the_right_answer_is_accepted(aws_resources):
+    from common import feedback_verification as fv
+
+    _put_article()
+    _set_feedback_config(rate_limit_count=10, pow_threshold_percent=10, pow_difficulty_bits=8)
+    assert _submit("up")[0]["statusCode"] == 201  # 1 of 10 = 10%: the site is now "busy"
+
+    issued = _status_body()["verification"]
+    assert issued["pow_bits"] == 8
+    token = issued["token"]
+    without, body = _post({"vote": "up", "token": token})
+    assert without["statusCode"] == 403 and body["verification"]["reason"] == "work"
+
+    nonce = next(n for n in range(10**6) if fv.work_is_valid(token, n, 8))
+    with_work, _ = _post({"vote": "up", "token": token, "work": nonce})
+    assert with_work["statusCode"] == 201
+
+
+def test_a_rejected_comment_spends_its_token(aws_resources, monkeypatch):
+    _put_article()
+    _model_says(monkeypatch, "DROP")
+    token = _issue_token()
+
+    rejected = _post({"vote": "up", "token": token, "comment": "rude and unhelpful"})[0]
+    again = _post({"vote": "up", "token": token})[1]
+
+    assert rejected["statusCode"] == 422
+    assert again["verification"]["reason"] == "used"  # the page fetches a fresh one to retry
+
+
+def test_the_honeypot_gets_a_fake_success_and_nothing_is_stored_or_counted(aws_resources, monkeypatch):
+    _put_article()
+    monkeypatch.setattr("common.comment_screening.invoke_claude", _unexpected_call)
+    token = _issue_token()
+
+    result, body = _post({"vote": "up", "token": token, "extra_note": "buy cheap pills"})
+
+    assert result["statusCode"] == 201 and body["status"] == "recorded"
+    _nothing_was_recorded_or_counted()
+    # The token was not spent either: a bot learns nothing from the attempt.
+    assert _post({"vote": "up", "token": token})[0]["statusCode"] == 201
+
+
+@pytest.mark.parametrize("value", ["", "   ", None])
+def test_an_empty_honeypot_is_a_person(aws_resources, value):
+    _put_article()
+
+    result, _ = _post({"vote": "up", "token": _issue_token(), "extra_note": value})
+
+    assert result["statusCode"] == 201
+    assert len(_feedback_items()) == 1
+
+
+def test_the_honeypot_is_checked_even_for_a_closed_site_or_a_missing_token(aws_resources):
+    _put_article()
+
+    result, _ = _post({"vote": "up", "extra_note": "x"})
+
+    assert result["statusCode"] == 201
+    _nothing_was_recorded_or_counted()
+
+
+def test_the_token_holds_nothing_about_who_asked(aws_resources):
+    import base64
+
+    _put_article()
+    event = _event(
+        "GET /articles/{article_id}/feedback-status", path_params={"article_id": "article-1"}
+    )
+    event["headers"] = {"User-Agent": "TestBrowser/1.0", "X-Forwarded-For": "203.0.113.9"}
+    event["requestContext"] = {"identity": {"sourceIp": "203.0.113.9"}}
+    token = json.loads(public_api_handler.handler(event, None)["body"])["verification"]["token"]
+
+    decoded = base64.urlsafe_b64decode(token.split(".")[1] + "==").decode()
+
+    assert "203.0.113.9" not in decoded and "TestBrowser" not in decoded
 
 
 # --- Musings --------------------------------------------------------------
@@ -1321,7 +1570,19 @@ def _unexpected_call(*_args, **_kwargs):
     raise AssertionError("should not have been called")
 
 
+def _issue_token(article_id="article-1"):
+    """The token GET .../feedback-status hands out (None if feedback is closed)."""
+    event = _event(
+        "GET /articles/{article_id}/feedback-status", path_params={"article_id": article_id}
+    )
+    body = json.loads(public_api_handler.handler(event, None)["body"])
+    return (body.get("verification") or {}).get("token")
+
+
 def _submit(vote="up", **extra):
+    # Like the page: ask for the form (and its token) first. Pass token=... to send another.
+    if "token" not in extra:
+        extra["token"] = _issue_token()
     event = _event(
         "POST /articles/{article_id}/feedback",
         path_params={"article_id": "article-1"},
