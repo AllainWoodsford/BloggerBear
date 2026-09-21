@@ -240,8 +240,14 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     if compliance.is_financial_topic(topic):
         draft_text = compliance.append_financial_disclaimer(draft_text)
 
+    # The reviewer sees the research the draft was written from, so a figure taken straight from
+    # the findings is not mistaken for an invented one (see compliance.py).
     review = compliance.review_draft(
-        draft_text, topic, model_id, fallback_model_id=fallback_model_id
+        draft_text,
+        topic,
+        model_id,
+        fallback_model_id=fallback_model_id,
+        source_material=summaries_block,
     )
 
     # AI lineage/cost tracking (docs/project-plan.md §11, PR 2 of 5): every
