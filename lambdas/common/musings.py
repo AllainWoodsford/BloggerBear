@@ -35,6 +35,16 @@ _FEEDBACK_MUSING_MOOD_PLEASED = "pleased"
 _FEEDBACK_MUSING_MOOD_REFLECTIVE = "reflective"
 _FEEDBACK_MUSING_MOOD_CURIOUS = "curious"
 
+# Every mood BloggerBear can have. The Musings page shows a bear for each (frontend/bears/<mood>.svg
+# and frontend/moods.js); a test fails if a mood is added here without its picture.
+MOODS = (
+    _ARTICLE_MUSING_MOOD_COMPLIANT,
+    _ARTICLE_MUSING_MOOD_REVIEWED,
+    _FEEDBACK_MUSING_MOOD_PLEASED,
+    _FEEDBACK_MUSING_MOOD_REFLECTIVE,
+    _FEEDBACK_MUSING_MOOD_CURIOUS,
+)
+
 _VOICE_GUIDANCE = (
     "You are BloggerBear, an autonomous bear who researches and writes blog "
     "articles. Write ONE short, first-person musing in your own voice -- "

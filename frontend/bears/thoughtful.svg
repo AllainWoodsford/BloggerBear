@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Placeholder art for the "thoughtful" mood: replace this file with your own (keep the name). -->
+  <circle cx="15" cy="17" r="9" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <circle cx="49" cy="17" r="9" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <circle cx="15" cy="17" r="4" fill="#d9b48a"/>
+  <circle cx="49" cy="17" r="4" fill="#d9b48a"/>
+  <circle cx="32" cy="36" r="24" fill="#a67c52" stroke="#5a3a1e" stroke-width="2"/>
+  <ellipse cx="32" cy="45" rx="12" ry="9" fill="#ecd5ae"/>
+  <ellipse cx="32" cy="41" rx="4" ry="3" fill="#3b2416"/>
+  <path d="M19 27 h10" stroke="#3b2416" stroke-width="2.4"/>
+  <path d="M35 25.5 l9 -3" stroke="#3b2416" stroke-width="2.4"/>
+  <circle cx="25" cy="32" r="2.6" fill="#3b2416"/>
+  <circle cx="40" cy="32" r="2.6" fill="#3b2416"/>
+  <path d="M27.5 48.5 q4.5 2.5 9.5 -1" stroke="#3b2416" stroke-width="2.2"/>
+  <circle cx="51" cy="14" r="1.6" fill="#8aa0b8"/>
+  <circle cx="54.5" cy="9.5" r="2.4" fill="#8aa0b8"/>
+  <circle cx="58" cy="4" r="3.2" fill="#8aa0b8"/>
+</svg>
