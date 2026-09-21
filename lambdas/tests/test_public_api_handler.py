@@ -556,6 +556,7 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
             "total_output_tokens",
             "cost_aud",
             "cost_note",
+            "model_labels",
             "published_by",
         }
         # None of the fixtures above set lineage/published_by -- explicit
@@ -565,6 +566,7 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
         assert article["total_output_tokens"] is None
         assert article["cost_aud"] is None
         assert article["cost_note"] is None
+        assert article["model_labels"] is None
         assert article["published_by"] is None
 
 

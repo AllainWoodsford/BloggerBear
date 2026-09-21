@@ -261,6 +261,31 @@
     return PUBLISHED_BY_LABELS[publishedBy] || String(publishedBy);
   }
 
+  // A model's readable name (recorded in the lineage when it was built), else its id.
+  function modelName(labels, modelId) {
+    return (labels && labels[modelId]) || modelId;
+  }
+
+  function modelNames(modelsUsed, labels) {
+    return (modelsUsed || []).map(function (modelId) {
+      return modelName(labels, modelId);
+    });
+  }
+
+  // "12 finding(s): X in / Y out" -- the research the article's findings cost.
+  function researchText(research) {
+    var tracked = Number(research.tracked_findings || 0);
+    var untracked = Number(research.untracked_findings || 0);
+    if (!tracked) {
+      return untracked ? "Not tracked (" + untracked + " finding(s) predate research tracking)" : "No research calls";
+    }
+    var text = tracked + " finding(s): " + formatCount(research.input_tokens) + " in / " + formatCount(research.output_tokens) + " out";
+    if (untracked) {
+      text += " (+" + untracked + " earlier finding(s) not tracked)";
+    }
+    return text;
+  }
+
   function costLabel(costAud, costNote) {
     if (typeof costAud === "number") {
       return "~$" + costAud.toFixed(2) + " AUD";
@@ -288,7 +313,7 @@
     }
     return order
       .map(function (modelId) {
-        return modelId + ": " + formatCount(totals[modelId].input) + " in / " + formatCount(totals[modelId].output) + " out";
+        return modelName(lineage.model_labels, modelId) + ": " + formatCount(totals[modelId].input) + " in / " + formatCount(totals[modelId].output) + " out";
       })
       .join(", ");
   }
@@ -298,11 +323,11 @@
   // (totals, not per-call -- see public_api_handler.py's _list_articles), so
   // `tokensText` is passed in by whichever caller has the right level of
   // detail rather than computed here.
-  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costAud, costNote, hasLineage) {
+  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costAud, costNote, hasLineage, modelLabels) {
     if (!hasLineage && (publishedBy === null || publishedBy === undefined)) {
       return "No data";
     }
-    var models = modelsUsed && modelsUsed.length > 0 ? modelsUsed.join(", ") : "no data";
+    var models = modelsUsed && modelsUsed.length > 0 ? modelNames(modelsUsed, modelLabels).join(", ") : "no data";
     return (
       "models [" + models + "] · tokens [" + tokensText + "] · approved by " +
       publishedByLabel(publishedBy) + " · " + (hasLineage ? costLabel(costAud, costNote) : "No data")
@@ -318,7 +343,8 @@
       article.published_by,
       hasLineage ? lineage.cost_aud : null,
       hasLineage ? lineage.cost_note : null,
-      hasLineage
+      hasLineage,
+      hasLineage ? lineage.model_labels : null
     );
   }
 
@@ -334,7 +360,8 @@
       article.published_by,
       article.cost_aud,
       article.cost_note,
-      hasLineage
+      hasLineage,
+      article.model_labels
     );
   }
 
@@ -343,7 +370,7 @@
   function renderLineageFooter(lineage, publishedBy) {
     var hasLineage = lineage !== null && lineage !== undefined;
     var models = hasLineage && lineage.models_used && lineage.models_used.length > 0
-      ? lineage.models_used.join(", ")
+      ? modelNames(lineage.models_used, lineage.model_labels).join(", ")
       : "No data";
 
     var footer = el("footer", { className: "lineage-footer", attrs: { "aria-label": "Article lineage" } });
@@ -355,7 +382,17 @@
       ["Tokens", hasLineage ? perModelTokenText(lineage) : "No data"],
       ["Approved by", publishedByLabel(publishedBy)],
       ["Approx. cost", hasLineage ? costLabel(lineage.cost_aud, lineage.cost_note) : "No data"],
-    ].forEach(function (row) {
+    ].concat(
+      // The research the article's findings cost, tallied hourly and bundled in
+      // when the article was written; absent on an article made before that.
+      hasLineage && lineage.research
+        ? [
+            ["Research tokens", researchText(lineage.research)],
+            ["Research cost", costLabel(lineage.research.cost_aud, lineage.research.cost_note)],
+            ["Total cost", costLabel(lineage.total_cost_aud, null)],
+          ]
+        : []
+    ).forEach(function (row) {
       list.appendChild(el("dt", { text: row[0] }));
       list.appendChild(el("dd", { text: row[1] }));
     });
@@ -785,6 +822,18 @@
         formatCount(totals.input_tokens) + " in / " + formatCount(totals.output_tokens) + " out"
       )
     );
+    // The part of the spend above that was the hourly research tick, bundled into
+    // the article each finding fed. Older API responses have no `research` block.
+    if (totals.research) {
+      tiles.appendChild(
+        statTile(
+          "Research spend",
+          formatAud(totals.research.cost_aud),
+          formatCount(totals.research.input_tokens + totals.research.output_tokens) + " tokens over " +
+            formatCount(totals.research.calls) + " summaries"
+        )
+      );
+    }
     contentEl.appendChild(tiles);
 
     var daily = stats.daily || [];
@@ -845,7 +894,7 @@
     } else {
       contentEl.appendChild(
         statsTable(
-          ["Topic", "Articles", "Tokens in", "Tokens out", "Est. cost (AUD)"],
+          ["Topic", "Articles", "Tokens in", "Tokens out", "Est. cost (AUD)", "of which research"],
           stats.by_topic.map(function (row) {
             return [
               row.name,
@@ -853,6 +902,7 @@
               formatCount(row.input_tokens),
               formatCount(row.output_tokens),
               formatAud(row.cost_aud),
+              row.research ? formatAud(row.research.cost_aud) : "No data",
             ];
           })
         )

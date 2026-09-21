@@ -36,6 +36,7 @@ from common.dynamo import (
     get_moderation_item_by_article_id,
     get_prompt_refinement,
     get_topic,
+    list_all_articles,
     list_all_moderation_items,
     list_candidate_ideas,
     list_failed_executions,
@@ -46,6 +47,7 @@ from common.dynamo import (
     put_model,
     put_model_config,
     put_topic,
+    update_article_lineage,
     update_article_status,
     update_moderation_status,
     update_prompt_refinement_status,
@@ -55,6 +57,7 @@ from common.editorial_resolver import (
     normalize_editorial_goals,
     validate_editorial_goals,
 )
+from common.lineage_tools import audit_lineage, plan_backfill
 from common.musings import generate_and_store_article_musing
 from common.scheduler import (
     DEFAULT_TIMEZONE,
@@ -544,6 +547,47 @@ def _unpublish_article(event: dict) -> dict:
     )
 
 
+# --- Lineage audit / backfill ---------------------------------------------
+
+
+def _lineage_audit(event: dict) -> dict:
+    """Where article lineage is missing or incomplete (ids only, no content)."""
+    return _response(200, audit_lineage(list_all_articles()))
+
+
+def _lineage_backfill(event: dict) -> dict:
+    """Recompute stored lineage's cost from its recorded token counts at today's
+    prices, and canonicalise model ids. A dry run unless `{"apply": true}`.
+
+    Only touches `lineage`; tokens and what each call did are kept. Articles with
+    no lineage cannot be backfilled (their tokens were never recorded) and are
+    reported by the audit instead.
+    """
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    apply = body.get("apply", False)
+    if not isinstance(apply, bool):
+        return _error(400, "'apply' must be a boolean if provided")
+
+    plan = plan_backfill(list_all_articles())
+    changed = [item for item in plan if item["changed"]]
+    if apply:
+        for item in changed:
+            update_article_lineage(item["article_id"], item["lineage"])
+
+    return _response(
+        200,
+        {
+            "applied": apply,
+            "examined": len(plan),
+            "changed": len(changed),
+            "articles": [{k: v for k, v in item.items() if k != "lineage"} for item in plan],
+        },
+    )
+
+
 # --- Moderation queue -----------------------------------------------------
 
 
@@ -773,6 +817,8 @@ _ROUTES = {
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
+    "GET /lineage/audit": _lineage_audit,
+    "POST /lineage/backfill": _lineage_backfill,
     "GET /moderation-queue": _list_moderation_queue,
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,

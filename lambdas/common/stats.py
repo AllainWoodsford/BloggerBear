@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from common.costing import USD_TO_AUD_RATE, call_cost_usd
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
+from common.model_pricing import canonical_model_id, default_model_entry, model_label
 
 DEFAULT_DAILY_WINDOW_DAYS = 30
 
@@ -54,6 +55,10 @@ def _zero_bucket() -> dict:
     return {"input_tokens": 0, "output_tokens": 0, "cost_aud": 0.0}
 
 
+def _research_bucket() -> dict:
+    return {"calls": 0, "unpriced_calls": 0, **_zero_bucket()}
+
+
 def build_stats(
     articles: list[dict],
     topics: list[dict],
@@ -65,6 +70,16 @@ def build_stats(
     today = today or datetime.now(UTC).date()
     pricing = {model["model_id"]: model for model in models}
     model_names = {model["model_id"]: model.get("display_name") or model["model_id"] for model in models}
+
+    def price_for(model_id: str) -> dict | None:
+        """The registry row for a model (by id as recorded, then canonical id),
+        else the built-in fallback -- the same resolution costing.pricing_for
+        does per article, here over one list_models() scan."""
+        for candidate in (model_id, canonical_model_id(model_id)):
+            entry = pricing.get(candidate)
+            if entry is not None and entry.get("input_price_usd_per_1k_tokens") is not None:
+                return entry
+        return default_model_entry(model_id)
     topic_names = {topic["topic_id"]: topic.get("name") or topic["topic_id"] for topic in topics}
     topic_names[DIGEST_TOPIC_ID] = DIGEST_TOPIC_NAME
 
@@ -80,6 +95,9 @@ def build_stats(
         "calls": 0,
         "unpriced_calls": 0,
         **_zero_bucket(),
+        # Of the above, the part spent by the hourly research tick (its calls
+        # are bundled into the article they fed -- common/costing.py).
+        "research": _research_bucket(),
     }
 
     for article in articles:
@@ -93,7 +111,9 @@ def build_stats(
         totals["articles_with_lineage"] += 1
 
         topic_id = article.get("topic_id") or "unknown"
-        topic_bucket = by_topic.setdefault(topic_id, {"articles": 0, **_zero_bucket()})
+        topic_bucket = by_topic.setdefault(
+            topic_id, {"articles": 0, **_zero_bucket(), "research": _research_bucket()}
+        )
         topic_bucket["articles"] += 1
 
         created = _created_date(article)
@@ -101,13 +121,17 @@ def build_stats(
         if day_bucket is not None:
             day_bucket["articles"] += 1
 
-        for call in lineage.get("calls") or []:
+        authoring_calls = lineage.get("calls") or []
+        research_calls = (lineage.get("research") or {}).get("calls") or []
+        for is_research, call in [(False, c) for c in authoring_calls] + [(True, c) for c in research_calls]:
             input_tokens = int(call.get("input_tokens", 0))
             output_tokens = int(call.get("output_tokens", 0))
-            model_id = call.get("model_id") or "unknown"
+            # Older articles recorded the full ARN; group them with the same model's
+            # canonical id rather than as a separate, unpriceable model.
+            model_id = canonical_model_id(call.get("model_id") or "unknown")
 
             usd = call_cost_usd(
-                {"input_tokens": input_tokens, "output_tokens": output_tokens}, pricing.get(model_id)
+                {"input_tokens": input_tokens, "output_tokens": output_tokens}, price_for(model_id)
             )
             cost_aud = usd * USD_TO_AUD_RATE if usd is not None else None
 
@@ -123,6 +147,12 @@ def build_stats(
             buckets = [totals, model_bucket, topic_bucket]
             if day_bucket is not None:
                 buckets.append(day_bucket)
+            if is_research:
+                buckets += [totals["research"], topic_bucket["research"]]
+                for research_bucket in (totals["research"], topic_bucket["research"]):
+                    research_bucket["calls"] += 1
+                    if cost_aud is None:
+                        research_bucket["unpriced_calls"] += 1
             for bucket in buckets:
                 bucket["input_tokens"] += input_tokens
                 bucket["output_tokens"] += output_tokens
@@ -141,7 +171,7 @@ def build_stats(
             (
                 {
                     "model_id": model_id,
-                    "display_name": model_names.get(model_id, model_id),
+                    "display_name": model_names.get(model_id) or model_label(model_id),
                     **bucket,
                     # None (not 0) when *every* call to this model was unpriced,
                     # so the page can say "unpriced" rather than "$0.00".
