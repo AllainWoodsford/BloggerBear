@@ -597,6 +597,24 @@ def test_the_original_bodys_location_is_stored_only_when_there_is_one(tables):
     assert "body_original_s3_key" not in dynamo.get_article("without")
 
 
+def test_the_gear_an_article_was_written_with_is_stored_and_stays_private(tables):
+    gear = [{"topic_id": "t", "version": "v1", "slot": "helmet"}]
+    _store("with", equipment_used=gear)
+    _store("none", equipment_used=[])
+    _store("before")
+    boto3.client("s3", region_name=REGION).put_object(
+        Bucket="bloggerbear-content-test", Key="articles/with.md", Body=b"The body."
+    )
+
+    assert dynamo.get_article("with")["equipment_used"] == gear
+    assert dynamo.get_article("none")["equipment_used"] == []  # wore nothing
+    assert "equipment_used" not in dynamo.get_article("before")  # written before gear existed
+    result = public_api_handler.handler(
+        {"routeKey": "GET /articles/{article_id}", "pathParameters": {"article_id": "with"}}, None
+    )
+    assert "equipment" not in result["body"]
+
+
 def test_the_public_article_carries_the_line_but_never_the_review_or_the_original(tables):
     review = _record("major", [_claim("secret claim")], held=True, revised=False)
     _store("a1", review=review, body_original_s3_key="articles/a1.original.md")

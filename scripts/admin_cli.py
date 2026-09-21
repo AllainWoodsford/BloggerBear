@@ -673,16 +673,79 @@ def _cmd_refinements_list(args: argparse.Namespace) -> None:
     _do_request(args, "GET", path)
 
 
+def _placement_body(args: argparse.Namespace) -> dict | None:
+    """The optional {scope, slot, replace} of an approve or equip call, from --scope, --slot and
+    --replace TOPIC_ID VERSION. None when none were given, so the API's own default applies."""
+    body: dict = {}
+    if args.scope:
+        body["scope"] = args.scope
+    if args.slot:
+        body["slot"] = args.slot
+    if args.replace:
+        body["replace"] = {"topic_id": args.replace[0], "version": args.replace[1]}
+    return body or None
+
+
+def _add_placement_arguments(parser: argparse.ArgumentParser, scopes: tuple[str, ...]) -> None:
+    parser.add_argument(
+        "--scope",
+        choices=scopes,
+        default=None,
+        help="topic: a ring for the item's own topic; global: an armor slot for every topic"
+        + ("; backpack: approve but do not wear" if "backpack" in scopes else ""),
+    )
+    parser.add_argument(
+        "--slot",
+        choices=["helmet", "chest", "gloves", "boots", "sword", "shield"],
+        default=None,
+        help="the armor slot, for global guidance (default: the first empty one)",
+    )
+    parser.add_argument(
+        "--replace",
+        nargs=2,
+        metavar=("TOPIC_ID", "VERSION"),
+        default=None,
+        help="when all rings are worn, the worn ring this one replaces",
+    )
+
+
 def _cmd_refinements_approve(args: argparse.Namespace) -> None:
     # `version` is an ISO-8601 timestamp and contains ':' characters, which
     # must be percent-encoded before they can go in a URL path segment.
     version = urllib.parse.quote(args.version, safe="")
-    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/approve")
+    _do_request(
+        args,
+        "POST",
+        f"/prompt-refinements/{args.topic_id}/{version}/approve",
+        body=_placement_body(args),
+    )
 
 
 def _cmd_refinements_reject(args: argparse.Namespace) -> None:
     version = urllib.parse.quote(args.version, safe="")
     _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/reject")
+
+
+# --- equipment subcommands -------------------------------------------------
+
+
+def _cmd_equipment_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/equipment")
+
+
+def _cmd_equipment_equip(args: argparse.Namespace) -> None:
+    version = urllib.parse.quote(args.version, safe="")
+    _do_request(
+        args,
+        "POST",
+        f"/prompt-refinements/{args.topic_id}/{version}/equip",
+        body=_placement_body(args) or {},
+    )
+
+
+def _cmd_equipment_unequip(args: argparse.Namespace) -> None:
+    version = urllib.parse.quote(args.version, safe="")
+    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/unequip")
 
 
 # --- argument parsing -----------------------------------------------------
@@ -1252,6 +1315,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     refinements_approve_parser.add_argument("topic_id")
     refinements_approve_parser.add_argument("version")
+    _add_placement_arguments(refinements_approve_parser, ("topic", "global", "backpack"))
     refinements_approve_parser.set_defaults(func=_cmd_refinements_approve)
 
     refinements_reject_parser = refinements_sub.add_parser(
@@ -1260,6 +1324,33 @@ def build_parser() -> argparse.ArgumentParser:
     refinements_reject_parser.add_argument("topic_id")
     refinements_reject_parser.add_argument("version")
     refinements_reject_parser.set_defaults(func=_cmd_refinements_reject)
+
+    equipment_parser = subparsers.add_parser(
+        "equipment",
+        help="What the bear wears: armor (global guidance), rings (topic guidance), the backpack",
+    )
+    equipment_sub = equipment_parser.add_subparsers(dest="action", required=True)
+
+    equipment_list_parser = equipment_sub.add_parser(
+        "list", help="Show every slot, the rings, and what is in the backpack"
+    )
+    equipment_list_parser.set_defaults(func=_cmd_equipment_list)
+
+    equipment_equip_parser = equipment_sub.add_parser(
+        "equip",
+        help="Wear an approved refinement (from the backpack or elsewhere); it replaces what is in the slot",
+    )
+    equipment_equip_parser.add_argument("topic_id")
+    equipment_equip_parser.add_argument("version")
+    _add_placement_arguments(equipment_equip_parser, ("topic", "global"))
+    equipment_equip_parser.set_defaults(func=_cmd_equipment_equip)
+
+    equipment_unequip_parser = equipment_sub.add_parser(
+        "unequip", help="Take a worn refinement off; it goes to the backpack and is no longer used"
+    )
+    equipment_unequip_parser.add_argument("topic_id")
+    equipment_unequip_parser.add_argument("version")
+    equipment_unequip_parser.set_defaults(func=_cmd_equipment_unequip)
 
     return parser
 
