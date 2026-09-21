@@ -1106,6 +1106,9 @@
 
   // --- Feedback -----------------------------------------------------------
 
+  // Matches MAX_COMMENT_CHARS in lambdas/common/comment_screening.py.
+  var MAX_COMMENT_LENGTH = 1000;
+
   function renderFeedback(articleId) {
     var section = el("section", { className: "feedback" });
     section.appendChild(el("h2", { text: "Feedback" }));
@@ -1133,13 +1136,17 @@
     var commentHintId = "feedback-comment-hint-" + encodeURIComponent(articleId);
     var commentHint = el("p", {
       className: "feedback-comment-hint",
-      text: "Please don't include your name, contact details, or any other personal information.",
+      text:
+        "Keep it civil and about the article, and please don't include your name, contact " +
+        "details, or any other personal information. Comments that don't fit are not saved.",
       attrs: { id: commentHintId },
     });
 
     var commentLabel = el("label", { text: "Comment (optional)" });
     var commentInput = document.createElement("textarea");
     commentInput.setAttribute("rows", "3");
+    // The API drops a longer comment (MAX_COMMENT_CHARS in common/comment_screening.py).
+    commentInput.setAttribute("maxlength", String(MAX_COMMENT_LENGTH));
     // Announces the same "don't share personal info" reminder from the
     // Privacy Policy to screen-reader users at the point they're about
     // to type a comment, not just on a separate page they may never
@@ -1174,7 +1181,18 @@
           if (!response.ok) {
             throw new Error("request failed: " + response.status);
           }
-          status.textContent = "Thanks for your feedback!";
+          return response.json().catch(function () {
+            return {};
+          });
+        })
+        .then(function (result) {
+          // The vote always counts. A comment that was screened out is simply not saved; the
+          // API says so, and nothing about why.
+          if (commentValue !== "" && result.comment_saved === false) {
+            status.textContent = "Thanks, your vote was recorded. Your comment wasn't saved.";
+          } else {
+            status.textContent = "Thanks for your feedback!";
+          }
         })
         .catch(function () {
           status.textContent = "Could not submit feedback right now. Please try again.";
@@ -1205,8 +1223,8 @@
   // does, not boilerplate: no cookies (verified against both the
   // frontend source and the CloudFront config, which explicitly forwards
   // none), an anonymous per-article view counter, anonymous feedback
-  // that goes through a two-pass PII redaction before being stored (see
-  // lambdas/common/compliance.py), and infrastructure-level WAF logging
+  // that is screened (PII, abuse, spam, injection) and dropped, not stored, if it fails (see
+  // lambdas/common/comment_screening.py), and infrastructure-level WAF logging
   // that's kept separate from application data (see
   // docs/project-plan.md §7).
 
@@ -1253,7 +1271,7 @@
         {
           heading: "6. Anonymous feedback",
           paragraphs: [
-            "You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the Privacy Policy for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. A comment may be automatically redacted, or never published at all, if it can't be confirmed safe.",
+            "You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the Privacy Policy for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. Every comment is screened automatically before it is saved, and is discarded (not saved, not published) if it contains personal information, is abusive, off-topic, spam or unlawful, breaks these terms, tries to instruct or attack the site or the software behind it, or can't be confirmed safe. Your vote is still counted when a comment is discarded.",
           ],
         },
         {
@@ -1285,7 +1303,7 @@
             "No accounts, no logins, no user profiles.",
             "No cookies.",
             "No advertising or analytics trackers.",
-            "No personal information is intentionally collected. If any ends up in a comment, automated redaction attempts to strip it before anything is stored — and you're asked not to include it in the first place (see “Please don't share personal information” below).",
+            "No personal information is intentionally collected. If a comment appears to contain any, the whole comment is discarded rather than stored — and you're asked not to include it in the first place (see “Please don't share personal information” below).",
           ],
         },
         {
@@ -1305,7 +1323,7 @@
         {
           heading: "4. Feedback (votes and comments)",
           paragraphs: [
-            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, after automated redaction — see below), and when it was submitted. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
+            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, and only if it passed automated screening — see below), and when it was submitted. A comment that fails screening is not stored anywhere. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
           ],
         },
         {
@@ -1335,7 +1353,7 @@
         {
           heading: "7. Third-party AI processing",
           paragraphs: [
-            "Article summaries and drafts are generated using Amazon Bedrock, a cloud AI service. Publicly available source data (trending repositories, news headlines, market prices) is sent to that service to generate content — no visitor data is ever sent there. If you submit a comment, the same service is also used purely to check the comment text for personal information before deciding whether to store it.",
+            "Article summaries and drafts are generated using Amazon Bedrock, a cloud AI service. Publicly available source data (trending repositories, news headlines, market prices) is sent to that service to generate content — no visitor data is ever sent there. If you submit a comment, the same service is also used purely to check the comment text (for personal information, abuse, spam and attempts to instruct the software) before deciding whether to store it.",
           ],
         },
         {
