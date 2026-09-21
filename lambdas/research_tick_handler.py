@@ -42,7 +42,7 @@ from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
 from common.adapters.web_search import WebSearchAdapter
-from common.bedrock import invoke_claude
+from common.bedrock import invoke_model_tracked
 from common.dynamo import get_latest_finding, get_topic, put_finding
 from common.editorial_resolver import resolve_editorial_goals
 from common.relevance import research_relevance_rule, topic_label
@@ -184,7 +184,17 @@ def _run_research_tick(topic_id: str) -> dict:
 
     model_id = os.environ["BEDROCK_MODEL_ID"]
     prompt = _build_prompt(topic, diff_summary, new_state, adapter)
-    summary = invoke_claude(prompt, model_id)
+    # Tracked so the spend is recorded on the Finding itself: research runs hourly,
+    # long before any article exists, and its cost is bundled into whichever
+    # article the Finding later feeds (common/costing.py's build_research_lineage).
+    result = invoke_model_tracked(prompt, model_id)
+    summary = result["text"]
+    research_call = {
+        "model_id": result["model_id"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "used_fallback": result["used_fallback"],
+    }
 
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()
     snapshot_key = _snapshot_key(topic_id, captured_at)
@@ -214,6 +224,7 @@ def _run_research_tick(topic_id: str) -> dict:
         summary=summary,
         raw_snapshot_s3_key=snapshot_key,
         source_refs=refs,
+        research_call=research_call,
     )
 
     return {"status": "material_change", "summary": summary}

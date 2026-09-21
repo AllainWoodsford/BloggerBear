@@ -36,7 +36,7 @@ import boto3
 
 from common import compliance
 from common.bedrock import invoke_model_tracked
-from common.costing import build_lineage
+from common.costing import build_lineage, build_research_lineage
 from common.dynamo import (
     get_latest_approved_prompt_refinement,
     get_top_voted_articles,
@@ -150,6 +150,11 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     # Topics with a daily editorial goal (the crypto feed) get the day's
     # goal and only the findings that belong to it; every other topic gets
     # (None, findings) back unchanged.
+    #
+    # The research tally is taken from the whole window *before* that selection:
+    # a Finding the goal filter sets aside still cost a Bedrock call, and each
+    # window starts where the last one ended, so nothing is counted twice.
+    research = build_research_lineage(findings)
     editorial_goal, findings = _select_goal_and_findings(topic, findings)
     if editorial_goal is not None:
         print(f"daily_cycle_handler: editorial_goal={editorial_goal.value} topic_id={topic_id}")
@@ -202,7 +207,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         for call in (ideate_call, draft_call, title_call, review["lineage_call"])
         if call is not None
     ]
-    lineage = build_lineage(calls)
+    lineage = build_lineage(calls, research=research)
 
     result = _publish_or_moderate(
         topic_id=topic_id,

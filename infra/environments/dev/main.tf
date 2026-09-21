@@ -605,6 +605,12 @@ module "admin_api" {
     # marks it rejected, removes its musings, invalidates the CDN cache). See
     # admin_api_handler.py's _unpublish_article and `articles unpublish`.
     "POST /articles/{article_id}/unpublish",
+    # Lineage/cost repair: `audit` lists articles with missing lineage or cost and
+    # models with no known price; `backfill` recomputes cost from stored tokens
+    # (a dry run unless {"apply": true}). See admin_api_handler.py's _lineage_*
+    # and `admin_cli lineage`.
+    "GET /lineage/audit",
+    "POST /lineage/backfill",
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",

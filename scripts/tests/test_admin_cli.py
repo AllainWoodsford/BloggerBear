@@ -604,3 +604,24 @@ def test_articles_unpublish_posts_to_the_unpublish_route():
         "ap-southeast-2",
         body=None,
     )
+
+
+def test_lineage_audit_gets_the_audit_route():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["lineage", "audit"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/lineage/audit", "ap-southeast-2", body=None
+    )
+
+
+def test_lineage_backfill_is_a_dry_run_unless_apply_is_passed():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["lineage", "backfill"])
+    assert m.call_args.kwargs["body"] == {"apply": False}
+    assert m.call_args.args[:3] == ("POST", "https://api.example.com", "/lineage/backfill")
+
+
+def test_lineage_backfill_apply_writes():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["lineage", "backfill", "--apply"])
+    assert m.call_args.kwargs["body"] == {"apply": True}

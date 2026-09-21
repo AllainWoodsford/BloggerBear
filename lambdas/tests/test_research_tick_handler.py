@@ -17,6 +17,19 @@ from common.adapters.web_search import WebSearchAdapter
 REGION = "ap-southeast-2"
 
 
+def _tracked(text, *, model_id="au.anthropic.claude-haiku-4-5-20251001-v1:0", input_tokens=120,
+             output_tokens=45, used_fallback=False):
+    """What common.bedrock.invoke_model_tracked returns."""
+    return {
+        "text": text,
+        "model_id": model_id,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "used_fallback": used_fallback,
+    }
+
+
+
 @pytest.fixture(autouse=True)
 def aws_env(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", REGION)
@@ -94,7 +107,8 @@ def test_first_tick_is_always_material_and_calls_bedrock(aws_resources, monkeypa
     new_state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
     monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: new_state)
 
-    with patch("research_tick_handler.invoke_claude", return_value="Claude summary here") as mock_invoke:
+    tracked = _tracked("Claude summary here")
+    with patch("research_tick_handler.invoke_model_tracked", return_value=tracked) as mock_invoke:
         result = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
 
     mock_invoke.assert_called_once()
@@ -111,6 +125,14 @@ def test_first_tick_is_always_material_and_calls_bedrock(aws_resources, monkeypa
     assert finding["source_refs"] == [
         {"url": "https://github.com/a/b", "title": "a/b", "accessed_at": "2026-09-13T00:00:00+00:00"}
     ]
+    # The Bedrock call behind the summary is kept on the Finding, so its cost can be
+    # bundled into the article this Finding later feeds.
+    assert finding["research_call"] == {
+        "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "input_tokens": 120,
+        "output_tokens": 45,
+        "used_fallback": False,
+    }
 
     s3 = boto3.client("s3", region_name=REGION)
     stored = s3.get_object(Bucket="bloggerbear-content-test", Key=finding["raw_snapshot_s3_key"])
@@ -123,7 +145,7 @@ def test_no_material_change_skips_bedrock_and_does_not_write_finding(aws_resourc
     state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
     monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
 
-    with patch("research_tick_handler.invoke_claude", return_value="unused") as mock_invoke:
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("unused")) as mock_invoke:
         first = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
         assert first["status"] == "material_change"
 
@@ -227,7 +249,7 @@ def test_an_adapter_supplied_summary_prompt_replaces_the_generic_one(aws_resourc
         GitHubTrendingAdapter, "build_summary_prompt", lambda self, topic, diff, new: "ADAPTER PROMPT"
     )
 
-    with patch("research_tick_handler.invoke_claude", return_value="ok") as mock_invoke:
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")) as mock_invoke:
         research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
 
     assert mock_invoke.call_args.args[0] == "ADAPTER PROMPT"
@@ -237,7 +259,7 @@ def test_adapters_without_a_prompt_get_the_generic_one(aws_resources, monkeypatc
     state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
     monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
 
-    with patch("research_tick_handler.invoke_claude", return_value="ok") as mock_invoke:
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")) as mock_invoke:
         research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
 
     prompt = mock_invoke.call_args.args[0]
@@ -266,7 +288,7 @@ def test_opt_in_adapters_receive_the_prior_snapshot_others_do_not(aws_resources,
     monkeypatch.setattr(CryptoFeedAdapter, "fetch_state", fake_fetch)
     monkeypatch.setattr(CryptoFeedAdapter, "material_diff", lambda self, old, new: (True, "d"))
 
-    with patch("research_tick_handler.invoke_claude", return_value="ok"):
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")):
         research_tick_handler.handler({"topic_id": "crypto-topic"}, None)
         research_tick_handler.handler({"topic_id": "crypto-topic"}, None)
 
@@ -286,7 +308,9 @@ def test_a_generic_web_search_topic_runs_end_to_end(aws_resources):
 
     with (
         patch("common.adapters.web_search.search_web", return_value=[result_item]),
-        patch("research_tick_handler.invoke_claude", return_value="AI summary") as mock_invoke,
+        patch(
+            "research_tick_handler.invoke_model_tracked", return_value=_tracked("AI summary")
+        ) as mock_invoke,
     ):
         result = research_tick_handler.handler({"topic_id": "ai-news"}, None)
 
@@ -315,7 +339,7 @@ def _summary_prompt(topic_id, adapter, adapter_config=None, editorial_goals=None
     }
     with (
         patch("common.adapters.web_search.search_web", return_value=[result_item]),
-        patch("research_tick_handler.invoke_claude", return_value="ok") as mock_invoke,
+        patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")) as mock_invoke,
     ):
         research_tick_handler.handler({"topic_id": topic_id}, None)
     return mock_invoke.call_args.args[0]
@@ -364,7 +388,7 @@ def test_a_topic_without_a_configured_query_researches_its_own_name(aws_resource
     )
     with (
         patch("common.adapters.web_search.search_web", return_value=[]) as mock_search,
-        patch("research_tick_handler.invoke_claude", return_value="ok"),
+        patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")),
     ):
         research_tick_handler.handler({"topic_id": "sec-threats"}, None)
 
@@ -377,7 +401,7 @@ def test_a_topic_without_a_configured_query_researches_its_own_name(aws_resource
 def _tick(monkeypatch, repos, fetched_at):
     state = {"repos": [_repo(n, s) for n, s in repos], "fetched_at": fetched_at}
     monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
-    with patch("research_tick_handler.invoke_claude", return_value="summary") as mock_invoke:
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("summary")) as mock_invoke:
         result = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
     return result, mock_invoke
 
