@@ -954,6 +954,7 @@ _FEEDBACK_SETTINGS = (
     "rate_limit_window_minutes",
     "daily_limit",
     "article_limit",
+    "screening_limit",
     "daily_timezone",
 )
 
@@ -981,6 +982,8 @@ def _put_feedback_config_route(event: dict) -> dict:
     - `rate_limit_count` and `rate_limit_window_minutes`: at most this many in a window.
     - `daily_limit`: at most this many a day, resetting at the start of the day.
     - `article_limit`: at most this many on one article, then it is locked.
+    - `screening_limit`: at most this many comments a day are sent to the model check (rejected
+      feedback does not count against the limits above, so this is what bounds its cost).
     - `daily_timezone` (IANA name): where a day starts.
 
     A setting that isn't in the body is left as it is.

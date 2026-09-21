@@ -333,9 +333,9 @@ def _view_article(event: dict) -> dict:
 #
 # A comment is optional and is screened before anything is written (see
 # common/comment_screening.py): PII, hate, rudeness, spam, links, prompt-injection or SQL/script
-# shapes, and anything unlawful are DROPPED -- not stored, not redacted-and-stored, not logged,
-# not echoed back. The vote that came with it still counts. The response says whether the
-# comment was kept, and nothing about why.
+# shapes, and anything unlawful are REJECTED -- not stored, not redacted-and-stored, not logged,
+# not echoed back, and the whole submission with it (the vote is not recorded and nothing is
+# counted against the limits). The response is a bare 422, and nothing about why.
 
 
 # Why feedback is closed -> the HTTP status of the refusal: a lock or pause is 423, a limit that
@@ -348,6 +348,13 @@ _CLOSED_STATUS = {
     feedback_limits.RATE_LIMIT: 429,
     feedback_limits.UNAVAILABLE: 503,
 }
+
+
+def _closed_response(status: dict) -> dict:
+    return _response(
+        _CLOSED_STATUS.get(status["reason"], 423),
+        {"error": "feedback is closed", "feedback": status},
+    )
 
 
 def _feedback_status(event: dict) -> dict:
@@ -377,23 +384,33 @@ def _submit_feedback(event: dict) -> dict:
     if vote not in ("up", "down"):
         return _error(400, "'vote' must be 'up' or 'down'")
 
-    # One piece of feedback against the article, the day and the rate limit (see
-    # common/feedback_limits.py). Refused before anything is screened or written, so a closed
-    # site costs no model call and stores nothing.
-    status = feedback_limits.acquire(article)
+    # 1. Is feedback open at all? A read only: a closed site costs no model call and stores
+    #    nothing (see common/feedback_limits.py).
+    status = feedback_limits.status_for(article)
     if not status["open"]:
-        return _response(
-            _CLOSED_STATUS.get(status["reason"], 423),
-            {"error": "feedback is closed", "feedback": status},
-        )
+        return _closed_response(status)
 
+    # 2. Screen the comment. A rejected comment rejects the whole submission: nothing is stored,
+    #    the vote is not recorded, and it is not counted against any limit, so rejected feedback
+    #    cannot use up the room real feedback needs. (The model checks it costs are bounded by
+    #    their own daily budget instead.) The reader is told nothing about why.
     screened = screen_comment(
-        payload.get("comment"), article.get("title") or "", os.environ["BEDROCK_MODEL_ID"]
+        payload.get("comment"),
+        article.get("title") or "",
+        os.environ["BEDROCK_MODEL_ID"],
+        may_call_model=feedback_limits.take_screening_slot,
     )
     final_comment = screened["comment"]
     if screened["dropped_because"]:
         # The reason code only: the comment itself is never logged.
-        print(f"public_api_handler: dropped a feedback comment ({screened['dropped_because']})")
+        print(f"public_api_handler: rejected a feedback submission ({screened['dropped_because']})")
+        return _response(422, {"error": "comment not accepted", "recorded": False})
+
+    # 3. Count it against the article, the day and the rate limit. Only now, once it is going to
+    #    be kept.
+    status = feedback_limits.acquire(article)
+    if not status["open"]:
+        return _closed_response(status)
 
     feedback_id = str(uuid.uuid4())
     created_at = datetime.now(UTC).isoformat()
@@ -406,8 +423,6 @@ def _submit_feedback(event: dict) -> dict:
             "status": "recorded",
             "article_id": article_id,
             "feedback_id": feedback_id,
-            # The vote is always recorded; this says whether the comment was kept. Nothing about
-            # why it wasn't, so a probe learns nothing about the rules.
             "comment_saved": final_comment is not None,
         },
     )
