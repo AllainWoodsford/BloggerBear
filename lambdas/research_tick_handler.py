@@ -56,6 +56,11 @@ COMPACT_STATE_MAX_CHARS = 4000
 # source can't grow the snapshot without bound.
 SEEN_RETENTION_DAYS = 7
 SEEN_MAX_KEYS = 2000
+# A finding's summary can be long (the crypto analysis days list every coin); at the
+# 1,024-token default several were cut off mid-sentence ("...across the pool ("). Room
+# for that, and one automatic retry with more if a reply still runs out.
+RESEARCH_MAX_TOKENS = 2048
+RESEARCH_RETRY_MAX_TOKENS = 4096
 
 _s3_client = None
 
@@ -230,14 +235,24 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # Tracked so the spend is recorded on the Finding itself: research runs hourly,
     # long before any article exists, and its cost is bundled into whichever
     # article the Finding later feeds (common/costing.py's build_research_lineage).
-    result = invoke_model_tracked(prompt, model_id)
+    result = invoke_model_tracked(
+        prompt,
+        model_id,
+        max_tokens=RESEARCH_MAX_TOKENS,
+        retry_max_tokens=RESEARCH_RETRY_MAX_TOKENS,
+    )
     summary = result["text"]
     research_call = {
         "model_id": result["model_id"],
         "input_tokens": result["input_tokens"],
         "output_tokens": result["output_tokens"],
         "used_fallback": result["used_fallback"],
+        "stop_reason": result.get("stop_reason"),
     }
+    if research_call["stop_reason"] == "max_tokens":
+        # Still cut off after the retry. The finding is kept -- a partial summary is
+        # better than losing what was found -- but it is said so, not silent.
+        print(f"research_tick_handler: the summary for {topic_id} was cut off at its token limit")
 
     captured_at = new_state.get("fetched_at") or datetime.now(UTC).isoformat()
     snapshot_key = _snapshot_key(topic_id, captured_at)

@@ -17,8 +17,15 @@ from common.adapters.web_search import WebSearchAdapter
 REGION = "ap-southeast-2"
 
 
-def _tracked(text, *, model_id="au.anthropic.claude-haiku-4-5-20251001-v1:0", input_tokens=120,
-             output_tokens=45, used_fallback=False):
+def _tracked(
+    text,
+    *,
+    model_id="au.anthropic.claude-haiku-4-5-20251001-v1:0",
+    input_tokens=120,
+    output_tokens=45,
+    used_fallback=False,
+    stop_reason="end_turn",
+):
     """What common.bedrock.invoke_model_tracked returns."""
     return {
         "text": text,
@@ -26,6 +33,8 @@ def _tracked(text, *, model_id="au.anthropic.claude-haiku-4-5-20251001-v1:0", in
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "used_fallback": used_fallback,
+        "stop_reason": stop_reason,
+        "attempts": 1,
     }
 
 
@@ -140,6 +149,7 @@ def test_first_tick_is_always_material_and_calls_bedrock(aws_resources, monkeypa
         "input_tokens": 120,
         "output_tokens": 45,
         "used_fallback": False,
+        "stop_reason": "end_turn",
     }
 
     s3 = boto3.client("s3", region_name=REGION)
@@ -511,3 +521,38 @@ def test_an_adapter_with_no_item_keys_gets_no_seen_set(aws_resources, monkeypatc
     stored = json.loads(s3.get_object(Bucket="bloggerbear-content-test", Key=key)["Body"].read())
 
     assert "_seen" not in stored
+
+
+# --- a summary that runs out of tokens -------------------------------------------------------------
+
+
+def _run_one_tick(monkeypatch, tracked):
+    state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+    with patch("research_tick_handler.invoke_model_tracked", return_value=tracked) as mock_invoke:
+        result = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+    return result, mock_invoke
+
+
+def test_the_summary_is_given_room_and_one_automatic_retry(aws_resources, monkeypatch):
+    _, mock_invoke = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    kwargs = mock_invoke.call_args.kwargs
+    assert kwargs["max_tokens"] == research_tick_handler.RESEARCH_MAX_TOKENS == 2048
+    assert kwargs["retry_max_tokens"] == research_tick_handler.RESEARCH_RETRY_MAX_TOKENS == 4096
+
+
+def test_a_summary_cut_off_even_after_the_retry_is_kept_and_said_so(aws_resources, monkeypatch, capsys):
+    result, _ = _run_one_tick(monkeypatch, _tracked("the summary stops mid-sen", stop_reason="max_tokens"))
+
+    assert result["status"] == "material_change"  # what was found is not thrown away
+    finding = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"][0]
+    assert finding["summary"] == "the summary stops mid-sen"
+    assert finding["research_call"]["stop_reason"] == "max_tokens"
+    assert "was cut off at its token limit" in capsys.readouterr().out
+
+
+def test_a_complete_summary_says_nothing_about_being_cut_off(aws_resources, monkeypatch, capsys):
+    _run_one_tick(monkeypatch, _tracked("all of it"))
+
+    assert "cut off" not in capsys.readouterr().out
