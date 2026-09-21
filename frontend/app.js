@@ -1181,7 +1181,7 @@
       className: "feedback-comment-hint",
       text:
         "Keep it civil and about the article, and please don't include your name, contact " +
-        "details, or any other personal information. Comments that don't fit are not saved.",
+        "details, or any other personal information. A comment that doesn't fit isn't accepted, and nothing is submitted with it.",
       attrs: { id: commentHintId },
     });
 
@@ -1221,6 +1221,15 @@
         body: JSON.stringify(payload),
       })
         .then(function (response) {
+          if (response.status === 422) {
+            // The comment wasn't accepted, so nothing was submitted or counted: the vote wasn't
+            // recorded either. Nothing about why. Keep what they typed so they can change it.
+            status.textContent =
+              "Your comment wasn't accepted, so nothing was submitted. " +
+              "Take it out or reword it, then try again.";
+            setDisabled(false);
+            return null;
+          }
           if (!response.ok) {
             // 423 (locked / paused), 429 (a limit) and 503 (the limiter is unavailable) come
             // with the reason: swap the form for it rather than inviting a retry.
@@ -1245,13 +1254,7 @@
           if (result === null) {
             return; // closed: the reason is already showing
           }
-          // The vote always counts. A comment that was screened out is simply not saved; the
-          // API says so, and nothing about why.
-          if (commentValue !== "" && result.comment_saved === false) {
-            status.textContent = "Thanks, your vote was recorded. Your comment wasn't saved.";
-          } else {
-            status.textContent = "Thanks for your feedback!";
-          }
+          status.textContent = "Thanks for your feedback!";
         })
         .catch(function () {
           status.textContent = "Could not submit feedback right now. Please try again.";
@@ -1351,7 +1354,7 @@
         {
           heading: "6. Anonymous feedback",
           paragraphs: [
-            "You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the Privacy Policy for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. Every comment is screened automatically before it is saved, and is discarded (not saved, not published) if it contains personal information, is abusive, off-topic, spam or unlawful, breaks these terms, tries to instruct or attack the site or the software behind it, or can't be confirmed safe. Your vote is still counted when a comment is discarded.",
+            "You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the Privacy Policy for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. Every comment is screened automatically before it is saved, and is rejected (not saved, not published) if it contains personal information, is abusive, off-topic, spam or unlawful, breaks these terms, tries to instruct or attack the site or the software behind it, or can't be confirmed safe. When a comment is rejected, nothing is submitted: your vote isn't recorded with it, so you can try again without the comment.",
           ],
         },
         {
@@ -1403,7 +1406,7 @@
         {
           heading: "4. Feedback (votes and comments)",
           paragraphs: [
-            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, and only if it passed automated screening — see below), and when it was submitted. A comment that fails screening is not stored anywhere. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
+            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, and only if it passed automated screening — see below), and when it was submitted. A comment that fails screening is not stored anywhere, and neither is the vote sent with it. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
           ],
         },
         {

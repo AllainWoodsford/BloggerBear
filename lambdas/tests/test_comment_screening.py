@@ -198,3 +198,28 @@ def test_a_very_long_title_is_capped(monkeypatch):
     cs.screen_comment("A fine comment.", "T" * 5000, "m")
 
     assert "T" * (cs.MAX_TITLE_CHARS + 1) not in calls[0][0]
+
+
+def test_the_model_is_not_called_when_the_screening_budget_says_no(monkeypatch):
+    calls = _model(monkeypatch, "KEEP")
+
+    result = cs.screen_comment("Could you add a chart?", "Title", "model", may_call_model=lambda: False)
+
+    assert result == {"comment": None, "dropped_because": cs.MODEL_BUDGET}
+    assert calls == []
+
+
+def test_the_budget_is_asked_only_after_the_rules_pass_and_only_once(monkeypatch):
+    _model(monkeypatch, "KEEP")
+    asked = []
+
+    def budget():
+        asked.append(1)
+        return True
+
+    cs.screen_comment("Nice'; DROP TABLE feedback; --", "T", "m", may_call_model=budget)
+    cs.screen_comment("", "T", "m", may_call_model=budget)
+    assert asked == []  # a rule drop, and no comment, use no check
+
+    assert cs.screen_comment("Could you add a chart?", "T", "m", may_call_model=budget)["comment"]
+    assert asked == [1]

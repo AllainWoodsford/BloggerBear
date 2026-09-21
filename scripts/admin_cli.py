@@ -447,12 +447,15 @@ def _cmd_feedback_config_set(args: argparse.Namespace) -> None:
         body["daily_limit"] = _parse_whole("--daily-limit", args.daily_limit)
     if args.article_limit is not None:
         body["article_limit"] = _parse_whole("--article-limit", args.article_limit)
+    if args.screening_limit is not None:
+        body["screening_limit"] = _parse_whole("--screening-limit", args.screening_limit)
     if args.daily_timezone is not None:
         body["daily_timezone"] = args.daily_timezone or None
     if not body:
         raise CliError(
             "feedback-config set needs at least one of --locked-down, --lockdown-reason, "
-            "--rate-limit, --rate-window-minutes, --daily-limit, --article-limit, --daily-timezone"
+            "--rate-limit, --rate-window-minutes, --daily-limit, --article-limit, "
+            "--screening-limit, --daily-timezone"
         )
     _do_request(args, "PUT", "/feedback-config", body=body)
 
@@ -881,6 +884,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="article_limit",
         default=None,
         help="At most this many on one article before it is locked (default 50)",
+    )
+    feedback_config_set.add_argument(
+        "--screening-limit",
+        dest="screening_limit",
+        default=None,
+        help=(
+            "At most this many comments a day are sent to the model check (default 300). "
+            "Rejected feedback does not count against the other limits, so this bounds its cost"
+        ),
     )
     feedback_config_set.add_argument(
         "--daily-timezone",
