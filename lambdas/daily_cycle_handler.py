@@ -38,14 +38,14 @@ from datetime import UTC, date, datetime, timedelta
 
 import boto3
 
-from common import compliance, fresh_review
+from common import compliance, equipment, fresh_review
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
 from common.dynamo import (
-    get_latest_approved_prompt_refinement,
     get_pipeline_config,
     get_top_voted_articles,
     get_topic,
+    list_prompt_refinements,
     list_recent_findings,
     put_article,
     put_candidate_idea,
@@ -177,11 +177,11 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     model_id, fallback_model_id = resolve_model(topic)
     summaries_block = _format_findings_summaries(findings)
 
-    # Phase 5: fold in any admin-approved prompt refinement and a few-shot
-    # excerpt from the topic's best-received past article, if either exists.
-    # Both are strictly additive -- when neither exists, the prompts below
-    # are built exactly as they were before Phase 5.
-    guidance = _get_approved_guidance(topic_id)
+    # Phase 5: fold in the guidance the bear is wearing (approved prompt refinements, see
+    # common/equipment.py) and a few-shot excerpt from the topic's best-received past article,
+    # if either exists. Both are strictly additive -- when neither exists, the prompts below
+    # are built exactly as they were before Phase 5. What was worn is kept on the article.
+    guidance, equipment_used = _get_approved_guidance(topic_id)
     few_shot_excerpt = _get_few_shot_excerpt(topic_id)
 
     angles, ideate_call = _ideate(
@@ -281,6 +281,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         fresh_review_record=fresh_record,
         hold_reasons=hold_reasons,
         original_body=original_body,
+        equipment_used=equipment_used,
     )
     _record_article_written(topic_id, run_started)
     return result
@@ -480,16 +481,14 @@ def _format_findings_summaries(findings: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _get_approved_guidance(topic_id: str) -> str | None:
-    """Return the latest approved PromptRefinements' guidance text, or None.
+def _get_approved_guidance(topic_id: str) -> tuple[str | None, list[dict]]:
+    """Return the guidance the bear is wearing for this topic, and which gear it came from.
 
-    None means no refinement has ever been approved for this topic --
-    callers must leave their prompts completely unchanged in that case.
+    Worn armor (global) plus the topic's rings; a refinement approved before equipment existed
+    still applies until the topic has a ring (common/equipment.py). (None, []) means nothing
+    applies -- callers must leave their prompts completely unchanged in that case.
     """
-    refinement = get_latest_approved_prompt_refinement(topic_id)
-    if refinement is None:
-        return None
-    return refinement.get("prompt_changes") or None
+    return equipment.guidance_for(topic_id, list_prompt_refinements(status="approved"))
 
 
 def _get_few_shot_excerpt(topic_id: str) -> str | None:
@@ -686,6 +685,7 @@ def _publish_or_moderate(
     fresh_review_record: dict | None = None,
     hold_reasons: list[str] | None = None,
     original_body: str | None = None,
+    equipment_used: list[dict] | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
 
@@ -739,6 +739,7 @@ def _publish_or_moderate(
         published_by="ai_only" if compliant else None,
         **({"review": fresh_review_record} if fresh_review_record else {}),
         **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
+        **({"equipment_used": equipment_used} if equipment_used is not None else {}),
     )
 
     if compliant:

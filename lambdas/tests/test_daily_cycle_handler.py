@@ -284,7 +284,7 @@ def _run_a_full_cycle(
     with (
         patch("daily_cycle_handler.get_topic", return_value=topic),
         patch("daily_cycle_handler.list_recent_findings", return_value=findings),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
         patch("daily_cycle_handler.build_lineage", side_effect=_build_lineage),
@@ -432,7 +432,7 @@ def test_handler_publishes_when_compliant(s3_bucket):
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -551,7 +551,7 @@ def test_handler_dedupes_duplicate_source_refs_before_publishing(s3_bucket):
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=findings),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -582,7 +582,7 @@ def test_handler_moderates_when_non_compliant(s3_bucket):
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -645,7 +645,7 @@ def test_handler_financial_topic_routes_to_moderation_without_calling_bedrock_fo
     with (
         patch("daily_cycle_handler.get_topic", return_value=FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -684,7 +684,7 @@ def test_handler_financial_topic_folds_guidance_into_prompts_and_appends_disclai
     with (
         patch("daily_cycle_handler.get_topic", return_value=FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -753,8 +753,8 @@ def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prom
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
         patch(
-            "daily_cycle_handler.get_latest_approved_prompt_refinement",
-            return_value=refinement,
+            "daily_cycle_handler.list_prompt_refinements",
+            return_value=[refinement],
         ),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
@@ -790,6 +790,92 @@ def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prom
     assert "reader feedback" not in title_prompt
 
 
+def _run_with_gear(s3_bucket, gear):
+    """Run one daily cycle for github-trending with `gear` as the approved refinements; returns
+    (the ideation prompt, the draft prompt, put_article's keyword arguments)."""
+    invoke_responses = ["Angle one\nAngle two\nAngle three", "Draft body text.", "Some Title"]
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=gear),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in invoke_responses],
+        ) as mock_invoke,
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+    ):
+        daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+    calls = mock_invoke.call_args_list
+    return calls[0].args[0], calls[1].args[0], mock_put_article.call_args.kwargs
+
+
+def _gear(topic, version, slot, scope, text):
+    return {
+        "topic_id": topic,
+        "version": version,
+        "prompt_changes": text,
+        "status": "approved",
+        "equipped": True,
+        "slot": slot,
+        "scope": scope,
+        "equipped_at": version,
+    }
+
+
+def test_worn_armor_and_the_topics_rings_are_injected_and_recorded_on_the_article(s3_bucket):
+    gear = [
+        _gear("security-hacker-news", "2026-09-01", "helmet", "global", "Keep it short."),
+        _gear("github-trending", "2026-09-02", "ring", "topic", "Name the repository."),
+        _gear("crypto", "2026-09-03", "ring", "topic", "Quote the price."),  # another topic's ring
+        {**_gear("github-trending", "2026-09-04", "ring", "topic", "Benched."), "equipped": False},
+    ]
+
+    ideation_prompt, draft_prompt, article = _run_with_gear(s3_bucket, gear)
+
+    for prompt in (ideation_prompt, draft_prompt):
+        header = "Additional guidance based on reader feedback:"
+        assert header + "\n- Keep it short.\n- Name the repository." in prompt
+        assert "Quote the price" not in prompt and "Benched" not in prompt
+    assert article["equipment_used"] == [
+        {"topic_id": "security-hacker-news", "version": "2026-09-01", "slot": "helmet"},
+        {"topic_id": "github-trending", "version": "2026-09-02", "slot": "ring"},
+    ]
+
+
+def test_an_article_written_with_no_gear_records_an_empty_list(s3_bucket):
+    ideation_prompt, draft_prompt, article = _run_with_gear(s3_bucket, [])
+
+    assert "reader feedback" not in ideation_prompt and "reader feedback" not in draft_prompt
+    assert article["equipment_used"] == []  # "wore nothing", not "written before gear existed"
+
+
+def test_a_legacy_approval_is_still_injected_and_recorded_as_legacy(s3_bucket):
+    legacy = {
+        "topic_id": "github-trending",
+        "version": "2026-08-01",
+        "prompt_changes": "Old guidance.",
+        "status": "approved",
+    }
+
+    ideation_prompt, _, article = _run_with_gear(s3_bucket, [legacy])
+
+    assert "Additional guidance based on reader feedback:\nOld guidance." in ideation_prompt
+    assert article["equipment_used"] == [
+        {"topic_id": "github-trending", "version": "2026-08-01", "slot": "legacy"}
+    ]
+
+
 def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
     ideation_response = "Angle one\nAngle two\nAngle three"
     invoke_responses = [ideation_response, "Draft body text.", "Some Title"]
@@ -803,7 +889,7 @@ def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=top_articles) as mock_top,
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -846,7 +932,7 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
     with (
         patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
         patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -933,7 +1019,7 @@ def _run_crypto(topic, findings):
     with (
         patch("daily_cycle_handler.get_topic", return_value=topic),
         patch("daily_cycle_handler.list_recent_findings", return_value=findings),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
         patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
@@ -1367,7 +1453,7 @@ def _run_with_review(
     with (
         patch("daily_cycle_handler.get_topic", return_value=topic),
         patch("daily_cycle_handler.list_recent_findings", return_value=findings),
-        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("m", "fallback-m")),
         patch("daily_cycle_handler.build_lineage", side_effect=build_lineage),

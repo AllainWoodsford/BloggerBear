@@ -1053,3 +1053,36 @@ yes before approving. Errors are shown per item and never end the run.
 
 The spec this came from assumed a pending-posts table and a pending-images bucket; neither exists here, so
 the sources are the two above.
+
+### Equipment: approved prompt changes as gear the bear wears
+
+**Status: PR 1 of 4 (the model and the injection).** An approved prompt refinement is *worn* rather than
+merely approved; only worn gear is injected into the ideation and drafting prompts. `common/equipment.py` is
+the pure rules; the state lives on the PromptRefinements items (`equipped`, `slot`, `scope`, `equipped_at`,
+`unequipped_at`).
+
+- **Armor** (helmet, chest, gloves, boots, sword, shield): *global* guidance, one item per slot. Equipping
+  into a taken slot benches the old item (it stays approved and can be worn again).
+- **Rings**: *topic* guidance for the item's own topic, at most 5 in all. When full, equipping needs a ring
+  to replace, or the item waits in the backpack.
+- **Backpack**: approved and not worn. Nothing there is injected, and it will only ever be a count in public.
+- **Compatibility.** An item approved before this has no `equipped` field. It is "legacy": the latest per
+  topic keeps being injected until the topic has a ring. Once an item has been equipped or benched it has the
+  field and is never legacy again. Approving with no choice wears a ring for the topic, so nothing changes for
+  the old workflow, except that guidance now stacks (all of a topic's rings plus the armor, capped at
+  4,000 characters, dropping whatever does not fit).
+- **What was worn is recorded.** `Articles.equipment_used` lists `{topic_id, version, slot}` per piece used;
+  `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
+  This is the data an effectiveness measure and wear-out would need; neither is built.
+- **Admin.** `GET /equipment`, `POST /prompt-refinements/{topic_id}/{version}/equip|unequip`, and an optional
+  `{scope, slot, replace}` body on approve. The displaced item is benched first, so a failure part way leaves
+  a slot empty rather than two items fighting over it. `admin_cli equipment ...`, and `approve` asks where
+  the bear wears a prompt change.
+
+**Still to come.** PR 2: a generated item name and random rarity (with the same public-name safety screening
+as comments), the bear suggesting a slot, an admin rarity bump. PR 3: durability (10-50, weighted by rarity),
+wear from trusted signals only (a human rejection, a "major" fresh-review finding, a hold; not raw anonymous
+votes, which are gameable), auto-replacement from the backpack, admin repair. PR 4: the Stats-page paper doll,
+with per-slot and per-rarity art, accessible hover/focus tooltips showing the guidance in use, and the bag
+count. Two things need the owner's call first: what "equip only in part" means, and which review signals
+count as a negative outcome for wear.
