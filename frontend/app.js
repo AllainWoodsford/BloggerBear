@@ -21,6 +21,7 @@
   "use strict";
 
   var navEl = document.getElementById("nav");
+  var topicsNavEl = document.getElementById("nav-topics");
   var contentEl = document.getElementById("content");
 
   function apiUrl(path) {
@@ -74,25 +75,13 @@
 
   // --- Nav ------------------------------------------------------------
 
-  // Phase 8: the cross-topic "trending everywhere" digest isn't a real
-  // Topic (no adapter, no cadence -- see trending_digest_handler.py), so
-  // it never comes back from GET /topics and needs its own static nav
-  // entry rather than the dynamic ones below. It links to the exact same
-  // #/topic/{id} route every other topic uses (topic_id "digest"), which
-  // already renders correctly with zero routing changes -- including the
-  // "No published articles yet." empty state, before the first digest
-  // has run.
+  // The site's own sections -- Trending Everywhere, Musings, Stats -- are not
+  // topics (nothing to rank, no article_count/researching fields), so they are
+  // fixed links in index.html (header #nav-site and the footer) and never come
+  // from GET /topics. Trending Everywhere is the cross-topic digest (see
+  // trending_digest_handler.py): it links to the same #/topic/{id} route every
+  // topic uses, with topic_id "digest".
   var DIGEST_TOPIC_ID = "digest";
-
-  // BloggerBear's musings feed -- not a topic at all (no article_count/
-  // researching fields, nothing to rank), so it's a second static nav
-  // entry alongside Trending Everywhere, always visible regardless of how
-  // many real topics get capped out of selectNavTopics below.
-  var MUSINGS_ROUTE_HASH = "#/musings";
-
-  // Public cost/token statistics page -- same category as Musings/Trending
-  // Everywhere: not a topic, always visible in the nav.
-  var STATS_ROUTE_HASH = "#/stats";
 
   // Keeps the compact header nav usable regardless of how many topics
   // exist: at most this many real topics ever show there, ranked by
@@ -126,25 +115,18 @@
     return withArticles.slice(0, NAV_TOPIC_LIMIT).concat(researchingOnly);
   }
 
+  // Only the topics are built here. The site's own sections (Trending
+  // Everywhere, Musings, Stats) are plain links in index.html's #nav-site and
+  // footer, so they are there without any JS or API call.
   function renderNav(topics) {
     clearChildren(navEl);
-    var digestLink = el("a", {
-      text: "Trending Everywhere",
-      href: "#/topic/" + DIGEST_TOPIC_ID,
-      className: "digest-link",
-    });
-    navEl.appendChild(digestLink);
-    var musingsLink = el("a", {
-      text: "Musings",
-      href: MUSINGS_ROUTE_HASH,
-      className: "musings-link",
-    });
-    navEl.appendChild(musingsLink);
-    navEl.appendChild(el("a", { text: "Stats", href: STATS_ROUTE_HASH, className: "stats-link" }));
-    selectNavTopics(topics).forEach(function (topic) {
+    var navTopics = selectNavTopics(topics);
+    navTopics.forEach(function (topic) {
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
     });
+    // No topics (yet): no empty "Topics" label either.
+    topicsNavEl.hidden = navTopics.length === 0;
   }
 
   function loadNav() {
@@ -155,6 +137,7 @@
       .catch(function () {
         // Nav failing to load shouldn't block the rest of the page.
         clearChildren(navEl);
+        topicsNavEl.hidden = true;
       });
   }
 
@@ -928,6 +911,112 @@
       });
   }
 
+  // --- Article body (markdown) ---------------------------------------------
+
+  // The article title is the page's one <h1>, so a "#" in the body is an <h2>
+  // (markdown.js shifts every heading down by this much): screen-reader users
+  // navigate by heading level, and a second <h1> would break that outline.
+  var BODY_HEADING_OFFSET = 1;
+
+  function renderInline(parent, nodes) {
+    nodes.forEach(function (node) {
+      if (node.type === "text") {
+        parent.appendChild(document.createTextNode(node.text));
+      } else if (node.type === "code") {
+        parent.appendChild(el("code", { text: node.text }));
+      } else if (node.type === "strong" || node.type === "em") {
+        var emphasis = el(node.type);
+        renderInline(emphasis, node.children);
+        parent.appendChild(emphasis);
+      } else if (node.type === "link") {
+        // markdown.js only emits http(s) links. Off-site, so the same
+        // treatment as the Sources list: new context stays out of this tab's
+        // opener, and the accessible name says it leaves the site.
+        var link = el("a", {
+          href: node.href,
+          attrs: { rel: "noopener noreferrer", target: "_blank" },
+        });
+        renderInline(link, node.children);
+        parent.appendChild(link);
+      }
+    });
+  }
+
+  function renderBlocks(parent, blocks) {
+    blocks.forEach(function (block) {
+      if (block.type === "heading") {
+        var heading = el("h" + block.level);
+        renderInline(heading, block.children);
+        parent.appendChild(heading);
+      } else if (block.type === "paragraph") {
+        var paragraph = el("p");
+        renderInline(paragraph, block.children);
+        parent.appendChild(paragraph);
+      } else if (block.type === "list") {
+        var list = el(block.ordered ? "ol" : "ul");
+        if (block.ordered && block.start !== null && block.start !== 1) {
+          list.setAttribute("start", String(block.start));
+        }
+        block.items.forEach(function (item) {
+          var li = el("li");
+          renderInline(li, item.inline);
+          renderBlocks(li, item.blocks);
+          list.appendChild(li);
+        });
+        parent.appendChild(list);
+      } else if (block.type === "blockquote") {
+        var quote = el("blockquote");
+        renderBlocks(quote, block.children);
+        parent.appendChild(quote);
+      } else if (block.type === "code") {
+        var pre = el("pre");
+        pre.appendChild(el("code", { text: block.text }));
+        parent.appendChild(pre);
+      } else if (block.type === "hr") {
+        parent.appendChild(el("hr"));
+      } else if (block.type === "table") {
+        parent.appendChild(renderTable(block));
+      }
+    });
+  }
+
+  function renderTable(block) {
+    // A wrapper that scrolls sideways: a wide table on a phone must not
+    // stretch the whole page (there is a "no horizontal page scroll" rule).
+    var wrap = el("div", { className: "table-scroll" });
+    var table = el("table");
+    var headRow = el("tr");
+    block.head.forEach(function (cell, index) {
+      var th = el("th", {
+        className: block.aligns[index] ? "align-" + block.aligns[index] : "",
+        attrs: { scope: "col" },
+      });
+      renderInline(th, cell);
+      headRow.appendChild(th);
+    });
+    var thead = el("thead");
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = el("tbody");
+    block.rows.forEach(function (row) {
+      var tr = el("tr");
+      row.forEach(function (cell, index) {
+        var td = el("td", { className: block.aligns[index] ? "align-" + block.aligns[index] : "" });
+        renderInline(td, cell);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    return wrap;
+  }
+
+  function renderMarkdownInto(parent, markdown) {
+    var blocks = window.BloggerMarkdown.parse(markdown, { headingOffset: BODY_HEADING_OFFSET });
+    renderBlocks(parent, blocks);
+  }
+
   // --- Article detail -----------------------------------------------------
 
   function renderArticle(article) {
@@ -943,15 +1032,7 @@
     contentEl.appendChild(el("p", { className: "lineage-summary", text: articleDetailSummaryText(article) }));
 
     var body = el("div", { className: "article-body" });
-    // Render body as plain text paragraphs, split on blank lines, rather
-    // than trusting/parsing it as HTML.
-    var paragraphs = String(article.body || "").split(/\n\s*\n/);
-    paragraphs.forEach(function (paragraph) {
-      if (paragraph.trim() === "") {
-        return;
-      }
-      body.appendChild(el("p", { text: paragraph }));
-    });
+    renderMarkdownInto(body, article.body);
     contentEl.appendChild(body);
 
     var sourceRefs = article.source_refs || [];

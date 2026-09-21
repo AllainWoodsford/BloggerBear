@@ -104,38 +104,28 @@ body {
   outline: none;
 }
 
-/* Sticky only below 640px (phones): on a small screen, real vertical
-   space is scarce and reaching a scrolled-away header/nav takes a
-   longer, more deliberate scroll gesture, so keeping it glued to the
-   top earns its keep there. On desktop/tablet the header scrolls away
-   normally -- with a whole viewport of width to work with, a
-   permanently-docked header just eats vertical space for content on
-   every page, for a "get back to the header" problem the new
-   "Back to top" footer link (see .back-to-top below) already solves
-   without any permanent cost. id="top" is this link's landmark target.
-   An explicit background on the sticky rule is required -- CSS
-   background isn't inherited, and without one the header would be
-   transparent while sticky-pinned over scrolled-under content; z-index
-   keeps it above the content scrolling underneath it. */
+/* The header is two groups of links: the site's own sections (Trending
+   Everywhere / Musings / Stats -- fixed, in the HTML, so they work even if
+   the API is down) and the topics (fetched, at most NAV_TOPIC_LIMIT). On a
+   wide screen that is the title and the sections on one row, the topics on
+   a row of their own. On a phone (max-width 640px, below) everything
+   stacks: the sections become a row of tap-sized buttons, the topics a
+   vertical list under a "Topics" label.
+
+   The header is not sticky on phones any more: stacked, it is too tall to
+   keep glued to the top of a small screen, and the footer's "Back to top"
+   link (see .back-to-top) is the way back up. id="top" is its target. */
 header {
   max-width: var(--max-width);
+  width: 100%;
   margin: 0 auto;
   padding: 20px 0 12px;
   border-bottom: 1px solid var(--border);
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 8px 20px;
   flex-shrink: 0;
-}
-
-@media (max-width: 640px) {
-  header {
-    position: sticky;
-    top: 0;
-    z-index: 20;
-    background: var(--bg);
-  }
 }
 
 .site-title {
@@ -170,30 +160,107 @@ header {
   flex-shrink: 0;
 }
 
-#nav {
+#nav,
+#nav-site {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
 }
 
-#nav a {
+#nav a,
+#nav-site a {
   color: var(--accent);
   text-decoration: none;
   font-size: 0.95rem;
 }
 
-#nav a:hover {
+#nav a:hover,
+#nav-site a:hover {
   text-decoration: underline;
 }
 
-/* Phase 8: the static "Trending Everywhere" cross-topic digest link,
-   distinguished from the dynamic per-topic links with a small border
-   pill rather than a whole new nav section -- it's still just one more
-   #nav a link under the hood. */
-.digest-link {
+/* The site's own sections (Trending Everywhere, Musings, Stats) are
+   outlined pills, so they read as "places on the site" next to the plain
+   topic links below them. */
+#nav-site {
+  gap: 6px 10px;
+}
+
+#nav-site a {
   border: 1px solid var(--accent);
   border-radius: 999px;
-  padding: 2px 10px;
+  padding: 2px 12px;
+}
+
+/* The topics: their own row on a wide screen, with a small muted label. */
+.nav-topics {
+  flex: 1 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.nav-topics[hidden] {
+  display: none;
+}
+
+.nav-label {
+  color: var(--muted);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+@media (max-width: 640px) {
+  header {
+    display: block;
+    padding-bottom: 8px;
+  }
+
+  #nav-site {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 12px 0 4px;
+  }
+
+  #nav-site a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 4px 8px;
+    text-align: center;
+    line-height: 1.2;
+  }
+
+  .nav-topics {
+    display: block;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .nav-label {
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  #nav {
+    display: block;
+  }
+
+  #nav a {
+    display: block;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 1rem;
+  }
+
+  #nav a:last-child {
+    border-bottom: 0;
+  }
 }
 
 main {
@@ -302,6 +369,109 @@ a {
   margin: 0 0 1em;
 }
 
+/* Headings the article body itself contains (real <h2>-<h6>, see
+   markdown.js: the article title is the page's one <h1>). Sized below the
+   title (1.6rem) and stepping down. */
+.article-body h2,
+.article-body h3,
+.article-body h4,
+.article-body h5,
+.article-body h6 {
+  line-height: 1.3;
+  margin: 1.6em 0 0.5em;
+}
+
+.article-body h2 {
+  font-size: 1.3rem;
+}
+
+.article-body h3 {
+  font-size: 1.15rem;
+}
+
+.article-body h4,
+.article-body h5,
+.article-body h6 {
+  font-size: 1rem;
+}
+
+.article-body ul,
+.article-body ol {
+  margin: 0 0 1em;
+  padding-left: 1.5em;
+}
+
+.article-body li {
+  margin: 0.25em 0;
+}
+
+.article-body li > ul,
+.article-body li > ol {
+  margin: 0.25em 0 0.25em;
+}
+
+.article-body blockquote {
+  margin: 0 0 1em;
+  padding: 0 0 0 1em;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.article-body pre {
+  margin: 0 0 1em;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.article-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.92em;
+}
+
+.article-body hr {
+  margin: 1.6em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.article-body a {
+  overflow-wrap: anywhere;
+}
+
+/* Wide tables scroll inside their own box rather than stretching the page. */
+.table-scroll {
+  overflow-x: auto;
+  margin: 0 0 1em;
+}
+
+.article-body table {
+  border-collapse: collapse;
+  font-size: 0.92rem;
+}
+
+.article-body th,
+.article-body td {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.article-body th {
+  background: var(--border);
+}
+
+.article-body .align-center {
+  text-align: center;
+}
+
+.article-body .align-right {
+  text-align: right;
+}
+
 /* --- Articles in the Pipeline ----------------------------------------
    A "terminal window" treatment for in-progress work (pending-review /
    researching) -- reuses the site's existing --bg/--fg/--border/--muted
@@ -353,6 +523,25 @@ a {
   color: var(--muted);
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+/* On a phone the fixed 11rem status column leaves the title a sliver: stack
+   the status above its title instead. */
+@media (max-width: 640px) {
+  .pipeline-list li {
+    flex-wrap: wrap;
+    gap: 2px 12px;
+  }
+
+  /* Leaves room for the paw (the li::before) so it stays on the status line. */
+  .pipeline-status {
+    flex: 1 0 calc(100% - 3rem);
+  }
+
+  .pipeline-item-title {
+    flex: 1 0 100%;
+    padding-left: 1.9rem;
+  }
 }
 
 /* Paw prints instead of default bullet dots -- a ::before pseudo-element
@@ -472,6 +661,18 @@ a {
   font-weight: 600;
 }
 
+/* One column on a phone: label above value, not a squeezed two-column grid. */
+@media (max-width: 640px) {
+  .lineage-footer dl {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .lineage-footer dd {
+    margin-bottom: 8px;
+  }
+}
+
 .lineage-footer dd {
   margin: 0;
   overflow-wrap: anywhere;
@@ -549,6 +750,7 @@ a {
 
 .site-footer {
   max-width: var(--max-width);
+  width: 100%;
   margin: 0 auto;
   padding: 16px 0 32px;
   border-top: 1px solid var(--border);
@@ -561,6 +763,7 @@ a {
   gap: 8px 20px;
 }
 
+.footer-nav,
 .legal-nav,
 .footer-links {
   display: flex;
@@ -568,16 +771,45 @@ a {
   gap: 4px 16px;
 }
 
+/* Phone: the footer's three groups (Explore = the site sections, Legal, and
+   RSS / Back to top) stack, and each group is a two-column grid of
+   tap-sized links instead of one long wrapping line. */
+@media (max-width: 640px) {
+  .site-footer {
+    display: block;
+    font-size: 0.95rem;
+  }
+
+  .footer-nav,
+  .legal-nav,
+  .footer-links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 16px;
+    margin-bottom: 12px;
+  }
+
+  .footer-nav a,
+  .legal-nav a,
+  .footer-links a {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
 .footer-links {
   align-items: baseline;
 }
 
+.footer-nav a,
 .legal-nav a,
 .site-footer a {
   color: var(--accent);
   text-decoration: none;
 }
 
+.footer-nav a:hover,
 .legal-nav a:hover,
 .site-footer a:hover {
   text-decoration: underline;
