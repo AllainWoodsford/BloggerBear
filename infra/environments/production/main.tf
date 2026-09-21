@@ -360,8 +360,17 @@ data "aws_iam_policy_document" "lambda_exec" {
   statement {
     sid       = "SitePublishing"
     effect    = "Allow"
-    actions   = ["s3:PutObject"]
+    actions   = ["s3:PutObject", "s3:DeleteObject"]
     resources = ["arn:aws:s3:::${module.static_site.bucket_name}/articles/*"]
+  }
+
+  # Unpublishing (admin_api_handler.py's _unpublish_article): deletes a page
+  # from the articles/ prefix above and asks CloudFront to drop its cached copy.
+  statement {
+    sid       = "CloudFrontInvalidation"
+    effect    = "Allow"
+    actions   = ["cloudfront:CreateInvalidation"]
+    resources = ["arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/${module.static_site.distribution_id}"]
   }
 
   # Foundation-model ARNs don't carry an account ID -- this is the exact
@@ -490,6 +499,11 @@ locals {
     # daily_cycle_handler.py and admin_api_handler.py; harmless on every
     # other Lambda, they just never read it.
     SITE_BUCKET = module.static_site.bucket_name
+
+    # Unpublishing: the distribution common/static_pages.py invalidates when an
+    # article page is deleted. Read by admin_api_handler.py only; unset means
+    # the invalidation is skipped and a cached copy lingers until its TTL.
+    CLOUDFRONT_DISTRIBUTION_ID = module.static_site.distribution_id
 
     # Musings: common/musings.py's target table (article musings, called
     # from daily_cycle_handler.py and admin_api_handler.py) and
@@ -653,6 +667,10 @@ module "admin_api" {
     # admin_api_handler.py's _publish_article and scripts/admin_cli.py's
     # `articles publish` subcommand.
     "POST /articles/{article_id}/publish",
+    # Inverse of the above: takes a published article down (deletes its page,
+    # marks it rejected, removes its musings, invalidates the CDN cache). See
+    # admin_api_handler.py's _unpublish_article and `articles unpublish`.
+    "POST /articles/{article_id}/unpublish",
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",

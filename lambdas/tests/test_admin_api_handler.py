@@ -1083,6 +1083,121 @@ def test_publish_unknown_article_returns_404(aws_resources):
     assert result["statusCode"] == 404
 
 
+# --- Articles (unpublish) ------------------------------------------------
+
+
+def _unpublish(article_id="article-1", *, musings_removed=1, cache_invalidated=True):
+    with (
+        patch("admin_api_handler.remove_article_page") as mock_remove,
+        patch("admin_api_handler.delete_musings_for_article", return_value=musings_removed) as mock_musings,
+        patch("admin_api_handler.invalidate_article_page", return_value=cache_invalidated) as mock_invalidate,
+    ):
+        event = _event(
+            "POST /articles/{article_id}/unpublish", path_params={"article_id": article_id}
+        )
+        result = admin_api_handler.handler(event, None)
+    return result, mock_remove, mock_musings, mock_invalidate
+
+
+def test_unpublish_takes_a_published_article_down(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+
+    result, mock_remove, mock_musings, mock_invalidate = _unpublish()
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"]) == {
+        "unpublished": "article-1",
+        "musings_removed": 1,
+        "cache_invalidated": True,
+    }
+    mock_remove.assert_called_once_with("article-1")
+    mock_musings.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1")
+
+    article = boto3.resource("dynamodb", region_name=REGION).Table("Articles").get_item(
+        Key={"article_id": "article-1"}
+    )["Item"]
+    assert article["status"] == "rejected"
+    queue_item = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue").get_item(
+        Key={"queue_id": "queue-1"}
+    )["Item"]
+    assert queue_item["status"] == "rejected"
+
+
+def test_unpublish_reports_when_the_cache_could_not_be_invalidated(aws_resources):
+    _put_article(status="published")
+
+    result, *_ = _unpublish(cache_invalidated=False)
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["cache_invalidated"] is False
+
+
+def test_unpublish_works_for_an_article_that_never_had_a_queue_item(aws_resources):
+    _put_article(status="published")
+
+    result, *_ = _unpublish()
+
+    assert result["statusCode"] == 200
+
+
+def test_unpublish_deletes_the_page_before_changing_any_status(aws_resources):
+    """If removing the page fails, the article must still read `published`, so
+    a retry finds it and a half-done unpublish never hides a live page."""
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+
+    with (
+        patch("admin_api_handler.remove_article_page", side_effect=RuntimeError("s3 down")),
+        patch("admin_api_handler.delete_musings_for_article"),
+        patch("admin_api_handler.invalidate_article_page"),
+    ):
+        event = _event("POST /articles/{article_id}/unpublish", path_params={"article_id": "article-1"})
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 500
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    assert table.get_item(Key={"article_id": "article-1"})["Item"]["status"] == "published"
+    queue = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    assert queue.get_item(Key={"queue_id": "queue-1"})["Item"]["status"] == "approved"
+
+
+def test_unpublish_can_be_repeated_on_an_already_rejected_article(aws_resources):
+    """The repair path: a failure after the status change is fixed by running it again."""
+    _put_article(status="rejected")
+    _put_moderation_item(status="rejected")
+
+    result, mock_remove, mock_musings, mock_invalidate = _unpublish()
+
+    assert result["statusCode"] == 200
+    mock_remove.assert_called_once_with("article-1")
+    mock_musings.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1")
+
+
+def test_unpublish_refuses_an_article_still_awaiting_moderation(aws_resources):
+    _put_article(status="pending_moderation")
+    _put_moderation_item(status="pending")
+
+    result, mock_remove, mock_musings, mock_invalidate = _unpublish()
+
+    assert result["statusCode"] == 409
+    assert "moderation reject" in json.loads(result["body"])["error"]
+    mock_remove.assert_not_called()
+    mock_musings.assert_not_called()
+    mock_invalidate.assert_not_called()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    assert table.get_item(Key={"article_id": "article-1"})["Item"]["status"] == "pending_moderation"
+
+
+def test_unpublish_unknown_article_returns_404(aws_resources):
+    result, mock_remove, *_ = _unpublish("nope")
+
+    assert result["statusCode"] == 404
+    mock_remove.assert_not_called()
+
+
 # --- Failed executions (DLQ consumer) -----------------------------------
 
 

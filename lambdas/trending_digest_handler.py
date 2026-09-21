@@ -51,7 +51,6 @@ error dict, since a scheduled job has no one watching synchronously.
 from __future__ import annotations
 
 import os
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import boto3
@@ -60,7 +59,13 @@ from common import compliance
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
-from common.dynamo import get_latest_finding, list_topics, put_article, put_moderation_item
+from common.dynamo import (
+    get_article,
+    get_latest_finding,
+    list_topics,
+    put_article,
+    put_moderation_item,
+)
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.source_refs import dedupe_source_refs
@@ -92,7 +97,27 @@ def handler(event, context) -> dict:
         return {"status": "error", "error": str(exc)}
 
 
+def digest_article_id(day: str) -> str:
+    """The digest's article id for a UTC date (`YYYY-MM-DD`): one per day."""
+    return f"digest-{day}"
+
+
 def _run_trending_digest() -> dict:
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    article_id = digest_article_id(today)
+
+    # One digest per day. A second run (a manual trigger, a retry) used to write
+    # a second identical article; now it is a no-op while the day's digest exists
+    # in any state but `rejected`. To regenerate, reject/unpublish it first --
+    # the rerun then replaces it. Checked before any model call.
+    existing = get_article(article_id)
+    if existing is not None and existing.get("status") != "rejected":
+        return {
+            "status": "already_exists",
+            "article_id": article_id,
+            "article_status": existing.get("status"),
+        }
+
     contributions = _recent_contributions()
     if not contributions:
         return {"status": "no_recent_findings"}
@@ -118,7 +143,7 @@ def _run_trending_digest() -> dict:
     )
     if any_financial:
         draft_text = compliance.append_financial_disclaimer(draft_text)
-    title = f"Trending Everywhere -- {datetime.now(UTC).strftime('%Y-%m-%d')}"
+    title = f"Trending Everywhere -- {today}"
 
     # A minimal synthetic "topic" -- review_draft only ever reads
     # is_financial off of it.
@@ -137,6 +162,7 @@ def _run_trending_digest() -> dict:
     lineage = build_lineage(calls)
 
     return _publish_or_moderate_digest(
+        article_id=article_id,
         title=title,
         draft_text=draft_text,
         source_refs=source_refs,
@@ -191,6 +217,7 @@ def _synthesize_digest(
 
 def _publish_or_moderate_digest(
     *,
+    article_id: str,
     title: str,
     draft_text: str,
     source_refs: list[dict],
@@ -198,7 +225,6 @@ def _publish_or_moderate_digest(
     model_id: str,
     lineage: dict,
 ) -> dict:
-    article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
     body_s3_key = f"articles/{article_id}.md"
 
@@ -257,8 +283,11 @@ def _publish_or_moderate_digest(
         )
         return {"status": "published", "article_id": article_id, "compliant": True}
 
+    # The queue item shares the article's id, so replacing a rejected digest
+    # overwrites its old (rejected) queue row instead of leaving two rows for
+    # one article.
     put_moderation_item(
-        queue_id=str(uuid.uuid4()),
+        queue_id=article_id,
         article_id=article_id,
         topic_id=DIGEST_TOPIC_ID,
         reasons=review["reasons"],
