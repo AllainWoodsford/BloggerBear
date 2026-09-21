@@ -2,12 +2,11 @@
 # enable_custom_domain = true, so BOTH of these must be set before the first production apply, and the
 # apply stops early with a plain-English message if hosted_zone_id is missing.
 #
-# hosted_zone_id is TODO: it does not exist until you create the zone (step 2 of
-# docs/production-runsheet.md: `terraform -chdir=infra/bootstrap apply -var domain_name=bloggerbear.com`)
-# and then copy its ID from `terraform -chdir=infra/bootstrap output hosted_zone_id`. Neither value is
-# sensitive, so it is fine here in git.
+# hosted_zone_id is the Route 53 zone created in infra/bootstrap (step 1 of docs/production-runsheet.md):
+# `terraform -chdir=infra/bootstrap output hosted_zone_id`. Neither value is sensitive, so it is fine here
+# in git.
 domain_name    = "bloggerbear.com"
-hosted_zone_id = ""
+hosted_zone_id = "Z08528613LTNU3HR75ODZ"
 
 # bedrock_model_id is deliberately NOT set here anymore. It used to be
 # pinned to "" (empty) right here, which -- since a tfvars value always
