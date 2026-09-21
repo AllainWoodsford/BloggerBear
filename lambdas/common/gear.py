@@ -248,3 +248,58 @@ def generate_identity(topic_id: str, prompt_changes: str, model_id: str, rng=Non
     if theme is not None and not _model_says_safe(theme, model_id):
         theme = None
     return new_identity(theme or fallback_theme(topic_id), slot_hint, rng)
+
+
+# --- what the public sees ---------------------------------------------------------------------
+
+MAX_PUBLIC_DESCRIPTION = 280
+WITHHELD = "(The details of this guidance are not shown.)"
+
+
+def public_description(guidance) -> str:
+    """The guidance as the Stats page shows it: one tidy line, capped.
+
+    A person approved this guidance, but it derives from anonymous comments and is public here, so it
+    gets the same code rules as a comment (links, personal information, injection, SQL, markup). If any
+    applies the text is withheld rather than shown."""
+    if not isinstance(guidance, str):
+        return WITHHELD
+    text = " ".join(guidance.split())
+    if not text or rule_drop_reason(text) is not None:
+        return WITHHELD
+    if len(text) > MAX_PUBLIC_DESCRIPTION:
+        text = text[: MAX_PUBLIC_DESCRIPTION - 1].rstrip() + "…"
+    return text
+
+
+def durability_percent(item: dict) -> int | None:
+    """Durability as a whole percentage of its maximum, or None if it has none (it predates gear)."""
+    top = item.get("max_durability")
+    now = item.get("durability")
+    if top is None or now is None or int(top) <= 0:
+        return None
+    return max(0, min(100, round(int(now) * 100 / int(top))))
+
+
+def public_view(item: dict, topic_names: dict | None = None) -> dict:
+    """One piece of worn gear as the public Stats page may see it. Nothing else about the proposal
+    (its rationale, version or ids) leaves the admin API.
+
+    The theme is checked again here even though it was screened when written: what is shown is what
+    passes now."""
+    theme = clean_theme(item.get("theme")) or fallback_theme(item.get("topic_id"))
+    named = {**item, "theme": theme}
+    ring = item.get("slot") == "ring"
+    topic_id = item.get("topic_id") if ring else None
+    rarity = item.get("rarity") if item.get("rarity") in RARITIES else "common"
+    return {
+        "name": display_name(named),
+        "rarity": rarity,
+        "slot": item.get("slot"),
+        "description": public_description(item.get("prompt_changes")),
+        "topic_id": topic_id,
+        "topic_name": (topic_names or {}).get(topic_id) if topic_id else None,
+        "durability": None if item.get("durability") is None else int(item["durability"]),
+        "max_durability": None if item.get("max_durability") is None else int(item["max_durability"]),
+        "durability_percent": durability_percent(item),
+    }

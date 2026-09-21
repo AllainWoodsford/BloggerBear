@@ -40,7 +40,7 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common import feedback_limits, feedback_verification, wear
+from common import equipment, feedback_limits, feedback_verification, gear, wear
 from common.comment_screening import screen_comment
 from common.dynamo import (
     get_article,
@@ -51,6 +51,7 @@ from common.dynamo import (
     list_models,
     list_musings,
     list_pending_moderation_for_topic,
+    list_prompt_refinements,
     list_published_articles,
     list_recent_findings,
     list_topics,
@@ -524,6 +525,29 @@ def _stats(event: dict) -> dict:
     return _response(200, stats, cache_seconds=_STATS_CACHE_SECONDS)
 
 
+# --- What BloggerBear is wearing ------------------------------------------------------------------
+
+# Gear changes when feedback arrives or an admin equips something, not by the second.
+_EQUIPMENT_CACHE_SECONDS = 60
+
+
+def _equipment(event: dict) -> dict:
+    """The gear BloggerBear is wearing, for the Stats page: each armor slot (or None), the rings, and how
+    many things are in the backpack. Never what is in the backpack, and never anything about a proposal
+    beyond what is shown on the gear itself (common/gear.py, public_view)."""
+    topic_names = {t.get("topic_id"): t.get("name") for t in list_topics()}
+    view = equipment.describe(
+        list_prompt_refinements(status="approved"), decorate=lambda i: gear.public_view(i, topic_names)
+    )
+    loadout = {
+        "armor": view["armor"],
+        "rings": view["rings"],
+        "max_rings": view["max_rings"],
+        "backpack_count": view["backpack_count"],
+    }
+    return _response(200, loadout, cache_seconds=_EQUIPMENT_CACHE_SECONDS)
+
+
 # --- RSS feed ---------------------------------------------------------------
 
 
@@ -608,6 +632,7 @@ _ROUTES = {
     "POST /articles/{article_id}/feedback": _submit_feedback,
     "GET /musings": _list_musings,
     "GET /stats": _stats,
+    "GET /equipment": _equipment,
     "GET /rss.xml": _rss_feed,
 }
 
