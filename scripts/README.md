@@ -71,6 +71,9 @@ python scripts/admin_cli.py topics update github-trending \
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
+# daily_cycle only writes from findings newer than the topic's last article, so a
+# repeat run with nothing new is a no-op. --force rewrites from the whole last-24h window:
+python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --force
 python scripts/admin_cli.py topics candidates github-trending
 python scripts/admin_cli.py topics findings github-trending
 
