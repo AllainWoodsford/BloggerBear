@@ -47,9 +47,13 @@ def test_valid_modes_and_unset_are_accepted(value):
     assert fr.review_mode_error(value) is None
 
 
-@pytest.mark.parametrize("value", ["enforce", "on", "", "SHADOW", 1, True])
-def test_anything_else_is_refused_including_enforce_which_does_not_exist_yet(value):
-    assert "must be one of off, shadow" in fr.review_mode_error(value)
+@pytest.mark.parametrize("value", ["on", "", "SHADOW", "Enforce", 1, True])
+def test_anything_else_is_refused(value):
+    assert "must be one of off, shadow, enforce" in fr.review_mode_error(value)
+
+
+def test_enforce_is_a_valid_mode():
+    assert fr.review_mode_error("enforce") is None
 
 
 def test_the_default_mode_is_shadow():
@@ -58,7 +62,8 @@ def test_the_default_mode_is_shadow():
 
 def test_a_stored_mode_is_used_and_an_invalid_stored_one_is_ignored():
     assert fr.resolve_review_mode({"review_mode": "off"}) == "off"
-    assert fr.resolve_review_mode({"review_mode": "enforce"}) == "shadow"  # not trusted
+    assert fr.resolve_review_mode({"review_mode": "enforce"}) == "enforce"
+    assert fr.resolve_review_mode({"review_mode": "bogus"}) == "shadow"  # not trusted
     assert fr.resolve_review_mode({"review_mode": 5}) == "shadow"
 
 
@@ -587,7 +592,7 @@ def test_the_review_mode_can_be_set_read_and_cleared(tables):
     assert cleared["review_mode"] is None and cleared["effective_review_mode"] == "shadow"
 
 
-@pytest.mark.parametrize("bad", ["enforce", "", "on", 1])
+@pytest.mark.parametrize("bad", ["bogus", "", "on", 1])
 def test_an_invalid_review_mode_is_refused_and_changes_nothing(tables, bad):
     dynamo.put_pipeline_config(review_mode="off")
 

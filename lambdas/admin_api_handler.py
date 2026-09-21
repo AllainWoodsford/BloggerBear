@@ -59,7 +59,13 @@ from common.editorial_resolver import (
     normalize_editorial_goals,
     validate_editorial_goals,
 )
-from common.fresh_review import resolve_review_mode, review_mode_error
+from common.fact_check import fact_check_label
+from common.fresh_review import (
+    on_unavailable_error,
+    resolve_on_unavailable,
+    resolve_review_mode,
+    review_mode_error,
+)
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.musings import generate_and_store_article_musing
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
@@ -205,6 +211,12 @@ def _create_topic(event: dict) -> dict:
     if interval_problem:
         return _error(400, f"'research_interval_hours' {interval_problem}")
 
+    # Per-topic override of the fresh-data review mode (else the pipeline-wide one).
+    review_mode = body.get("review_mode")
+    mode_problem = review_mode_error(review_mode)
+    if mode_problem:
+        return _error(400, f"'review_mode' {mode_problem}")
+
     # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
     # of 5): optional per-topic model overrides, read by
     # common/model_routing.py's resolve_model. Both None by default --
@@ -247,6 +259,8 @@ def _create_topic(event: dict) -> dict:
         item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
     if research_interval_hours is not None:
         item["research_interval_hours"] = research_interval_hours
+    if review_mode is not None:
+        item["review_mode"] = review_mode
     put_topic(item)
     try:
         upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
@@ -283,6 +297,7 @@ def _update_topic(event: dict) -> dict:
         "is_financial",
         "research_cadence",
         "research_interval_hours",
+        "review_mode",
         "daily_cadence",
         "daily_timezone",
         "model_id",
@@ -326,6 +341,12 @@ def _update_topic(event: dict) -> dict:
             return _error(400, f"'research_interval_hours' {interval_problem}")
         if updated["research_interval_hours"] is None:
             del updated["research_interval_hours"]  # cleared: inherit the pipeline default
+    if "review_mode" in body:
+        mode_problem = review_mode_error(updated["review_mode"])
+        if mode_problem:
+            return _error(400, f"'review_mode' {mode_problem}")
+        if updated["review_mode"] is None:
+            del updated["review_mode"]  # cleared: inherit the pipeline-wide mode
     if "model_id" in body and updated["model_id"] is not None and (
         not isinstance(updated["model_id"], str) or not updated["model_id"]
     ):
@@ -488,6 +509,9 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # force-publish) required an operator action.
         lineage=article.get("lineage"),
         published_by="humans",
+        # The reader-facing line about the fresh-data review, from the stored record:
+        # a person approving a held article is what "reviewed by a person" means.
+        fact_check=fact_check_label(article.get("review"), "humans"),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],
@@ -867,6 +891,8 @@ def _get_pipeline_config_route(event: dict) -> dict:
             ),
             "review_mode": config.get("review_mode"),
             "effective_review_mode": resolve_review_mode(config),
+            "review_on_unavailable": config.get("review_on_unavailable"),
+            "effective_review_on_unavailable": resolve_on_unavailable(config),
         },
     )
 
@@ -876,8 +902,10 @@ def _put_pipeline_config_route(event: dict) -> dict:
 
     - `research_interval_hours`: how often a topic without its own interval does real
       work on a heartbeat.
-    - `review_mode`: whether the fresh-data review of drafts runs (`shadow`, recorded
-      only) or is `off`.
+    - `review_mode`: the fresh-data review of drafts: `off`, `shadow` (recorded only) or
+      `enforce` (it acts). A topic's own `review_mode` overrides it.
+    - `review_on_unavailable`: what enforce mode does when the review could not run:
+      `hold` the article for a person (the default) or `note` it and publish.
 
     A setting that isn't in the body is left as it is.
     """
@@ -897,9 +925,16 @@ def _put_pipeline_config_route(event: dict) -> dict:
         if mode_problem:
             return _error(400, f"'review_mode' {mode_problem}")
         updates["review_mode"] = body["review_mode"]
+    if "review_on_unavailable" in body:
+        problem = on_unavailable_error(body["review_on_unavailable"])
+        if problem:
+            return _error(400, f"'review_on_unavailable' {problem}")
+        updates["review_on_unavailable"] = body["review_on_unavailable"]
     if not updates:
         return _error(
-            400, "send 'research_interval_hours' and/or 'review_mode' (null clears a setting)"
+            400,
+            "send 'research_interval_hours', 'review_mode' and/or 'review_on_unavailable' "
+            "(null clears a setting)",
         )
 
     put_pipeline_config(**updates)

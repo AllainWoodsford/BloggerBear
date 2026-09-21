@@ -54,6 +54,7 @@ from common.dynamo import (
     put_feedback,
     update_article_net_votes,
 )
+from common.fact_check import fact_check_label
 from common.source_refs import dedupe_source_refs
 from common.stats import build_stats
 
@@ -282,6 +283,9 @@ def _get_article_detail(event: dict) -> dict:
             # detection has something concrete to check against.
             "lineage": article.get("lineage"),
             "published_by": article.get("published_by"),
+            # A reader-facing line about the fresh-data review, or None. The review record
+            # itself (claims, evidence) stays private; only this sentence is public.
+            "fact_check": fact_check_label(article.get("review"), article.get("published_by")),
         },
     )
 

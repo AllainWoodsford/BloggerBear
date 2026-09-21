@@ -232,6 +232,8 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
         body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+    if args.review_mode is not None:
+        body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
@@ -257,6 +259,8 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
         body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+    if args.review_mode is not None:
+        body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
@@ -413,8 +417,13 @@ def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
         body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (back to the default)
+    if args.review_on_unavailable is not None:
+        body["review_on_unavailable"] = args.review_on_unavailable or None
     if not body:
-        raise CliError("pipeline-config set needs --research-interval-hours and/or --review-mode")
+        raise CliError(
+            "pipeline-config set needs --research-interval-hours, --review-mode "
+            "and/or --review-on-unavailable"
+        )
     _do_request(args, "PUT", "/pipeline-config", body=body)
 
 
@@ -590,6 +599,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     create_parser.add_argument(
+        "--review-mode",
+        dest="review_mode",
+        default=None,
+        choices=["off", "shadow", "enforce"],
+        help="This topic's fresh-data review mode; omit to inherit the pipeline-wide mode",
+    )
+    create_parser.add_argument(
         "--daily-cadence",
         dest="daily_cadence",
         default=None,
@@ -633,6 +649,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Whole hours between real research runs for this topic; '' clears it "
             "(inherit the pipeline-wide default)"
+        ),
+    )
+    update_parser.add_argument(
+        "--review-mode",
+        dest="review_mode",
+        default=None,
+        choices=["off", "shadow", "enforce", ""],
+        help=(
+            "This topic's fresh-data review mode, overriding the pipeline-wide one: 'off', "
+            "'shadow' (record only) or 'enforce' (act on it); '' clears it (inherit)"
         ),
     )
     update_parser.add_argument(
@@ -738,10 +764,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--review-mode",
         dest="review_mode",
         default=None,
-        choices=["off", "shadow", ""],
+        choices=["off", "shadow", "enforce", ""],
         help=(
             "Fresh-data review of drafts: 'shadow' runs and records it without changing any "
-            "outcome (the default), 'off' skips it; '' clears it (back to the default)"
+            "outcome (the default), 'enforce' acts on it (revises minor problems, holds major "
+            "ones), 'off' skips it; '' clears it (back to the default). A topic's own "
+            "--review-mode overrides this"
+        ),
+    )
+    pipeline_config_set.add_argument(
+        "--review-on-unavailable",
+        dest="review_on_unavailable",
+        default=None,
+        choices=["hold", "note", ""],
+        help=(
+            "In enforce mode, when the review could not run: 'hold' the article for a person "
+            "(the default) or 'note' the gap and publish; '' clears it"
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)
