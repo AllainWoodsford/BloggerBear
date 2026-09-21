@@ -199,7 +199,8 @@ resource "aws_lambda_permission" "this" {
 # HTTP API: REST API stage ARNs (unlike apigatewayv2 stage ARNs) are a
 # WAFv2-supported association target.
 resource "aws_wafv2_web_acl_association" "this" {
-  count = var.web_acl_id != "" ? 1 : 0
+  # From the flag, not from var.web_acl_id: the ARN can be unknown until apply (see the variable).
+  count = var.associate_web_acl ? 1 : 0
 
   resource_arn = aws_api_gateway_stage.this.arn
   web_acl_arn  = var.web_acl_id

@@ -25,3 +25,13 @@ output "prod_deploy_role_arn" {
   value       = aws_iam_role.gha_prod_deploy.arn
   description = "Set this as the `role-to-assume` GitHub Environment variable on the `production` Environment."
 }
+
+output "hosted_zone_id" {
+  value       = one(aws_route53_zone.site[*].zone_id)
+  description = "Route 53 hosted zone ID for var.domain_name (null when no domain is set). Set this as `hosted_zone_id` in infra/environments/production/terraform.tfvars."
+}
+
+output "hosted_zone_name_servers" {
+  value       = one(aws_route53_zone.site[*].name_servers)
+  description = "The four name servers to enter as CUSTOM nameservers at your registrar (GoDaddy: Domain Settings > Nameservers > Change > Enter my own). Null when no domain is set."
+}

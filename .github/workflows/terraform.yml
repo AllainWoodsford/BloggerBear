@@ -143,7 +143,7 @@ jobs:
     # CoinGecko's keyless public API. See infra/environments/dev/variables.tf.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
-      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV }}
+      TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
       TF_VAR_coingecko_api_key: ${{ secrets.COINGECKO_API_KEY_DEV }}
     steps:
       - name: Checkout
