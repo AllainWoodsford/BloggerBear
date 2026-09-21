@@ -169,11 +169,14 @@ SUMMARY_STATE_MAX_CHARS = 9000
 # funds / treasuries and other NAV-style assets (seen live in the top 200:
 # "Janus Henderson Anemoy Treasury Fund" at $1.12, an EUR swap fund at $1.16)
 # don't sit at $1 but barely move over any window, which the flatness check
-# catches whatever their price or currency.
+# catches whatever their price or currency. Gold-backed tokens (tether-gold, pax-gold) track
+# the metal, not a peg, so at thousands of dollars and gold-volatile they pass neither check
+# and are listed by id.
 KNOWN_STABLECOIN_IDS = frozenset({
     "tether", "usd-coin", "dai", "usds", "ethena-usde", "first-digital-usd", "usdd",
     "paypal-usd", "true-usd", "frax", "usd1-wlfi", "global-dollar", "ripple-usd",
     "gemini-dollar", "pax-dollar", "binance-usd", "usdb", "stasis-eurs", "tether-gold",
+    "pax-gold",
 })  # fmt: skip
 _PEG_BAND = 0.03
 _PEG_MAX_24H_MOVE = 1.0
