@@ -1056,7 +1056,7 @@ the sources are the two above.
 
 ### Equipment: approved prompt changes as gear the bear wears
 
-**Status: PR 1 of 4 (the model and the injection).** An approved prompt refinement is *worn* rather than
+**Status: PRs 1 and 2 of 4 (the model, the injection, and gear identity).** An approved prompt refinement is *worn* rather than
 merely approved; only worn gear is injected into the ideation and drafting prompts. `common/equipment.py` is
 the pure rules; the state lives on the PromptRefinements items (`equipped`, `slot`, `scope`, `equipped_at`,
 `unequipped_at`).
@@ -1065,6 +1065,9 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
   into a taken slot benches the old item (it stays approved and can be worn again).
 - **Rings**: *topic* guidance for the item's own topic, at most 5 in all. When full, equipping needs a ring
   to replace, or the item waits in the backpack.
+- **Wearing is not using.** A topic's rings are used in every article, but the bear takes in only some of its
+  worn armor each time: a random number of pieces (at least one), chosen at random (`pick_armor`). What it used
+  is recorded on the article, and that record is what later wear is tied to.
 - **Backpack**: approved and not worn. Nothing there is injected, and it will only ever be a count in public.
 - **Compatibility.** An item approved before this has no `equipped` field. It is "legacy": the latest per
   topic keeps being injected until the topic has a ring. Once an item has been equipped or benched it has the
@@ -1072,17 +1075,43 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
   the old workflow, except that guidance now stacks (all of a topic's rings plus the armor, capped at
   4,000 characters, dropping whatever does not fit).
 - **What was worn is recorded.** `Articles.equipment_used` lists `{topic_id, version, slot}` per piece used;
-  `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
+  (only the armor actually taken in) `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
   This is the data an effectiveness measure and wear-out would need; neither is built.
 - **Admin.** `GET /equipment`, `POST /prompt-refinements/{topic_id}/{version}/equip|unequip`, and an optional
   `{scope, slot, replace}` body on approve. The displaced item is benched first, so a failure part way leaves
   a slot empty rather than two items fighting over it. `admin_cli equipment ...`, and `approve` asks where
   the bear wears a prompt change.
 
-**Still to come.** PR 2: a generated item name and random rarity (with the same public-name safety screening
-as comments), the bear suggesting a slot, an admin rarity bump. PR 3: durability (10-50, weighted by rarity),
-wear from trusted signals only (a human rejection, a "major" fresh-review finding, a hold; not raw anonymous
-votes, which are gameable), auto-replacement from the backpack, admin repair. PR 4: the Stats-page paper doll,
-with per-slot and per-rarity art, accessible hover/focus tooltips showing the guidance in use, and the bag
-count. Two things need the owner's call first: what "equip only in part" means, and which review signals
-count as a negative outcome for wear.
+**PR 2 of 4 (identity): names, rarity, durability, the bear's slot suggestion, the admin bump.**
+`common/gear.py`. The weekly reflection names each proposal as it writes it, so the person approving sees
+what the bear found.
+
+- **Rarity is rolled by code**, weighted (common 50, uncommon 28, rare 14, epic 6, legendary 2; tunable in
+  `RARITY_WEIGHTS`). The model never picks it, so it cannot be argued into a better one. Only an admin can
+  raise it, and only up.
+- **Durability** is the most wear an item can take, rolled once in its rarity's range: common 6-10, uncommon
+  10-15, rare 15-20, epic 21-30, legendary 40-50. It starts full and never exceeds the maximum. A bump
+  re-rolls the maximum in the new range (never below the old one) and adds the extra room without repairing.
+- **The name is `<slot noun> of <theme>`.** The model writes only a short theme ("Plain Speaking"); the noun
+  comes from the slot (Helm, Breastplate, Gauntlets, Boots, Blade, Shield, Ring), so moving an item renames it.
+  The theme is public and derives from guidance that derives from anonymous comments, so it is screened like
+  a comment: the same code rules (links, personal information, injection, SQL, markup), a character
+  allow-list and a length cap, then a one-word model check that fails closed. Anything else, or any error,
+  falls back to a theme built from the topic ("Github Trending Lore"). A proposal is never lost to its name.
+- **The bear suggests a slot** (armor by what the guidance is about, a ring if it only fits its topic). With
+  no slot named, equipping takes the suggestion if empty, else the first empty armor slot; the CLI's Enter does
+  the same. The server's default on a bare approve is still a ring, so nothing widens by accident.
+- **Older proposals** have no identity; one is rolled, once and stored, the first time an item is approved,
+  worn or bumped (no model is called from the admin API).
+- `POST /prompt-refinements/{topic_id}/{version}/rarity`, `admin_cli equipment bump`.
+
+**Still to come.**
+- **PR 3, wear.** A **non-rejected comment with a downvote** damages the gear the article used (the pieces in
+  `equipment_used`: only the armor actually taken in, and the topic's rings). A piece worn out is unequipped and
+  another takes its place; an admin can repair it, never above its maximum. Durability and its ceiling are
+  already stored (PR 2).
+- **PR 4, the Stats page.** The paper doll, with per-slot and per-rarity art, accessible hover/focus tooltips
+  showing the guidance in use, and the bag count.
+
+Settled with the owner: "equip only in part" means the bear takes in a random subset of its worn armor for each
+article (PR 1), and wear comes from a non-rejected comment downvote.

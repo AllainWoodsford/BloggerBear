@@ -696,6 +696,7 @@ module "admin_api" {
     "POST /prompt-refinements/{topic_id}/{version}/reject",
     "POST /prompt-refinements/{topic_id}/{version}/equip",
     "POST /prompt-refinements/{topic_id}/{version}/unequip",
+    "POST /prompt-refinements/{topic_id}/{version}/rarity",
     "GET /equipment",
     # DLQ-consumer visibility -- see admin_api_handler.py's
     # _list_failed_executions and scripts/admin_cli.py's

@@ -21,10 +21,11 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import boto3
 
-from common import equipment, feedback_limits
+from common import equipment, feedback_limits, gear
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
@@ -54,6 +55,7 @@ from common.dynamo import (
     put_topic,
     set_article_feedback_lock,
     set_prompt_refinement_equipment,
+    set_prompt_refinement_fields,
     update_article_lineage,
     update_article_status,
     update_moderation_status,
@@ -814,11 +816,51 @@ def _reject_moderation_item(event: dict) -> dict:
 # --- Prompt refinements (Phase 5) ----------------------------------------
 
 
+def _plain(value):
+    """DynamoDB hands numbers back as Decimal, which JSON cannot carry."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
+    return value
+
+
+def _view(item: dict) -> dict:
+    """A refinement as the admin sees it: plain numbers, and the gear's name."""
+    return {**_plain(item), "name": gear.display_name(item)}
+
+
+def _gear_summary(item: dict) -> dict:
+    plain = _view(item)
+    return {key: plain.get(key) for key in ("name", "rarity", "durability", "max_durability")}
+
+
+def _as_worn(item: dict, plan: dict | None) -> dict:
+    """The item as it is once placed, so its name has the noun for the slot it went into."""
+    return {**item, "slot": plan["slot"]} if plan else item
+
+
+def _ensure_identity(item: dict) -> dict:
+    """Give an item that predates gear (or was proposed without a name) a rarity and a durability.
+
+    Rolled once and stored, so asking again never re-rolls. Its theme, if it has one, is kept; otherwise
+    it gets one made from its topic (no model is called here)."""
+    if gear.has_identity(item):
+        return item
+    identity = gear.new_identity(
+        item.get("theme") or gear.fallback_theme(item["topic_id"]), item.get("slot_hint")
+    )
+    set_prompt_refinement_fields(item["topic_id"], item["version"], identity)
+    return {**item, **identity}
+
+
 def _list_prompt_refinements(event: dict) -> dict:
     topic_id = _query_param(event, "topic_id")
     status = _query_param(event, "status")
     refinements = list_prompt_refinements(topic_id=topic_id, status=status)
-    return _response(200, {"refinements": refinements})
+    return _response(200, {"refinements": [_view(item) for item in refinements]})
 
 
 def _placement_body(event: dict) -> dict | None:
@@ -869,6 +911,7 @@ def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
 
     plan = None
     if new_status == "approved":
+        item = _ensure_identity(item)
         body = _placement_body(event)
         if body is None:
             return _error(400, "request body must be a JSON object")
@@ -904,6 +947,7 @@ def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
                 topic_id, version, equipped=False, at=datetime.now(UTC).isoformat()
             )
         payload["placement"] = _placement_view(item, plan)
+        payload["item"] = _gear_summary(_as_worn(item, plan))
     return _response(200, {action_key: payload})
 
 
@@ -933,6 +977,7 @@ def _equip_prompt_refinement(event: dict) -> dict:
     body = _placement_body(event)
     if body is None:
         return _error(400, "request body must be a JSON object")
+    item = _ensure_identity(item)
     approved = list_prompt_refinements(status="approved")
     try:
         plan = equipment.plan_equip(
@@ -946,7 +991,8 @@ def _equip_prompt_refinement(event: dict) -> dict:
         return _error(exc.status, exc.message)
     _wear(item, plan)
     placement = _placement_view(item, plan)
-    return _response(200, {"equipped": {**equipment.ref(item), **placement}})
+    worn = _gear_summary(_as_worn(item, plan))
+    return _response(200, {"equipped": {**equipment.ref(item), **placement, "item": worn}})
 
 
 def _unequip_prompt_refinement(event: dict) -> dict:
@@ -961,8 +1007,35 @@ def _unequip_prompt_refinement(event: dict) -> dict:
     return _response(200, {"unequipped": equipment.ref(item)})
 
 
+def _raise_rarity(event: dict) -> dict:
+    """Bump an item's rarity up. Body {"rarity": "epic"}, or none for one step up. Only up."""
+    topic_id = _path_param(event, "topic_id")
+    version = _path_param(event, "version")
+    item = get_prompt_refinement(topic_id, version)
+    if item is None:
+        return _error(404, f"prompt refinement '{topic_id}'/'{version}' not found")
+    if item.get("status") == "rejected":
+        return _error(409, "a rejected prompt change has no gear to bump")
+    body = _placement_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    item = _ensure_identity(item)
+    target = body.get("rarity") or gear.next_rarity(item["rarity"])
+    if target is None:
+        return _error(409, f"it is already {item['rarity']}: there is nothing higher")
+    try:
+        changes = gear.bump(item, target)
+    except ValueError as exc:
+        return _error(400 if target not in gear.RARITIES else 409, str(exc))
+    set_prompt_refinement_fields(topic_id, version, changes)
+    summary = _gear_summary({**item, **changes})
+    return _response(200, {"bumped": {**equipment.ref(item), "was": item["rarity"], **summary}})
+
+
 def _get_equipment(event: dict) -> dict:
-    return _response(200, equipment.describe(list_prompt_refinements(status="approved")))
+    return _response(
+        200, equipment.describe(list_prompt_refinements(status="approved"), decorate=_view)
+    )
 
 
 # --- Failed executions (DLQ consumer) --------------------------------------
@@ -1240,6 +1313,7 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/reject": _reject_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/equip": _equip_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/unequip": _unequip_prompt_refinement,
+    "POST /prompt-refinements/{topic_id}/{version}/rarity": _raise_rarity,
     "GET /equipment": _get_equipment,
     "GET /failed-executions": _list_failed_executions,
     "GET /models": _list_models,

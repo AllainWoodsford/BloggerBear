@@ -743,6 +743,12 @@ def _cmd_equipment_equip(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_equipment_bump(args: argparse.Namespace) -> None:
+    version = urllib.parse.quote(args.version, safe="")
+    body = {"rarity": args.to} if args.to else {}
+    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/rarity", body=body)
+
+
 def _cmd_equipment_unequip(args: argparse.Namespace) -> None:
     version = urllib.parse.quote(args.version, safe="")
     _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/unequip")
@@ -1344,6 +1350,20 @@ def build_parser() -> argparse.ArgumentParser:
     equipment_equip_parser.add_argument("version")
     _add_placement_arguments(equipment_equip_parser, ("topic", "global"))
     equipment_equip_parser.set_defaults(func=_cmd_equipment_equip)
+
+    equipment_bump_parser = equipment_sub.add_parser(
+        "bump",
+        help="Raise a piece of gear's rarity (only up): a higher maximum durability, one step by default",
+    )
+    equipment_bump_parser.add_argument("topic_id")
+    equipment_bump_parser.add_argument("version")
+    equipment_bump_parser.add_argument(
+        "--to",
+        choices=["uncommon", "rare", "epic", "legendary"],
+        default=None,
+        help="the rarity to raise it to (default: one step up)",
+    )
+    equipment_bump_parser.set_defaults(func=_cmd_equipment_bump)
 
     equipment_unequip_parser = equipment_sub.add_parser(
         "unequip", help="Take a worn refinement off; it goes to the backpack and is no longer used"

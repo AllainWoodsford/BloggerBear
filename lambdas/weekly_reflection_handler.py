@@ -30,6 +30,7 @@ import os
 import re
 from datetime import UTC, datetime, timedelta
 
+from common import gear
 from common.bedrock import invoke_claude
 from common.dynamo import get_article, list_feedback_since, put_prompt_refinement
 
@@ -81,12 +82,16 @@ def _run_weekly_reflection() -> dict:
     for topic_id, topic_feedback in by_topic.items():
         rationale, prompt_changes = _reflect_on_topic(topic_id, topic_feedback, model_id)
         version = datetime.now(UTC).isoformat()
+        # The proposal becomes a piece of gear if it is approved: name it, and roll its rarity and
+        # durability, now, so the person approving sees what the bear found. Never raises.
+        identity = gear.generate_identity(topic_id, prompt_changes, model_id)
         put_prompt_refinement(
             topic_id=topic_id,
             version=version,
             rationale=rationale,
             prompt_changes=prompt_changes,
             status="pending",
+            extra=identity,
         )
         proposals_created += 1
 
