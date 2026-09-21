@@ -1621,6 +1621,7 @@ def test_feedback_config_get_shows_defaults_and_usage(aws_resources):
         "rate_limit_window_minutes": 5,
         "daily_limit": 100,
         "article_limit": 50,
+        "screening_limit": 300,
         "daily_timezone": "Australia/Sydney",
     }
     assert body["usage"]["today"] == 0 and body["usage"]["this_window"] == 0
@@ -1636,6 +1637,7 @@ def test_feedback_config_put_sets_and_clears_settings(aws_resources):
             "rate_limit_window_minutes": 10,
             "daily_limit": 30,
             "article_limit": 8,
+            "screening_limit": 40,
             "daily_timezone": "UTC",
         },
     )
@@ -1649,6 +1651,7 @@ def test_feedback_config_put_sets_and_clears_settings(aws_resources):
         "rate_limit_window_minutes": 10,
         "daily_limit": 30,
         "article_limit": 8,
+        "screening_limit": 40,
         "daily_timezone": "UTC",
     }
 
@@ -1677,6 +1680,7 @@ def test_feedback_config_put_a_setting_not_sent_is_left_alone(aws_resources):
         {"rate_limit_window_minutes": 5000},
         {"daily_limit": -1},
         {"article_limit": 10**9},
+        {"screening_limit": 0},
         {"locked_down": "true"},
         {"lockdown_reason": ""},
         {"lockdown_reason": "x" * 101},

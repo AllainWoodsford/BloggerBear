@@ -1,7 +1,11 @@
 """When BloggerBear is, and isn't, taking feedback.
 
-Every submission (a vote, with or without a comment) is one piece of feedback and counts
-against four things, checked in this order; the first one that is closed is the reason shown:
+Every ACCEPTED submission (a vote, with or without a comment) is one piece of feedback and counts
+against four things, checked in this order; the first one that is closed is the reason shown.
+A submission whose comment is rejected (see common/comment_screening.py) is not accepted at all:
+it is not stored, its vote is not recorded, and it counts against none of these. What bounds the
+model checks those rejected comments still cost is a separate daily budget, `screening_limit`
+(default 300), see take_screening_slot:
 
 1. The article. `feedback_locked` on its Articles row (true/false: flip it by hand in DynamoDB
    to lock an article) and `feedback_count` against `article_limit` (default 50). It supersedes
@@ -47,6 +51,7 @@ DEFAULT_RATE_LIMIT_COUNT = 20
 DEFAULT_RATE_LIMIT_WINDOW_MINUTES = 5
 DEFAULT_DAILY_LIMIT = 100
 DEFAULT_ARTICLE_LIMIT = 50
+DEFAULT_SCREENING_LIMIT = 300
 DEFAULT_DAILY_TIMEZONE = "Australia/Sydney"
 
 MAX_LIMIT = 1_000_000
@@ -86,7 +91,10 @@ def _is_true(value) -> bool:
 
 
 def _whole_number(value, *, low: int = 1, high: int = MAX_LIMIT) -> int | None:
-    """`value` as a whole number in range, else None (booleans, floats and strings are not)."""
+    """`value` as a whole number in range, else None (booleans, floats and strings are not).
+    A DynamoDB number arrives as a Decimal, so a whole Decimal counts."""
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value if low <= value <= high else None
@@ -138,6 +146,7 @@ def effective_settings(row: dict | None) -> dict:
         or DEFAULT_RATE_LIMIT_WINDOW_MINUTES,
         "daily_limit": _whole_number(row.get("daily_limit")) or DEFAULT_DAILY_LIMIT,
         "article_limit": _whole_number(row.get("article_limit")) or DEFAULT_ARTICLE_LIMIT,
+        "screening_limit": _whole_number(row.get("screening_limit")) or DEFAULT_SCREENING_LIMIT,
         "daily_timezone": zone_name if _zone(zone_name) is not None else DEFAULT_DAILY_TIMEZONE,
     }
 
@@ -262,6 +271,31 @@ def acquire(article: dict, now: datetime | None = None) -> dict:
     return dict(_OPEN)
 
 
+def _screen_key(day_key: str) -> str:
+    return day_key.replace("feedback-day#", "feedback-screen#")
+
+
+def take_screening_slot(now: datetime | None = None) -> bool:
+    """Take one of today's model checks for a comment (`screening_limit`, default 300 a day).
+
+    Rejected feedback does not count against the feedback limits, so those alone cannot bound
+    how many comments reach the model. This does: a comment is only sent to the model while
+    there are checks left today, whether it turns out to be kept or dropped. Returns False when
+    they are used up, or if the counter cannot be read or written (fail closed: an unchecked
+    comment is dropped, and the vote can still be sent without it).
+    """
+    now = now or datetime.now(UTC)
+    try:
+        settings = effective_settings(get_feedback_config())
+        day_key, day_ends = _day(settings, now)
+        return consume_feedback_counter(
+            _screen_key(day_key), settings["screening_limit"], _expiry(day_ends)
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"feedback_limits: could not take a screening slot: {exc!r}")
+        return False
+
+
 def _give_back(taken: list) -> None:
     for refund in reversed(taken):
         try:
@@ -279,6 +313,8 @@ def usage(now: datetime | None = None) -> dict:
     return {
         "today": get_feedback_counter(day_key),
         "daily_limit": settings["daily_limit"],
+        "screened_today": get_feedback_counter(_screen_key(day_key)),
+        "screening_limit": settings["screening_limit"],
         "day_ends_at": day_ends.isoformat(),
         "this_window": get_feedback_counter(window_key),
         "rate_limit_count": settings["rate_limit_count"],

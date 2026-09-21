@@ -77,6 +77,7 @@ def test_defaults_when_nothing_is_configured():
         "rate_limit_window_minutes": 5,
         "daily_limit": 100,
         "article_limit": 50,
+        "screening_limit": 300,
         "daily_timezone": "Australia/Sydney",
     }
 
@@ -87,6 +88,7 @@ def test_configured_values_are_used():
         rate_limit_window_minutes=10,
         daily_limit=7,
         article_limit=2,
+        screening_limit=11,
         locked_down=True,
         lockdown_reason="  Back soon  ",
         daily_timezone="UTC",
@@ -99,6 +101,7 @@ def test_configured_values_are_used():
         "rate_limit_window_minutes": 10,
         "daily_limit": 7,
         "article_limit": 2,
+        "screening_limit": 11,
         "daily_timezone": "UTC",
     }
 
@@ -116,6 +119,8 @@ def test_configured_values_are_used():
         {"rate_limit_window_minutes": 5000},
         {"daily_limit": "many"},
         {"article_limit": None},
+        {"screening_limit": 0},
+        {"screening_limit": "300"},
         {"daily_timezone": "Mars/Olympus"},
         {"daily_timezone": 5},
         {"lockdown_reason": "   "},
@@ -494,8 +499,49 @@ def test_usage_reports_todays_and_this_windows_counts():
     assert fl.usage(NOON) == {
         "today": 2,
         "daily_limit": 10,
+        "screened_today": 0,
+        "screening_limit": 300,
         "day_ends_at": "2026-09-21T14:00:00+00:00",
         "this_window": 2,
         "rate_limit_count": 4,
         "window_ends_at": "2026-09-21T02:05:00+00:00",
     }
+
+
+# --- the model-check budget: what bounds the cost of rejected comments -----------------------
+
+
+def test_a_whole_decimal_from_dynamodb_is_a_valid_setting():
+    assert fl.effective_settings({"screening_limit": Decimal(7)})["screening_limit"] == 7
+    assert fl.effective_settings({"screening_limit": Decimal("7.5")})["screening_limit"] == 300
+
+
+def test_screening_slots_run_out_at_the_screening_limit():
+    _configure(screening_limit=3)
+
+    assert [fl.take_screening_slot(NOON) for _ in range(5)] == [True, True, True, False, False]
+    assert fl.usage(NOON)["screened_today"] == 3
+
+
+def test_the_default_screening_budget_is_three_hundred_a_day():
+    assert [fl.take_screening_slot(NOON) for _ in range(301)].count(True) == 300
+
+
+def test_screening_slots_reset_with_the_day_in_sydney():
+    _configure(screening_limit=1)
+    assert fl.take_screening_slot(NOON) is True
+    assert fl.take_screening_slot(NOON) is False
+
+    assert fl.take_screening_slot(datetime(2026, 9, 21, 14, 0, tzinfo=UTC)) is True  # 00:00 Sydney
+
+
+def test_screening_slots_do_not_touch_the_feedback_counters():
+    fl.take_screening_slot(NOON)
+
+    assert list(_counter_rows()) == ["feedback-screen#2026-09-21"]
+    assert fl.status_for(_article(), NOON)["open"] is True
+
+
+def test_no_screening_slot_if_the_counter_cannot_be_used():
+    with patch.object(fl, "consume_feedback_counter", side_effect=RuntimeError("boom")):
+        assert fl.take_screening_slot(NOON) is False
