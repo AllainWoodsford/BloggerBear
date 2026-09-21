@@ -82,6 +82,16 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 # on its queue item (`review_notes`, shown by `moderation list`) without changing any
 # outcome; `off` skips it; '' clears the setting. Costs about one extra model call per article.
 python scripts/admin_cli.py pipeline-config set --review-mode off
+# `enforce` makes the review ACT: a minor problem is corrected by one revision pass (checked by
+# plain code -- no new figures or links, similar length -- and the original body is kept); a
+# major problem, a correction that can't be trusted, or a review that couldn't run holds the
+# article for a person, with the reasons in `moderation list`. Decide from `review report`.
+python scripts/admin_cli.py pipeline-config set --review-mode enforce
+# If a review can't run in enforce mode: hold the article (default) or publish and note it.
+python scripts/admin_cli.py pipeline-config set --review-on-unavailable note
+# One topic can differ from the pipeline-wide mode ('' clears it back to inheriting):
+python scripts/admin_cli.py topics update github-trending --review-mode enforce
+python scripts/admin_cli.py topics update github-trending --review-mode ""
 # How the review is doing, from the records it leaves on articles: counts by outcome and
 # topic, unavailable reasons, what enforcement WOULD have held and revised (the number that
 # decides whether turning it on is safe), readiness against the plan's starting thresholds,

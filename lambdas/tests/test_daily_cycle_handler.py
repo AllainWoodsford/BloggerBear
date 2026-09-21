@@ -177,7 +177,7 @@ def test_a_topic_with_nothing_new_in_the_window_writes_no_article(s3_bucket):
     mock_put_article.assert_not_called()
 
 
-# --- the window starts at the topic's last article ----------------------------
+# --- the window starts at the topic's last article ------------------------------------------------
 
 _RUN = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
 _DAY_BEFORE = (_RUN - timedelta(hours=24)).isoformat()
@@ -730,7 +730,7 @@ def _fake_put_candidate_idea(topic_id, created_at, angle, status="considered"):
     }
 
 
-# --- Phase 5: prompt-refinement guidance / few-shot splicing ---------------
+# --- Phase 5: prompt-refinement guidance / few-shot splicing --------------------------------------
 
 
 def test_approved_prompt_refinement_guidance_appended_to_ideation_and_draft_prompts(s3_bucket):
@@ -911,7 +911,7 @@ def test_no_refinement_and_no_top_voted_article_leaves_prompts_unchanged(s3_buck
     assert draft_prompt == expected_draft
 
 
-# --- editorial goals (crypto feed) --------------------------------------------
+# --- editorial goals (crypto feed) ----------------------------------------------------------------
 
 
 def _finding_at(captured_at, summary, url):
@@ -1035,7 +1035,7 @@ def test_unparseable_finding_dates_fall_back_to_todays_goal_and_all_findings():
     assert kept == findings
 
 
-# --- topic relevance guardrails ---------------------------------------------------
+# --- topic relevance guardrails -------------------------------------------------------------------
 
 NOISE_FINDINGS = [
     _finding_at(
@@ -1122,7 +1122,7 @@ def test_the_guardrails_sit_alongside_financial_and_feedback_guidance(s3_bucket)
     assert "CRITICAL RELEVANCE BOUNDARY" in mock_invoke.call_args_list[1].args[0]
 
 
-# --- hierarchical editorial goals (standing objective) -----------------------------
+# --- hierarchical editorial goals (standing objective) --------------------------------------------
 
 FOCUS = "Identify unpatched zero-day exploits actively being observed in production environments."
 EXCLUSIONS = "Ignore generalized marketing press releases or compliance frameworks."
@@ -1266,7 +1266,7 @@ def test_a_topic_specific_focus_still_wins_on_a_market_news_day(s3_bucket):
     assert "Topic-Specific Focus: Track institutional flows." in mock_invoke.call_args_list[0].args[0]
 
 
-# --- the fresh-data review (shadow mode) ------------------------------------------------------------
+# --- the fresh-data review (shadow mode) ----------------------------------------------------------
 
 
 def _review_record(outcome="clean", claims=(), status="reviewed", **extra):
@@ -1289,6 +1289,30 @@ def _review_record(outcome="clean", claims=(), status="reviewed", **extra):
 
 
 _MAJOR = {"claim": "Repo X is #1", "problem": "stale", "evidence": "now #4", "severity": "major"}
+_MINOR = {"claim": "Repo X has 5,000 stars", "problem": "stale", "evidence": "4,000", "severity": "minor"}
+
+_REVISION_CALL = {
+    "stage": "revision",
+    "model_id": "anthropic.claude-test-model",
+    "input_tokens": 1500,
+    "output_tokens": 900,
+    "used_fallback": False,
+    "stop_reason": "end_turn",
+}
+
+
+def _revised(title="Corrected Title", body="# Corrected body"):
+    """What run_revision returns when the correction passes every guard."""
+    return {"status": "revised", "title": title, "body": body, "lineage_call": dict(_REVISION_CALL)}
+
+
+def _rejected(reason="introduces figure(s) found in none of the sources: 9"):
+    return {
+        "status": "rejected",
+        "reason": reason,
+        "violations": [reason],
+        "lineage_call": dict(_REVISION_CALL),
+    }
 
 
 def _run_with_review(
@@ -1303,12 +1327,17 @@ def _run_with_review(
     draft_stop_reason="end_turn",
     draft_attempts=1,
     model_calls=None,
+    revision=None,
+    revision_error=None,
+    mocks=None,
 ):
     """A whole cycle with the review turned on (unless `config` says otherwise) and the
     reviewer itself mocked. Returns the result and everything the review touched.
 
     `draft_stop_reason` is why the draft call stopped ("max_tokens" = cut off);
-    `model_calls`, if given, collects the keyword arguments of each drafting call."""
+    `model_calls`, if given, collects the keyword arguments of each drafting call.
+    `revision` is what the (mocked) revision pass returns; `mocks`, if given, is filled
+    with the revision and render mocks so a test can inspect them."""
     responses = [
         _tracked_result("Angle one\nAngle two\nAngle three"),
         _tracked_result("# Draft body", stop_reason=draft_stop_reason, attempts=draft_attempts),
@@ -1349,7 +1378,7 @@ def _run_with_review(
         patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
         patch("daily_cycle_handler.put_article") as mock_put_article,
         patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
-        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.render_and_publish_article_page") as mock_render,
         patch("daily_cycle_handler.generate_and_store_article_musing"),
         patch("daily_cycle_handler.set_topic_last_article_at"),
         config_patch,
@@ -1358,8 +1387,15 @@ def _run_with_review(
             side_effect=review_error,
             return_value=record if record is not None else _review_record(),
         ) as mock_run,
+        patch(
+            "daily_cycle_handler.fresh_review.run_revision",
+            side_effect=revision_error,
+            return_value=revision if revision is not None else _revised(),
+        ) as mock_revision,
     ):
         result = daily_cycle_handler.handler({"topic_id": topic["topic_id"]}, None)
+    if mocks is not None:
+        mocks.update(revision=mock_revision, render=mock_render)
     return result, mock_run, mock_put_article, mock_put_moderation, lineage_calls
 
 
@@ -1479,7 +1515,7 @@ def test_an_unreadable_pipeline_config_falls_back_to_the_default_mode(s3_bucket)
 
 
 def test_an_invalid_stored_mode_is_ignored(s3_bucket):
-    _, mock_run, _, _, _ = _run_with_review(config={"review_mode": "enforce"})
+    _, mock_run, _, _, _ = _run_with_review(config={"review_mode": "bogus"})
 
     assert mock_run.call_args.kwargs["mode"] == "shadow"
 
@@ -1493,7 +1529,7 @@ def test_a_skipped_review_is_recorded_but_says_nothing_to_the_operator(s3_bucket
     assert "review_notes" not in mock_put_moderation.call_args.kwargs
 
 
-# --- what the adapter is asked to re-check ---------------------------------------------------------------
+# --- what the adapter is asked to re-check --------------------------------------------------------
 
 
 def _findings_with_snapshots(*keys):
@@ -1541,7 +1577,7 @@ def test_the_snapshot_comes_from_the_whole_window_not_just_the_goals_findings(s3
     assert mock_run.call_args.kwargs["latest_state"] == {"today": True}
 
 
-# --- a draft that ran out of tokens ---------------------------------------------------------------------
+# --- a draft that ran out of tokens ---------------------------------------------------------------
 
 
 def _draft_lineage_call(lineage_calls):
@@ -1625,3 +1661,308 @@ def test_a_truncated_drafts_lineage_says_so(s3_bucket):
 
     call = _draft_lineage_call(lineage_calls)
     assert call["stop_reason"] == "max_tokens" and call["attempts"] == 2
+
+
+# --- enforce mode ---------------------------------------------------------------------------------
+
+
+def _enforced(outcome="clean", claims=(), status="reviewed", **extra):
+    """A review record from a run in enforce mode (evidence attached, as run_review returns it)."""
+    return _review_record(outcome, claims, status=status, mode="enforce", evidence="FRESH EVIDENCE", **extra)
+
+
+ENFORCE = {"review_mode": "enforce"}
+
+
+def _stored_review(mock_put_article):
+    return mock_put_article.call_args.kwargs["review"]
+
+
+def test_a_clean_enforced_review_publishes_untouched_and_says_it_was_checked(s3_bucket):
+    mocks = {}
+
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("clean"), mocks=mocks
+    )
+
+    assert result["status"] == "published"
+    mocks["revision"].assert_not_called()
+    assert mocks["render"].call_args.kwargs["fact_check"] == "Checked against current data: no problems found"
+    assert mocks["render"].call_args.kwargs["title"] == "A Title"
+    assert "body_original_s3_key" not in mock_put_article.call_args.kwargs
+    mock_put_moderation.assert_not_called()
+
+
+def test_the_review_is_given_the_articles_title(s3_bucket):
+    _, mock_run, _, _, _ = _run_with_review(config=ENFORCE, record=_enforced("clean"))
+
+    assert mock_run.call_args.kwargs["title"] == "A Title"
+
+
+def test_minor_problems_are_corrected_and_the_corrected_article_is_what_publishes(s3_bucket):
+    mocks = {}
+    record = _enforced("minor", [_MINOR])
+
+    result, _, mock_put_article, _, _ = _run_with_review(
+        config=ENFORCE, record=record, revision=_revised("Corrected Title", "# Corrected body"), mocks=mocks
+    )
+
+    assert result["status"] == "published"
+    kwargs = mock_put_article.call_args.kwargs
+    assert kwargs["title"] == "Corrected Title" and kwargs["status"] == "published"
+    stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=kwargs["body_s3_key"])["Body"].read()
+    assert stored.decode("utf-8") == "# Corrected body"
+    assert mocks["render"].call_args.kwargs["body_markdown"] == "# Corrected body"
+    assert mocks["render"].call_args.kwargs["title"] == "Corrected Title"
+    assert (
+        mocks["render"].call_args.kwargs["fact_check"]
+        == "Checked against current data: corrected before publishing"
+    )
+
+
+def test_the_revision_is_given_everything_it_needs(s3_bucket):
+    mocks = {}
+
+    _run_with_review(config=ENFORCE, record=_enforced("minor", [_MINOR]), mocks=mocks)
+
+    kwargs = mocks["revision"].call_args.kwargs
+    assert kwargs["title"] == "A Title" and kwargs["body"] == "# Draft body"
+    assert kwargs["claims"] == [_MINOR] and kwargs["evidence"] == "FRESH EVIDENCE"
+    assert "Repo X jumped to #1" in kwargs["findings_text"]
+    assert (kwargs["model_id"], kwargs["fallback_model_id"]) == ("m", "fallback-m")
+
+
+def test_the_original_draft_is_kept_beside_a_corrected_one(s3_bucket):
+    _, _, mock_put_article, _, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("minor", [_MINOR]), revision=_revised(body="# Corrected body")
+    )
+
+    key = mock_put_article.call_args.kwargs["body_original_s3_key"]
+    assert key.endswith(".original.md")
+    original = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=key)["Body"].read().decode("utf-8")
+    assert original == "# Draft body"
+
+
+def test_a_corrected_articles_review_says_so_and_keeps_the_old_title(s3_bucket):
+    _, _, mock_put_article, _, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("minor", [_MINOR]), revision=_revised("Corrected Title")
+    )
+
+    review = _stored_review(mock_put_article)
+    assert review["revised"] is True and review["original_title"] == "A Title"
+    assert "held" not in review and "evidence" not in review and "lineage_call" not in review
+
+
+def test_a_correction_that_leaves_the_title_alone_records_no_original_title(s3_bucket):
+    _, _, mock_put_article, _, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("minor", [_MINOR]), revision=_revised("A Title")
+    )
+
+    assert "original_title" not in _stored_review(mock_put_article)
+
+
+def test_the_revision_is_a_lineage_stage_between_the_review_and_compliance(s3_bucket):
+    _, _, _, _, lineage_calls = _run_with_review(config=ENFORCE, record=_enforced("minor", [_MINOR]))
+
+    stages = [call["stage"] for call in lineage_calls[0]]
+    assert stages.index("adversarial_review") < stages.index("revision") < stages.index("compliance_review")
+
+
+def test_a_correction_that_cannot_be_trusted_holds_the_article_with_the_original_text(s3_bucket):
+    result, _, mock_put_article, mock_put_moderation, lineage_calls = _run_with_review(
+        config=ENFORCE,
+        record=_enforced("minor", [_MINOR]),
+        revision=_rejected("introduces figure(s) found in none of the sources: 9"),
+    )
+
+    assert result["status"] == "pending_moderation"
+    reason = result["reasons"][0]
+    assert "could not be trusted" in reason and "introduces figure(s)" in reason
+    kwargs = mock_put_article.call_args.kwargs
+    assert kwargs["status"] == "pending_moderation" and kwargs["title"] == "A Title"
+    body = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=kwargs["body_s3_key"])["Body"].read()
+    assert body.decode("utf-8") == "# Draft body"  # the draft as written, not the rejected rewrite
+    assert "body_original_s3_key" not in kwargs
+    review = _stored_review(mock_put_article)
+    assert review["held"] is True and "introduces figure(s)" in review["revision_rejected"]
+    assert "revised" not in review
+    assert any(call["stage"] == "revision" for call in lineage_calls[0])  # the spend is still recorded
+    notes = mock_put_moderation.call_args.kwargs["review_notes"]
+    assert any("correction was rejected" in note for note in notes)
+
+
+def test_a_revision_call_that_failed_outright_holds_the_article_and_records_no_cost(s3_bucket):
+    failed = {"status": "failed", "reason": "the revision model call failed: throttled", "lineage_call": None}
+
+    result, _, _, _, lineage_calls = _run_with_review(
+        config=ENFORCE, record=_enforced("minor", [_MINOR]), revision=failed
+    )
+
+    assert result["status"] == "pending_moderation"
+    assert all(call["stage"] != "revision" for call in lineage_calls[0])
+
+
+def test_a_major_problem_holds_the_article_and_does_not_try_to_fix_it(s3_bucket):
+    mocks = {}
+    record = _enforced("major", [_MAJOR])
+
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(
+        config=ENFORCE, record=record, compliant=True, mocks=mocks
+    )
+
+    assert result["status"] == "pending_moderation" and result["compliant"] is False
+    assert "1 major claim(s)" in result["reasons"][0]
+    mocks["revision"].assert_not_called()
+    mocks["render"].assert_not_called()  # never published
+    assert mock_put_article.call_args.kwargs["published_at"] is None
+    review = _stored_review(mock_put_article)
+    assert review["held"] is True and review["hold_reasons"] == result["reasons"]
+    assert mock_put_moderation.call_args.kwargs["review_notes"]  # the operator is told why
+
+
+def test_the_hold_reason_is_listed_ahead_of_the_compliance_reasons(s3_bucket):
+    result, _, _, _, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("major", [_MAJOR]), compliant=False
+    )
+
+    assert "major claim(s)" in result["reasons"][0] and result["reasons"][-1] == "needs a look"
+
+
+def test_a_review_that_could_not_run_holds_the_article_by_default(s3_bucket):
+    record = _enforced(status="unavailable", outcome=None, reason="could not fetch fresh data: down")
+
+    result, _, mock_put_article, _, _ = _run_with_review(config=ENFORCE, record=record)
+
+    assert result["status"] == "pending_moderation"
+    assert "unavailable" in result["reasons"][0]
+    assert _stored_review(mock_put_article)["held"] is True
+
+
+def test_the_operator_can_choose_to_publish_and_note_an_unavailable_review_instead(s3_bucket):
+    record = _enforced(status="unavailable", outcome=None, reason="down")
+    mocks = {}
+
+    result, _, mock_put_article, _, _ = _run_with_review(
+        config={**ENFORCE, "review_on_unavailable": "note"}, record=record, mocks=mocks
+    )
+
+    assert result["status"] == "published"
+    assert "held" not in _stored_review(mock_put_article)
+    assert mocks["render"].call_args.kwargs["fact_check"] == (
+        "Not checked against current data (the check was unavailable)"
+    )
+
+
+def test_an_invalid_stored_unavailable_action_holds_never_publishes(s3_bucket):
+    record = _enforced(status="unavailable", outcome=None, reason="down")
+
+    result, _, _, _, _ = _run_with_review(
+        config={**ENFORCE, "review_on_unavailable": "publish"}, record=record
+    )
+
+    assert result["status"] == "pending_moderation"
+
+
+def test_a_skipped_review_changes_nothing_and_claims_nothing(s3_bucket):
+    record = _enforced(status="skipped", outcome=None, reason="nothing to review against")
+    mocks = {}
+
+    result, _, _, _, _ = _run_with_review(config=ENFORCE, record=record, mocks=mocks)
+
+    assert result["status"] == "published"
+    assert mocks["render"].call_args.kwargs["fact_check"] is None
+
+
+def test_a_review_step_that_itself_fails_holds_the_article_in_enforce_mode(s3_bucket):
+    result, _, mock_put_article, _, _ = _run_with_review(
+        config=ENFORCE, review_error=RuntimeError("boom"), compliant=True
+    )
+
+    assert result["status"] == "pending_moderation"
+    review = _stored_review(mock_put_article)
+    assert review["status"] == "unavailable" and review["mode"] == "enforce" and review["held"] is True
+
+
+def test_an_unexpected_error_while_enforcing_holds_the_article_rather_than_failing_or_publishing(s3_bucket):
+    result, _, mock_put_article, _, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("minor", [_MINOR]), revision_error=RuntimeError("bug")
+    )
+
+    assert result["status"] == "pending_moderation"
+    assert "could not be applied" in result["reasons"][0]
+    assert _stored_review(mock_put_article)["held"] is True
+
+
+def test_shadow_mode_never_revises_or_holds_however_bad_the_review(s3_bucket):
+    mocks = {}
+
+    result, _, mock_put_article, _, _ = _run_with_review(
+        config={"review_mode": "shadow"}, record=_review_record("major", [_MAJOR]), mocks=mocks
+    )
+
+    assert result["status"] == "published"
+    mocks["revision"].assert_not_called()
+    assert "held" not in _stored_review(mock_put_article)
+
+
+def test_a_topics_own_mode_overrides_the_pipeline_wide_one(s3_bucket):
+    enforced_topic = {**NON_FINANCIAL_TOPIC, "review_mode": "enforce"}
+    shadowed_topic = {**NON_FINANCIAL_TOPIC, "review_mode": "shadow"}
+
+    held, _, _, _, _ = _run_with_review(
+        config={"review_mode": "shadow"}, topic=enforced_topic, record=_enforced("major", [_MAJOR])
+    )
+    passed, mock_run, _, _, _ = _run_with_review(
+        config=ENFORCE, topic=shadowed_topic, record=_review_record("major", [_MAJOR])
+    )
+
+    assert held["status"] == "pending_moderation"
+    assert passed["status"] == "published" and mock_run.call_args.kwargs["mode"] == "shadow"
+
+
+def test_a_topic_can_turn_the_review_off_while_the_pipeline_enforces(s3_bucket):
+    topic = {**NON_FINANCIAL_TOPIC, "review_mode": "off"}
+
+    result, mock_run, _, _, _ = _run_with_review(config=ENFORCE, topic=topic)
+
+    assert result["status"] == "published"
+    mock_run.assert_not_called()
+
+
+def test_a_financial_topic_is_still_corrected_and_still_moderated(s3_bucket):
+    mocks = {}
+
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(
+        config=ENFORCE,
+        record=_enforced("minor", [_MINOR]),
+        revision=_revised("Corrected Title", "# Corrected body"),
+        topic=FINANCIAL_TOPIC,
+        compliant=False,
+        mocks=mocks,
+    )
+
+    assert result["status"] == "pending_moderation"  # financial articles always go to a person
+    assert mock_put_article.call_args.kwargs["title"] == "Corrected Title"
+    assert _stored_review(mock_put_article)["revised"] is True
+    mocks["render"].assert_not_called()
+    assert any("corrected automatically" in n for n in mock_put_moderation.call_args.kwargs["review_notes"])
+
+
+def test_a_truncated_draft_is_reported_before_the_reviews_reasons(s3_bucket):
+    result, _, _, _, _ = _run_with_review(
+        config=ENFORCE, record=_enforced("major", [_MAJOR]), draft_stop_reason="max_tokens"
+    )
+
+    assert result["reasons"][0] == daily_cycle_handler.TRUNCATED_DRAFT_REASON
+    assert "major claim(s)" in result["reasons"][1]
+
+
+def test_an_article_a_person_later_approves_can_still_say_it_was_held_for_review(s3_bucket):
+    _, _, mock_put_article, _, _ = _run_with_review(config=ENFORCE, record=_enforced("major", [_MAJOR]))
+
+    from common.fact_check import fact_check_label
+
+    review = _stored_review(mock_put_article)
+    assert fact_check_label(review, "humans") == (
+        "Checked against current data: reviewed by a person before publishing"
+    )

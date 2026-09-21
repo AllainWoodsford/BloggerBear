@@ -63,6 +63,7 @@ from common.editorial_resolver import (
     MANDATE_ALIGNMENT_RULE,
     resolve_editorial_goals,
 )
+from common.fact_check import fact_check_label
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.relevance import (
@@ -206,12 +207,31 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     if hold_reasons:
         print(f"daily_cycle_handler: holding a truncated draft for topic_id={topic_id}")
 
-    # Fresh-data review (docs/project-plan.md §11, "(C)"): compare the draft's claims with
-    # what the source says *now*. Shadow mode: recorded, never acted on. Placed before the
-    # disclaimer is appended so it reviews the article's own text.
-    fresh_record, fresh_call = _run_fresh_review(
-        topic, draft_text, summaries_block, window_findings, model_id, fallback_model_id
+    # Fresh-data review (docs/project-plan.md §11, "(C)"): compare the draft and its title with
+    # what the source says *now*. In shadow mode that is recorded and nothing more; in enforce
+    # mode a minor problem is corrected by one revision pass and a major one (or a review that
+    # could not run) holds the article for a person. Placed before the disclaimer is appended
+    # so it reviews the article's own text.
+    fresh_record, fresh_call, fresh_evidence, on_unavailable = _run_fresh_review(
+        topic, title, draft_text, summaries_block, window_findings, model_id, fallback_model_id
     )
+    revision_call = None
+    original_body = None
+    if fresh_record is not None and fresh_record.get("mode") == "enforce":
+        enforcement = _enforce_review(
+            topic=topic,
+            record=fresh_record,
+            evidence=fresh_evidence,
+            title=title,
+            draft_text=draft_text,
+            summaries_block=summaries_block,
+            model_id=model_id,
+            fallback_model_id=fallback_model_id,
+            on_unavailable=on_unavailable,
+        )
+        title, draft_text = enforcement["title"], enforcement["draft_text"]
+        revision_call, original_body = enforcement["revision_call"], enforcement["original_body"]
+        hold_reasons = hold_reasons + enforcement["hold_reasons"]
 
     # Phase 7: deterministically guarantee the standing "not financial
     # advice" disclaimer on every financial-topic draft, regardless of
@@ -231,7 +251,14 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     # than fabricated.
     calls = [
         call
-        for call in (ideate_call, draft_call, title_call, fresh_call, review["lineage_call"])
+        for call in (
+            ideate_call,
+            draft_call,
+            title_call,
+            fresh_call,
+            revision_call,
+            review["lineage_call"],
+        )
         if call is not None
     ]
     lineage = build_lineage(calls, research=research)
@@ -247,6 +274,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         lineage=lineage,
         fresh_review_record=fresh_record,
         hold_reasons=hold_reasons,
+        original_body=original_body,
     )
     _record_article_written(topic_id, run_started)
     return result
@@ -266,31 +294,43 @@ def _load_latest_snapshot(findings: list[dict]) -> dict | None:
         return None
 
 
+def _read_pipeline_config() -> dict:
+    """The pipeline-wide settings row, or {} if there is none or it cannot be read: a config
+    read must never stop an article from being written (everything then takes its default)."""
+    try:
+        return get_pipeline_config() or {}
+    except Exception as exc:  # noqa: BLE001
+        print(f"daily_cycle_handler: could not read the pipeline config, using defaults: {exc!r}")
+        return {}
+
+
 def _run_fresh_review(
     topic: dict,
+    title: str,
     draft_text: str,
     summaries_block: str,
     window_findings: list[dict],
     model_id: str,
     fallback_model_id: str | None,
-) -> tuple[dict | None, dict | None]:
-    """(review record, its lineage call), or (None, None) when the review is off.
+) -> tuple[dict | None, dict | None, str | None, str]:
+    """(review record, its lineage call, the evidence it used, what to do if a review can't
+    run) -- or (None, None, None, ...) when the review is off for this topic.
 
-    Never raises and never changes what happens to the article: the whole step is
-    wrapped so that nothing in it can fail a daily run, and in this (shadow) version
-    its result is only recorded.
+    Never raises: the whole step is wrapped so nothing in it can fail a daily run. A step that
+    itself fails is recorded as `unavailable`, in the mode it was running in, so enforce mode
+    holds the article rather than publishing it unchecked. The evidence is returned separately
+    (it is not stored) because the revision pass needs it.
     """
+    config = _read_pipeline_config()
+    on_unavailable = fresh_review.resolve_on_unavailable(config)
+    mode = fresh_review.resolve_review_mode(config, topic)
     try:
-        try:
-            mode = fresh_review.resolve_review_mode(get_pipeline_config())
-        except Exception as exc:  # noqa: BLE001 - a config read must not stop the article
-            print(f"daily_cycle_handler: could not read the pipeline config, review mode default: {exc!r}")
-            mode = fresh_review.DEFAULT_REVIEW_MODE
         if mode == "off":
-            return None, None
+            return None, None, None, on_unavailable
 
         record = fresh_review.run_review(
             topic=topic,
+            title=title,
             draft=draft_text,
             findings_text=summaries_block,
             latest_state=_load_latest_snapshot(window_findings),
@@ -299,14 +339,80 @@ def _run_fresh_review(
             mode=mode,
         )
         lineage_call = record.pop("lineage_call", None)
+        evidence = record.pop("evidence", None)
         print(
-            f"daily_cycle_handler: fresh-data review status={record['status']} "
+            f"daily_cycle_handler: fresh-data review mode={mode} status={record['status']} "
             f"outcome={record.get('outcome')} topic_id={topic.get('topic_id')}"
         )
-        return record, lineage_call
+        return record, lineage_call, evidence, on_unavailable
     except Exception as exc:  # noqa: BLE001
         print(f"daily_cycle_handler: fresh-data review failed: {exc!r}")
-        return {"status": "unavailable", "reason": f"review step failed: {exc}", "mode": "shadow"}, None
+        failed = {"status": "unavailable", "reason": f"review step failed: {exc}", "mode": mode}
+        return failed, None, None, on_unavailable
+
+
+def _enforce_review(
+    *,
+    topic: dict,
+    record: dict,
+    evidence: str | None,
+    title: str,
+    draft_text: str,
+    summaries_block: str,
+    model_id: str,
+    fallback_model_id: str | None,
+    on_unavailable: str,
+) -> dict:
+    """Act on a review (enforce mode). Returns the (possibly corrected) title and body, any
+    reasons to hold the article for a person, the revision's lineage call, and the original
+    body if it was replaced.
+
+    Updates `record` in place (revised / held / hold_reasons / revision_rejected) so the
+    stored review says what was done. Fails safe: an error in here holds the article; it
+    never lets an enforced article through unchecked or fails the run.
+    """
+    outcome = {
+        "title": title,
+        "draft_text": draft_text,
+        "hold_reasons": [],
+        "revision_call": None,
+        "original_body": None,
+    }
+    try:
+        action, reason = fresh_review.enforcement_action(record, on_unavailable)
+        if action == "hold":
+            outcome["hold_reasons"].append(reason)
+        elif action == "revise":
+            result = fresh_review.run_revision(
+                topic=topic,
+                title=title,
+                body=draft_text,
+                claims=record.get("claims") or [],
+                findings_text=summaries_block,
+                evidence=evidence or "",
+                model_id=model_id,
+                fallback_model_id=fallback_model_id,
+            )
+            outcome["revision_call"] = result.get("lineage_call")
+            if result["status"] == "revised":
+                record["revised"] = True
+                if result["title"] != title:
+                    record["original_title"] = title
+                outcome.update(title=result["title"], draft_text=result["body"], original_body=draft_text)
+            else:
+                record["revision_rejected"] = result["reason"]
+                outcome["hold_reasons"].append(
+                    "fresh-data review: the automatic correction could not be trusted "
+                    f"({result['reason']}), so a person should check this"
+                )
+    except Exception as exc:  # noqa: BLE001
+        print(f"daily_cycle_handler: enforcing the review failed, holding the article: {exc!r}")
+        outcome["hold_reasons"].append(f"fresh-data review could not be applied ({exc})")
+
+    if outcome["hold_reasons"]:
+        record["held"] = True
+        record["hold_reasons"] = list(outcome["hold_reasons"])
+    return outcome
 
 
 def _review_notes_kwargs(record: dict | None) -> dict:
@@ -573,6 +679,7 @@ def _publish_or_moderate(
     lineage: dict,
     fresh_review_record: dict | None = None,
     hold_reasons: list[str] | None = None,
+    original_body: str | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
 
@@ -592,6 +699,18 @@ def _publish_or_moderate(
         Body=draft_text.encode("utf-8"),
         ContentType="text/markdown",
     )
+
+    # If a revision replaced the draft, keep the original beside it (private) so a
+    # moderator can see exactly what was changed.
+    body_original_s3_key = None
+    if original_body is not None:
+        body_original_s3_key = f"articles/{article_id}.original.md"
+        s3.put_object(
+            Bucket=os.environ["CONTENT_BUCKET"],
+            Key=body_original_s3_key,
+            Body=original_body.encode("utf-8"),
+            ContentType="text/markdown",
+        )
 
     source_refs = []
     for finding in findings:
@@ -613,6 +732,7 @@ def _publish_or_moderate(
         lineage=lineage,
         published_by="ai_only" if compliant else None,
         **({"review": fresh_review_record} if fresh_review_record else {}),
+        **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
     )
 
     if compliant:
@@ -630,6 +750,7 @@ def _publish_or_moderate(
             view_count=0,
             lineage=lineage,
             published_by="ai_only",
+            fact_check=fact_check_label(fresh_review_record, "ai_only"),
         )
         generate_and_store_article_musing(
             article_id=article_id,

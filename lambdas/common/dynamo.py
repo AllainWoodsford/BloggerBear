@@ -219,11 +219,14 @@ def put_article(
     lineage: dict | None = None,
     published_by: str | None = None,
     review: dict | None = None,
+    body_original_s3_key: str | None = None,
 ) -> dict:
     """Write an Articles item and return it.
 
     `review` is the fresh-data review's record (common/fresh_review.py), stored only
-    when a review ran; never part of the public API's projection.
+    when a review ran; never part of the public API's projection. `body_original_s3_key`
+    is where the draft as first written is kept when a revision replaced it, so a
+    moderator can compare; stored only then, and never public.
 
     `lineage` (docs/project-plan.md §11, PR 2 of 5) is fixed once at draft
     time and never changes afterward, regardless of the article's eventual
@@ -249,6 +252,8 @@ def put_article(
     }
     if review is not None:
         item["review"] = review
+    if body_original_s3_key is not None:
+        item["body_original_s3_key"] = body_original_s3_key
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -959,7 +964,12 @@ def get_pipeline_config() -> dict | None:
 _UNSET = object()
 
 
-def put_pipeline_config(*, research_interval_hours=_UNSET, review_mode=_UNSET) -> dict:
+def put_pipeline_config(
+    *,
+    research_interval_hours=_UNSET,
+    review_mode=_UNSET,
+    review_on_unavailable=_UNSET,
+) -> dict:
     """Update pipeline-wide settings and return the row.
 
     Only the settings passed are touched (a value sets it, None clears it), so
@@ -968,6 +978,7 @@ def put_pipeline_config(*, research_interval_hours=_UNSET, review_mode=_UNSET) -
     updates = {
         "research_interval_hours": research_interval_hours,
         "review_mode": review_mode,
+        "review_on_unavailable": review_on_unavailable,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):

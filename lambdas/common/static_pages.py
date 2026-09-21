@@ -182,7 +182,9 @@ def _render_lineage_summary_line_html(lineage: dict | None, published_by: str | 
     )
 
 
-def _render_lineage_footer_html(lineage: dict | None, published_by: str | None) -> str:
+def _render_lineage_footer_html(
+    lineage: dict | None, published_by: str | None, fact_check: str | None = None
+) -> str:
     """Render the "Lineage" footer block (docs/project-plan.md §11, PR 3 of
     5) -- always present, even when there's nothing to show, so an
     article published before this feature existed reads as an explicit
@@ -215,6 +217,11 @@ def _render_lineage_footer_html(lineage: dict | None, published_by: str | None) 
             f"<dt>Total cost</dt><dd>{escape(total_text)}</dd>"
         )
 
+    # Only present when the fresh-data review was enforced for this article (see
+    # common/fact_check.py): a shadow-mode review changed nothing, so claiming a check
+    # would overstate it.
+    fact_check_row = f"<dt>Fact check</dt><dd>{escape(fact_check)}</dd>" if fact_check else ""
+
     return (
         '<footer class="lineage-footer" aria-label="Article lineage">'
         "<h2>Lineage</h2>"
@@ -224,6 +231,7 @@ def _render_lineage_footer_html(lineage: dict | None, published_by: str | None) 
         f"<dt>Approved by</dt><dd>{approved_html}</dd>"
         f"<dt>Approx. cost</dt><dd>{cost_html}</dd>"
         f"{research_rows}"
+        f"{fact_check_row}"
         "</dl>"
         "</footer>"
     )
@@ -255,6 +263,7 @@ def render_and_publish_article_page(
     view_count: int = 0,
     lineage: dict | None = None,
     published_by: str | None = None,
+    fact_check: str | None = None,
 ) -> str:
     """Render `article_id` as a static HTML page and upload it to the site
     bucket. Returns the S3 key it was written to.
@@ -292,7 +301,7 @@ def render_and_publish_article_page(
 
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
-    lineage_footer_html = _render_lineage_footer_html(lineage, published_by)
+    lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
 
     page_html = f"""<!DOCTYPE html>
 <html lang="en">
