@@ -367,7 +367,7 @@
 
   // The fuller footer block, same shape as the static page's
   // <footer class="lineage-footer"> -- always rendered, even when empty.
-  function renderLineageFooter(lineage, publishedBy) {
+  function renderLineageFooter(lineage, publishedBy, factCheck) {
     var hasLineage = lineage !== null && lineage !== undefined;
     var models = hasLineage && lineage.models_used && lineage.models_used.length > 0
       ? modelNames(lineage.models_used, lineage.model_labels).join(", ")
@@ -383,6 +383,9 @@
       ["Approved by", publishedByLabel(publishedBy)],
       ["Approx. cost", hasLineage ? costLabel(lineage.cost_aud, lineage.cost_note) : "No data"],
     ].concat(
+      // Present only when the fresh-data review was enforced for this article.
+      factCheck ? [["Fact check", factCheck]] : []
+    ).concat(
       // The research the article's findings cost, tallied hourly and bundled in
       // when the article was written; absent on an article made before that.
       hasLineage && lineage.research
@@ -980,7 +983,7 @@
       contentEl.appendChild(sourcesSection);
     }
 
-    contentEl.appendChild(renderLineageFooter(article.lineage, article.published_by));
+    contentEl.appendChild(renderLineageFooter(article.lineage, article.published_by, article.fact_check));
     contentEl.appendChild(renderFeedback(article.article_id));
   }
 
