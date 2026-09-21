@@ -409,6 +409,7 @@ def render_and_publish_article_page(
 </footer>
 <script src="/config.js"></script>
 <script src="/verify.js" defer></script>
+<script src="/tummy.js" defer></script>
 <script src="/article-widgets.js" defer></script>
 </body>
 </html>

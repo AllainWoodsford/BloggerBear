@@ -65,6 +65,15 @@
     if (retry) {
       box.appendChild(paragraph(retry, "feedback-closed-retry"));
     }
+    // Something to do while feedback is closed (see tummy.js), except when the site is simply
+    // broken. Decoration only: it can never get in the way.
+    if (window.BloggerTummy && (!status || status.reason !== "unavailable")) {
+      try {
+        window.BloggerTummy.mount(box);
+      } catch (ignore) {
+        // decoration only
+      }
+    }
     return box;
   }
 
@@ -189,6 +198,19 @@
               });
           }
           if (statusEl) statusEl.textContent = "Thanks for your feedback!";
+          // Now and then, a treat (tummy.js). Decoration, so a problem with it must never look
+          // like a problem with the feedback.
+          try {
+            if (
+              feedbackSection &&
+              window.BloggerTummy &&
+              window.BloggerTummy.shouldOffer(Math.random())
+            ) {
+              window.BloggerTummy.mount(feedbackSection);
+            }
+          } catch (ignore) {
+            // decoration only
+          }
         })
         .catch(function () {
           if (statusEl) {
