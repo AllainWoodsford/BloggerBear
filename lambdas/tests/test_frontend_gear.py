@@ -388,3 +388,38 @@ def test_the_stats_page_asks_for_the_gear_separately_so_a_failure_never_hides_th
     assert 'apiUrl("/equipment")' in _gear_section_of_app()
     assert "loadGear(gearSection)" in APP_JS
     assert "Could not load the gear right now." in _gear_section_of_app()
+
+
+def _render_stats_body() -> str:
+    start = APP_JS.index("function renderStats(stats)")
+    return APP_JS[start : APP_JS.index("function loadStats()", start)]
+
+
+def test_the_stats_page_opens_with_the_gear_and_the_numbers_follow():
+    body = _render_stats_body()
+
+    order = [
+        body.index('el("h1", { text: "Stats" })'),
+        body.index("loadGear(gearSection)"),
+        body.index('text: "Spend and usage"'),
+        body.index("stats.cost_basis"),
+        body.index('className: "stats-tiles"'),
+        body.index("Estimated spend per day"),
+    ]
+    assert order == sorted(order), "the page should read: title, gear, then spend and usage"
+
+
+def test_the_original_stats_are_all_still_there_below_the_gear():
+    body = _render_stats_body()
+    after_gear = body[body.index("loadGear(gearSection)") :]
+
+    for heading in ("Estimated spend per day", "By model", "By topic"):
+        assert heading in after_gear
+    for tile in (
+        "Estimated AI spend",
+        "Articles drafted",
+        "Average cost per article",
+        "Tokens",
+        "Research spend",
+    ):
+        assert f'"{tile}"' in after_gear
