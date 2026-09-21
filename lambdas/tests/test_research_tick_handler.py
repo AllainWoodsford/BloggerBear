@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, date, datetime
 from unittest.mock import patch
 
 import boto3
@@ -113,7 +114,9 @@ def test_first_tick_is_always_material_and_calls_bedrock(aws_resources, monkeypa
 
     s3 = boto3.client("s3", region_name=REGION)
     stored = s3.get_object(Bucket="bloggerbear-content-test", Key=finding["raw_snapshot_s3_key"])
-    assert json.loads(stored["Body"].read()) == new_state
+    today = datetime.now(UTC).date().isoformat()
+    # the snapshot also carries which items have now been reported (for the next tick)
+    assert json.loads(stored["Body"].read()) == {**new_state, "_seen": {"a/b": today}}
 
 
 def test_no_material_change_skips_bedrock_and_does_not_write_finding(aws_resources, monkeypatch):
@@ -244,7 +247,7 @@ def test_adapters_without_a_prompt_get_the_generic_one(aws_resources, monkeypatc
     # noise in the source data is ignored rather than summarized.
     assert "RELEVANCE RULE: this digest covers 'Python trending repos' and nothing else" in prompt
     assert prompt.index("Current state") < prompt.index("RELEVANCE RULE")
-    assert prompt.index("RELEVANCE RULE") < prompt.index("Summarize what changed")
+    assert prompt.index("RELEVANCE RULE") < prompt.index("Summarize only what is new")
 
 
 def test_opt_in_adapters_receive_the_prior_snapshot_others_do_not(aws_resources, monkeypatch):
@@ -343,8 +346,8 @@ def test_a_bare_topic_summarises_through_independent_web_research(aws_resources)
 def test_the_goal_block_precedes_the_data_and_the_safety_lines_survive(aws_resources):
     prompt = _summary_prompt("bare", "web_search", {"query": "zero-day"})
 
-    assert prompt.index("OPERATIONAL EDITORIAL GOAL") < prompt.index("What changed:")
-    assert prompt.index("What changed:") < prompt.index("Current state")
+    assert prompt.index("OPERATIONAL EDITORIAL GOAL") < prompt.index("What's new:")
+    assert prompt.index("What's new:") < prompt.index("Current state")
     assert "RELEVANCE RULE: this digest covers" in prompt
     assert "do not give financial or investment advice" in prompt
 
@@ -366,3 +369,113 @@ def test_a_topic_without_a_configured_query_researches_its_own_name(aws_resource
         research_tick_handler.handler({"topic_id": "sec-threats"}, None)
 
     assert mock_search.call_args.args[0] == "(Cybersecurity OR Infrastructure OR Threats)"
+
+
+# --- what counts as new: judged against everything already reported ---------
+
+
+def _tick(monkeypatch, repos, fetched_at):
+    state = {"repos": [_repo(n, s) for n, s in repos], "fetched_at": fetched_at}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+    with patch("research_tick_handler.invoke_claude", return_value="summary") as mock_invoke:
+        result = research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+    return result, mock_invoke
+
+
+def test_an_item_that_drops_out_and_returns_is_not_reported_again(aws_resources, monkeypatch):
+    result, _ = _tick(monkeypatch, [("a/b", 10), ("c/d", 10)], "2026-09-13T01:00:00+00:00")
+    assert result["status"] == "material_change"
+
+    # e/f is new, so this tick is stored -- and c/d is no longer in the list
+    result, _ = _tick(monkeypatch, [("a/b", 10), ("e/f", 10)], "2026-09-13T02:00:00+00:00")
+    assert result["status"] == "material_change"
+
+    # c/d is back. The last stored snapshot no longer lists it, but it was reported.
+    result, mock_invoke = _tick(
+        monkeypatch, [("a/b", 10), ("e/f", 10), ("c/d", 10)], "2026-09-13T03:00:00+00:00"
+    )
+    assert result == {"status": "no_change"}
+    mock_invoke.assert_not_called()
+
+
+def test_a_genuinely_new_item_is_reported_and_only_it_is_asked_about(aws_resources, monkeypatch):
+    _tick(monkeypatch, [("a/b", 10)], "2026-09-13T01:00:00+00:00")
+
+    result, mock_invoke = _tick(monkeypatch, [("a/b", 10), ("x/y", 10)], "2026-09-13T02:00:00+00:00")
+
+    assert result["status"] == "material_change"
+    prompt = mock_invoke.call_args.args[0]
+    assert "What's new: entered: x/y" in prompt
+    assert "_seen" not in prompt
+
+
+def test_the_generic_prompt_reports_only_what_is_new_and_forbids_invention(aws_resources, monkeypatch):
+    _, mock_invoke = _tick(monkeypatch, [("a/b", 10)], "2026-09-13T01:00:00+00:00")
+
+    prompt = mock_invoke.call_args.args[0]
+    assert "Summarize only what is new" in prompt
+    assert "Do not restate items that are not listed as new" in prompt
+    assert "never add causes, quotes, numbers or detail that it does not contain" in prompt
+    # nothing domain-specific leaks into a topic that isn't that domain
+    assert "crypto" not in prompt.lower() and "bitcoin" not in prompt.lower()
+
+
+def test_the_seen_set_is_stored_in_the_snapshot_and_carried_forward(aws_resources, monkeypatch):
+    _tick(monkeypatch, [("a/b", 10)], "2026-09-13T01:00:00+00:00")
+    _tick(monkeypatch, [("c/d", 10)], "2026-09-13T02:00:00+00:00")
+
+    s3 = boto3.client("s3", region_name=REGION)
+    key = "snapshots/github-trending-python/2026-09-13T02:00:00+00:00.json"
+    stored = json.loads(s3.get_object(Bucket="bloggerbear-content-test", Key=key)["Body"].read())
+
+    assert set(stored["_seen"]) == {"a/b", "c/d"}  # a/b is no longer listed but is remembered
+
+
+class _KeyedAdapter(GitHubTrendingAdapter):
+    def item_keys(self, state):
+        return set(state.get("keys", []))
+
+
+def test_merge_seen_forgets_items_older_than_the_retention_window():
+    today = date(2026, 9, 20)
+    old_state = {"_seen": {"stale": "2026-09-01", "recent": "2026-09-18"}}
+
+    seen = research_tick_handler._merge_seen(_KeyedAdapter(), old_state, {"keys": ["fresh"]}, today)
+
+    assert seen == {"recent": "2026-09-18", "fresh": "2026-09-20"}
+
+
+def test_merge_seen_keeps_the_first_seen_date_of_an_item_that_returns():
+    seen = research_tick_handler._merge_seen(
+        _KeyedAdapter(), {"_seen": {"a": "2026-09-18"}}, {"keys": ["a"]}, date(2026, 9, 20)
+    )
+
+    assert seen == {"a": "2026-09-18"}
+
+
+def test_merge_seen_treats_a_snapshot_stored_before_the_seen_set_as_reported():
+    seen = research_tick_handler._merge_seen(
+        _KeyedAdapter(), {"keys": ["old"]}, {"keys": ["new"]}, date(2026, 9, 20)
+    )
+
+    assert seen == {"old": "2026-09-20", "new": "2026-09-20"}
+
+
+def test_merge_seen_is_capped_dropping_the_oldest_first(monkeypatch):
+    monkeypatch.setattr(research_tick_handler, "SEEN_MAX_KEYS", 2)
+    old_state = {"_seen": {"a": "2026-09-16", "b": "2026-09-19"}}
+
+    seen = research_tick_handler._merge_seen(_KeyedAdapter(), old_state, {"keys": ["c"]}, date(2026, 9, 20))
+
+    assert seen == {"b": "2026-09-19", "c": "2026-09-20"}
+
+
+def test_an_adapter_with_no_item_keys_gets_no_seen_set(aws_resources, monkeypatch):
+    monkeypatch.setattr(GitHubTrendingAdapter, "item_keys", lambda self, state: set())
+    _tick(monkeypatch, [("a/b", 10)], "2026-09-13T01:00:00+00:00")
+
+    s3 = boto3.client("s3", region_name=REGION)
+    key = "snapshots/github-trending-python/2026-09-13T01:00:00+00:00.json"
+    stored = json.loads(s3.get_object(Bucket="bloggerbear-content-test", Key=key)["Body"].read())
+
+    assert "_seen" not in stored

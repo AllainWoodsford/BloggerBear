@@ -256,6 +256,48 @@ def test_topics_update_with_custom_cadence():
     )
 
 
+def test_topics_update_can_move_a_topic_to_sydney_time():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            [
+                "topics",
+                "update",
+                "my-topic",
+                "--daily-cadence",
+                "cron(0 9 * * ? *)",
+                "--daily-timezone",
+                "Australia/Sydney",
+            ]
+        )
+    m.assert_called_once_with(
+        "PUT",
+        "https://api.example.com",
+        "/topics/my-topic",
+        "ap-southeast-2",
+        body={"daily_cadence": "cron(0 9 * * ? *)", "daily_timezone": "Australia/Sydney"},
+    )
+
+
+def test_topics_create_with_daily_timezone():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            [
+                "topics",
+                "create",
+                "--topic-id",
+                "new-topic",
+                "--name",
+                "New Topic",
+                "--adapter",
+                "github_trending",
+                "--daily-timezone",
+                "America/New_York",
+            ]
+        )
+    body = m.call_args.kwargs["body"]
+    assert body["daily_timezone"] == "America/New_York"
+
+
 def test_topics_update_with_no_fields_errors(capsys):
     with patch("admin_cli.signed_request") as m:
         with pytest.raises(SystemExit) as exc_info:

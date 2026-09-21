@@ -535,16 +535,30 @@ def test_a_price_move_does_not_stop_the_day_rollover_from_being_material():
     assert changed is True and "new daily analysis" in summary
 
 
-def test_material_diff_needs_five_new_headlines_for_a_web_change():
+def test_material_diff_any_new_headline_is_a_web_change():
     adapter = CryptoFeedAdapter()
     old = _state(goal="WEB_AGGREGATOR", urls=[1, 2, 3])
 
-    four_new = _state(goal="WEB_AGGREGATOR", urls=[1, 2, 3, 4, 5, 6, 7])
-    assert adapter.material_diff(old, four_new) == (False, "no material change")
+    assert adapter.material_diff(old, _state(goal="WEB_AGGREGATOR", urls=[1, 2, 3])) == (
+        False,
+        "no material change",
+    )
 
-    five_new = _state(goal="WEB_AGGREGATOR", urls=[1, 2, 3, 4, 5, 6, 7, 8])
-    changed, summary = adapter.material_diff(old, five_new)
-    assert changed is True and summary.startswith("5 new news items: Story 4; Story 5")
+    one_new = _state(goal="WEB_AGGREGATOR", urls=[1, 2, 3, 4])
+    changed, summary = adapter.material_diff(old, one_new)
+    assert changed is True and summary.startswith("1 new news items: Story 4")
+
+
+def test_material_diff_a_headline_already_reported_is_not_new_when_it_returns():
+    adapter = CryptoFeedAdapter()
+    old = _state(goal="WEB_AGGREGATOR", urls=[2, 3])
+    old["_seen"] = {"https://x/1": "2026-09-20", "https://x/2": "2026-09-20", "https://x/3": "2026-09-20"}
+
+    # story 1 dropped out of the results earlier and is back: not news
+    assert adapter.material_diff(old, _state(goal="WEB_AGGREGATOR", urls=[1, 2, 3])) == (
+        False,
+        "no material change",
+    )
 
 
 # --- source_refs -------------------------------------------------------------
@@ -903,7 +917,7 @@ def test_market_news_material_diff_follows_new_headlines_not_crypto_prices():
     adapter = CryptoFeedAdapter()
     old = _market_news_state(urls=[1, 2, 3])
 
-    assert adapter.material_diff(old, _market_news_state(urls=[1, 2, 3, 4, 5])) == (
+    assert adapter.material_diff(old, _market_news_state(urls=[1, 2, 3])) == (
         False,
         "no material change",
     )

@@ -193,7 +193,8 @@ def test_create_topic_success(aws_resources):
         "adapter_config": {},
         "is_financial": False,
         "research_cadence": "rate(1 hour)",
-        "daily_cadence": "cron(0 6 * * ? *)",
+        "daily_cadence": "cron(0 9 * * ? *)",
+        "daily_timezone": "Australia/Sydney",
         "model_id": None,
         "fallback_model_id": None,
         "model_id_candidates": None,
@@ -202,7 +203,9 @@ def test_create_topic_success(aws_resources):
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert table.get_item(Key={"topic_id": "new-topic"})["Item"] == created
 
-    mock_upsert.assert_called_once_with("new-topic", "rate(1 hour)", "cron(0 6 * * ? *)")
+    mock_upsert.assert_called_once_with(
+        "new-topic", "rate(1 hour)", "cron(0 9 * * ? *)", "Australia/Sydney"
+    )
 
 
 def test_create_topic_accepts_model_id_candidates(aws_resources):
@@ -306,7 +309,42 @@ def test_create_topic_custom_cadence(aws_resources):
     created = json.loads(result["body"])
     assert created["research_cadence"] == "rate(30 minutes)"
     assert created["daily_cadence"] == "cron(0 12 * * ? *)"
-    mock_upsert.assert_called_once_with("new-topic", "rate(30 minutes)", "cron(0 12 * * ? *)")
+    assert created["daily_timezone"] == "Australia/Sydney"
+    mock_upsert.assert_called_once_with(
+        "new-topic", "rate(30 minutes)", "cron(0 12 * * ? *)", "Australia/Sydney"
+    )
+
+
+def test_create_topic_custom_daily_timezone(aws_resources):
+    body = {
+        "topic_id": "new-topic",
+        "name": "New Topic",
+        "adapter": "github_trending",
+        "daily_timezone": "America/New_York",
+    }
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["daily_timezone"] == "America/New_York"
+    mock_upsert.assert_called_once_with(
+        "new-topic", "rate(1 hour)", "cron(0 9 * * ? *)", "America/New_York"
+    )
+
+
+@pytest.mark.parametrize("bad_timezone", ["", "Sydney time", 5, "Australia/"])
+def test_create_topic_invalid_daily_timezone_returns_400(aws_resources, bad_timezone):
+    body = {
+        "topic_id": "new-topic",
+        "name": "New Topic",
+        "adapter": "github_trending",
+        "daily_timezone": bad_timezone,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 400
+    mock_upsert.assert_not_called()
 
 
 def test_create_topic_invalid_cadence_expression_returns_400(aws_resources):
@@ -395,12 +433,13 @@ def test_update_topic_partial(aws_resources):
     assert updated["name"] == "Renamed"
     assert updated["is_financial"] is True
     assert updated["adapter"] == TOPIC["adapter"]  # untouched field preserved
-    # Not present on TOPIC -- update fills in the defaults.
+    # Not present on TOPIC -- update fills in the defaults. The zone is not the
+    # new-topic default: this topic's existing schedule is UTC, and an unrelated
+    # edit must not move it.
     assert updated["research_cadence"] == "rate(1 hour)"
-    assert updated["daily_cadence"] == "cron(0 6 * * ? *)"
-    mock_upsert.assert_called_once_with(
-        "github-trending", "rate(1 hour)", "cron(0 6 * * ? *)"
-    )
+    assert updated["daily_cadence"] == "cron(0 9 * * ? *)"
+    assert updated["daily_timezone"] == "UTC"
+    mock_upsert.assert_called_once_with("github-trending", "rate(1 hour)", "cron(0 9 * * ? *)", "UTC")
 
 
 def test_update_topic_switching_to_crypto_feed_forces_is_financial_true(aws_resources):
@@ -449,8 +488,54 @@ def test_update_topic_custom_cadence(aws_resources):
     assert updated["research_cadence"] == "rate(2 hours)"
     assert updated["daily_cadence"] == "cron(0 18 * * ? *)"
     mock_upsert.assert_called_once_with(
-        "github-trending", "rate(2 hours)", "cron(0 18 * * ? *)"
+        "github-trending", "rate(2 hours)", "cron(0 18 * * ? *)", "UTC"
     )
+
+
+def test_update_topic_moves_a_legacy_topic_to_sydney_time(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"daily_cadence": "cron(0 9 * * ? *)", "daily_timezone": "Australia/Sydney"},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["daily_timezone"] == "Australia/Sydney"
+    mock_upsert.assert_called_once_with(
+        "github-trending", "rate(1 hour)", "cron(0 9 * * ? *)", "Australia/Sydney"
+    )
+
+
+def test_update_topic_keeps_an_already_set_timezone_on_unrelated_edits(aws_resources):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    table.put_item(Item={**TOPIC, "daily_cadence": "cron(0 9 * * ? *)", "daily_timezone": "Australia/Sydney"})
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"name": "Renamed"},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert mock_upsert.call_args.args[3] == "Australia/Sydney"
+
+
+def test_update_topic_invalid_daily_timezone_returns_400(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"daily_timezone": "not a zone"},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 400
+    mock_upsert.assert_not_called()
 
 
 def test_update_topic_invalid_cadence_expression_returns_400(aws_resources):

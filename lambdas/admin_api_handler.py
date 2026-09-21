@@ -56,14 +56,22 @@ from common.editorial_resolver import (
 )
 from common.musings import generate_and_store_article_musing
 from common.scheduler import (
+    DEFAULT_TIMEZONE,
     _validate_schedule_expression,
     delete_topic_schedules,
     upsert_topic_schedules,
+    validate_timezone,
 )
 from common.static_pages import read_article_body, render_and_publish_article_page
 
 _DEFAULT_RESEARCH_CADENCE = "rate(1 hour)"
-_DEFAULT_DAILY_CADENCE = "cron(0 6 * * ? *)"
+# New topics get their daily article at 9 AM Sydney time (the scheduler reads the
+# cron in `daily_timezone`, so it follows daylight saving). A topic created before
+# `daily_timezone` existed has none stored and keeps the UTC its schedule was
+# made with -- see _LEGACY_DAILY_TIMEZONE in _update_topic.
+_DEFAULT_DAILY_CADENCE = "cron(0 9 * * ? *)"
+_DEFAULT_DAILY_TIMEZONE = "Australia/Sydney"
+_LEGACY_DAILY_TIMEZONE = DEFAULT_TIMEZONE
 
 _lambda_client = None
 
@@ -164,6 +172,7 @@ def _create_topic(event: dict) -> dict:
 
     research_cadence = body.get("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = body.get("daily_cadence", _DEFAULT_DAILY_CADENCE)
+    daily_timezone = body.get("daily_timezone", _DEFAULT_DAILY_TIMEZONE)
     if not isinstance(research_cadence, str) or not research_cadence:
         return _error(400, "'research_cadence' must be a non-empty string if provided")
     if not isinstance(daily_cadence, str) or not daily_cadence:
@@ -171,6 +180,7 @@ def _create_topic(event: dict) -> dict:
     try:
         _validate_schedule_expression(research_cadence)
         _validate_schedule_expression(daily_cadence)
+        validate_timezone(daily_timezone)
     except ValueError as exc:
         return _error(400, str(exc))
 
@@ -205,6 +215,7 @@ def _create_topic(event: dict) -> dict:
         "is_financial": is_financial,
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
+        "daily_timezone": daily_timezone,
         "model_id": model_id,
         "fallback_model_id": fallback_model_id,
         "model_id_candidates": model_id_candidates,
@@ -215,7 +226,7 @@ def _create_topic(event: dict) -> dict:
         item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
     put_topic(item)
     try:
-        upsert_topic_schedules(topic_id, research_cadence, daily_cadence)
+        upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(201, item)
@@ -249,6 +260,7 @@ def _update_topic(event: dict) -> dict:
         "is_financial",
         "research_cadence",
         "daily_cadence",
+        "daily_timezone",
         "model_id",
         "fallback_model_id",
         "model_id_candidates",
@@ -299,15 +311,19 @@ def _update_topic(event: dict) -> dict:
 
     research_cadence = updated.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = updated.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
+    # Not the new-topic default: a topic with no stored zone has a UTC schedule,
+    # and defaulting it to Sydney here would move its run on an unrelated edit.
+    daily_timezone = updated.setdefault("daily_timezone", _LEGACY_DAILY_TIMEZONE)
     try:
         _validate_schedule_expression(research_cadence)
         _validate_schedule_expression(daily_cadence)
+        validate_timezone(daily_timezone)
     except ValueError as exc:
         return _error(400, str(exc))
 
     put_topic(updated)
     try:
-        upsert_topic_schedules(topic_id, research_cadence, daily_cadence)
+        upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(200, updated)

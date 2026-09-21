@@ -108,7 +108,30 @@ def test_material_diff_false_on_pure_reorder():
     changed, summary = adapter.material_diff(old_state, new_state)
 
     assert changed is False
-    assert summary == "no material change"
+    assert summary == "no new information"
+
+
+def test_material_diff_a_story_already_reported_is_not_new_when_it_returns():
+    story_a = {"id": 1, "title": "a", "url": "ua", "score": 10, "by": "x"}
+    story_b = {"id": 2, "title": "b", "url": "ub", "score": 20, "by": "y"}
+    # the seen-set round-trips through JSON, so its keys are strings
+    old_state = {"stories": [story_a], "_seen": {"1": "2026-09-20", "2": "2026-09-20"}}
+    new_state = {"stories": [story_a, story_b]}  # story 2 left the list earlier and is back
+
+    assert HackerNewsAdapter().material_diff(old_state, new_state) == (False, "no new information")
+
+
+def test_material_diff_a_story_leaving_the_list_is_not_news_but_a_new_one_is():
+    story_a = {"id": 1, "title": "a", "url": "ua", "score": 10, "by": "x"}
+    story_b = {"id": 2, "title": "b", "url": "ub", "score": 20, "by": "y"}
+    story_c = {"id": 3, "title": "c", "url": "uc", "score": 5, "by": "z"}
+    adapter = HackerNewsAdapter()
+
+    assert adapter.material_diff({"stories": [story_a, story_b]}, {"stories": [story_a]})[0] is False
+    changed, summary = adapter.material_diff(
+        {"stories": [story_a, story_b]}, {"stories": [story_a, story_c]}
+    )
+    assert changed is True and "entered: c" in summary and "left: b" in summary
 
 
 def test_material_diff_true_when_story_set_changes():

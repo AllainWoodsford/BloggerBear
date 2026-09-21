@@ -99,6 +99,9 @@ class GitHubTrendingAdapter(Adapter):
 
         return repos
 
+    def item_keys(self, state: dict) -> set[str]:
+        return {r["name"] for r in state.get("repos", [])}
+
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         if not new_state.get("repos"):
             return False, "no relevant repos to report"
@@ -108,7 +111,10 @@ class GitHubTrendingAdapter(Adapter):
         old_repos = {r["name"]: r for r in old_state.get("repos", [])}
         new_repos = {r["name"]: r for r in new_state.get("repos", [])}
 
-        entered = sorted(set(new_repos) - set(old_repos))
+        # New = never reported for this topic before, not merely absent from the
+        # last snapshot. A repo leaving the list is context, not news.
+        known = self.known_keys(old_state)
+        entered = sorted(n for n in new_repos if n not in known)
         left = sorted(set(old_repos) - set(new_repos))
 
         star_jumps = []
@@ -123,8 +129,8 @@ class GitHubTrendingAdapter(Adapter):
             if is_big_absolute_jump or is_big_relative_jump:
                 star_jumps.append((name, old_stars, new_stars, delta))
 
-        if not entered and not left and not star_jumps:
-            return False, "no material change"
+        if not entered and not star_jumps:
+            return False, "no new information"
 
         parts = []
         if entered:
