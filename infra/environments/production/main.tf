@@ -713,6 +713,9 @@ module "admin_api" {
     "PUT /pipeline-config",
     # Feedback limits (lockdown, rate limit, daily limit, per-article limit) and locking one
     # article. See admin_api_handler.py's _*_feedback_* routes and `admin_cli feedback-config`.
+    # One article in any status (title, text, cost, sources) for the review inbox: see
+    # admin_api_handler.py's _get_article and scripts/review_inbox.py.
+    "GET /articles/{article_id}",
     "GET /feedback-config",
     "PUT /feedback-config",
     "PUT /articles/{article_id}/feedback-lock",

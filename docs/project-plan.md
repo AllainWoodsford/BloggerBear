@@ -1034,3 +1034,22 @@ full-body pictures rather than the mood faces, because the tummy has to be in th
 
 **Not built, deliberately:** anything that scores how human the scratching looks, and any use of the
 game to decide whether feedback goes through. Both were rejected in the anti-bot assessment.
+
+### The review inbox: what needs a person, and one way to clear it
+
+Two things wait for a person: **articles in the moderation queue** and **prompt-change proposals**. Both
+are in `admin_cli inbox` (a summary, plus heads-ups if feedback is locked down or verification is off)
+and `admin_cli approve` (`scripts/review_inbox.py`): one item at a time, one keystroke each (y approve,
+r reject, z skip, v read it all, q quit), up to 30 a time, oldest first.
+
+It goes through the Admin API, never straight to DynamoDB or S3, because approving an article does more
+than flip a flag (it renders the page, publishes it, writes a musing). It needed one new admin-only route,
+`GET /articles/{article_id}`, because the moderation queue lists items but not the article's title or text.
+
+Each item is a `ContentSource` (`ModerationSource`, `RefinementSource`, and a `MockSource` for practice), so a
+new kind of waiting thing is one small class. Skipped items are hidden from later runs for 24 hours in a local
+file so a rerun gives the next batch; nothing skipped is changed. An item held for a reason asks for a second
+yes before approving. Errors are shown per item and never end the run.
+
+The spec this came from assumed a pending-posts table and a pending-images bucket; neither exists here, so
+the sources are the two above.
