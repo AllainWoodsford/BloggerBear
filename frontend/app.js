@@ -397,6 +397,8 @@
         return {
           label: item.label || (item.status === "pending_review" ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
           title: item.title || "",
+          // Only the researching item has one: when its source was last checked.
+          checkedAt: item.checked_at || "",
         };
       });
     }
@@ -410,6 +412,28 @@
       items.push({ label: RESEARCHING_LABEL, title: "" });
     }
     return items;
+  }
+
+  // "checked 38 min ago" for an ISO timestamp, "" if it can't be read. A time slightly in the
+  // future (clock skew between the server and this browser) reads as "just now".
+  function formatChecked(isoString) {
+    var then = new Date(isoString).getTime();
+    if (isNaN(then)) {
+      return "";
+    }
+    var minutes = Math.floor((Date.now() - then) / 60000);
+    if (minutes < 1) {
+      return "checked just now";
+    }
+    if (minutes < 60) {
+      return "checked " + minutes + " min ago";
+    }
+    var hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+      return "checked " + hours + (hours === 1 ? " hour ago" : " hours ago");
+    }
+    var days = Math.floor(hours / 24);
+    return "checked " + days + (days === 1 ? " day ago" : " days ago");
   }
 
   function renderPipelineSection(items) {
@@ -430,6 +454,18 @@
       row.appendChild(el("span", { className: "pipeline-status", text: item.label }));
       if (item.title) {
         row.appendChild(el("span", { className: "pipeline-item-title", text: item.title }));
+      }
+      var checked = item.checkedAt ? formatChecked(item.checkedAt) : "";
+      if (checked) {
+        // The exact time is in the tooltip; the row says how long ago, so a quiet hour
+        // (a check that found nothing new) still reads as alive rather than stuck.
+        row.appendChild(
+          el("span", {
+            className: "pipeline-item-meta",
+            text: checked,
+            attrs: { title: new Date(item.checkedAt).toLocaleString() },
+          })
+        );
       }
       list.appendChild(row);
     });

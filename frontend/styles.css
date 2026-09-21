@@ -525,6 +525,15 @@ a {
   overflow-wrap: anywhere;
 }
 
+/* "checked 38 min ago": beside the title on a wide screen, on its own line below on a phone. */
+.pipeline-item-meta {
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
 /* On a phone the fixed 11rem status column leaves the title a sliver: stack
    the status above its title instead. */
 @media (max-width: 640px) {
@@ -540,6 +549,12 @@ a {
 
   .pipeline-item-title {
     flex: 1 0 100%;
+    padding-left: 1.9rem;
+  }
+
+  .pipeline-item-meta {
+    flex: 1 0 100%;
+    margin-left: 0;
     padding-left: 1.9rem;
   }
 }

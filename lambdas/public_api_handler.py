@@ -44,12 +44,14 @@ from common.compliance import bedrock_redact_review, regex_redact
 from common.dynamo import (
     get_article,
     get_latest_finding,
+    get_topic,
     increment_view_count,
     list_all_articles,
     list_models,
     list_musings,
     list_pending_moderation_for_topic,
     list_published_articles,
+    list_recent_findings,
     list_topics,
     put_feedback,
     update_article_net_votes,
@@ -161,6 +163,34 @@ def _list_topics(event: dict) -> dict:
     return _response(200, {"topics": public_topics})
 
 
+def _ref_key(ref: dict) -> str:
+    return ref.get("url") or ref.get("title") or ""
+
+
+def _researching_ref(latest: dict, previous: dict | None) -> dict | None:
+    """The source to name in "Researching: ...": the first one in the newest finding that
+    the finding before it did not have, else simply the first. Findings often lead with the
+    same anchors (a crypto finding always starts Bitcoin, Ethereum; a trending list keeps
+    its top repos), so the first source alone never changes even when the research does.
+    Topic-agnostic: it only compares two findings' source lists."""
+    refs = [r for r in dedupe_source_refs(latest.get("source_refs")) if r.get("title") or r.get("url")]
+    known = {_ref_key(r) for r in dedupe_source_refs((previous or {}).get("source_refs"))}
+    fresh = next((r for r in refs if _ref_key(r) not in known), None)
+    return fresh or (refs[0] if refs else None)
+
+
+def _last_checked_at(topic_id: str, latest_finding: dict) -> str | None:
+    """When the topic's source was last successfully checked (a check that finds nothing new
+    writes no finding, so the topic row is the only record), else when the newest finding was
+    captured. Just a timestamp: nothing else from the topic is exposed."""
+    try:
+        topic = get_topic(topic_id) or {}
+    except Exception as exc:  # noqa: BLE001 - a label must never break the page
+        print(f"public_api_handler: could not read topic {topic_id} for its last check: {exc!r}")
+        topic = {}
+    return topic.get("last_research_at") or latest_finding.get("captured_at") or None
+
+
 def _topic_activity(event: dict) -> dict:
     """Static article publishing (docs/project-plan.md §11): lets the
     frontend show a "BloggerBear is researching this topic" placeholder
@@ -197,24 +227,22 @@ def _topic_activity(event: dict) -> dict:
             }
         )
 
-    latest_finding = get_latest_finding(topic_id)
+    recent_findings = list_recent_findings(topic_id, limit=2)
+    latest_finding = recent_findings[0] if recent_findings else None
     if latest_finding is not None:
         researching = True
-        research_ref = next(
-            (
-                ref
-                for ref in dedupe_source_refs(latest_finding.get("source_refs"))
-                if ref.get("title") or ref.get("url")
-            ),
-            None,
+        research_ref = _researching_ref(
+            latest_finding, recent_findings[1] if len(recent_findings) > 1 else None
         )
-        pipeline_items.append(
-            {
-                "status": "researching",
-                "label": "Researching",
-                "title": (research_ref or {}).get("title") or (research_ref or {}).get("url") or "",
-            }
-        )
+        researching_item = {
+            "status": "researching",
+            "label": "Researching",
+            "title": (research_ref or {}).get("title") or (research_ref or {}).get("url") or "",
+        }
+        checked_at = _last_checked_at(topic_id, latest_finding)
+        if checked_at:
+            researching_item["checked_at"] = checked_at
+        pipeline_items.append(researching_item)
     return _response(
         200,
         {
