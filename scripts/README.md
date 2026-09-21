@@ -92,6 +92,12 @@ python scripts/admin_cli.py pipeline-config set --review-on-unavailable note
 # One topic can differ from the pipeline-wide mode ('' clears it back to inheriting):
 python scripts/admin_cli.py topics update github-trending --review-mode enforce
 python scripts/admin_cli.py topics update github-trending --review-mode ""
+# How the review is doing, from the records it leaves on articles: counts by outcome and
+# topic, unavailable reasons, what enforcement WOULD have held and revised (the number that
+# decides whether turning it on is safe), readiness against the plan's starting thresholds,
+# and a sample of recent flagged claims to check by eye.
+python scripts/admin_cli.py review report
+python scripts/admin_cli.py review report --sample 25
 python scripts/admin_cli.py pipeline-config set --review-mode shadow
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --review-mode shadow
 python scripts/admin_cli.py topics delete github-trending
