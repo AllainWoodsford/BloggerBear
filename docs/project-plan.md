@@ -781,3 +781,40 @@ a revision; anything that publishes without a human on a financial topic.
 or notes [hold]; (2) a per-topic `review_mode` override [yes]; (3) a public "checked against
 current data" footer row [yes, it is honest about what the check is]; (4) re-review a
 revised draft [no, rely on the guards].
+
+### The compliance review sees the sources
+
+**Problem.** The compliance reviewer saw only the draft, so a figure taken straight from the
+findings ("over 170 stars", "16,660 in total") read as an invented claim and nearly every
+non-financial draft was held for a person. The reviewer wasn't wrong that it couldn't verify
+the claim; it just couldn't see what the claim came from.
+
+**What we learned.** Showing the model the sources made it *stricter* (0 of 6 real drafts
+passed, against 2 of 6 before): it cross-checked rounded figures against every snapshot, read
+"positioning security as a core capability" as investment advice, and called ordinary
+enthusiasm a tone problem. It also changed its mind between calls on the same draft.
+
+**What it does now** (`common/compliance.py`, `review_draft(..., source_material=...)`; the
+daily cycle passes the findings block the draft was written from). The model only
+*nominates*: each item is a labelled line with an exact quote, and plain code decides which
+stand, the way the enforce-mode revision guards work.
+
+| Item | Holds the article only if |
+|---|---|
+| Any figure in the draft (code, model not asked) | it is within 3% of no figure in the sources. Counts up to 20 and years are exempt |
+| `FABRICATED` (model) | its quote holds a number or capitalised name found nowhere in the sources |
+| `ADVICE` (model) | its quote holds a recommendation word (buy, sell, invest, price target...) |
+| `PII` (model) | its quote holds a contact detail the redaction pass caught, or a street address |
+| `NOTE`, tone, a name on its own, a loose or rounded figure | never; kept as a minor concern |
+
+An empty answer, or one with no recognisable shape, still fails closed. A financial topic
+still never calls the model and always goes to a person. A review with no source material
+(the trending digest) is exactly what it was.
+
+**A deliberate loosening.** Tone and "interpretation stated as fact" no longer hold an
+article on their own. Whether a claim is *true and current* is the fresh-data review's job
+(`review_mode: enforce`), which is now the check that matters for accuracy.
+
+**Replay on real data** (six non-financial drafts, three runs each, Haiku 4.5): old prompt 2
+of 6 passed; this design 18 of 18 runs. Three deliberately bad drafts (an invented funding
+round, "you should invest your savings", a named person's address) were held 3 of 3 times.

@@ -461,6 +461,11 @@ def test_handler_publishes_when_compliant(s3_bucket):
 
     assert mock_invoke.call_count == 3
     mock_review.assert_called_once()
+    # The reviewer is shown the research the draft was written from, so a figure taken
+    # straight from a finding is not mistaken for an invented one.
+    source = mock_review.call_args.kwargs["source_material"]
+    assert "Repo X jumped to #1 trending after a viral launch post." in source
+    assert "Repo Y gained stars following a conference talk." in source
 
     # 3 "considered" + 1 "selected" re-write of the first candidate.
     assert mock_put_candidate.call_count == 4
