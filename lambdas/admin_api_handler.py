@@ -59,6 +59,7 @@ from common.editorial_resolver import (
     normalize_editorial_goals,
     validate_editorial_goals,
 )
+from common.fresh_review import resolve_review_mode, review_mode_error
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.musings import generate_and_store_article_musing
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
@@ -843,25 +844,44 @@ def _get_pipeline_config_route(event: dict) -> dict:
             "effective_default_research_interval_hours": (
                 config.get("research_interval_hours") or DEFAULT_RESEARCH_INTERVAL_HOURS
             ),
+            "review_mode": config.get("review_mode"),
+            "effective_review_mode": resolve_review_mode(config),
         },
     )
 
 
 def _put_pipeline_config_route(event: dict) -> dict:
-    """Set (or, with null, clear) the pipeline-wide research interval -- how often
-    a topic without its own `research_interval_hours` does real work on a heartbeat."""
+    """Set (or, with null, clear) pipeline-wide settings. Send either or both:
+
+    - `research_interval_hours`: how often a topic without its own interval does real
+      work on a heartbeat.
+    - `review_mode`: whether the fresh-data review of drafts runs (`shadow`, recorded
+      only) or is `off`.
+
+    A setting that isn't in the body is left as it is.
+    """
     try:
         body = _parse_body(event)
     except (json.JSONDecodeError, TypeError):
         return _error(400, "request body must be valid JSON")
-    if "research_interval_hours" not in body:
-        return _error(400, "'research_interval_hours' is required (use null to clear it)")
 
-    interval_problem = interval_error(body["research_interval_hours"])
-    if interval_problem:
-        return _error(400, f"'research_interval_hours' {interval_problem}")
+    updates = {}
+    if "research_interval_hours" in body:
+        interval_problem = interval_error(body["research_interval_hours"])
+        if interval_problem:
+            return _error(400, f"'research_interval_hours' {interval_problem}")
+        updates["research_interval_hours"] = body["research_interval_hours"]
+    if "review_mode" in body:
+        mode_problem = review_mode_error(body["review_mode"])
+        if mode_problem:
+            return _error(400, f"'review_mode' {mode_problem}")
+        updates["review_mode"] = body["review_mode"]
+    if not updates:
+        return _error(
+            400, "send 'research_interval_hours' and/or 'review_mode' (null clears a setting)"
+        )
 
-    put_pipeline_config(research_interval_hours=body["research_interval_hours"])
+    put_pipeline_config(**updates)
     return _get_pipeline_config_route(event)
 
 

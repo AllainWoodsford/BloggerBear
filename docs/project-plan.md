@@ -425,8 +425,8 @@ row keyed by profile id.
 
 ### Rolling research, whole-window articles, and a fresh-data review before publish
 
-**Status: shipped, except (C) the fresh-data review, which is designed below and
-not started.** Written up from a review of how the research and authoring
+**Status: shipped, except (C) the fresh-data review: its shadow mode is built
+(records only, changes nothing); enforcement is designed below and not started.** Written up from a review of how the research and authoring
 pipelines behaved, checked against the code and the dev environment.
 
 **Design constraint: topic-agnostic.** Topics can be about anything; the first
@@ -500,7 +500,17 @@ adapter.
 
 ---
 
-#### (C) Fresh-data adversarial review before publish -- design (not started)
+#### (C) Fresh-data adversarial review before publish -- design
+
+**Status.** PR 1 (shadow mode) is built: `common/fresh_review.py`, the adapter hook
+(`Adapter.review_evidence`, with a crypto override), `common/adapters/registry.py`,
+the record on the article (`review`) and on the moderation item (`review_notes`), the
+`adversarial_review` lineage stage, and `pipeline-config set --review-mode off|shadow`
+(default `shadow`). Where it differs from the design below: `review_mode` accepts only
+`off` and `shadow` -- `enforce` is added with PR 2, so a setting can never claim more than
+the code does; an adapter that opts out yields a `skipped` record; the daily-cycle
+Lambda timeout is now 300s. PR 2 (the revision pass and routing to moderation) is not
+started, and waits on about a week of shadow data from dev.
 
 **Problem.** Nothing re-checks an article against reality before it goes out.
 Drafts are written from finding *summaries*, hours old by publish time, and

@@ -81,7 +81,7 @@ from common.http_retry import get_json_with_backoff
 from common.relevance import matches_keywords, research_relevance_rule, topic_label
 from common.web_search import search_web
 
-from .base import Adapter
+from .base import Adapter, render_review_evidence
 
 PUBLIC_BASE_URL = "https://api.coingecko.com/api/v3"
 PRO_BASE_URL = "https://pro-api.coingecko.com/api/v3"
@@ -520,6 +520,62 @@ class CryptoFeedAdapter(Adapter):
                 print(f"crypto_feed: no headlines this tick ({exc}); continuing with the market data")
                 state["web_results"] = []
         return state
+
+    def review_evidence(self, topic_config: dict, latest_state: dict | None) -> str | None:
+        """Current prices for what the article can mention, plus the latest headlines.
+
+        The default (a plain re-fetch) would look at a *different* random pool of coins
+        than the one the article was written about, so this re-reads the coins the
+        latest snapshot analysed (`analyzed_today`) from the one markets call -- current
+        price and 24h/7d/30d change for the top 200, no per-coin history -- plus the
+        anchors. A general-market news day has no coins at all: headlines only.
+        """
+        adapter_config = topic_config.get("adapter_config") or {}
+        now = datetime.now(UTC)
+        goal = goal_for_adapter_config(adapter_config, now.date())
+        evidence: dict = {"as_of": now.isoformat(), "editorial_goal": goal.value}
+
+        if goal is not EditorialGoal.MARKET_NEWS:
+            markets = self._fetch_markets(CoinGeckoClient.from_env())
+            evidence["market_anchors"] = self._anchors(markets)
+            by_id = {coin["id"]: coin for coin in markets}
+            wanted = self._analyzed_ids(latest_state)
+            evidence["coins"] = [
+                {
+                    "name": by_id[coin_id].get("name") or coin_id,
+                    "symbol": by_id[coin_id].get("symbol"),
+                    "rank": by_id[coin_id].get("market_cap_rank"),
+                    "price": _round_price(by_id[coin_id]["current_price"]),
+                    "change_24h": _market_pct(by_id[coin_id], "24h"),
+                    "change_7d": _market_pct(by_id[coin_id], "7d"),
+                    "change_30d": _market_pct(by_id[coin_id], "30d"),
+                }
+                for coin_id in sorted(wanted)
+                if coin_id in by_id and by_id[coin_id].get("current_price") is not None
+            ]
+            missing = len(wanted) - len(evidence["coins"])
+            if missing:
+                evidence["coins_no_longer_in_the_top_200"] = missing
+
+        try:
+            headlines = self._fetch_web_results(adapter_config, goal)
+        except Exception as exc:  # noqa: BLE001 - headlines are context, not the point
+            print(f"crypto_feed: no headlines for the review ({exc})")
+            headlines = []
+        evidence["headlines"] = [
+            {"title": r["title"], "source": r.get("source"), "published_at": r.get("published_at")}
+            for r in headlines
+        ]
+        return render_review_evidence(evidence)
+
+    @staticmethod
+    def _analyzed_ids(latest_state: dict | None) -> set[str]:
+        """Every coin id a snapshot analysed (its cumulative day list and its pool)."""
+        if not latest_state:
+            return set()
+        ids = set(latest_state.get("analyzed_today") or [])
+        ids.update(coin["id"] for coin in latest_state.get("analyzed_pool") or [] if coin.get("id"))
+        return ids
 
     def _fetch_markets(self, client: CoinGeckoClient) -> list[dict]:
         return client.get_json(
