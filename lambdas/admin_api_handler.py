@@ -880,7 +880,11 @@ def _wear(item: dict, plan: dict) -> None:
     displaced = plan["displaced"]
     if displaced is not None:
         set_prompt_refinement_equipment(
-            displaced["topic_id"], displaced["version"], equipped=False, at=now
+            displaced["topic_id"],
+            displaced["version"],
+            equipped=False,
+            at=now,
+            reason=equipment.DISPLACED,
         )
     set_prompt_refinement_equipment(
         item["topic_id"], item["version"], equipped=True, at=now, slot=plan["slot"], scope=plan["scope"]
@@ -943,8 +947,16 @@ def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
         if plan is not None:
             _wear(item, plan)
         else:
+            # In the backpack. Parked (no room for it) may be put on automatically if something
+            # wears out; shelved (the admin chose the backpack) never is. See common/equipment.py.
+            parked = body.get("scope") != "backpack"
             set_prompt_refinement_equipment(
-                topic_id, version, equipped=False, at=datetime.now(UTC).isoformat()
+                topic_id,
+                version,
+                equipped=False,
+                at=datetime.now(UTC).isoformat(),
+                reason=equipment.PARKED if parked else equipment.SHELVED,
+                scope=equipment.SCOPE_TOPIC if parked else None,
             )
         payload["placement"] = _placement_view(item, plan)
         payload["item"] = _gear_summary(_as_worn(item, plan))
@@ -1002,9 +1014,37 @@ def _unequip_prompt_refinement(event: dict) -> dict:
     if not equipment.is_equipped(item):
         return _error(409, "that refinement is not equipped")
     set_prompt_refinement_equipment(
-        item["topic_id"], item["version"], equipped=False, at=datetime.now(UTC).isoformat()
+        item["topic_id"],
+        item["version"],
+        equipped=False,
+        at=datetime.now(UTC).isoformat(),
+        reason=equipment.BENCHED,
     )
     return _response(200, {"unequipped": equipment.ref(item)})
+
+
+def _repair_gear(event: dict) -> dict:
+    """Restore a piece of gear's durability (body {"amount": n}, or none for all of it), never above
+    its maximum. It stays where it is: a worn-out piece is repaired into the backpack, and putting it
+    back on is a separate, deliberate step."""
+    item, error = _approved_refinement_or_error(event)
+    if error:
+        return error
+    body = _placement_body(event)
+    if body is None:
+        return _error(400, "request body must be a JSON object")
+    amount = body.get("amount")
+    if amount is not None and (not isinstance(amount, int) or isinstance(amount, bool) or amount < 1):
+        return _error(400, "'amount' must be a whole number of at least 1")
+    item = _ensure_identity(item)
+    top = int(item["max_durability"])
+    now = int(item.get("durability", top))
+    repaired = top if amount is None else min(top, now + amount)
+    if repaired <= now:
+        return _error(409, f"it is already at full durability ({now}/{top})")
+    set_prompt_refinement_fields(item["topic_id"], item["version"], {"durability": repaired})
+    summary = _gear_summary({**item, "durability": repaired})
+    return _response(200, {"repaired": {**equipment.ref(item), "was": now, **summary}})
 
 
 def _raise_rarity(event: dict) -> dict:
@@ -1314,6 +1354,7 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/equip": _equip_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/unequip": _unequip_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/rarity": _raise_rarity,
+    "POST /prompt-refinements/{topic_id}/{version}/repair": _repair_gear,
     "GET /equipment": _get_equipment,
     "GET /failed-executions": _list_failed_executions,
     "GET /models": _list_models,

@@ -40,7 +40,7 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common import feedback_limits, feedback_verification
+from common import feedback_limits, feedback_verification, wear
 from common.comment_screening import screen_comment
 from common.dynamo import (
     get_article,
@@ -472,6 +472,10 @@ def _submit_feedback(event: dict) -> dict:
     created_at = datetime.now(UTC).isoformat()
     put_feedback(article_id, feedback_id, vote, final_comment, created_at)
     update_article_net_votes(article_id, 1 if vote == "up" else -1)
+
+    # The gear this article was written with takes the feedback: a downvote wears it, an upvote
+    # repairs it (common/wear.py). Never raises, and says nothing to the reader about it.
+    wear.apply_feedback(article, vote)
 
     return _response(
         201,

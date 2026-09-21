@@ -676,12 +676,14 @@ def set_prompt_refinement_equipment(
     at: str,
     slot: str | None = None,
     scope: str | None = None,
+    reason: str | None = None,
 ) -> None:
     """Wear (`equipped=True`, with `slot` and `scope`) or take off a PromptRefinements item.
 
-    Taking off keeps `scope` and clears `slot`, and always leaves `equipped` set to False, which
-    is what tells an item that was benched on purpose from a legacy approval that never had the
-    field (common/equipment.py). The item must exist.
+    Taking off clears `slot` and records why (`reason`, see common/equipment.py: it decides whether
+    the item may be put back on automatically). It keeps `scope` unless one is given, and always
+    leaves `equipped` set to False, which is what tells an item that was benched on purpose from a
+    legacy approval that never had the field. The item must exist.
     """
     table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
     if equipped:
@@ -693,12 +695,52 @@ def set_prompt_refinement_equipment(
             ConditionExpression="attribute_exists(topic_id)",
         )
         return
+    sets = ["equipped = :f", "unequipped_at = :at", "unequipped_reason = :reason"]
+    names = {}
+    values = {":f": False, ":at": at, ":reason": reason}
+    if scope is not None:
+        sets.append("#scope = :scope")
+        names["#scope"] = "scope"
+        values[":scope"] = scope
     table.update_item(
         Key={"topic_id": topic_id, "version": version},
-        UpdateExpression="SET equipped = :f, unequipped_at = :at REMOVE slot",
-        ExpressionAttributeValues={":f": False, ":at": at},
+        UpdateExpression="SET " + ", ".join(sets) + " REMOVE slot",
+        **({"ExpressionAttributeNames": names} if names else {}),
+        ExpressionAttributeValues=values,
         ConditionExpression="attribute_exists(topic_id)",
     )
+
+
+def apply_prompt_refinement_wear(topic_id: str, version: str, delta: int) -> dict | None:
+    """Damage (`delta` < 0) or repair (`delta` > 0) a piece of gear that is being worn, atomically.
+
+    Returns {"durability", "max_durability"} after the change, or None if there was nothing to do:
+    the item is not worn, has no durability (it predates gear), is already at 0 when damaged, or is
+    already full when repaired. The conditions are in the write itself, so concurrent feedback can
+    neither push durability below 0 nor above its maximum, and exactly one caller sees it reach 0.
+    """
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    bound = "durability > :zero" if delta < 0 else "durability < max_durability"
+    try:
+        response = table.update_item(
+            Key={"topic_id": topic_id, "version": version},
+            UpdateExpression="SET durability = durability + :delta",
+            ConditionExpression=(
+                f"equipped = :yes AND #status = :approved AND attribute_exists(durability) AND {bound}"
+            ),
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":delta": delta,
+                ":yes": True,
+                ":approved": "approved",
+                **({":zero": 0} if delta < 0 else {}),
+            },
+            ReturnValues="ALL_NEW",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+    item = response["Attributes"]
+    return {"durability": int(item["durability"]), "max_durability": int(item["max_durability"])}
 
 
 def set_prompt_refinement_fields(topic_id: str, version: str, fields: dict) -> None:
