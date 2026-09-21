@@ -549,7 +549,29 @@
     var list = el("ul", { className: "musings-list" });
     musings.forEach(function (musing) {
       var item = el("li", { className: "musing-item" });
-      item.appendChild(el("p", { className: "musing-text", text: musing.text }));
+
+      // A bear feeling the musing's mood, where a bullet point would be. It is decorative (the
+      // words below say the same), so it has no alt text. A picture that fails to load, or a mood
+      // with none, falls back to the plain bear.
+      var mood = window.BloggerMoods.describe(musing.mood);
+      var bear = el("img", {
+        className: "musing-bear",
+        attrs: { src: mood.image, alt: "", width: "56", height: "56" },
+      });
+      bear.addEventListener("error", function () {
+        if (bear.getAttribute("src") !== window.BloggerMoods.FALLBACK_IMAGE) {
+          bear.setAttribute("src", window.BloggerMoods.FALLBACK_IMAGE);
+        }
+      });
+      item.appendChild(bear);
+
+      var body = el("div", { className: "musing-body" });
+      body.appendChild(el("p", { className: "musing-text", text: musing.text }));
+      if (mood.label) {
+        body.appendChild(
+          el("p", { className: "musing-mood", text: "BloggerBear was feeling " + mood.label })
+        );
+      }
 
       var meta = el("p", { className: "musing-meta" });
       meta.appendChild(el("span", { text: formatDate(musing.created_at) }));
@@ -559,7 +581,8 @@
           el("a", { text: "read the article", href: "#/article/" + encodeURIComponent(musing.article_id) })
         );
       }
-      item.appendChild(meta);
+      body.appendChild(meta);
+      item.appendChild(body);
 
       list.appendChild(item);
     });

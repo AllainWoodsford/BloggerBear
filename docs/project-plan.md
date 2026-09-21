@@ -974,3 +974,31 @@ the rest, and the privacy policy rules that out.
 
 **Settings** (the `feedback` row, with the limits above): `verification_required`, `token_delay_min_ms`,
 `token_delay_max_ms`, `pow_threshold_percent`, `pow_difficulty_bits` (0 = never ask for work).
+
+### Musings: BloggerBear's moods, and a bear for each
+
+Each musing carries a mood, and the Musings page shows it: a bear feeling that mood where a bullet
+point used to be, and a line of grey text after the musing, "BloggerBear was feeling proud".
+
+**BloggerBear has five moods** (`common/musings.py`, `MOODS`), each set by real signal, not chosen at
+random:
+
+| Mood | When |
+|---|---|
+| **proud** | an article sailed through compliance on the first pass |
+| **thoughtful** | an article needed a person first (moderation-approve or a force-publish) |
+| **pleased** | the periodic feedback musing, when net votes are positive |
+| **reflective** | the same, when votes are net negative or tied |
+| **curious** | the same, when there was no feedback at all |
+
+**The pictures** are `frontend/bears/<mood>.svg`, plus `default.svg` for a mood with no art of its own
+and for an older musing with no mood. They are placeholders in a consistent style: to use your own,
+**replace the file with the same name** (any square SVG; it is shown at 56px, 44px on a phone). The
+pictures are served with `Cache-Control: no-cache`, so a replacement shows up at once. The picture is
+decorative (no alt text): the grey line says the same in words.
+
+**Adding a mood** means adding it to `MOODS` in `musings.py` and `frontend/moods.js`, a
+`bears/<mood>.svg`, and its line in both environments' `frontend_files`. A test fails until all of
+those agree, so a mood can't ship with a broken image. Until its art exists it shows the plain bear.
+
+A mood word that isn't plain letters is never shown as text or used to build a file name.
