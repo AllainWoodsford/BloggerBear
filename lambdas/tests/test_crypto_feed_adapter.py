@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 import threading
 import time
@@ -1195,3 +1196,90 @@ def test_the_bookkeeping_list_is_kept_out_of_the_summary_prompt():
 
     assert "alt-secret-marker" not in prompt and "analyzed_today" not in prompt
     assert "Raw Analysis Metrics" in prompt
+
+
+# --- the fresh-data review's evidence ---------------------------------------------------------
+
+
+def _evidence(topic=DEEP_DIVE, latest_state=None, markets=None, headlines=(), search_error=None):
+    search = patch("common.adapters.crypto_feed.search_web", return_value=list(headlines))
+    if search_error:
+        search = patch("common.adapters.crypto_feed.search_web", side_effect=search_error)
+    with patch(GET, side_effect=_fake_get(markets or _markets())) as mock_get, search:
+        text = CryptoFeedAdapter().review_evidence(topic, latest_state)
+    return json.loads(text), mock_get
+
+
+def test_evidence_covers_the_anchors_and_only_the_coins_the_latest_snapshot_analysed():
+    latest = {"analyzed_today": ["alt-1", "alt-2"], "analyzed_pool": [{"id": "alt-3"}]}
+
+    evidence, mock_get = _evidence(latest_state=latest)
+
+    assert set(evidence["market_anchors"]) == {"bitcoin", "ethereum"}
+    assert [c["name"] for c in evidence["coins"]] == ["Alt 1", "Alt 2", "Alt 3"]
+    assert _history_calls(mock_get) == []  # one markets call, no per-coin history
+
+
+def test_the_evidence_is_the_current_price_not_the_one_in_the_snapshot():
+    markets = _markets()
+    for coin in markets:
+        if coin["id"] == "alt-1":
+            coin["current_price"] = 123.45
+
+    evidence, _ = _evidence(latest_state={"analyzed_today": ["alt-1"]}, markets=markets)
+
+    assert evidence["coins"][0]["price"] == 123.45
+    assert {"change_24h", "change_7d", "change_30d", "rank", "symbol"} <= set(evidence["coins"][0])
+
+
+def test_a_coin_that_has_left_the_top_200_is_counted_not_silently_dropped():
+    evidence, _ = _evidence(latest_state={"analyzed_today": ["alt-1", "long-gone-coin"]})
+
+    assert [c["name"] for c in evidence["coins"]] == ["Alt 1"]
+    assert evidence["coins_no_longer_in_the_top_200"] == 1
+
+
+def test_with_no_snapshot_the_evidence_is_the_anchors_and_headlines_only():
+    evidence, _ = _evidence(latest_state=None, headlines=[_web_result(1)])
+
+    assert evidence["coins"] == [] and set(evidence["market_anchors"]) == {"bitcoin", "ethereum"}
+    assert [h["title"] for h in evidence["headlines"]] == ["Bitcoin story 1"]
+
+
+def test_headlines_carry_their_source_and_date_and_nothing_else():
+    evidence, _ = _evidence(headlines=[_web_result(1, "2026-09-20T08:00:00+00:00")])
+
+    assert evidence["headlines"] == [
+        {"title": "Bitcoin story 1", "source": "news.example", "published_at": "2026-09-20T08:00:00+00:00"}
+    ]
+
+
+def test_a_failed_headline_search_does_not_stop_the_evidence(capsys):
+    evidence, _ = _evidence(
+        latest_state={"analyzed_today": ["alt-1"]}, search_error=RuntimeError("gdelt down")
+    )
+
+    assert evidence["headlines"] == [] and len(evidence["coins"]) == 1
+    assert "no headlines for the review" in capsys.readouterr().out
+
+
+def test_a_general_market_news_day_has_no_coins_and_makes_no_coingecko_call():
+    with (
+        patch(GET) as mock_get,
+        patch("common.adapters.crypto_feed.search_web", return_value=[_market_result(1)]),
+    ):
+        text = CryptoFeedAdapter().review_evidence(MARKET_NEWS_TOPIC, {"analyzed_today": ["alt-1"]})
+
+    evidence = json.loads(text)
+    assert "coins" not in evidence and "market_anchors" not in evidence
+    assert evidence["headlines"] and evidence["editorial_goal"] == "MARKET_NEWS"
+    mock_get.assert_not_called()
+
+
+def test_a_markets_failure_is_raised_so_the_review_reports_unavailable():
+    with (
+        patch(GET, side_effect=RuntimeError("coingecko down")),
+        patch("common.adapters.crypto_feed.search_web", return_value=[]),
+        pytest.raises(RuntimeError, match="coingecko down"),
+    ):
+        CryptoFeedAdapter().review_evidence(DEEP_DIVE, None)

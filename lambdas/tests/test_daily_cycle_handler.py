@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import patch
 
@@ -59,6 +60,14 @@ ENV = {
 def _env(monkeypatch):
     for key, value in ENV.items():
         monkeypatch.setenv(key, value)
+
+
+@pytest.fixture(autouse=True)
+def _review_off_by_default():
+    """The fresh-data review is on (shadow) by default and would fetch live data; these
+    tests are about everything else in the cycle. Tests of the review turn it on."""
+    with patch("daily_cycle_handler.get_pipeline_config", return_value={"review_mode": "off"}) as mock_config:
+        yield mock_config
 
 
 @pytest.fixture
@@ -1246,3 +1255,266 @@ def test_a_topic_specific_focus_still_wins_on_a_market_news_day(s3_bucket):
     _, mock_invoke, _ = _run_crypto(topic, findings)
 
     assert "Topic-Specific Focus: Track institutional flows." in mock_invoke.call_args_list[0].args[0]
+
+
+# --- the fresh-data review (shadow mode) ------------------------------------------------------------
+
+
+def _review_record(outcome="clean", claims=(), status="reviewed", **extra):
+    """What common.fresh_review.run_review returns (its lineage call still attached)."""
+    return {
+        "status": status,
+        "outcome": outcome,
+        "claims": list(claims),
+        "evidence_as_of": "2026-09-21T09:00:00+00:00",
+        "mode": "shadow",
+        "lineage_call": {
+            "stage": "adversarial_review",
+            "model_id": "anthropic.claude-test-model",
+            "input_tokens": 900,
+            "output_tokens": 60,
+            "used_fallback": False,
+        },
+        **extra,
+    }
+
+
+_MAJOR = {"claim": "Repo X is #1", "problem": "stale", "evidence": "now #4", "severity": "major"}
+
+
+def _run_with_review(
+    *,
+    config=None,
+    config_error=None,
+    record=None,
+    review_error=None,
+    compliant=True,
+    topic=NON_FINANCIAL_TOPIC,
+    findings=FINDINGS,
+):
+    """A whole cycle with the review turned on (unless `config` says otherwise) and the
+    reviewer itself mocked. Returns the result and everything the review touched."""
+    responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
+    lineage_calls = []
+
+    def build_lineage(calls, **kwargs):
+        lineage_calls.append(calls)
+        return _DUMMY_LINEAGE
+
+    config_patch = (
+        patch("daily_cycle_handler.get_pipeline_config", side_effect=config_error)
+        if config_error
+        else patch("daily_cycle_handler.get_pipeline_config", return_value=config or {})
+    )
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=topic),
+        patch("daily_cycle_handler.list_recent_findings", return_value=findings),
+        patch("daily_cycle_handler.get_latest_approved_prompt_refinement", return_value=None),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", "fallback-m")),
+        patch("daily_cycle_handler.build_lineage", side_effect=build_lineage),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in responses],
+        ),
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={
+                "compliant": compliant,
+                "reasons": ["needs a look"],
+                "lineage_call": _DUMMY_LINEAGE_CALL,
+            },
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item") as mock_put_moderation,
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+        patch("daily_cycle_handler.set_topic_last_article_at"),
+        config_patch,
+        patch(
+            "daily_cycle_handler.fresh_review.run_review",
+            side_effect=review_error,
+            return_value=record if record is not None else _review_record(),
+        ) as mock_run,
+    ):
+        result = daily_cycle_handler.handler({"topic_id": topic["topic_id"]}, None)
+    return result, mock_run, mock_put_article, mock_put_moderation, lineage_calls
+
+
+def test_the_review_runs_by_default_in_shadow_mode(s3_bucket):
+    _, mock_run, _, _, _ = _run_with_review(config={})
+
+    mock_run.assert_called_once()
+    kwargs = mock_run.call_args.kwargs
+    assert kwargs["mode"] == "shadow"
+    assert kwargs["topic"] == NON_FINANCIAL_TOPIC
+    assert kwargs["draft"] == "# Draft body"
+    assert "Repo X jumped to #1" in kwargs["findings_text"]  # the window's summaries
+    assert (kwargs["model_id"], kwargs["fallback_model_id"]) == ("m", "fallback-m")
+
+
+def test_the_review_can_be_switched_off_from_the_pipeline_config(s3_bucket):
+    _, mock_run, mock_put_article, _, lineage_calls = _run_with_review(config={"review_mode": "off"})
+
+    mock_run.assert_not_called()
+    assert "review" not in mock_put_article.call_args.kwargs
+    assert all(call["stage"] != "adversarial_review" for call in lineage_calls[0])
+
+
+def test_the_record_is_stored_on_the_article_without_its_lineage_call(s3_bucket):
+    record = _review_record("major", [_MAJOR])
+
+    _, _, mock_put_article, _, _ = _run_with_review(record=record)
+
+    stored = mock_put_article.call_args.kwargs["review"]
+    assert stored["outcome"] == "major" and stored["claims"] == [_MAJOR] and stored["status"] == "reviewed"
+    assert "lineage_call" not in stored  # that goes into the article's lineage instead
+
+
+def test_the_reviewers_call_becomes_a_lineage_stage(s3_bucket):
+    _, _, _, _, lineage_calls = _run_with_review()
+
+    stages = [call["stage"] for call in lineage_calls[0]]
+    assert "adversarial_review" in stages and "compliance_review" in stages
+    assert stages.index("adversarial_review") < stages.index("compliance_review")
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _review_record("major", [_MAJOR]),
+        _review_record("minor", [{**_MAJOR, "severity": "minor"}]),
+        _review_record(status="unavailable", outcome=None, reason="source is down"),
+    ],
+)
+def test_shadow_mode_never_changes_what_happens_to_an_article(s3_bucket, record):
+    """The whole point of shadow mode: however bad the review, the outcome is exactly what
+    it would have been without one."""
+    published, _, _, _, _ = _run_with_review(record=record, compliant=True)
+    held, _, _, _, _ = _run_with_review(record=record, compliant=False)
+
+    assert published["status"] == "published" and published["compliant"] is True
+    assert held["status"] == "pending_moderation"
+
+
+def test_a_moderated_article_carries_the_review_notes_for_the_operator(s3_bucket):
+    record = _review_record("major", [_MAJOR])
+
+    _, _, _, mock_put_moderation, _ = _run_with_review(record=record, compliant=False)
+
+    assert mock_put_moderation.call_args.kwargs["review_notes"] == [
+        "fresh-data review: Repo X is #1 -- stale (major): now #4"
+    ]
+    assert mock_put_moderation.call_args.kwargs["reasons"] == ["needs a look"]  # unchanged
+
+
+def test_an_unavailable_review_leaves_a_note_on_a_moderated_article(s3_bucket):
+    record = _review_record(status="unavailable", outcome=None, reason="source is down")
+
+    _, _, _, mock_put_moderation, _ = _run_with_review(record=record, compliant=False)
+
+    assert mock_put_moderation.call_args.kwargs["review_notes"] == [
+        "fresh-data review unavailable: source is down"
+    ]
+
+
+def test_a_clean_review_leaves_no_notes(s3_bucket):
+    _, _, _, mock_put_moderation, _ = _run_with_review(record=_review_record(), compliant=False)
+
+    assert "review_notes" not in mock_put_moderation.call_args.kwargs
+
+
+def test_a_published_article_does_not_touch_the_moderation_queue(s3_bucket):
+    _, _, _, mock_put_moderation, _ = _run_with_review(record=_review_record("major", [_MAJOR]))
+
+    mock_put_moderation.assert_not_called()
+
+
+def test_a_financial_topic_gets_its_notes_and_the_review_sees_the_draft_before_the_disclaimer(s3_bucket):
+    record = _review_record("major", [_MAJOR])
+
+    _, mock_run, _, mock_put_moderation, _ = _run_with_review(
+        record=record, topic=FINANCIAL_TOPIC, compliant=False
+    )
+
+    assert "financial or investment advice" not in mock_run.call_args.kwargs["draft"]
+    assert mock_put_moderation.call_args.kwargs["review_notes"]
+
+
+def test_a_review_that_blows_up_never_fails_the_article(s3_bucket):
+    result, _, mock_put_article, _, _ = _run_with_review(review_error=RuntimeError("boom"))
+
+    assert result["status"] == "published"
+    stored = mock_put_article.call_args.kwargs["review"]
+    assert stored["status"] == "unavailable" and "boom" in stored["reason"]
+
+
+def test_an_unreadable_pipeline_config_falls_back_to_the_default_mode(s3_bucket):
+    result, mock_run, _, _, _ = _run_with_review(config_error=RuntimeError("throttled"))
+
+    assert result["status"] == "published"
+    assert mock_run.call_args.kwargs["mode"] == "shadow"
+
+
+def test_an_invalid_stored_mode_is_ignored(s3_bucket):
+    _, mock_run, _, _, _ = _run_with_review(config={"review_mode": "enforce"})
+
+    assert mock_run.call_args.kwargs["mode"] == "shadow"
+
+
+def test_a_skipped_review_is_recorded_but_says_nothing_to_the_operator(s3_bucket):
+    record = _review_record(status="skipped", outcome=None, reason="nothing to review against")
+
+    _, _, mock_put_article, mock_put_moderation, _ = _run_with_review(record=record, compliant=False)
+
+    assert mock_put_article.call_args.kwargs["review"]["status"] == "skipped"
+    assert "review_notes" not in mock_put_moderation.call_args.kwargs
+
+
+# --- what the adapter is asked to re-check ---------------------------------------------------------------
+
+
+def _findings_with_snapshots(*keys):
+    return [{**FINDINGS[0], "captured_at": f"2026-09-21T0{i}:00:00+00:00", "raw_snapshot_s3_key": key}
+            for i, key in enumerate(keys)]
+
+
+def test_the_review_is_given_the_newest_findings_stored_snapshot(s3_bucket):
+    snapshot = {"analyzed_today": ["alt-1"], "editorial_goal": "ALTCOIN_DEEP_DIVE"}
+    s3_bucket.put_object(
+        Bucket=ENV["CONTENT_BUCKET"], Key="snapshots/newest.json", Body=json.dumps(snapshot).encode()
+    )
+    s3_bucket.put_object(Bucket=ENV["CONTENT_BUCKET"], Key="snapshots/older.json", Body=b'{"old": true}')
+
+    _, mock_run, _, _, _ = _run_with_review(
+        findings=_findings_with_snapshots("snapshots/newest.json", "snapshots/older.json")
+    )
+
+    assert mock_run.call_args.kwargs["latest_state"] == snapshot
+
+
+def test_a_snapshot_that_cannot_be_read_gives_the_review_no_state_rather_than_failing(s3_bucket, capsys):
+    _, mock_run, _, _, _ = _run_with_review(findings=_findings_with_snapshots("snapshots/missing.json"))
+
+    assert mock_run.call_args.kwargs["latest_state"] is None
+    assert "could not load the latest snapshot" in capsys.readouterr().out
+
+
+def test_findings_with_no_snapshot_key_give_no_state(s3_bucket):
+    _, mock_run, _, _, _ = _run_with_review(findings=FINDINGS)  # these carry no raw_snapshot_s3_key
+
+    assert mock_run.call_args.kwargs["latest_state"] is None
+
+
+def test_the_snapshot_comes_from_the_whole_window_not_just_the_goals_findings(s3_bucket):
+    """The crypto goal filter keeps only today's findings, but the newest finding in the
+    window is what tells the adapter which coins to re-check."""
+    today = datetime.now(UTC)
+    newest = {**FINDINGS[0], "captured_at": today.isoformat(), "raw_snapshot_s3_key": "snapshots/today.json"}
+    s3_bucket.put_object(Bucket=ENV["CONTENT_BUCKET"], Key="snapshots/today.json", Body=b'{"today": true}')
+    crypto_topic = {**NON_FINANCIAL_TOPIC, "adapter": "crypto_feed", "is_financial": True}
+
+    _, mock_run, _, _, _ = _run_with_review(findings=[newest], topic=crypto_topic)
+
+    assert mock_run.call_args.kwargs["latest_state"] == {"today": True}

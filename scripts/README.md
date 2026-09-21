@@ -77,6 +77,13 @@ python scripts/admin_cli.py topics update github-trending --research-interval-ho
 python scripts/admin_cli.py pipeline-config get
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2   # save cost
 python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
+# Fresh-data review of each draft before it is checked and published. `shadow` (the
+# default) runs it and records the result on the article and, if it goes to moderation,
+# on its queue item (`review_notes`, shown by `moderation list`) without changing any
+# outcome; `off` skips it; '' clears the setting. Costs about one extra model call per article.
+python scripts/admin_cli.py pipeline-config set --review-mode off
+python scripts/admin_cli.py pipeline-config set --review-mode shadow
+python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --review-mode shadow
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait

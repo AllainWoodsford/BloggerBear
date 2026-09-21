@@ -21,12 +21,16 @@ model):
    findings is ignored or reframed rather than written up.
 4. Select: deterministically pick the first candidate (no scoring model yet).
 5. Draft: ask Bedrock for a title and a full article draft.
-6. Compliance review (common.compliance.review_draft).
-7. Publish (S3 + Articles "published") or route to ModerationQueue
+6. Fresh-data review (common.fresh_review): compare the draft's claims with what
+   the source says now. Shadow mode -- recorded on the article (and its moderation
+   item), never acted on; `pipeline-config set --review-mode off` skips it.
+7. Compliance review (common.compliance.review_draft).
+8. Publish (S3 + Articles "published") or route to ModerationQueue
    (Articles "pending_moderation" + a ModerationQueue item), depending on
    the compliance verdict.
 """
 
+import json
 import os
 import re
 import uuid
@@ -34,11 +38,12 @@ from datetime import UTC, date, datetime, timedelta
 
 import boto3
 
-from common import compliance
+from common import compliance, fresh_review
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
 from common.dynamo import (
     get_latest_approved_prompt_refinement,
+    get_pipeline_config,
     get_top_voted_articles,
     get_topic,
     list_recent_findings,
@@ -155,6 +160,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     # a Finding the goal filter sets aside still cost a Bedrock call, and each
     # window starts where the last one ended, so nothing is counted twice.
     research = build_research_lineage(findings)
+    window_findings = findings
     editorial_goal, findings = _select_goal_and_findings(topic, findings)
     if editorial_goal is not None:
         print(f"daily_cycle_handler: editorial_goal={editorial_goal.value} topic_id={topic_id}")
@@ -186,6 +192,13 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     )
     title, title_call = _draft_title(selected["angle"], model_id, fallback_model_id)
 
+    # Fresh-data review (docs/project-plan.md §11, "(C)"): compare the draft's claims with
+    # what the source says *now*. Shadow mode: recorded, never acted on. Placed before the
+    # disclaimer is appended so it reviews the article's own text.
+    fresh_record, fresh_call = _run_fresh_review(
+        topic, draft_text, summaries_block, window_findings, model_id, fallback_model_id
+    )
+
     # Phase 7: deterministically guarantee the standing "not financial
     # advice" disclaimer on every financial-topic draft, regardless of
     # whether the model actually followed the guidance folded into the
@@ -204,7 +217,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     # than fabricated.
     calls = [
         call
-        for call in (ideate_call, draft_call, title_call, review["lineage_call"])
+        for call in (ideate_call, draft_call, title_call, fresh_call, review["lineage_call"])
         if call is not None
     ]
     lineage = build_lineage(calls, research=research)
@@ -218,9 +231,72 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         review=review,
         model_id=model_id,
         lineage=lineage,
+        fresh_review_record=fresh_record,
     )
     _record_article_written(topic_id, run_started)
     return result
+
+
+def _load_latest_snapshot(findings: list[dict]) -> dict | None:
+    """The newest finding's stored snapshot (findings are newest first), or None if it
+    can't be read -- an adapter then re-checks without knowing what it looked at."""
+    key = (findings[0].get("raw_snapshot_s3_key") if findings else None) or None
+    if not key:
+        return None
+    try:
+        body = boto3.client("s3").get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=key)["Body"]
+        return json.loads(body.read())
+    except Exception as exc:  # noqa: BLE001
+        print(f"daily_cycle_handler: could not load the latest snapshot for the review: {exc!r}")
+        return None
+
+
+def _run_fresh_review(
+    topic: dict,
+    draft_text: str,
+    summaries_block: str,
+    window_findings: list[dict],
+    model_id: str,
+    fallback_model_id: str | None,
+) -> tuple[dict | None, dict | None]:
+    """(review record, its lineage call), or (None, None) when the review is off.
+
+    Never raises and never changes what happens to the article: the whole step is
+    wrapped so that nothing in it can fail a daily run, and in this (shadow) version
+    its result is only recorded.
+    """
+    try:
+        try:
+            mode = fresh_review.resolve_review_mode(get_pipeline_config())
+        except Exception as exc:  # noqa: BLE001 - a config read must not stop the article
+            print(f"daily_cycle_handler: could not read the pipeline config, review mode default: {exc!r}")
+            mode = fresh_review.DEFAULT_REVIEW_MODE
+        if mode == "off":
+            return None, None
+
+        record = fresh_review.run_review(
+            topic=topic,
+            draft=draft_text,
+            findings_text=summaries_block,
+            latest_state=_load_latest_snapshot(window_findings),
+            model_id=model_id,
+            fallback_model_id=fallback_model_id,
+            mode=mode,
+        )
+        lineage_call = record.pop("lineage_call", None)
+        print(
+            f"daily_cycle_handler: fresh-data review status={record['status']} "
+            f"outcome={record.get('outcome')} topic_id={topic.get('topic_id')}"
+        )
+        return record, lineage_call
+    except Exception as exc:  # noqa: BLE001
+        print(f"daily_cycle_handler: fresh-data review failed: {exc!r}")
+        return {"status": "unavailable", "reason": f"review step failed: {exc}", "mode": "shadow"}, None
+
+
+def _review_notes_kwargs(record: dict | None) -> dict:
+    notes = fresh_review.review_notes(record)
+    return {"review_notes": notes} if notes else {}
 
 
 def _captured_date(finding: dict) -> date | None:
@@ -470,6 +546,7 @@ def _publish_or_moderate(
     review: dict,
     model_id: str,
     lineage: dict,
+    fresh_review_record: dict | None = None,
 ) -> dict:
     article_id = str(uuid.uuid4())
     now = datetime.now(UTC).isoformat()
@@ -501,6 +578,7 @@ def _publish_or_moderate(
         source_refs=source_refs,
         lineage=lineage,
         published_by="ai_only" if compliant else None,
+        **({"review": fresh_review_record} if fresh_review_record else {}),
     )
 
     if compliant:
@@ -540,6 +618,7 @@ def _publish_or_moderate(
         topic_id=topic_id,
         reasons=review["reasons"],
         created_at=now,
+        **_review_notes_kwargs(fresh_review_record),
     )
     return {
         "status": "pending_moderation",

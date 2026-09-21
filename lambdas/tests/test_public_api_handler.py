@@ -992,3 +992,25 @@ def test_unhandled_exception_returns_500(aws_resources, monkeypatch):
     result = public_api_handler.handler(_event("GET /topics"), None)
     assert result["statusCode"] == 500
     assert "error" in json.loads(result["body"])
+
+
+def test_the_fresh_data_review_is_never_exposed_publicly(aws_resources):
+    _put_article()
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET review = :r",
+        ExpressionAttributeValues={
+            ":r": {"status": "reviewed", "outcome": "major", "claims": [{"claim": "secret note"}]}
+        },
+    )
+
+    detail = public_api_handler.handler(
+        _event("GET /articles/{article_id}", path_params={"article_id": "article-1"}), None
+    )
+    listing = public_api_handler.handler(
+        _event("GET /topics/{topic_id}/articles", path_params={"topic_id": "github-trending"}), None
+    )
+
+    assert "review" not in json.loads(detail["body"])
+    assert "secret note" not in detail["body"] and "secret note" not in listing["body"]
