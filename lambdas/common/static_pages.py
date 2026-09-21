@@ -390,6 +390,13 @@ def render_and_publish_article_page(
 {lineage_footer_html}
 <section class="feedback" data-role="feedback">
 <h2>Feedback</h2>
+<div class="hp-wrap" aria-hidden="true">
+<label for="feedback-extra-note">
+Leave this field empty. It is only there to catch automated scripts.
+</label>
+<input type="text" id="feedback-extra-note" name="extra_note" data-role="extra-note"
+ tabindex="-1" autocomplete="off" />
+</div>
 <div class="feedback-buttons" hidden>
 <button type="button" data-role="upvote" aria-label="Upvote this article">Upvote</button>
 <button type="button" data-role="downvote" aria-label="Downvote this article">Downvote</button>
@@ -403,6 +410,7 @@ def render_and_publish_article_page(
 <div class="footer-links"><a class="back-to-top" href="#top">Back to top &#8593;</a></div>
 </footer>
 <script src="/config.js"></script>
+<script src="/verify.js" defer></script>
 <script src="/article-widgets.js" defer></script>
 </body>
 </html>

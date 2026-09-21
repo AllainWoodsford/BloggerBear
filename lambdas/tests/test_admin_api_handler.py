@@ -1622,6 +1622,11 @@ def test_feedback_config_get_shows_defaults_and_usage(aws_resources):
         "daily_limit": 100,
         "article_limit": 50,
         "screening_limit": 300,
+        "verification_required": True,
+        "token_delay_min_ms": 500,
+        "token_delay_max_ms": 2000,
+        "pow_threshold_percent": 70,
+        "pow_difficulty_bits": 16,
         "daily_timezone": "Australia/Sydney",
     }
     assert body["usage"]["today"] == 0 and body["usage"]["this_window"] == 0
@@ -1638,6 +1643,11 @@ def test_feedback_config_put_sets_and_clears_settings(aws_resources):
             "daily_limit": 30,
             "article_limit": 8,
             "screening_limit": 40,
+            "verification_required": False,
+            "token_delay_min_ms": 100,
+            "token_delay_max_ms": 900,
+            "pow_threshold_percent": 50,
+            "pow_difficulty_bits": 12,
             "daily_timezone": "UTC",
         },
     )
@@ -1652,6 +1662,11 @@ def test_feedback_config_put_sets_and_clears_settings(aws_resources):
         "daily_limit": 30,
         "article_limit": 8,
         "screening_limit": 40,
+        "verification_required": False,
+        "token_delay_min_ms": 100,
+        "token_delay_max_ms": 900,
+        "pow_threshold_percent": 50,
+        "pow_difficulty_bits": 12,
         "daily_timezone": "UTC",
     }
 
@@ -1681,6 +1696,12 @@ def test_feedback_config_put_a_setting_not_sent_is_left_alone(aws_resources):
         {"daily_limit": -1},
         {"article_limit": 10**9},
         {"screening_limit": 0},
+        {"verification_required": "no"},
+        {"token_delay_min_ms": -1},
+        {"token_delay_max_ms": 30_001},
+        {"pow_threshold_percent": 0},
+        {"pow_threshold_percent": 101},
+        {"pow_difficulty_bits": 25},
         {"locked_down": "true"},
         {"lockdown_reason": ""},
         {"lockdown_reason": "x" * 101},

@@ -1206,6 +1206,50 @@ resource "aws_wafv2_web_acl" "public_api" {
   # below -- that ACL already default-blocks everything except the
   # operator's own allowlisted IP, which is stricter than any managed
   # rule set could add.
+  # The feedback route only: at most 20 submissions per 5 minutes from one IP. The general limit
+  # above (500 across the whole API) is far too loose for something that costs a model call, and
+  # this stores nothing about the visitor: WAF counts the source address itself and forgets it.
+  # The path match is on the end of the path so it catches POST .../articles/{id}/feedback and
+  # not GET .../feedback-status. Blocked requests are answered by WAF before they reach the Lambda.
+  rule {
+    name     = "feedback-rate-limit"
+    priority = 3
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = 20
+        evaluation_window_sec = 300
+        aggregate_key_type    = "IP"
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = "/feedback"
+            positional_constraint = "ENDS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-production-public-api-feedback-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
   rule {
     name     = "aws-managed-common"
     priority = 2
@@ -1356,6 +1400,7 @@ locals {
     "normalize.css" = "text/css"
     "app.js"        = "application/javascript"
     "markdown.js"   = "application/javascript"
+    "verify.js"     = "application/javascript"
     # Static article publishing (docs/project-plan.md §11): the external
     # script the pages rendered by common/static_pages.py load -- must be
     # a real file at the bucket root, not inline, per the CSP comment on

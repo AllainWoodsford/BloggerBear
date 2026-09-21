@@ -40,7 +40,7 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common import feedback_limits
+from common import feedback_limits, feedback_verification
 from common.comment_screening import screen_comment
 from common.dynamo import (
     get_article,
@@ -350,6 +350,10 @@ _CLOSED_STATUS = {
 }
 
 
+# The form's decoy field. Named so a browser will not autofill it (not "email", "url", "name"...).
+HONEYPOT_FIELD = "extra_note"
+
+
 def _closed_response(status: dict) -> dict:
     return _response(
         _CLOSED_STATUS.get(status["reason"], 423),
@@ -364,7 +368,20 @@ def _feedback_status(event: dict) -> dict:
     article = _get_published_article(article_id)
     if article is None:
         return _error(404, f"article '{article_id}' not found")
-    return _response(200, feedback_limits.status_for(article))
+    status = feedback_limits.status_for(article)
+    if status["open"]:
+        # Open: also hand out the one-use token this article's submission must carry, and how
+        # long the browser must wait / how much work it must do (common/feedback_verification.py).
+        try:
+            verification = feedback_verification.issue(
+                article_id, feedback_limits.current_settings()
+            )
+        except Exception as exc:  # noqa: BLE001 - no key, no token: closed, not open
+            print(f"public_api_handler: could not issue a feedback token: {exc!r}")
+            return _response(200, feedback_limits.unavailable_status())
+        if verification is not None:
+            status = {**status, "verification": verification}
+    return _response(200, status)
 
 
 def _submit_feedback(event: dict) -> dict:
@@ -384,11 +401,49 @@ def _submit_feedback(event: dict) -> dict:
     if vote not in ("up", "down"):
         return _error(400, "'vote' must be 'up' or 'down'")
 
+    # 0. The honeypot: a field no person sees (hidden from sight and from screen readers, skipped
+    #    by the keyboard). A script that fills in every input fills it in. It is told it worked
+    #    and nothing is stored or counted, so it learns nothing.
+    honeypot = payload.get(HONEYPOT_FIELD)
+    if honeypot is not None and str(honeypot).strip():
+        print("public_api_handler: rejected a feedback submission (honeypot)")
+        return _response(
+            201,
+            {
+                "status": "recorded",
+                "article_id": article_id,
+                "feedback_id": str(uuid.uuid4()),
+                "comment_saved": False,
+            },
+        )
+
     # 1. Is feedback open at all? A read only: a closed site costs no model call and stores
-    #    nothing (see common/feedback_limits.py).
+    #    nothing (see common/feedback_limits.py), and says why whether or not there is a token.
     status = feedback_limits.status_for(article)
     if not status["open"]:
         return _closed_response(status)
+
+    # 1b. The token from GET .../feedback-status, unused, old enough, with its proof of work if
+    #     the site is busy. Checked before anything is screened or counted.
+    try:
+        settings = feedback_limits.current_settings()
+    except Exception as exc:  # noqa: BLE001 - fail closed, like the limiter
+        print(f"public_api_handler: could not read the feedback settings: {exc!r}")
+        return _closed_response(feedback_limits.unavailable_status())
+    verdict = feedback_verification.verify(
+        article_id, payload.get("token"), payload.get("work"), settings
+    )
+    if not verdict["ok"]:
+        return _response(
+            503 if verdict["reason"] == feedback_verification.UNAVAILABLE else 403,
+            {
+                "error": "verification failed",
+                "verification": {
+                    "reason": verdict["reason"],
+                    "retry_after_ms": verdict["retry_after_ms"],
+                },
+            },
+        )
 
     # 2. Screen the comment. A rejected comment rejects the whole submission: nothing is stored,
     #    the vote is not recorded, and it is not counted against any limit, so rejected feedback
