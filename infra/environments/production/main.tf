@@ -1373,12 +1373,18 @@ resource "aws_s3_object" "frontend" {
   source       = "${local.frontend_dir}/${each.key}"
   etag         = filemd5("${local.frontend_dir}/${each.key}")
   content_type = each.value
+  # The files aren't fingerprinted, so a browser or CloudFront must not keep serving an old
+  # copy after a deploy: with no Cache-Control at all they did (CloudFront's default TTL is 24
+  # hours and browsers guess), so a new page could arrive with the old stylesheet. no-cache means
+  # "revalidate every time" -- a cheap conditional request -- for everything but images.
+  cache_control = startswith(each.value, "image/") ? "public, max-age=86400" : "no-cache"
 }
 
 resource "aws_s3_object" "frontend_config" {
-  bucket       = module.static_site.bucket_name
-  key          = "config.js"
-  content_type = "application/javascript"
+  bucket        = module.static_site.bucket_name
+  key           = "config.js"
+  content_type  = "application/javascript"
+  cache_control = "no-cache"
 
   content = <<-EOT
     window.PUBLIC_API_URL = "${module.public_api.invoke_url}";
