@@ -713,6 +713,56 @@ a {
   display: none;
 }
 
+/* --- Musings ---------------------------------------------------------
+   A bear feeling the musing's mood sits where a bullet point would be (see moods.js). */
+
+.musings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.musing-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.musing-bear {
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+}
+
+.musing-body {
+  min-width: 0;
+}
+
+.musing-text {
+  margin: 0 0 6px;
+}
+
+.musing-mood {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.musing-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .musing-bear {
+    width: 44px;
+    height: 44px;
+  }
+}
+
 .feedback-closed {
   padding: 14px 16px;
   border: 1px dashed var(--border);

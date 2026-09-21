@@ -1393,14 +1393,21 @@ resource "aws_wafv2_web_acl_logging_configuration" "shared" {
 locals {
   frontend_dir = "${path.module}/../../../frontend"
   frontend_files = {
-    "index.html"    = "text/html"
-    "error.html"    = "text/html"
-    "about.html"    = "text/html"
-    "styles.css"    = "text/css"
-    "normalize.css" = "text/css"
-    "app.js"        = "application/javascript"
-    "markdown.js"   = "application/javascript"
-    "verify.js"     = "application/javascript"
+    "index.html"           = "text/html"
+    "error.html"           = "text/html"
+    "about.html"           = "text/html"
+    "styles.css"           = "text/css"
+    "normalize.css"        = "text/css"
+    "app.js"               = "application/javascript"
+    "markdown.js"          = "application/javascript"
+    "verify.js"            = "application/javascript"
+    "moods.js"             = "application/javascript"
+    "bears/proud.svg"      = "image/svg+xml"
+    "bears/thoughtful.svg" = "image/svg+xml"
+    "bears/pleased.svg"    = "image/svg+xml"
+    "bears/reflective.svg" = "image/svg+xml"
+    "bears/curious.svg"    = "image/svg+xml"
+    "bears/default.svg"    = "image/svg+xml"
     # Static article publishing (docs/project-plan.md §11): the external
     # script the pages rendered by common/static_pages.py load -- must be
     # a real file at the bucket root, not inline, per the CSP comment on
@@ -1429,8 +1436,9 @@ resource "aws_s3_object" "frontend" {
   # The files aren't fingerprinted, so a browser or CloudFront must not keep serving an old
   # copy after a deploy: with no Cache-Control at all they did (CloudFront's default TTL is 24
   # hours and browsers guess), so a new page could arrive with the old stylesheet. no-cache means
-  # "revalidate every time" -- a cheap conditional request -- for everything but images.
-  cache_control = startswith(each.value, "image/") ? "public, max-age=86400" : "no-cache"
+  # "revalidate every time" -- a cheap conditional request -- for everything but images. (The bear
+  # pictures under bears/ revalidate too, so replacing one with your own shows up at once.)
+  cache_control = startswith(each.value, "image/") && !startswith(each.key, "bears/") ? "public, max-age=86400" : "no-cache"
 }
 
 resource "aws_s3_object" "frontend_config" {
