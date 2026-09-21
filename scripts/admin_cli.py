@@ -749,6 +749,12 @@ def _cmd_equipment_bump(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/rarity", body=body)
 
 
+def _cmd_equipment_repair(args: argparse.Namespace) -> None:
+    version = urllib.parse.quote(args.version, safe="")
+    body = {"amount": args.amount} if args.amount else {}
+    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/repair", body=body)
+
+
 def _cmd_equipment_unequip(args: argparse.Namespace) -> None:
     version = urllib.parse.quote(args.version, safe="")
     _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/unequip")
@@ -1364,6 +1370,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="the rarity to raise it to (default: one step up)",
     )
     equipment_bump_parser.set_defaults(func=_cmd_equipment_bump)
+
+    equipment_repair_parser = equipment_sub.add_parser(
+        "repair",
+        help="Restore a piece of gear's durability (all of it by default), never above its maximum",
+    )
+    equipment_repair_parser.add_argument("topic_id")
+    equipment_repair_parser.add_argument("version")
+    equipment_repair_parser.add_argument(
+        "--amount", type=int, default=None, help="how many points to restore (default: to full)"
+    )
+    equipment_repair_parser.set_defaults(func=_cmd_equipment_repair)
 
     equipment_unequip_parser = equipment_sub.add_parser(
         "unequip", help="Take a worn refinement off; it goes to the backpack and is no longer used"

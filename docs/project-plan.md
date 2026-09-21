@@ -1056,7 +1056,7 @@ the sources are the two above.
 
 ### Equipment: approved prompt changes as gear the bear wears
 
-**Status: PRs 1 and 2 of 4 (the model, the injection, and gear identity).** An approved prompt refinement is *worn* rather than
+**Status: PRs 1 to 3 of 4 (the model, the injection, gear identity, and wear).** An approved prompt refinement is *worn* rather than
 merely approved; only worn gear is injected into the ideation and drafting prompts. `common/equipment.py` is
 the pure rules; the state lives on the PromptRefinements items (`equipped`, `slot`, `scope`, `equipped_at`,
 `unequipped_at`).
@@ -1105,11 +1105,34 @@ what the bear found.
   worn or bumped (no model is called from the admin API).
 - `POST /prompt-refinements/{topic_id}/{version}/rarity`, `admin_cli equipment bump`.
 
+**PR 3 of 4 (wear): durability is the performance record.** `common/wear.py`, called from the public API's
+feedback path right after a submission is stored.
+
+- A stored **downvote costs each piece the article used 1 durability; an upvote gives 1 back**, never above
+  its maximum. "Used" is `Articles.equipment_used`: the topic's rings and only the armor the bear took in that
+  time, so gear it left out is neither blamed nor rewarded.
+- **Only feedback that is kept counts.** A submission with a comment screened out, a bad token, a hit limit or
+  a filled honeypot is turned away before anything is stored, so it wears nothing. (Bare thumbs count too;
+  downvotes are still cheap to send, but the existing per-article and rate limits, the token and the honeypot
+  already bound how many can land.)
+- **Only worn gear is touched.** A retired or benched piece is not revived by an upvote on an old article; only
+  an admin repairs it. The change is one conditional write (`durability > 0` / `durability < max_durability`,
+  `equipped = true`), so concurrent feedback can neither push it below 0 nor above the maximum, and exactly one
+  submission sees it reach 0.
+- **At 0 the piece is taken off** (`unequipped_reason = worn_out`) and a spare may take its place. Every way an
+  item gets to the backpack records why: `parked` (approved when there was no room), `shelved` (approved to
+  the backpack by choice), `benched` (an admin took it off), `displaced` (something else took its slot),
+  `worn_out`. **Only `parked` spares are put on automatically**, and only the same kind (a ring for the same
+  topic, or global armor for an armor slot), never past the ring cap and never displacing anything, choosing
+  the one with the most durability left. Today parking happens for topic items (a default approve with every
+  ring worn), so in practice this replaces rings; armor is re-equipped by an admin.
+- **Admin repair**: `POST /prompt-refinements/{topic_id}/{version}/repair` (`admin_cli equipment repair`),
+  all of it or `--amount`, never above the maximum; the item stays where it is. Gear at 0 cannot be worn until
+  repaired. Worn-out gear that is repaired goes back on by an admin's choice, which is the rotation the owner
+  wants.
+- The wear step never raises into the feedback path, and says nothing to the reader.
+
 **Still to come.**
-- **PR 3, wear.** A **non-rejected comment with a downvote** damages the gear the article used (the pieces in
-  `equipment_used`: only the armor actually taken in, and the topic's rings). A piece worn out is unequipped and
-  another takes its place; an admin can repair it, never above its maximum. Durability and its ceiling are
-  already stored (PR 2).
 - **PR 4, the Stats page.** The paper doll, with per-slot and per-rarity art, accessible hover/focus tooltips
   showing the guidance in use, and the bag count.
 

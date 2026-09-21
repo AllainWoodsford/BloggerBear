@@ -274,6 +274,20 @@ A bump only goes up. It re-rolls the maximum in the new rarity's range (never lo
 extra room to the item's durability, so making a battered item rarer does not repair it. An item proposed or
 approved before this has no rarity: it is given one, once, the first time it is approved, worn or bumped.
 
+**Wear.** Durability is how gear's record shows. When feedback is stored, each piece of gear the article
+*used* takes it: a downvote costs 1 durability, an upvote gives 1 back (never above the maximum). Feedback
+that is turned away (a rejected comment, a bad token, a limit, the honeypot) never counts. Only gear that is
+being *worn* is affected, so an upvote on some old article does not revive gear that has been retired.
+
+- At 0 the piece is taken off (into the backpack, marked `worn_out`).
+- If a **parked** spare is waiting (an item approved when there was no room for it: a ring for the same
+  topic, or global armor for armor), the one with the most durability left takes its place. Anything you
+  benched, took off, displaced or shelved is never put back automatically, and a worn-out piece stays worn
+  out until you repair it.
+- `equipment repair TOPIC VERSION [--amount N]` restores durability (all of it by default), never above the
+  maximum, and leaves the item where it is. A repaired worn-out piece is in the backpack until you
+  `equipment equip` it. Gear at 0 durability can't be equipped until it is repaired.
+
 Each article records which gear was in the prompts that wrote it (`equipment_used`: topic, version and slot
 per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
 gear helps, and share out wear. It is never shown publicly.

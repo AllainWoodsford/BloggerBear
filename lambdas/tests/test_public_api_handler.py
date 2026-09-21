@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import xml.etree.ElementTree as ET
 from decimal import Decimal
+from unittest.mock import patch
 
 import boto3
 import pytest
@@ -27,6 +28,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
+    monkeypatch.setenv("PROMPT_REFINEMENTS_TABLE", "PromptRefinements")
     # A fresh signing key per test (it is cached in the module and the table is new each time).
     from common import feedback_verification
 
@@ -112,6 +114,19 @@ def aws_resources(aws_env):
             TableName="ModerationQueue",
             KeySchema=[{"AttributeName": "queue_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "queue_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        dynamodb.create_table(
+            TableName="PromptRefinements",
+            KeySchema=[
+                {"AttributeName": "topic_id", "KeyType": "HASH"},
+                {"AttributeName": "version", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "topic_id", "AttributeType": "S"},
+                {"AttributeName": "version", "AttributeType": "S"},
+            ],
             BillingMode="PAY_PER_REQUEST",
         )
 
@@ -1746,3 +1761,142 @@ def test_the_fresh_data_review_is_never_exposed_publicly(aws_resources):
 
     assert "review" not in json.loads(detail["body"])
     assert "secret note" not in detail["body"] and "secret note" not in listing["body"]
+
+
+# --- Feedback wears the gear the article was written with ------------------------------------
+
+
+def _gear(version="g1", durability=5, top=10, slot="ring", **fields):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    table.put_item(
+        Item={
+            "topic_id": "github-trending",
+            "version": version,
+            "status": "approved",
+            "equipped": True,
+            "slot": slot,
+            "scope": "topic",
+            "prompt_changes": "Be plain.",
+            "rarity": "common",
+            "durability": durability,
+            "max_durability": top,
+            **fields,
+        }
+    )
+
+
+def _durability(version="g1"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    item = table.get_item(Key={"topic_id": "github-trending", "version": version})["Item"]
+    return int(item["durability"])
+
+
+def _written_with(version="g1"):
+    """Say article-1 was written with gear `version` (its `equipment_used` record)."""
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET equipment_used = :used",
+        ExpressionAttributeValues={
+            ":used": [{"topic_id": "github-trending", "version": version, "slot": "ring"}]
+        },
+    )
+
+
+def test_a_downvote_wears_the_gear_the_article_was_written_with(aws_resources):
+    _put_article()
+    _gear()
+    _written_with()
+
+    result, body = _submit("down")
+
+    assert result["statusCode"] == 201
+    assert _durability() == 4
+    assert "durability" not in json.dumps(body) and "gear" not in json.dumps(body)  # readers see nothing
+
+
+def test_an_upvote_repairs_it(aws_resources):
+    _put_article()
+    _gear()
+    _written_with()
+
+    _submit("up")
+
+    assert _durability() == 6
+
+
+def test_a_kept_comment_on_a_downvote_wears_it_too(aws_resources, monkeypatch):
+    _put_article()
+    _gear()
+    _written_with()
+    _model_says(monkeypatch, "KEEP")
+
+    result, body = _submit("down", comment="The intro was confusing.")
+
+    assert result["statusCode"] == 201 and body["comment_saved"] is True
+    assert _durability() == 4
+
+
+def test_a_downvote_whose_comment_is_rejected_wears_nothing(aws_resources, monkeypatch):
+    _put_article()
+    _gear()
+    _written_with()
+    _model_says(monkeypatch, "DROP")
+
+    result, _ = _submit("down", comment="You are all idiots.")
+
+    assert result["statusCode"] == 422
+    assert _feedback_items() == []  # nothing was recorded, so nothing wears
+    assert _durability() == 5
+
+
+def test_a_honeypot_submission_wears_nothing(aws_resources):
+    _put_article()
+    _gear()
+    _written_with()
+
+    result, _ = _submit("down", **{public_api_handler.HONEYPOT_FIELD: "gotcha"})
+
+    assert result["statusCode"] == 201 and _durability() == 5
+
+
+def test_feedback_that_is_turned_away_wears_nothing(aws_resources):
+    _put_article()
+    _gear()
+    _written_with()
+
+    result, _ = _submit("down", token="not-a-token")
+
+    assert result["statusCode"] == 403 and _durability() == 5
+
+
+def test_an_article_written_with_no_gear_is_unaffected(aws_resources):
+    _put_article()
+    _gear()
+
+    result, _ = _submit("down")
+
+    assert result["statusCode"] == 201 and _durability() == 5
+
+
+def test_feedback_is_still_recorded_if_the_gear_cannot_be_worn(aws_resources):
+    _put_article()
+    _written_with("missing")  # the gear it names does not exist
+
+    with patch("common.wear.apply_prompt_refinement_wear", side_effect=RuntimeError("throttled")):
+        result, _ = _submit("down")
+
+    assert result["statusCode"] == 201
+    assert len(_feedback_items()) == 1
+
+
+def test_the_downvote_that_wears_gear_out_takes_it_off(aws_resources):
+    _put_article()
+    _gear(durability=1)
+    _written_with()
+
+    _submit("down")
+
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    stored = table.get_item(Key={"topic_id": "github-trending", "version": "g1"})["Item"]
+    assert stored["equipped"] is False and stored["unequipped_reason"] == "worn_out"

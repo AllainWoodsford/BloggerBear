@@ -18,6 +18,12 @@ This module is pure -- it decides and describes, and never touches DynamoDB -- s
 easy to test. The refinement items themselves are plain PromptRefinements dicts; the fields this
 adds are `equipped` (bool), `slot`, `scope` ("global" | "topic"), `equipped_at`, `unequipped_at`.
 
+**Wear.** A stored downvote costs each piece of gear the article used 1 durability, and an upvote gives 1
+back (never above the maximum); only gear that is being worn is affected (common/wear.py). Gear that reaches
+0 is taken off (`worn_out`) and, if there is a suitable spare in the backpack, replaced. Only a spare that was
+*parked* (approved when there was no room) may be put on automatically: anything an admin benched, took off,
+or displaced stays where they left it, and a worn-out piece stays worn out until an admin repairs it.
+
 A refinement approved before equipment existed has no `equipped` field at all. It is *legacy*: it
 keeps working exactly as it did (the latest one per topic is injected) until the topic has a ring
 of its own. Once an item has been equipped or unequipped it has the field and is never legacy.
@@ -33,6 +39,13 @@ MAX_RINGS = 5
 SCOPE_GLOBAL = "global"
 SCOPE_TOPIC = "topic"
 LEGACY_SLOT = "legacy"
+
+# Why an item is in the backpack (`unequipped_reason`). Only PARKED may be put on again automatically.
+PARKED = "parked"  # approved when there was no room for it
+SHELVED = "shelved"  # approved straight to the backpack by choice
+BENCHED = "benched"  # taken off by an admin
+DISPLACED = "displaced"  # pushed out by something else being worn
+WORN_OUT = "worn_out"  # its durability ran out
 
 # Worn guidance is folded into every prompt; keep the total from swamping them.
 MAX_GUIDANCE_CHARS = 4000
@@ -106,6 +119,37 @@ def suggest_slot(items: list[dict], scope: str, hint: str | None = None) -> str 
     return free[0] if free else None
 
 
+def durability_left(item: dict) -> bool:
+    """True unless the item has a durability and it is used up. (No durability: it predates gear.)"""
+    durability = item.get("durability")
+    return durability is None or int(durability) > 0
+
+
+def pick_replacement(items: list[dict], retired: dict) -> dict | None:
+    """The spare that should take the place of a piece of gear that has just worn out, or None.
+
+    Only parked spares qualify (see the module docstring), that still have durability, and are the
+    same kind: a ring for the same topic, or armor for another armor slot. The one with the most
+    durability left wins, the newest breaking ties.
+    """
+    ring = retired.get("slot") == RING_SLOT
+    candidates = []
+    for item in items:
+        if item.get("status") != "approved" or item.get("equipped") is not False:
+            continue
+        if item.get("unequipped_reason") != PARKED or not durability_left(item) or "durability" not in item:
+            continue
+        if ref(item) == ref(retired):
+            continue
+        is_ring = item.get("scope") != SCOPE_GLOBAL
+        if ring != is_ring or (ring and item.get("topic_id") != retired.get("topic_id")):
+            continue
+        candidates.append(item)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda i: (int(i["durability"]), i.get("version") or ""))
+
+
 def plan_equip(
     items: list[dict],
     target: dict,
@@ -122,6 +166,8 @@ def plan_equip(
     """
     if scope not in (SCOPE_GLOBAL, SCOPE_TOPIC):
         raise EquipError(400, f"scope must be '{SCOPE_GLOBAL}' or '{SCOPE_TOPIC}'")
+    if not durability_left(target):
+        raise EquipError(409, "it is worn out: an admin has to repair it before it can be worn")
     worn = [i for i in equipped_items(items) if ref(i) != ref(target)]
 
     if scope == SCOPE_GLOBAL:
