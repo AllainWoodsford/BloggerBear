@@ -613,7 +613,7 @@ def test_trigger_research_tick_invokes_lambda(aws_resources):
     mock_client.invoke.assert_called_once_with(
         FunctionName="research-tick-fn",
         InvocationType="Event",
-        Payload=json.dumps({"topic_id": "github-trending"}).encode("utf-8"),
+        Payload=json.dumps({"topic_id": "github-trending", "force": True}).encode("utf-8"),
     )
 
 

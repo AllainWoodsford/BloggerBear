@@ -186,6 +186,19 @@ def _add_model_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_interval_hours(text: str):
+    """`--research-interval-hours` value: a whole number of hours, or '' meaning
+    "clear it and inherit the pipeline-wide default" (sent as null)."""
+    if text == "":
+        return None
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise CliError(
+            f"--research-interval-hours must be a whole number of hours (or ''): {text!r}"
+        ) from exc
+
+
 def _parse_editorial_goals_json(text: str):
     try:
         return json.loads(text)
@@ -217,6 +230,8 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
         body["editorial_goals"] = _parse_editorial_goals_json(args.editorial_goals_json)
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
+    if args.research_interval_hours is not None:
+        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
@@ -240,6 +255,8 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
         body["is_financial"] = args.financial
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
+    if args.research_interval_hours is not None:
+        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
     if args.daily_cadence is not None:
         body["daily_cadence"] = args.daily_cadence
     if args.daily_timezone is not None:
@@ -381,6 +398,18 @@ def _cmd_articles_publish(args: argparse.Namespace) -> None:
 
 def _cmd_articles_unpublish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/unpublish")
+
+
+# --- pipeline-config subcommands ----------------------------------------
+
+
+def _cmd_pipeline_config_get(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", "/pipeline-config")
+
+
+def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
+    body = {"research_interval_hours": _parse_interval_hours(args.research_interval_hours)}
+    _do_request(args, "PUT", "/pipeline-config", body=body)
 
 
 # --- lineage subcommands ------------------------------------------------
@@ -536,6 +565,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1 hour))",
     )
     create_parser.add_argument(
+        "--research-interval-hours",
+        dest="research_interval_hours",
+        default=None,
+        help=(
+            "Whole hours between real research runs (the --research-cadence schedule is only "
+            "the heartbeat). Omit to inherit the pipeline-wide default"
+        ),
+    )
+    create_parser.add_argument(
         "--daily-cadence",
         dest="daily_cadence",
         default=None,
@@ -571,6 +609,15 @@ def build_parser() -> argparse.ArgumentParser:
         dest="research_cadence",
         default=None,
         help="EventBridge Scheduler expression, e.g. 'rate(1 hour)'",
+    )
+    update_parser.add_argument(
+        "--research-interval-hours",
+        dest="research_interval_hours",
+        default=None,
+        help=(
+            "Whole hours between real research runs for this topic; '' clears it "
+            "(inherit the pipeline-wide default)"
+        ),
     )
     update_parser.add_argument(
         "--daily-cadence",
@@ -653,6 +700,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unpublish_parser.add_argument("article_id")
     unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
+
+    pipeline_config_parser = subparsers.add_parser(
+        "pipeline-config", help="Pipeline-wide settings (the default research interval)"
+    )
+    pipeline_config_sub = pipeline_config_parser.add_subparsers(dest="action", required=True)
+    pipeline_config_sub.add_parser("get", help="Show the pipeline-wide settings").set_defaults(
+        func=_cmd_pipeline_config_get
+    )
+    pipeline_config_set = pipeline_config_sub.add_parser(
+        "set", help="Set the default research interval for topics that don't set their own"
+    )
+    pipeline_config_set.add_argument(
+        "--research-interval-hours",
+        dest="research_interval_hours",
+        required=True,
+        help="Whole hours between real research runs (1-168); '' clears it (back to 1)",
+    )
+    pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)
 
     lineage_parser = subparsers.add_parser("lineage", help="Audit and repair article lineage/cost data")
     lineage_sub = lineage_parser.add_subparsers(dest="action", required=True)

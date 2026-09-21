@@ -50,6 +50,14 @@ def aws_env(monkeypatch):
     dynamo_module._dynamodb_resource = None
 
 
+@pytest.fixture(autouse=True)
+def _no_interval_recording(monkeypatch):
+    """These tests run several ticks back to back to test diffing. Recording each
+    check would make the second one `not_due`; the interval has its own tests
+    (test_research_interval.py)."""
+    monkeypatch.setattr(research_tick_handler, "set_topic_last_research_at", lambda topic_id, ts: None)
+
+
 @pytest.fixture
 def aws_resources(aws_env):
     with mock_aws():

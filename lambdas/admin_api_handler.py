@@ -34,6 +34,7 @@ from common.dynamo import (
     get_model_config,
     get_moderation_item,
     get_moderation_item_by_article_id,
+    get_pipeline_config,
     get_prompt_refinement,
     get_topic,
     list_all_articles,
@@ -46,6 +47,7 @@ from common.dynamo import (
     list_topics,
     put_model,
     put_model_config,
+    put_pipeline_config,
     put_topic,
     update_article_lineage,
     update_article_status,
@@ -59,6 +61,7 @@ from common.editorial_resolver import (
 )
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.musings import generate_and_store_article_musing
+from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
@@ -193,6 +196,13 @@ def _create_topic(event: dict) -> dict:
     except ValueError as exc:
         return _error(400, str(exc))
 
+    # How often a heartbeat of `research_cadence` actually does work. Optional:
+    # unset inherits the pipeline-wide default (see common/research_schedule.py).
+    research_interval_hours = body.get("research_interval_hours")
+    interval_problem = interval_error(research_interval_hours)
+    if interval_problem:
+        return _error(400, f"'research_interval_hours' {interval_problem}")
+
     # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
     # of 5): optional per-topic model overrides, read by
     # common/model_routing.py's resolve_model. Both None by default --
@@ -233,6 +243,8 @@ def _create_topic(event: dict) -> dict:
     # adapter's/the global default goal (common/editorial_resolver.py).
     if body.get("editorial_goals") is not None:
         item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
+    if research_interval_hours is not None:
+        item["research_interval_hours"] = research_interval_hours
     put_topic(item)
     try:
         upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
@@ -268,6 +280,7 @@ def _update_topic(event: dict) -> dict:
         "editorial_goals",
         "is_financial",
         "research_cadence",
+        "research_interval_hours",
         "daily_cadence",
         "daily_timezone",
         "model_id",
@@ -305,6 +318,12 @@ def _update_topic(event: dict) -> dict:
         not isinstance(updated["daily_cadence"], str) or not updated["daily_cadence"]
     ):
         return _error(400, "'daily_cadence' must be a non-empty string")
+    if "research_interval_hours" in body:
+        interval_problem = interval_error(updated["research_interval_hours"])
+        if interval_problem:
+            return _error(400, f"'research_interval_hours' {interval_problem}")
+        if updated["research_interval_hours"] is None:
+            del updated["research_interval_hours"]  # cleared: inherit the pipeline default
     if "model_id" in body and updated["model_id"] is not None and (
         not isinstance(updated["model_id"], str) or not updated["model_id"]
     ):
@@ -369,6 +388,10 @@ def _trigger_topic(event: dict) -> dict:
         return _error(404, f"topic '{topic_id}' not found")
 
     payload = {"topic_id": topic_id}
+    # A manual research_tick is "check now": it must not be refused because the
+    # topic's research interval hasn't elapsed, so it always bypasses that check.
+    if pipeline == "research_tick":
+        payload["force"] = True
     # `force` (daily_cycle only): write from the whole window even if the topic
     # already has an article since -- for an intentional regenerate. Sent only
     # when asked for, so the default payload is unchanged.
@@ -377,7 +400,11 @@ def _trigger_topic(event: dict) -> dict:
         return _error(400, "'force' must be a boolean if provided")
     if force:
         if pipeline != "daily_cycle":
-            return _error(400, "'force' only applies to the daily_cycle pipeline")
+            return _error(
+                400,
+                "'force' only applies to the daily_cycle pipeline "
+                "(a manual research_tick always runs now)",
+            )
         payload["force"] = True
 
     function_name = os.environ[_PIPELINE_FUNCTION_ENV_VARS[pipeline]]
@@ -806,6 +833,38 @@ def _put_model_config_route(event: dict) -> dict:
     return _response(200, item)
 
 
+def _get_pipeline_config_route(event: dict) -> dict:
+    config = get_pipeline_config() or {}
+    return _response(
+        200,
+        {
+            "config_id": "pipeline",
+            "research_interval_hours": config.get("research_interval_hours"),
+            "effective_default_research_interval_hours": (
+                config.get("research_interval_hours") or DEFAULT_RESEARCH_INTERVAL_HOURS
+            ),
+        },
+    )
+
+
+def _put_pipeline_config_route(event: dict) -> dict:
+    """Set (or, with null, clear) the pipeline-wide research interval -- how often
+    a topic without its own `research_interval_hours` does real work on a heartbeat."""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if "research_interval_hours" not in body:
+        return _error(400, "'research_interval_hours' is required (use null to clear it)")
+
+    interval_problem = interval_error(body["research_interval_hours"])
+    if interval_problem:
+        return _error(400, f"'research_interval_hours' {interval_problem}")
+
+    put_pipeline_config(research_interval_hours=body["research_interval_hours"])
+    return _get_pipeline_config_route(event)
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -831,6 +890,8 @@ _ROUTES = {
     "POST /models": _put_model,
     "GET /model-config": _get_model_config,
     "PUT /model-config": _put_model_config_route,
+    "GET /pipeline-config": _get_pipeline_config_route,
+    "PUT /pipeline-config": _put_pipeline_config_route,
 }
 
 

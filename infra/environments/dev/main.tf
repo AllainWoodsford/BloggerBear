@@ -637,6 +637,10 @@ module "admin_api" {
     "POST /models",
     "GET /model-config",
     "PUT /model-config",
+    # Pipeline-wide settings (today: the default research interval). See
+    # admin_api_handler.py's _*_pipeline_config_route and `admin_cli pipeline-config`.
+    "GET /pipeline-config",
+    "PUT /pipeline-config",
   ])
 }
 

@@ -43,9 +43,16 @@ from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
 from common.adapters.web_search import WebSearchAdapter
 from common.bedrock import invoke_model_tracked
-from common.dynamo import get_latest_finding, get_topic, put_finding
+from common.dynamo import (
+    get_latest_finding,
+    get_pipeline_config,
+    get_topic,
+    put_finding,
+    set_topic_last_research_at,
+)
 from common.editorial_resolver import resolve_editorial_goals
 from common.relevance import research_relevance_rule, topic_label
+from common.research_schedule import is_due, next_due_at, resolve_interval_hours
 
 FINDING_TTL_DAYS = 14
 COMPACT_STATE_MAX_CHARS = 4000
@@ -143,18 +150,67 @@ def handler(event, context) -> dict:
     if not topic_id:
         return {"status": "error", "reason": "event missing required 'topic_id'"}
 
-    print(f"research_tick_handler: starting run for topic_id={topic_id}")
+    # Only an operator's manual trigger sets this (the schedule never does): a
+    # manual "run research now" must not be refused because the interval hasn't
+    # elapsed.
+    force = (event or {}).get("force") is True
+
+    print(f"research_tick_handler: starting run for topic_id={topic_id} force={force}")
     try:
-        return _run_research_tick(topic_id)
+        return _run_research_tick(topic_id, force=force)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         print(f"research_tick_handler: unhandled exception for topic_id={topic_id}: {exc!r}")
         return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
 
 
-def _run_research_tick(topic_id: str) -> dict:
+def _not_due(topic: dict, now: datetime) -> dict | None:
+    """A `not_due` result if the topic's research interval hasn't elapsed, else None.
+
+    The schedule is only a heartbeat; the interval that decides whether a heartbeat
+    does any work is read from DynamoDB (the topic's own, else the pipeline-wide
+    default), so it can be changed without touching the schedule. A failure to read
+    the global default must not stop research: it falls back to the built-in one.
+    """
+    try:
+        pipeline_config = get_pipeline_config()
+    except Exception as exc:  # noqa: BLE001
+        print(f"research_tick_handler: could not read the pipeline config, using defaults: {exc!r}")
+        pipeline_config = None
+
+    interval_hours = resolve_interval_hours(topic, pipeline_config)
+    last_research_at = topic.get("last_research_at")
+    if is_due(now, last_research_at, interval_hours):
+        return None
+    due_at = next_due_at(last_research_at, interval_hours)
+    return {
+        "status": "not_due",
+        "topic_id": topic["topic_id"],
+        "interval_hours": interval_hours,
+        "next_due_at": due_at.isoformat() if due_at else None,
+    }
+
+
+def _record_research_check(topic_id: str, now: datetime) -> None:
+    """Remember when the source was last successfully checked (a tick that finds
+    nothing writes no Finding, so this is the only record of it). Never raises: a
+    failure only means the next heartbeat may check a little early."""
+    try:
+        set_topic_last_research_at(topic_id, now.isoformat())
+    except Exception as exc:  # noqa: BLE001
+        print(f"research_tick_handler: could not record last_research_at for {topic_id}: {exc!r}")
+
+
+def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
+
+    run_started = datetime.now(UTC)
+    if not force:
+        not_due = _not_due(topic, run_started)
+        if not_due is not None:
+            print(f"research_tick_handler: {topic_id} not due until {not_due['next_due_at']}")
+            return not_due
 
     adapter_key = topic.get("adapter")
     adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
@@ -177,6 +233,11 @@ def _run_research_tick(topic_id: str) -> dict:
         new_state = adapter.fetch_state(topic, previous_state=old_state)
     else:
         new_state = adapter.fetch_state(topic)
+
+    # The source answered: this counts as a check even if nothing is new. (A fetch
+    # that raises records nothing, so the next heartbeat retries rather than waiting
+    # out a whole interval on a failed one.)
+    _record_research_check(topic_id, run_started)
 
     changed, diff_summary = adapter.material_diff(old_state, new_state)
     if not changed:
