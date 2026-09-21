@@ -262,6 +262,20 @@ def put_topic(item: dict) -> None:
     table.put_item(Item=item)
 
 
+def set_topic_last_article_at(topic_id: str, timestamp: str) -> None:
+    """Set only a Topic's `last_article_at` (ISO-8601 UTC), leaving every other
+    attribute alone. Fails (ConditionalCheckFailedException) rather than
+    creating a Topic that no longer exists.
+    """
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET last_article_at = :t",
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeValues={":t": timestamp},
+    )
+
+
 def delete_topic(topic_id: str) -> None:
     """Delete a Topic item by `topic_id`."""
     table = get_table(os.environ["TOPICS_TABLE"])

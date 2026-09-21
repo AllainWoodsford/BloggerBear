@@ -329,6 +329,27 @@ def test_topics_trigger_builds_body():
     )
 
 
+def test_topics_trigger_force_is_sent_for_daily_cycle():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+        _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle", "--force", "--no-wait"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/topics/my-topic/trigger",
+        "ap-southeast-2",
+        body={"pipeline": "daily_cycle", "force": True},
+    )
+
+
+def test_topics_trigger_force_is_refused_for_research_tick(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "trigger", "my-topic", "--pipeline", "research_tick", "--force"])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "--force only applies" in capsys.readouterr().err
+
+
 def test_topics_trigger_invalid_pipeline_rejected_by_argparse():
     with pytest.raises(SystemExit):
         _run(["topics", "trigger", "my-topic", "--pipeline", "not_a_pipeline"])

@@ -6,9 +6,9 @@ on a schedule is Phase 3 and is intentionally not built here.
 Flow (see docs/project-plan.md §4 "Daily Authoring Cycle" and §5 data
 model):
 1. Load topic.
-2. Load every finding from the last FINDINGS_WINDOW_HOURS (the whole window
-   the research loop covered, not just the newest few); bail out if there's
-   nothing new to write about.
+2. Load every finding since the topic's previous article, at most
+   FINDINGS_WINDOW_HOURS back (the whole window the research loop covered, not
+   just the newest few); bail out if there's nothing new to write about.
    Topics with a daily editorial goal (the crypto feed -- see
    common/editorial_goals.py) resolve today's goal here and keep only the
    findings that belong to it; its mandate and article style are folded into
@@ -45,6 +45,7 @@ from common.dynamo import (
     put_article,
     put_candidate_idea,
     put_moderation_item,
+    set_topic_last_article_at,
 )
 from common.editorial_goals import (
     ARTICLE_STYLES,
@@ -86,23 +87,64 @@ def handler(event: dict, context) -> dict:
     if not topic_id:
         return {"status": "error", "error": "event missing required 'topic_id'"}
 
-    print(f"daily_cycle_handler: starting run for topic_id={topic_id}")
+    # Only an operator's manual trigger ever sets this; the schedule never does.
+    force = (event or {}).get("force") is True
+
+    print(f"daily_cycle_handler: starting run for topic_id={topic_id} force={force}")
     try:
-        return _run_daily_cycle(topic_id)
+        return _run_daily_cycle(topic_id, force=force)
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         return {"status": "error", "topic_id": topic_id, "error": str(exc)}
 
 
-def _run_daily_cycle(topic_id: str) -> dict:
+def _window_start(topic: dict, run_started: datetime, force: bool) -> str:
+    """ISO timestamp findings must be captured at or after to feed this article.
+
+    The window is the last FINDINGS_WINDOW_HOURS, but never reaches back past the
+    topic's previous article (`last_article_at`), so a second run with nothing
+    found since the last one has nothing to write about instead of rewriting the
+    same findings. `force` ignores the previous article (an operator asking for
+    a fresh take on the whole window).
+    """
+    floor = run_started - timedelta(hours=FINDINGS_WINDOW_HOURS)
+    last_article_at = None if force else topic.get("last_article_at")
+    if last_article_at:
+        try:
+            previous = datetime.fromisoformat(last_article_at)
+        except (TypeError, ValueError):
+            previous = None
+        if previous is not None:
+            if previous.tzinfo is None:
+                previous = previous.replace(tzinfo=UTC)  # stored in UTC
+            return max(floor, previous).isoformat()
+    return floor.isoformat()
+
+
+def _record_article_written(topic_id: str, run_started: datetime) -> None:
+    """Remember when this run began, so the next window starts there.
+
+    The run's *start* (not its end) is stored: a finding captured while the article
+    was being written belongs to the next one. Never raises -- the article already
+    exists by now, and an error here would make Step Functions retry the whole run
+    and write a duplicate.
+    """
+    try:
+        set_topic_last_article_at(topic_id, run_started.isoformat())
+    except Exception as exc:  # noqa: BLE001
+        print(f"daily_cycle_handler: could not record last_article_at for {topic_id}: {exc!r}")
+
+
+def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "topic_id": topic_id, "error": "topic not found"}
 
-    since = (datetime.now(UTC) - timedelta(hours=FINDINGS_WINDOW_HOURS)).isoformat()
+    run_started = datetime.now(UTC)
+    since = _window_start(topic, run_started, force)
     findings = list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
     if not findings:
-        # Nothing new was found in the window: better no article than one
-        # rewritten from findings the last run already covered.
+        # Nothing new since the topic's last article (or in the last day): better
+        # no article than one rewritten from findings a previous run already used.
         return {"status": "no_findings", "topic_id": topic_id}
 
     # Topics with a daily editorial goal (the crypto feed) get the day's
@@ -162,7 +204,7 @@ def _run_daily_cycle(topic_id: str) -> dict:
     ]
     lineage = build_lineage(calls)
 
-    return _publish_or_moderate(
+    result = _publish_or_moderate(
         topic_id=topic_id,
         topic_name=topic.get("name", topic_id),
         title=title,
@@ -172,6 +214,8 @@ def _run_daily_cycle(topic_id: str) -> dict:
         model_id=model_id,
         lineage=lineage,
     )
+    _record_article_written(topic_id, run_started)
+    return result
 
 
 def _captured_date(finding: dict) -> date | None:
