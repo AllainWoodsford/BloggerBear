@@ -68,8 +68,17 @@ python scripts/admin_cli.py topics update github-trending --name "Renamed" --fin
 # you move it -- an unrelated update never changes its run time:
 python scripts/admin_cli.py topics update github-trending \
     --daily-cadence "cron(0 9 * * ? *)" --daily-timezone Australia/Sydney
+# How often research really runs. `--research-cadence` is only the heartbeat (hourly by
+# default); each heartbeat checks whether the topic is due. A topic's own interval wins,
+# else the pipeline-wide one, else 1 hour. Whole hours, 1-168; '' clears it. Applies from
+# the next heartbeat. Editing `research_interval_hours` straight in DynamoDB works too.
+python scripts/admin_cli.py topics update github-trending --research-interval-hours 3
+python scripts/admin_cli.py topics update github-trending --research-interval-hours ""
+python scripts/admin_cli.py pipeline-config get
+python scripts/admin_cli.py pipeline-config set --research-interval-hours 2   # save cost
+python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 python scripts/admin_cli.py topics delete github-trending
-python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick
+python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
 # daily_cycle only writes from findings newer than the topic's last article, so a
 # repeat run with nothing new is a no-op. --force rewrites from the whole last-24h window:

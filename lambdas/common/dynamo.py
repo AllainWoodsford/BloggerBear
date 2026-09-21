@@ -925,3 +925,53 @@ def put_model_config(*, model_id: str | None, fallback_model_id: str | None) -> 
     }
     table.put_item(Item=item)
     return item
+
+
+# A second row in the same table, separate from the "default" model row above so
+# neither overwrites the other. Holds pipeline-wide settings edited from the admin
+# API/CLI or straight in DynamoDB -- today just the research interval default.
+_PIPELINE_CONFIG_ID = "pipeline"
+
+
+def get_pipeline_config() -> dict | None:
+    """The pipeline-wide settings row, or None if nothing has been set (a valid
+    state: every setting then takes its built-in default)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": _PIPELINE_CONFIG_ID}).get("Item")
+    if item is not None and item.get("research_interval_hours") is not None:
+        item["research_interval_hours"] = int(item["research_interval_hours"])
+    return item
+
+
+def put_pipeline_config(*, research_interval_hours: int | None) -> dict:
+    """Set (or, with None, clear) the global research interval and return the row.
+
+    Updates only that attribute, so settings added to this row later are not
+    wiped by an edit to this one.
+    """
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    if research_interval_hours is None:
+        table.update_item(
+            Key={"config_id": _PIPELINE_CONFIG_ID},
+            UpdateExpression="REMOVE research_interval_hours",
+        )
+    else:
+        table.update_item(
+            Key={"config_id": _PIPELINE_CONFIG_ID},
+            UpdateExpression="SET research_interval_hours = :hours",
+            ExpressionAttributeValues={":hours": research_interval_hours},
+        )
+    return get_pipeline_config() or {"config_id": _PIPELINE_CONFIG_ID}
+
+
+def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
+    """Set only a Topic's `last_research_at` (ISO-8601 UTC): when its source was
+    last successfully checked. Leaves every other attribute alone, and fails
+    (ConditionalCheckFailedException) rather than creating a deleted topic."""
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET last_research_at = :t",
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeValues={":t": timestamp},
+    )
