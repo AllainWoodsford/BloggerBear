@@ -881,6 +881,13 @@
     }
     contentEl.appendChild(tiles);
 
+    // What BloggerBear is wearing: its own request, so a slow or failed one never holds up the numbers.
+    var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
+    gearHeading(gearSection);
+    gearSection.appendChild(el("p", { text: "Loading..." }));
+    contentEl.appendChild(gearSection);
+    loadGear(gearSection);
+
     var daily = stats.daily || [];
     var activeDays = daily.filter(function (day) {
       return day.cost_aud > 0 || day.articles > 0;
@@ -967,6 +974,288 @@
       .then(renderStats)
       .catch(function () {
         showMessage("Could not load stats right now.");
+      });
+  }
+
+  // --- What BloggerBear is wearing (a section of the Stats page) ----------------------------
+  //
+  // GET /equipment: the six armor slots (or null), the rings, and a backpack COUNT. Approved reader
+  // feedback becomes gear; hovering, focusing or tapping a piece shows what it is and the guidance it
+  // carries. The backpack is only a number: nothing in it can be looked at.
+  //
+  // The tooltip follows the WCAG 1.4.13 rules: it appears on hover AND keyboard focus AND tap, stays
+  // while the pointer is over it (it sits inside the slot's own wrapper, so there is no gap to cross),
+  // and Escape dismisses it. The slot is a real <button>; its tooltip is also its aria-describedby, so a
+  // screen reader hears the same thing without having to open anything. The same facts are in a list
+  // below ("View the gear as a list"), so nothing depends on hovering.
+  //
+  // Colours (rarity, condition) come from CSS classes. The bar is an SVG rect with a width attribute --
+  // never a style attribute, which the CSP blocks. Text is always set with textContent.
+
+  var gearOpen = null; // { wrap, tip, pinned } for the one tooltip that is showing
+
+  function closeGearTip() {
+    if (gearOpen) {
+      gearOpen.tip.hidden = true;
+      gearOpen.wrap.classList.remove("is-open");
+      gearOpen = null;
+    }
+  }
+
+  function openGearTip(wrap, tip, pinned) {
+    var keepPinned = !!(gearOpen && gearOpen.wrap === wrap && gearOpen.pinned);
+    if (gearOpen && gearOpen.wrap !== wrap) {
+      closeGearTip();
+    }
+    tip.hidden = false;
+    wrap.classList.add("is-open");
+    gearOpen = { wrap: wrap, tip: tip, pinned: !!pinned || keepPinned };
+  }
+
+  var gearListenersBound = false;
+
+  function bindGearDismissers() {
+    if (gearListenersBound) {
+      return;
+    }
+    gearListenersBound = true;
+    document.addEventListener("keydown", function (event) {
+      // Escape puts it away without moving focus (moving it would just open it again).
+      if (event.key === "Escape" && gearOpen) {
+        closeGearTip();
+      }
+    });
+    // A tap or click anywhere else puts it away (on a phone this is how you close one).
+    document.addEventListener("click", function (event) {
+      if (gearOpen && !gearOpen.wrap.contains(event.target)) {
+        closeGearTip();
+      }
+    });
+  }
+
+  function drawIcon(spec, className) {
+    var svg = svgEl("svg", {
+      viewBox: spec.viewBox,
+      class: className,
+      "aria-hidden": "true",
+      focusable: "false",
+    });
+    spec.nodes.forEach(function (node) {
+      svg.appendChild(svgEl(node.tag, node.attrs));
+    });
+    return svg;
+  }
+
+  function gearIcon(slot, rarity, extraClass) {
+    return drawIcon(BloggerGear.iconSpec(slot, rarity), "gear-icon" + (extraClass ? " " + extraClass : ""));
+  }
+
+  // The condition bar: a track and a fill, the fill's width the percentage. Decoration only (the
+  // percentage is always written beside it).
+  function gearBar(condition) {
+    var svg = svgEl("svg", { viewBox: "0 0 100 6", class: "gear-bar", "aria-hidden": "true", focusable: "false" });
+    svg.appendChild(svgEl("rect", { class: "gear-bar-track", x: 0, y: 0, width: 100, height: 6, rx: 3 }));
+    if (condition.percent !== null && condition.percent > 0) {
+      svg.appendChild(
+        svgEl("rect", { class: "gear-bar-fill dur-" + condition.tier, x: 0, y: 0, width: condition.percent, height: 6, rx: 3 })
+      );
+    }
+    return svg;
+  }
+
+  function gearTipRow(term, valueNode) {
+    var row = el("div", { className: "gear-tip-row" });
+    row.appendChild(el("dt", { text: term }));
+    var definition = el("dd");
+    definition.appendChild(valueNode);
+    row.appendChild(definition);
+    return row;
+  }
+
+  function gearTooltip(info, tipId) {
+    var tip = el("div", { className: "gear-tip rarity-" + info.rarity, attrs: { role: "tooltip", id: tipId } });
+    tip.hidden = true;
+    tip.appendChild(el("p", { className: "gear-tip-name", text: info.name }));
+    tip.appendChild(el("p", { className: "gear-tip-rarity", text: info.rarityLabel }));
+    tip.appendChild(el("p", { className: "gear-tip-desc", text: info.description }));
+    var facts = el("dl", { className: "gear-tip-facts" });
+    facts.appendChild(gearTipRow("Slot", document.createTextNode(info.slotLabel)));
+    facts.appendChild(
+      gearTipRow(info.topic ? "Topic" : "Applies to", document.createTextNode(info.topic || "Every topic"))
+    );
+    var condition = el("span", { className: "gear-tip-condition dur-" + info.durability.tier });
+    condition.appendChild(el("strong", { text: info.durability.text }));
+    condition.appendChild(document.createTextNode(" · " + info.durability.label));
+    var conditionCell = el("span");
+    conditionCell.appendChild(condition);
+    conditionCell.appendChild(gearBar(info.durability));
+    facts.appendChild(gearTipRow("Durability", conditionCell));
+    tip.appendChild(facts);
+    return tip;
+  }
+
+  function emptyGearSlot(slot) {
+    var wrap = el("div", { className: "gear-slot gear-slot-" + slot + " gear-empty" });
+    var box = el("div", { className: "gear-slot-box" });
+    box.appendChild(gearIcon(slot, null, "gear-icon-empty"));
+    wrap.appendChild(box);
+    wrap.appendChild(el("span", { className: "gear-slot-label", text: BloggerGear.SLOT_LABELS[slot] }));
+    wrap.appendChild(el("span", { className: "gear-slot-sub", text: "Empty" }));
+    return wrap;
+  }
+
+  function wornGearSlot(item, slot, tipId, align) {
+    var info = BloggerGear.describe(item, slot);
+    var wrap = el("div", { className: "gear-slot gear-slot-" + slot + " gear-worn gear-align-" + align });
+    var button = el("button", {
+      className: "gear-slot-box rarity-" + info.rarity,
+      attrs: { type: "button", "aria-describedby": tipId, "aria-label": info.accessibleName },
+    });
+    button.appendChild(gearIcon(slot, info.rarity));
+    button.appendChild(gearBar(info.durability));
+    wrap.appendChild(button);
+    wrap.appendChild(el("span", { className: "gear-slot-label", text: info.slotLabel }));
+    if (info.topic) {
+      wrap.appendChild(el("span", { className: "gear-slot-sub", text: info.topic }));
+    }
+    var tip = gearTooltip(info, tipId);
+    wrap.appendChild(tip);
+
+    // Hover (a mouse only: a touch "hover" is just the start of a tap, which click handles).
+    wrap.addEventListener("pointerenter", function (event) {
+      if (event.pointerType === "mouse") {
+        openGearTip(wrap, tip, false);
+      }
+    });
+    wrap.addEventListener("pointerleave", function (event) {
+      if (event.pointerType === "mouse" && gearOpen && gearOpen.wrap === wrap && !gearOpen.pinned) {
+        closeGearTip();
+      }
+    });
+    // Keyboard focus.
+    wrap.addEventListener("focusin", function () {
+      openGearTip(wrap, tip, false);
+    });
+    wrap.addEventListener("focusout", function (event) {
+      if (!wrap.contains(event.relatedTarget) && gearOpen && gearOpen.wrap === wrap && !gearOpen.pinned) {
+        closeGearTip();
+      }
+    });
+    // A click, a tap, or Enter / Space: hold it open, or put it away if it is already held.
+    button.addEventListener("click", function () {
+      if (gearOpen && gearOpen.wrap === wrap && gearOpen.pinned) {
+        closeGearTip();
+      } else {
+        openGearTip(wrap, tip, true);
+      }
+    });
+    return { node: wrap, info: info };
+  }
+
+  function gearLegend() {
+    var list = el("ul", { className: "gear-legend", attrs: { "aria-label": "Rarity colours" } });
+    BloggerGear.RARITIES.forEach(function (rarity) {
+      list.appendChild(
+        el("li", { className: "gear-legend-item rarity-" + rarity, text: BloggerGear.RARITY_LABELS[rarity] })
+      );
+    });
+    return list;
+  }
+
+  function gearList(entries) {
+    var details = el("details", { className: "stats-details" });
+    details.appendChild(el("summary", { text: "View the gear as a list" }));
+    var list = el("ul", { className: "gear-list" });
+    entries.forEach(function (info) {
+      var item = el("li");
+      item.appendChild(el("strong", { className: "rarity-" + info.rarity, text: info.name }));
+      item.appendChild(
+        document.createTextNode(
+          " — " + info.rarityLabel + ", " + info.slotLabel + ", " + info.scope.toLowerCase() +
+            ", durability " + info.durability.text + " (" + info.durability.label.toLowerCase() + ")."
+        )
+      );
+      item.appendChild(el("span", { className: "gear-list-desc", text: info.description }));
+      list.appendChild(item);
+    });
+    details.appendChild(list);
+    return details;
+  }
+
+  function gearHeading(section) {
+    section.appendChild(
+      el("h2", { text: "What BloggerBear is wearing", className: "section-heading", attrs: { id: "gear-heading" } })
+    );
+  }
+
+  function renderGear(section, gear) {
+    clearChildren(section);
+    gearHeading(section);
+    section.appendChild(
+      el("p", {
+        className: "stats-note",
+        text:
+          "Approved reader feedback becomes gear, and the gear is the guidance BloggerBear follows when it writes. " +
+          "Hover over, focus on or tap a piece to see what it says. A thumbs-down on an article wears its gear down and " +
+          "a thumbs-up repairs it; gear that wears out is taken off.",
+      })
+    );
+
+    var armor = (gear && gear.armor) || {};
+    var rings = (gear && gear.rings) || [];
+    var entries = [];
+    var doll = el("div", { className: "gear-doll" });
+    // Which side of the slot the tooltip lines up with, so it never runs off the page.
+    var aligns = { helmet: "left", chest: "left", gloves: "left", sword: "right", shield: "right", boots: "right" };
+    BloggerGear.ARMOR_SLOTS.forEach(function (slot) {
+      if (armor[slot]) {
+        var worn = wornGearSlot(armor[slot], slot, "gear-tip-" + slot, aligns[slot]);
+        entries.push(worn.info);
+        doll.appendChild(worn.node);
+      } else {
+        doll.appendChild(emptyGearSlot(slot));
+      }
+    });
+    var bear = el("div", { className: "gear-bear" });
+    bear.appendChild(el("img", { attrs: { src: "bears/default.svg", alt: "", width: 160, height: 160 } }));
+    doll.appendChild(bear);
+    section.appendChild(doll);
+
+    var ringRow = el("div", { className: "gear-rings" });
+    rings.forEach(function (ring, index) {
+      var align = index === 0 ? "left" : index === rings.length - 1 && rings.length > 2 ? "right" : "center";
+      var worn = wornGearSlot(ring, "ring", "gear-tip-ring-" + index, align);
+      entries.push(worn.info);
+      ringRow.appendChild(worn.node);
+    });
+    if (rings.length === 0) {
+      ringRow.appendChild(
+        el("p", { className: "stats-note", text: "No rings are worn: no topic has guidance of its own right now." })
+      );
+    }
+    section.appendChild(ringRow);
+
+    var bag = el("p", { className: "gear-bag" });
+    bag.appendChild(drawIcon(BloggerGear.BAG, "gear-icon gear-icon-bag"));
+    bag.appendChild(el("span", { text: BloggerGear.backpackText(gear && gear.backpack_count) }));
+    section.appendChild(bag);
+
+    section.appendChild(gearLegend());
+    if (entries.length > 0) {
+      section.appendChild(gearList(entries));
+    }
+    bindGearDismissers();
+  }
+
+  function loadGear(section) {
+    fetchJson(apiUrl("/equipment"))
+      .then(function (gear) {
+        renderGear(section, gear);
+      })
+      .catch(function () {
+        clearChildren(section);
+        gearHeading(section);
+        section.appendChild(el("p", { text: "Could not load the gear right now." }));
       });
   }
 

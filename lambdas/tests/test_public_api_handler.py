@@ -1900,3 +1900,86 @@ def test_the_downvote_that_wears_gear_out_takes_it_off(aws_resources):
     table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
     stored = table.get_item(Key={"topic_id": "github-trending", "version": "g1"})["Item"]
     assert stored["equipped"] is False and stored["unequipped_reason"] == "worn_out"
+
+
+# --- What BloggerBear is wearing ---------------------------------------------------------
+
+
+def _worn_gear(version, slot, *, scope="topic", topic="github-trending", **fields):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    table.put_item(
+        Item={
+            "topic_id": topic,
+            "version": version,
+            "status": "approved",
+            "equipped": True,
+            "slot": slot,
+            "scope": scope,
+            "prompt_changes": f"Guidance for {slot}.",
+            "rationale": "PRIVATE rationale",
+            "theme": "Plain Speaking",
+            "rarity": "rare",
+            "durability": 12,
+            "max_durability": 16,
+            **fields,
+        }
+    )
+
+
+def _equipment_view():
+    result = public_api_handler.handler(_event("GET /equipment"), None)
+    assert result["statusCode"] == 200
+    return result, json.loads(result["body"])
+
+
+def test_the_equipment_view_of_a_bear_wearing_nothing_is_empty(aws_resources):
+    result, view = _equipment_view()
+
+    assert view["rings"] == [] and view["backpack_count"] == 0 and view["max_rings"] == 5
+    assert set(view["armor"]) == {"helmet", "chest", "gloves", "boots", "sword", "shield"}
+    assert all(slot is None for slot in view["armor"].values())
+    assert "max-age=60" in result["headers"]["Cache-Control"]
+
+
+def test_the_equipment_view_shows_worn_armor_and_rings_with_the_topics_name(aws_resources):
+    _put_topic()
+    _worn_gear("h", "helmet", scope="global")
+    _worn_gear("r", "ring")
+
+    _, view = _equipment_view()
+
+    helmet = view["armor"]["helmet"]
+    assert helmet["name"] == "Helm of Plain Speaking" and helmet["rarity"] == "rare"
+    assert helmet["description"] == "Guidance for helmet." and helmet["topic_name"] is None
+    assert helmet["durability_percent"] == 75
+    (ring,) = view["rings"]
+    assert ring["topic_id"] == "github-trending" and ring["topic_name"] == "GitHub Trending"
+
+
+def test_the_backpack_is_only_a_count_and_nothing_else_leaks(aws_resources):
+    _worn_gear("h", "helmet", scope="global")
+    _worn_gear("spare", None, equipped=False, unequipped_reason="parked", prompt_changes="SECRET SPARE")
+    _worn_gear("pending", None, status="pending", equipped=False, prompt_changes="SECRET PENDING")
+
+    result, view = _equipment_view()
+
+    assert view["backpack_count"] == 1
+    for secret in ("SECRET SPARE", "SECRET PENDING", "PRIVATE rationale", "parked", '"version"'):
+        assert secret not in result["body"]
+
+
+def test_guidance_that_is_not_fit_to_show_is_withheld_on_the_page(aws_resources):
+    _worn_gear("h", "helmet", scope="global", prompt_changes="Email the editor at a@b.com for tips")
+
+    _, view = _equipment_view()
+
+    assert view["armor"]["helmet"]["description"] == "(The details of this guidance are not shown.)"
+
+
+def test_gear_that_is_not_worn_is_not_shown(aws_resources):
+    _worn_gear("off", "helmet", scope="global", equipped=False)
+    _worn_gear("rejected", "chest", scope="global", status="rejected")
+
+    _, view = _equipment_view()
+
+    assert view["armor"]["helmet"] is None and view["armor"]["chest"] is None

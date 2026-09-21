@@ -1093,6 +1093,9 @@ module "public_api" {
     # Aggregate AI cost/token statistics -- see public_api_handler.py's
     # _stats and common/stats.py. Aggregates only, never article content.
     "GET /stats",
+    # What BloggerBear is wearing (the Stats page): gear and a backpack count, never the backpack --
+    # see public_api_handler.py's _equipment and common/gear.py.
+    "GET /equipment",
     "GET /rss.xml",
   ])
 }
@@ -1309,6 +1312,7 @@ locals {
     "verify.js"             = "application/javascript"
     "moods.js"              = "application/javascript"
     "tummy.js"              = "application/javascript"
+    "gear.js"               = "application/javascript"
     "bears/proud.svg"       = "image/svg+xml"
     "bears/thoughtful.svg"  = "image/svg+xml"
     "bears/pleased.svg"     = "image/svg+xml"
