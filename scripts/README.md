@@ -79,6 +79,7 @@ python scripts/admin_cli.py moderation approve <queue_id>
 python scripts/admin_cli.py moderation reject <queue_id>
 
 python scripts/admin_cli.py articles publish <article_id>
+python scripts/admin_cli.py articles unpublish <article_id>
 
 python scripts/admin_cli.py failed-executions list
 
@@ -112,6 +113,16 @@ something that was never routed to moderation in the first place, or to
 override a stuck/undesired status. If a moderation queue item exists for
 the article and is still `pending`, it's marked `approved` too so the two
 records don't disagree.
+
+`articles unpublish` is the inverse: it deletes the article's static page,
+marks the article and its moderation-queue item `rejected` (so it leaves every
+public listing), removes the musings written about it, and asks CloudFront to
+drop its cached page. The markdown body is kept, so `articles publish` can
+bring it back. An article still waiting in moderation is refused (use
+`moderation reject`). If it fails part-way, run it again -- every step is
+safe to repeat. `cache_invalidated: false` in the response means CloudFront
+wasn't asked (or the request failed); a cached copy can then linger until the
+CDN's TTL expires.
 
 `failed-executions list` shows every daily_cycle Step Functions execution
 that exhausted its retries and landed on the pipeline dead-letter queue

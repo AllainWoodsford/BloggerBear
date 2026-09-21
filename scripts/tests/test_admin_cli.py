@@ -571,3 +571,15 @@ def test_topics_editorial_goals_invalid_json_exits_nonzero(capsys):
     assert exc_info.value.code != 0
     assert "--editorial-goals-json is not valid JSON" in capsys.readouterr().err
     m.assert_not_called()
+
+
+def test_articles_unpublish_posts_to_the_unpublish_route():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["articles", "unpublish", "article-1"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/articles/article-1/unpublish",
+        "ap-southeast-2",
+        body=None,
+    )
