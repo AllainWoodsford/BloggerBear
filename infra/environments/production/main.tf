@@ -711,6 +711,11 @@ module "admin_api" {
     # admin_api_handler.py's _*_pipeline_config_route and `admin_cli pipeline-config`.
     "GET /pipeline-config",
     "PUT /pipeline-config",
+    # Feedback limits (lockdown, rate limit, daily limit, per-article limit) and locking one
+    # article. See admin_api_handler.py's _*_feedback_* routes and `admin_cli feedback-config`.
+    "GET /feedback-config",
+    "PUT /feedback-config",
+    "PUT /articles/{article_id}/feedback-lock",
   ])
 }
 
@@ -1134,6 +1139,9 @@ module "public_api" {
     "POST /articles/{article_id}/view",
     # Phase 5: anonymous thumbs up/down + optional comment -- see
     # public_api_handler.py's _submit_feedback.
+    # Whether feedback is open for an article, and if not why (the page swaps its form for the
+    # reason) -- see public_api_handler.py's _feedback_status and common/feedback_limits.py.
+    "GET /articles/{article_id}/feedback-status",
     "POST /articles/{article_id}/feedback",
     # BloggerBear's musings feed -- see public_api_handler.py's
     # _list_musings.

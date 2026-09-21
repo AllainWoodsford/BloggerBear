@@ -1004,6 +1004,155 @@ def put_pipeline_config(
     return get_pipeline_config() or {"config_id": _PIPELINE_CONFIG_ID}
 
 
+
+# --- Feedback limits (see common/feedback_limits.py) ---------------------------------------
+#
+# The settings live as one more row in the same config table as the pipeline settings, so they
+# can be changed from the admin API/CLI or straight in DynamoDB. The counters that enforce them
+# are rows in that table too (`feedback-window#<n>`, `feedback-day#<date>`), each with an
+# `expires_at` the table's TTL clears out. An article's own state is two attributes on its
+# Articles row: `feedback_locked` (true/false, editable by hand) and `feedback_count`.
+
+_FEEDBACK_CONFIG_ID = "feedback"
+
+_FEEDBACK_CONFIG_NUMBERS = (
+    "rate_limit_count",
+    "rate_limit_window_minutes",
+    "daily_limit",
+    "article_limit",
+)
+
+
+def get_feedback_config() -> dict | None:
+    """The feedback settings row, or None if nothing has been set (every setting then takes its
+    built-in default). Whole numbers come back as int (DynamoDB hands back Decimal)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": _FEEDBACK_CONFIG_ID}).get("Item")
+    if item is not None:
+        for name in _FEEDBACK_CONFIG_NUMBERS:
+            if item.get(name) is not None:
+                item[name] = int(item[name])
+    return item
+
+
+def put_feedback_config(updates: dict) -> dict:
+    """Update feedback settings and return the row. Only the settings in `updates` are touched
+    (a value sets it, None clears it), so editing one never wipes another."""
+    sets, removes, values = [], [], {}
+    for index, (name, value) in enumerate(updates.items()):
+        if value is None:
+            removes.append(name)
+        else:
+            sets.append(f"{name} = :v{index}")
+            values[f":v{index}"] = value
+    if sets or removes:
+        expression = ""
+        if sets:
+            expression += "SET " + ", ".join(sets)
+        if removes:
+            expression += (" " if expression else "") + "REMOVE " + ", ".join(removes)
+        kwargs = {"ExpressionAttributeValues": values} if values else {}
+        table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+        table.update_item(
+            Key={"config_id": _FEEDBACK_CONFIG_ID}, UpdateExpression=expression, **kwargs
+        )
+    return get_feedback_config() or {"config_id": _FEEDBACK_CONFIG_ID}
+
+
+def get_feedback_counter(key: str) -> int:
+    """How many pieces of feedback a window/day counter has counted (0 if it doesn't exist)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": key}).get("Item")
+    return int(item["count"]) if item and item.get("count") is not None else 0
+
+
+def consume_feedback_counter(key: str, limit: int, expires_at: int) -> bool:
+    """Atomically count one more piece of feedback against `key`, but only if it is still under
+    `limit`. Returns False (and changes nothing) when the limit is already reached, so two
+    submissions at the edge can never both get in. `expires_at` (epoch seconds) is the row's TTL."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": key},
+            UpdateExpression="ADD #c :one SET expires_at = :e",
+            ConditionExpression="attribute_not_exists(#c) OR #c < :limit",
+            ExpressionAttributeNames={"#c": "count"},
+            ExpressionAttributeValues={":one": 1, ":limit": limit, ":e": expires_at},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def refund_feedback_counter(key: str) -> None:
+    """Give back one count taken by consume_feedback_counter (a later check refused the
+    submission, so it should not have used up this one). Never goes below zero."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    try:
+        table.update_item(
+            Key={"config_id": key},
+            UpdateExpression="ADD #c :minus_one",
+            ConditionExpression="#c > :zero",
+            ExpressionAttributeNames={"#c": "count"},
+            ExpressionAttributeValues={":minus_one": -1, ":zero": 0},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        pass
+
+
+def consume_article_feedback(article_id: str, limit: int) -> int | None:
+    """Atomically count one more piece of feedback on an article, but only if it is not locked
+    (`feedback_locked` is not true) and is still under `limit`. Returns the new count, or None
+    if refused (locked, at its limit, or no such article)."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    try:
+        response = table.update_item(
+            Key={"article_id": article_id},
+            UpdateExpression="ADD feedback_count :one",
+            ConditionExpression=(
+                "attribute_exists(article_id) AND "
+                "(attribute_not_exists(feedback_locked) OR feedback_locked = :no) AND "
+                "(attribute_not_exists(feedback_count) OR feedback_count < :limit)"
+            ),
+            ExpressionAttributeValues={":one": 1, ":no": False, ":limit": limit},
+            ReturnValues="UPDATED_NEW",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+    return int(response["Attributes"]["feedback_count"])
+
+
+def refund_article_feedback(article_id: str) -> None:
+    """Give back one count taken by consume_article_feedback. Never goes below zero."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    try:
+        table.update_item(
+            Key={"article_id": article_id},
+            UpdateExpression="ADD feedback_count :minus_one",
+            ConditionExpression="feedback_count > :zero",
+            ExpressionAttributeValues={":minus_one": -1, ":zero": 0},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        pass
+
+
+def set_article_feedback_lock(article_id: str, locked: bool, *, reset_count: bool = False) -> None:
+    """Set an article's `feedback_locked` flag (and, optionally, zero its `feedback_count` so it
+    has its full allowance again). Fails (ConditionalCheckFailedException) for a missing article."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    expression = "SET feedback_locked = :locked"
+    values: dict = {":locked": locked}
+    if reset_count:
+        expression += ", feedback_count = :zero"
+        values[":zero"] = 0
+    table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression=expression,
+        ConditionExpression="attribute_exists(article_id)",
+        ExpressionAttributeValues=values,
+    )
+
+
 def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
     """Set only a Topic's `last_research_at` (ISO-8601 UTC): when its source was
     last successfully checked. Leaves every other attribute alone, and fails

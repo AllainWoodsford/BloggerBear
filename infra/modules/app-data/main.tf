@@ -189,6 +189,14 @@ resource "aws_dynamodb_table" "model_config" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "config_id"
 
+  # The feedback limiter's counters (one row per rate-limit window and per day, see
+  # common/feedback_limits.py) carry an expires_at; TTL clears them out. The settings rows
+  # ("default", "pipeline", "feedback") have none, so they are never expired.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+
   attribute {
     name = "config_id"
     type = "S"

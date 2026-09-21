@@ -24,12 +24,14 @@ from datetime import UTC, datetime
 
 import boto3
 
+from common import feedback_limits
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     delete_musings_for_article,
     delete_topic,
     get_article,
+    get_feedback_config,
     get_latest_finding,
     get_model_config,
     get_moderation_item,
@@ -45,10 +47,12 @@ from common.dynamo import (
     list_pending_moderation,
     list_prompt_refinements,
     list_topics,
+    put_feedback_config,
     put_model,
     put_model_config,
     put_pipeline_config,
     put_topic,
+    set_article_feedback_lock,
     update_article_lineage,
     update_article_status,
     update_moderation_status,
@@ -941,6 +945,99 @@ def _put_pipeline_config_route(event: dict) -> dict:
     return _get_pipeline_config_route(event)
 
 
+# --- Feedback limits -----------------------------------------------------------------------
+
+_FEEDBACK_SETTINGS = (
+    "locked_down",
+    "lockdown_reason",
+    "rate_limit_count",
+    "rate_limit_window_minutes",
+    "daily_limit",
+    "article_limit",
+    "daily_timezone",
+)
+
+
+def _get_feedback_config_route(event: dict) -> dict:
+    """The stored feedback settings, the ones in force (a missing or invalid one takes its
+    default), and today's and this window's usage."""
+    row = get_feedback_config() or {}
+    return _response(
+        200,
+        {
+            "config_id": "feedback",
+            **{name: row.get(name) for name in _FEEDBACK_SETTINGS},
+            "effective": feedback_limits.effective_settings(row),
+            "usage": feedback_limits.usage(),
+        },
+    )
+
+
+def _put_feedback_config_route(event: dict) -> dict:
+    """Set (or, with null, clear back to the default) feedback settings. Send any of:
+
+    - `locked_down` (true/false): stop taking feedback site-wide; the page shows why.
+    - `lockdown_reason` (short text): what the page says while locked down.
+    - `rate_limit_count` and `rate_limit_window_minutes`: at most this many in a window.
+    - `daily_limit`: at most this many a day, resetting at the start of the day.
+    - `article_limit`: at most this many on one article, then it is locked.
+    - `daily_timezone` (IANA name): where a day starts.
+
+    A setting that isn't in the body is left as it is.
+    """
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict):
+        return _error(400, "the body must be a JSON object")
+
+    updates = {}
+    for name in _FEEDBACK_SETTINGS:
+        if name not in body:
+            continue
+        problem = feedback_limits.settings_error(name, body[name])
+        if problem:
+            return _error(400, f"'{name}' {problem}")
+        value = body[name]
+        updates[name] = value.strip() if isinstance(value, str) else value
+    if not updates:
+        return _error(400, f"send at least one of: {', '.join(_FEEDBACK_SETTINGS)} (null clears one)")
+
+    put_feedback_config(updates)
+    return _get_feedback_config_route(event)
+
+
+def _feedback_lock_article(event: dict) -> dict:
+    """Lock (or unlock) feedback on one article: `{"locked": true|false}`. Unlocking with
+    `{"locked": false, "reset_count": true}` also gives the article its full allowance again.
+    The same flag can be flipped by hand in the Articles table (`feedback_locked`)."""
+    article_id = _path_param(event, "article_id")
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    if not isinstance(body, dict) or not isinstance(body.get("locked"), bool):
+        return _error(400, "'locked' must be true or false")
+    reset_count = body.get("reset_count", False)
+    if not isinstance(reset_count, bool):
+        return _error(400, "'reset_count' must be true or false if provided")
+
+    set_article_feedback_lock(article_id, body["locked"], reset_count=reset_count)
+    updated = get_article(article_id) or {}
+    return _response(
+        200,
+        {
+            "article_id": article_id,
+            "feedback_locked": bool(updated.get("feedback_locked")),
+            "feedback_count": int(updated.get("feedback_count") or 0),
+        },
+    )
+
+
 _ROUTES = {
     "GET /topics": _list_topics,
     "POST /topics": _create_topic,
@@ -969,6 +1066,9 @@ _ROUTES = {
     "PUT /model-config": _put_model_config_route,
     "GET /pipeline-config": _get_pipeline_config_route,
     "PUT /pipeline-config": _put_pipeline_config_route,
+    "GET /feedback-config": _get_feedback_config_route,
+    "PUT /feedback-config": _put_feedback_config_route,
+    "PUT /articles/{article_id}/feedback-lock": _feedback_lock_article,
 }
 
 
