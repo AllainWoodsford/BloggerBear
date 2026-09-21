@@ -359,12 +359,24 @@ def _trigger_topic(event: dict) -> dict:
     if get_topic(topic_id) is None:
         return _error(404, f"topic '{topic_id}' not found")
 
+    payload = {"topic_id": topic_id}
+    # `force` (daily_cycle only): write from the whole window even if the topic
+    # already has an article since -- for an intentional regenerate. Sent only
+    # when asked for, so the default payload is unchanged.
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        return _error(400, "'force' must be a boolean if provided")
+    if force:
+        if pipeline != "daily_cycle":
+            return _error(400, "'force' only applies to the daily_cycle pipeline")
+        payload["force"] = True
+
     function_name = os.environ[_PIPELINE_FUNCTION_ENV_VARS[pipeline]]
     client = _get_lambda_client()
     client.invoke(
         FunctionName=function_name,
         InvocationType="Event",
-        Payload=json.dumps({"topic_id": topic_id}).encode("utf-8"),
+        Payload=json.dumps(payload).encode("utf-8"),
     )
     return _response(202, {"triggered": pipeline, "topic_id": topic_id})
 
