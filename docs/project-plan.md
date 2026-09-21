@@ -168,11 +168,15 @@ this section is intentionally a summary, not the tracker.
 
 ## 11) Proposed Enhancements
 
-Not yet scheduled or scoped for implementation — captured here so the
-idea isn't lost, to be picked up in a dedicated follow-up PR when
-explicitly requested.
+Enhancements proposed here, each carrying its own status. Where one has
+shipped, its entry records what shipped and what was decided rather than the
+original proposal; where it hasn't, it is a design to be picked up in a
+dedicated PR when explicitly requested.
 
 ### Static article publishing
+
+**Status: implemented** (`common/static_pages.py`; every publish path renders the
+page, and topic pages show a "researching" placeholder for unpublished work).
 
 **Problem**: every published article is currently read through
 `public_api_handler`'s `GET /articles/{article_id}` — a Lambda invocation
@@ -208,6 +212,10 @@ field, or the static page and the table's authoritative status will drift
 out of sync.
 
 ### Custom domain (bloggerbear.com) via Route 53 + ACM
+
+**Status: not done.** The module and production wiring exist, but `domain_name` and
+`hosted_zone_id` are still empty in `infra/environments/production/terraform.tfvars`;
+the remaining steps below are manual.
 
 **Problem**: the production site is only ever reachable at its
 `*.cloudfront.net` default domain. A real domain, `bloggerbear.com`, has
@@ -415,173 +423,176 @@ row keyed by profile id.
   per-topic/global model resolution the daily cycle uses (unchanged behaviour; the
   recorded model is whatever it actually called).
 
-### Rolling research, whole-day article input, and a fresh-data review before publish
+### Rolling research, whole-window articles, and a fresh-data review before publish
 
-**Status: (A) and (B) implemented in a simpler shape than written below (see
-"Decisions and what shipped"); (C) proposed, not implemented; DynamoDB-
-configurable cadence is the scoped next change.** Written up from a review of
-how the research and authoring pipelines behave today (checked against the
-code and the dev environment), so the design starts from what actually happens.
+**Status: shipped, except (C) the fresh-data review, which is designed below and
+not started.** Written up from a review of how the research and authoring
+pipelines behaved, checked against the code and the dev environment.
 
-**Design constraint: topic-agnostic.** Topics can be about anything; the
-first one built out happened to be crypto. Everything here lives in the
-generic pipeline or behind the adapter contract, so every topic gets the
+**Design constraint: topic-agnostic.** Topics can be about anything; the first
+one built out happened to be crypto. Everything here lives in the generic
+pipeline or behind the adapter contract, so every topic gets the
 research-quality improvement and no domain's rules or vocabulary reach
-another's. Domain knowledge (what an "item" is, what a day's editorial goal
-is) stays inside each adapter; the handlers only ask the adapter.
+another's. Domain knowledge (what an "item" is, what a day's editorial goal is,
+which coins to look at) stays inside each adapter; the handlers only ask the
+adapter.
 
-**Decisions and what shipped**
-- *Daily cycle at 9 AM Sydney time.* `daily_timezone` (default
+**What shipped**
+- *Daily cycle at 9 AM Sydney* (#69). `daily_timezone` (default
   `Australia/Sydney`) is stored on the topic and passed to EventBridge
   Scheduler as `ScheduleExpressionTimezone`, so `cron(0 9 * * ? *)` follows
-  daylight saving. Only *new* topics get the new default; a topic created
-  earlier has no stored zone and stays on UTC until moved on purpose
-  (`admin_cli topics update <id> --daily-cadence "cron(0 9 * * ? *)"
-  --daily-timezone Australia/Sydney`), so an unrelated edit never shifts its
-  run. 9 AM Sydney is 22:00/23:00 UTC the day before, i.e. the end of the UTC
-  day whose findings (and, for the crypto adapter, whose editorial goal) the
-  article uses.
-- *No thresholds on novelty (A).* Any item new to the topic makes a tick
-  material (web-search `min_new_results` now defaults to 1; the crypto news
-  threshold is 1). "Leaving a list" is no longer a trigger anywhere; a jump in
-  a known item's score/stars still is, since that is a new fact.
-- *"New" is judged against everything already reported, not the last
-  snapshot.* Every stored snapshot carries `_seen` (item key -> first-seen
-  date, 7-day retention, 2000-key cap), built from the adapter's `item_keys`,
-  so an item that drops out of a feed and returns is not reported twice.
-  This replaced the proposed Observations table: a tick with nothing new
-  stores nothing and calls no model, and a tick with something new stores a
-  Finding, so there was nothing for a separate store to hold.
-- *Summaries cover only what is new and may not invent.* The generic prompt
-  asks about the "What's new" items only, treats the rest of the state as
-  background, and forbids adding facts, figures, causes or sources the data
-  does not contain.
-- *Articles read the whole window (B).* The daily cycle reads every finding
-  since the topic's previous article, at most 24h back (cap 48, 40k
-  characters, oldest dropped first), instead of the 5 newest. The topic
-  records `last_article_at` (the run's *start* time, written only after an
-  article exists and never allowed to fail the run, since a retry would write
-  a duplicate), so a second run with nothing found since the first -- a manual
-  run followed by the scheduled one -- writes nothing rather than rewriting the
-  same findings. A topic with no `last_article_at` yet uses the plain 24h
-  window. `topics trigger --pipeline daily_cycle --force` ignores it for an
-  intentional regenerate.
-- *Not done:* (C) the fresh-data review; fetching a news feed alongside the
-  crypto analysis days (crypto-specific; adapter-level follow-up).
+  daylight saving. Only *new* topics get the new default; an older topic stays
+  on UTC until moved on purpose (`admin_cli topics update <id> --daily-cadence
+  "cron(0 9 * * ? *)" --daily-timezone Australia/Sydney`), so an unrelated edit
+  never shifts its run.
+- *No thresholds on novelty* (#69). Any item new to the topic makes a tick
+  material. "Leaving a list" is no longer a trigger; a jump in a known item's
+  score/stars still is, since that is a new fact.
+- *"New" is judged against everything already reported* (#69). Every stored
+  snapshot carries `_seen` (item key -> first-seen date, 7-day retention,
+  2000-key cap), built from the adapter's `item_keys`, so an item that drops
+  out of a feed and returns is not reported twice. This replaced the proposed
+  Observations table: a tick with nothing new stores nothing and calls no
+  model, and a tick with something new stores a Finding, so there was nothing
+  for a separate store to hold.
+- *Summaries cover only what is new and may not invent* (#69).
+- *Articles read the whole window* (#69, #70). Every finding since the topic's
+  previous article, at most 24h back (cap 48, 40k characters, oldest dropped
+  first). The topic records `last_article_at` (the run's *start*, written only
+  after an article exists and never allowed to fail the run, since a retry
+  would write a duplicate), so a manual run followed by the scheduled one
+  writes nothing the second time. `topics trigger --pipeline daily_cycle
+  --force` ignores it for an intentional regenerate.
+- *Research spend as a running tally* (#72). Each Finding stores the Bedrock
+  call behind its summary; the daily cycle sums the whole window's calls into
+  the article's lineage (`research`, `total_cost_aud`). See "Lineage cost fixes
+  and the research tally" above.
+- *Research interval from DynamoDB* (#73). The per-topic schedule stays a
+  fixed hourly heartbeat and each tick asks whether it is due, against
+  `research_interval_hours` on the topic, else the `pipeline` row in the
+  ModelConfig table, else 1 hour. Whole hours (1-168); a manual trigger always
+  runs. `admin_cli topics update --research-interval-hours N`, `pipeline-config
+  set`. (Editing the schedule itself from DynamoDB was rejected: EventBridge
+  only learns a schedule when the Admin API writes it, and rewriting schedules
+  from a DynamoDB stream adds a stream, a Lambda and IAM for exact-cron control
+  nobody needs.)
+- *A fresh random coin pool every tick, and headlines on analysis days* (#74;
+  crypto adapter only). The pool is an unseeded draw each tick, skipping coins
+  already analysed that UTC day, so each tick has new information to report.
+  A newly sampled coin counts as new. Only the day's *goal* stays date-seeded.
+  Cost of this: history is fetched for each tick's pool (set
+  `COINGECKO_API_KEY`), and analysis days now produce a Finding per tick -- the
+  research interval above is the dial.
 
-**Motivation -- what happens today**
-- *Hourly tick* (`research_tick_handler`): every tick re-fetches the source
-  (a fresh web search on the news days), but stores a snapshot only when
-  `material_diff` says something changed, and a snapshot is only ever stored
-  as part of a Finding, which needs a Bedrock summary. Otherwise the fresh
-  data is discarded. For the crypto topic a Finding is written on the first
-  observation, a new UTC day, a goal change, or (news days) 5+ new headlines
-  (price moves were removed as a trigger). Each summary is written from that
-  tick's data alone; earlier findings are not fed in, so old and new research
-  meet only when the article is written.
-- *Analysis days* (altcoin deep-dive, trend inventor): the 10-coin pool and
-  its history are fixed for the UTC day by design (seeded pool, once-a-day
-  history), so later ticks re-fetch markets only to discard them -- in effect
-  the same coins are "watched" all day.
-- *Daily cycle* (`daily_cycle_handler`, cron 06:00 UTC): runs once a day and
-  reads only the 5 newest Findings (`list_recent_findings`); for the crypto
-  topic those are further limited to findings captured *today* (UTC), so that
-  the day's goal matches its data. At 06:00 UTC that is at most the first six
-  hours of the day's research, and research found after 06:00 is never used
-  by any article.
-- *No check on drift.* Nothing re-verifies the sources before an article is
-  composed. The compliance review is a deterministic route to manual
-  moderation for financial topics (no model call at all) and a PII/harm
-  review for others; neither tests whether the article's claims are still
-  true. Drafts are written from finding summaries, not source text, and only
-  headlines are available from the current news search.
-
-**Goal**
-Articles change rarely, so research should *accumulate* cheaply all day and
-be *synthesised and re-checked once*, just before the article is composed --
-instead of paying for an hourly summary and then writing from a fraction of
-the day's research.
-
-**(A) Accumulate on every tick, summarise only when material**
-- Store each tick's snapshot (S3) plus a small index record (topic,
-  captured_at, snapshot key, TTL) *without* a Bedrock call, decoupled from
-  Findings. A Finding (summary) is still written only on a material change,
-  so the diff-first rule (§2 rule 2: no Bedrock before diffing) is unchanged.
-- Storage shape is a design decision: an `Observations` table/item type is
-  preferred over summary-less Findings, so existing Finding readers (daily
-  cycle, trending digest, stats) never see an item without a summary.
-- Optionally feed the previous Finding's summary into the next tick's
-  summary prompt ("what we already knew") so summaries build on old research
-  rather than restarting each time.
-
-**(B) Give the article the whole window, not the newest five**
-- The daily cycle reads all Findings and observations for the window since
-  the previous article (or the last 24h), not the 5 newest.
-- The crypto goal-per-day rule needs an explicit window definition, because
-  the goal changes at 00:00 UTC while the article is written at 06:00 UTC.
-  Options: write from the just-completed UTC day (run the daily cycle shortly
-  after 00:00 UTC), keep 06:00 and use "today so far + yesterday's remainder"
-  grouped by goal, or move the article to end-of-day. To be decided in the
-  design pass.
-
-**(C) Fresh-data adversarial review before composing/publishing**
-- After the draft, before publish or the moderation hand-off, re-run the
-  adapter's fetch for *current* data (prices for the crypto analysis days; a
-  fresh search for the news days) through the existing adapter contract; no
-  new source-specific logic in the core pipeline (§2 rule 5).
-- An adversarial reviewer step compares the draft's claims and the
-  accumulated findings against the fresh data and lists claims that are stale,
-  contradicted, or unsupported, each with evidence and a severity.
-- Outcomes: minor drift -> one automatic revision pass; major drift -> route
-  to moderation. For financial topics (always manual moderation) the review
-  notes are attached to the ModerationQueue item for the human. If the fresh
-  fetch fails, record "review unavailable" and treat the article as needing
-  review; never silently pass.
-- Limitation to keep in mind: a model re-reading its own draft cannot detect
-  real-world drift; the fresh fetch is what makes the review meaningful.
-  News reviews are headline-level until a provider with article text is added.
-- The review is a lineage stage (`adversarial_review`, and `revision` if it
-  rewrites), so its cost appears in per-article lineage and the Stats page.
-
-**(D) Cost and quality**
-- Fewer per-tick summaries (only on material change) offset the added review
-  call (+1 model call per article, +1 if it revises).
-- Quality: articles draw on the whole day's research and are checked against
-  current data instead of being written from the first six hours.
-
-**Open questions**
-- Article window and cron time (see B).
-- Observation storage shape, TTL and pruning (see A).
-- What severity threshold sends a non-financial article to moderation.
-- Whether the previous-summary context (A) should apply to all adapters or
-  only opt-in ones (`uses_previous_state` already exists for adapters).
+**Decisions on the earlier open questions**
+- *Article window and cron time:* decided (9 AM Sydney = 22:00/23:00 UTC the
+  day before, the end of the UTC day whose findings and goal the article uses;
+  window = since `last_article_at`).
+- *Observation storage:* none needed (see `_seen`).
+- *Feed the previous summary into the next tick's summary prompt:* **decided
+  against.** The delta-only prompt plus `_seen` already deliver "build on what we
+  knew", and feeding old summaries back in works against "report only what is
+  new" and invites the model to restate or embellish old material.
 
 **Deferred**
-- Article-body fetching for news (needs a search provider that returns text).
+- Article-body fetching for news. Needs a search provider that returns text, or
+  page fetching with paywall and robots handling; a spike after (C).
 
-**Next change (scoped, not started): cadence configured from DynamoDB**
-Goal: change how often a topic researches by editing DynamoDB -- per topic,
-or one global default (e.g. every 2 hours to save cost) -- with no Terraform
-apply and no Admin API call.
-- *Why it is not possible today:* the cadence is stored on the Topic item but
-  EventBridge Scheduler only learns of it when the Admin API writes the
-  schedule (`common/scheduler.py`), so a bare DynamoDB edit changes nothing.
-- *Proposed design:* keep the per-topic hourly schedule as a fixed base
-  heartbeat and make the tick decide whether it is due. The topic carries
-  `research_interval_minutes` (optional); the global default lives in a
-  DynamoDB config item (alongside `model-config`, with a hard-coded fallback
-  of 60). At the start of a tick the handler compares now with the topic's
-  last-checked time (a small field on the Topic item, updated every tick, since
-  a tick that finds nothing writes no Finding) and returns `not_due` without
-  fetching anything if the interval has not elapsed. Changes apply from the
-  next tick; granularity is the heartbeat (hourly), so intervals are whole
-  hours; the cost of a skipped tick is one Lambda invocation and two reads.
-- *Alternative considered:* DynamoDB Streams into a sync Lambda that rewrites
-  the EventBridge schedules. Exact cron control, but a global-default change
-  fans out to every topic's schedule and it adds a stream, a Lambda and IAM.
-- *In scope:* the interval field and global default, the due-check, Admin API
-  and CLI fields (`--research-interval-hours`, and a command to set the
-  global default), validation, tests, and the same topic-agnostic rule -- the
-  gate lives in the handler and knows nothing of any adapter.
-- *Not in scope:* changing the daily cycle time from DynamoDB (it stays a
-  cron in a named time zone, edited through the Admin API).
+---
+
+#### (C) Fresh-data adversarial review before publish -- design (not started)
+
+**Problem.** Nothing re-checks an article against reality before it goes out.
+Drafts are written from finding *summaries*, hours old by publish time, and
+the compliance review checks safety (PII/harm, or a deterministic route to
+manual moderation for financial topics), not whether the claims are still
+true. The moderation queue already shows the symptom: non-financial drafts are
+flagged for figures like "gained over 170 stars" stated without support.
+
+**Where it sits.** In `daily_cycle_handler._run_daily_cycle`, after the draft and
+title and before the disclaimer and compliance review, so compliance sees the
+final text:
+
+`draft -> fresh-data review -> (revision) -> disclaimer -> compliance -> publish | moderation`
+
+**1. Get fresh evidence through the adapter contract (no domain code in the
+handler).**
+- Move `ADAPTER_REGISTRY` out of `research_tick_handler` into
+  `common/adapters/registry.py` so both handlers use it (a pure refactor, own
+  commit).
+- New optional adapter hook `review_evidence(topic_config, latest_state) -> str |
+  None`. `latest_state` is the topic's most recent stored snapshot, so the
+  adapter re-checks *what it was looking at*. Default: `fetch_state(topic_config)`
+  rendered as compact text with internal keys (`_seen`, ...) removed and a
+  length cap. Returning None opts the topic out.
+- Crypto overrides it, because its pool is random per tick and a plain re-fetch
+  would look at *different coins*: it reads the coin ids from the snapshot's
+  `analyzed_today`, makes the one markets call (top 200: current price and
+  24h/7d/30d change for every coin the article could mention, plus BTC/ETH), and
+  the latest headlines. No per-coin history calls.
+- GitHub Trending / Hacker News use the default (current trending list, current
+  stars/scores).
+- Time-boxed. A failed or slow fetch is `unavailable`, never a silent pass.
+
+**2. The reviewer.** One tracked Bedrock call (stage `adversarial_review`) given the
+draft, the window's finding summaries, and the fresh evidence, told to use only
+that material and to return JSON only:
+`{"claims": [{"claim", "problem": "stale|contradicted|unsupported", "evidence",
+"severity": "minor|major"}]}`. Guidance: flag a claim only if it states a number,
+rank, direction or fact as *current* and the material shows otherwise; ignore
+ordinary short-term movement the draft doesn't present as current; when unsure,
+flag nothing. `major` = central to the article's point; `minor` = peripheral.
+Unparseable output is `unavailable`, not `clean`.
+
+**3. Outcomes** (one record per article, `review` on the Articles item, never
+public):
+
+| Result | Non-financial topic | Financial topic (always moderated) |
+|---|---|---|
+| clean | publish path as today | as today |
+| minor only | one revision pass (stage `revision`): fix the listed claims using only the fresh evidence and findings, add no new claims; then compliance | same, notes attached |
+| any major | route to moderation with the notes as reasons | notes attached to the queue item |
+| unavailable | route to moderation ("fresh-data review unavailable") | note attached |
+
+Notes go on the ModerationQueue item, so `moderation list` shows the operator
+*why*. Both stages appear in lineage (`calls`), so their cost is in the article
+footer and on the Stats page.
+
+**4. Safety.** Fetched text (headlines, page titles) is untrusted: it is passed
+to the model as delimited data, the reviewer can only return the JSON schema
+(it cannot act, publish or change routing except through a `severity`), the
+revision prompt forbids facts not in the supplied evidence, and evidence is
+length-capped.
+
+**5. Rollout, in two PRs.**
+- *PR 1 -- shadow mode.* Registry extraction, the adapter hook (default + crypto),
+  the reviewer, storage on the article, lineage stages, and a global
+  `review_mode` (`off | shadow | enforce`) on the `pipeline` config row
+  (`pipeline-config set --review-mode`), defaulting to `shadow`: the review runs
+  and is recorded but changes no outcome. Also raise the daily-cycle Lambda
+  timeout from 120s (it already makes four Bedrock calls; this adds two and a
+  fetch) and add a `review` summary to `moderation list`.
+- *Run in shadow on dev for about a week.* Watch the share of articles flagged,
+  the severity split, and sample the notes for false positives; tune the
+  reviewer prompt and, if needed, per-adapter tolerance.
+- *PR 2 -- enforce.* The revision pass and moderation routing, behind
+  `review_mode = enforce`, then turn it on.
+
+**6. Cost.** +1 model call per article, +1 if it revises: a few cents a day per
+topic at Haiku prices, and visible in the lineage.
+
+**7. Tests.** Adapter hook (default, crypto reading `analyzed_today`, opt-out);
+reviewer JSON parsing (fenced, invalid, empty claims); each outcome in each mode;
+fetch failure and timeout are `unavailable`; the revision keeps structure and adds
+no new claims (mocked model); evidence is delimited and capped; a non-crypto topic
+never sees crypto code; lineage carries both stages.
+
+**Limitations to state honestly.** A model re-reading its own draft cannot detect
+real-world drift; the fresh fetch is what makes the review meaningful. News
+review is headline-level until a provider with article text exists. The review
+catches stale or unsupported figures, not subtle framing errors.
+
+**Still open (decide from the shadow-mode data).** The severity threshold that
+sends a non-financial article to moderation (starting point: any `major`);
+whether a flaky fetch should force moderation or publish with a note; which
+future adapters should opt in.
