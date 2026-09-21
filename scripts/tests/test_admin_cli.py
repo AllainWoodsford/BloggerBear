@@ -625,3 +625,52 @@ def test_lineage_backfill_apply_writes():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["lineage", "backfill", "--apply"])
     assert m.call_args.kwargs["body"] == {"apply": True}
+
+
+def test_topics_update_sets_a_research_interval():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--research-interval-hours", "2"])
+    assert m.call_args.kwargs["body"] == {"research_interval_hours": 2}
+
+
+def test_topics_update_clears_a_research_interval_with_an_empty_string():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "my-topic", "--research-interval-hours", ""])
+    assert m.call_args.kwargs["body"] == {"research_interval_hours": None}
+
+
+def test_topics_create_accepts_a_research_interval():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            ["topics", "create", "--topic-id", "t", "--name", "T", "--adapter", "github_trending",
+             "--research-interval-hours", "3"]
+        )
+    assert m.call_args.kwargs["body"]["research_interval_hours"] == 3
+
+
+def test_a_non_numeric_research_interval_is_refused_before_any_request(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "update", "my-topic", "--research-interval-hours", "soon"])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "whole number of hours" in capsys.readouterr().err
+
+
+def test_pipeline_config_get():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "get"])
+    m.assert_called_once_with(
+        "GET", "https://api.example.com", "/pipeline-config", "ap-southeast-2", body=None
+    )
+
+
+def test_pipeline_config_set_and_clear():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--research-interval-hours", "2"])
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/pipeline-config")
+    assert m.call_args.kwargs["body"] == {"research_interval_hours": 2}
+
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--research-interval-hours", ""])
+    assert m.call_args.kwargs["body"] == {"research_interval_hours": None}
