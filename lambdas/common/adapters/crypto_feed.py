@@ -11,7 +11,7 @@ seeded by the UTC date, so this adapter and the daily cycle always agree on it):
       the anchors, stablecoins, tokenized funds, or wrapped/staked/bridged
       derivatives), each enriched from one CoinGecko history call with its
       3-month and 1-year change and a 5-day anomaly read (price spike and/or
-      volume surge).
+      volume surge), plus the latest crypto headlines as context.
   WEB_AGGREGATOR
       5-15 crypto news items from the last 24h, via common/web_search.py.
   MARKET_NEWS
@@ -19,22 +19,26 @@ seeded by the UTC date, so this adapter and the daily cycle always agree on it):
       crypto in them (crypto headlines are filtered out). No CoinGecko call
       and no anchors that day: `market_anchors` is empty.
 
-**The pool is random but stable within a UTC day** -- seeded by (topic, date).
-The research tick runs hourly; an unseeded sample would pick 10 different
-coins every hour, so every tick would look like a material change and burn a
-Bedrock call and a Finding. Seeded, the day's pool only changes when the
-date does. A snapshot is material on the first observation, a new UTC day, a
-goal change, or (on the news days) any headline not already reported -- price moves are not a
-trigger, so the analysis days produce one Finding a day.
+**The pool is a fresh random draw on every tick** -- unseeded, so no two ticks
+watch the same coins by design, and each tick has genuinely new information to
+report. (Only the *goal* is seeded by the date, because this adapter and the
+daily cycle must agree on it.) Coins already analysed earlier the same UTC day
+(`analyzed_today`, carried in the snapshot) are left out of the draw while enough
+others remain, so the day's ticks cover fresh ground; once fewer than 10 unseen
+coins are left the exclusion lapses rather than shrinking the pool. A snapshot is
+material on the first observation, a new UTC day, a goal change, any coin newly
+sampled into the pool, or any headline not already reported. Price moves are not
+a trigger. With a new pool each tick, that means a Finding per tick on analysis
+days -- the research interval (common/research_schedule.py) is the dial for cost.
 
-**History is fetched once per UTC day, not once per tick.** It is daily data,
-and CoinGecko's public API answers 429 well below what 10 history calls an
-hour would need (observed live: 3 of 10 failed even with backoff). The adapter
-opts into `uses_previous_state`, so on later ticks it reuses the day's
-already-fetched metrics -- refreshing only each coin's current price and its
-3-month/1-year change from the stored baselines -- and re-requests only
-coins whose history failed earlier. A partly failed first tick therefore
-heals over the day instead of repeating the whole fetch.
+**History is fetched for each tick's new pool.** That is up to 10 CoinGecko
+history calls per tick, and the public keyless API answers 429 well below that
+(observed live: 3 of 10 failed even with backoff), so set `COINGECKO_API_KEY`
+for this to be dependable. A coin whose history can't be fetched is dropped and
+the tick fails only if fewer than MIN_POOL_SIZE survive (the next heartbeat
+simply draws again). The adapter still opts into `uses_previous_state`: a coin
+that is drawn again the same day (only once the unseen ones run out) reuses its
+already-fetched metrics, refreshing just its current price.
 
 Requests that are made run concurrently (asyncio, a small semaphore) through
 common/http_retry.py's exponential backoff; a coin whose history can't be
@@ -66,7 +70,7 @@ import os
 import random
 import re
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import requests
@@ -252,14 +256,27 @@ def is_altcoin_candidate(coin: dict) -> bool:
     return _NOT_AN_ALTCOIN_WORDS.search(label) is None
 
 
-def select_altcoin_pool(markets: list[dict], topic_id: str, day: date) -> list[dict]:
-    """Sample POOL_SIZE altcoins, reproducibly for (`topic_id`, `day`)."""
+def select_altcoin_pool(
+    markets: list[dict],
+    *,
+    exclude_ids: frozenset[str] | set[str] = frozenset(),
+    rng: random.Random | None = None,
+) -> list[dict]:
+    """Sample POOL_SIZE altcoins entirely at random: a fresh, unseeded draw on every
+    call, so no two ticks watch the same coins by design.
+
+    Coins in `exclude_ids` (those already analysed earlier the same UTC day) are
+    left out while enough others remain, so a tick's pool is about coins not yet
+    looked at today. Once fewer than POOL_SIZE unseen ones are left the exclusion is
+    dropped rather than shrinking the pool.
+    """
     eligible = sorted(
         (coin for coin in markets if is_altcoin_candidate(coin)),
         key=lambda coin: coin["market_cap_rank"],
     )
-    rng = random.Random(f"{topic_id}:{day.isoformat()}")
-    return rng.sample(eligible, min(POOL_SIZE, len(eligible)))
+    fresh = [coin for coin in eligible if coin["id"] not in exclude_ids]
+    candidates = fresh if len(fresh) >= min(POOL_SIZE, len(eligible)) else eligible
+    return (rng or random.SystemRandom()).sample(candidates, min(POOL_SIZE, len(candidates)))
 
 
 def _nearest_price(prices: list[list[float]], target_ts: float) -> float:
@@ -488,9 +505,20 @@ class CryptoFeedAdapter(Adapter):
         if goal is EditorialGoal.WEB_AGGREGATOR:
             state["web_results"] = self._fetch_web_results(adapter_config, goal)
         else:
-            state["analyzed_pool"] = self._build_pool(
-                markets, topic_config.get("topic_id", ""), now, previous_state, client
-            )
+            already_analysed = self._analyzed_today(previous_state, now)
+            pool = self._build_pool(markets, already_analysed, previous_state, now, client)
+            state["analyzed_pool"] = pool
+            # Every coin analysed so far today (this pool included), so the next tick
+            # draws from coins not yet looked at. Kept out of the summary prompt.
+            state["analyzed_today"] = sorted(already_analysed | {coin["id"] for coin in pool})
+            # The analysis is the substance; the headlines are context. A search
+            # that fails or finds nothing must not sink a tick whose market data
+            # is fine (unlike a news day, where the headlines are the whole point).
+            try:
+                state["web_results"] = self._fetch_web_results(adapter_config, goal)
+            except Exception as exc:  # noqa: BLE001
+                print(f"crypto_feed: no headlines this tick ({exc}); continuing with the market data")
+                state["web_results"] = []
         return state
 
     def _fetch_markets(self, client: CoinGeckoClient) -> list[dict]:
@@ -527,12 +555,12 @@ class CryptoFeedAdapter(Adapter):
     def _build_pool(
         self,
         markets: list[dict],
-        topic_id: str,
-        now: datetime,
+        already_analysed: set[str],
         previous_state: dict | None,
+        now: datetime,
         client: CoinGeckoClient,
     ) -> list[dict]:
-        target = select_altcoin_pool(markets, topic_id, now.date())
+        target = select_altcoin_pool(markets, exclude_ids=already_analysed)
         carried = self._carried_entries(previous_state, now)
 
         by_id: dict[str, dict] = {}
@@ -555,6 +583,18 @@ class CryptoFeedAdapter(Adapter):
                 f"(need at least {MIN_POOL_SIZE})"
             )
         return pool
+
+    @staticmethod
+    def _analyzed_today(previous_state: dict | None, now: datetime) -> set[str]:
+        """Coin ids already analysed earlier *today* (same UTC date), from the last
+        snapshot. Nothing carries across a date change or from a legacy snapshot."""
+        if not previous_state or "market_anchors" not in previous_state:
+            return set()
+        if (previous_state.get("fetched_at") or "")[:10] != now.date().isoformat():
+            return set()
+        ids = set(previous_state.get("analyzed_today") or [])
+        ids.update(coin["id"] for coin in previous_state.get("analyzed_pool") or [] if coin.get("id"))
+        return ids
 
     @staticmethod
     def _carried_entries(previous_state: dict | None, now: datetime) -> dict[str, dict]:
@@ -677,17 +717,27 @@ class CryptoFeedAdapter(Adapter):
         if old_state.get("editorial_goal") != goal:
             return True, f"editorial goal changed to {goal}"
 
-        # Price moves are deliberately not a trigger: on the analysis days the
-        # snapshot is a once-a-day read, and on the news days it is the headlines
-        # that matter. Within a day only a burst of new headlines counts.
-        # Novelty is judged against every headline already reported (the
-        # carried seen-set), so a story that drops out of the search results
-        # and returns later is not reported twice.
+        # Price moves are deliberately not a trigger. What is new is (a) coins
+        # sampled into this tick's pool that the last snapshot's pool did not have
+        # -- the pool is a fresh random draw each tick, so on the analysis days that
+        # is nearly every tick -- and (b) headlines not already reported. Novelty of
+        # headlines is judged against every one already reported (the carried
+        # seen-set), so a story that drops out of the results and returns later is
+        # not reported twice.
+        parts = []
+        old_pool_ids = {coin["id"] for coin in old_state.get("analyzed_pool") or []}
+        fresh_coins = [c for c in new_state.get("analyzed_pool") or [] if c["id"] not in old_pool_ids]
+        if fresh_coins:
+            names = ", ".join(c.get("name") or c["id"] for c in fresh_coins[:POOL_SIZE])
+            parts.append(f"{len(fresh_coins)} newly sampled coins: {names}")
+
         known = self.known_keys(old_state)
         fresh = [r for r in new_state.get("web_results") or [] if r["url"] not in known]
         if len(fresh) >= WEB_NEW_RESULTS_THRESHOLD:
-            return True, f"{len(fresh)} new news items: " + "; ".join(r["title"] for r in fresh[:5])
+            parts.append(f"{len(fresh)} new news items: " + "; ".join(r["title"] for r in fresh[:5]))
 
+        if parts:
+            return True, "; ".join(parts)
         return False, "no material change"
 
     # --- citation ---------------------------------------------------------
@@ -726,7 +776,9 @@ class CryptoFeedAdapter(Adapter):
             return None  # legacy snapshot: the generic prompt is all it supports
 
         topic_name = topic_label(topic)
-        compact_state = json.dumps(new_state, separators=(",", ":"))[:SUMMARY_STATE_MAX_CHARS]
+        # `analyzed_today` is bookkeeping for the next tick's draw, not data to summarise.
+        prompt_state = {k: v for k, v in new_state.items() if k != "analyzed_today"}
+        compact_state = json.dumps(prompt_state, separators=(",", ":"))[:SUMMARY_STATE_MAX_CHARS]
         anchors = _anchor_summary(new_state)  # empty on a MARKET_NEWS day: no crypto data
         header = (
             f'You are monitoring the topic "{topic_name}" for a research digest.'
@@ -779,6 +831,13 @@ class CryptoFeedAdapter(Adapter):
                 "analysed coin with its key figures, note major 1-year macro trends and "
                 "3-month velocity shifts, and flag any asset experiencing an active 5-day "
                 "anomaly (price spikes or sharp crashes)."
+            )
+        if new_state.get("web_results"):
+            task += (
+                " The state also lists the latest crypto news headlines (headline and source "
+                "only, no article text): where one relates to an analysed coin or to the market "
+                "moves described, mention it and name its source, and attribute it rather than "
+                "adding any detail the headline does not contain."
             )
         return (
             header + focus + f"Raw Analysis Metrics (JSON): {compact_state}\n\n" + task + closing
