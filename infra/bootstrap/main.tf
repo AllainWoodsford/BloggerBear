@@ -101,6 +101,21 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 # phase that needs it lands, not granted up front. Bedrock remains
 # deliberately excluded even now; see the comment at the end of this
 # policy.
+# AVD-AWS-0345 ("IAM policy allows 's3:*'", reported twice: once for this
+# policy and once for each role that uses it) is ignored deliberately, and
+# only here. The SiteBuckets statement below grants s3:* on all resources
+# because the deploy role creates and manages buckets that don't exist yet
+# when this bootstrap runs (each environment's content and site buckets), so
+# they can't be named, and S3's action names are too irregular to enumerate
+# safely (see that statement's comment for the two that bit us). What limits
+# the risk instead: the grant is confined to S3 (no other service gets a
+# wildcard), and the roles that carry it can only be assumed through the
+# GitHub OIDC trust policies below -- the dev role from this repository's dev
+# branch, the production role from its `production` environment -- with no
+# long-lived credentials anywhere. Accepted for a single-operator project. To
+# tighten it later, give the buckets a fixed name prefix and scope the
+# resources to it; remove this ignore when that lands.
+# trivy:ignore:AVD-AWS-0345
 data "aws_iam_policy_document" "gha_deploy" {
   # State backend: list the bucket (needed by the S3 backend/native
   # locking) and read/write the state object + its .tflock companion for
