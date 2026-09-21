@@ -612,12 +612,32 @@ future adapters should opt in.
 
 ---
 
-#### (C) Enforcement -- scoped enhancement (not started)
+#### (C) Enforcement -- built, default still shadow
 
-**Status: scoped, not started.** This is the second half of (C): shadow mode records a
-review and changes nothing; enforcement makes the review *act*. It is deliberately
-gated on real shadow data, so it is broken into three steps in order, the first two of
-which are useful whatever is decided about the third.
+**Status: built; nothing changes until you turn it on.** This is the second half of (C):
+shadow mode records a review and changes nothing; enforcement makes the review *act*. It
+was scoped as three steps, gated on real shadow data. All three are built: Step 0 (#78,
+truncated drafts), Step 1 (#79, `review report`) and Step 2 (the enforcement change). The
+default `review_mode` is still `shadow`; turning `enforce` on is a decision to make from
+`admin_cli review report`, against the go/no-go criteria below.
+
+**How the decisions came out.** (1) An unavailable review **holds** the article
+(`review_on_unavailable`, default `hold`, `note` to publish and record the gap). (2) There is
+a **per-topic** `review_mode` override (`topics update --review-mode`), topic then pipeline
+then `shadow`. (3) A public **"Fact check"** line appears in the article footer *only* when
+the review was enforced (`common/fact_check.py`); a shadow-mode review changed nothing, so
+claiming a check would overstate it, and the review record itself stays private. (4) A
+revised draft is **not** re-reviewed; the deterministic guards bound what it can add.
+
+**Built as scoped, with these details.** The reviewer also sees the title, and the
+revision returns a corrected title and body as JSON. The guards are plain code
+(`revision_violations`): no number that is in none of the original draft, the findings and
+the fresh evidence (a source figure rounded to its own precision is allowed); no new link;
+body length within 65-135% of the original; the heading count unchanged; a single short
+title within 40-250% of the original length. A broken guard, a cut-off or unparseable
+revision, or a failed call *holds* the article instead. The original body is kept at
+`articles/<id>.original.md` (`body_original_s3_key`), private. An unexpected error while
+enforcing holds the article; it never lets an enforced article through unchecked.
 
 **What reading the code found (these shape the scope).**
 1. *Drafts are being cut off.* The draft, ideation and title calls all use
