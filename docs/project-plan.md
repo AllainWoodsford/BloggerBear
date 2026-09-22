@@ -1179,3 +1179,19 @@ feedback path right after a submission is stored.
 
 Settled with the owner: "equip only in part" means the bear takes in a random subset of its worn armor for each
 article (PR 1), and wear comes from a stored downvote (1 point), repaired by a stored upvote.
+
+**Built beyond the original four PRs.**
+
+- **Make and delete gear by hand.** `POST /equipment` and `DELETE /prompt-refinements/{topic}/{version}`
+  (`admin_cli equipment create`, guided or with flags, and `equipment delete`), covered above under PR 1's
+  "Made by hand" and the loot-drop bullet.
+- **The "Equipment used" record on a static article page.** `common/static_pages.py`: when an article's
+  `equipment_used` names gear, a second footer sits beside Lineage (side by side on a wide screen, stacked
+  below it on a narrow one via `.article-footers`, a `flex-wrap` container) -- the gear's name, rarity, slot
+  and what it says. It is a **snapshot taken once**, at the moment the page is rendered (`get_prompt_refinement`
+  read there and nowhere else), and baked into the static HTML: no script, no API call, and deliberately never
+  re-fetched, so it stays exactly as it was even if that gear is later deleted, repaired, worn out, or bumped
+  in rarity -- the same "record what happened, not what is true right now" choice as the loot-drop snapshot and
+  as Lineage itself (`published_by`/cost are fixed at draft/approval time too). Present only when the article
+  actually used gear; an article with none, or from before this existed, shows no gap. Never touches the
+  Lineage code -- a separate function, its own footer, joined only by the shared wrapper's layout.

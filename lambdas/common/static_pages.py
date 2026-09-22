@@ -18,6 +18,13 @@ admin_api_handler.py) -- and per the risk called out in the project plan,
 all three call `render_and_publish_article_page` below rather than
 duplicating the rendering/upload logic, so the static page can never drift
 out of sync with whichever path actually published the article.
+
+**Equipment used.** When an article was written with gear equipped (see common/equipment.py,
+Articles.equipment_used), a small "Equipment used" record sits beside the Lineage footer. It is a
+snapshot of each piece (name, rarity, slot, what it says) taken *once*, the moment this page is
+rendered, and baked into the static HTML -- deliberately not looked up again after that, so it
+stays exactly as it was even if the gear is later deleted, repaired, worn out, or bumped in rarity.
+No script or API call is involved; it is as static as the Lineage footer next to it.
 """
 
 from __future__ import annotations
@@ -29,6 +36,8 @@ from html import escape
 import boto3
 import markdown
 
+from .dynamo import get_prompt_refinement, get_topic
+from .gear import public_view as _gear_public_view
 from .source_refs import dedupe_source_refs
 
 _s3_client = None
@@ -237,6 +246,82 @@ def _render_lineage_footer_html(
     )
 
 
+# The noun shown for each slot in the "Equipment used" record -- mirrors frontend/gear.js's
+# SLOT_LABELS, kept as a separate copy here since this file renders server-side HTML text, not
+# the JS the Stats page draws with.
+_EQUIPMENT_SLOT_LABELS = {
+    "helmet": "Helmet",
+    "chest": "Chest",
+    "gloves": "Gloves",
+    "boots": "Boots",
+    "sword": "Sword",
+    "shield": "Shield",
+    "ring": "Ring",
+    "legacy": "Guidance",
+}
+
+
+def _equipment_snapshot(equipment_used: list[dict] | None) -> list[dict]:
+    """The gear `equipment_used` names, as it is right now -- read once, here, so the caller can
+    bake it into the page and never ask again. A piece that no longer exists (deleted before this
+    page was ever rendered) is left out; there is nothing left to describe. Each piece appears
+    once even if it is listed more than once (e.g. two armor pieces cited by the same version by
+    mistake never happens, but a defensive de-dupe costs nothing)."""
+    if not equipment_used:
+        return []
+    topic_names: dict[str, str] = {}
+    snapshot = []
+    seen: set[tuple] = set()
+    for piece in equipment_used:
+        if not isinstance(piece, dict):
+            continue
+        topic_id, version = piece.get("topic_id"), piece.get("version")
+        if not topic_id or not version or (topic_id, version) in seen:
+            continue
+        seen.add((topic_id, version))
+        item = get_prompt_refinement(topic_id, version)
+        if item is None:
+            continue
+        if item.get("slot") == "ring" and topic_id not in topic_names:
+            topic = get_topic(topic_id)
+            if topic is not None:
+                topic_names[topic_id] = topic.get("name", topic_id)
+        snapshot.append(_gear_public_view(item, topic_names))
+    return snapshot
+
+
+def _equipment_item_html(piece: dict) -> str:
+    slot_label = _EQUIPMENT_SLOT_LABELS.get(piece.get("slot"), "Gear")
+    rarity = str(piece.get("rarity") or "common")
+    applies_to = piece.get("topic_name") or "Every topic"
+    meta = f"{rarity.capitalize()} \u00b7 {slot_label} \u00b7 {escape(applies_to)}"
+    description_html = (
+        f'<p class="equipment-desc">{escape(piece["description"])}</p>' if piece.get("description") else ""
+    )
+    return (
+        f'<li class="equipment-item rarity-{escape(rarity)}">'
+        f'<p class="equipment-name">{escape(piece.get("name") or "Unnamed gear")}</p>'
+        f'<p class="equipment-meta">{meta}</p>'
+        f"{description_html}"
+        "</li>"
+    )
+
+
+def _render_equipment_footer_html(snapshot: list[dict]) -> str:
+    """The "Equipment used" record, or "" when the article used none -- unlike the Lineage
+    footer, this is never shown as an explicit "No data": most articles (and every one from
+    before this feature) simply have nothing here, and that is not a gap worth calling out."""
+    if not snapshot:
+        return ""
+    items_html = "".join(_equipment_item_html(piece) for piece in snapshot)
+    return (
+        '<footer class="equipment-footer" aria-label="Equipment used">'
+        "<h2>Equipment used</h2>"
+        f'<ul class="equipment-list">{items_html}</ul>'
+        "</footer>"
+    )
+
+
 def read_article_body(body_s3_key: str) -> str:
     """Read an article's raw markdown body from the content bucket.
 
@@ -317,6 +402,7 @@ def render_and_publish_article_page(
     lineage: dict | None = None,
     published_by: str | None = None,
     fact_check: str | None = None,
+    equipment_used: list[dict] | None = None,
 ) -> str:
     """Render `article_id` as a static HTML page and upload it to the site
     bucket. Returns the S3 key it was written to.
@@ -355,6 +441,8 @@ def render_and_publish_article_page(
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
+    equipment_footer_html = _render_equipment_footer_html(_equipment_snapshot(equipment_used))
+    footers_html = f'<div class="article-footers">{lineage_footer_html}{equipment_footer_html}</div>'
     site_sections_html = _site_sections_links_html()
     footer_sections_html = _site_sections_links_html(paws=True)
     footer_legal_html = _links_html(_LEGAL_LINKS, paws=True)
@@ -387,7 +475,7 @@ def render_and_publish_article_page(
 <p class="lineage-summary">{lineage_summary_line_html}</p>
 <div class="article-body">{body_html}</div>
 {source_refs_html}
-{lineage_footer_html}
+{footers_html}
 <section class="feedback" data-role="feedback">
 <h2>Feedback</h2>
 <div hidden aria-hidden="true">
