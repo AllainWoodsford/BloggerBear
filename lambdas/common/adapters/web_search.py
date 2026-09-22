@@ -11,6 +11,13 @@ This is also the default adapter for a topic created without one: with no
 `queries`/`query` configured it searches on the topic's own name (see
 `default_query_for_topic`), so a bare topic still does independent web research.
 
+A query whose search fails (a rate-limited or unreachable backend) is dropped rather than raised --
+that query contributes nothing this tick, the rest still run, and a tick where every query fails
+simply reports no relevant results, the same quiet outcome as a tick that genuinely found nothing.
+Confirmed in production: GDELT's free API rate-limits under load, and before this, one busy tick
+crashed the whole topic's research (`research_tick_handler: unhandled exception ...`) instead of
+just missing that tick's results.
+
 adapter_config (all optional; a search string defaults to the topic's name):
     queries          list of search strings (or `query`, a single string)
     max_results      total results kept across all queries (default 10, max 25)
@@ -95,9 +102,7 @@ class WebSearchAdapter(Adapter):
                 "or a topic name to search for"
             )
 
-        max_results = min(
-            int(adapter_config.get("max_results") or DEFAULT_MAX_RESULTS), MAX_RESULTS_LIMIT
-        )
+        max_results = min(int(adapter_config.get("max_results") or DEFAULT_MAX_RESULTS), MAX_RESULTS_LIMIT)
         max_age_hours = int(adapter_config.get("max_age_hours") or DEFAULT_MAX_AGE_HOURS)
 
         configured_keywords = adapter_config.get("title_keywords")
@@ -109,13 +114,23 @@ class WebSearchAdapter(Adapter):
                 title_keywords = keywords_from_query(query) or None
             else:
                 title_keywords = normalize_keywords(configured_keywords) or None
-            for result in search_web(
-                query,
-                max_results=max_results,
-                max_age_hours=max_age_hours,
-                title_keywords=title_keywords,
-                provider=adapter_config.get("provider"),
-            ):
+            try:
+                results = search_web(
+                    query,
+                    max_results=max_results,
+                    max_age_hours=max_age_hours,
+                    title_keywords=title_keywords,
+                    provider=adapter_config.get("provider"),
+                )
+            except Exception as exc:  # noqa: BLE001 - one query's backend failure (a rate-limited
+                # search provider, a timeout) must not sink the whole tick, including every other
+                # query's results already gathered: it is treated as "nothing new from this query",
+                # the same way common/adapters/crypto_feed.py treats its own (optional) web search
+                # failing -- unlike there, this adapter has nothing else to fall back on, so a tick
+                # where every query fails simply reports no relevant results, not an error.
+                print(f"web_search adapter: query {query!r} failed ({exc!r}); continuing with the rest")
+                continue
+            for result in results:
                 if result["url"] not in seen_urls:
                     seen_urls.add(result["url"])
                     merged.append(result)

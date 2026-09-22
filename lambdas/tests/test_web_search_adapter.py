@@ -41,9 +41,7 @@ def test_fetch_state_merges_queries_dedupes_and_sorts_newest_first():
         "one": [_result(1, "2026-09-20T10:00:00+00:00"), _result(2, "2026-09-20T12:00:00+00:00")],
         "two": [_result(2, "2026-09-20T12:00:00+00:00"), _result(3, "2026-09-20T11:00:00+00:00")],
     }
-    with patch(
-        "common.adapters.web_search.search_web", side_effect=lambda q, **kw: per_query[q]
-    ):
+    with patch("common.adapters.web_search.search_web", side_effect=lambda q, **kw: per_query[q]):
         state = WebSearchAdapter().fetch_state(_topic(queries=["one", "two"]))
 
     assert [r["url"] for r in state["results"]] == [
@@ -73,9 +71,7 @@ def test_fetch_state_passes_config_through_and_clamps_max_results():
 
 
 def test_fetch_state_caps_merged_results_at_max_results():
-    with patch(
-        "common.adapters.web_search.search_web", return_value=[_result(i) for i in range(20)]
-    ):
+    with patch("common.adapters.web_search.search_web", return_value=[_result(i) for i in range(20)]):
         state = WebSearchAdapter().fetch_state(_topic(query="q", max_results=4))
 
     assert len(state["results"]) == 4
@@ -158,7 +154,7 @@ def _keywords_passed(**adapter_config):
 
 
 def test_without_title_keywords_each_query_filters_on_its_own_terms():
-    passed = _keywords_passed(queries=["(ransomware OR \"zero-day\")", "supply chain attack"])
+    passed = _keywords_passed(queries=['(ransomware OR "zero-day")', "supply chain attack"])
 
     assert passed == [["zero-day", "ransomware"], ["supply", "chain", "attack"]]
 
@@ -235,3 +231,43 @@ def test_a_configured_query_beats_the_name_fallback():
         WebSearchAdapter().fetch_state(topic)
 
     assert mock_search.call_args.args[0] == "ransomware"
+
+
+# --- one query's backend failure must not sink the tick --------------------------------------
+
+
+def test_a_failed_query_is_dropped_and_the_others_still_come_through(capsys):
+    def side_effect(query, **kw):
+        if query == "bad":
+            raise RuntimeError("429 Client Error: Too Many Requests")
+        return [_result(1)]
+
+    with patch("common.adapters.web_search.search_web", side_effect=side_effect):
+        state = WebSearchAdapter().fetch_state(_topic(queries=["bad", "good"]))
+
+    assert [r["url"] for r in state["results"]] == ["https://a.com/1"]
+    assert "query 'bad' failed" in capsys.readouterr().out
+
+
+def test_every_query_failing_reports_no_results_not_an_error(capsys):
+    with patch("common.adapters.web_search.search_web", side_effect=RuntimeError("boom")):
+        state = WebSearchAdapter().fetch_state(_topic(queries=["one", "two"]))
+
+    assert state["results"] == []
+    assert WebSearchAdapter().material_diff(None, state) == (False, "no relevant results to report")
+    out = capsys.readouterr().out
+    assert out.count("failed") == 2  # both queries logged, neither one raised
+
+
+def test_a_single_configured_querys_failure_is_the_same_as_finding_nothing():
+    with patch("common.adapters.web_search.search_web", side_effect=ConnectionError("down")):
+        state = WebSearchAdapter().fetch_state(_topic(query="tech news"))
+
+    assert state["results"] == []
+
+
+def test_fetch_state_still_carries_min_new_results_and_fetched_at_after_a_failure():
+    with patch("common.adapters.web_search.search_web", side_effect=RuntimeError("boom")):
+        state = WebSearchAdapter().fetch_state(_topic(queries=["x"], min_new_results=3))
+
+    assert state["min_new_results"] == 3 and state["fetched_at"]
