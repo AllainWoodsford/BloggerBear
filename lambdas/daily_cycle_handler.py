@@ -758,6 +758,7 @@ def _publish_or_moderate(
             lineage=lineage,
             published_by="ai_only",
             fact_check=fact_check_label(fresh_review_record, "ai_only"),
+            equipment_used=equipment_used,
         )
         generate_and_store_article_musing(
             article_id=article_id,

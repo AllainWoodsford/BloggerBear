@@ -535,6 +535,7 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # The reader-facing line about the fresh-data review, from the stored record:
         # a person approving a held article is what "reviewed by a person" means.
         fact_check=fact_check_label(article.get("review"), "humans"),
+        equipment_used=article.get("equipment_used"),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],

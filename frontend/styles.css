@@ -693,6 +693,75 @@ a {
   overflow-wrap: anywhere;
 }
 
+/* Wraps the Lineage footer and, when an article used equipment, the "Equipment used" record next
+   to it (common/static_pages.py) -- side by side on a wide screen, the equipment record flexing
+   below lineage on a narrow one. Always present (even with only lineage inside) so the spacing
+   above the pair is set once, here, rather than by each footer separately. */
+.article-footers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px 32px;
+  margin-top: 32px;
+}
+
+.article-footers > .lineage-footer,
+.article-footers > .equipment-footer {
+  flex: 1 1 280px;
+  min-width: 0;
+  margin-top: 0;
+}
+
+@media (max-width: 640px) {
+  .article-footers {
+    flex-direction: column;
+  }
+}
+
+/* Gear an article was written with -- a snapshot baked in when the page was rendered, styled
+   like the Stats page's gear (rarity-coloured, frontend/gear.js), but plain server-rendered
+   text: no icons, no script, no live check. */
+.equipment-footer h2 {
+  font-size: 1rem;
+  margin: 0 0 8px;
+  color: var(--fg);
+}
+
+.equipment-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.equipment-item {
+  padding: 8px 10px;
+  border: 1px solid var(--gear-color, var(--border));
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.equipment-item p {
+  margin: 0;
+}
+
+.equipment-name {
+  color: var(--gear-color);
+  font-weight: 700;
+}
+
+.equipment-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 2px !important;
+}
+
+.equipment-desc {
+  margin-top: 4px !important;
+}
+
 .feedback {
   margin-top: 32px;
   padding-top: 16px;
