@@ -1402,3 +1402,24 @@ def get_stats_history_row(week_start: str) -> dict | None:
     """One completed week's StatsHistory row, or None if that week was never rolled over."""
     table = get_table(os.environ["STATS_HISTORY_TABLE"])
     return table.get_item(Key={"week_start": week_start}).get("Item")
+
+
+def set_current_stats_fields(fields: dict, week_start: str) -> None:
+    """SET (not ADD) each of `fields` onto the current week's StatsCurrent row -- for a value
+    that is a refreshed snapshot each time it's written (e.g. cost_explorer_poll_handler.py's
+    latest Cost Explorer reading), not one accumulated across calls the way
+    increment_current_stats's ADD counters are: a repeat write overwrites the previous reading
+    instead of compounding it. Creates the row on first use, and sets `week_start` the same way
+    increment_current_stats does (once, left alone after)."""
+    if not fields:
+        return
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    sets = ", ".join(f"#f{n} = :v{n}" for n in range(len(fields)))
+    table.update_item(
+        Key={"stats_id": "current"},
+        UpdateExpression=f"SET week_start = if_not_exists(week_start, :week), {sets}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={**values, ":week": week_start},
+    )
