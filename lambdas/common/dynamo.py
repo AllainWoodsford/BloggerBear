@@ -743,6 +743,12 @@ def apply_prompt_refinement_wear(topic_id: str, version: str, delta: int) -> dic
     return {"durability": int(item["durability"]), "max_durability": int(item["max_durability"])}
 
 
+def delete_prompt_refinement(topic_id: str, version: str) -> None:
+    """Remove a PromptRefinements item outright (deleting an absent one is not an error)."""
+    table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    table.delete_item(Key={"topic_id": topic_id, "version": version})
+
+
 def set_prompt_refinement_fields(topic_id: str, version: str, fields: dict) -> None:
     """Set plain fields on an existing PromptRefinements item (its gear identity, a rarity bump).
     Refuses to create an item that does not exist."""
@@ -920,8 +926,10 @@ def put_musing(
     created_at: str,
     article_id: str | None = None,
     topic_id: str | None = None,
+    gear: dict | None = None,
 ) -> dict:
-    """Write a Musings item and return it. `kind` is "article" or "feedback"."""
+    """Write a Musings item and return it. `kind` is "article", "feedback" or "loot". A loot musing
+    carries `gear`, a public snapshot of the piece it announces."""
     table = get_table(os.environ["MUSINGS_TABLE"])
     item = {
         "musing_id": musing_id,
@@ -932,6 +940,8 @@ def put_musing(
         "mood": mood,
         "created_at": created_at,
     }
+    if gear is not None:
+        item["gear"] = gear
     table.put_item(Item=item)
     return item
 

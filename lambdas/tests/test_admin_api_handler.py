@@ -2322,3 +2322,408 @@ def test_an_item_approved_with_no_room_is_parked_and_one_shelved_by_choice_is_no
     parked, shelved = _refinement_item("no-room"), _refinement_item("chosen")
     assert (parked["unequipped_reason"], parked["scope"]) == ("parked", "topic")
     assert shelved["unequipped_reason"] == "shelved"
+
+
+# --- Numbers stored in DynamoDB come back as Decimal: no route may 500 on them ---------------
+
+
+def test_a_topic_with_its_own_research_interval_can_be_listed_and_fetched(aws_resources):
+    """Regression: GET /topics answered 500 ("Decimal is not JSON serializable") as soon as any topic held
+    a research_interval_hours, which blocked `admin_cli topics list` and every `topics get`."""
+    _put_topic({**TOPIC, "topic_id": "slow-topic", "research_interval_hours": 6})
+    _put_topic()
+
+    listed = admin_api_handler.handler(_event("GET /topics"), None)
+    fetched = admin_api_handler.handler(
+        _event("GET /topics/{topic_id}", path_params={"topic_id": "slow-topic"}), None
+    )
+
+    assert listed["statusCode"] == 200 and fetched["statusCode"] == 200
+    by_id = {t["topic_id"]: t for t in json.loads(listed["body"])["topics"]}
+    assert by_id["slow-topic"]["research_interval_hours"] == 6
+    assert isinstance(by_id["slow-topic"]["research_interval_hours"], int)
+    assert json.loads(fetched["body"])["research_interval_hours"] == 6
+
+
+def test_decimals_are_written_as_whole_numbers_or_floats():
+    payload = {
+        "whole": Decimal("6"),
+        "fraction": Decimal("0.25"),
+        "big": Decimal("1000000"),
+        "n": [Decimal("2")],
+    }
+
+    body = admin_api_handler._response(200, payload)["body"]
+
+    assert json.loads(body) == {"whole": 6, "fraction": 0.25, "big": 1000000, "n": [2]}
+    assert '"whole": 6,' in body and "6.0" not in body
+
+
+def test_something_that_is_not_a_number_still_fails_loudly():
+    with pytest.raises(TypeError):
+        admin_api_handler._response(200, {"when": object()})
+
+
+# --- Creating and deleting gear by hand ------------------------------------------------------
+
+
+def _create_gear(body):
+    return admin_api_handler.handler(_event("POST /equipment", body=body), None)
+
+
+def _delete(topic_id, version):
+    return admin_api_handler.handler(
+        _event(
+            "DELETE /prompt-refinements/{topic_id}/{version}",
+            path_params={"topic_id": topic_id, "version": version},
+        ),
+        None,
+    )
+
+
+def _stored(topic_id, version):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    return table.get_item(Key={"topic_id": topic_id, "version": version}).get("Item")
+
+
+def _refinements_count():
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    return len(table.scan()["Items"])
+
+
+@pytest.fixture
+def named():
+    """The bear names new gear by asking a model: give it a fixed answer instead."""
+    identity = {
+        "theme": "Plain Speaking",
+        "slot_hint": "chest",
+        "rarity": "rare",
+        "max_durability": 17,
+        "durability": 17,
+    }
+    with patch("admin_api_handler.gear.generate_identity", return_value=identity) as mock:
+        yield mock
+
+
+def test_an_admin_can_create_armor_and_it_is_worn_at_once(aws_resources):
+    result = _create_gear(
+        {
+            "text": "Open with the single most useful fact.",
+            "theme": "Front Loaded Facts",
+            "slot": "helmet",
+            "rarity": "epic",
+        }
+    )
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])["created"]
+    assert created["topic_id"] == "global"
+    assert created["placement"] == {"equipped": True, "slot": "helmet", "scope": "global", "displaced": None}
+    assert created["item"]["name"] == "Helm of Front Loaded Facts" and created["item"]["rarity"] == "epic"
+    stored = _stored("global", created["version"])
+    assert stored["status"] == "approved" and stored["equipped"] is True and stored["created_by"] == "admin"
+    assert stored["prompt_changes"] == "Open with the single most useful fact."
+    assert 21 <= int(stored["max_durability"]) <= 30 and stored["durability"] == stored["max_durability"]
+
+
+def test_the_bear_names_the_gear_and_suggests_the_slot_when_the_admin_does_not(aws_resources, named):
+    result = _create_gear({"text": "Use plain words."})
+
+    created = json.loads(result["body"])["created"]
+    assert created["item"]["name"] == "Breastplate of Plain Speaking"
+    assert created["placement"]["slot"] == "chest"  # the suggestion of the bear
+    named.assert_called_once()
+    assert named.call_args.args[:2] == ("global", "Use plain words.")
+
+
+def test_an_admin_named_rarity_beats_the_roll_and_the_bear(aws_resources, named):
+    result = _create_gear({"text": "Use plain words.", "rarity": "legendary"})
+
+    created = json.loads(result["body"])["created"]
+    assert created["item"]["rarity"] == "legendary"
+    assert 40 <= created["item"]["max_durability"] <= 50
+
+
+def test_if_naming_fails_the_gear_still_gets_made_with_a_plain_name(aws_resources):
+    with patch("admin_api_handler.gear.generate_identity", side_effect=RuntimeError("throttled")):
+        result = _create_gear({"text": "Use plain words.", "slot": "shield"})
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["created"]["item"]["name"] == "Shield of Global Lore"
+
+
+def test_a_ring_is_tied_to_a_topic_and_the_scope_is_inferred(aws_resources, named):
+    _put_topic()
+
+    result = _create_gear({"text": "Name the repository.", "topic_id": "github-trending"})
+
+    created = json.loads(result["body"])["created"]
+    assert created["topic_id"] == "github-trending"
+    assert created["placement"] == {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None}
+    assert named.call_args.args[0] == "github-trending"
+
+
+def test_a_ring_for_a_topic_that_does_not_exist_is_refused_and_creates_nothing(aws_resources, named):
+    assert _create_gear({"text": "x", "topic_id": "nowhere"})["statusCode"] == 404
+    assert _create_gear({"text": "x", "scope": "topic"})["statusCode"] == 400
+    assert _refinements_count() == 0
+
+
+def test_armor_is_for_every_topic_so_it_refuses_a_topic(aws_resources, named):
+    _put_topic()
+
+    assert _create_gear({"text": "x", "scope": "global", "topic_id": "github-trending"})["statusCode"] == 400
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"text": ""},
+        {"text": "   "},
+        {"text": 5},
+        {"text": "x" * 1001},
+        {"text": "x", "rarity": "mythic"},
+        {"text": "x", "slot": "hat"},
+        {"text": "x", "scope": "everywhere"},
+        {"text": "x", "equip": "yes"},
+        {"text": "x", "theme": "Email me bob@example.com"},
+    ],
+)
+def test_a_request_that_makes_no_sense_creates_nothing(aws_resources, named, body):
+    assert _create_gear(body)["statusCode"] == 400
+    assert _refinements_count() == 0
+
+
+def test_a_request_with_no_body_creates_nothing(aws_resources, named):
+    result = admin_api_handler.handler(_event("POST /equipment"), None)
+
+    assert result["statusCode"] == 400 and _refinements_count() == 0
+
+
+def test_gear_can_be_made_without_putting_it_on(aws_resources, named):
+    from common import equipment
+
+    result = _create_gear({"text": "Use plain words.", "equip": False})
+
+    created = json.loads(result["body"])["created"]
+    assert created["placement"]["equipped"] is False
+    stored = _stored("global", created["version"])
+    assert stored["equipped"] is False and stored["unequipped_reason"] == "shelved"
+    assert equipment.guidance_for("t", [stored]) == (None, [])  # in the backpack: injected nowhere
+
+
+def test_new_armor_pushes_out_what_was_in_the_slot(aws_resources, named):
+    first = json.loads(_create_gear({"text": "First.", "slot": "helmet"})["body"])["created"]
+
+    second = json.loads(_create_gear({"text": "Second.", "slot": "helmet"})["body"])["created"]
+
+    assert second["placement"]["displaced"] == {"topic_id": "global", "version": first["version"]}
+    assert _stored("global", first["version"])["equipped"] is False
+    assert _stored("global", first["version"])["unequipped_reason"] == "displaced"
+
+
+def test_a_sixth_ring_is_refused_before_anything_is_created(aws_resources, named):
+    _put_topic()
+    for n in range(5):
+        assert _create_gear({"text": f"Ring {n}.", "topic_id": "github-trending"})["statusCode"] == 201
+
+    result = _create_gear({"text": "One too many.", "topic_id": "github-trending"})
+
+    assert result["statusCode"] == 409
+    assert _refinements_count() == 5
+
+
+def test_a_full_set_of_rings_can_swap_one_out(aws_resources, named):
+    _put_topic()
+    made = [
+        json.loads(_create_gear({"text": f"Ring {n}.", "topic_id": "github-trending"})["body"])["created"]
+        for n in range(5)
+    ]
+    swap = {"topic_id": "github-trending", "version": made[2]["version"]}
+
+    result = _create_gear({"text": "Newest.", "topic_id": "github-trending", "replace": swap})
+
+    assert result["statusCode"] == 201
+    assert _stored("github-trending", made[2]["version"])["equipped"] is False
+
+
+def test_the_reserved_topic_id_cannot_be_used_for_a_real_topic(aws_resources):
+    body = {"topic_id": "global", "name": "Global", "adapter": "github_trending"}
+
+    result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 400 and "reserved" in json.loads(result["body"])["error"]
+
+
+def test_deleting_gear_removes_it_and_frees_its_slot(aws_resources, named):
+    created = json.loads(_create_gear({"text": "Use plain words.", "slot": "boots"})["body"])["created"]
+
+    result = _delete("global", created["version"])
+
+    assert result["statusCode"] == 200
+    deleted = json.loads(result["body"])["deleted"]
+    assert deleted["was_equipped"] is True and deleted["name"] == "Boots of Plain Speaking"
+    assert _stored("global", created["version"]) is None
+    view = json.loads(admin_api_handler.handler(_event("GET /equipment"), None)["body"])
+    assert view["armor"]["boots"] is None
+
+
+def test_deleting_something_that_is_not_there_is_a_404(aws_resources):
+    assert _delete("global", "nope")["statusCode"] == 404
+
+
+def test_feedback_on_an_article_written_with_deleted_gear_wears_nothing_and_does_not_fail(
+    aws_resources, named
+):
+    from common import wear
+
+    created = json.loads(_create_gear({"text": "Use plain words.", "slot": "helmet"})["body"])["created"]
+    _delete("global", created["version"])
+    used = [{"topic_id": "global", "version": created["version"], "slot": "helmet"}]
+
+    changes = wear.apply_feedback({"equipment_used": used}, "down")
+
+    assert changes == []
+    assert _stored("global", created["version"]) is None  # not resurrected by the wear update
+
+
+# --- Loot drops: announcing new gear ------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def loot_musing(aws_resources):
+    """Announcing writes a musing through a model: fake it, and let each test look at what it was given."""
+    with patch(
+        "admin_api_handler.generate_and_store_loot_musing", return_value={"musing_id": "m-loot"}
+    ) as mock:
+        yield mock
+
+
+def _worn_gear(text="Use plain words.", **body):
+    return json.loads(
+        _create_gear({"text": text, "theme": "Plain Speaking", "slot": "helmet", **body})["body"]
+    )["created"]
+
+
+def test_new_gear_that_is_worn_is_announced_with_its_public_details(loot_musing):
+    created = _worn_gear(rarity="epic")
+
+    assert created["loot_drop"] == "m-loot"
+    loot_musing.assert_called_once()
+    gear = loot_musing.call_args.kwargs["gear"]
+    assert (gear["name"], gear["rarity"], gear["slot"]) == ("Helm of Plain Speaking", "epic", "helmet")
+    assert gear["description"] == "Use plain words." and gear["topic_name"] is None
+    assert "version" not in gear and "rationale" not in gear  # only the public view
+    assert _stored("global", created["version"])["loot_announced_at"]
+
+
+def test_a_ring_is_announced_with_its_topics_name(aws_resources, loot_musing):
+    _put_topic()
+
+    created = json.loads(
+        _create_gear({"text": "Name the repository.", "theme": "Repo Focus", "topic_id": "github-trending"})[
+            "body"
+        ]
+    )["created"]
+
+    assert created["loot_drop"] == "m-loot"
+    gear = loot_musing.call_args.kwargs["gear"]
+    assert gear["name"] == "Ring of Repo Focus" and gear["topic_name"] == "GitHub Trending"
+    assert loot_musing.call_args.kwargs["gear"]["topic_id"] == "github-trending"
+
+
+def test_gear_put_in_the_backpack_is_not_announced_until_it_is_worn(loot_musing):
+    created = _worn_gear(equip=False)
+
+    assert created["loot_drop"] is None and not loot_musing.called
+    equipped = json.loads(
+        _post("equip", created["version"], {"scope": "global", "slot": "helmet"}, "global")["body"]
+    )
+    assert equipped["equipped"]["loot_drop"] == "m-loot" and loot_musing.call_count == 1
+
+
+def test_a_piece_is_announced_once_however_often_it_is_taken_off_and_put_on(loot_musing):
+    created = _worn_gear()
+    _post("unequip", created["version"], topic_id="global")
+    again = json.loads(
+        _post("equip", created["version"], {"scope": "global", "slot": "helmet"}, "global")["body"]
+    )
+
+    assert again["equipped"]["loot_drop"] is None
+    assert loot_musing.call_count == 1
+
+
+def test_the_admin_can_stay_quiet_and_the_drop_is_saved_for_later(loot_musing):
+    created = _worn_gear(announce=False)
+
+    assert created["loot_drop"] is None and not loot_musing.called
+    assert "loot_announced_at" not in _stored("global", created["version"])
+    _post("unequip", created["version"], topic_id="global")
+    later = json.loads(
+        _post("equip", created["version"], {"scope": "global", "slot": "helmet"}, "global")["body"]
+    )
+    assert later["equipped"]["loot_drop"] == "m-loot"  # the first time it is worn with announcing on
+
+
+def test_approving_a_proposal_into_a_worn_slot_announces_it(aws_resources, loot_musing):
+    _put_refinement(version="v1", prompt_changes="Be plain.")
+
+    approved = json.loads(_post("approve", "v1")["body"])["approved"]
+
+    assert approved["loot_drop"] == "m-loot"
+    assert loot_musing.call_args.kwargs["gear"]["description"] == "Be plain."
+
+
+def test_approving_into_the_backpack_announces_nothing(aws_resources, loot_musing):
+    _put_refinement(version="v1")
+
+    approved = json.loads(_post("approve", "v1", {"scope": "backpack"})["body"])["approved"]
+
+    assert approved["loot_drop"] is None and not loot_musing.called
+
+
+def test_a_failed_announcement_never_stops_the_gear_being_worn(loot_musing):
+    loot_musing.side_effect = RuntimeError("bedrock is down")
+
+    result = _create_gear({"text": "Use plain words.", "theme": "Plain Speaking", "slot": "helmet"})
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])["created"]
+    assert created["placement"]["equipped"] is True and created["loot_drop"] is None
+    assert "loot_announced_at" not in _stored("global", created["version"])  # so it can be announced again
+
+
+def test_the_announce_command_can_announce_again_and_says_which_musing(loot_musing):
+    created = _worn_gear()
+    loot_musing.reset_mock()
+
+    result = _post("announce", created["version"], topic_id="global")
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["announced"] == {
+        "topic_id": "global",
+        "version": created["version"],
+        "musing_id": "m-loot",
+    }
+    assert loot_musing.call_count == 1
+
+
+def test_the_announce_command_reports_a_failure_instead_of_hiding_it(loot_musing):
+    created = _worn_gear(announce=False)
+    loot_musing.side_effect = RuntimeError("bedrock is down")
+
+    assert _post("announce", created["version"], topic_id="global")["statusCode"] == 500
+
+
+def test_only_approved_gear_can_be_announced(aws_resources):
+    _put_refinement(version="pending-one")
+
+    assert _post("announce", "pending-one")["statusCode"] == 409
+    assert _post("announce", "nowhere")["statusCode"] == 404
+
+
+def test_a_bad_announce_flag_is_treated_as_yes(loot_musing):
+    created = _worn_gear(announce="no thanks")
+
+    assert created["loot_drop"] == "m-loot"

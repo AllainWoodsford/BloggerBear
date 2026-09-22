@@ -251,6 +251,38 @@ Wearing is not the same as using. The topic's rings are used in every article, b
 *some* of its worn armor each time: a random number of pieces, at least one, chosen at random. The article
 records which pieces it used.
 
+**Make your own gear.** You do not have to wait for readers: write the guidance yourself and it becomes gear at
+once (approved, named, given a rarity and durability) and, by default, is put on.
+
+```
+python scripts/admin_cli.py equipment create                     # guided: it asks what it needs, one question at a time
+python scripts/admin_cli.py equipment create --text "Lead with the most useful fact." --slot helmet
+python scripts/admin_cli.py equipment create --text "Name the repository." --topic-id github-trending --rarity epic
+python scripts/admin_cli.py equipment create --text "..." --no-equip     # into the backpack, not worn
+python scripts/admin_cli.py equipment delete TOPIC VERSION               # for good; it asks first (--yes skips)
+```
+
+Every choice has a default: the bear names the gear (or pass `--theme "Plain Speaking"`), suggests the slot, and
+the rarity is rolled like a drop (or pass `--rarity legendary`; the durability then follows the rarity). Armor
+is filed under the reserved topic `global`, and `global` cannot be used as a real topic's id. Checks run
+before anything is written, so a refusal (a sixth ring, an unknown topic, a bad name) creates nothing. Deleting
+removes it entirely; articles already written with it keep their own record of it.
+
+**Loot drops.** The first time a piece of gear is worn, BloggerBear posts about it on the Musings page: a
+short, excited, tweet-like post naming the gear and thanking readers, next to a card with its name, rarity,
+slot and what it does -- coloured by rarity, same as the Stats page. It is written by the model in the
+same voice as every other musing and screened the same way a comment is; if the model fails or the reply
+does not pass, a plain accurate post is used instead, so a drop is always announced. It only ever
+announces once per piece: taking it off and putting it back on (a repair, say) does not post again.
+
+Every command that can put something on takes `--no-announce` to stay quiet (`refinements approve`,
+`equipment equip`, `equipment create`), and the guided `equipment create` asks. To post the announcement
+for a piece later, or again:
+
+```
+python scripts/admin_cli.py equipment announce TOPIC VERSION
+```
+
 `--scope global` with no `--slot` takes the first empty armor slot. Approving with no choice made wears it
 as a ring for its topic (what approving always meant), or leaves it in the backpack if all five rings are
 worn. Unlike before, guidance now *stacks*: several rings for one topic, plus the armor, are all used

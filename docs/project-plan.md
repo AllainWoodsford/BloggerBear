@@ -1083,6 +1083,18 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
 - **What was worn is recorded.** `Articles.equipment_used` lists `{topic_id, version, slot}` per piece used;
   (only the armor actually taken in) `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
   This is the data an effectiveness measure and wear-out would need; neither is built.
+- **Loot drops.** The first time a piece of gear is worn, BloggerBear posts a "loot drop" musing (a new
+  `kind`, `"loot"`, and a new mood, `excited`): a short model-written announcement in the same voice as
+  every other musing, screened the same way a comment is (fails closed to a plain, always-accurate post),
+  carrying a snapshot of the gear (name, rarity, slot, description, topic) so the post still makes sense
+  if the gear is deleted later. `loot_announced_at` on the item stops a repaired-and-re-equipped piece
+  announcing twice. `--no-announce` on approve/equip/create opts out; `POST .../announce` (`admin_cli
+  equipment announce`) posts it later or again. A failure to announce never stops the equip.
+- **Made by hand.** `POST /equipment` (`admin_cli equipment create`, guided or with flags) creates gear you
+  wrote, approved from the start, optionally with a chosen rarity and name, and puts it on; `DELETE
+  /prompt-refinements/{topic}/{version}` (`equipment delete`) removes it. Armor made this way is filed under
+  the reserved pseudo-topic `global`. All checks (scope, topic, slot, rarity, name, room for another ring) run
+  before anything is written.
 - **Admin.** `GET /equipment`, `POST /prompt-refinements/{topic_id}/{version}/equip|unequip`, and an optional
   `{scope, slot, replace}` body on approve. The displaced item is benched first, so a failure part way leaves
   a slot empty rather than two items fighting over it. `admin_cli equipment ...`, and `approve` asks where
@@ -1167,3 +1179,19 @@ feedback path right after a submission is stored.
 
 Settled with the owner: "equip only in part" means the bear takes in a random subset of its worn armor for each
 article (PR 1), and wear comes from a stored downvote (1 point), repaired by a stored upvote.
+
+**Built beyond the original four PRs.**
+
+- **Make and delete gear by hand.** `POST /equipment` and `DELETE /prompt-refinements/{topic}/{version}`
+  (`admin_cli equipment create`, guided or with flags, and `equipment delete`), covered above under PR 1's
+  "Made by hand" and the loot-drop bullet.
+- **The "Equipment used" record on a static article page.** `common/static_pages.py`: when an article's
+  `equipment_used` names gear, a second footer sits beside Lineage (side by side on a wide screen, stacked
+  below it on a narrow one via `.article-footers`, a `flex-wrap` container) -- the gear's name, rarity, slot
+  and what it says. It is a **snapshot taken once**, at the moment the page is rendered (`get_prompt_refinement`
+  read there and nowhere else), and baked into the static HTML: no script, no API call, and deliberately never
+  re-fetched, so it stays exactly as it was even if that gear is later deleted, repaired, worn out, or bumped
+  in rarity -- the same "record what happened, not what is true right now" choice as the loot-drop snapshot and
+  as Lineage itself (`published_by`/cost are fixed at draft/approval time too). Present only when the article
+  actually used gear; an article with none, or from before this existed, shows no gap. Never touches the
+  Lineage code -- a separate function, its own footer, joined only by the shared wrapper's layout.

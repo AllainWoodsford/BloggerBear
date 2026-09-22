@@ -503,6 +503,8 @@ def _list_musings(event: dict) -> dict:
             "text": m.get("text"),
             "mood": m.get("mood"),
             "created_at": m.get("created_at"),
+            # A loot drop carries a snapshot of the gear it announces (already the public view).
+            **({"gear": m["gear"]} if m.get("gear") else {}),
         }
         for m in items
     ]

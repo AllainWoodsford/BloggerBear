@@ -30,6 +30,7 @@ from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     delete_musings_for_article,
+    delete_prompt_refinement,
     delete_topic,
     get_article,
     get_feedback_config,
@@ -52,6 +53,7 @@ from common.dynamo import (
     put_model,
     put_model_config,
     put_pipeline_config,
+    put_prompt_refinement,
     put_topic,
     set_article_feedback_lock,
     set_prompt_refinement_equipment,
@@ -74,7 +76,7 @@ from common.fresh_review import (
     review_mode_error,
 )
 from common.lineage_tools import audit_lineage, plan_backfill
-from common.musings import generate_and_store_article_musing
+from common.musings import generate_and_store_article_musing, generate_and_store_loot_musing
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
 from common.scheduler import (
@@ -111,11 +113,20 @@ def _get_lambda_client():
     return _lambda_client
 
 
+def _json_number(value):
+    """json.dumps' fallback: DynamoDB hands every number back as a Decimal, which JSON cannot carry.
+    Whole numbers become ints and the rest floats, so no route can fail with a 500 because some stored
+    item happens to hold a number (a topic's research_interval_hours did exactly that on GET /topics)."""
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _response(status_code: int, payload: dict) -> dict:
     return {
         "statusCode": status_code,
         "headers": {"Content-Type": "application/json"},
-        "body": json.dumps(payload),
+        "body": json.dumps(payload, default=_json_number),
     }
 
 
@@ -172,6 +183,10 @@ def _create_topic(event: dict) -> dict:
 
     if not isinstance(topic_id, str) or not topic_id:
         return _error(400, "'topic_id' is required and must be a non-empty string")
+    if topic_id == equipment.GLOBAL_TOPIC_ID:
+        return _error(
+            400, f"'{equipment.GLOBAL_TOPIC_ID}' is reserved (armor created by hand is filed under it)"
+        )
     if not isinstance(name, str) or not name:
         return _error(400, "'name' is required and must be a non-empty string")
     if not isinstance(adapter, str) or not adapter:
@@ -520,6 +535,7 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # The reader-facing line about the fresh-data review, from the stored record:
         # a person approving a held article is what "reviewed by a person" means.
         fact_check=fact_check_label(article.get("review"), "humans"),
+        equipment_used=article.get("equipment_used"),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],
@@ -891,6 +907,42 @@ def _wear(item: dict, plan: dict) -> None:
     )
 
 
+def _announce_drop(
+    item: dict, plan: dict | None, *, announce: bool = True, force: bool = False, raise_errors: bool = False
+) -> str | None:
+    """Tell readers BloggerBear has new gear: one loot-drop musing, the first time a piece is worn.
+
+    Returns the musing id, or None if nothing was announced. It stays quiet if the piece has been
+    announced before (a repaired piece put back on does not drop twice), if it was not worn, or if the
+    caller asked for silence, unless `force`. A failure never stops the equip that led here (unless
+    `raise_errors`, for the command whose whole job is announcing).
+    """
+    if not announce or (plan is None and not force):
+        return None
+    if item.get("loot_announced_at") and not force:
+        return None
+    try:
+        worn = _as_worn(item, plan)
+        topic = get_topic(item["topic_id"]) if worn.get("slot") == equipment.RING_SLOT else None
+        names = {item["topic_id"]: topic.get("name")} if topic else {}
+        view = {**gear.public_view(worn, names), "topic_id": item["topic_id"] if topic else None}
+        musing = generate_and_store_loot_musing(gear=view, model_id=os.environ["BEDROCK_MODEL_ID"])
+        set_prompt_refinement_fields(
+            item["topic_id"], item["version"], {"loot_announced_at": datetime.now(UTC).isoformat()}
+        )
+        return musing["musing_id"]
+    except Exception as exc:  # noqa: BLE001 - announcing is never worth failing the equip for
+        print(f"admin_api_handler: could not announce a loot drop: {exc!r}")
+        if raise_errors:
+            raise
+        return None
+
+
+def _announce_flag(body: dict) -> bool:
+    value = body.get("announce", True)
+    return value if isinstance(value, bool) else True
+
+
 def _placement_view(item: dict, plan: dict | None) -> dict:
     """What happened to an item, for the response and for the CLI to tell the admin."""
     if plan is None:
@@ -960,6 +1012,7 @@ def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
             )
         payload["placement"] = _placement_view(item, plan)
         payload["item"] = _gear_summary(_as_worn(item, plan))
+        payload["loot_drop"] = _announce_drop(item, plan, announce=_announce_flag(body))
     return _response(200, {action_key: payload})
 
 
@@ -1004,7 +1057,8 @@ def _equip_prompt_refinement(event: dict) -> dict:
     _wear(item, plan)
     placement = _placement_view(item, plan)
     worn = _gear_summary(_as_worn(item, plan))
-    return _response(200, {"equipped": {**equipment.ref(item), **placement, "item": worn}})
+    drop = _announce_drop(item, plan, announce=_announce_flag(body))
+    return _response(200, {"equipped": {**equipment.ref(item), **placement, "item": worn, "loot_drop": drop}})
 
 
 def _unequip_prompt_refinement(event: dict) -> dict:
@@ -1045,6 +1099,157 @@ def _repair_gear(event: dict) -> dict:
     set_prompt_refinement_fields(item["topic_id"], item["version"], {"durability": repaired})
     summary = _gear_summary({**item, "durability": repaired})
     return _response(200, {"repaired": {**equipment.ref(item), "was": now, **summary}})
+
+
+def _create_equipment(event: dict) -> dict:
+    """Make a new piece of gear by hand, and (by default) put it on.
+
+    Body: {text (the guidance, required), scope ("global" armor or "topic" ring; inferred from topic_id),
+    topic_id (rings), slot, rarity (else rolled), theme (else the bear names it), equip (default true),
+    replace (a ring to swap out when all five are worn)}. The item is approved from the start: a person
+    made it, so it skips the proposal step. Everything is checked before anything is written, so a
+    refusal creates nothing.
+    """
+    body = _placement_body(event)
+    if not body:
+        return _error(400, "request body must be a JSON object with at least 'text'")
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _error(400, "'text' (what the gear tells the bear to do) is required")
+    text = " ".join(text.split())
+    if len(text) > equipment.MAX_GUIDANCE_LENGTH:
+        return _error(400, f"'text' must be at most {equipment.MAX_GUIDANCE_LENGTH} characters")
+
+    topic_id = body.get("topic_id")
+    scope = body.get("scope") or (equipment.SCOPE_TOPIC if topic_id else equipment.SCOPE_GLOBAL)
+    if scope not in (equipment.SCOPE_GLOBAL, equipment.SCOPE_TOPIC):
+        return _error(400, "'scope' must be 'global' (armor) or 'topic' (a ring)")
+    if scope == equipment.SCOPE_TOPIC:
+        if not isinstance(topic_id, str) or not topic_id:
+            return _error(400, "a ring is tied to a topic: 'topic_id' is required")
+        if get_topic(topic_id) is None:
+            return _error(404, f"topic '{topic_id}' not found")
+        key = topic_id
+    else:
+        if topic_id not in (None, "", equipment.GLOBAL_TOPIC_ID):
+            return _error(400, "armor applies to every topic: leave out 'topic_id', or use scope 'topic'")
+        key = equipment.GLOBAL_TOPIC_ID
+
+    rarity = body.get("rarity")
+    if rarity is not None and rarity not in gear.RARITIES:
+        return _error(400, f"'rarity' must be one of: {', '.join(gear.RARITIES)}")
+    slot = body.get("slot")
+    all_slots = (*equipment.ARMOR_SLOTS, equipment.RING_SLOT)
+    if slot is not None and slot not in all_slots:
+        return _error(400, f"'slot' must be one of: {', '.join(all_slots)}")
+    equip = body.get("equip", True)
+    if not isinstance(equip, bool):
+        return _error(400, "'equip' must be true or false")
+
+    theme = body.get("theme")
+    slot_hint = None
+    if theme is not None:
+        theme = gear.clean_theme(theme)
+        if theme is None:
+            return _error(400, "'theme' must be 2 to 5 plain words (letters, spaces, apostrophes, hyphens)")
+    else:
+        # The bear names it and suggests a slot; any failure falls back to a plain name from the topic.
+        try:
+            generated = gear.generate_identity(key, text, os.environ["BEDROCK_MODEL_ID"])
+            theme, slot_hint = generated["theme"], generated["slot_hint"]
+        except Exception as exc:  # noqa: BLE001 - a name is never worth refusing the gear for
+            print(f"admin_api_handler: could not name new gear: {exc!r}")
+            theme = gear.fallback_theme(key)
+
+    version = datetime.now(UTC).isoformat()
+    identity = gear.new_identity(theme, slot or slot_hint, rarity=rarity)
+    item = {
+        "topic_id": key,
+        "version": version,
+        "proposed_at": version,
+        "rationale": "Created by an admin.",
+        "prompt_changes": text,
+        "status": "approved",
+        "scope": scope,
+        "created_by": "admin",
+        **identity,
+    }
+
+    plan = None
+    if equip:
+        try:
+            plan = equipment.plan_equip(
+                list_prompt_refinements(status="approved"),
+                item,
+                scope=scope,
+                slot=slot,
+                replace=body.get("replace"),
+            )
+        except equipment.EquipError as exc:
+            return _error(exc.status, exc.message)
+
+    fixed = ("topic_id", "version", "proposed_at", "rationale", "prompt_changes", "status")
+    put_prompt_refinement(
+        key,
+        version,
+        item["rationale"],
+        text,
+        status="approved",
+        extra={k: v for k, v in item.items() if k not in fixed},
+    )
+    if plan is not None:
+        _wear(item, plan)
+    else:
+        set_prompt_refinement_equipment(
+            key,
+            version,
+            equipped=False,
+            at=datetime.now(UTC).isoformat(),
+            reason=equipment.SHELVED,
+        )
+    return _response(
+        201,
+        {
+            "created": {
+                **equipment.ref(item),
+                "placement": _placement_view(item, plan),
+                "item": _gear_summary(_as_worn(item, plan)),
+                "loot_drop": _announce_drop(item, plan, announce=_announce_flag(body)),
+            }
+        },
+    )
+
+
+def _announce_loot(event: dict) -> dict:
+    """Announce a piece of gear as a loot drop (again, if it already was): the fix when the first
+    announcement was skipped or failed."""
+    item, error = _approved_refinement_or_error(event)
+    if error:
+        return error
+    item = _ensure_identity(item)
+    plan = {"slot": item["slot"]} if item.get("slot") else None
+    musing_id = _announce_drop(item, plan, force=True, raise_errors=True)
+    return _response(200, {"announced": {**equipment.ref(item), "musing_id": musing_id}})
+
+
+def _delete_prompt_refinement(event: dict) -> dict:
+    """Remove a piece of gear entirely (worn or not). Articles written with it keep their own record."""
+    topic_id = _path_param(event, "topic_id")
+    version = _path_param(event, "version")
+    item = get_prompt_refinement(topic_id, version)
+    if item is None:
+        return _error(404, f"prompt refinement '{topic_id}'/'{version}' not found")
+    delete_prompt_refinement(topic_id, version)
+    return _response(
+        200,
+        {
+            "deleted": {
+                **equipment.ref(item),
+                "name": _view(item)["name"],
+                "was_equipped": equipment.is_equipped(item),
+            }
+        },
+    )
 
 
 def _raise_rarity(event: dict) -> dict:
@@ -1356,6 +1561,9 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/rarity": _raise_rarity,
     "POST /prompt-refinements/{topic_id}/{version}/repair": _repair_gear,
     "GET /equipment": _get_equipment,
+    "POST /equipment": _create_equipment,
+    "POST /prompt-refinements/{topic_id}/{version}/announce": _announce_loot,
+    "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
     "GET /models": _list_models,
     "POST /models": _put_model,
