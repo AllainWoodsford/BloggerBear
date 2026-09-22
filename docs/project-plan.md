@@ -1195,3 +1195,57 @@ article (PR 1), and wear comes from a stored downvote (1 point), repaired by a s
   as Lineage itself (`published_by`/cost are fixed at draft/approval time too). Present only when the article
   actually used gear; an article with none, or from before this existed, shows no gap. Never touches the
   Lineage code -- a separate function, its own footer, joined only by the shared wrapper's layout.
+
+### Observability: a Stats table, a Historic table, and everything Bedrock spends that isn't on an article
+
+**Status: PR 1 of an owner-scoped series (recording what was previously untracked), not yet built: the
+weekly rollover job, Lambda billed-duration tracking, API Gateway cost, or any Stats-page UI for any of
+this.** Prompted by the owner asking how tokens are calculated and finding two real gaps: no dedicated
+Stats table existed (per-article `lineage`, aggregated live by `common/stats.py`, was the whole story),
+and four real Bedrock-calling code paths were never tracked at all.
+
+**Two new DynamoDB tables** (`infra/modules/app-data`): `StatsCurrent`, one row (`stats_id = "current"`),
+updated in place all week with `ADD` expressions -- the same pattern the ModelConfig table's rate-limit
+counters already use (`common/dynamo.py`'s `consume_feedback_counter`), so the row and every attribute
+on it come into existence on first use, nothing has to create it first. `StatsHistory`, one row per
+completed week (hash key `week_start`, the Monday it covers), the same shape, written once by a rollover
+job this PR does not build yet -- empty until it exists. Not everything on either row is meant to reach
+the public Stats page; some of it (see below) is for the owner's own troubleshooting.
+
+**Four previously-untracked call sites now go through `common/stats_tracking.py`'s `tracked_claude`**
+(same signature and return as `common.bedrock.invoke_claude`, so each call site's own diff is one line)
+instead of the plain, untracked `invoke_claude`:
+
+- `musings` -- every article, loot-drop and feedback musing (`common/musings.py`)
+- `weekly_reflection` -- a topic's rationale and suggested change (`weekly_reflection_handler.py`)
+- `gear_identity` -- naming a new piece of gear, and its name-safety check (`common/gear.py`)
+- `comment_screening` -- KEEP/DROP on a reader's comment (`common/comment_screening.py`)
+
+`tracked_claude` prices the call the same way per-article cost already is (`common/costing.py`'s
+`pricing_for`/`call_cost_usd`), and tallies calls/tokens/cost onto `StatsCurrent` under that category --
+an unpriced model is counted in `{category}_unpriced_calls`, never silently costed at zero, same rule
+`common/stats.py` already holds itself to. Deliberately **not** done: splitting ideation out as its own
+category (it stays bundled into whichever article gets published, as it always has -- owner's call).
+Recording a tally never loses the model's actual answer: a DynamoDB failure here is logged and
+swallowed, the generated text is still returned, the same "bookkeeping must never break the real
+work" rule as every other cross-cutting concern in this codebase.
+
+**Reader-activity counters, also on `StatsCurrent`:** `feedback_given` (a stored submission --
+`public_api_handler.py`'s `_submit_feedback`) and `feedback_rejected_comment` (a whole submission thrown
+away because its comment failed the content screen -- narrower than "every way a submission didn't
+succeed": a closed site never let the reader try, and a bad token or a filled-in honeypot is a caught
+bot, neither is what a person reads as "my feedback was rejected"). `loot_drops` (an activity count, not
+a cost figure -- `common/musings.py`, the moment a loot-drop musing is actually written).
+
+**Still to come, each its own PR:** the weekly rollover (`StatsCurrent` → a new `StatsHistory` row, then
+reset for the next week; "Total Stats" on the public page will sum `StatsHistory` and must say it
+excludes the current week, still in `StatsCurrent`); Lambda billed-duration tracking (self-timed --
+`time.perf_counter()` around each pipeline handler's own body, close to but not identical to AWS's
+billed figure, chosen over pulling CloudWatch's own `REPORT` lines/metrics after the fact, for build
+quality over exactness -- the owner's call, and deliberately only the scheduled pipeline handlers, not
+`admin_api`/`public_api`, so live reader traffic never takes an extra write); API Gateway cost via a
+periodic Cost Explorer poll (`ce:GetCostAndUsage`, `SERVICE = Amazon API Gateway`, a rolling 30 days --
+chosen over hand-maintaining AWS's per-request price, the owner's explicit "least complex to
+troubleshoot" steer, even at the cost of Cost Explorer's own ~24h data lag and small per-call charge);
+and the Stats-page UI for any of this (Total Stats from History, Weekly Stats from Current, Feedback
+Given/Rejected cards, a Loot Stat tracker, gear moved to the bottom of the page).

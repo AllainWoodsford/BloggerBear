@@ -27,8 +27,8 @@ from __future__ import annotations
 
 import re
 
-from common.bedrock import invoke_claude
 from common.compliance import regex_redact
+from common.stats_tracking import tracked_claude
 
 MAX_COMMENT_CHARS = 1000
 MAX_TITLE_CHARS = 200
@@ -201,7 +201,7 @@ def screen_comment(raw_comment, article_title: str, model_id: str, may_call_mode
         title=_defang((article_title or "")[:MAX_TITLE_CHARS]), comment=_defang(text)
     )
     try:
-        answer = invoke_claude(prompt, model_id)
+        answer = tracked_claude("comment_screening", prompt, model_id)
     except Exception as exc:  # noqa: BLE001 - fail closed: an unreviewed comment is dropped
         print(f"comment_screening: the model call failed, dropping the comment: {exc!r}")
         return {"comment": None, "dropped_because": MODEL_ERROR}

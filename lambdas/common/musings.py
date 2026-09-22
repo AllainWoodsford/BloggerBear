@@ -26,9 +26,9 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from common.bedrock import invoke_claude
 from common.comment_screening import rule_drop_reason
 from common.dynamo import put_musing
+from common.stats_tracking import record_loot_drop, tracked_claude
 
 _MAX_MUSING_CHARS = 280
 _MUSING_MAX_TOKENS = 100
@@ -160,7 +160,7 @@ def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
         description=gear.get("description") or "no description",
     )
     try:
-        text = _truncate(invoke_claude(prompt, model_id, max_tokens=_LOOT_MUSING_MAX_TOKENS))
+        text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_LOOT_MUSING_MAX_TOKENS))
     except Exception as exc:  # noqa: BLE001 - the announcement must not depend on the model
         print(f"musings: could not write a loot-drop post, using the plain one: {exc!r}")
         text = ""
@@ -171,7 +171,7 @@ def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
         for key in ("name", "rarity", "slot", "description", "topic_name")
         if gear.get(key) is not None
     }
-    return put_musing(
+    musing = put_musing(
         musing_id=str(uuid.uuid4()),
         kind="loot",
         text=text,
@@ -180,6 +180,11 @@ def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
         topic_id=gear.get("topic_id"),
         gear=snapshot,
     )
+    try:
+        record_loot_drop()
+    except Exception as exc:  # noqa: BLE001 - the musing is already written; never lose it over this
+        print(f"musings: could not record the loot drop stat: {exc!r}")
+    return musing
 
 
 def _truncate(text: str) -> str:
@@ -220,7 +225,7 @@ def generate_and_store_article_musing(
         topic_name=topic_name,
         mood_guidance=mood_guidance,
     )
-    text = _truncate(invoke_claude(prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
 
     return put_musing(
         musing_id=str(uuid.uuid4()),
@@ -273,7 +278,7 @@ def generate_and_store_feedback_musing(
         down_votes=down_votes,
         mood_guidance=_FEEDBACK_MOOD_GUIDANCE[mood],
     )
-    text = _truncate(invoke_claude(prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
 
     return put_musing(
         musing_id=str(uuid.uuid4()),

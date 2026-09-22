@@ -27,8 +27,8 @@ from __future__ import annotations
 import random
 import re
 
-from common.bedrock import invoke_claude
 from common.comment_screening import rule_drop_reason
+from common.stats_tracking import tracked_claude
 
 RARITIES = ("common", "uncommon", "rare", "epic", "legendary")
 
@@ -226,7 +226,8 @@ def _parse_theme_reply(reply: str) -> tuple[str | None, str | None]:
 
 def _model_says_safe(theme: str, model_id: str) -> bool:
     try:
-        answer = invoke_claude(_NAME_CHECK_PROMPT.format(name=_defang(theme)), model_id, max_tokens=10)
+        prompt = _NAME_CHECK_PROMPT.format(name=_defang(theme))
+        answer = tracked_claude("gear_identity", prompt, model_id, max_tokens=10)
     except Exception as exc:  # noqa: BLE001 - fail closed: an unchecked name is not shown
         print(f"gear: the name check failed, using a plain name: {exc!r}")
         return False
@@ -244,7 +245,8 @@ def generate_identity(topic_id: str, prompt_changes: str, model_id: str, rng=Non
         guidance=_defang((prompt_changes or "")[:MAX_GUIDANCE_SHOWN]), topic_id=topic_id
     )
     try:
-        raw_theme, slot_hint = _parse_theme_reply(invoke_claude(prompt, model_id, max_tokens=60))
+        answer = tracked_claude("gear_identity", prompt, model_id, max_tokens=60)
+        raw_theme, slot_hint = _parse_theme_reply(answer)
         theme = clean_theme(raw_theme)
     except Exception as exc:  # noqa: BLE001 - a proposal is never lost to its name
         print(f"gear: could not name a proposal for {topic_id}: {exc!r}")
