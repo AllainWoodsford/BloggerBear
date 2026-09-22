@@ -1983,3 +1983,33 @@ def test_gear_that_is_not_worn_is_not_shown(aws_resources):
     _, view = _equipment_view()
 
     assert view["armor"]["helmet"] is None and view["armor"]["chest"] is None
+
+
+# --- Musings: loot drops carry their gear ------------------------------------------------------
+
+
+def _put_musing(musing_id, kind, created_at, **fields):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Musings")
+    table.put_item(
+        Item={
+            "musing_id": musing_id,
+            "kind": kind,
+            "text": f"text of {musing_id}",
+            "mood": "excited" if kind == "loot" else "proud",
+            "created_at": created_at,
+            **fields,
+        }
+    )
+
+
+def test_a_loot_drop_musing_is_listed_with_the_gear_it_announces(aws_resources):
+    gear = {"name": "Helm of Plain Speaking", "rarity": "epic", "slot": "helmet", "description": "Be plain."}
+    _put_musing("m1", "loot", "2026-09-22T00:00:00+00:00", gear=gear)
+    _put_musing("m2", "article", "2026-09-21T00:00:00+00:00", article_id="a1")
+
+    result = public_api_handler.handler(_event("GET /musings"), None)
+
+    by_id = {m["musing_id"]: m for m in json.loads(result["body"])["musings"]}
+    assert by_id["m1"]["kind"] == "loot" and by_id["m1"]["mood"] == "excited"
+    assert by_id["m1"]["gear"] == gear
+    assert "gear" not in by_id["m2"]  # only loot drops have any
