@@ -634,6 +634,8 @@ module "admin_api" {
     "POST /prompt-refinements/{topic_id}/{version}/rarity",
     "POST /prompt-refinements/{topic_id}/{version}/repair",
     "GET /equipment",
+    "POST /equipment",
+    "DELETE /prompt-refinements/{topic_id}/{version}",
     # DLQ-consumer visibility -- see admin_api_handler.py's
     # _list_failed_executions and scripts/admin_cli.py's
     # `failed-executions list` subcommand.

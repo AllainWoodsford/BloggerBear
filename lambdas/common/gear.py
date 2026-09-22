@@ -125,9 +125,12 @@ def roll_max_durability(rarity: str, rng=None) -> int:
     return rng.randint(low, high)
 
 
-def new_identity(theme: str, slot_hint: str | None = None, rng=None) -> dict:
-    """The fields a fresh piece of gear gets: a rolled rarity, a durability rolled to match it, and full."""
-    rarity = roll_rarity(rng)
+def new_identity(theme: str, slot_hint: str | None = None, rng=None, rarity: str | None = None) -> dict:
+    """The fields a fresh piece of gear gets: a rarity (rolled, unless an admin names one), a durability
+    rolled to match it, and full."""
+    if rarity is not None and rarity not in RARITIES:
+        raise ValueError(f"rarity must be one of: {', '.join(RARITIES)}")
+    rarity = rarity or roll_rarity(rng)
     top = roll_max_durability(rarity, rng)
     return {
         "theme": theme,

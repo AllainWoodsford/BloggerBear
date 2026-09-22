@@ -30,6 +30,7 @@ from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     delete_musings_for_article,
+    delete_prompt_refinement,
     delete_topic,
     get_article,
     get_feedback_config,
@@ -52,6 +53,7 @@ from common.dynamo import (
     put_model,
     put_model_config,
     put_pipeline_config,
+    put_prompt_refinement,
     put_topic,
     set_article_feedback_lock,
     set_prompt_refinement_equipment,
@@ -181,6 +183,10 @@ def _create_topic(event: dict) -> dict:
 
     if not isinstance(topic_id, str) or not topic_id:
         return _error(400, "'topic_id' is required and must be a non-empty string")
+    if topic_id == equipment.GLOBAL_TOPIC_ID:
+        return _error(
+            400, f"'{equipment.GLOBAL_TOPIC_ID}' is reserved (armor created by hand is filed under it)"
+        )
     if not isinstance(name, str) or not name:
         return _error(400, "'name' is required and must be a non-empty string")
     if not isinstance(adapter, str) or not adapter:
@@ -1056,6 +1062,144 @@ def _repair_gear(event: dict) -> dict:
     return _response(200, {"repaired": {**equipment.ref(item), "was": now, **summary}})
 
 
+def _create_equipment(event: dict) -> dict:
+    """Make a new piece of gear by hand, and (by default) put it on.
+
+    Body: {text (the guidance, required), scope ("global" armor or "topic" ring; inferred from topic_id),
+    topic_id (rings), slot, rarity (else rolled), theme (else the bear names it), equip (default true),
+    replace (a ring to swap out when all five are worn)}. The item is approved from the start: a person
+    made it, so it skips the proposal step. Everything is checked before anything is written, so a
+    refusal creates nothing.
+    """
+    body = _placement_body(event)
+    if not body:
+        return _error(400, "request body must be a JSON object with at least 'text'")
+    text = body.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return _error(400, "'text' (what the gear tells the bear to do) is required")
+    text = " ".join(text.split())
+    if len(text) > equipment.MAX_GUIDANCE_LENGTH:
+        return _error(400, f"'text' must be at most {equipment.MAX_GUIDANCE_LENGTH} characters")
+
+    topic_id = body.get("topic_id")
+    scope = body.get("scope") or (equipment.SCOPE_TOPIC if topic_id else equipment.SCOPE_GLOBAL)
+    if scope not in (equipment.SCOPE_GLOBAL, equipment.SCOPE_TOPIC):
+        return _error(400, "'scope' must be 'global' (armor) or 'topic' (a ring)")
+    if scope == equipment.SCOPE_TOPIC:
+        if not isinstance(topic_id, str) or not topic_id:
+            return _error(400, "a ring is tied to a topic: 'topic_id' is required")
+        if get_topic(topic_id) is None:
+            return _error(404, f"topic '{topic_id}' not found")
+        key = topic_id
+    else:
+        if topic_id not in (None, "", equipment.GLOBAL_TOPIC_ID):
+            return _error(400, "armor applies to every topic: leave out 'topic_id', or use scope 'topic'")
+        key = equipment.GLOBAL_TOPIC_ID
+
+    rarity = body.get("rarity")
+    if rarity is not None and rarity not in gear.RARITIES:
+        return _error(400, f"'rarity' must be one of: {', '.join(gear.RARITIES)}")
+    slot = body.get("slot")
+    all_slots = (*equipment.ARMOR_SLOTS, equipment.RING_SLOT)
+    if slot is not None and slot not in all_slots:
+        return _error(400, f"'slot' must be one of: {', '.join(all_slots)}")
+    equip = body.get("equip", True)
+    if not isinstance(equip, bool):
+        return _error(400, "'equip' must be true or false")
+
+    theme = body.get("theme")
+    slot_hint = None
+    if theme is not None:
+        theme = gear.clean_theme(theme)
+        if theme is None:
+            return _error(400, "'theme' must be 2 to 5 plain words (letters, spaces, apostrophes, hyphens)")
+    else:
+        # The bear names it and suggests a slot; any failure falls back to a plain name from the topic.
+        try:
+            generated = gear.generate_identity(key, text, os.environ["BEDROCK_MODEL_ID"])
+            theme, slot_hint = generated["theme"], generated["slot_hint"]
+        except Exception as exc:  # noqa: BLE001 - a name is never worth refusing the gear for
+            print(f"admin_api_handler: could not name new gear: {exc!r}")
+            theme = gear.fallback_theme(key)
+
+    version = datetime.now(UTC).isoformat()
+    identity = gear.new_identity(theme, slot or slot_hint, rarity=rarity)
+    item = {
+        "topic_id": key,
+        "version": version,
+        "proposed_at": version,
+        "rationale": "Created by an admin.",
+        "prompt_changes": text,
+        "status": "approved",
+        "scope": scope,
+        "created_by": "admin",
+        **identity,
+    }
+
+    plan = None
+    if equip:
+        try:
+            plan = equipment.plan_equip(
+                list_prompt_refinements(status="approved"),
+                item,
+                scope=scope,
+                slot=slot,
+                replace=body.get("replace"),
+            )
+        except equipment.EquipError as exc:
+            return _error(exc.status, exc.message)
+
+    fixed = ("topic_id", "version", "proposed_at", "rationale", "prompt_changes", "status")
+    put_prompt_refinement(
+        key,
+        version,
+        item["rationale"],
+        text,
+        status="approved",
+        extra={k: v for k, v in item.items() if k not in fixed},
+    )
+    if plan is not None:
+        _wear(item, plan)
+    else:
+        set_prompt_refinement_equipment(
+            key,
+            version,
+            equipped=False,
+            at=datetime.now(UTC).isoformat(),
+            reason=equipment.SHELVED,
+        )
+    return _response(
+        201,
+        {
+            "created": {
+                **equipment.ref(item),
+                "placement": _placement_view(item, plan),
+                "item": _gear_summary(_as_worn(item, plan)),
+            }
+        },
+    )
+
+
+def _delete_prompt_refinement(event: dict) -> dict:
+    """Remove a piece of gear entirely (worn or not). Articles written with it keep their own record."""
+    topic_id = _path_param(event, "topic_id")
+    version = _path_param(event, "version")
+    item = get_prompt_refinement(topic_id, version)
+    if item is None:
+        return _error(404, f"prompt refinement '{topic_id}'/'{version}' not found")
+    delete_prompt_refinement(topic_id, version)
+    return _response(
+        200,
+        {
+            "deleted": {
+                **equipment.ref(item),
+                "name": _view(item)["name"],
+                "was_equipped": equipment.is_equipped(item),
+            }
+        },
+    )
+
+
 def _raise_rarity(event: dict) -> dict:
     """Bump an item's rarity up. Body {"rarity": "epic"}, or none for one step up. Only up."""
     topic_id = _path_param(event, "topic_id")
@@ -1365,6 +1509,8 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/rarity": _raise_rarity,
     "POST /prompt-refinements/{topic_id}/{version}/repair": _repair_gear,
     "GET /equipment": _get_equipment,
+    "POST /equipment": _create_equipment,
+    "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
     "GET /models": _list_models,
     "POST /models": _put_model,

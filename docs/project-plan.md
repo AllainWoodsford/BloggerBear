@@ -1083,6 +1083,11 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
 - **What was worn is recorded.** `Articles.equipment_used` lists `{topic_id, version, slot}` per piece used;
   (only the armor actually taken in) `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
   This is the data an effectiveness measure and wear-out would need; neither is built.
+- **Made by hand.** `POST /equipment` (`admin_cli equipment create`, guided or with flags) creates gear you
+  wrote, approved from the start, optionally with a chosen rarity and name, and puts it on; `DELETE
+  /prompt-refinements/{topic}/{version}` (`equipment delete`) removes it. Armor made this way is filed under
+  the reserved pseudo-topic `global`. All checks (scope, topic, slot, rarity, name, room for another ring) run
+  before anything is written.
 - **Admin.** `GET /equipment`, `POST /prompt-refinements/{topic_id}/{version}/equip|unequip`, and an optional
   `{scope, slot, replace}` body on approve. The displaced item is benched first, so a failure part way leaves
   a slot empty rather than two items fighting over it. `admin_cli equipment ...`, and `approve` asks where

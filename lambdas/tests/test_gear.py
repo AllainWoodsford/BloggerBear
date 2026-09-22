@@ -380,3 +380,20 @@ def test_a_long_description_is_capped_with_an_ellipsis():
 )
 def test_guidance_that_is_not_fit_to_show_is_withheld(unsafe):
     assert gear.public_description(unsafe) == gear.WITHHELD
+
+
+# --- an admin can name the rarity -----------------------------------------------------------
+
+
+def test_an_admin_can_name_the_rarity_and_the_durability_follows_it():
+    for rarity, (low, high) in gear.DURABILITY_RANGES.items():
+        identity = gear.new_identity("Plain Speaking", "chest", random.Random(1), rarity=rarity)
+
+        assert identity["rarity"] == rarity
+        assert low <= identity["max_durability"] <= high
+        assert identity["durability"] == identity["max_durability"]
+
+
+def test_a_rarity_that_does_not_exist_is_refused():
+    with pytest.raises(ValueError, match="one of"):
+        gear.new_identity("Plain Speaking", None, rarity="mythic")
