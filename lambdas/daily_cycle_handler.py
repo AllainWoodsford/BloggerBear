@@ -64,6 +64,7 @@ from common.editorial_resolver import (
     resolve_editorial_goals,
 )
 from common.fact_check import fact_check_label
+from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.relevance import (
@@ -96,6 +97,7 @@ _FEEDBACK_GUIDANCE_HEADER = "Additional guidance based on reader feedback:"
 _FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 
 
+@track_lambda_duration("daily_cycle")
 def handler(event: dict, context) -> dict:
     topic_id = (event or {}).get("topic_id")
     if not topic_id:

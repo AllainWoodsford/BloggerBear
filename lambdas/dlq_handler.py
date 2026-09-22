@@ -27,8 +27,10 @@ import uuid
 from datetime import UTC, datetime
 
 from common.dynamo import put_failed_execution
+from common.lambda_timing import track_lambda_duration
 
 
+@track_lambda_duration("dlq_handler")
 def handler(event: dict, context) -> dict:
     records = (event or {}).get("Records", [])
     processed = 0
