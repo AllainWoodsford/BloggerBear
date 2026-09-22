@@ -2586,3 +2586,144 @@ def test_feedback_on_an_article_written_with_deleted_gear_wears_nothing_and_does
 
     assert changes == []
     assert _stored("global", created["version"]) is None  # not resurrected by the wear update
+
+
+# --- Loot drops: announcing new gear ------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def loot_musing(aws_resources):
+    """Announcing writes a musing through a model: fake it, and let each test look at what it was given."""
+    with patch(
+        "admin_api_handler.generate_and_store_loot_musing", return_value={"musing_id": "m-loot"}
+    ) as mock:
+        yield mock
+
+
+def _worn_gear(text="Use plain words.", **body):
+    return json.loads(
+        _create_gear({"text": text, "theme": "Plain Speaking", "slot": "helmet", **body})["body"]
+    )["created"]
+
+
+def test_new_gear_that_is_worn_is_announced_with_its_public_details(loot_musing):
+    created = _worn_gear(rarity="epic")
+
+    assert created["loot_drop"] == "m-loot"
+    loot_musing.assert_called_once()
+    gear = loot_musing.call_args.kwargs["gear"]
+    assert (gear["name"], gear["rarity"], gear["slot"]) == ("Helm of Plain Speaking", "epic", "helmet")
+    assert gear["description"] == "Use plain words." and gear["topic_name"] is None
+    assert "version" not in gear and "rationale" not in gear  # only the public view
+    assert _stored("global", created["version"])["loot_announced_at"]
+
+
+def test_a_ring_is_announced_with_its_topics_name(aws_resources, loot_musing):
+    _put_topic()
+
+    created = json.loads(
+        _create_gear({"text": "Name the repository.", "theme": "Repo Focus", "topic_id": "github-trending"})[
+            "body"
+        ]
+    )["created"]
+
+    assert created["loot_drop"] == "m-loot"
+    gear = loot_musing.call_args.kwargs["gear"]
+    assert gear["name"] == "Ring of Repo Focus" and gear["topic_name"] == "GitHub Trending"
+    assert loot_musing.call_args.kwargs["gear"]["topic_id"] == "github-trending"
+
+
+def test_gear_put_in_the_backpack_is_not_announced_until_it_is_worn(loot_musing):
+    created = _worn_gear(equip=False)
+
+    assert created["loot_drop"] is None and not loot_musing.called
+    equipped = json.loads(
+        _post("equip", created["version"], {"scope": "global", "slot": "helmet"}, "global")["body"]
+    )
+    assert equipped["equipped"]["loot_drop"] == "m-loot" and loot_musing.call_count == 1
+
+
+def test_a_piece_is_announced_once_however_often_it_is_taken_off_and_put_on(loot_musing):
+    created = _worn_gear()
+    _post("unequip", created["version"], topic_id="global")
+    again = json.loads(
+        _post("equip", created["version"], {"scope": "global", "slot": "helmet"}, "global")["body"]
+    )
+
+    assert again["equipped"]["loot_drop"] is None
+    assert loot_musing.call_count == 1
+
+
+def test_the_admin_can_stay_quiet_and_the_drop_is_saved_for_later(loot_musing):
+    created = _worn_gear(announce=False)
+
+    assert created["loot_drop"] is None and not loot_musing.called
+    assert "loot_announced_at" not in _stored("global", created["version"])
+    _post("unequip", created["version"], topic_id="global")
+    later = json.loads(
+        _post("equip", created["version"], {"scope": "global", "slot": "helmet"}, "global")["body"]
+    )
+    assert later["equipped"]["loot_drop"] == "m-loot"  # the first time it is worn with announcing on
+
+
+def test_approving_a_proposal_into_a_worn_slot_announces_it(aws_resources, loot_musing):
+    _put_refinement(version="v1", prompt_changes="Be plain.")
+
+    approved = json.loads(_post("approve", "v1")["body"])["approved"]
+
+    assert approved["loot_drop"] == "m-loot"
+    assert loot_musing.call_args.kwargs["gear"]["description"] == "Be plain."
+
+
+def test_approving_into_the_backpack_announces_nothing(aws_resources, loot_musing):
+    _put_refinement(version="v1")
+
+    approved = json.loads(_post("approve", "v1", {"scope": "backpack"})["body"])["approved"]
+
+    assert approved["loot_drop"] is None and not loot_musing.called
+
+
+def test_a_failed_announcement_never_stops_the_gear_being_worn(loot_musing):
+    loot_musing.side_effect = RuntimeError("bedrock is down")
+
+    result = _create_gear({"text": "Use plain words.", "theme": "Plain Speaking", "slot": "helmet"})
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])["created"]
+    assert created["placement"]["equipped"] is True and created["loot_drop"] is None
+    assert "loot_announced_at" not in _stored("global", created["version"])  # so it can be announced again
+
+
+def test_the_announce_command_can_announce_again_and_says_which_musing(loot_musing):
+    created = _worn_gear()
+    loot_musing.reset_mock()
+
+    result = _post("announce", created["version"], topic_id="global")
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["announced"] == {
+        "topic_id": "global",
+        "version": created["version"],
+        "musing_id": "m-loot",
+    }
+    assert loot_musing.call_count == 1
+
+
+def test_the_announce_command_reports_a_failure_instead_of_hiding_it(loot_musing):
+    created = _worn_gear(announce=False)
+    loot_musing.side_effect = RuntimeError("bedrock is down")
+
+    assert _post("announce", created["version"], topic_id="global")["statusCode"] == 500
+
+
+def test_only_approved_gear_can_be_announced(aws_resources):
+    _put_refinement(version="pending-one")
+
+    assert _post("announce", "pending-one")["statusCode"] == 409
+    assert _post("announce", "nowhere")["statusCode"] == 404
+
+
+def test_a_bad_announce_flag_is_treated_as_yes(loot_musing):
+    created = _worn_gear(announce="no thanks")
+
+    assert created["loot_drop"] == "m-loot"

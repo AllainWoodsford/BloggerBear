@@ -54,9 +54,10 @@ def _describe(*values) -> list[dict]:
 # --- the backend's moods, and the pictures -----------------------------------------------------------
 
 
-def test_bloggerbear_has_five_moods():
-    assert set(musings.MOODS) == {"proud", "thoughtful", "pleased", "reflective", "curious"}
-    assert len(musings.MOODS) == 5
+def test_bloggerbear_has_six_moods():
+    moods = {"proud", "thoughtful", "pleased", "reflective", "curious", "excited"}  # excited: a loot drop
+    assert set(musings.MOODS) == moods
+    assert len(musings.MOODS) == 6
 
 
 def test_every_backend_mood_has_a_bear_picture():
@@ -133,9 +134,9 @@ def test_case_and_spaces_do_not_matter():
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
 def test_a_new_mood_with_no_picture_yet_shows_its_word_and_the_plain_bear():
-    (result,) = _describe("excited")
+    (result,) = _describe("elated")
 
-    assert result == {"label": "excited", "image": "bears/default.svg", "known": False}
+    assert result == {"label": "elated", "image": "bears/default.svg", "known": False}
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
