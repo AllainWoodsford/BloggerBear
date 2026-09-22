@@ -23,9 +23,11 @@ over a bookkeeping write. This mirrors every other "never let this break the rea
 this codebase (e.g. daily_cycle_handler's musing generation, admin_api_handler's loot-drop
 announcement).
 
-Not built yet, by design (separate PRs): a weekly rollover job that copies this row into
-StatsHistory and resets it, Lambda billed-duration tracking, and API Gateway cost via Cost
-Explorer. Their fields are not reserved here; they will just be more keys on the same row.
+PR 2 added the weekly rollover job (stats_rollover_handler.py, StatsCurrent -> a new StatsHistory
+row, then reset) and Lambda billed-duration tracking (common/lambda_timing.py). PR 3 added API
+Gateway cost via a daily Cost Explorer poll (common/cost_explorer.py, cost_explorer_poll_handler.py)
+-- see record_api_gateway_cost below, the one field on this row that is SET rather than ADD'd: a
+refreshed snapshot of a rolling 30-day total, not something to accumulate across polls.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ from decimal import Decimal
 
 from common.bedrock import invoke_model_tracked
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
-from common.dynamo import increment_current_stats
+from common.dynamo import increment_current_stats, set_current_stats_fields
 
 BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening")
 
@@ -52,6 +54,13 @@ LOOT_DROPS = "loot_drops"
 # Prefix for common/lambda_timing.py's per-function running total: "{PREFIX}{function_name}",
 # e.g. "lambda_ms_research_tick" -- milliseconds, summed across every invocation this week.
 LAMBDA_MS_PREFIX = "lambda_ms_"
+
+# cost_explorer_poll_handler.py's latest reading -- a refreshed snapshot (SET), not a counter
+# (ADD) like everything else on this row. Not all of these are meant for the public Stats page;
+# api_gateway_cost_as_of in particular is for the owner's own troubleshooting.
+API_GATEWAY_COST_USD_30D = "api_gateway_cost_usd_30d"
+API_GATEWAY_COST_AUD_30D = "api_gateway_cost_aud_30d"
+API_GATEWAY_COST_AS_OF = "api_gateway_cost_as_of"
 
 
 def _current_week_start(today: date | None = None) -> str:
@@ -132,3 +141,21 @@ def record_lambda_duration(function_name: str, duration_ms: int) -> None:
     for the week (common/lambda_timing.py's track_lambda_duration -- this is never called directly
     outside that decorator)."""
     _record({f"{LAMBDA_MS_PREFIX}{function_name}": duration_ms})
+
+
+def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
+    """The latest Cost Explorer reading for API Gateway spend (common/cost_explorer.py's
+    fetch_api_gateway_cost_usd_30d, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
+    a rolling 30-day total, not a counter, so this SETs rather than ADDs: a repeat poll overwrites
+    the previous reading instead of compounding it onto every prior one."""
+    try:
+        set_current_stats_fields(
+            {
+                API_GATEWAY_COST_USD_30D: cost_usd,
+                API_GATEWAY_COST_AUD_30D: cost_usd * Decimal(str(USD_TO_AUD_RATE)),
+                API_GATEWAY_COST_AS_OF: as_of,
+            },
+            _current_week_start(),
+        )
+    except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
+        print(f"stats_tracking: could not record api gateway cost: {exc!r}")

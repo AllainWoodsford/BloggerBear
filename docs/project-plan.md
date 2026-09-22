@@ -1198,11 +1198,12 @@ article (PR 1), and wear comes from a stored downvote (1 point), repaired by a s
 
 ### Observability: a Stats table, a Historic table, and everything Bedrock spends that isn't on an article
 
-**Status: PR 1 and PR 2 of an owner-scoped series done (recording what was previously untracked, then the
-weekly rollover job and Lambda billed-duration tracking); not yet built: API Gateway cost or any
-Stats-page UI for any of this.** Prompted by the owner asking how tokens are calculated and finding two
-real gaps: no dedicated Stats table existed (per-article `lineage`, aggregated live by `common/stats.py`,
-was the whole story), and four real Bedrock-calling code paths were never tracked at all.
+**Status: PR 1, 2 and 3 of an owner-scoped series done (recording what was previously untracked; the
+weekly rollover job and Lambda billed-duration tracking; API Gateway cost via Cost Explorer); not yet
+built: the Stats-page UI for any of this.** Prompted by the owner asking how tokens are calculated and
+finding two real gaps: no dedicated Stats table existed (per-article `lineage`, aggregated live by
+`common/stats.py`, was the whole story), and four real Bedrock-calling code paths were never tracked at
+all.
 
 **Two new DynamoDB tables** (`infra/modules/app-data`): `StatsCurrent`, one row (`stats_id = "current"`),
 updated in place all week with `ADD` expressions -- the same pattern the ModelConfig table's rate-limit
@@ -1265,10 +1266,28 @@ instead of the literal `#f{n}` placeholder token, which raised a `ValidationExce
 Fixed in the same PR 2 commit rather than a separate hotfix; called out here in case anyone finds it
 independently.
 
-**Still to come, each its own PR:** API Gateway cost via a periodic Cost Explorer poll
-(`ce:GetCostAndUsage`, `SERVICE = Amazon API Gateway`, a rolling 30 days -- chosen over hand-maintaining
-AWS's per-request price, the owner's explicit "least complex to troubleshoot" steer, even at the cost of
-Cost Explorer's own ~24h data lag and small per-call charge; needs a one-time manual Cost Explorer
-console enablement plus a new `ce:GetCostAndUsage` IAM grant); and the Stats-page UI for any of this
-(Total Stats from History, Weekly Stats from Current, Feedback Given/Rejected cards, a Loot Stat tracker,
-gear moved to the bottom of the page).
+**PR 3 -- built:** API Gateway cost via a daily Cost Explorer poll (`cost_explorer_poll_handler.py`,
+`common/cost_explorer.py`). `ce:GetCostAndUsage`, filtered to `SERVICE = Amazon API Gateway`, summed
+over a rolling 30 days ending *yesterday* (Cost Explorer's own data lags real spend by roughly a day, so
+today's figure would be partial and understate the true cost -- the query's exclusive `End` is always
+today, never tomorrow). Queried at `DAILY` granularity and summed here, not requested as `MONTHLY`:
+Cost Explorer's `MONTHLY` granularity requires the queried period to align to calendar-month boundaries,
+which an arbitrary rolling 30-day window does not. Chosen over hand-maintaining AWS's per-request price
+ourselves, the owner's explicit "least complex to troubleshoot / manage" steer, even at the cost of that
+~24h lag and `GetCostAndUsage`'s own small per-call charge (~$0.01/request -- why this polls once a day,
+not more often). The reading is written straight onto `StatsCurrent` as a refreshed snapshot (`SET`, via
+`common/dynamo.py`'s new `set_current_stats_fields`), not accumulated (`ADD`) like every other field on
+that row -- a repeat poll overwrites the previous reading rather than compounding onto it. `ce` has no
+regional API of its own; queried via `us-east-1` regardless of the stack's own `ap-southeast-2`. New IAM
+grant (`ce:GetCostAndUsage`, `resources = ["*"]` -- Cost Explorer does not support resource-level
+permissions, so this is the correct, narrowest scope, not an oversight). **Requires a one-time manual
+enablement of Cost Explorer in the AWS console before `GetCostAndUsage` returns real data** -- cannot be
+done via Terraform or the CLI. Until it's turned on in both accounts, `cost_explorer_poll_handler.py`'s
+own top-level try/except means a rejected call is logged and reported as `{"status": "error"}` rather
+than crashing, the same as any other scheduled handler's real failure -- it is not silently masked as a
+$0 reading.
+
+**Still to come:** the Stats-page UI for any of this (Total Stats from History -- explicitly labelled as
+excluding the current week -- Weekly Stats from Current, Feedback Given/Rejected cards, a Loot Stat
+tracker, gear moved to the bottom of the page). Not everything on `StatsCurrent`/`StatsHistory` is meant
+to reach that page; `api_gateway_cost_as_of` in particular is for the owner's own troubleshooting.
