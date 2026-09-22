@@ -32,6 +32,7 @@ from datetime import UTC, datetime, timedelta
 
 from common import gear
 from common.dynamo import get_article, list_feedback_since, put_prompt_refinement
+from common.lambda_timing import track_lambda_duration
 from common.stats_tracking import tracked_claude
 
 _LOOKBACK_DAYS = 7
@@ -61,6 +62,7 @@ drafts on this topic>
 """
 
 
+@track_lambda_duration("weekly_reflection")
 def handler(event, context) -> dict:
     try:
         return _run_weekly_reflection()

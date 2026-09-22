@@ -1198,11 +1198,11 @@ article (PR 1), and wear comes from a stored downvote (1 point), repaired by a s
 
 ### Observability: a Stats table, a Historic table, and everything Bedrock spends that isn't on an article
 
-**Status: PR 1 of an owner-scoped series (recording what was previously untracked), not yet built: the
-weekly rollover job, Lambda billed-duration tracking, API Gateway cost, or any Stats-page UI for any of
-this.** Prompted by the owner asking how tokens are calculated and finding two real gaps: no dedicated
-Stats table existed (per-article `lineage`, aggregated live by `common/stats.py`, was the whole story),
-and four real Bedrock-calling code paths were never tracked at all.
+**Status: PR 1 and PR 2 of an owner-scoped series done (recording what was previously untracked, then the
+weekly rollover job and Lambda billed-duration tracking); not yet built: API Gateway cost or any
+Stats-page UI for any of this.** Prompted by the owner asking how tokens are calculated and finding two
+real gaps: no dedicated Stats table existed (per-article `lineage`, aggregated live by `common/stats.py`,
+was the whole story), and four real Bedrock-calling code paths were never tracked at all.
 
 **Two new DynamoDB tables** (`infra/modules/app-data`): `StatsCurrent`, one row (`stats_id = "current"`),
 updated in place all week with `ADD` expressions -- the same pattern the ModelConfig table's rate-limit
@@ -1237,15 +1237,38 @@ succeed": a closed site never let the reader try, and a bad token or a filled-in
 bot, neither is what a person reads as "my feedback was rejected"). `loot_drops` (an activity count, not
 a cost figure -- `common/musings.py`, the moment a loot-drop musing is actually written).
 
-**Still to come, each its own PR:** the weekly rollover (`StatsCurrent` → a new `StatsHistory` row, then
-reset for the next week; "Total Stats" on the public page will sum `StatsHistory` and must say it
-excludes the current week, still in `StatsCurrent`); Lambda billed-duration tracking (self-timed --
-`time.perf_counter()` around each pipeline handler's own body, close to but not identical to AWS's
-billed figure, chosen over pulling CloudWatch's own `REPORT` lines/metrics after the fact, for build
-quality over exactness -- the owner's call, and deliberately only the scheduled pipeline handlers, not
-`admin_api`/`public_api`, so live reader traffic never takes an extra write); API Gateway cost via a
-periodic Cost Explorer poll (`ce:GetCostAndUsage`, `SERVICE = Amazon API Gateway`, a rolling 30 days --
-chosen over hand-maintaining AWS's per-request price, the owner's explicit "least complex to
-troubleshoot" steer, even at the cost of Cost Explorer's own ~24h data lag and small per-call charge);
-and the Stats-page UI for any of this (Total Stats from History, Weekly Stats from Current, Feedback
-Given/Rejected cards, a Loot Stat tracker, gear moved to the bottom of the page).
+**PR 2 -- built:** the weekly rollover job (`stats_rollover_handler.py`, a static EventBridge Scheduler
+job like `weekly_reflection`'s, `cron(15 9 ? * MON *)` -- 15 minutes after `weekly_reflection`'s own
+Monday run, so that Monday's reflection cost lands in the week it is reflecting on, not the new week
+just starting). It copies `StatsCurrent` into a new `StatsHistory` row keyed by the week it covers
+(`common/dynamo.py`'s `put_stats_history_row`, a conditional write -- a retried or duplicated invocation
+never overwrites an already-rolled-over week), then clears `StatsCurrent` (`delete_current_stats`) so
+the next Bedrock call or reader-activity event starts the new week's row fresh. "Total Stats" on the
+public page will sum `StatsHistory` and must say it excludes the current week, still in `StatsCurrent`,
+per the owner's steer.
+
+Also in PR 2: Lambda billed-duration tracking, self-timed (`common/lambda_timing.py`'s
+`track_lambda_duration` decorator, `time.perf_counter()` around each handler's own body -- close to but
+not identical to AWS's billed figure, chosen over pulling CloudWatch's own `REPORT` lines/metrics after
+the fact, for build quality over exactness, the owner's explicit call). Applied to every scheduled
+pipeline handler (`research_tick`, `daily_cycle`, `weekly_reflection`, `musing_feedback`,
+`trending_digest`, `dlq_handler`, `stats_rollover` itself) and deliberately **not** to `admin_api`/
+`public_api`, so live reader traffic never takes an extra write. One wrinkle worth knowing: because
+`stats_rollover_handler.handler` is itself decorated, its own duration is recorded *after* `_roll_over()`
+has already cleared `StatsCurrent` -- so a fresh row for the new week reappears immediately, seeded with
+nothing but that run's own `lambda_ms_stats_rollover`. Correct and intentional: the rollover job's own
+cost belongs to the week it actually ran in, not the one it just archived.
+
+Found and fixed while building PR 2's tests: a real bug in PR 1's `increment_current_stats` (already
+merged into `dev`) -- its DynamoDB `ADD` expression referenced each field's *resolved* attribute name
+instead of the literal `#f{n}` placeholder token, which raised a `ValidationException` on every call.
+Fixed in the same PR 2 commit rather than a separate hotfix; called out here in case anyone finds it
+independently.
+
+**Still to come, each its own PR:** API Gateway cost via a periodic Cost Explorer poll
+(`ce:GetCostAndUsage`, `SERVICE = Amazon API Gateway`, a rolling 30 days -- chosen over hand-maintaining
+AWS's per-request price, the owner's explicit "least complex to troubleshoot" steer, even at the cost of
+Cost Explorer's own ~24h data lag and small per-call charge; needs a one-time manual Cost Explorer
+console enablement plus a new `ce:GetCostAndUsage` IAM grant); and the Stats-page UI for any of this
+(Total Stats from History, Weekly Stats from Current, Feedback Given/Rejected cards, a Loot Stat tracker,
+gear moved to the bottom of the page).

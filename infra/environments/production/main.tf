@@ -1565,6 +1565,40 @@ resource "aws_scheduler_schedule" "weekly_reflection" {
   }
 }
 
+# Observability enhancement, PR 2: closes out this week's Stats row and opens next week's. Scheduled
+# 15 minutes after weekly_reflection above, so that Monday's reflection cost is tallied into the week
+# it is reflecting on, not the new week that is just starting -- see stats_rollover_handler.py.
+resource "aws_lambda_function" "stats_rollover" {
+  function_name = "bloggerbear-production-stats-rollover"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "stats_rollover_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+resource "aws_scheduler_schedule" "stats_rollover" {
+  name                = "bloggerbear-production-stats-rollover"
+  group_name          = "default"
+  schedule_expression = "cron(15 9 ? * MON *)"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.stats_rollover.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
 # =========================================================================
 # Phase 6 -- Observability & hardening: CloudWatch alarms/dashboard for
 # all 5 pipeline Lambdas + the daily-cycle state machine/DLQ (see
@@ -1588,6 +1622,7 @@ module "observability" {
     aws_lambda_function.trending_digest.function_name,
     aws_lambda_function.dlq_handler.function_name,
     aws_lambda_function.musing_feedback.function_name,
+    aws_lambda_function.stats_rollover.function_name,
   ]
   state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name

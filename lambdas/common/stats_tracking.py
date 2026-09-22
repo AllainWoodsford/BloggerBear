@@ -49,6 +49,10 @@ FEEDBACK_GIVEN = "feedback_given"
 FEEDBACK_REJECTED_COMMENT = "feedback_rejected_comment"
 LOOT_DROPS = "loot_drops"
 
+# Prefix for common/lambda_timing.py's per-function running total: "{PREFIX}{function_name}",
+# e.g. "lambda_ms_research_tick" -- milliseconds, summed across every invocation this week.
+LAMBDA_MS_PREFIX = "lambda_ms_"
+
 
 def _current_week_start(today: date | None = None) -> str:
     """The Monday of the current ISO week, as StatsCurrent's `week_start` (e.g. "2026-09-15")."""
@@ -121,3 +125,10 @@ def record_loot_drop() -> None:
     """A piece of gear was just announced as a loot drop (common/musings.py's
     generate_and_store_loot_musing) -- an activity count, not a cost figure."""
     _record({LOOT_DROPS: 1})
+
+
+def record_lambda_duration(function_name: str, duration_ms: int) -> None:
+    """One invocation's self-timed wall-clock duration, added to `function_name`'s running total
+    for the week (common/lambda_timing.py's track_lambda_duration -- this is never called directly
+    outside that decorator)."""
+    _record({f"{LAMBDA_MS_PREFIX}{function_name}": duration_ms})

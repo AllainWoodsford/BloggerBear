@@ -47,6 +47,7 @@ from common.dynamo import (
     set_topic_last_research_at,
 )
 from common.editorial_resolver import resolve_editorial_goals
+from common.lambda_timing import track_lambda_duration
 from common.relevance import research_relevance_rule, topic_label
 from common.research_schedule import is_due, next_due_at, resolve_interval_hours
 
@@ -132,6 +133,7 @@ def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> s
     )
 
 
+@track_lambda_duration("research_tick")
 def handler(event, context) -> dict:
     topic_id = (event or {}).get("topic_id")
     if not topic_id:

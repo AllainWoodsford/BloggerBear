@@ -25,11 +25,13 @@ import os
 from datetime import UTC, datetime, timedelta
 
 from common.dynamo import list_feedback_since
+from common.lambda_timing import track_lambda_duration
 from common.musings import generate_and_store_feedback_musing
 
 _LOOKBACK_DAYS = 4
 
 
+@track_lambda_duration("musing_feedback")
 def handler(event, context) -> dict:
     try:
         return _run_feedback_musing()
