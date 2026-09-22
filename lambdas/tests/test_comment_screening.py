@@ -25,15 +25,18 @@ REAL_COMMENTS = [
 
 
 def _model(monkeypatch, answer):
+    """Stands in for common.stats_tracking.tracked_claude (the tracking/pricing itself has its
+    own dedicated tests in test_stats_tracking.py, same as invoke_model_tracked's do in
+    test_bedrock.py -- callers here only need to trust it returns the model's text)."""
     calls = []
 
-    def fake(prompt, model_id):
+    def fake(category, prompt, model_id, max_tokens=1024):
         calls.append((prompt, model_id))
         if isinstance(answer, Exception):
             raise answer
         return answer
 
-    monkeypatch.setattr(cs, "invoke_claude", fake)
+    monkeypatch.setattr(cs, "tracked_claude", fake)
     return calls
 
 
