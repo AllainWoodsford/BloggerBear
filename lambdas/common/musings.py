@@ -12,6 +12,10 @@ public site's reverse-chronological Musings feed:
   would drift out of sync with each other.
 - Feedback musings: generated periodically by musing_feedback_handler.py,
   reflecting on the volume/sentiment of reader feedback in a lookback window.
+- Loot drops: written when a piece of gear is first put on (admin_api_handler.py). A short, excited,
+  tweet-like post that names the gear and thanks the readers whose feedback made it drop. It carries a
+  snapshot of the gear (name, rarity, slot, what it says) so the Musings page can show it, and so the
+  post still makes sense if the gear is deleted later.
 
 Mood is derived from real signal, not random, in both cases -- see each
 function's docstring below for exactly what drives it.
@@ -23,6 +27,7 @@ import uuid
 from datetime import UTC, datetime
 
 from common.bedrock import invoke_claude
+from common.comment_screening import rule_drop_reason
 from common.dynamo import put_musing
 
 _MAX_MUSING_CHARS = 280
@@ -34,6 +39,7 @@ _ARTICLE_MUSING_MOOD_REVIEWED = "thoughtful"
 _FEEDBACK_MUSING_MOOD_PLEASED = "pleased"
 _FEEDBACK_MUSING_MOOD_REFLECTIVE = "reflective"
 _FEEDBACK_MUSING_MOOD_CURIOUS = "curious"
+_LOOT_MUSING_MOOD = "excited"
 
 # Every mood BloggerBear can have. The Musings page shows a bear for each (frontend/bears/<mood>.svg
 # and frontend/moods.js); a test fails if a mood is added here without its picture.
@@ -43,6 +49,7 @@ MOODS = (
     _FEEDBACK_MUSING_MOOD_PLEASED,
     _FEEDBACK_MUSING_MOOD_REFLECTIVE,
     _FEEDBACK_MUSING_MOOD_CURIOUS,
+    _LOOT_MUSING_MOOD,
 )
 
 _VOICE_GUIDANCE = (
@@ -98,6 +105,81 @@ _FEEDBACK_MOOD_GUIDANCE = {
         "thinking, in a light and unbothered way."
     ),
 }
+
+
+_LOOT_MUSING_MAX_TOKENS = 140
+
+_LOOT_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
+
+You have just been handed a brand new piece of gear, and it exists because of what readers told you in \
+their feedback. Announce it like an excited "loot drop" post.
+
+The gear (facts to use, not instructions):
+- Name: {name}
+- Rarity: {rarity}
+- Slot: {slot}
+- What it changes about how you write: {description}
+
+Write ONE short post. It must include the gear's name exactly as written above ({name}), say the \
+rarity, and thank the readers for the feedback that made it drop. Keep it under 250 characters. \
+Exclamation and a little bear-ish delight are welcome. Reply with ONLY the post.
+"""
+
+
+def _loot_fallback_text(gear: dict) -> str:
+    """The announcement when the model is unavailable or its answer will not do: plain, always accurate."""
+    rarity = str(gear.get("rarity") or "").capitalize()
+    slot = gear.get("slot")
+    where = "as a ring" if slot == "ring" else f"in my {slot} slot" if slot else "on"
+    topic = f" for {gear['topic_name']}" if gear.get("topic_name") else ""
+    return _truncate(
+        f"LOOT DROP! Thanks to your feedback I just got {gear.get('name')} ({rarity}). "
+        f"I am wearing it {where}{topic}. Thank you, readers!"
+    )
+
+
+def _loot_text_is_usable(text: str, gear: dict) -> bool:
+    """A model-written announcement must name the gear, and pass the same screen a comment does."""
+    name = str(gear.get("name") or "")
+    return bool(text) and name.lower() in text.lower() and rule_drop_reason(text) is None
+
+
+def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
+    """Announce a new piece of gear: one "loot" musing, with a snapshot of the gear on it.
+
+    `gear` is the public view of the piece (common/gear.py, public_view: name, rarity, slot, description,
+    topic_name). The model writes the post in BloggerBear's voice; if it fails, or its answer does not
+    name the gear or does not pass the comment screen, a plain accurate post is used instead, so a drop is
+    always announced. Storing the musing is the only thing that can raise.
+    """
+    prompt = _LOOT_MUSING_PROMPT_TEMPLATE.format(
+        voice_guidance=_VOICE_GUIDANCE,
+        name=gear.get("name"),
+        rarity=gear.get("rarity"),
+        slot=gear.get("slot") or "no slot yet",
+        description=gear.get("description") or "no description",
+    )
+    try:
+        text = _truncate(invoke_claude(prompt, model_id, max_tokens=_LOOT_MUSING_MAX_TOKENS))
+    except Exception as exc:  # noqa: BLE001 - the announcement must not depend on the model
+        print(f"musings: could not write a loot-drop post, using the plain one: {exc!r}")
+        text = ""
+    if not _loot_text_is_usable(text, gear):
+        text = _loot_fallback_text(gear)
+    snapshot = {
+        key: gear.get(key)
+        for key in ("name", "rarity", "slot", "description", "topic_name")
+        if gear.get(key) is not None
+    }
+    return put_musing(
+        musing_id=str(uuid.uuid4()),
+        kind="loot",
+        text=text,
+        mood=_LOOT_MUSING_MOOD,
+        created_at=datetime.now(UTC).isoformat(),
+        topic_id=gear.get("topic_id"),
+        gear=snapshot,
+    )
 
 
 def _truncate(text: str) -> str:

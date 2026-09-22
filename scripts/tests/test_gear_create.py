@@ -132,7 +132,7 @@ def test_the_summary_says_what_will_be_made_before_anything_is():
         ("Be brief.", "q"),
         ("Be brief.", "", "q"),
         ("Be brief.", "", "", "q"),
-        ("Be brief.", "", "", "", "", "", "n"),
+        ("Be brief.", "", "", "", "", "", "", "n"),  # ...answered the loot-drop question, then declined
     ],
 )
 def test_backing_out_at_any_point_makes_nothing(typed):
@@ -187,7 +187,7 @@ def test_creating_posts_the_body_and_says_what_was_made_and_where():
 def test_creating_with_no_body_runs_the_conversation_first():
     api = FakeApi({"GET /equipment": ARMOR, "POST /equipment": MADE})
 
-    code = gc.create(api, None, answers("Be brief.", "", "", "", "", "", ""), io.StringIO())
+    code = gc.create(api, None, answers("Be brief.", "", "", "", "", "", "", ""), io.StringIO())
 
     assert code == 0 and api.calls[-1] == ("POST", "/equipment", {"text": "Be brief.", "equip": True})
 
@@ -383,7 +383,7 @@ def test_create_for_a_topic_into_the_backpack_and_with_a_swap():
 
 
 def test_create_with_no_text_starts_the_conversation(monkeypatch):
-    typed = iter(["Be brief.", "", "", "", "", "", ""])
+    typed = iter(["Be brief.", "", "", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(typed))
 
     sent = run_cli(["equipment", "create"], {"GET /equipment": ARMOR, "POST /equipment": MADE})
@@ -415,3 +415,49 @@ def test_delete_asks_unless_told_yes():
 def test_create_refuses_a_rarity_that_does_not_exist():
     with pytest.raises(SystemExit):
         run_cli(["equipment", "create", "--text", "x", "--rarity", "mythic"], {})
+
+
+# --- loot drops -------------------------------------------------------------------------------------
+
+
+def test_the_conversation_asks_about_the_loot_drop_and_can_decline_it():
+    body, out = guide(FakeApi({"GET /equipment": ARMOR}), "Be brief.", "", "", "", "", "", "n", "y")
+
+    assert body == {"text": "Be brief.", "equip": True, "announce": False}
+    assert "Loot drop: no" in out
+
+
+def test_by_default_the_drop_is_announced_and_the_summary_says_so():
+    body, out = guide(FakeApi({"GET /equipment": ARMOR}), "Be brief.", "", "", "", "", "", "", "")
+
+    assert "announce" not in body and "Loot drop: yes, posted to the Musings" in out
+
+
+def test_gear_that_goes_to_the_backpack_is_not_asked_about_a_drop():
+    body, out = guide(FakeApi({"GET /equipment": ARMOR}), "Be brief.", "", "", "", "", "n", "y")
+
+    assert body["equip"] is False and "Post a loot drop" not in out and "Loot drop:" not in out
+
+
+def test_the_message_says_when_a_loot_drop_was_posted():
+    posted = {"created": {**MADE["created"], "loot_drop": "m-1"}}
+
+    assert gc.describe_created(posted).endswith("A loot drop has been posted to the Musings.")
+    assert "loot drop" not in gc.describe_created(MADE)
+
+
+def test_create_can_stay_quiet_and_announce_can_be_run_later():
+    quiet = run_cli(["equipment", "create", "--text", "x", "--no-announce"], {"POST /equipment": MADE})
+    later = run_cli(["equipment", "announce", "global", "2026-09-22T00:00:00+00:00"], {})
+
+    assert quiet[0][2]["announce"] is False
+    assert later[0][:2] == ("POST", "/prompt-refinements/global/2026-09-22T00%3A00%3A00%2B00%3A00/announce")
+
+
+def test_approve_and_equip_can_stay_quiet_too():
+    approve = run_cli(["refinements", "approve", "t", "v1", "--no-announce"], {})
+    equip = run_cli(["equipment", "equip", "t", "v1", "--no-announce"], {})
+    loud = run_cli(["equipment", "equip", "t", "v1"], {})
+
+    assert approve[0][2] == {"announce": False} and equip[0][2] == {"announce": False}
+    assert loud[0][2] == {}  # announcing is the default

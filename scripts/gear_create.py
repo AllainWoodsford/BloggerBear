@@ -144,6 +144,10 @@ def guided_body(api: Api, ask: Callable[[str], str], out=None) -> dict | None:
 
     equip = _ask(ask, "\nPut it on straight away? [Y/n] ", "y").lower()
     body["equip"] = equip not in ("n", "no")
+    if body["equip"]:
+        announce = _ask(ask, "Post a loot drop to the Musings when it goes on? [Y/n] ", "y").lower()
+        if announce in ("n", "no"):
+            body["announce"] = False
 
     _say(out, "\nHere is what will be made:")
     _say(out, f"   Guidance: {_short(text, 90)}")
@@ -155,6 +159,8 @@ def guided_body(api: Api, ask: Callable[[str], str], out=None) -> dict | None:
     _say(out, f"   Rarity:   {body.get('rarity') or 'rolled'}")
     _say(out, f"   Name:     {'... of ' + theme if theme else 'chosen by the bear'}")
     _say(out, f"   Worn now: {'yes' if body['equip'] else 'no, into the backpack'}")
+    if body["equip"]:
+        _say(out, f"   Loot drop: {'no' if body.get('announce') is False else 'yes, posted to the Musings'}")
     if _ask(ask, "\nMake it? [Y/n] ", "y").lower() in ("n", "no"):
         return None
     return body
@@ -173,7 +179,8 @@ def describe_created(response: dict) -> str:
     where = "as a ring for its topic" if slot == "ring" else f"in the {slot} slot"
     displaced = placement.get("displaced")
     replaced = f", replacing {displaced.get('topic_id')} {displaced.get('version')}" if displaced else ""
-    return f"{head}, and BloggerBear is now wearing it {where}{replaced}."
+    drop = " A loot drop has been posted to the Musings." if created.get("loot_drop") else ""
+    return f"{head}, and BloggerBear is now wearing it {where}{replaced}.{drop}"
 
 
 def create(api: Api, body: dict | None, ask: Callable[[str], str], out=None) -> int:

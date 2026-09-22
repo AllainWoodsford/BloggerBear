@@ -683,6 +683,8 @@ def _placement_body(args: argparse.Namespace) -> dict | None:
         body["slot"] = args.slot
     if args.replace:
         body["replace"] = {"topic_id": args.replace[0], "version": args.replace[1]}
+    if getattr(args, "no_announce", False):
+        body["announce"] = False
     return body or None
 
 
@@ -706,6 +708,13 @@ def _add_placement_arguments(parser: argparse.ArgumentParser, scopes: tuple[str,
         metavar=("TOPIC_ID", "VERSION"),
         default=None,
         help="when all rings are worn, the worn ring this one replaces",
+    )
+    parser.add_argument(
+        "--no-announce",
+        dest="no_announce",
+        action="store_true",
+        default=False,
+        help="do not post a loot drop to the Musings when it is put on",
     )
 
 
@@ -754,9 +763,16 @@ def _cmd_equipment_create(args: argparse.Namespace) -> None:
                 body[key] = getattr(args, key)
         if args.replace:
             body["replace"] = {"topic_id": args.replace[0], "version": args.replace[1]}
+        if args.no_announce:
+            body["announce"] = False
     code = gear_create.create(_review_api(args), body, input)
     if code:
         raise SystemExit(code)
+
+
+def _cmd_equipment_announce(args: argparse.Namespace) -> None:
+    version = urllib.parse.quote(args.version, safe="")
+    _do_request(args, "POST", f"/prompt-refinements/{args.topic_id}/{version}/announce")
 
 
 def _cmd_equipment_delete(args: argparse.Namespace) -> None:
@@ -1431,7 +1447,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="when all rings are worn, the ring this one replaces",
     )
+    equipment_create_parser.add_argument(
+        "--no-announce",
+        dest="no_announce",
+        action="store_true",
+        default=False,
+        help="do not post a loot drop to the Musings",
+    )
     equipment_create_parser.set_defaults(func=_cmd_equipment_create)
+
+    equipment_announce_parser = equipment_sub.add_parser(
+        "announce",
+        help="Post a loot drop to the Musings for a piece of gear (again, if it was already announced)",
+    )
+    equipment_announce_parser.add_argument("topic_id")
+    equipment_announce_parser.add_argument("version")
+    equipment_announce_parser.set_defaults(func=_cmd_equipment_announce)
 
     equipment_delete_parser = equipment_sub.add_parser(
         "delete",

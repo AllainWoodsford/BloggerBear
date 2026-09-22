@@ -423,3 +423,56 @@ def test_the_original_stats_are_all_still_there_below_the_gear():
         "Research spend",
     ):
         assert f'"{tile}"' in after_gear
+
+
+# --- loot drops on the Musings page ---------------------------------------------------------------------
+
+
+def _musings_section_of_app() -> str:
+    start = APP_JS.index("// --- Musings ---")
+    return APP_JS[start : APP_JS.index("function loadMusings()", start)]
+
+
+def test_a_loot_drop_is_drawn_as_a_card_from_the_gear_the_musing_carries():
+    section = _musings_section_of_app()
+
+    assert "function lootCard(snapshot)" in section
+    assert 'musing.kind === "loot" && musing.gear' in section
+    assert "lootCard(musing.gear)" in section
+    assert "BloggerGear.describe(snapshot" in section and 'className: "loot-card rarity-"' in section
+
+
+def test_the_loot_card_is_text_and_class_names_only():
+    section = _musings_section_of_app()
+
+    assert not re.search(r"innerHTML|outerHTML|insertAdjacentHTML|\.style\b|['\"]style['\"]", section)
+
+
+def test_a_loot_drop_links_to_the_stats_page_where_the_gear_is_worn():
+    assert '"#/stats"' in _musings_section_of_app()
+
+
+def test_the_loot_card_is_styled_and_coloured_by_rarity():
+    for name in ("loot-card", "loot-icon", "loot-label", "loot-name", "loot-meta", "loot-desc"):
+        assert re.search(rf"\.{name}\b", STYLES), name
+    assert "border: 2px solid var(--gear-color" in STYLES[STYLES.index(".loot-card {") :][:400]
+
+
+@needs_node
+def test_the_card_shows_what_a_snapshot_contains_and_survives_a_bare_one():
+    full = _run(
+        "g.describe({name:'Ring of Repo Focus',rarity:'legendary',slot:'ring',description:'Say why.',"
+        "topic_name:'GitHub Trending'},'ring')"
+    )
+    bare = _run("g.describe({name:'Charm of Something'},undefined)")
+
+    assert (
+        full["rarityLabel"] == "Legendary"
+        and full["slotLabel"] == "Ring"
+        and full["topic"] == "GitHub Trending"
+    )
+    assert (
+        bare["rarity"] == "common"
+        and bare["slotLabel"] == "Gear"
+        and bare["description"] == "No description."
+    )

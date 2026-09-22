@@ -268,6 +268,21 @@ is filed under the reserved topic `global`, and `global` cannot be used as a rea
 before anything is written, so a refusal (a sixth ring, an unknown topic, a bad name) creates nothing. Deleting
 removes it entirely; articles already written with it keep their own record of it.
 
+**Loot drops.** The first time a piece of gear is worn, BloggerBear posts about it on the Musings page: a
+short, excited, tweet-like post naming the gear and thanking readers, next to a card with its name, rarity,
+slot and what it does -- coloured by rarity, same as the Stats page. It is written by the model in the
+same voice as every other musing and screened the same way a comment is; if the model fails or the reply
+does not pass, a plain accurate post is used instead, so a drop is always announced. It only ever
+announces once per piece: taking it off and putting it back on (a repair, say) does not post again.
+
+Every command that can put something on takes `--no-announce` to stay quiet (`refinements approve`,
+`equipment equip`, `equipment create`), and the guided `equipment create` asks. To post the announcement
+for a piece later, or again:
+
+```
+python scripts/admin_cli.py equipment announce TOPIC VERSION
+```
+
 `--scope global` with no `--slot` takes the first empty armor slot. Approving with no choice made wears it
 as a ring for its topic (what approving always meant), or leaves it in the backpack if all five rings are
 worn. Unlike before, guidance now *stacks*: several rings for one topic, plus the armor, are all used
