@@ -61,6 +61,7 @@ from common.dynamo import (
 from common.fact_check import fact_check_label
 from common.source_refs import dedupe_source_refs
 from common.stats import build_stats
+from common.stats_tracking import record_feedback_given, record_feedback_rejected_comment
 
 _RSS_ITEM_LIMIT = 50
 _RSS_DESCRIPTION_MAX_CHARS = 300
@@ -459,8 +460,15 @@ def _submit_feedback(event: dict) -> dict:
     )
     final_comment = screened["comment"]
     if screened["dropped_because"]:
-        # The reason code only: the comment itself is never logged.
+        # The reason code only: the comment itself is never logged. The whole submission is
+        # thrown away -- the vote is not recorded either -- so this is what "feedback was
+        # rejected" means for the Stats page, not a closed site or a caught bot (see
+        # common/stats_tracking.py's FEEDBACK_REJECTED_COMMENT).
         print(f"public_api_handler: rejected a feedback submission ({screened['dropped_because']})")
+        try:
+            record_feedback_rejected_comment()
+        except Exception as exc:  # noqa: BLE001 - the rejection itself must still be returned
+            print(f"public_api_handler: could not record the rejected-feedback stat: {exc!r}")
         return _response(422, {"error": "comment not accepted", "recorded": False})
 
     # 3. Count it against the article, the day and the rate limit. Only now, once it is going to
@@ -473,6 +481,10 @@ def _submit_feedback(event: dict) -> dict:
     created_at = datetime.now(UTC).isoformat()
     put_feedback(article_id, feedback_id, vote, final_comment, created_at)
     update_article_net_votes(article_id, 1 if vote == "up" else -1)
+    try:
+        record_feedback_given()
+    except Exception as exc:  # noqa: BLE001 - the feedback is already stored; never lose it over this
+        print(f"public_api_handler: could not record the feedback-given stat: {exc!r}")
 
     # The gear this article was written with takes the feedback: a downvote wears it, an upvote
     # repairs it (common/wear.py). Never raises, and says nothing to the reader about it.

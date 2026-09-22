@@ -1328,3 +1328,98 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeValues={":t": timestamp},
     )
+
+
+# --- StatsCurrent (Observability enhancement, PR 1) ---------------------------------------
+#
+# Owned by common/stats_tracking.py. One row (stats_id="current"), updated in place all week
+# with ADD expressions -- same pattern as the model_config counters above -- so the row and
+# every attribute on it come into existence on first use; nothing has to create it first.
+
+
+def increment_current_stats(updates: dict[str, int | Decimal], week_start: str) -> None:
+    """ADD each of `updates` onto the current week's StatsCurrent row (creating it, and any
+    attribute in `updates` not yet present, on first use -- same as consume_feedback_counter
+    above). `week_start` (the Monday of the ISO week this row covers, e.g. "2026-09-15") is
+    recorded once, the first time this week's row is touched, and left alone after that -- a
+    later week's rollover job resets it, this function never does."""
+    if not updates:
+        return
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(updates)}
+    values = {f":v{n}": value for n, value in enumerate(updates.values())}
+    adds = ", ".join(f"#f{n} :v{n}" for n in range(len(updates)))
+    table.update_item(
+        Key={"stats_id": "current"},
+        UpdateExpression=f"SET week_start = if_not_exists(week_start, :week) ADD {adds}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={**values, ":week": week_start},
+    )
+
+
+def get_current_stats() -> dict:
+    """The current week's StatsCurrent row, or an empty shell if nothing has been recorded yet
+    this week (never raises for "no row" -- that is the normal state right after a rollover)."""
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    response = table.get_item(Key={"stats_id": "current"})
+    return response.get("Item") or {"stats_id": "current"}
+
+
+def delete_current_stats() -> None:
+    """Clear the current week's StatsCurrent row (stats_rollover_handler.py, after copying it into
+    StatsHistory). Deleting it outright, not zeroing its attributes, so the next increment
+    recreates it fresh -- same "the row comes into existence on first use" rule
+    increment_current_stats already follows. Deleting an already-empty row is not an error."""
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    table.delete_item(Key={"stats_id": "current"})
+
+
+# --- StatsHistory (Observability enhancement, PR 2) ----------------------------------------
+#
+# Owned by stats_rollover_handler.py. One row per completed week, written once and never
+# updated after that -- the same shape as StatsCurrent's row, just keyed by the week it covers.
+
+
+def put_stats_history_row(week_start: str, row: dict) -> bool:
+    """Write `row` (a copy of a completed week's StatsCurrent row) into StatsHistory, keyed by
+    `week_start`. Refuses to overwrite a week that has already been rolled over -- returns False
+    (and writes nothing) rather than silently replacing a historical record, which a retried or
+    duplicated rollover invocation could otherwise do. Returns True on a real write."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    item = {**row, "week_start": week_start}
+    item.pop("stats_id", None)  # StatsCurrent's key, meaningless once this is a StatsHistory row
+    try:
+        table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(week_start)",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def get_stats_history_row(week_start: str) -> dict | None:
+    """One completed week's StatsHistory row, or None if that week was never rolled over."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    return table.get_item(Key={"week_start": week_start}).get("Item")
+
+
+def set_current_stats_fields(fields: dict, week_start: str) -> None:
+    """SET (not ADD) each of `fields` onto the current week's StatsCurrent row -- for a value
+    that is a refreshed snapshot each time it's written (e.g. cost_explorer_poll_handler.py's
+    latest Cost Explorer reading), not one accumulated across calls the way
+    increment_current_stats's ADD counters are: a repeat write overwrites the previous reading
+    instead of compounding it. Creates the row on first use, and sets `week_start` the same way
+    increment_current_stats does (once, left alone after)."""
+    if not fields:
+        return
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    sets = ", ".join(f"#f{n} = :v{n}" for n in range(len(fields)))
+    table.update_item(
+        Key={"stats_id": "current"},
+        UpdateExpression=f"SET week_start = if_not_exists(week_start, :week), {sets}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={**values, ":week": week_start},
+    )

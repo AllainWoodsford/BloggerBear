@@ -326,6 +326,16 @@ data "aws_iam_policy_document" "lambda_exec" {
     ]
   }
 
+  # cost_explorer_poll_handler.py's daily API Gateway spend read. Cost Explorer's
+  # GetCostAndUsage does not support resource-level permissions -- AWS requires
+  # "*" here, there is no ARN to scope it to.
+  statement {
+    sid       = "CostExplorerRead"
+    effect    = "Allow"
+    actions   = ["ce:GetCostAndUsage"]
+    resources = ["*"]
+  }
+
   statement {
     sid    = "Logs"
     effect = "Allow"
@@ -453,6 +463,12 @@ locals {
     # /models, /model-config routes. Harmless on every other Lambda.
     MODELS_TABLE       = module.app_data.models_table_name
     MODEL_CONFIG_TABLE = module.app_data.model_config_table_name
+
+    # Observability enhancement, PR 1: Bedrock usage that is not part of any one article's
+    # lineage (musings, the weekly reflection, gear identity, comment screening), plus reader
+    # activity counters -- see common/stats_tracking.py. Harmless on every other Lambda.
+    STATS_CURRENT_TABLE = module.app_data.stats_current_table_name
+    STATS_HISTORY_TABLE = module.app_data.stats_history_table_name
   }
 }
 
@@ -1423,6 +1439,74 @@ resource "aws_scheduler_schedule" "weekly_reflection" {
   }
 }
 
+# Observability enhancement, PR 2: closes out this week's Stats row and opens next week's. Scheduled
+# 15 minutes after weekly_reflection above, so that Monday's reflection cost is tallied into the week
+# it is reflecting on, not the new week that is just starting -- see stats_rollover_handler.py.
+resource "aws_lambda_function" "stats_rollover" {
+  function_name = "bloggerbear-dev-stats-rollover"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "stats_rollover_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+resource "aws_scheduler_schedule" "stats_rollover" {
+  name                = "bloggerbear-dev-stats-rollover"
+  group_name          = "default"
+  schedule_expression = "cron(15 9 ? * MON *)"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.stats_rollover.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
+# Observability enhancement, PR 3: a daily poll of Cost Explorer for API Gateway's own spend, which
+# Bedrock/DynamoDB cost tracking above doesn't cover -- see common/cost_explorer.py for why daily,
+# and why a rolling 30-day window ending yesterday rather than today.
+resource "aws_lambda_function" "cost_explorer_poll" {
+  function_name = "bloggerbear-dev-cost-explorer-poll"
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "cost_explorer_poll_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 30
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+resource "aws_scheduler_schedule" "cost_explorer_poll" {
+  name                = "bloggerbear-dev-cost-explorer-poll"
+  group_name          = "default"
+  schedule_expression = "cron(0 10 * * ? *)"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.cost_explorer_poll.arn
+    role_arn = aws_iam_role.scheduler_invoke.arn
+  }
+}
+
 # =========================================================================
 # Phase 6 -- Observability & hardening: CloudWatch alarms/dashboard for
 # all 5 pipeline Lambdas + the daily-cycle state machine/DLQ (see
@@ -1446,6 +1530,8 @@ module "observability" {
     aws_lambda_function.trending_digest.function_name,
     aws_lambda_function.dlq_handler.function_name,
     aws_lambda_function.musing_feedback.function_name,
+    aws_lambda_function.stats_rollover.function_name,
+    aws_lambda_function.cost_explorer_poll.function_name,
   ]
   state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name

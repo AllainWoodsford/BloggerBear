@@ -136,10 +136,10 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
 def test_every_table_is_protected_when_asked_and_production_asks():
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('resource "aws_dynamodb_table"') == 11
-    assert tables.count("deletion_protection_enabled = var.protect_data") == 11
+    assert tables.count('resource "aws_dynamodb_table"') == 13
+    assert tables.count("deletion_protection_enabled = var.protect_data") == 13
     assert (
-        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 11
+        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 13
     )  # point-in-time recovery
     assert re.search(r"protect_data\s*=\s*true", _read("environments", "production", "main.tf"))
     assert "protect_data" not in _read("environments", "dev", "main.tf")
