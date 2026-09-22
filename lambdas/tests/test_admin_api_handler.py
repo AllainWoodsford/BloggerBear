@@ -2362,3 +2362,227 @@ def test_decimals_are_written_as_whole_numbers_or_floats():
 def test_something_that_is_not_a_number_still_fails_loudly():
     with pytest.raises(TypeError):
         admin_api_handler._response(200, {"when": object()})
+
+
+# --- Creating and deleting gear by hand ------------------------------------------------------
+
+
+def _create_gear(body):
+    return admin_api_handler.handler(_event("POST /equipment", body=body), None)
+
+
+def _delete(topic_id, version):
+    return admin_api_handler.handler(
+        _event(
+            "DELETE /prompt-refinements/{topic_id}/{version}",
+            path_params={"topic_id": topic_id, "version": version},
+        ),
+        None,
+    )
+
+
+def _stored(topic_id, version):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    return table.get_item(Key={"topic_id": topic_id, "version": version}).get("Item")
+
+
+def _refinements_count():
+    table = boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements")
+    return len(table.scan()["Items"])
+
+
+@pytest.fixture
+def named():
+    """The bear names new gear by asking a model: give it a fixed answer instead."""
+    identity = {
+        "theme": "Plain Speaking",
+        "slot_hint": "chest",
+        "rarity": "rare",
+        "max_durability": 17,
+        "durability": 17,
+    }
+    with patch("admin_api_handler.gear.generate_identity", return_value=identity) as mock:
+        yield mock
+
+
+def test_an_admin_can_create_armor_and_it_is_worn_at_once(aws_resources):
+    result = _create_gear(
+        {
+            "text": "Open with the single most useful fact.",
+            "theme": "Front Loaded Facts",
+            "slot": "helmet",
+            "rarity": "epic",
+        }
+    )
+
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])["created"]
+    assert created["topic_id"] == "global"
+    assert created["placement"] == {"equipped": True, "slot": "helmet", "scope": "global", "displaced": None}
+    assert created["item"]["name"] == "Helm of Front Loaded Facts" and created["item"]["rarity"] == "epic"
+    stored = _stored("global", created["version"])
+    assert stored["status"] == "approved" and stored["equipped"] is True and stored["created_by"] == "admin"
+    assert stored["prompt_changes"] == "Open with the single most useful fact."
+    assert 21 <= int(stored["max_durability"]) <= 30 and stored["durability"] == stored["max_durability"]
+
+
+def test_the_bear_names_the_gear_and_suggests_the_slot_when_the_admin_does_not(aws_resources, named):
+    result = _create_gear({"text": "Use plain words."})
+
+    created = json.loads(result["body"])["created"]
+    assert created["item"]["name"] == "Breastplate of Plain Speaking"
+    assert created["placement"]["slot"] == "chest"  # the suggestion of the bear
+    named.assert_called_once()
+    assert named.call_args.args[:2] == ("global", "Use plain words.")
+
+
+def test_an_admin_named_rarity_beats_the_roll_and_the_bear(aws_resources, named):
+    result = _create_gear({"text": "Use plain words.", "rarity": "legendary"})
+
+    created = json.loads(result["body"])["created"]
+    assert created["item"]["rarity"] == "legendary"
+    assert 40 <= created["item"]["max_durability"] <= 50
+
+
+def test_if_naming_fails_the_gear_still_gets_made_with_a_plain_name(aws_resources):
+    with patch("admin_api_handler.gear.generate_identity", side_effect=RuntimeError("throttled")):
+        result = _create_gear({"text": "Use plain words.", "slot": "shield"})
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["created"]["item"]["name"] == "Shield of Global Lore"
+
+
+def test_a_ring_is_tied_to_a_topic_and_the_scope_is_inferred(aws_resources, named):
+    _put_topic()
+
+    result = _create_gear({"text": "Name the repository.", "topic_id": "github-trending"})
+
+    created = json.loads(result["body"])["created"]
+    assert created["topic_id"] == "github-trending"
+    assert created["placement"] == {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None}
+    assert named.call_args.args[0] == "github-trending"
+
+
+def test_a_ring_for_a_topic_that_does_not_exist_is_refused_and_creates_nothing(aws_resources, named):
+    assert _create_gear({"text": "x", "topic_id": "nowhere"})["statusCode"] == 404
+    assert _create_gear({"text": "x", "scope": "topic"})["statusCode"] == 400
+    assert _refinements_count() == 0
+
+
+def test_armor_is_for_every_topic_so_it_refuses_a_topic(aws_resources, named):
+    _put_topic()
+
+    assert _create_gear({"text": "x", "scope": "global", "topic_id": "github-trending"})["statusCode"] == 400
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"text": ""},
+        {"text": "   "},
+        {"text": 5},
+        {"text": "x" * 1001},
+        {"text": "x", "rarity": "mythic"},
+        {"text": "x", "slot": "hat"},
+        {"text": "x", "scope": "everywhere"},
+        {"text": "x", "equip": "yes"},
+        {"text": "x", "theme": "Email me bob@example.com"},
+    ],
+)
+def test_a_request_that_makes_no_sense_creates_nothing(aws_resources, named, body):
+    assert _create_gear(body)["statusCode"] == 400
+    assert _refinements_count() == 0
+
+
+def test_a_request_with_no_body_creates_nothing(aws_resources, named):
+    result = admin_api_handler.handler(_event("POST /equipment"), None)
+
+    assert result["statusCode"] == 400 and _refinements_count() == 0
+
+
+def test_gear_can_be_made_without_putting_it_on(aws_resources, named):
+    from common import equipment
+
+    result = _create_gear({"text": "Use plain words.", "equip": False})
+
+    created = json.loads(result["body"])["created"]
+    assert created["placement"]["equipped"] is False
+    stored = _stored("global", created["version"])
+    assert stored["equipped"] is False and stored["unequipped_reason"] == "shelved"
+    assert equipment.guidance_for("t", [stored]) == (None, [])  # in the backpack: injected nowhere
+
+
+def test_new_armor_pushes_out_what_was_in_the_slot(aws_resources, named):
+    first = json.loads(_create_gear({"text": "First.", "slot": "helmet"})["body"])["created"]
+
+    second = json.loads(_create_gear({"text": "Second.", "slot": "helmet"})["body"])["created"]
+
+    assert second["placement"]["displaced"] == {"topic_id": "global", "version": first["version"]}
+    assert _stored("global", first["version"])["equipped"] is False
+    assert _stored("global", first["version"])["unequipped_reason"] == "displaced"
+
+
+def test_a_sixth_ring_is_refused_before_anything_is_created(aws_resources, named):
+    _put_topic()
+    for n in range(5):
+        assert _create_gear({"text": f"Ring {n}.", "topic_id": "github-trending"})["statusCode"] == 201
+
+    result = _create_gear({"text": "One too many.", "topic_id": "github-trending"})
+
+    assert result["statusCode"] == 409
+    assert _refinements_count() == 5
+
+
+def test_a_full_set_of_rings_can_swap_one_out(aws_resources, named):
+    _put_topic()
+    made = [
+        json.loads(_create_gear({"text": f"Ring {n}.", "topic_id": "github-trending"})["body"])["created"]
+        for n in range(5)
+    ]
+    swap = {"topic_id": "github-trending", "version": made[2]["version"]}
+
+    result = _create_gear({"text": "Newest.", "topic_id": "github-trending", "replace": swap})
+
+    assert result["statusCode"] == 201
+    assert _stored("github-trending", made[2]["version"])["equipped"] is False
+
+
+def test_the_reserved_topic_id_cannot_be_used_for_a_real_topic(aws_resources):
+    body = {"topic_id": "global", "name": "Global", "adapter": "github_trending"}
+
+    result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+
+    assert result["statusCode"] == 400 and "reserved" in json.loads(result["body"])["error"]
+
+
+def test_deleting_gear_removes_it_and_frees_its_slot(aws_resources, named):
+    created = json.loads(_create_gear({"text": "Use plain words.", "slot": "boots"})["body"])["created"]
+
+    result = _delete("global", created["version"])
+
+    assert result["statusCode"] == 200
+    deleted = json.loads(result["body"])["deleted"]
+    assert deleted["was_equipped"] is True and deleted["name"] == "Boots of Plain Speaking"
+    assert _stored("global", created["version"]) is None
+    view = json.loads(admin_api_handler.handler(_event("GET /equipment"), None)["body"])
+    assert view["armor"]["boots"] is None
+
+
+def test_deleting_something_that_is_not_there_is_a_404(aws_resources):
+    assert _delete("global", "nope")["statusCode"] == 404
+
+
+def test_feedback_on_an_article_written_with_deleted_gear_wears_nothing_and_does_not_fail(
+    aws_resources, named
+):
+    from common import wear
+
+    created = json.loads(_create_gear({"text": "Use plain words.", "slot": "helmet"})["body"])["created"]
+    _delete("global", created["version"])
+    used = [{"topic_id": "global", "version": created["version"], "slot": "helmet"}]
+
+    changes = wear.apply_feedback({"equipment_used": used}, "down")
+
+    assert changes == []
+    assert _stored("global", created["version"]) is None  # not resurrected by the wear update

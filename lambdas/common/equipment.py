@@ -40,6 +40,12 @@ SCOPE_GLOBAL = "global"
 SCOPE_TOPIC = "topic"
 LEGACY_SLOT = "legacy"
 
+# Armor an admin creates by hand is not about any one topic, but every refinement is keyed by a topic id.
+# It is filed under this pseudo-topic (no real topic may use the id: see the admin API's create-topic).
+GLOBAL_TOPIC_ID = "global"
+# The longest guidance an admin can write for a piece of gear (it is injected into prompts).
+MAX_GUIDANCE_LENGTH = 1000
+
 # Why an item is in the backpack (`unequipped_reason`). Only PARKED may be put on again automatically.
 PARKED = "parked"  # approved when there was no room for it
 SHELVED = "shelved"  # approved straight to the backpack by choice
