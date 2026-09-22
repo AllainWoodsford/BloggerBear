@@ -743,6 +743,30 @@ def _cmd_equipment_equip(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_equipment_create(args: argparse.Namespace) -> None:
+    import gear_create
+
+    body = None
+    if args.text is not None:
+        body = {"text": args.text, "equip": not args.no_equip}
+        for key in ("scope", "topic_id", "slot", "rarity", "theme"):
+            if getattr(args, key):
+                body[key] = getattr(args, key)
+        if args.replace:
+            body["replace"] = {"topic_id": args.replace[0], "version": args.replace[1]}
+    code = gear_create.create(_review_api(args), body, input)
+    if code:
+        raise SystemExit(code)
+
+
+def _cmd_equipment_delete(args: argparse.Namespace) -> None:
+    import gear_create
+
+    code = gear_create.delete(_review_api(args), args.topic_id, args.version, input, assume_yes=args.yes)
+    if code:
+        raise SystemExit(code)
+
+
 def _cmd_equipment_bump(args: argparse.Namespace) -> None:
     version = urllib.parse.quote(args.version, safe="")
     body = {"rarity": args.to} if args.to else {}
@@ -1356,6 +1380,67 @@ def build_parser() -> argparse.ArgumentParser:
     equipment_equip_parser.add_argument("version")
     _add_placement_arguments(equipment_equip_parser, ("topic", "global"))
     equipment_equip_parser.set_defaults(func=_cmd_equipment_equip)
+
+    equipment_create_parser = equipment_sub.add_parser(
+        "create",
+        help=(
+            "Make a new piece of gear yourself and (by default) put it on. With no --text it asks you "
+            "what it needs, one question at a time"
+        ),
+    )
+    equipment_create_parser.add_argument(
+        "--text", default=None, help="what the gear tells BloggerBear to do (omit to be asked)"
+    )
+    equipment_create_parser.add_argument(
+        "--scope",
+        choices=["global", "topic"],
+        default=None,
+        help="global: armor for every topic; topic: a ring",
+    )
+    equipment_create_parser.add_argument(
+        "--topic-id", dest="topic_id", default=None, help="the topic, for a ring (implies --scope topic)"
+    )
+    equipment_create_parser.add_argument(
+        "--slot",
+        choices=["helmet", "chest", "gloves", "boots", "sword", "shield"],
+        default=None,
+        help="the armor slot (default: the bear suggests one)",
+    )
+    equipment_create_parser.add_argument(
+        "--rarity",
+        choices=["common", "uncommon", "rare", "epic", "legendary"],
+        default=None,
+        help="the rarity (default: rolled at random, like a drop)",
+    )
+    equipment_create_parser.add_argument(
+        "--theme",
+        default=None,
+        help="two to four words for its name, e.g. 'Plain Speaking' (default: the bear names it)",
+    )
+    equipment_create_parser.add_argument(
+        "--no-equip",
+        dest="no_equip",
+        action="store_true",
+        default=False,
+        help="create it into the backpack, not worn",
+    )
+    equipment_create_parser.add_argument(
+        "--replace",
+        nargs=2,
+        metavar=("TOPIC_ID", "VERSION"),
+        default=None,
+        help="when all rings are worn, the ring this one replaces",
+    )
+    equipment_create_parser.set_defaults(func=_cmd_equipment_create)
+
+    equipment_delete_parser = equipment_sub.add_parser(
+        "delete",
+        help="Delete a piece of gear for good (it asks first). Articles written with it keep their record",
+    )
+    equipment_delete_parser.add_argument("topic_id")
+    equipment_delete_parser.add_argument("version")
+    equipment_delete_parser.add_argument("--yes", action="store_true", default=False, help="do not ask")
+    equipment_delete_parser.set_defaults(func=_cmd_equipment_delete)
 
     equipment_bump_parser = equipment_sub.add_parser(
         "bump",
