@@ -255,3 +255,37 @@ def test_a_week_start_computed_a_day_apart_can_still_land_on_the_same_monday():
     today = date(2026, 9, 24)
     tomorrow = today + timedelta(days=1)
     assert st._current_week_start(today) == st._current_week_start(tomorrow)
+
+
+# --- api gateway cost: a SET snapshot, not an ADD counter ---------------------------------------
+
+
+def test_api_gateway_cost_is_recorded_in_usd_and_aud(table):
+    st.record_api_gateway_cost(Decimal("2.00"), "2026-09-22T00:00:00+00:00")
+
+    row = _row(table)
+    assert row[st.API_GATEWAY_COST_USD_30D] == Decimal("2.00")
+    assert row[st.API_GATEWAY_COST_AUD_30D] == Decimal("3.00")  # 2.00 * 1.50 AUD/USD
+    assert row[st.API_GATEWAY_COST_AS_OF] == "2026-09-22T00:00:00+00:00"
+
+
+def test_a_repeat_poll_overwrites_rather_than_accumulates(table):
+    st.record_api_gateway_cost(Decimal("2.00"), "2026-09-22T00:00:00+00:00")
+    st.record_api_gateway_cost(Decimal("5.00"), "2026-09-23T00:00:00+00:00")
+
+    row = _row(table)
+    assert row[st.API_GATEWAY_COST_USD_30D] == Decimal("5.00")  # not 7.00
+    assert row[st.API_GATEWAY_COST_AS_OF] == "2026-09-23T00:00:00+00:00"
+
+
+def test_api_gateway_cost_does_not_disturb_unrelated_counters(table):
+    st.record_loot_drop()
+    st.record_api_gateway_cost(Decimal("1.00"), "2026-09-22T00:00:00+00:00")
+
+    row = _row(table)
+    assert row[st.LOOT_DROPS] == 1
+    assert row[st.API_GATEWAY_COST_USD_30D] == Decimal("1.00")
+
+
+def test_api_gateway_cost_never_raises_even_with_no_table(monkeypatch):
+    st.record_api_gateway_cost(Decimal("1.00"), "2026-09-22T00:00:00+00:00")
