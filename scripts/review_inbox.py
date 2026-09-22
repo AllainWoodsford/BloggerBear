@@ -90,6 +90,9 @@ class Api:
     def post(self, path: str, body: dict | None = None) -> dict:
         return self._call("POST", path, body)
 
+    def delete(self, path: str) -> dict:
+        return self._call("DELETE", path)
+
 
 @dataclass
 class Item:
