@@ -108,6 +108,26 @@ output "model_config_table_arn" {
   description = "ARN of the ModelConfig DynamoDB table."
 }
 
+output "stats_current_table_name" {
+  value       = aws_dynamodb_table.stats_current.name
+  description = "Name of the StatsCurrent DynamoDB table."
+}
+
+output "stats_current_table_arn" {
+  value       = aws_dynamodb_table.stats_current.arn
+  description = "ARN of the StatsCurrent DynamoDB table."
+}
+
+output "stats_history_table_name" {
+  value       = aws_dynamodb_table.stats_history.name
+  description = "Name of the StatsHistory DynamoDB table."
+}
+
+output "stats_history_table_arn" {
+  value       = aws_dynamodb_table.stats_history.arn
+  description = "ARN of the StatsHistory DynamoDB table."
+}
+
 output "table_arns" {
   value = [
     aws_dynamodb_table.topics.arn,
@@ -121,6 +141,8 @@ output "table_arns" {
     aws_dynamodb_table.musings.arn,
     aws_dynamodb_table.models.arn,
     aws_dynamodb_table.model_config.arn,
+    aws_dynamodb_table.stats_current.arn,
+    aws_dynamodb_table.stats_history.arn,
   ]
-  description = "All 11 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 13 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
 }

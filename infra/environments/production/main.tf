@@ -553,6 +553,12 @@ locals {
     # /models, /model-config routes. Harmless on every other Lambda.
     MODELS_TABLE       = module.app_data.models_table_name
     MODEL_CONFIG_TABLE = module.app_data.model_config_table_name
+
+    # Observability enhancement, PR 1: Bedrock usage that is not part of any one article's
+    # lineage (musings, the weekly reflection, gear identity, comment screening), plus reader
+    # activity counters -- see common/stats_tracking.py. Harmless on every other Lambda.
+    STATS_CURRENT_TABLE = module.app_data.stats_current_table_name
+    STATS_HISTORY_TABLE = module.app_data.stats_history_table_name
   }
 }
 

@@ -31,8 +31,8 @@ import re
 from datetime import UTC, datetime, timedelta
 
 from common import gear
-from common.bedrock import invoke_claude
 from common.dynamo import get_article, list_feedback_since, put_prompt_refinement
+from common.stats_tracking import tracked_claude
 
 _LOOKBACK_DAYS = 7
 
@@ -151,7 +151,7 @@ def _reflect_on_topic(topic_id: str, topic_feedback: list[dict], model_id: str) 
         down_votes=down_votes,
         comments_block=comments_block,
     )
-    response = invoke_claude(prompt, model_id)
+    response = tracked_claude("weekly_reflection", prompt, model_id)
     return _parse_reflection_response(response)
 
 
