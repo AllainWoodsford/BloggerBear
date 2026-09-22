@@ -66,6 +66,7 @@ from common.dynamo import (
     put_article,
     put_moderation_item,
 )
+from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.source_refs import dedupe_source_refs
@@ -89,6 +90,7 @@ speculate beyond what's given, and do not give financial or investment advice.
 _DIGEST_FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 
 
+@track_lambda_duration("trending_digest")
 def handler(event, context) -> dict:
     try:
         return _run_trending_digest()
