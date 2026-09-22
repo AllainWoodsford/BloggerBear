@@ -1083,6 +1083,13 @@ the pure rules; the state lives on the PromptRefinements items (`equipped`, `slo
 - **What was worn is recorded.** `Articles.equipment_used` lists `{topic_id, version, slot}` per piece used;
   (only the armor actually taken in) `[]` means no gear, an absent field means written before gear existed. Never in the public projection.
   This is the data an effectiveness measure and wear-out would need; neither is built.
+- **Loot drops.** The first time a piece of gear is worn, BloggerBear posts a "loot drop" musing (a new
+  `kind`, `"loot"`, and a new mood, `excited`): a short model-written announcement in the same voice as
+  every other musing, screened the same way a comment is (fails closed to a plain, always-accurate post),
+  carrying a snapshot of the gear (name, rarity, slot, description, topic) so the post still makes sense
+  if the gear is deleted later. `loot_announced_at` on the item stops a repaired-and-re-equipped piece
+  announcing twice. `--no-announce` on approve/equip/create opts out; `POST .../announce` (`admin_cli
+  equipment announce`) posts it later or again. A failure to announce never stops the equip.
 - **Made by hand.** `POST /equipment` (`admin_cli equipment create`, guided or with flags) creates gear you
   wrote, approved from the start, optionally with a chosen rarity and name, and puts it on; `DELETE
   /prompt-refinements/{topic}/{version}` (`equipment delete`) removes it. Armor made this way is filed under

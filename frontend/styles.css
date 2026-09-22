@@ -1599,3 +1599,47 @@ button.gear-slot-box:focus-visible {
     width: 110px;
   }
 }
+
+/* A loot drop on the Musings page: the gear, in a card coloured by its rarity (tokens above). */
+.loot-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 2px solid var(--gear-color, var(--border));
+  border-radius: 12px;
+}
+
+.loot-icon {
+  flex: none;
+  color: var(--gear-color, var(--muted));
+}
+
+.loot-details p {
+  margin: 0;
+}
+
+.loot-label {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.loot-name {
+  color: var(--gear-color);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.loot-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.loot-desc {
+  margin-top: 4px !important;
+  font-size: 0.9rem;
+}

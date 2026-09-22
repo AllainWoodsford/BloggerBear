@@ -76,7 +76,7 @@ from common.fresh_review import (
     review_mode_error,
 )
 from common.lineage_tools import audit_lineage, plan_backfill
-from common.musings import generate_and_store_article_musing
+from common.musings import generate_and_store_article_musing, generate_and_store_loot_musing
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
 from common.scheduler import (
@@ -906,6 +906,42 @@ def _wear(item: dict, plan: dict) -> None:
     )
 
 
+def _announce_drop(
+    item: dict, plan: dict | None, *, announce: bool = True, force: bool = False, raise_errors: bool = False
+) -> str | None:
+    """Tell readers BloggerBear has new gear: one loot-drop musing, the first time a piece is worn.
+
+    Returns the musing id, or None if nothing was announced. It stays quiet if the piece has been
+    announced before (a repaired piece put back on does not drop twice), if it was not worn, or if the
+    caller asked for silence, unless `force`. A failure never stops the equip that led here (unless
+    `raise_errors`, for the command whose whole job is announcing).
+    """
+    if not announce or (plan is None and not force):
+        return None
+    if item.get("loot_announced_at") and not force:
+        return None
+    try:
+        worn = _as_worn(item, plan)
+        topic = get_topic(item["topic_id"]) if worn.get("slot") == equipment.RING_SLOT else None
+        names = {item["topic_id"]: topic.get("name")} if topic else {}
+        view = {**gear.public_view(worn, names), "topic_id": item["topic_id"] if topic else None}
+        musing = generate_and_store_loot_musing(gear=view, model_id=os.environ["BEDROCK_MODEL_ID"])
+        set_prompt_refinement_fields(
+            item["topic_id"], item["version"], {"loot_announced_at": datetime.now(UTC).isoformat()}
+        )
+        return musing["musing_id"]
+    except Exception as exc:  # noqa: BLE001 - announcing is never worth failing the equip for
+        print(f"admin_api_handler: could not announce a loot drop: {exc!r}")
+        if raise_errors:
+            raise
+        return None
+
+
+def _announce_flag(body: dict) -> bool:
+    value = body.get("announce", True)
+    return value if isinstance(value, bool) else True
+
+
 def _placement_view(item: dict, plan: dict | None) -> dict:
     """What happened to an item, for the response and for the CLI to tell the admin."""
     if plan is None:
@@ -975,6 +1011,7 @@ def _resolve_prompt_refinement(event: dict, *, new_status: str) -> dict:
             )
         payload["placement"] = _placement_view(item, plan)
         payload["item"] = _gear_summary(_as_worn(item, plan))
+        payload["loot_drop"] = _announce_drop(item, plan, announce=_announce_flag(body))
     return _response(200, {action_key: payload})
 
 
@@ -1019,7 +1056,8 @@ def _equip_prompt_refinement(event: dict) -> dict:
     _wear(item, plan)
     placement = _placement_view(item, plan)
     worn = _gear_summary(_as_worn(item, plan))
-    return _response(200, {"equipped": {**equipment.ref(item), **placement, "item": worn}})
+    drop = _announce_drop(item, plan, announce=_announce_flag(body))
+    return _response(200, {"equipped": {**equipment.ref(item), **placement, "item": worn, "loot_drop": drop}})
 
 
 def _unequip_prompt_refinement(event: dict) -> dict:
@@ -1175,9 +1213,22 @@ def _create_equipment(event: dict) -> dict:
                 **equipment.ref(item),
                 "placement": _placement_view(item, plan),
                 "item": _gear_summary(_as_worn(item, plan)),
+                "loot_drop": _announce_drop(item, plan, announce=_announce_flag(body)),
             }
         },
     )
+
+
+def _announce_loot(event: dict) -> dict:
+    """Announce a piece of gear as a loot drop (again, if it already was): the fix when the first
+    announcement was skipped or failed."""
+    item, error = _approved_refinement_or_error(event)
+    if error:
+        return error
+    item = _ensure_identity(item)
+    plan = {"slot": item["slot"]} if item.get("slot") else None
+    musing_id = _announce_drop(item, plan, force=True, raise_errors=True)
+    return _response(200, {"announced": {**equipment.ref(item), "musing_id": musing_id}})
 
 
 def _delete_prompt_refinement(event: dict) -> dict:
@@ -1510,6 +1561,7 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/repair": _repair_gear,
     "GET /equipment": _get_equipment,
     "POST /equipment": _create_equipment,
+    "POST /prompt-refinements/{topic_id}/{version}/announce": _announce_loot,
     "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
     "GET /models": _list_models,

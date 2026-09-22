@@ -735,6 +735,7 @@ module "admin_api" {
     "POST /prompt-refinements/{topic_id}/{version}/repair",
     "GET /equipment",
     "POST /equipment",
+    "POST /prompt-refinements/{topic_id}/{version}/announce",
     "DELETE /prompt-refinements/{topic_id}/{version}",
     # DLQ-consumer visibility -- see admin_api_handler.py's
     # _list_failed_executions and scripts/admin_cli.py's
@@ -1458,6 +1459,7 @@ locals {
     "bears/pleased.svg"     = "image/svg+xml"
     "bears/reflective.svg"  = "image/svg+xml"
     "bears/curious.svg"     = "image/svg+xml"
+    "bears/excited.svg"     = "image/svg+xml"
     "bears/default.svg"     = "image/svg+xml"
     "bears/tummy.svg"       = "image/svg+xml"
     "bears/tummy-happy.svg" = "image/svg+xml"

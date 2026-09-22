@@ -271,7 +271,8 @@ class RefinementSource(ContentSource):
         response = self.api.post(path, item.ref.get("placement") or None)
         approved = response.get("approved") or {}
         found = _gear_line(approved.get("item"))
-        return "approved: " + found + _worn_message(approved.get("placement") or {})
+        drop = " A loot drop was posted to the Musings." if approved.get("loot_drop") else ""
+        return "approved: " + found + _worn_message(approved.get("placement") or {}) + drop
 
     def reject(self, item: Item) -> str:
         self.api.post(f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/reject")

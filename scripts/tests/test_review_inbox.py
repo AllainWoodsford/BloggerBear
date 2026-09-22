@@ -1155,3 +1155,31 @@ def test_limit_must_be_positive(cli_env, capsys):
         admin_cli.main(["approve", "--mock", "--limit", "0"])
 
     assert "--limit must be at least 1" in capsys.readouterr().err
+
+
+def test_approving_a_prompt_change_says_when_a_loot_drop_was_posted():
+    response = {
+        "approved": {
+            "item": {
+                "name": "Ring of Plain Speaking",
+                "rarity": "epic",
+                "durability": 24,
+                "max_durability": 24,
+            },
+            "placement": {"equipped": True, "slot": "ring", "scope": "topic", "displaced": None},
+            "loot_drop": "m-1",
+        }
+    }
+    api = _prompt_change_api(approve_response=response)
+
+    _, out = _approve_with(api, "t")
+
+    assert "A loot drop was posted to the Musings." in out
+
+
+def test_no_loot_drop_line_when_none_was_posted():
+    response = {"approved": {"placement": {"equipped": True, "slot": "ring"}, "loot_drop": None}}
+
+    _, out = _approve_with(_prompt_change_api(approve_response=response), "t")
+
+    assert "loot drop" not in out.lower()

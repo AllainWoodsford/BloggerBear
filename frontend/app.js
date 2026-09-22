@@ -537,6 +537,29 @@
 
   // --- Musings --------------------------------------------------------
 
+  // A loot drop's card: the gear the musing announces, shown as the musing itself recorded it (a snapshot,
+  // so it still reads right if the gear is deleted later). Colour by rarity, like the Stats page; the
+  // rarity and slot are always written out too. Text only ever goes in with textContent.
+  function lootCard(snapshot) {
+    var info = BloggerGear.describe(snapshot, snapshot && snapshot.slot);
+    var card = el("div", { className: "loot-card rarity-" + info.rarity });
+    var icon = el("div", { className: "loot-icon" });
+    icon.appendChild(gearIcon(info.slot, info.rarity));
+    card.appendChild(icon);
+    var details = el("div", { className: "loot-details" });
+    details.appendChild(el("p", { className: "loot-label", text: "Loot drop" }));
+    details.appendChild(el("p", { className: "loot-name", text: info.name }));
+    details.appendChild(
+      el("p", {
+        className: "loot-meta",
+        text: info.rarityLabel + " \u00b7 " + info.slotLabel + (info.topic ? " \u00b7 " + info.topic : ""),
+      })
+    );
+    details.appendChild(el("p", { className: "loot-desc", text: info.description }));
+    card.appendChild(details);
+    return card;
+  }
+
   function renderMusings(musings) {
     clearChildren(contentEl);
     contentEl.appendChild(el("h1", { text: "Musings" }));
@@ -567,6 +590,9 @@
 
       var body = el("div", { className: "musing-body" });
       body.appendChild(el("p", { className: "musing-text", text: musing.text }));
+      if (musing.kind === "loot" && musing.gear) {
+        body.appendChild(lootCard(musing.gear));
+      }
       if (mood.label) {
         body.appendChild(
           el("p", { className: "musing-mood", text: "BloggerBear was feeling " + mood.label })
@@ -580,6 +606,9 @@
         meta.appendChild(
           el("a", { text: "read the article", href: "#/article/" + encodeURIComponent(musing.article_id) })
         );
+      } else if (musing.kind === "loot") {
+        meta.appendChild(document.createTextNode(" · "));
+        meta.appendChild(el("a", { text: "see what I am wearing", href: "#/stats" }));
       }
       body.appendChild(meta);
       item.appendChild(body);
