@@ -78,7 +78,7 @@ def test_zero_feedback_still_creates_a_curious_musing(aws_resources):
         "musing_feedback_handler.generate_and_store_feedback_musing",
         wraps=musing_feedback_handler.generate_and_store_feedback_musing,
     ) as mock_generate, patch(
-        "common.musings.invoke_claude", return_value="Quiet out there today."
+        "common.musings.tracked_claude", return_value="Quiet out there today."
     ):
         result = musing_feedback_handler.handler({}, None)
 
@@ -98,7 +98,7 @@ def test_net_positive_feedback_is_pleased(aws_resources):
     _put_feedback("a1", "f2", "up")
     _put_feedback("a2", "f3", "down")
 
-    with patch("common.musings.invoke_claude", return_value="Feeling good about this one."):
+    with patch("common.musings.tracked_claude", return_value="Feeling good about this one."):
         result = musing_feedback_handler.handler({}, None)
 
     assert result["mood"] == "pleased"
@@ -111,7 +111,7 @@ def test_net_negative_feedback_is_reflective(aws_resources):
     _put_feedback("a1", "f2", "down")
     _put_feedback("a2", "f3", "up")
 
-    with patch("common.musings.invoke_claude", return_value="Something to think about."):
+    with patch("common.musings.tracked_claude", return_value="Something to think about."):
         result = musing_feedback_handler.handler({}, None)
 
     assert result["mood"] == "reflective"
@@ -121,7 +121,7 @@ def test_tied_feedback_is_reflective(aws_resources):
     _put_feedback("a1", "f1", "up")
     _put_feedback("a1", "f2", "down")
 
-    with patch("common.musings.invoke_claude", return_value="A mixed bag."):
+    with patch("common.musings.tracked_claude", return_value="A mixed bag."):
         result = musing_feedback_handler.handler({}, None)
 
     assert result["mood"] == "reflective"
@@ -130,7 +130,7 @@ def test_tied_feedback_is_reflective(aws_resources):
 def test_feedback_outside_lookback_window_is_ignored(aws_resources):
     _put_feedback("a1", "f1", "up", days_ago=10)
 
-    with patch("common.musings.invoke_claude", return_value="Quiet out there today."):
+    with patch("common.musings.tracked_claude", return_value="Quiet out there today."):
         result = musing_feedback_handler.handler({}, None)
 
     assert result["up_votes"] == 0
@@ -140,7 +140,7 @@ def test_feedback_outside_lookback_window_is_ignored(aws_resources):
 
 def test_generated_text_is_truncated_and_stored(aws_resources):
     overlong = "x" * 400
-    with patch("common.musings.invoke_claude", return_value=overlong):
+    with patch("common.musings.tracked_claude", return_value=overlong):
         musing_feedback_handler.handler({}, None)
 
     musings = _list_musings()

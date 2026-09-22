@@ -1328,3 +1328,38 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeValues={":t": timestamp},
     )
+
+
+# --- StatsCurrent (Observability enhancement, PR 1) ---------------------------------------
+#
+# Owned by common/stats_tracking.py. One row (stats_id="current"), updated in place all week
+# with ADD expressions -- same pattern as the model_config counters above -- so the row and
+# every attribute on it come into existence on first use; nothing has to create it first.
+
+
+def increment_current_stats(updates: dict[str, int | Decimal], week_start: str) -> None:
+    """ADD each of `updates` onto the current week's StatsCurrent row (creating it, and any
+    attribute in `updates` not yet present, on first use -- same as consume_feedback_counter
+    above). `week_start` (the Monday of the ISO week this row covers, e.g. "2026-09-15") is
+    recorded once, the first time this week's row is touched, and left alone after that -- a
+    later week's rollover job resets it, this function never does."""
+    if not updates:
+        return
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(updates)}
+    values = {f":v{n}": value for n, value in enumerate(updates.values())}
+    adds = ", ".join(f"{names[f'#f{n}']} :v{n}" for n in range(len(updates)))
+    table.update_item(
+        Key={"stats_id": "current"},
+        UpdateExpression=f"SET week_start = if_not_exists(week_start, :week) ADD {adds}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues={**values, ":week": week_start},
+    )
+
+
+def get_current_stats() -> dict:
+    """The current week's StatsCurrent row, or an empty shell if nothing has been recorded yet
+    this week (never raises for "no row" -- that is the normal state right after a rollover)."""
+    table = get_table(os.environ["STATS_CURRENT_TABLE"])
+    response = table.get_item(Key={"stats_id": "current"})
+    return response.get("Item") or {"stats_id": "current"}

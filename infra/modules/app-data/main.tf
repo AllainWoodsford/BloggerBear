@@ -290,3 +290,51 @@ resource "aws_dynamodb_table" "model_config" {
     type = "S"
   }
 }
+
+# Observability enhancement, PR 1: Bedrock usage/cost that isn't part of any one article's lineage
+# (musings, the weekly reflection, gear identity, comment screening) plus a few reader-activity
+# counters (feedback given/rejected, loot drops) -- see common/stats_tracking.py. One row, key
+# "current" (hash key stats_id, a fixed string -- there is only ever one), updated in place all
+# week with ADD expressions the same way model_config's rate-limit counters are (common/dynamo.py's
+# consume_feedback_counter); the row and every attribute on it come into existence on first use, no
+# separate "create the row" step. A later PR's weekly rollover copies this row into
+# stats_history below (keyed by the week that just ended) and resets it for the next week.
+resource "aws_dynamodb_table" "stats_current" {
+  name         = "bloggerbear-${var.environment_name}-stats-current"
+  billing_mode = "PAY_PER_REQUEST"
+  # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
+  # second in the last 35 days. Off in dev, where tables are disposable.
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "stats_id"
+
+  attribute {
+    name = "stats_id"
+    type = "S"
+  }
+}
+
+# One row per completed week (hash key week_start, the Monday it covers, e.g. "2026-09-15"),
+# written once by the rollover job (a later PR) and never updated after that -- the same shape as
+# stats_current's row, so "what changed this week vs a typical one" is a straight row-to-row
+# comparison. Empty until that rollover job exists.
+resource "aws_dynamodb_table" "stats_history" {
+  name                        = "bloggerbear-${var.environment_name}-stats-history"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "week_start"
+
+  attribute {
+    name = "week_start"
+    type = "S"
+  }
+}
