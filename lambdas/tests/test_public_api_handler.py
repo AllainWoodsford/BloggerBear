@@ -1332,6 +1332,8 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
             "total_output_tokens",
             "cost_aud",
             "cost_note",
+            "total_cost_aud",
+            "has_research",
             "model_labels",
             "published_by",
         }
@@ -1342,6 +1344,8 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
         assert article["total_output_tokens"] is None
         assert article["cost_aud"] is None
         assert article["cost_note"] is None
+        assert article["total_cost_aud"] is None
+        assert article["has_research"] is False
         assert article["model_labels"] is None
         assert article["published_by"] is None
 
@@ -1378,7 +1382,37 @@ def test_list_articles_projects_lineage_summary_when_present(aws_resources):
     assert article["total_input_tokens"] == 10
     assert article["total_output_tokens"] == 5
     assert article["cost_aud"] == 0.05
+    assert article["total_cost_aud"] is None
+    assert article["has_research"] is False
     assert article["published_by"] == "ai_only"
+
+
+def test_list_articles_projects_the_total_cost_and_whether_research_was_tracked(aws_resources):
+    lineage = {
+        "calls": [{"stage": "draft", "model_id": "model-a", "input_tokens": 10, "output_tokens": 5}],
+        "total_input_tokens": Decimal(10),
+        "total_output_tokens": Decimal(5),
+        "models_used": ["model-a"],
+        "cost_aud": Decimal("0.05"),
+        "cost_note": None,
+        "research": {"findings": 1, "tracked_findings": 1, "untracked_findings": 0},
+        "total_cost_aud": Decimal("0.08"),
+    }
+    _put_article("article-1", published_at="2026-09-12T00:00:00+00:00", title="Has research")
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET lineage = :lineage",
+        ExpressionAttributeValues={":lineage": lineage},
+    )
+
+    event = _event("GET /articles", query_params={"topic_id": "github-trending"})
+    result = public_api_handler.handler(event, None)
+    article = json.loads(result["body"])["articles"][0]
+
+    assert article["cost_aud"] == 0.05  # the authoring-only figure is still there
+    assert article["total_cost_aud"] == 0.08
+    assert article["has_research"] is True
 
 
 # --- Article detail -------------------------------------------------------
