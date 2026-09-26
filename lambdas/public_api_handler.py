@@ -292,6 +292,11 @@ def _list_articles(event: dict) -> dict:
             "total_output_tokens": (a.get("lineage") or {}).get("total_output_tokens"),
             "cost_aud": (a.get("lineage") or {}).get("cost_aud"),
             "cost_note": (a.get("lineage") or {}).get("cost_note"),
+            # total_cost_aud (authoring + research) and whether a research tally exists at all --
+            # see common/static_pages.py's _summary_cost_label for why the frontend needs both,
+            # not just the number: cost_aud alone understates the true cost of most articles.
+            "total_cost_aud": (a.get("lineage") or {}).get("total_cost_aud"),
+            "has_research": "research" in (a.get("lineage") or {}),
             "model_labels": (a.get("lineage") or {}).get("model_labels"),
             "published_by": a.get("published_by"),
         }

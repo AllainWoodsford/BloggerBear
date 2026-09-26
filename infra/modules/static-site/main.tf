@@ -74,6 +74,15 @@ resource "aws_cloudfront_origin_access_control" "site" {
 # 'self' with no 'unsafe-inline' -- frontend/app.js has no inline
 # scripts or inline style attributes anywhere, and every stylesheet is a
 # same-origin <link>, so nothing here needs loosening.
+#
+# require-trusted-types-for 'script' (a Lighthouse "Trust and Safety" flag):
+# safe to turn on outright, not just declare, because nothing in frontend/*.js
+# ever calls a DOM-XSS sink with a string in the first place -- no innerHTML/
+# outerHTML/document.write, no eval/new Function, no setTimeout/setInterval
+# given a string instead of a function (confirmed by grep across every
+# frontend/*.js file). No custom policy is registered because none of that
+# ever needs one; this purely closes the door on such a sink ever being added
+# unnoticed later.
 # -----------------------------------------------------------------------
 resource "aws_cloudfront_response_headers_policy" "security" {
   name = "bloggerbear-${var.environment_name}-security-headers"
@@ -118,19 +127,31 @@ resource "aws_cloudfront_response_headers_policy" "security" {
         "base-uri 'self'",
         "form-action 'self'",
         "object-src 'none'",
+        "require-trusted-types-for 'script'",
       ])
       override = true
     }
   }
 
-  # Permissions-Policy has no typed block in security_headers_config (as
-  # of the AWS provider versions this project pins) -- set via
-  # custom_headers_config instead. Denies every sensitive browser
-  # feature this site has no use for.
+  # Permissions-Policy and Cross-Origin-Opener-Policy have no typed block in
+  # security_headers_config (as of the AWS provider versions this project
+  # pins) -- set via custom_headers_config instead.
+  #
+  # COOP "same-origin" (a Lighthouse "Trust and Safety" flag, "Ensure proper
+  # origin isolation with COOP"): this site never opens, or is opened as, a
+  # popup/tab that needs a cross-origin window reference (no OAuth-style
+  # window.open() flow, no cross-origin postMessage handshake anywhere in
+  # frontend/*.js) -- isolating the top-level browsing context from other
+  # origins' windows has no feature to break here.
   custom_headers_config {
     items {
       header   = "Permissions-Policy"
       value    = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+      override = true
+    }
+    items {
+      header   = "Cross-Origin-Opener-Policy"
+      value    = "same-origin"
       override = true
     }
   }

@@ -119,6 +119,24 @@ def _format_cost_label(lineage: dict) -> str:
     return lineage.get("cost_note") or "No data"
 
 
+def _summary_cost_label(lineage: dict) -> str:
+    """The cost figure for the compact one-line summary: the article's total cost (authoring +
+    research, common/costing.py's build_lineage) when a research tally exists, since that -- not
+    the authoring-only cost_aud -- is what a reader means by "the cost" of the article. Checked
+    via the "research" key itself, not just total_cost_aud being present: a research tally that
+    couldn't be priced still means there IS a real, larger cost than cost_aud alone, so this says
+    "No data" rather than silently understating it by falling back to the authoring figure.
+
+    Falls back to the plain cost label when there's no research tally at all (e.g.
+    trending_digest_handler.py's cross-topic synthesis, which was never split into research vs.
+    authoring in the first place) -- cost_aud there already *is* the whole cost.
+    """
+    if "research" in lineage:
+        total = lineage.get("total_cost_aud")
+        return f"~${total:.2f} AUD" if total is not None else "No data"
+    return _format_cost_label(lineage)
+
+
 def _model_name(lineage: dict, model_id: str) -> str:
     """A model's readable name (recorded in the lineage at build time), else its id."""
     return (lineage.get("model_labels") or {}).get(model_id) or model_id
@@ -182,7 +200,7 @@ def _render_lineage_summary_line_html(lineage: dict | None, published_by: str | 
         ", ".join(_model_name(lineage or {}, m) for m in models_used) if models_used else "no data"
     )
     tokens_text = _per_model_token_breakdown_text(lineage) if lineage is not None else "no data"
-    cost_text = _format_cost_label(lineage) if lineage is not None else "No data"
+    cost_text = _summary_cost_label(lineage) if lineage is not None else "No data"
     approved_text = _published_by_label(published_by)
 
     return escape(
@@ -460,8 +478,13 @@ def render_and_publish_article_page(
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>{escape(title)} -- BloggerBear</title>
+<link rel="preload" href="/normalize.css" as="style" data-swap />
+<link rel="preload" href="/styles.css" as="style" data-swap />
+<script src="/preload-styles.js"></script>
+<noscript>
 <link rel="stylesheet" href="/normalize.css" />
 <link rel="stylesheet" href="/styles.css" />
+</noscript>
 <link rel="icon" href="/logo.svg" type="image/svg+xml" />
 </head>
 <body>

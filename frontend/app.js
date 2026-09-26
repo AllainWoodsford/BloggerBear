@@ -125,8 +125,10 @@
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
     });
-    // No topics (yet): no empty "Topics" label either.
-    topicsNavEl.hidden = navTopics.length === 0;
+    // No topics (yet): no empty "Topics" label either. A class, not the `hidden` attribute --
+    // this row's space is reserved from first paint (see styles.css), so revealing it here never
+    // moves #content/the footer the way toggling `hidden` after the fact used to.
+    topicsNavEl.classList.toggle("is-visible", navTopics.length > 0);
   }
 
   function loadNav() {
@@ -137,7 +139,7 @@
       .catch(function () {
         // Nav failing to load shouldn't block the rest of the page.
         clearChildren(navEl);
-        topicsNavEl.hidden = true;
+        topicsNavEl.classList.remove("is-visible");
       });
   }
 
@@ -276,6 +278,19 @@
     return costNote || "No data";
   }
 
+  // The cost figure for the compact one-line summary: the article's total cost (authoring +
+  // research) when a research tally exists, since that -- not the authoring-only costAud -- is
+  // what a reader means by "the cost" of the article. Mirrors common/static_pages.py's
+  // _summary_cost_label exactly, including checking hasResearch itself rather than just whether
+  // totalCostAud is a number: a research tally that couldn't be priced still means there IS a
+  // real, larger cost than costAud alone, so this says "No data" rather than understating it.
+  function summaryCostLabel(hasResearch, costAud, costNote, totalCostAud) {
+    if (hasResearch) {
+      return typeof totalCostAud === "number" ? "~$" + totalCostAud.toFixed(2) + " AUD" : "No data";
+    }
+    return costLabel(costAud, costNote);
+  }
+
   // "model: X in / Y out" per model actually used, summed across every call
   // that used it (an article can span more than one model, e.g. a fallback
   // kicking in partway through).
@@ -306,14 +321,17 @@
   // (totals, not per-call -- see public_api_handler.py's _list_articles), so
   // `tokensText` is passed in by whichever caller has the right level of
   // detail rather than computed here.
-  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costAud, costNote, hasLineage, modelLabels) {
+  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costArgs, hasLineage, modelLabels) {
     if (!hasLineage && (publishedBy === null || publishedBy === undefined)) {
       return "No data";
     }
     var models = modelsUsed && modelsUsed.length > 0 ? modelNames(modelsUsed, modelLabels).join(", ") : "no data";
+    var costText = hasLineage
+      ? summaryCostLabel(costArgs.hasResearch, costArgs.costAud, costArgs.costNote, costArgs.totalCostAud)
+      : "No data";
     return (
       "models [" + models + "] · tokens [" + tokensText + "] · approved by " +
-      publishedByLabel(publishedBy) + " · " + (hasLineage ? costLabel(costAud, costNote) : "No data")
+      publishedByLabel(publishedBy) + " · " + costText
     );
   }
 
@@ -324,8 +342,12 @@
       hasLineage ? lineage.models_used : null,
       hasLineage ? perModelTokenText(lineage) : "no data",
       article.published_by,
-      hasLineage ? lineage.cost_aud : null,
-      hasLineage ? lineage.cost_note : null,
+      {
+        hasResearch: hasLineage && lineage.research !== null && lineage.research !== undefined,
+        costAud: hasLineage ? lineage.cost_aud : null,
+        costNote: hasLineage ? lineage.cost_note : null,
+        totalCostAud: hasLineage ? lineage.total_cost_aud : null,
+      },
       hasLineage,
       hasLineage ? lineage.model_labels : null
     );
@@ -341,8 +363,12 @@
       article.models_used,
       tokensText,
       article.published_by,
-      article.cost_aud,
-      article.cost_note,
+      {
+        hasResearch: !!article.has_research,
+        costAud: article.cost_aud,
+        costNote: article.cost_note,
+        totalCostAud: article.total_cost_aud,
+      },
       hasLineage,
       article.model_labels
     );
@@ -2084,6 +2110,13 @@
   // infrastructure security logging this site does do. Shown once per
   // browser; dismissal is remembered in localStorage, the one and only
   // thing this site stores client-side (see the Privacy Policy, §6).
+  //
+  // Initial visibility is notice.js's job now, not this one's -- it runs
+  // the instant the element exists in the DOM, before first paint, which
+  // is what actually fixed the layout shift this used to cause by
+  // toggling `hidden` this late (DOMContentLoaded, after the whole script
+  // chain). This only wires the dismiss button, which is fine to leave
+  // until here: nothing shifts in response to a user's own click.
   var SITE_NOTICE_DISMISSED_KEY = "bloggerbear-site-notice-dismissed";
 
   function initSiteNotice() {
@@ -2091,19 +2124,6 @@
     var dismissButton = document.getElementById("site-notice-dismiss");
     if (!notice || !dismissButton) {
       return;
-    }
-
-    var alreadyDismissed = false;
-    try {
-      alreadyDismissed = window.localStorage.getItem(SITE_NOTICE_DISMISSED_KEY) === "1";
-    } catch (err) {
-      // Private browsing / storage disabled -- fall back to showing the
-      // notice every visit rather than breaking the page.
-      alreadyDismissed = false;
-    }
-
-    if (!alreadyDismissed) {
-      notice.hidden = false;
     }
 
     dismissButton.addEventListener("click", function () {
