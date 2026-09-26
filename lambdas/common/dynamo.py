@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import boto3
@@ -35,6 +36,19 @@ def get_table(name: str):
     if _dynamodb_resource is None:
         _dynamodb_resource = boto3.resource("dynamodb")
     return _dynamodb_resource.Table(name)
+
+
+# Cleanup PR: how long CandidateIdeas/FailedExecutions items live, and (only from the moment of
+# rejection, never before) ModerationQueue/PromptRefinements items -- one shared constant so every
+# TTL this file sets agrees, the same "one clock" reasoning research_tick_handler.py's own
+# FINDING_TTL_DAYS already follows for Findings (kept separate, at 14 days, since that one has to
+# outlive the article window it feeds, not just an operator's 7-day glance-back).
+CLEANUP_TTL_DAYS = 7
+
+
+def _expires_in(days: int) -> int:
+    """An `expires_at` epoch-seconds value `days` from now, for a TTL attribute."""
+    return int((datetime.now(UTC) + timedelta(days=days)).timestamp())
 
 
 # --- Topics / Findings (research-tick worker) -------------------------------
@@ -131,7 +145,11 @@ def put_candidate_idea(
     """Write (or overwrite) a CandidateIdeas item and return it.
 
     Call again with the same (topic_id, created_at) key and an updated
-    `status` to move an idea from "considered" to "selected".
+    `status` to move an idea from "considered" to "selected". Carries
+    `expires_at` (Cleanup PR, CLEANUP_TTL_DAYS from now) so it self-clears
+    via TTL once it's well past useful -- a pure operational scratchpad
+    superseded by the topic's next research cycle, nothing reads it back
+    historically the way Findings' research cost is.
     """
     table = get_table(os.environ["CANDIDATE_IDEAS_TABLE"])
     item = {
@@ -139,6 +157,7 @@ def put_candidate_idea(
         "created_at": created_at,
         "angle": angle,
         "status": status,
+        "expires_at": _expires_in(CLEANUP_TTL_DAYS),
     }
     table.put_item(Item=item)
     return item
@@ -421,13 +440,25 @@ def get_moderation_item(queue_id: str) -> dict | None:
 
 
 def update_moderation_status(queue_id: str, status: str) -> None:
-    """Update a ModerationQueue item's `status` field in place."""
+    """Update a ModerationQueue item's `status` field in place.
+
+    Cleanup PR: a `status` of "rejected" also sets `expires_at` (CLEANUP_TTL_DAYS from now), so a
+    rejected item self-clears via TTL; "approved" or "pending" never gets one and the item
+    persists indefinitely, same as before this PR. A real trade-off, not a free cleanup --
+    admin_api_handler.py's _moderation_queue_stats reads rejected items' reasons "across all
+    history" to inform compliance-prompt iteration; see that function's own updated docstring.
+    """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    expression = "SET #status = :status"
+    values = {":status": status}
+    if status == "rejected":
+        expression += ", expires_at = :expires_at"
+        values[":expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     table.update_item(
         Key={"queue_id": queue_id},
-        UpdateExpression="SET #status = :status",
+        UpdateExpression=expression,
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": status},
+        ExpressionAttributeValues=values,
     )
 
 
@@ -658,13 +689,24 @@ def get_prompt_refinement(topic_id: str, version: str) -> dict | None:
 
 
 def update_prompt_refinement_status(topic_id: str, version: str, status: str) -> None:
-    """Update a PromptRefinements item's `status` field in place."""
+    """Update a PromptRefinements item's `status` field in place.
+
+    Cleanup PR: a `status` of "rejected" also sets `expires_at` (CLEANUP_TTL_DAYS from now), so a
+    rejected version self-clears via TTL; "approved" or "pending" never gets one, so real, adopted
+    refinement history persists exactly as before. Unlike ModerationQueue's rejected items, nothing
+    reads a rejected version back historically -- no follow-on trade-off here.
+    """
     table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    expression = "SET #status = :status"
+    values = {":status": status}
+    if status == "rejected":
+        expression += ", expires_at = :expires_at"
+        values[":expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     table.update_item(
         Key={"topic_id": topic_id, "version": version},
-        UpdateExpression="SET #status = :status",
+        UpdateExpression=expression,
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": status},
+        ExpressionAttributeValues=values,
     )
 
 
@@ -888,7 +930,10 @@ def put_failed_execution(
 
     `topic_id` and `error` may be None/malformed if the DLQ message body
     didn't parse as expected -- `raw_message` (the untouched SQS message
-    body) is always kept so a human can inspect it either way.
+    body) is always kept so a human can inspect it either way. Carries
+    `expires_at` (Cleanup PR, CLEANUP_TTL_DAYS from now) so old failures
+    self-clear via TTL -- an operator-visibility record with a bounded
+    glance-back window, not a permanent audit log.
     """
     table = get_table(os.environ["FAILED_EXECUTIONS_TABLE"])
     item = {
@@ -897,6 +942,7 @@ def put_failed_execution(
         "error": error,
         "raw_message": raw_message,
         "created_at": created_at,
+        "expires_at": _expires_in(CLEANUP_TTL_DAYS),
     }
     table.put_item(Item=item)
     return item

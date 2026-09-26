@@ -56,6 +56,9 @@ def test_records_a_failed_execution(failed_executions_table):
     assert items[0]["topic_id"] == "github-trending"
     assert items[0]["error"] == {"Error": "States.TaskFailed", "Cause": "synthetic test message"}
     assert items[0]["raw_message"] == body
+    # Cleanup PR: common/dynamo.py's put_failed_execution sets expires_at so this self-clears via
+    # TTL after CLEANUP_TTL_DAYS -- a bounded operational glance-back, not a permanent record.
+    assert "expires_at" in items[0]
 
 
 def test_processes_multiple_records_in_one_batch(failed_executions_table):
