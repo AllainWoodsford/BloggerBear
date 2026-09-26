@@ -785,7 +785,11 @@ _STATS_RECENT_LIMIT = 20
 
 
 def _moderation_queue_stats(event: dict) -> dict:
-    """Summarize what compliance review has flagged, across all history.
+    """Summarize what compliance review has flagged, across all history for a pending or
+    approved item -- for a rejected one, only as far back as the Cleanup PR's TTL window
+    (CLEANUP_TTL_DAYS, common/dynamo.py's update_moderation_status): rejected items self-clear
+    after that, a deliberate trade-off between this endpoint's original "across all history"
+    reach and not keeping rejected compliance-review output around indefinitely.
 
     Phase 6 ("Prompt iteration on the compliance-review step based on
     what's actually been flagged so far"): iterating the compliance

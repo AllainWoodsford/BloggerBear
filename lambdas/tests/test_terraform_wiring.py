@@ -153,6 +153,46 @@ def test_the_content_bucket_is_versioned_and_old_versions_expire():
     assert "depends_on = [aws_s3_bucket_versioning.content]" in production
 
 
+# --- Cleanup PR: snapshots expire, TTLs were added, log retention was set ---------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env):
+    """21 days, not the Findings table's own 14-day FINDING_TTL_DAYS -- a safety margin over how
+    long a DynamoDB TTL deletion can lag past a Finding's actual expiry, so a live Finding's
+    raw_snapshot_s3_key is never left pointing at an already-deleted object."""
+    text = _read("environments", env, "main.tf")
+    start = re.search(r'id\s*=\s*"expire-old-snapshots"', text).start()
+    rule = text[start : start + 400]
+
+    assert 'prefix = "snapshots/"' in rule
+    assert "days = 21" in rule
+
+
+def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
+    """Findings and ModelConfig already had one; CandidateIdeas, ModerationQueue,
+    PromptRefinements and FailedExecutions are the four this PR adds."""
+    tables = _read("modules", "app-data", "main.tf")
+
+    assert tables.count('attribute_name = "expires_at"') == 6
+    assert tables.count("ttl {") == 6
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
+    """One for_each block, reusing the same function_name list module.observability's
+    lambda_function_names already uses, not one resource (or one list) per function -- see
+    that resource's own comment on why."""
+    text = _read("environments", env, "main.tf")
+
+    assert text.count("retention_in_days = 90") == 1
+    assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
+    assert "for_each          = toset(local.pipeline_lambda_function_names)" in text
+    function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
+    assert len(function_names) == 10  # named once each, in the one list both resources share
+    assert len(set(function_names)) == 10
+
+
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
 
 
@@ -264,6 +304,11 @@ def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env)
     found = 0
     for match in re.finditer(r'^resource "aws_cloudwatch_log_group" "[^"]+" \{\n(.*?)^\}', text, re.S | re.M):
         body = match.group(1)
+        if "for_each" in body:
+            # aws_cloudwatch_log_group.lambda (Cleanup PR): named "/aws/lambda/${each.value}" --
+            # a for_each this static-analysis loop can't resolve to a literal name. Checked
+            # properly instead by test_every_pipeline_lambdas_function_name_is_covered_too below.
+            continue
         region = (
             "us-east-1" if re.search(r"^\s*provider\s*=\s*aws\.us_east_1", body, re.M) else "ap-southeast-2"
         )
@@ -274,6 +319,20 @@ def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env)
             "(infra/bootstrap/main.tf, WafLogGroups / LambdaLogGroups)"
         )
     assert found >= 2
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_pipeline_lambdas_function_name_is_covered_too(env):
+    """The other half of the skip above: aws_cloudwatch_log_group.lambda's for_each can't be
+    resolved to a literal name by regex, so this checks the thing that actually decides whether
+    the deploy role can create it -- every function_name feeding that for_each really does start
+    with "bloggerbear-", which is exactly what infra/bootstrap/main.tf's LambdaLogGroups
+    statement (/aws/lambda/bloggerbear-*) covers."""
+    text = _read("environments", env, "main.tf")
+
+    names = re.findall(r'function_name\s*=\s*"([^"]+)"', text)
+    assert len(names) >= 10
+    assert all(name.startswith("bloggerbear-") for name in names)
 
 
 def test_the_shared_cloudfront_waf_log_group_really_is_in_us_east_1():
