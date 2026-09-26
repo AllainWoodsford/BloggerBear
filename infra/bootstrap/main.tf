@@ -269,15 +269,17 @@ data "aws_iam_policy_document" "gha_deploy" {
   }
 
   # Phase 1: the CloudWatch log groups Lambda creates on first invocation
-  # (and that Terraform may come to manage directly for retention).
-  # Scoped to the /aws/lambda/bloggerbear-* log group prefix. Not
-  # currently exercised by any resource in infra/environments (no
-  # aws_cloudwatch_log_group targets this pattern yet -- Lambda creates
-  # these itself on first invocation, outside Terraform), so this
-  # statement is unproven against a real apply; widened to logs:* and
-  # given both ARN forms (with and without the trailing `:*`) alongside
-  # WafLogGroups below for the same reason, rather than leaving an
-  # unexercised guess in place to fail the same way WafLogGroups did.
+  # (and that Terraform may come to manage directly for retention). Scoped
+  # to the /aws/lambda/bloggerbear-* log group prefix. Now exercised (Cleanup
+  # PR): every pipeline/API Lambda's log group gets an explicit
+  # aws_cloudwatch_log_group with retention_in_days = 90 in each environment
+  # -- each one already exists from a prior real invocation, though, so the
+  # first apply needs `terraform import` per function before it, or it fails
+  # with ResourceAlreadyExistsException (see that resource's own comment).
+  # Widened to logs:* and given both ARN forms (with and without the
+  # trailing `:*`) alongside WafLogGroups below for the same reason, rather
+  # than leaving an unexercised guess in place to fail the same way
+  # WafLogGroups did.
   statement {
     sid     = "LambdaLogGroups"
     effect  = "Allow"

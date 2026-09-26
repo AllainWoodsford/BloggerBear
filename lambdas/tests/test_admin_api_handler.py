@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -939,6 +940,7 @@ def test_approve_moderation_item(aws_resources):
     queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
     queue_item = queue_table.get_item(Key={"queue_id": "queue-1"})["Item"]
     assert queue_item["status"] == "approved"
+    assert "expires_at" not in queue_item  # Cleanup PR: only a rejected item ever gets one
 
     # Static article publishing (docs/project-plan.md §11): approving a
     # moderation-queue item must regenerate the static page too, or it
@@ -988,6 +990,10 @@ def test_reject_moderation_item(aws_resources):
     queue_table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
     queue_item = queue_table.get_item(Key={"queue_id": "queue-1"})["Item"]
     assert queue_item["status"] == "rejected"
+    # Cleanup PR: a rejected item self-clears via TTL roughly a week out (common/dynamo.py's
+    # CLEANUP_TTL_DAYS) -- a real trade-off against _moderation_queue_stats's own "across all
+    # history" reach, not a free cleanup (see that function's updated docstring).
+    assert queue_item["expires_at"] > int(datetime.now(UTC).timestamp())
 
 
 def test_approve_unknown_queue_item_returns_404(aws_resources):
@@ -1452,6 +1458,7 @@ def test_approve_prompt_refinement_success(aws_resources):
     assert item["status"] == "approved"
     assert item["equipped"] is True
     assert item["slot"] == "ring"
+    assert "expires_at" not in item  # Cleanup PR: only a rejected version ever gets one
 
 
 def test_reject_prompt_refinement_success(aws_resources):
@@ -1471,6 +1478,10 @@ def test_reject_prompt_refinement_success(aws_resources):
         Key={"topic_id": "github-trending", "version": "2026-09-12T00:00:00+00:00"}
     )["Item"]
     assert item["status"] == "rejected"
+    # Cleanup PR: a rejected version self-clears via TTL (common/dynamo.py's CLEANUP_TTL_DAYS) --
+    # nothing reads a rejected version back historically, unlike moderation_queue's own rejected
+    # items, so no follow-on trade-off here.
+    assert item["expires_at"] > int(datetime.now(UTC).timestamp())
 
 
 def test_approve_prompt_refinement_not_found_returns_404(aws_resources):
