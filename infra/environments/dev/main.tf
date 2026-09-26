@@ -632,6 +632,11 @@ module "admin_api" {
     "GET /review/report",
     "GET /lineage/audit",
     "POST /lineage/backfill",
+    # Observability enhancement, PR 5: one-time catch-up folding every existing article's
+    # already-recorded lineage cost into StatsHistory's all-time row (a dry run unless
+    # {"apply": true}, and refuses to double-count on a second run -- see admin_api_handler.py's
+    # _stats_backfill_articles and `admin_cli stats backfill-articles`).
+    "POST /stats/backfill-articles",
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",

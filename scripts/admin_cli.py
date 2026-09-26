@@ -597,6 +597,13 @@ def _cmd_lineage_backfill(args: argparse.Namespace) -> None:
     _do_request(args, "POST", "/lineage/backfill", body={"apply": args.apply})
 
 
+# --- stats subcommands ---------------------------------------------------
+
+
+def _cmd_stats_backfill_articles(args: argparse.Namespace) -> None:
+    _do_request(args, "POST", "/stats/backfill-articles", body={"apply": args.apply})
+
+
 # --- moderation subcommands ---------------------------------------------
 
 
@@ -1278,6 +1285,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the recomputed lineage (default: only report what would change)",
     )
     backfill_parser.set_defaults(func=_cmd_lineage_backfill)
+
+    stats_parser = subparsers.add_parser("stats", help="Observability: one-time catch-up jobs")
+    stats_sub = stats_parser.add_subparsers(dest="action", required=True)
+    stats_backfill_parser = stats_sub.add_parser(
+        "backfill-articles",
+        help=(
+            "Fold every existing article's already-recorded cost into StatsHistory's all-time "
+            "total (a dry run unless --apply; refuses to run twice)"
+        ),
+    )
+    stats_backfill_parser.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="Write the totals onto StatsHistory (default: only report what they would be)",
+    )
+    stats_backfill_parser.set_defaults(func=_cmd_stats_backfill_articles)
 
     moderation_parser = subparsers.add_parser("moderation", help="Manage the moderation queue")
     moderation_sub = moderation_parser.add_subparsers(dest="action", required=True)
