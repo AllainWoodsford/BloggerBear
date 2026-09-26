@@ -40,7 +40,9 @@ from common.dynamo import (
     get_moderation_item_by_article_id,
     get_pipeline_config,
     get_prompt_refinement,
+    get_stats_history_row,
     get_topic,
+    increment_stats_totals,
     list_all_articles,
     list_all_moderation_items,
     list_candidate_ideas,
@@ -54,6 +56,7 @@ from common.dynamo import (
     put_model_config,
     put_pipeline_config,
     put_prompt_refinement,
+    put_stats_history_row,
     put_topic,
     set_article_feedback_lock,
     set_prompt_refinement_equipment,
@@ -93,6 +96,7 @@ from common.static_pages import (
     remove_article_page,
     render_and_publish_article_page,
 )
+from common.stats_tracking import ARTICLES_BACKFILL_MARKER, plan_articles_backfill, to_stats_updates
 
 _DEFAULT_RESEARCH_CADENCE = "rate(1 hour)"
 # New topics get their daily article at 9 AM Sydney time (the scheduler reads the
@@ -700,6 +704,52 @@ def _lineage_backfill(event: dict) -> dict:
             "examined": len(plan),
             "changed": len(changed),
             "articles": [{k: v for k, v in item.items() if k != "lineage"} for item in plan],
+        },
+    )
+
+
+def _stats_backfill_articles(event: dict) -> dict:
+    """One-time catch-up (Observability enhancement, PR 5): fold every existing article's
+    already-recorded lineage cost into StatsHistory's all-time row, under the same `articles`
+    category common/stats_tracking.py's record_article_lineage tallies onto going forward -- for
+    every article drafted before that category existed. A dry run unless `{"apply": true}`.
+
+    Refuses to double-count: a reserved StatsHistory row (`week_start` = the sentinel
+    ARTICLES_BACKFILL_MARKER) marks that this has already run, written by the same conditional
+    put_stats_history_row every real week's rollover already uses, so a retried or duplicated
+    call -- or simply running this a second time on purpose -- can never fold these articles
+    into the running total twice. A dry run still reports the current totals either way, so an
+    operator can preview or audit them even after they've already been applied.
+    """
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    apply = body.get("apply", False)
+    if not isinstance(apply, bool):
+        return _error(400, "'apply' must be a boolean if provided")
+
+    plan = plan_articles_backfill(list_all_articles())
+    already_run = get_stats_history_row(ARTICLES_BACKFILL_MARKER) is not None
+    written = False
+    if apply and not already_run and plan["totals"]:
+        marker = {
+            "applied_at": datetime.now(UTC).isoformat(),
+            "examined": plan["examined"],
+            "included": plan["included"],
+        }
+        written = put_stats_history_row(ARTICLES_BACKFILL_MARKER, marker)
+        if written:
+            increment_stats_totals(to_stats_updates(plan["totals"]))
+
+    return _response(
+        200,
+        {
+            "already_run": already_run,
+            "applied": written,
+            "examined": plan["examined"],
+            "included": plan["included"],
+            "totals": plan["totals"],
         },
     )
 
@@ -1549,6 +1599,7 @@ _ROUTES = {
     "GET /review/report": _review_report,
     "GET /lineage/audit": _lineage_audit,
     "POST /lineage/backfill": _lineage_backfill,
+    "POST /stats/backfill-articles": _stats_backfill_articles,
     "GET /moderation-queue": _list_moderation_queue,
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,

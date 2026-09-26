@@ -467,6 +467,58 @@ def test_public_view_converts_api_gateway_cost_but_never_exposes_as_of():
     assert "api_gateway_cost_as_of" not in str(view)  # not tucked away under another key either
 
 
+# --- plan_articles_backfill / to_stats_updates: the one-time catch-up (PR 5) --------------------
+
+
+def test_plan_articles_backfill_sums_several_articles_into_one_totals_dict():
+    lineage_1 = _lineage(calls=[_call(input_tokens=1000, output_tokens=500)], cost_aud=3.0)
+    lineage_2 = _lineage(calls=[_call(input_tokens=200, output_tokens=100)], cost_aud=1.0)
+    articles = [
+        {"article_id": "a1", "lineage": lineage_1},
+        {"article_id": "a2", "lineage": lineage_2},
+    ]
+
+    plan = st.plan_articles_backfill(articles)
+
+    assert (plan["examined"], plan["included"]) == (2, 2)
+    assert plan["totals"]["articles_calls"] == 2
+    assert plan["totals"]["articles_input_tokens"] == 1200
+    assert plan["totals"]["articles_cost_aud"] == pytest.approx(4.0)
+
+
+def test_plan_articles_backfill_skips_articles_with_no_lineage_or_no_calls():
+    articles = [
+        {"article_id": "a1", "lineage": None},
+        {"article_id": "a2"},  # no "lineage" key at all
+        {"article_id": "a3", "lineage": _lineage(calls=[])},
+    ]
+
+    plan = st.plan_articles_backfill(articles)
+
+    assert (plan["examined"], plan["included"]) == (3, 0)
+    assert plan["totals"] == {}
+
+
+def test_plan_articles_backfill_counts_unpriced_articles_separately_from_priced_ones():
+    articles = [
+        {"article_id": "a1", "lineage": _lineage(calls=[_call()], cost_aud=1.0)},
+        {"article_id": "a2", "lineage": _lineage(calls=[_call()], cost_aud=None)},
+    ]
+
+    plan = st.plan_articles_backfill(articles)
+
+    assert plan["totals"]["articles_cost_aud"] == pytest.approx(1.0)  # only the priced one
+    assert plan["totals"]["articles_unpriced_articles"] == 1
+
+
+def test_to_stats_updates_wraps_only_the_float_in_decimal():
+    updates = st.to_stats_updates({"articles_calls": 3, "articles_cost_aud": 4.5})
+
+    assert updates == {"articles_calls": 3, "articles_cost_aud": Decimal("4.5")}
+    assert isinstance(updates["articles_calls"], int)
+    assert isinstance(updates["articles_cost_aud"], Decimal)
+
+
 def test_public_view_on_an_entirely_empty_row_is_all_zeros_and_nones():
     view = st.public_view({"week_start": "all-time"})
 
