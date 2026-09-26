@@ -261,12 +261,19 @@ _EQUIPMENT_SLOT_LABELS = {
 }
 
 
-def _equipment_snapshot(equipment_used: list[dict] | None) -> list[dict]:
+def equipment_snapshot(equipment_used: list[dict] | None) -> list[dict]:
     """The gear `equipment_used` names, as it is right now -- read once, here, so the caller can
     bake it into the page and never ask again. A piece that no longer exists (deleted before this
     page was ever rendered) is left out; there is nothing left to describe. Each piece appears
     once even if it is listed more than once (e.g. two armor pieces cited by the same version by
-    mistake never happens, but a defensive de-dupe costs nothing)."""
+    mistake never happens, but a defensive de-dupe costs nothing).
+
+    Public (not `_`-prefixed): also called live, per request, by public_api_handler.py's
+    `_get_article_detail` for the SPA's own article view -- unlike the static page below, which
+    calls this once and bakes the result into HTML that then sits in S3/CloudFront until the page
+    is re-rendered, the SPA re-fetches an article's JSON on every visit anyway, so showing today's
+    actual gear state there (rather than a frozen historical snapshot) is consistent with
+    everything else it already shows live (view count, feedback, ...)."""
     if not equipment_used:
         return []
     topic_names: dict[str, str] = {}
@@ -441,7 +448,7 @@ def render_and_publish_article_page(
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
-    equipment_footer_html = _render_equipment_footer_html(_equipment_snapshot(equipment_used))
+    equipment_footer_html = _render_equipment_footer_html(equipment_snapshot(equipment_used))
     footers_html = f'<div class="article-footers">{lineage_footer_html}{equipment_footer_html}</div>'
     site_sections_html = _site_sections_links_html()
     footer_sections_html = _site_sections_links_html(paws=True)

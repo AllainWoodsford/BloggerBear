@@ -374,6 +374,28 @@ def test_setting_the_pipeline_interval_leaves_other_settings_on_that_row_alone(w
     assert item["some_future_setting"] == "keep me" and item["research_interval_hours"] == 4
 
 
+def test_no_last_armor_row_is_a_valid_state(world):
+    assert dynamo.get_last_armor_versions() == []
+
+
+def test_the_last_armor_drawn_round_trips(world):
+    dynamo.set_last_armor_versions(["a", "b"])
+
+    assert dynamo.get_last_armor_versions() == ["a", "b"]
+
+    dynamo.set_last_armor_versions([])
+    assert dynamo.get_last_armor_versions() == []
+
+
+def test_the_last_armor_row_and_the_pipeline_row_do_not_overwrite_each_other(world):
+    dynamo.put_pipeline_config(research_interval_hours=2)
+
+    dynamo.set_last_armor_versions(["a"])
+
+    assert dynamo.get_pipeline_config()["research_interval_hours"] == 2
+    assert dynamo.get_last_armor_versions() == ["a"]
+
+
 def test_set_topic_last_research_at_changes_only_that_field(world):
     _put_topic()
 
