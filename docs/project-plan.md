@@ -1198,11 +1198,12 @@ article (PR 1), and wear comes from a stored downvote (1 point), repaired by a s
 
 ### Observability: a Stats table, a Historic table, and everything Bedrock spends that isn't on an article
 
-**Status: all four PRs of an owner-scoped series done** (recording what was previously untracked; the
+**Status: all five PRs of an owner-scoped series done** (recording what was previously untracked; the
 weekly rollover job and Lambda billed-duration tracking; API Gateway cost via Cost Explorer; the
-Stats-page UI for all of it). Prompted by the owner asking how tokens are calculated and finding two
-real gaps: no dedicated Stats table existed (per-article `lineage`, aggregated live by
-`common/stats.py`, was the whole story), and four real Bedrock-calling code paths were never tracked at
+Stats-page UI for all of it; a one-time backfill of pre-existing article spend). Prompted by the owner
+asking how tokens are calculated and finding two real gaps: no dedicated Stats table existed
+(per-article `lineage`, aggregated live by `common/stats.py`, was the whole story), and four real
+Bedrock-calling code paths were never tracked at
 all.
 
 **Two new DynamoDB tables** (`infra/modules/app-data`): `StatsCurrent`, one row (`stats_id = "current"`),
@@ -1317,3 +1318,33 @@ labelled as excluding the current week. Weekly Stats is the same category/feedba
 API-Gateway shape, just from `StatsCurrent`. Gear moved to the bottom of the page, superseding the
 earlier fix/stats-gear-first order, now that there's real financial data above it to lead with. The
 "Estimated spend per day" heading and its "View as table" twin now say how many days they cover.
+
+**PR 5 -- built:** a one-time catch-up, `POST /stats/backfill-articles` (`admin_api_handler.py`'s
+`_stats_backfill_articles`, `admin_cli stats backfill-articles [--apply]`) -- run once, after PR 4
+deploys, before the separate Cleanup PR touches anything: article spend was never folded into
+`StatsCurrent`/`StatsHistory` before `record_article_lineage` existed, so every article drafted before
+that deploy would otherwise be invisible to Weekly/Total Stats even though its cost is sitting right
+there on the Articles table. `common/stats_tracking.py`'s `plan_articles_backfill` sums every existing
+article's lineage into one totals dict (the exact shape `record_article_lineage` would have tallied,
+via a shared `_lineage_tally` the two now split out between them) -- pure and read-only, same
+"caller already fetched the data" shape as `lineage_tools.py`'s own `plan_backfill`. A dry run unless
+`{"apply": true}`; applying it folds the totals onto `StatsHistory`'s all-time row in one shot
+(`to_stats_updates` Decimal-wraps only at that write boundary) and writes a reserved marker row
+(`week_start = "articles-backfill"`, via the same conditional `put_stats_history_row` a real week's
+row already uses) so a second run -- retried, duplicated, or just run again on purpose -- can never
+fold these articles in twice; it reports `already_run: true` and touches nothing.
+
+**Deliberately not backfilled, and never can be:** the four other categories (`musings`,
+`weekly_reflection`, `gear_identity`, `comment_screening`) and Lambda billed duration. None of them
+were ever tracked before PRs 1/2 existed -- there is no stored token count or duration anywhere to sum,
+so inventing one would be a guess dressed up as data, the same principle the existing lineage-backfill
+CLI already holds itself to for an article drafted before *that* tracking existed. API Gateway cost is
+technically recoverable from Cost Explorer's own history (it answers for past date ranges, not just
+"now"), but was left out of this PR as the lowest-value figure to chase, not a limitation of the
+approach -- a candidate for a later, separate follow-up if it turns out to matter.
+
+One thing worth knowing before running any of this against production data: Findings already expire via
+DynamoDB TTL after `FINDING_TTL_DAYS = 14` (`research_tick_handler.py`, unrelated to this series) --
+older research-cost data has been quietly aging out of reach this whole time, regardless of this PR or
+the separate Cleanup PR's own retention proposals. Articles themselves carry no TTL and are kept
+indefinitely, so this backfill's own numbers are not racing against anything.
