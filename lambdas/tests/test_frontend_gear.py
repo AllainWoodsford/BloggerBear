@@ -390,6 +390,52 @@ def test_the_stats_page_asks_for_the_gear_separately_so_a_failure_never_hides_th
     assert "Could not load the gear right now." in _gear_section_of_app()
 
 
+# --- Equipment used, next to Lineage on an article page --------------------------------------
+
+
+def _render_equipment_footer_body() -> str:
+    start = APP_JS.index("function renderEquipmentFooter(equipmentUsed)")
+    return APP_JS[start : APP_JS.index("function pipelineItemsFor", start)]
+
+
+def test_renders_nothing_for_no_equipment_used():
+    section = _render_equipment_footer_body()
+
+    assert "return null;" in section
+
+
+def test_equipment_footer_reuses_gears_own_rarity_labels_not_a_fresh_copy():
+    """RARITY_LABELS (Common/Uncommon/.../Legendary) is already loaded globally via gear.js --
+    this checks the equipment footer reuses it rather than a second hardcoded copy drifting out
+    of sync with it."""
+    section = _render_equipment_footer_body()
+
+    assert "BloggerGear.RARITY_LABELS" in section
+
+
+def test_equipment_footer_uses_the_same_css_classes_as_the_static_article_page():
+    """common/static_pages.py's _equipment_item_html/_render_equipment_footer_html render the
+    same classes server-side for the static article page -- both must agree, or styles.css's
+    rules (and its wide/narrow .article-footers layout) would only ever apply to one of them."""
+    section = _render_equipment_footer_body()
+    classes = ("equipment-footer", "equipment-list", "equipment-item", "equipment-name", "equipment-meta")
+
+    for class_name in classes:
+        assert class_name in section, class_name
+
+
+def test_the_article_page_wraps_lineage_and_equipment_in_one_shared_footers_container():
+    """Side by side on a wide screen, equipment flexing below lineage on a narrow one -- the
+    .article-footers wrapper (styles.css) is what actually does that; appending both straight to
+    contentEl (skipping the wrapper) would lose the layout entirely, wide or narrow."""
+    section = APP_JS[APP_JS.index("renderLineageFooter(article.lineage") - 400 :][:700]
+
+    assert 'className: "article-footers"' in section
+    assert "renderEquipmentFooter(article.equipment_used)" in section
+    assert "footers.appendChild(renderLineageFooter" in section
+    assert "footers.appendChild(equipmentFooter)" in section
+
+
 def _render_stats_body() -> str:
     start = APP_JS.index("function renderStats(stats)")
     return APP_JS[start : APP_JS.index("function loadStats()", start)]
