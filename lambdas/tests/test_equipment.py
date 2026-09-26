@@ -187,12 +187,12 @@ def test_armor_applies_to_every_topic_and_rings_only_to_their_own():
         worn("ring", "topic", topic="t2", version="r2", text="Mention the price."),
     ]
 
-    text, used = eq.guidance_for("t1", items)
+    text, used = eq.guidance_for("t1", items, TakeAll)
 
     assert text == "- Be brief.\n- Cite the repo."
     assert [u["slot"] for u in used] == ["helmet", "ring"]
     assert "price" not in text
-    assert eq.guidance_for("t3", items)[0] == "Be brief."  # armor only, the rings are for other topics
+    assert eq.guidance_for("t3", items, TakeAll)[0] == "Be brief."  # armor only, rings are for other topics
 
 
 def test_armor_comes_in_slot_order_not_the_order_worn():
@@ -211,12 +211,12 @@ def _armor(count):
     return [worn(slot, "global", version=slot, text=f"{slot} guidance.") for slot in eq.ARMOR_SLOTS[:count]]
 
 
-def test_the_bear_takes_in_at_least_one_piece_and_never_more_than_it_wears():
+def test_the_bear_can_go_bare_or_take_in_up_to_everything_it_wears():
     armor = _armor(4)
 
     sizes = {len(eq.pick_armor(armor, random.Random(seed))) for seed in range(200)}
 
-    assert sizes == {1, 2, 3, 4}  # every count comes up; none is zero, none is over
+    assert sizes == {0, 1, 2, 3, 4}  # every count comes up, including bringing nothing
 
 
 def test_every_piece_gets_left_out_sometimes_and_taken_in_sometimes():
@@ -239,6 +239,49 @@ def test_no_armor_means_nothing_to_pick():
     assert eq.pick_armor([]) == []
 
 
+# --- the bear avoids repeating the exact combination it brought last time -----------------
+
+
+def test_a_single_piece_alternates_between_bare_and_worn_rather_than_repeating():
+    armor = _armor(1)
+
+    for seed in range(50):
+        rng = random.Random(seed)
+        first = {i["version"] for i in eq.pick_armor(armor, rng)}
+        second = {i["version"] for i in eq.pick_armor(armor, rng, avoid_versions=first)}
+        assert second != first  # bare last time -> worn this time, or vice versa
+
+
+def test_avoid_versions_none_never_redraws_even_by_coincidence():
+    armor = _armor(4)
+    # A generous rng that always "repeats" whatever avoid_versions asks it to avoid would still
+    # return on the first draw when nothing is being avoided.
+    assert eq.pick_armor(armor, TakeAll, avoid_versions=None) == list(armor)
+
+
+def test_a_redraw_that_cannot_escape_the_avoided_set_still_returns_something():
+    # Single piece, and TakeAll always draws every piece in -- so with that one piece's version
+    # being avoided, every redraw keeps landing on the same, unavoidable combination.
+    armor = _armor(1)
+    avoided = {armor[0]["version"]}
+
+    result = eq.pick_armor(armor, TakeAll, avoid_versions=avoided)
+
+    assert {i["version"] for i in result} == avoided  # gave up after MAX_ARMOR_REDRAWS, not stuck
+
+
+def test_guidance_for_threads_avoid_armor_versions_into_the_pick():
+    armor = _armor(1)
+    avoided = {armor[0]["version"]}
+
+    # TakeAll would normally take the one piece in; forbidding that exact combination with no
+    # other worn piece to fall back on still has to return the only option there is.
+    text, used = eq.guidance_for("t1", armor, TakeAll, avoid_armor_versions=avoided)
+
+    assert used[0]["version"] == armor[0]["version"]
+    assert text == armor[0]["prompt_changes"]
+
+
 def test_rings_are_always_used_but_armor_is_not():
     items = _armor(6) + [worn("ring", "topic", topic="t1", version="r", text="The ring.")]
     armor_counts = set()
@@ -249,7 +292,7 @@ def test_rings_are_always_used_but_armor_is_not():
         assert used[-1]["slot"] == "ring"
         armor_counts.add(len(used) - 1)
 
-    assert armor_counts == {1, 2, 3, 4, 5, 6}  # from one piece to all of it
+    assert armor_counts == {0, 1, 2, 3, 4, 5, 6}  # from nothing at all to every piece
 
 
 def test_only_the_armor_taken_in_is_recorded_and_injected():
@@ -280,7 +323,9 @@ def test_a_legacy_approval_still_applies_until_the_topic_has_a_ring():
 
 
 def test_legacy_is_used_alongside_armor():
-    text, _ = eq.guidance_for("t1", [worn("chest", "global", topic="x", text="Armor."), item(text="Legacy.")])
+    text, _ = eq.guidance_for(
+        "t1", [worn("chest", "global", topic="x", text="Armor."), item(text="Legacy.")], TakeAll
+    )
 
     assert text == "- Armor.\n- Legacy."
 

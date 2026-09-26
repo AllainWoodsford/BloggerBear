@@ -1187,6 +1187,29 @@ def put_pipeline_config(
     return get_pipeline_config() or {"config_id": _PIPELINE_CONFIG_ID}
 
 
+# A third row in the same table: the armor piece versions the bear brought to its most recently
+# drafted article (any topic -- armor is global, see common/equipment.py's SCOPE_GLOBAL). Read
+# and rewritten every time common.equipment.pick_armor draws again, so that draw can avoid
+# repeating the exact same combination twice running. No TTL -- like the two rows above, this is
+# ongoing operational state, not something that should ever expire on its own.
+
+_LAST_ARMOR_CONFIG_ID = "last-armor"
+
+
+def get_last_armor_versions() -> list[str]:
+    """The armor piece versions drawn for the most recent article, or [] if none has ever been
+    recorded (a fresh deploy, or every draw so far came up "no armor")."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": _LAST_ARMOR_CONFIG_ID}).get("Item")
+    return list(item["versions"]) if item and item.get("versions") is not None else []
+
+
+def set_last_armor_versions(versions: list[str]) -> None:
+    """Record the armor piece versions just drawn (possibly an empty list -- "brought nothing"
+    is recorded too, so the next draw can avoid repeating *that* twice running as well)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    table.put_item(Item={"config_id": _LAST_ARMOR_CONFIG_ID, "versions": versions})
+
 
 # --- Feedback limits (see common/feedback_limits.py) ---------------------------------------
 #
