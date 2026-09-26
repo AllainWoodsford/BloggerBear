@@ -909,6 +909,30 @@ def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
     return positively_voted[:limit]
 
 
+def list_recent_article_titles(topic_id: str, limit: int = 5) -> list[str]:
+    """Return up to `limit` of `topic_id`'s own published articles' titles, most recent first.
+
+    Same Scan + FilterExpression as get_top_voted_articles above (no topic_id GSI on this table),
+    just sorted by created_at instead of net_votes. Fed into daily_cycle_handler.py's ideation
+    prompt so a source that stays trending for days doesn't get written up again each day just
+    because that day's numbers are technically new -- titles only, never full articles or ids,
+    since that's all a "don't repeat this" reminder needs."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
+
+    response = table.scan(FilterExpression=filter_expression)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression=filter_expression,
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return [item["title"] for item in items[:limit]]
+
+
 # --- FailedExecutions (DLQ consumer) -------------------------------------
 #
 # Owned by the dlq_handler worker. A FailedExecutions item is written once

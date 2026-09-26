@@ -46,6 +46,7 @@ from common.dynamo import (
     get_top_voted_articles,
     get_topic,
     list_prompt_refinements,
+    list_recent_article_titles,
     list_recent_findings,
     put_article,
     put_candidate_idea,
@@ -91,9 +92,63 @@ DRAFT_RETRY_MAX_TOKENS = 8192
 TRUNCATED_DRAFT_REASON = (
     "draft truncated: the model ran out of output tokens before finishing the article"
 )
+IMPLAUSIBLE_TITLE_REASON = (
+    "title looks like a refusal or clarifying question, not a title, even after one retry"
+)
 _NUM_CANDIDATE_ANGLES = 3
 _LIST_MARKER_RE = re.compile(r"^[\s\d.\-\)]+")
 _FEW_SHOT_EXCERPT_CHARS = 500
+
+# How many of a topic's own recent titles ideation is shown, so a story that stays on GitHub's
+# trending list (or similarly persistent source) for several consecutive days doesn't get written
+# up again each day just because that day's numbers are technically new (two production articles
+# on the same repo, back to back, is what prompted this).
+RECENT_TITLES_LIMIT = 5
+
+# Bug writeup (production, two real incidents): ideation can refuse outright when it judges a
+# day's findings don't support its editorial mandate ("I cannot propose article angles based on
+# these findings... the findings consist almost entirely of..."), and the per-line parser below
+# used to have no way to tell that refusal's own sentences apart from real angles -- it just
+# harvested whatever non-empty lines came out, and the first one (the refusal itself) got selected
+# and fed into both the draft and the title call. Drafting recovered by improvising a topic from
+# the raw findings; title-writing did not, and answered the nonsensical "angle" as literally and
+# earnestly as a confused person would -- which got published as the article's title, unchecked.
+# _is_plausible_reply below is the guard against both ends of that failure: an ideation "angle"
+# this rejects is never stored as a candidate, and a title this rejects is never stored as a title.
+_REFUSAL_PHRASES = (
+    "i cannot",
+    "i can't",
+    "i'm not able",
+    "i am not able",
+    "i don't have enough",
+    "i do not have enough",
+    "i'm not sure",
+    "i am not sure",
+    "don't understand",
+    "do not understand",
+    "could you provide",
+    "could you clarify",
+    "can you provide",
+    "can you clarify",
+    "as an ai",
+    "i'd be happy to help",
+    "i would be happy to help",
+)
+# A real angle is a descriptive phrase or short sentence; a real title is shorter still. Neither
+# is ever a multi-paragraph reply -- the actual shape every refusal this guards against takes.
+_MAX_ANGLE_WORDS = 40
+_MAX_TITLE_WORDS = 20
+
+
+def _is_plausible_reply(text: str, *, max_words: int) -> bool:
+    """A plausible single angle/title -- not a stray refusal or clarifying question the model
+    produced instead of following the format it was asked for. Not a guarantee of quality, only a
+    guard against that one specific failure mode (see the module-level note above)."""
+    if not text or "\n" in text:
+        return False
+    if any(phrase in text.lower() for phrase in _REFUSAL_PHRASES):
+        return False
+    return len(text.split()) <= max_words
 _FEEDBACK_GUIDANCE_HEADER = "Additional guidance based on reader feedback:"
 _FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 
@@ -186,10 +241,24 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     # are built exactly as they were before Phase 5. What was worn is kept on the article.
     guidance, equipment_used = _get_approved_guidance(topic_id)
     few_shot_excerpt = _get_few_shot_excerpt(topic_id)
+    recent_titles = list_recent_article_titles(topic_id, limit=RECENT_TITLES_LIMIT)
 
     angles, ideate_call = _ideate(
-        topic, summaries_block, model_id, fallback_model_id, guidance=guidance, goal=editorial_goal
+        topic,
+        summaries_block,
+        model_id,
+        fallback_model_id,
+        guidance=guidance,
+        goal=editorial_goal,
+        recent_titles=recent_titles,
     )
+    if not angles:
+        # Ideation refused outright (a real production incident: "I cannot propose article
+        # angles based on these findings...") rather than producing anything usable -- better no
+        # article today than one built around a candidate that was never really an angle. Same
+        # shape as the "nothing new since last run" bail-out above.
+        print(f"daily_cycle_handler: ideation had no usable angles for topic_id={topic_id}")
+        return {"status": "no_usable_angles", "topic_id": topic_id}
     selected = _select_and_store_candidates(topic_id, angles)
 
     draft_text, draft_call = _draft_article(
@@ -202,13 +271,19 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         few_shot_excerpt=few_shot_excerpt,
         goal=editorial_goal,
     )
-    title, title_call = _draft_title(selected["angle"], model_id, fallback_model_id)
+    title, title_call, title_is_plausible = _draft_title(selected["angle"], model_id, fallback_model_id)
 
-    # A draft that ran out of tokens even after the retry is half an article: never
-    # publish it. It goes to a human, whatever the compliance review says.
-    hold_reasons = [TRUNCATED_DRAFT_REASON] if draft_call.get("stop_reason") == "max_tokens" else []
+    # A draft that ran out of tokens even after the retry is half an article, and a title that
+    # still doesn't look like one after its own retry is a quality problem the model itself
+    # couldn't resolve -- neither publishes automatically. Both go to a human, whatever the
+    # compliance review says.
+    hold_reasons = []
+    if draft_call.get("stop_reason") == "max_tokens":
+        hold_reasons.append(TRUNCATED_DRAFT_REASON)
+    if not title_is_plausible:
+        hold_reasons.append(IMPLAUSIBLE_TITLE_REASON)
     if hold_reasons:
-        print(f"daily_cycle_handler: holding a truncated draft for topic_id={topic_id}")
+        print(f"daily_cycle_handler: holding {hold_reasons} for topic_id={topic_id}")
 
     # Fresh-data review (docs/project-plan.md §11, "(C)"): compare the draft and its title with
     # what the source says *now*. In shadow mode that is recorded and nothing more; in enforce
@@ -523,6 +598,7 @@ def _ideate(
     fallback_model_id: str | None,
     guidance: str | None = None,
     goal: EditorialGoal | None = None,
+    recent_titles: list[str] | None = None,
 ) -> tuple[list[str], dict]:
     topic_name = topic_label(topic)
     # The relevance rule sits before the data in both variants: findings from
@@ -537,6 +613,18 @@ def _ideate(
         f"{ideation_relevance_rule(topic_name)}\n"
         f"{MANDATE_ALIGNMENT_RULE}"
     )
+    # A source that stays trending for days (a GitHub repo whose star count keeps climbing, say)
+    # looks like fresh material to this call every single day, even when the underlying story is
+    # the one already told -- this is the one thing that reminds it. Empty for a topic's first
+    # article, or if nothing published recently, in which case the prompt is unchanged from before
+    # this existed.
+    already_covered = ""
+    if recent_titles:
+        titles_block = "\n".join(f"- {title}" for title in recent_titles)
+        already_covered = (
+            "\n\nAlready covered recently -- propose a genuinely different angle, not a rehash "
+            f"of the same story with new numbers:\n{titles_block}"
+        )
     if goal is None:
         prompt = (
             f"Based on the following recent research findings about "
@@ -544,7 +632,7 @@ def _ideate(
             f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
-            f"{standing_goal}\n\n"
+            f"{standing_goal}{already_covered}\n\n"
             f"Findings:\n{summaries_block}"
         )
     else:
@@ -558,7 +646,7 @@ def _ideate(
             f"{_NUM_CANDIDATE_ANGLES} distinct, specific candidate article angles. "
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
-            f"{standing_goal}\n\n"
+            f"{standing_goal}{already_covered}\n\n"
             f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n"
             f"Apply this mandate strictly within the theme of '{topic_name}' and the Active "
             "Editorial Mandate above: it decides the shape of each angle, never the subject.\n\n"
@@ -574,13 +662,19 @@ def _ideate(
     angles = []
     for line in response.strip().splitlines():
         cleaned = _LIST_MARKER_RE.sub("", line).strip()
-        if cleaned:
+        if cleaned and _is_plausible_reply(cleaned, max_words=_MAX_ANGLE_WORDS):
             angles.append(cleaned)
 
     if not angles:
-        # Defensive fallback: never proceed with zero angles even if the
-        # model's response didn't parse as expected.
-        angles = [response.strip() or "untitled angle"]
+        # The model didn't reply one-angle-per-line as asked -- if what it sent as a whole still
+        # reads like a single usable angle, keep that (the old, unconditional fallback here is
+        # exactly what let a refusal like "I cannot propose article angles based on these
+        # findings..." through as if it were one); otherwise there is genuinely nothing to
+        # propose, and angles stays empty for the caller to treat like any other "nothing to
+        # write about today" -- never invented.
+        candidate = response.strip()
+        if candidate and _is_plausible_reply(candidate, max_words=_MAX_ANGLE_WORDS):
+            angles = [candidate]
 
     lineage_call = {
         "stage": "ideation",
@@ -660,20 +754,55 @@ def _draft_article(
     return result["text"], lineage_call
 
 
-def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tuple[str, dict]:
+def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tuple[str, dict, bool]:
+    """Ask for a title, and check it actually looks like one (see the module-level note above --
+    a refusal or clarifying question, answered as literally as the "angle" it was given and then
+    published verbatim as the title, is a real production incident this guards against). One
+    automatic retry with a firmer prompt, on the same model, if the first reply doesn't pass. If
+    the retry doesn't either, the (still bad) text is still returned -- so a human reviewing it in
+    moderation, where the caller routes it when the third element here is False, sees exactly what
+    the model actually said -- rather than something invented in its place.
+    """
     prompt = (
-        "Write a short, engaging article title (no surrounding quotes, no "
-        f"markdown) for an article with this angle: {angle}"
+        "Write a short, engaging article title for an article with this angle: "
+        f"{angle}\n\n"
+        f"Reply with the title only, as a single line of no more than {_MAX_TITLE_WORDS} words. "
+        "No surrounding quotes, no markdown, no explanation, and no questions back -- if the "
+        "angle is unclear, title it as best you can rather than asking for clarification."
     )
     result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    title = result["text"].strip()
+    input_tokens, output_tokens, used_fallback = (
+        result["input_tokens"],
+        result["output_tokens"],
+        result["used_fallback"],
+    )
+    attempts = 1
+
+    if not _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS):
+        retry_prompt = (
+            f"{prompt}\n\nYour previous reply was not a usable title -- reply with nothing but "
+            "the title itself this time."
+        )
+        result = invoke_model_tracked(retry_prompt, model_id, fallback_model_id=fallback_model_id)
+        title = result["text"].strip()
+        # A discarded first reply still cost real tokens -- summed in below, not dropped from the
+        # total, the same principle invoke_model_tracked's own max_tokens retry already follows.
+        input_tokens += result["input_tokens"]
+        output_tokens += result["output_tokens"]
+        used_fallback = used_fallback or result["used_fallback"]
+        attempts = 2
+
     lineage_call = {
         "stage": "title",
         "model_id": result["model_id"],
-        "input_tokens": result["input_tokens"],
-        "output_tokens": result["output_tokens"],
-        "used_fallback": result["used_fallback"],
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "used_fallback": used_fallback,
     }
-    return result["text"].strip(), lineage_call
+    if attempts > 1:
+        lineage_call["attempts"] = attempts
+    return title, lineage_call, _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS)
 
 
 def _publish_or_moderate(
