@@ -386,6 +386,58 @@
     return footer;
   }
 
+  // The noun shown for each slot -- mirrors common/static_pages.py's own
+  // _EQUIPMENT_SLOT_LABELS, kept as a separate small copy rather than reusing
+  // gear.js's SLOT_LABELS: that one only covers what can be *worn* (armor +
+  // ring, for the Stats page's doll), not "legacy" (guidance not tied to a
+  // worn slot), which equipment_used can carry too.
+  var _EQUIPMENT_SLOT_LABELS = {
+    helmet: "Helmet",
+    chest: "Chest",
+    gloves: "Gloves",
+    boots: "Boots",
+    sword: "Sword",
+    shield: "Shield",
+    ring: "Ring",
+    legacy: "Guidance",
+  };
+
+  // Mirrors common/static_pages.py's server-rendered "Equipment used" record (same CSS classes,
+  // same plain text -- no icons, no script, no live check). Returns null when the article used no
+  // gear, unlike renderLineageFooter (always shown, even as "No data") -- most articles, and every
+  // one from before this feature, simply have nothing here, and that's not a gap worth calling out
+  // (see static_pages.py's own _render_equipment_footer_html comment).
+  function renderEquipmentFooter(equipmentUsed) {
+    if (!equipmentUsed || equipmentUsed.length === 0) {
+      return null;
+    }
+    var footer = el("footer", { className: "equipment-footer", attrs: { "aria-label": "Equipment used" } });
+    footer.appendChild(el("h2", { text: "Equipment used" }));
+    var list = el("ul", { className: "equipment-list" });
+    equipmentUsed.forEach(function (piece) {
+      var rarity = (piece && piece.rarity) || "common";
+      var rarityLabel = BloggerGear.RARITY_LABELS[rarity] || "Common";
+      var slotLabel = _EQUIPMENT_SLOT_LABELS[piece && piece.slot] || "Gear";
+      var appliesTo = (piece && piece.topic_name) || "Every topic";
+      var item = el("li", { className: "equipment-item rarity-" + rarity });
+      item.appendChild(
+        el("p", { className: "equipment-name", text: (piece && piece.name) || "Unnamed gear" })
+      );
+      item.appendChild(
+        el("p", {
+          className: "equipment-meta",
+          text: rarityLabel + " · " + slotLabel + " · " + appliesTo,
+        })
+      );
+      if (piece && piece.description) {
+        item.appendChild(el("p", { className: "equipment-desc", text: piece.description }));
+      }
+      list.appendChild(item);
+    });
+    footer.appendChild(list);
+    return footer;
+  }
+
   // --- Articles in the Pipeline --------------------------------------
   //
   var PENDING_REVIEW_LABEL = "Pending review";
@@ -1567,7 +1619,16 @@
       contentEl.appendChild(sourcesSection);
     }
 
-    contentEl.appendChild(renderLineageFooter(article.lineage, article.published_by, article.fact_check));
+    // Side by side on a wide screen, the equipment record flexing below lineage on a narrow one
+    // (see styles.css's own comment on .article-footers) -- same wrapper common/static_pages.py's
+    // static article page already uses for the two footers, just built as DOM nodes here.
+    var footers = el("div", { className: "article-footers" });
+    footers.appendChild(renderLineageFooter(article.lineage, article.published_by, article.fact_check));
+    var equipmentFooter = renderEquipmentFooter(article.equipment_used);
+    if (equipmentFooter) {
+      footers.appendChild(equipmentFooter);
+    }
+    contentEl.appendChild(footers);
     contentEl.appendChild(renderFeedback(article.article_id));
   }
 
