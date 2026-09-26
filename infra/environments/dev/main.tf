@@ -1374,9 +1374,20 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
 # concurrent workstream) may not exist yet when this is first applied in
 # some environments/orderings; these resources simply create nothing
 # until the files land, rather than failing terraform validate/plan.
+#
+# frontend_dir points at frontend-dist/, not frontend/ itself -- a mirror
+# scripts/minify_frontend.py builds with .js/.css minified (frontend/ stays
+# exactly as committed: plain, comment-rich, no build step to read it
+# yourself). Generated fresh by CI before every apply (see
+# .github/workflows/terraform.yml/terraform-production-release.yml) and
+# never committed, the same "regenerated, gitignored" relationship
+# lambda-build/ already has with lambdas/ -- see .gitignore's comment on
+# that one. Anyone applying by hand needs to run that script first too, or
+# every frontend_files entry below evaluates fileexists() to false and
+# uploads nothing (safe -- see the guard above -- just not what you want).
 # -----------------------------------------------------------------------
 locals {
-  frontend_dir = "${path.module}/../../../frontend"
+  frontend_dir = "${path.module}/../../../frontend-dist"
   frontend_files = {
     "index.html"            = "text/html"
     "error.html"            = "text/html"
