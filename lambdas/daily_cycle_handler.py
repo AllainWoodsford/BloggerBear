@@ -74,6 +74,7 @@ from common.relevance import (
 )
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
+from common.stats_tracking import record_article_lineage
 
 # An article is written from everything the research loop found since the last
 # daily run, not from the few newest findings: the window is the day the run
@@ -270,6 +271,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         if call is not None
     ]
     lineage = build_lineage(calls, research=research)
+    record_article_lineage(lineage)
 
     result = _publish_or_moderate(
         topic_id=topic_id,

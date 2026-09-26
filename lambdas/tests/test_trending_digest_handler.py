@@ -145,6 +145,7 @@ def test_publishes_digest_when_compliant(s3_bucket):
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
         patch("trending_digest_handler.render_and_publish_article_page") as mock_render_page,
         patch("trending_digest_handler.generate_and_store_article_musing") as mock_musing,
+        patch("trending_digest_handler.record_article_lineage") as mock_record_lineage,
     ):
         result = trending_digest_handler.handler({}, None)
 
@@ -202,6 +203,10 @@ def test_publishes_digest_when_compliant(s3_bucket):
     assert musing_kwargs["topic_name"] == "Trending Everywhere"
     assert musing_kwargs["compliant"] is True
 
+    # Observability enhancement, PR 4: this digest article's finished lineage is folded onto
+    # this week's Stats row too, same as daily_cycle_handler.py's own articles.
+    mock_record_lineage.assert_called_once_with(_DUMMY_LINEAGE)
+
 
 def test_publishes_digest_with_deduped_source_refs(s3_bucket):
     findings_by_topic = {
@@ -232,6 +237,7 @@ def test_publishes_digest_with_deduped_source_refs(s3_bucket):
         patch("trending_digest_handler.put_article") as mock_put_article,
         patch("trending_digest_handler.render_and_publish_article_page"),
         patch("trending_digest_handler.generate_and_store_article_musing"),
+        patch("trending_digest_handler.record_article_lineage"),
     ):
         trending_digest_handler.handler({}, None)
 
@@ -270,6 +276,7 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
         patch("trending_digest_handler.render_and_publish_article_page") as mock_render_page,
         patch("trending_digest_handler.generate_and_store_article_musing") as mock_musing,
+        patch("trending_digest_handler.record_article_lineage"),
     ):
         result = trending_digest_handler.handler({}, None)
 
@@ -331,6 +338,7 @@ def _run_digest(*, compliant=False):
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
         patch("trending_digest_handler.render_and_publish_article_page"),
         patch("trending_digest_handler.generate_and_store_article_musing"),
+        patch("trending_digest_handler.record_article_lineage"),
     ):
         result = trending_digest_handler.handler({}, None)
     return result, mock_invoke, mock_put_article, mock_put_moderation

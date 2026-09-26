@@ -29,6 +29,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
     monkeypatch.setenv("STATS_CURRENT_TABLE", "StatsCurrent")
+    monkeypatch.setenv("STATS_HISTORY_TABLE", "StatsHistory")
     monkeypatch.setenv("PROMPT_REFINEMENTS_TABLE", "PromptRefinements")
     # A fresh signing key per test (it is cached in the module and the table is new each time).
     from common import feedback_verification
@@ -115,6 +116,12 @@ def aws_resources(aws_env):
             TableName="StatsCurrent",
             KeySchema=[{"AttributeName": "stats_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "stats_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="StatsHistory",
+            KeySchema=[{"AttributeName": "week_start", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "week_start", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         dynamodb.create_table(
@@ -1205,6 +1212,39 @@ def test_stats_empty(aws_resources):
     assert body["totals"]["articles"] == 0
     assert body["by_model"] == []
     assert len(body["daily"]) == 30
+    # PR 4 of the Observability enhancement: Weekly Stats (StatsCurrent) and Total Stats
+    # (StatsHistory's all-time row) sit alongside the per-article aggregates above, both
+    # present and all-zero even before anything has ever been recorded.
+    assert body["weekly"]["feedback_given"] == 0
+    assert body["weekly"]["categories"][0]["calls"] == 0
+    assert body["historic"]["feedback_given"] == 0
+    assert "current week" in body["historic"]["note"]
+
+
+def test_stats_reports_weekly_and_historic_observability_data(aws_resources):
+    boto3.resource("dynamodb", region_name=REGION).Table("StatsCurrent").put_item(
+        Item={
+            "stats_id": "current",
+            "week_start": "2026-09-21",
+            "musings_calls": 3,
+            "feedback_given": 2,
+            "lambda_ms_research_tick": 3_600_000,
+        }
+    )
+    boto3.resource("dynamodb", region_name=REGION).Table("StatsHistory").put_item(
+        Item={"week_start": "all-time", "musings_calls": 30, "feedback_given": 12}
+    )
+
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    body = json.loads(result["body"])
+    weekly_musings = next(c for c in body["weekly"]["categories"] if c["category"] == "musings")
+    assert weekly_musings["calls"] == 3
+    assert body["weekly"]["feedback_given"] == 2
+    assert body["weekly"]["pipeline_hours"] == 1.0
+    historic_musings = next(c for c in body["historic"]["categories"] if c["category"] == "musings")
+    assert historic_musings["calls"] == 30
+    assert body["historic"]["feedback_given"] == 12
 
 
 def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):
