@@ -54,6 +54,7 @@ def tables(monkeypatch):
         "ARTICLES_TABLE": "Articles",
         "FINDINGS_TABLE": "Findings",
         "MODELS_TABLE": "Models",
+        "STATS_HISTORY_TABLE": "StatsHistory",
     }.items():
         monkeypatch.setenv(key, value)
     dynamo._dynamodb_resource = None
@@ -81,6 +82,12 @@ def tables(monkeypatch):
                 {"AttributeName": "topic_id", "AttributeType": "S"},
                 {"AttributeName": "captured_at", "AttributeType": "S"},
             ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        client.create_table(
+            TableName="StatsHistory",
+            KeySchema=[{"AttributeName": "week_start", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "week_start", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         yield
@@ -377,4 +384,88 @@ def test_a_backfill_uses_the_registry_price_when_one_exists(tables):
     assert dynamo.get_article("no-cost")["lineage"]["cost_aud"] == pytest.approx(
         expected_usd * costing.USD_TO_AUD_RATE
     )
+
+
+# --- admin: the one-time articles-into-StatsHistory backfill (Observability enhancement, PR 5) --
+
+
+def _priced_lineage(cost_aud=3.0):
+    return {
+        "calls": [_call(input_tokens=1000, output_tokens=500)],
+        "total_input_tokens": 1000,
+        "total_output_tokens": 500,
+        "models_used": [PROFILE],
+        "cost_aud": cost_aud,
+        "cost_note": None,
+    }
+
+
+def test_the_articles_backfill_route_is_a_dry_run_by_default(tables):
+    _put_article("a1", _priced_lineage(cost_aud=3.0))
+    _put_article("a2", _priced_lineage(cost_aud=2.0))
+
+    result = _admin("POST /stats/backfill-articles")
+
+    body = json.loads(result["body"])
+    assert result["statusCode"] == 200
+    assert (body["already_run"], body["applied"]) == (False, False)
+    assert (body["examined"], body["included"]) == (2, 2)
+    assert body["totals"]["articles_calls"] == 2
+    assert body["totals"]["articles_cost_aud"] == pytest.approx(5.0)
+    # A dry run previews the numbers -- it never writes anything.
+    assert dynamo.get_stats_history_row("articles-backfill") is None
+
+
+def test_the_articles_backfill_route_writes_when_asked_and_a_second_run_refuses(tables):
+    _put_article("a1", _priced_lineage(cost_aud=3.0))
+
+    first = json.loads(_admin("POST /stats/backfill-articles", {"apply": True})["body"])
+    second = json.loads(_admin("POST /stats/backfill-articles", {"apply": True})["body"])
+
+    assert (first["already_run"], first["applied"]) == (False, True)
+    assert (second["already_run"], second["applied"]) == (True, False)  # refused, not double-applied
+    marker = dynamo.get_stats_history_row("articles-backfill")
+    assert marker is not None and marker["examined"] == 1 and "applied_at" in marker
+
+
+def test_the_articles_backfill_route_only_folds_the_totals_in_once(tables):
+    _put_article("a1", _priced_lineage(cost_aud=3.0))
+    _put_article("a2", _priced_lineage(cost_aud=2.0))
+
+    _admin("POST /stats/backfill-articles", {"apply": True})
+    _admin("POST /stats/backfill-articles", {"apply": True})  # a second attempt, refused
+
+    all_time = dynamo.get_stats_totals()
+    assert all_time["articles_calls"] == 2  # not 4
+    assert float(all_time["articles_cost_aud"]) == pytest.approx(5.0)  # not 10.0
+
+
+def test_the_articles_backfill_route_counts_an_unpriced_article_without_a_cost(tables):
+    _put_article("a1", _legacy_lineage())  # cost_aud is None -- pricing not available
+
+    result = _admin("POST /stats/backfill-articles", {"apply": True})
+
+    body = json.loads(result["body"])
+    assert body["totals"]["articles_unpriced_articles"] == 1
+    assert "articles_cost_aud" not in body["totals"]
+    all_time = dynamo.get_stats_totals()
+    assert all_time["articles_unpriced_articles"] == 1
+    assert "articles_cost_aud" not in all_time
+
+
+def test_the_articles_backfill_route_skips_articles_with_no_lineage_at_all(tables):
+    _put_article("no-lineage", None)
+
+    result = _admin("POST /stats/backfill-articles", {"apply": True})
+
+    body = json.loads(result["body"])
+    assert (body["examined"], body["included"]) == (1, 0)  # scanned, but nothing to tally
+    assert body["totals"] == {}
+    assert dynamo.get_stats_history_row("articles-backfill") is None  # nothing to apply
+
+
+def test_the_articles_backfill_route_rejects_a_non_boolean_apply(tables):
+    result = _admin("POST /stats/backfill-articles", {"apply": "yes"})
+
+    assert result["statusCode"] == 400
 

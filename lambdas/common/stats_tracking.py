@@ -204,30 +204,85 @@ def record_article_lineage(lineage: dict) -> None:
     never raised back into the caller mid-publish.
     """
     try:
-        _record_article_lineage(lineage)
+        tally = _lineage_tally(lineage)
+        if tally is not None:
+            _record(to_stats_updates(tally))
     except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a drafted article
         print(f"stats_tracking: could not record article lineage: {exc!r}")
 
 
-def _record_article_lineage(lineage: dict) -> None:
+def _lineage_tally(lineage: dict) -> dict[str, int | float] | None:
+    """One article's raw calls/tokens/cost tally under `articles`, in native numbers -- Decimal
+    is a storage concern, added only at the write boundary (to_stats_updates below), not here.
+    None when there is nothing to tally (e.g. a non-financial topic's compliance review makes no
+    Bedrock call at all). Shared by record_article_lineage (the live, per-article path, right
+    after an article is drafted) and plan_articles_backfill (the one-time catch-up over every
+    article that already exists, PR 5) so both tally a lineage exactly the same way.
+
+    Reuses the lineage's own already-computed cost (`total_cost_aud` when there was a research
+    component, else `cost_aud`) rather than re-pricing every call a second time -- that figure is
+    already None under the same "never partially sum an unpriced call" rule
+    common.costing.calculate_lineage_cost_aud follows, so an article with any unpriced call is
+    counted here the same honest way: its tokens still count, `articles_unpriced_articles` (an
+    article count, deliberately not named `_unpriced_calls` like every other category -- this is
+    coarser, per-article granularity) goes up, and no cost is guessed at.
+    """
     research = lineage.get("research") or {}
     calls = list(lineage.get("calls") or []) + list(research.get("calls") or [])
     if not calls:
-        # e.g. a non-financial topic's compliance review makes no Bedrock call at all -- nothing
-        # actually happened here, so there is nothing to tally.
-        return
+        return None
 
     cost_aud = lineage.get("total_cost_aud") if research else lineage.get("cost_aud")
-    updates: dict[str, int | Decimal] = {
+    tally: dict[str, int | float] = {
         f"{ARTICLES_CATEGORY}_calls": len(calls),
         f"{ARTICLES_CATEGORY}_input_tokens": sum(int(call.get("input_tokens", 0)) for call in calls),
         f"{ARTICLES_CATEGORY}_output_tokens": sum(int(call.get("output_tokens", 0)) for call in calls),
     }
     if cost_aud is not None:
-        updates[f"{ARTICLES_CATEGORY}_cost_aud"] = Decimal(str(cost_aud))
+        tally[f"{ARTICLES_CATEGORY}_cost_aud"] = cost_aud
     else:
-        updates[f"{ARTICLES_CATEGORY}_unpriced_articles"] = 1
-    _record(updates)
+        tally[f"{ARTICLES_CATEGORY}_unpriced_articles"] = 1
+    return tally
+
+
+def to_stats_updates(tally: dict[str, int | float]) -> dict[str, int | Decimal]:
+    """`tally`'s native numbers, Decimal-wrapped wherever DynamoDB needs it (its boto3 resource
+    rejects a native float) -- the one conversion point every writer of a StatsCurrent/
+    StatsHistory row shares (record_article_lineage above; the one-time backfill admin route,
+    which sums several articles' tallies together before writing, so this has to be a separate
+    step from _lineage_tally rather than folded into it)."""
+    return {key: Decimal(str(value)) if isinstance(value, float) else value for key, value in tally.items()}
+
+
+def plan_articles_backfill(articles: list[dict]) -> dict:
+    """Sum every existing article's lineage into one totals dict, shaped exactly like what
+    record_article_lineage would have tallied onto StatsCurrent (and, via a rollover, onto
+    StatsHistory's all-time row) had it existed when each article was drafted -- the one-time
+    catch-up for articles drafted before this category existed (Observability enhancement,
+    PR 5). Pure and read-only, the same "caller already fetched the data" shape as
+    lineage_tools.py's plan_backfill -- the admin route decides whether to actually write this.
+    """
+    totals: dict[str, int | float] = {}
+    included = 0
+    for article in articles:
+        lineage = article.get("lineage")
+        if not lineage:
+            continue
+        tally = _lineage_tally(lineage)
+        if tally is None:
+            continue
+        included += 1
+        for key, value in tally.items():
+            totals[key] = totals.get(key, 0) + value
+    return {"examined": len(articles), "included": included, "totals": totals}
+
+
+# StatsHistory's reserved marker for "the one-time articles backfill has already run" -- a
+# sentinel week_start, like the all-time row's own, that can never collide with a real Monday
+# date. Written via the same conditional put_stats_history_row every real week's row already
+# uses, so a retried or duplicated backfill call can never fold these articles into the running
+# total twice.
+ARTICLES_BACKFILL_MARKER = "articles-backfill"
 
 
 # Keys on a StatsCurrent/StatsHistory row that are a refreshed snapshot (SET at write time), never

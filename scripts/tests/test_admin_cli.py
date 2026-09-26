@@ -712,6 +712,19 @@ def test_lineage_backfill_apply_writes():
     assert m.call_args.kwargs["body"] == {"apply": True}
 
 
+def test_stats_backfill_articles_is_a_dry_run_unless_apply_is_passed():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["stats", "backfill-articles"])
+    assert m.call_args.kwargs["body"] == {"apply": False}
+    assert m.call_args.args[:3] == ("POST", "https://api.example.com", "/stats/backfill-articles")
+
+
+def test_stats_backfill_articles_apply_writes():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["stats", "backfill-articles", "--apply"])
+    assert m.call_args.kwargs["body"] == {"apply": True}
+
+
 def test_topics_update_sets_a_research_interval():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["topics", "update", "my-topic", "--research-interval-hours", "2"])
