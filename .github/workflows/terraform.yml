@@ -176,6 +176,21 @@ jobs:
           aws-region: ap-southeast-2
           role-to-assume: ${{ vars.AWS_DEV_DEPLOY_ROLE_ARN }}
 
+      # Pinned to the same actions/setup-python commit python-ci.yml already uses.
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      # Builds frontend-dist/ (frontend/ with .js/.css minified) for
+      # infra/environments/dev's frontend_dir to deploy from -- see that
+      # local's own comment on why this has to run before apply.
+      - name: Minify frontend assets
+        run: |
+          set -euo pipefail
+          pip install -r scripts/requirements.txt
+          python scripts/minify_frontend.py
+
       - name: Terraform apply (dev)
         run: |
           set -euo pipefail
