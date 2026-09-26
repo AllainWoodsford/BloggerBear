@@ -1439,6 +1439,46 @@ def test_get_article_detail_includes_lineage_when_present(aws_resources):
     assert body["lineage"]["calls"][0]["input_tokens"] == 100
 
 
+def test_get_article_detail_includes_equipment_used_when_present(aws_resources):
+    _put_topic()
+    boto3.resource("dynamodb", region_name=REGION).Table("PromptRefinements").put_item(
+        Item={
+            "topic_id": "global",
+            "version": "2026-09-12T00:00:00+00:00",
+            "status": "approved",
+            "slot": "sword",
+            "prompt_changes": "Be plain.",
+            "theme": "Plain Speaking",
+            "rarity": "epic",
+        }
+    )
+    _put_article()
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": "article-1"},
+        UpdateExpression="SET equipment_used = :eq",
+        ExpressionAttributeValues={
+            ":eq": [{"topic_id": "global", "version": "2026-09-12T00:00:00+00:00", "slot": "sword"}]
+        },
+    )
+
+    event = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert len(body["equipment_used"]) == 1
+    piece = body["equipment_used"][0]
+    assert piece["slot"] == "sword" and piece["rarity"] == "epic"
+    assert piece["name"]  # display_name derives something non-empty from the theme
+
+
+def test_get_article_detail_equipment_used_is_an_empty_list_by_default(aws_resources):
+    _put_article()
+
+    event = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+    result = public_api_handler.handler(event, None)
+    body = json.loads(result["body"])
+    assert body["equipment_used"] == []
+
+
 def test_get_article_detail_dedupes_duplicate_source_refs(aws_resources):
     _put_article(
         source_refs=[

@@ -62,6 +62,7 @@ from common.dynamo import (
 )
 from common.fact_check import fact_check_label
 from common.source_refs import dedupe_source_refs
+from common.static_pages import equipment_snapshot
 from common.stats import build_stats
 from common.stats_tracking import (
     HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE,
@@ -324,6 +325,10 @@ def _get_article_detail(event: dict) -> dict:
             # A reader-facing line about the fresh-data review, or None. The review record
             # itself (claims, evidence) stays private; only this sentence is public.
             "fact_check": fact_check_label(article.get("review"), article.get("published_by")),
+            # The gear (if any) this article was written with, resolved live -- see
+            # common/static_pages.py's equipment_snapshot for why this is live rather than a
+            # frozen-at-publish-time snapshot like the static article page's own copy.
+            "equipment_used": equipment_snapshot(article.get("equipment_used")),
         },
     )
 
