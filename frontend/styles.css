@@ -192,17 +192,28 @@ header {
   padding: 2px 12px;
 }
 
-/* The topics: their own row on a wide screen, with a small muted label. */
+/* The topics: their own row on a wide screen, with a small muted label.
+
+   min-height + visibility (not the `hidden` attribute -- see index.html/app.js) reserves this
+   row's space from the very first paint, whether or not there turn out to be any topics to show:
+   Lighthouse flagged this row appearing ~2.5s after first paint (once /topics resolves) as the
+   biggest of this page's layout shifts (~0.168 of 0.384 CLS), pushing #content and the footer
+   down. Approximate, not pixel-exact (topic count/name lengths vary within NAV_TOPIC_LIMIT), but
+   sized for the common case (see the narrow-screen min-height below for that layout's own case)
+   so revealing real topics here doesn't move anything. The one trade-off: on the rare deploy
+   with genuinely no topics, this stays an invisible reserved gap rather than collapsing away. */
 .nav-topics {
   flex: 1 0 100%;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 12px;
+  min-height: 2.6rem;
+  visibility: hidden;
 }
 
-.nav-topics[hidden] {
-  display: none;
+.nav-topics.is-visible {
+  visibility: visible;
 }
 
 .nav-label {
@@ -240,6 +251,9 @@ header {
     margin-top: 12px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
+    /* Overrides the wide-screen reservation above with this layout's own: stacked label + up to
+       NAV_TOPIC_LIMIT (3) block-level links (see #nav a below), not one baseline-aligned row. */
+    min-height: 10.5rem;
   }
 
   .nav-label {

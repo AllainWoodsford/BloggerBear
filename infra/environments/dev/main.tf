@@ -1389,17 +1389,23 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
 locals {
   frontend_dir = "${path.module}/../../../frontend-dist"
   frontend_files = {
-    "index.html"            = "text/html"
-    "error.html"            = "text/html"
-    "about.html"            = "text/html"
-    "styles.css"            = "text/css"
-    "normalize.css"         = "text/css"
-    "app.js"                = "application/javascript"
-    "markdown.js"           = "application/javascript"
-    "verify.js"             = "application/javascript"
-    "moods.js"              = "application/javascript"
-    "tummy.js"              = "application/javascript"
-    "gear.js"               = "application/javascript"
+    "index.html"    = "text/html"
+    "error.html"    = "text/html"
+    "about.html"    = "text/html"
+    "styles.css"    = "text/css"
+    "normalize.css" = "text/css"
+    "app.js"        = "application/javascript"
+    "markdown.js"   = "application/javascript"
+    "verify.js"     = "application/javascript"
+    "moods.js"      = "application/javascript"
+    "tummy.js"      = "application/javascript"
+    "gear.js"       = "application/javascript"
+    # Flips index.html's (and the article page template's) preloaded stylesheet <link>s to
+    # active ones once loaded -- see the file's own docstring for why this isn't inline.
+    "preload-styles.js" = "application/javascript"
+    # Sets #site-notice's initial visibility before first paint (index.html only) -- see the
+    # file's own docstring for the layout-shift bug this replaces.
+    "notice.js"             = "application/javascript"
     "bears/proud.svg"       = "image/svg+xml"
     "bears/thoughtful.svg"  = "image/svg+xml"
     "bears/pleased.svg"     = "image/svg+xml"
