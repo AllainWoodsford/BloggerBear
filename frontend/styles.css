@@ -1262,6 +1262,26 @@ a {
   white-space: nowrap;
 }
 
+/* Total Stats/By model/By topic/etc. nest under Total Stats and Weekly Stats now (PR 4) -- an
+   <h3>, not a sibling <h2>, but sharing .section-heading's colour/spacing, just a size step down
+   so the page's two top-level sections still read as the biggest headings on it. */
+h3.section-heading {
+  font-size: 1rem;
+}
+
+/* Jump links to the page's three top-level sections (PR 4) -- plain in-page anchors, a no-JS
+   fallback the same way .back-to-top (index.html) is. Wraps on narrow screens rather than
+   scrolling, same reasoning as .nav-topics above. */
+.stats-quicklinks ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 20px;
+  font-size: 0.9rem;
+}
+
 /* --- What BloggerBear is wearing (Stats page) ------------------------------------------------------
    Rarity colours follow the usual game convention: grey common, green uncommon, blue rare, purple epic,
    orange legendary. Condition runs green, yellow, orange, red as durability falls. Colour is never the only

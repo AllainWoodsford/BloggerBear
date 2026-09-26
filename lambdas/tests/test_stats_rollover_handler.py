@@ -138,6 +138,67 @@ def test_a_different_weeks_history_is_unaffected_by_this_weeks_rollover(tables):
     assert tables["history"].get_item(Key={"week_start": "2026-09-15"})["Item"]["musings_calls"] == 2
 
 
+# --- PR 4: the completed week is also folded onto StatsHistory's all-time row -------------------
+
+
+def test_a_rollover_folds_the_week_onto_the_all_time_running_total(tables):
+    _put_current(tables["current"], musings_calls=5, feedback_given=3)
+
+    stats_rollover_handler.handler({}, None)
+
+    all_time = tables["history"].get_item(Key={"week_start": "all-time"})["Item"]
+    assert all_time["musings_calls"] == 5
+    assert all_time["feedback_given"] == 3
+
+
+def test_the_all_time_row_accumulates_across_several_rollovers(tables):
+    _put_current(tables["current"], week_start="2026-09-08", musings_calls=5)
+    stats_rollover_handler.handler({}, None)
+    _put_current(tables["current"], week_start="2026-09-15", musings_calls=7)
+    stats_rollover_handler.handler({}, None)
+
+    all_time = tables["history"].get_item(Key={"week_start": "all-time"})["Item"]
+    assert all_time["musings_calls"] == 12  # 5 + 7, not overwritten
+
+
+def test_the_api_gateway_reading_on_the_all_time_row_is_the_latest_not_a_sum(tables):
+    _put_current(
+        tables["current"],
+        week_start="2026-09-08",
+        **{"api_gateway_cost_usd_30d": Decimal("2.00"), "api_gateway_cost_aud_30d": Decimal("3.00")},
+    )
+    stats_rollover_handler.handler({}, None)
+    _put_current(
+        tables["current"],
+        week_start="2026-09-15",
+        **{"api_gateway_cost_usd_30d": Decimal("5.00"), "api_gateway_cost_aud_30d": Decimal("7.50")},
+    )
+    stats_rollover_handler.handler({}, None)
+
+    all_time = tables["history"].get_item(Key={"week_start": "all-time"})["Item"]
+    assert all_time["api_gateway_cost_usd_30d"] == Decimal("5.00")  # latest reading, not 2 + 5
+
+
+def test_an_already_rolled_over_week_is_not_folded_into_all_time_again(tables):
+    tables["history"].put_item(Item={"week_start": "2026-09-15", "musings_calls": 999})
+    tables["history"].put_item(Item={"week_start": "all-time", "musings_calls": 999})
+    _put_current(tables["current"], musings_calls=5)  # a stale, duplicate copy of the same week
+
+    stats_rollover_handler.handler({}, None)
+
+    all_time = tables["history"].get_item(Key={"week_start": "all-time"})["Item"]
+    assert all_time["musings_calls"] == 999  # unchanged -- 5 was never added a second time
+
+
+def test_a_week_with_nothing_recorded_leaves_the_all_time_row_untouched(tables):
+    tables["history"].put_item(Item={"week_start": "all-time", "musings_calls": 42})
+
+    stats_rollover_handler.handler({}, None)  # nothing to roll over
+
+    all_time = tables["history"].get_item(Key={"week_start": "all-time"})["Item"]
+    assert all_time["musings_calls"] == 42
+
+
 # --- it never raises unhandled ------------------------------------------------------------------
 
 
