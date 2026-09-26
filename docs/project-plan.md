@@ -1410,3 +1410,58 @@ counters) already had their own `expires_at` and self-clear via TTL, from before
 "tokens" in that table's `verification-secret` row is an unrelated, deliberately permanent HMAC signing
 key, not a rate-limit counter, and was never a cleanup candidate. Articles are kept indefinitely, per the
 owner's explicit call.
+
+### Bugfix: a refusal parsed as an angle or a title (two real production incidents)
+
+**Status: fixed.** Two things the owner found live on bloggerbear.com in the same week: two consecutive
+`github-trending` articles both wrote about the same repo (Google's Ax) back to back, and one
+`tech-market-news` article published with its **title** literally reading *"I'd be happy to help you write
+an article title, but I'm not sure I understand your request. You've indicated that you cannot propose
+article angles based on certain findings, but you haven't shared: 1. What those findings are..."* --
+Bedrock's own confused reply to a nonsensical prompt, stored and served as-is.
+
+Root cause, confirmed against the actual production `CandidateIdeas` row for that article: ideation
+refused outright that day ("I cannot propose article angles based on these findings... the findings
+consist almost entirely of..."), because it judged the day's research didn't support the topic's editorial
+mandate. `daily_cycle_handler.py`'s `_ideate` parser had no way to tell that refusal's own sentences apart
+from real proposed angles -- it just harvested whatever non-empty lines came out after stripping list
+markers, and (Phase 1's deterministic "pick candidate zero, no scoring model yet") the refusal's own first
+sentence became *the angle*, fed into both the draft and title calls. Drafting recovered by improvising a
+topic from the raw findings; title-writing had nothing to improvise around, and answered the nonsensical
+"angle" as literally and earnestly as a confused person would -- and `_draft_title` had zero validation on
+what came back, so that answer became the title.
+
+**`_is_plausible_reply(text, max_words)`** is the one guard behind both fixes: rejects multi-line text,
+text over the word cap, and text containing a short list of refusal/clarifying-question phrases (`"i
+cannot"`, `"i'm not sure"`, `"could you provide"`, `"as an ai"`, etc. -- not exhaustive, just what the two
+real incidents actually said). Applied at both ends of the pipe:
+
+- **`_ideate`** filters every candidate line through it (`_MAX_ANGLE_WORDS = 40`) before treating it as a
+  real angle; the old unconditional "use the whole raw reply as one angle" fallback -- the thing that let a
+  multi-paragraph refusal through in the first place -- now only fires when that whole reply itself passes
+  the same check. If nothing survives, `handler()` bails out cleanly (`{"status": "no_usable_angles", ...}`),
+  the same shape as the existing "nothing new since last run" bail-out, rather than drafting from a
+  candidate that was never really an angle.
+- **`_draft_title`** (`_MAX_TITLE_WORDS = 20`) checks its own reply, and gets one automatic retry with a
+  firmer prompt on the same model if it fails -- tokens from the discarded first attempt are still summed
+  into the lineage call, same "a wasted attempt still cost money" principle `invoke_model_tracked`'s own
+  `max_tokens` retry already follows. If the retry still fails, the (still bad) text is kept, not discarded
+  -- so a person reviewing it in moderation, where the article is now held (`IMPLAUSIBLE_TITLE_REASON`,
+  alongside `TRUNCATED_DRAFT_REASON` in the same `hold_reasons` list), sees exactly what the model actually
+  said, never something invented in its place.
+- The title prompt itself also now explicitly states the word cap and says not to ask clarifying questions
+  -- the original prompt never told the model either of those things, which is arguably why a
+  clarification felt like a reasonable reply to make in the first place.
+
+**Separately, the duplicate-topic problem**: `_ideate` only ever saw that day's research findings, with no
+memory of what the topic already published. A GitHub repo that stays trending for several consecutive days
+(Ax's star count kept climbing) looks like fresh material every single day, because the numbers genuinely
+are new -- the story just isn't. `common/dynamo.py`'s new `list_recent_article_titles(topic_id, limit=5)`
+(same Scan + FilterExpression shape as the existing `get_top_voted_articles`, sorted by `created_at`
+instead of `net_votes`) feeds the topic's own last few published titles into the ideation prompt under an
+"Already covered recently -- propose a genuinely different angle" header, only when there's something to
+show; a topic's first article, or one with nothing published recently, sees the exact prompt as before.
+
+The bad title already live in production was fixed by hand (DynamoDB `title` update, then re-rendering the
+static page and invalidating its CloudFront cache -- the same three steps every other publish path already
+does, just driven manually since there was no admin route for "fix just the title" at the time).
