@@ -79,6 +79,15 @@ def _review_off_by_default():
         yield mock_config
 
 
+@pytest.fixture(autouse=True)
+def _no_recent_titles_by_default():
+    """A topic's own recently-published titles (fed into ideation so a still-trending story
+    isn't written up again) -- empty by default, a real dynamo Scan otherwise. Tests of that
+    feature itself override this."""
+    with patch("daily_cycle_handler.list_recent_article_titles", return_value=[]) as mock_titles:
+        yield mock_titles
+
+
 @pytest.fixture
 def s3_bucket():
     with mock_aws():
@@ -1420,6 +1429,7 @@ def _run_with_review(
     model_calls=None,
     revision=None,
     revision_error=None,
+    title_responses=None,
     mocks=None,
 ):
     """A whole cycle with the review turned on (unless `config` says otherwise) and the
@@ -1427,12 +1437,14 @@ def _run_with_review(
 
     `draft_stop_reason` is why the draft call stopped ("max_tokens" = cut off);
     `model_calls`, if given, collects the keyword arguments of each drafting call.
-    `revision` is what the (mocked) revision pass returns; `mocks`, if given, is filled
-    with the revision and render mocks so a test can inspect them."""
+    `revision` is what the (mocked) revision pass returns; `title_responses`, if given, replaces
+    the single default title response -- a second entry is a retry (see _draft_title's own
+    plausibility check); `mocks`, if given, is filled with the revision and render mocks so a
+    test can inspect them."""
     responses = [
         _tracked_result("Angle one\nAngle two\nAngle three"),
         _tracked_result("# Draft body", stop_reason=draft_stop_reason, attempts=draft_attempts),
-        _tracked_result("A Title"),
+        *(title_responses or [_tracked_result("A Title")]),
     ]
     lineage_calls = []
 
@@ -2070,3 +2082,229 @@ def test_an_article_a_person_later_approves_can_still_say_it_was_held_for_review
     assert fact_check_label(review, "humans") == (
         "Checked against current data: reviewed by a person before publishing"
     )
+
+
+# --- guardrails against a refusal parsed as an angle or a title (production bug) ------------------
+#
+# Two real production incidents prompted these: ideation refusing outright ("I cannot propose
+# article angles based on these findings...") had its own sentences harvested as if they were
+# real angles, and the one selected then got fed into _draft_title, which answered it as literally
+# as the nonsensical "angle" it was given -- and that answer was published as the article's title,
+# unchecked. See docs/project-plan.md's writeup for the full incident.
+
+
+def test_is_plausible_reply_accepts_a_short_ordinary_line():
+    assert daily_cycle_handler._is_plausible_reply("A perfectly normal angle", max_words=40) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I cannot propose article angles based on these findings.",
+        "I would be happy to help you write an article title, but I am not sure I understand your request.",
+        "Could you provide more details about the subject matter?",
+        "As an AI, I do not have enough context to answer that.",
+    ],
+)
+def test_is_plausible_reply_rejects_refusals_and_clarifying_questions(text):
+    assert daily_cycle_handler._is_plausible_reply(text, max_words=40) is False
+
+
+def test_is_plausible_reply_rejects_anything_over_the_word_cap():
+    long_text = " ".join(["word"] * 41)
+    assert daily_cycle_handler._is_plausible_reply(long_text, max_words=40) is False
+
+
+def test_is_plausible_reply_rejects_multiline_text():
+    assert daily_cycle_handler._is_plausible_reply("Line one\nLine two", max_words=40) is False
+
+
+def test_is_plausible_reply_rejects_empty_text():
+    assert daily_cycle_handler._is_plausible_reply("", max_words=40) is False
+
+
+# --- _ideate filters implausible lines out of its candidate angles --------------------------------
+
+
+def _ideate_with_response(text, **kwargs):
+    with patch("daily_cycle_handler.invoke_model_tracked", return_value=_tracked_result(text)):
+        return daily_cycle_handler._ideate(
+            NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m", **kwargs
+        )
+
+
+def test_ideate_drops_a_refusal_line_and_keeps_the_real_ones():
+    angles, _ = _ideate_with_response(
+        "I cannot propose article angles based on these findings.\n"
+        "A real angle about something specific\n"
+        "Another real angle, also specific"
+    )
+
+    assert angles == ["A real angle about something specific", "Another real angle, also specific"]
+
+
+def test_ideate_returns_nothing_when_the_whole_reply_is_a_refusal():
+    angles, _ = _ideate_with_response(
+        "I cannot propose article angles based on these findings.\n"
+        "I am not sure how to help with this request."
+    )
+
+    assert angles == []
+
+
+def test_ideate_still_falls_back_to_a_whole_unparsed_reply_when_it_is_plausible():
+    """The one case the old unconditional fallback got right: a model that replies with a single
+    reasonable angle as one paragraph, not the requested one-per-line format, should not lose it."""
+    angles, _ = _ideate_with_response("A single reasonable angle written as one paragraph")
+
+    assert angles == ["A single reasonable angle written as one paragraph"]
+
+
+def test_ideate_includes_recent_titles_in_the_prompt_when_given():
+    captured_prompt = {}
+
+    def model(prompt, model_id, **kwargs):
+        captured_prompt["text"] = prompt
+        return _tracked_result("Angle one\nAngle two\nAngle three")
+
+    with patch("daily_cycle_handler.invoke_model_tracked", side_effect=model):
+        daily_cycle_handler._ideate(
+            NON_FINANCIAL_TOPIC,
+            "some findings",
+            "m",
+            "fallback-m",
+            recent_titles=["Google Ax's Go Runtime: Building the Standard Blueprint"],
+        )
+
+    assert "Already covered recently" in captured_prompt["text"]
+    assert "Google Ax's Go Runtime: Building the Standard Blueprint" in captured_prompt["text"]
+
+
+def test_ideate_prompt_is_unchanged_with_no_recent_titles():
+    """No recent_titles (a topic's first article, or nothing published yet) -- the prompt is
+    exactly what it was before this feature existed, not an empty "Already covered" header."""
+    captured_prompt = {}
+
+    def model(prompt, model_id, **kwargs):
+        captured_prompt["text"] = prompt
+        return _tracked_result("Angle one\nAngle two\nAngle three")
+
+    with patch("daily_cycle_handler.invoke_model_tracked", side_effect=model):
+        daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    assert "Already covered recently" not in captured_prompt["text"]
+
+
+# --- _draft_title validates its own output, with one retry -----------------------------------------
+
+
+def test_draft_title_accepts_a_plausible_title_on_the_first_try():
+    with patch("daily_cycle_handler.invoke_model_tracked", return_value=_tracked_result("A Good Title")):
+        title, lineage_call, is_plausible = daily_cycle_handler._draft_title("an angle", "m", "fallback-m")
+
+    assert (title, is_plausible) == ("A Good Title", True)
+    assert "attempts" not in lineage_call
+
+
+def test_draft_title_retries_once_when_the_first_reply_is_a_refusal():
+    responses = [
+        _tracked_result("I am not sure I understand your request. Could you clarify the angle?"),
+        _tracked_result("A Title From The Retry"),
+    ]
+
+    def model(prompt, model_id, **kwargs):
+        return responses.pop(0)
+
+    with patch("daily_cycle_handler.invoke_model_tracked", side_effect=model) as mock_invoke:
+        title, lineage_call, is_plausible = daily_cycle_handler._draft_title("an angle", "m", "fallback-m")
+
+    assert (title, is_plausible) == ("A Title From The Retry", True)
+    assert mock_invoke.call_count == 2
+    assert lineage_call["attempts"] == 2
+
+
+def test_draft_title_sums_tokens_across_both_attempts_not_just_the_retry():
+    """A discarded first reply still cost real tokens -- never dropped from the total."""
+    responses = [
+        _tracked_result("I cannot help with that.", input_tokens=100, output_tokens=50),
+        _tracked_result("A Title From The Retry", input_tokens=20, output_tokens=10),
+    ]
+
+    def model(prompt, model_id, **kwargs):
+        return responses.pop(0)
+
+    with patch("daily_cycle_handler.invoke_model_tracked", side_effect=model):
+        _, lineage_call, _ = daily_cycle_handler._draft_title("an angle", "m", "fallback-m")
+
+    assert lineage_call["input_tokens"] == 120
+    assert lineage_call["output_tokens"] == 60
+
+
+def test_draft_title_returns_false_when_still_implausible_after_the_retry():
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("I cannot help with that request."),
+    ) as mock_invoke:
+        title, _, is_plausible = daily_cycle_handler._draft_title("an angle", "m", "fallback-m")
+
+    assert is_plausible is False
+    assert title == "I cannot help with that request."  # kept, not discarded, for a human to see
+    assert mock_invoke.call_count == 2  # one retry attempted either way
+
+
+# --- handler(): no usable angles bails out cleanly; a bad title holds the article -----------------
+
+
+def test_handler_bails_out_cleanly_when_ideation_has_no_usable_angles(s3_bucket):
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", "fallback-m")),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            return_value=_tracked_result("I cannot propose article angles based on these findings."),
+        ),
+        patch("daily_cycle_handler.put_candidate_idea") as mock_put_candidate,
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+    ):
+        result = daily_cycle_handler.handler({"topic_id": NON_FINANCIAL_TOPIC["topic_id"]}, None)
+
+    assert result == {"status": "no_usable_angles", "topic_id": NON_FINANCIAL_TOPIC["topic_id"]}
+    mock_put_candidate.assert_not_called()  # nothing that wasn't a real angle is stored as one
+    mock_put_article.assert_not_called()
+
+
+def test_handler_holds_an_article_whose_title_is_still_implausible_after_retry(s3_bucket):
+    title_responses = [
+        _tracked_result("I cannot help with that request."),
+        _tracked_result("I cannot help with that request either."),
+    ]
+
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(
+        title_responses=title_responses
+    )
+
+    assert result["status"] == "pending_moderation"
+    assert daily_cycle_handler.IMPLAUSIBLE_TITLE_REASON in mock_put_moderation.call_args.kwargs["reasons"]
+    assert mock_put_article.call_args.kwargs["title"] == "I cannot help with that request either."
+
+
+def test_the_implausible_title_reason_comes_first_ahead_of_compliance_reasons(s3_bucket):
+    title_responses = [
+        _tracked_result("I cannot help with that request."),
+        _tracked_result("I cannot help with that request either."),
+    ]
+
+    result, _, _, _, _ = _run_with_review(title_responses=title_responses, compliant=False)
+
+    assert result["reasons"][0] == daily_cycle_handler.IMPLAUSIBLE_TITLE_REASON
+    assert result["reasons"][-1] == "needs a look"
+
+
+def test_a_plausible_title_never_triggers_a_hold(s3_bucket):
+    result, _, _, mock_put_moderation, _ = _run_with_review()
+
+    assert result["status"] == "published"
+    mock_put_moderation.assert_not_called()
