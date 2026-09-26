@@ -433,13 +433,23 @@ def test_the_original_stats_are_all_still_there_above_weekly_stats():
 def test_quick_links_jump_to_the_pages_three_top_level_sections():
     # The links themselves live in renderQuickLinks, a helper defined above renderStats --
     # checked against the whole file, unlike the ids below, which renderStats sets itself.
-    assert '"#total-stats-heading", "Total Stats"' in APP_JS
-    assert '"#weekly-stats-heading", "Weekly Stats"' in APP_JS
-    assert '"#gear-heading", "Gear"' in APP_JS
+    assert '"total-stats-heading", "Total Stats"' in APP_JS
+    assert '"weekly-stats-heading", "Weekly Stats"' in APP_JS
+    assert '"gear-heading", "Gear"' in APP_JS
 
     body = _render_stats_body()
     assert 'id: "total-stats-heading"' in body
     assert 'id: "weekly-stats-heading"' in body
+
+
+def test_quick_links_intercept_the_click_instead_of_hash_routing_to_page_not_found():
+    """Same fix as .back-to-top's own initBackToTop, for the same reason: this app hash-routes
+    on the whole fragment, so an uncaught click on href="#some-id" would route to "Page not
+    found" instead of scrolling. See renderQuickLinks' own comment."""
+    section = APP_JS[APP_JS.index("function renderQuickLinks()") : APP_JS.index("function renderSpendChart")]
+
+    assert "event.preventDefault()" in section
+    assert "scrollIntoView" in section
 
 
 def test_total_stats_says_it_excludes_the_current_week():

@@ -171,6 +171,11 @@ resource "aws_cloudfront_distribution" "site" {
     target_origin_id           = "s3-${var.environment_name}-site"
     viewer_protocol_policy     = "redirect-to-https"
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+    # Off by default on this resource -- confirmed missing against the real site (every static
+    # asset came back uncompressed despite `Accept-Encoding: gzip, br`). CloudFront compresses
+    # text-ish content types (html/css/js/json/svg, the entire frontend) automatically once this
+    # is on; no origin or app.js change needed for it.
+    compress = true
 
     dynamic "function_association" {
       for_each = local.www_redirect ? [1] : []

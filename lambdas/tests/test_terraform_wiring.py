@@ -109,6 +109,16 @@ def test_the_module_stops_at_plan_time_with_a_plain_message_if_the_zone_is_missi
     assert "docs/production-runsheet.md" in module
 
 
+def test_the_distribution_compresses_text_responses():
+    """Confirmed missing against the real site (every static asset came back uncompressed
+    despite Accept-Encoding: gzip, br) -- compress is off by default on this resource, so it has
+    to be set, not just left alone."""
+    module = _read("modules", "static-site", "main.tf")
+    behavior = re.search(r"default_cache_behavior \{(.*?)\n  \}", module, re.S).group(1)
+
+    assert re.search(r"^\s*compress\s*=\s*true\s*$", behavior, re.M)
+
+
 def test_the_certificate_and_the_distribution_both_cover_www():
     module = _read("modules", "static-site", "main.tf")
 

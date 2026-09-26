@@ -816,15 +816,31 @@
   // Quick Links: jumps to the page's three top-level sections. A no-JS fallback the same way
   // .back-to-top (index.html) is -- plain in-page anchors, nothing here depends on script.
   function renderQuickLinks() {
+    // Same fix as .back-to-top's own initBackToTop, for the same reason: this app hash-routes
+    // (parseRoute reads the whole hash as a route, e.g. "#/stats"), so an uncaught click on
+    // href="#total-stats-heading" would set location.hash to that, fire the hashchange listener,
+    // and route to "Page not found" instead of scrolling. Intercepted here and scrolled instead,
+    // without touching the hash at all -- these links only ever exist once this SPA has already
+    // rendered with JS, unlike .back-to-top's static, always-present href in index.html, so
+    // there's no no-JS case of this href to preserve as a fallback.
     var nav = el("nav", { className: "stats-quicklinks", attrs: { "aria-label": "Jump to a section" } });
     var list = el("ul");
     [
-      ["#total-stats-heading", "Total Stats"],
-      ["#weekly-stats-heading", "Weekly Stats"],
-      ["#gear-heading", "Gear"],
+      ["total-stats-heading", "Total Stats"],
+      ["weekly-stats-heading", "Weekly Stats"],
+      ["gear-heading", "Gear"],
     ].forEach(function (pair) {
+      var targetId = pair[0];
       var li = el("li");
-      li.appendChild(el("a", { text: pair[1], href: pair[0] }));
+      var link = el("a", { text: pair[1], href: "#" + targetId });
+      link.addEventListener("click", function (event) {
+        event.preventDefault();
+        var target = document.getElementById(targetId);
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth" });
+        }
+      });
+      li.appendChild(link);
       list.appendChild(li);
     });
     nav.appendChild(list);
