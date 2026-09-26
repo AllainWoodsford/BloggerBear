@@ -1404,6 +1404,59 @@ def get_stats_history_row(week_start: str) -> dict | None:
     return table.get_item(Key={"week_start": week_start}).get("Item")
 
 
+# StatsHistory's permanent running-total row (Observability enhancement, PR 4): a sentinel
+# `week_start` that can never collide with a real Monday date (those are always "YYYY-MM-DD"
+# ISO dates -- this is neither a valid date nor formatted like one). Kept in sync by
+# stats_rollover_handler.py at every rollover (common/stats_tracking.py's split_for_rollover
+# decides which fields get ADD'd here versus SET) so "Total Stats" is one get_item away, never a
+# scan-and-sum over every week there has ever been.
+_STATS_ALL_TIME_KEY = "all-time"
+
+
+def increment_stats_totals(updates: dict[str, int | Decimal]) -> None:
+    """ADD each of `updates` onto StatsHistory's all-time row -- same ADD-onto-first-use
+    mechanics as increment_current_stats, just keyed by the all-time sentinel instead of the
+    current week."""
+    if not updates:
+        return
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(updates)}
+    values = {f":v{n}": value for n, value in enumerate(updates.values())}
+    adds = ", ".join(f"#f{n} :v{n}" for n in range(len(updates)))
+    table.update_item(
+        Key={"week_start": _STATS_ALL_TIME_KEY},
+        UpdateExpression=f"ADD {adds}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def set_stats_totals_fields(fields: dict) -> None:
+    """SET (not ADD) each of `fields` onto StatsHistory's all-time row -- for a refreshed
+    snapshot value (API Gateway's rolling 30-day reading) that must overwrite, not accumulate,
+    the same reason set_current_stats_fields SETs rather than ADDs."""
+    if not fields:
+        return
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    sets = ", ".join(f"#f{n} = :v{n}" for n in range(len(fields)))
+    table.update_item(
+        Key={"week_start": _STATS_ALL_TIME_KEY},
+        UpdateExpression=f"SET {sets}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def get_stats_totals() -> dict:
+    """StatsHistory's all-time running-total row, or an empty shell if no week has ever been
+    rolled over yet (the normal state on a fresh deploy)."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    response = table.get_item(Key={"week_start": _STATS_ALL_TIME_KEY})
+    return response.get("Item") or {"week_start": _STATS_ALL_TIME_KEY}
+
+
 def set_current_stats_fields(fields: dict, week_start: str) -> None:
     """SET (not ADD) each of `fields` onto the current week's StatsCurrent row -- for a value
     that is a refreshed snapshot each time it's written (e.g. cost_explorer_poll_handler.py's

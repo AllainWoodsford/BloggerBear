@@ -1472,6 +1472,7 @@ def _run_with_review(
         patch("daily_cycle_handler.render_and_publish_article_page") as mock_render,
         patch("daily_cycle_handler.generate_and_store_article_musing"),
         patch("daily_cycle_handler.set_topic_last_article_at"),
+        patch("daily_cycle_handler.record_article_lineage") as mock_record_lineage,
         config_patch,
         patch(
             "daily_cycle_handler.fresh_review.run_review",
@@ -1486,7 +1487,7 @@ def _run_with_review(
     ):
         result = daily_cycle_handler.handler({"topic_id": topic["topic_id"]}, None)
     if mocks is not None:
-        mocks.update(revision=mock_revision, render=mock_render)
+        mocks.update(revision=mock_revision, render=mock_render, record_lineage=mock_record_lineage)
     return result, mock_run, mock_put_article, mock_put_moderation, lineage_calls
 
 
@@ -1526,6 +1527,18 @@ def test_the_reviewers_call_becomes_a_lineage_stage(s3_bucket):
     stages = [call["stage"] for call in lineage_calls[0]]
     assert "adversarial_review" in stages and "compliance_review" in stages
     assert stages.index("adversarial_review") < stages.index("compliance_review")
+
+
+def test_the_finished_lineage_is_recorded_onto_this_weeks_stats(s3_bucket):
+    """Observability enhancement, PR 4: every drafted article folds its own lineage onto
+    StatsCurrent's `articles` category (common/stats_tracking.py's record_article_lineage),
+    not just the four previously-untracked call sites -- see that module's own tests for the
+    tallying itself; this just confirms daily_cycle_handler.py actually calls it, with the
+    article's real, finished lineage."""
+    mocks = {}
+    _run_with_review(mocks=mocks)
+
+    mocks["record_lineage"].assert_called_once_with(_DUMMY_LINEAGE)
 
 
 @pytest.mark.parametrize(

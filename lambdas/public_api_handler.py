@@ -44,7 +44,9 @@ from common import equipment, feedback_limits, feedback_verification, gear, wear
 from common.comment_screening import screen_comment
 from common.dynamo import (
     get_article,
+    get_current_stats,
     get_latest_finding,
+    get_stats_totals,
     get_topic,
     increment_view_count,
     list_all_articles,
@@ -61,7 +63,12 @@ from common.dynamo import (
 from common.fact_check import fact_check_label
 from common.source_refs import dedupe_source_refs
 from common.stats import build_stats
-from common.stats_tracking import record_feedback_given, record_feedback_rejected_comment
+from common.stats_tracking import (
+    HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE,
+    public_view,
+    record_feedback_given,
+    record_feedback_rejected_comment,
+)
 
 _RSS_ITEM_LIMIT = 50
 _RSS_DESCRIPTION_MAX_CHARS = 300
@@ -534,8 +541,13 @@ _STATS_CACHE_SECONDS = 300
 
 def _stats(event: dict) -> dict:
     """Aggregate AI cost/token statistics for the public Stats page --
-    aggregates only (common/stats.py), never article content or ids."""
+    aggregates only (common/stats.py plus common/stats_tracking.py), never article content or
+    ids. `weekly` (StatsCurrent) and `historic` (StatsHistory's all-time running total, PR 4 of
+    the Observability enhancement) sit alongside the original per-article `by_model`/`by_topic`/
+    `daily` breakdown -- both single get_item reads, no extra scan."""
     stats = build_stats(list_all_articles(), list_topics(), list_models())
+    stats["weekly"] = public_view(get_current_stats())
+    stats["historic"] = {**public_view(get_stats_totals()), "note": HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE}
     return _response(200, stats, cache_seconds=_STATS_CACHE_SECONDS)
 
 
