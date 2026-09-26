@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import boto3
@@ -35,6 +36,19 @@ def get_table(name: str):
     if _dynamodb_resource is None:
         _dynamodb_resource = boto3.resource("dynamodb")
     return _dynamodb_resource.Table(name)
+
+
+# Cleanup PR: how long CandidateIdeas/FailedExecutions items live, and (only from the moment of
+# rejection, never before) ModerationQueue/PromptRefinements items -- one shared constant so every
+# TTL this file sets agrees, the same "one clock" reasoning research_tick_handler.py's own
+# FINDING_TTL_DAYS already follows for Findings (kept separate, at 14 days, since that one has to
+# outlive the article window it feeds, not just an operator's 7-day glance-back).
+CLEANUP_TTL_DAYS = 7
+
+
+def _expires_in(days: int) -> int:
+    """An `expires_at` epoch-seconds value `days` from now, for a TTL attribute."""
+    return int((datetime.now(UTC) + timedelta(days=days)).timestamp())
 
 
 # --- Topics / Findings (research-tick worker) -------------------------------
@@ -131,7 +145,11 @@ def put_candidate_idea(
     """Write (or overwrite) a CandidateIdeas item and return it.
 
     Call again with the same (topic_id, created_at) key and an updated
-    `status` to move an idea from "considered" to "selected".
+    `status` to move an idea from "considered" to "selected". Carries
+    `expires_at` (Cleanup PR, CLEANUP_TTL_DAYS from now) so it self-clears
+    via TTL once it's well past useful -- a pure operational scratchpad
+    superseded by the topic's next research cycle, nothing reads it back
+    historically the way Findings' research cost is.
     """
     table = get_table(os.environ["CANDIDATE_IDEAS_TABLE"])
     item = {
@@ -139,6 +157,7 @@ def put_candidate_idea(
         "created_at": created_at,
         "angle": angle,
         "status": status,
+        "expires_at": _expires_in(CLEANUP_TTL_DAYS),
     }
     table.put_item(Item=item)
     return item
@@ -421,13 +440,25 @@ def get_moderation_item(queue_id: str) -> dict | None:
 
 
 def update_moderation_status(queue_id: str, status: str) -> None:
-    """Update a ModerationQueue item's `status` field in place."""
+    """Update a ModerationQueue item's `status` field in place.
+
+    Cleanup PR: a `status` of "rejected" also sets `expires_at` (CLEANUP_TTL_DAYS from now), so a
+    rejected item self-clears via TTL; "approved" or "pending" never gets one and the item
+    persists indefinitely, same as before this PR. A real trade-off, not a free cleanup --
+    admin_api_handler.py's _moderation_queue_stats reads rejected items' reasons "across all
+    history" to inform compliance-prompt iteration; see that function's own updated docstring.
+    """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    expression = "SET #status = :status"
+    values = {":status": status}
+    if status == "rejected":
+        expression += ", expires_at = :expires_at"
+        values[":expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     table.update_item(
         Key={"queue_id": queue_id},
-        UpdateExpression="SET #status = :status",
+        UpdateExpression=expression,
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": status},
+        ExpressionAttributeValues=values,
     )
 
 
@@ -658,13 +689,24 @@ def get_prompt_refinement(topic_id: str, version: str) -> dict | None:
 
 
 def update_prompt_refinement_status(topic_id: str, version: str, status: str) -> None:
-    """Update a PromptRefinements item's `status` field in place."""
+    """Update a PromptRefinements item's `status` field in place.
+
+    Cleanup PR: a `status` of "rejected" also sets `expires_at` (CLEANUP_TTL_DAYS from now), so a
+    rejected version self-clears via TTL; "approved" or "pending" never gets one, so real, adopted
+    refinement history persists exactly as before. Unlike ModerationQueue's rejected items, nothing
+    reads a rejected version back historically -- no follow-on trade-off here.
+    """
     table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    expression = "SET #status = :status"
+    values = {":status": status}
+    if status == "rejected":
+        expression += ", expires_at = :expires_at"
+        values[":expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     table.update_item(
         Key={"topic_id": topic_id, "version": version},
-        UpdateExpression="SET #status = :status",
+        UpdateExpression=expression,
         ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":status": status},
+        ExpressionAttributeValues=values,
     )
 
 
@@ -867,6 +909,30 @@ def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
     return positively_voted[:limit]
 
 
+def list_recent_article_titles(topic_id: str, limit: int = 5) -> list[str]:
+    """Return up to `limit` of `topic_id`'s own published articles' titles, most recent first.
+
+    Same Scan + FilterExpression as get_top_voted_articles above (no topic_id GSI on this table),
+    just sorted by created_at instead of net_votes. Fed into daily_cycle_handler.py's ideation
+    prompt so a source that stays trending for days doesn't get written up again each day just
+    because that day's numbers are technically new -- titles only, never full articles or ids,
+    since that's all a "don't repeat this" reminder needs."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
+
+    response = table.scan(FilterExpression=filter_expression)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.scan(
+            FilterExpression=filter_expression,
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        items.extend(response.get("Items", []))
+
+    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
+    return [item["title"] for item in items[:limit]]
+
+
 # --- FailedExecutions (DLQ consumer) -------------------------------------
 #
 # Owned by the dlq_handler worker. A FailedExecutions item is written once
@@ -888,7 +954,10 @@ def put_failed_execution(
 
     `topic_id` and `error` may be None/malformed if the DLQ message body
     didn't parse as expected -- `raw_message` (the untouched SQS message
-    body) is always kept so a human can inspect it either way.
+    body) is always kept so a human can inspect it either way. Carries
+    `expires_at` (Cleanup PR, CLEANUP_TTL_DAYS from now) so old failures
+    self-clear via TTL -- an operator-visibility record with a bounded
+    glance-back window, not a permanent audit log.
     """
     table = get_table(os.environ["FAILED_EXECUTIONS_TABLE"])
     item = {
@@ -897,6 +966,7 @@ def put_failed_execution(
         "error": error,
         "raw_message": raw_message,
         "created_at": created_at,
+        "expires_at": _expires_in(CLEANUP_TTL_DAYS),
     }
     table.put_item(Item=item)
     return item
@@ -1402,6 +1472,59 @@ def get_stats_history_row(week_start: str) -> dict | None:
     """One completed week's StatsHistory row, or None if that week was never rolled over."""
     table = get_table(os.environ["STATS_HISTORY_TABLE"])
     return table.get_item(Key={"week_start": week_start}).get("Item")
+
+
+# StatsHistory's permanent running-total row (Observability enhancement, PR 4): a sentinel
+# `week_start` that can never collide with a real Monday date (those are always "YYYY-MM-DD"
+# ISO dates -- this is neither a valid date nor formatted like one). Kept in sync by
+# stats_rollover_handler.py at every rollover (common/stats_tracking.py's split_for_rollover
+# decides which fields get ADD'd here versus SET) so "Total Stats" is one get_item away, never a
+# scan-and-sum over every week there has ever been.
+_STATS_ALL_TIME_KEY = "all-time"
+
+
+def increment_stats_totals(updates: dict[str, int | Decimal]) -> None:
+    """ADD each of `updates` onto StatsHistory's all-time row -- same ADD-onto-first-use
+    mechanics as increment_current_stats, just keyed by the all-time sentinel instead of the
+    current week."""
+    if not updates:
+        return
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(updates)}
+    values = {f":v{n}": value for n, value in enumerate(updates.values())}
+    adds = ", ".join(f"#f{n} :v{n}" for n in range(len(updates)))
+    table.update_item(
+        Key={"week_start": _STATS_ALL_TIME_KEY},
+        UpdateExpression=f"ADD {adds}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def set_stats_totals_fields(fields: dict) -> None:
+    """SET (not ADD) each of `fields` onto StatsHistory's all-time row -- for a refreshed
+    snapshot value (API Gateway's rolling 30-day reading) that must overwrite, not accumulate,
+    the same reason set_current_stats_fields SETs rather than ADDs."""
+    if not fields:
+        return
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    sets = ", ".join(f"#f{n} = :v{n}" for n in range(len(fields)))
+    table.update_item(
+        Key={"week_start": _STATS_ALL_TIME_KEY},
+        UpdateExpression=f"SET {sets}",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def get_stats_totals() -> dict:
+    """StatsHistory's all-time running-total row, or an empty shell if no week has ever been
+    rolled over yet (the normal state on a fresh deploy)."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    response = table.get_item(Key={"week_start": _STATS_ALL_TIME_KEY})
+    return response.get("Item") or {"week_start": _STATS_ALL_TIME_KEY}
 
 
 def set_current_stats_fields(fields: dict, week_start: str) -> None:

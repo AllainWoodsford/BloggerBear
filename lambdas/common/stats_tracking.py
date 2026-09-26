@@ -28,6 +28,21 @@ row, then reset) and Lambda billed-duration tracking (common/lambda_timing.py). 
 Gateway cost via a daily Cost Explorer poll (common/cost_explorer.py, cost_explorer_poll_handler.py)
 -- see record_api_gateway_cost below, the one field on this row that is SET rather than ADD'd: a
 refreshed snapshot of a rolling 30-day total, not something to accumulate across polls.
+
+PR 4 (the Stats-page UI) adds one more category to the same weekly row: `record_article_lineage`
+folds each drafted article's own cost (already tracked per-article as `lineage` on the Articles
+table, unaffected by any of this) into this week's `articles_*` counters too -- so "Weekly Stats"
+and "Total Stats" show one holistic AI-spend figure instead of leaving out the largest share of it.
+Per-model/per-topic/per-day detail stays common/stats.py's job, aggregated live from Articles,
+unchanged; this is a coarse weekly total alongside it, not a replacement for it.
+
+Also PR 4: StatsHistory holds one more row beyond the normal one-per-completed-week ones --
+`week_start = "all-time"` (a sentinel that can never collide with a real Monday date), a running
+total kept in sync by stats_rollover_handler.py at every rollover (common/dynamo.py's
+increment_stats_totals/set_stats_totals_fields). `split_for_rollover` below is what tells the
+rollover job which of this row's fields are weekly counters (safe to ADD onto that running total)
+versus a refreshed snapshot (API Gateway's reading -- SET, never summed). This makes "Total Stats"
+a single get_item, never a scan-and-sum over every week that has ever existed.
 """
 
 from __future__ import annotations
@@ -40,6 +55,12 @@ from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.dynamo import increment_current_stats, set_current_stats_fields
 
 BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening")
+
+# Not one of BEDROCK_CATEGORIES above -- articles never call tracked_claude (they build their own
+# lineage via common/costing.py, long before this module existed), so record_article_lineage below
+# tallies them onto the same weekly row under this category by hand, from a finished lineage dict
+# rather than from a single tracked call.
+ARTICLES_CATEGORY = "articles"
 
 FEEDBACK_GIVEN = "feedback_given"
 # Reasons a whole feedback submission was thrown away -- see public_api_handler.py's
@@ -159,3 +180,185 @@ def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
         print(f"stats_tracking: could not record api gateway cost: {exc!r}")
+
+
+def record_article_lineage(lineage: dict) -> None:
+    """Tally one just-drafted article's total spend (authoring + research, if any) onto this
+    week's Stats row under `articles` -- called once per article, right after
+    common.costing.build_lineage (and build_research_lineage, when there is one) finish
+    (daily_cycle_handler.py, trending_digest_handler.py). Deliberately per-article, not per
+    Bedrock call within it: that finer detail (which model, ideation vs draft vs title, which
+    topic) stays common/stats.py's job, read live off the Articles table; this is one coarse
+    weekly total sitting alongside it, so Weekly/Total Stats aren't missing the largest share of
+    AI spend just because it isn't tracked the same way musings/weekly_reflection/etc. are.
+
+    Reuses the lineage's own already-computed cost (`total_cost_aud` when there was a research
+    component, else `cost_aud`) rather than re-pricing every call a second time -- that figure is
+    already None under the same "never partially sum an unpriced call" rule
+    common.costing.calculate_lineage_cost_aud follows, so an article with any unpriced call is
+    counted here the same honest way: its tokens still count, `articles_unpriced_articles` (an
+    article count, deliberately not named `_unpriced_calls` like every other category -- this is
+    coarser, per-article granularity) goes up, and no cost is guessed at.
+
+    Fails open like every other recorder here: a bookkeeping failure is logged and swallowed,
+    never raised back into the caller mid-publish.
+    """
+    try:
+        tally = _lineage_tally(lineage)
+        if tally is not None:
+            _record(to_stats_updates(tally))
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a drafted article
+        print(f"stats_tracking: could not record article lineage: {exc!r}")
+
+
+def _lineage_tally(lineage: dict) -> dict[str, int | float] | None:
+    """One article's raw calls/tokens/cost tally under `articles`, in native numbers -- Decimal
+    is a storage concern, added only at the write boundary (to_stats_updates below), not here.
+    None when there is nothing to tally (e.g. a non-financial topic's compliance review makes no
+    Bedrock call at all). Shared by record_article_lineage (the live, per-article path, right
+    after an article is drafted) and plan_articles_backfill (the one-time catch-up over every
+    article that already exists, PR 5) so both tally a lineage exactly the same way.
+
+    Reuses the lineage's own already-computed cost (`total_cost_aud` when there was a research
+    component, else `cost_aud`) rather than re-pricing every call a second time -- that figure is
+    already None under the same "never partially sum an unpriced call" rule
+    common.costing.calculate_lineage_cost_aud follows, so an article with any unpriced call is
+    counted here the same honest way: its tokens still count, `articles_unpriced_articles` (an
+    article count, deliberately not named `_unpriced_calls` like every other category -- this is
+    coarser, per-article granularity) goes up, and no cost is guessed at.
+    """
+    research = lineage.get("research") or {}
+    calls = list(lineage.get("calls") or []) + list(research.get("calls") or [])
+    if not calls:
+        return None
+
+    cost_aud = lineage.get("total_cost_aud") if research else lineage.get("cost_aud")
+    tally: dict[str, int | float] = {
+        f"{ARTICLES_CATEGORY}_calls": len(calls),
+        f"{ARTICLES_CATEGORY}_input_tokens": sum(int(call.get("input_tokens", 0)) for call in calls),
+        f"{ARTICLES_CATEGORY}_output_tokens": sum(int(call.get("output_tokens", 0)) for call in calls),
+    }
+    if cost_aud is not None:
+        tally[f"{ARTICLES_CATEGORY}_cost_aud"] = cost_aud
+    else:
+        tally[f"{ARTICLES_CATEGORY}_unpriced_articles"] = 1
+    return tally
+
+
+def to_stats_updates(tally: dict[str, int | float]) -> dict[str, int | Decimal]:
+    """`tally`'s native numbers, Decimal-wrapped wherever DynamoDB needs it (its boto3 resource
+    rejects a native float) -- the one conversion point every writer of a StatsCurrent/
+    StatsHistory row shares (record_article_lineage above; the one-time backfill admin route,
+    which sums several articles' tallies together before writing, so this has to be a separate
+    step from _lineage_tally rather than folded into it)."""
+    return {key: Decimal(str(value)) if isinstance(value, float) else value for key, value in tally.items()}
+
+
+def plan_articles_backfill(articles: list[dict]) -> dict:
+    """Sum every existing article's lineage into one totals dict, shaped exactly like what
+    record_article_lineage would have tallied onto StatsCurrent (and, via a rollover, onto
+    StatsHistory's all-time row) had it existed when each article was drafted -- the one-time
+    catch-up for articles drafted before this category existed (Observability enhancement,
+    PR 5). Pure and read-only, the same "caller already fetched the data" shape as
+    lineage_tools.py's plan_backfill -- the admin route decides whether to actually write this.
+    """
+    totals: dict[str, int | float] = {}
+    included = 0
+    for article in articles:
+        lineage = article.get("lineage")
+        if not lineage:
+            continue
+        tally = _lineage_tally(lineage)
+        if tally is None:
+            continue
+        included += 1
+        for key, value in tally.items():
+            totals[key] = totals.get(key, 0) + value
+    return {"examined": len(articles), "included": included, "totals": totals}
+
+
+# StatsHistory's reserved marker for "the one-time articles backfill has already run" -- a
+# sentinel week_start, like the all-time row's own, that can never collide with a real Monday
+# date. Written via the same conditional put_stats_history_row every real week's row already
+# uses, so a retried or duplicated backfill call can never fold these articles into the running
+# total twice.
+ARTICLES_BACKFILL_MARKER = "articles-backfill"
+
+
+# Keys on a StatsCurrent/StatsHistory row that are a refreshed snapshot (SET at write time), never
+# additive across weeks -- everything else this module ever writes onto the row is a plain weekly
+# counter, safe to ADD. Metadata fields describe the row itself, not something to fold into a
+# total at all.
+_SNAPSHOT_FIELDS = frozenset({API_GATEWAY_COST_USD_30D, API_GATEWAY_COST_AUD_30D, API_GATEWAY_COST_AS_OF})
+_METADATA_FIELDS = frozenset({"stats_id", "week_start", "rolled_over_at"})
+
+
+def split_for_rollover(row: dict) -> tuple[dict, dict]:
+    """Split a completed week's StatsCurrent row into (additive, snapshot) for
+    stats_rollover_handler.py to fold onto StatsHistory's permanent all-time row
+    (common/dynamo.py's increment_stats_totals/set_stats_totals_fields): every counter this
+    module records is safe to ADD across every week there has ever been; API Gateway's reading is
+    a rolling 30-day snapshot, never additive, so the all-time row keeps only the latest one
+    (SET), whichever week's rollover happens to carry it."""
+    additive = {k: v for k, v in row.items() if k not in _SNAPSHOT_FIELDS and k not in _METADATA_FIELDS}
+    snapshot = {k: v for k, v in row.items() if k in _SNAPSHOT_FIELDS}
+    return additive, snapshot
+
+
+# --- Shaping a row for the public Stats page (Observability enhancement, PR 4) -----------------
+#
+# StatsCurrent's row (-> "Weekly Stats") and StatsHistory's all-time row (-> "Total Stats") are
+# the same shape, so one function shapes either. Not everything this module records reaches the
+# page: the per-function Lambda breakdown stays internal for now (only the combined pipeline run
+# time is public), and api_gateway_cost_as_of never leaves this module at all (owner-only
+# troubleshooting, per the module docstring) -- both left out below, not merely unused.
+
+HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE = (
+    "Excludes the current week, which is still in progress and counted separately under Weekly Stats."
+)
+
+_PUBLIC_CATEGORIES = (*BEDROCK_CATEGORIES, ARTICLES_CATEGORY)
+
+
+def _category_view(row: dict, category: str) -> dict:
+    cost = row.get(f"{category}_cost_aud")
+    # "articles" is tallied per-article (record_article_lineage above), never per-call, so its
+    # unpriced count is named _unpriced_articles at the storage layer -- see that function's own
+    # docstring. Normalised to the same "unpriced" key here so the frontend can loop one way over
+    # every category without caring which kind of unit it's coarser at.
+    unpriced_key = (
+        f"{category}_unpriced_articles" if category == ARTICLES_CATEGORY else f"{category}_unpriced_calls"
+    )
+    return {
+        "category": category,
+        "calls": int(row.get(f"{category}_calls", 0)),
+        "input_tokens": int(row.get(f"{category}_input_tokens", 0)),
+        "output_tokens": int(row.get(f"{category}_output_tokens", 0)),
+        "cost_aud": float(cost) if cost is not None else None,
+        "unpriced": int(row.get(unpriced_key, 0)),
+    }
+
+
+def public_view(row: dict) -> dict:
+    """Shape a StatsCurrent or StatsHistory-all-time row (Decimal-valued, straight from
+    common/dynamo.py) into what the public Stats page actually reads: Decimal turned into a plain
+    float (cost) or int (every count), one entry per category, the reader-activity counters, one
+    combined pipeline run-time figure in hours, and the API Gateway reading with its `_as_of`
+    timestamp left out."""
+    total_lambda_ms = sum(
+        int(value)
+        for key, value in row.items()
+        if key.startswith(LAMBDA_MS_PREFIX) and isinstance(value, int | Decimal)
+    )
+    api_gateway_cost_usd = row.get(API_GATEWAY_COST_USD_30D)
+    api_gateway_cost_aud = row.get(API_GATEWAY_COST_AUD_30D)
+
+    return {
+        "categories": [_category_view(row, category) for category in _PUBLIC_CATEGORIES],
+        "feedback_given": int(row.get(FEEDBACK_GIVEN, 0)),
+        "feedback_rejected_comment": int(row.get(FEEDBACK_REJECTED_COMMENT, 0)),
+        "loot_drops": int(row.get(LOOT_DROPS, 0)),
+        "pipeline_hours": round(total_lambda_ms / 3_600_000, 2),
+        "api_gateway_cost_usd_30d": float(api_gateway_cost_usd) if api_gateway_cost_usd is not None else None,
+        "api_gateway_cost_aud_30d": float(api_gateway_cost_aud) if api_gateway_cost_aud is not None else None,
+    }

@@ -747,6 +747,106 @@
     return count === 1 ? "1 article" : count + " articles";
   }
 
+  // --- Weekly/Total Stats: everything from GET /stats's `weekly` and `historic` --------------
+  //
+  // Observability enhancement, PR 4. Both are the same shape (common/stats_tracking.py's
+  // public_view): a fixed set of categories the app doesn't need to discover, so a table with
+  // a label per category is enough -- no "no data yet" branch like By Model/By Topic need,
+  // since every category is always present, calls or not.
+
+  var OBSERVABILITY_CATEGORY_LABELS = {
+    articles: "Articles (all stages)",
+    musings: "Musings",
+    weekly_reflection: "Weekly reflection",
+    gear_identity: "Gear naming",
+    comment_screening: "Comment screening",
+  };
+
+  function formatHours(value) {
+    var hours = Number(value || 0);
+    var rounded = Math.round(hours * 10) / 10;
+    return rounded + (rounded === 1 ? " hr" : " hrs");
+  }
+
+  function categoryRow(category) {
+    var cost = formatAud(category.cost_aud);
+    if (category.cost_aud !== null && category.unpriced > 0) {
+      cost += " (+" + category.unpriced + " unpriced)";
+    }
+    return [
+      OBSERVABILITY_CATEGORY_LABELS[category.category] || category.category,
+      formatCount(category.calls),
+      formatCount(category.input_tokens),
+      formatCount(category.output_tokens),
+      cost,
+    ];
+  }
+
+  // `apiGatewayNote` distinguishes Weekly Stats' rolling-30-day reading from Total Stats'
+  // reuse of that same reading (a snapshot, never summed across weeks -- see this section's
+  // own note in renderStats).
+  function renderObservabilitySection(data, apiGatewayNote) {
+    var wrap = el("div", {});
+    var tiles = el("div", { className: "stats-tiles" });
+    tiles.appendChild(statTile("Feedback given", formatCount(data.feedback_given)));
+    tiles.appendChild(
+      statTile(
+        "Feedback rejected",
+        formatCount(data.feedback_rejected_comment),
+        "comment failed the content screen"
+      )
+    );
+    tiles.appendChild(statTile("Loot drops", formatCount(data.loot_drops)));
+    tiles.appendChild(
+      statTile("Pipeline run time", formatHours(data.pipeline_hours), "self-timed, scheduled jobs only")
+    );
+    if (data.api_gateway_cost_aud_30d !== null && data.api_gateway_cost_aud_30d !== undefined) {
+      tiles.appendChild(statTile("API Gateway spend", formatAud(data.api_gateway_cost_aud_30d), apiGatewayNote));
+    }
+    wrap.appendChild(tiles);
+    wrap.appendChild(
+      statsTable(
+        ["Category", "Calls", "Tokens in", "Tokens out", "Est. cost (AUD)"],
+        (data.categories || []).map(categoryRow)
+      )
+    );
+    return wrap;
+  }
+
+  // Quick Links: jumps to the page's three top-level sections. A no-JS fallback the same way
+  // .back-to-top (index.html) is -- plain in-page anchors, nothing here depends on script.
+  function renderQuickLinks() {
+    // Same fix as .back-to-top's own initBackToTop, for the same reason: this app hash-routes
+    // (parseRoute reads the whole hash as a route, e.g. "#/stats"), so an uncaught click on
+    // href="#total-stats-heading" would set location.hash to that, fire the hashchange listener,
+    // and route to "Page not found" instead of scrolling. Intercepted here and scrolled instead,
+    // without touching the hash at all -- these links only ever exist once this SPA has already
+    // rendered with JS, unlike .back-to-top's static, always-present href in index.html, so
+    // there's no no-JS case of this href to preserve as a fallback.
+    var nav = el("nav", { className: "stats-quicklinks", attrs: { "aria-label": "Jump to a section" } });
+    var list = el("ul");
+    [
+      ["total-stats-heading", "Total Stats"],
+      ["weekly-stats-heading", "Weekly Stats"],
+      ["gear-heading", "Gear"],
+    ].forEach(function (pair) {
+      var targetId = pair[0];
+      var li = el("li");
+      var link = el("a", { text: pair[1], href: "#" + targetId });
+      link.addEventListener("click", function (event) {
+        event.preventDefault();
+        var target = document.getElementById(targetId);
+        if (target) {
+          target.scrollIntoView({ behavior: "smooth" });
+        }
+      });
+      li.appendChild(link);
+      list.appendChild(li);
+    });
+    nav.appendChild(list);
+    return nav;
+  }
+
   function renderSpendChart(daily) {
     // viewBox width follows the container (1 SVG unit = 1 CSS px), so axis
     // text stays a readable 11px instead of scaling down with the chart on
@@ -869,16 +969,14 @@
   function renderStats(stats) {
     clearChildren(contentEl);
     contentEl.appendChild(el("h1", { text: "Stats" }));
+    contentEl.appendChild(renderQuickLinks());
 
-    // The page opens with what BloggerBear is wearing; the cost and usage numbers follow.
-    // Its own request, so a slow or failed one never holds up the numbers.
-    var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
-    gearHeading(gearSection);
-    gearSection.appendChild(el("p", { text: "Loading..." }));
-    contentEl.appendChild(gearSection);
-    loadGear(gearSection);
-
-    contentEl.appendChild(el("h2", { text: "Spend and usage", className: "section-heading" }));
+    // --- Total Stats: the article-level detail (always fully live, scanned off Articles) -----
+    // plus everything else Bedrock/reader-activity spends, all time (StatsHistory's running
+    // total -- Observability enhancement, PR 4).
+    contentEl.appendChild(
+      el("h2", { text: "Total Stats", className: "section-heading", attrs: { id: "total-stats-heading" } })
+    );
     contentEl.appendChild(el("p", { className: "stats-note", text: stats.cost_basis }));
 
     var totals = stats.totals;
@@ -924,7 +1022,9 @@
     var activeDays = daily.filter(function (day) {
       return day.cost_aud > 0 || day.articles > 0;
     });
-    contentEl.appendChild(el("h2", { text: "Estimated spend per day", className: "section-heading" }));
+    contentEl.appendChild(
+      el("h3", { text: "Estimated spend per day (last " + daily.length + " days)", className: "section-heading" })
+    );
     if (activeDays.length === 0) {
       contentEl.appendChild(el("p", { text: "No spend recorded in the last " + daily.length + " days yet." }));
     } else {
@@ -948,7 +1048,7 @@
       contentEl.appendChild(details);
     }
 
-    contentEl.appendChild(el("h2", { text: "By model", className: "section-heading" }));
+    contentEl.appendChild(el("h3", { text: "By model", className: "section-heading" }));
     if ((stats.by_model || []).length === 0) {
       contentEl.appendChild(el("p", { text: "No model usage recorded yet." }));
     } else {
@@ -972,7 +1072,7 @@
       );
     }
 
-    contentEl.appendChild(el("h2", { text: "By topic", className: "section-heading" }));
+    contentEl.appendChild(el("h3", { text: "By topic", className: "section-heading" }));
     if ((stats.by_topic || []).length === 0) {
       contentEl.appendChild(el("p", { text: "No topic usage recorded yet." }));
     } else {
@@ -992,6 +1092,29 @@
         )
       );
     }
+
+    var historic = stats.historic || {};
+    contentEl.appendChild(
+      el("h3", { text: "Other AI spend and activity, all time", className: "section-heading" })
+    );
+    contentEl.appendChild(el("p", { className: "stats-note", text: historic.note || "" }));
+    contentEl.appendChild(renderObservabilitySection(historic, "latest reading, not summed across weeks"));
+
+    // --- Weekly Stats: this week so far (StatsCurrent), resets every Monday -------------------
+    contentEl.appendChild(
+      el("h2", { text: "Weekly Stats", className: "section-heading", attrs: { id: "weekly-stats-heading" } })
+    );
+    contentEl.appendChild(
+      el("p", { className: "stats-note", text: "This week so far -- resets every Monday." })
+    );
+    contentEl.appendChild(renderObservabilitySection(stats.weekly || {}, "rolling 30 days"));
+
+    // --- Gear: moved to the bottom now that there's real financial data above it to lead with -
+    var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
+    gearHeading(gearSection);
+    gearSection.appendChild(el("p", { text: "Loading..." }));
+    contentEl.appendChild(gearSection);
+    loadGear(gearSection);
 
     if (stats.generated_at) {
       contentEl.appendChild(

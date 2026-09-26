@@ -289,3 +289,243 @@ def test_api_gateway_cost_does_not_disturb_unrelated_counters(table):
 
 def test_api_gateway_cost_never_raises_even_with_no_table(monkeypatch):
     st.record_api_gateway_cost(Decimal("1.00"), "2026-09-22T00:00:00+00:00")
+
+
+# --- record_article_lineage: an article's own lineage, folded onto the same weekly row ---------
+
+
+def _lineage(calls=None, cost_aud=None, research=None):
+    return {"calls": calls or [], "cost_aud": cost_aud, "research": research}
+
+
+def _call(model_id="model-a", input_tokens=100, output_tokens=50):
+    return {"model_id": model_id, "input_tokens": input_tokens, "output_tokens": output_tokens}
+
+
+def test_record_article_lineage_tallies_calls_tokens_and_cost(table):
+    lineage = _lineage(calls=[_call(input_tokens=1000, output_tokens=500)], cost_aud=3.0)
+
+    st.record_article_lineage(lineage)
+
+    row = _row(table)
+    assert row["articles_calls"] == 1
+    assert row["articles_input_tokens"] == 1000
+    assert row["articles_output_tokens"] == 500
+    assert row["articles_cost_aud"] == Decimal("3.0")
+    assert "articles_unpriced_articles" not in row
+
+
+def test_record_article_lineage_includes_research_calls_and_uses_total_cost(table):
+    lineage = _lineage(
+        calls=[_call(input_tokens=100, output_tokens=50)],
+        cost_aud=1.0,  # authoring alone -- must NOT be used once there's a research component
+        research={"calls": [_call(input_tokens=10, output_tokens=5)]},
+    )
+    lineage["total_cost_aud"] = 4.0
+
+    st.record_article_lineage(lineage)
+
+    row = _row(table)
+    assert row["articles_calls"] == 2  # 1 authoring + 1 research
+    assert row["articles_input_tokens"] == 110
+    assert row["articles_output_tokens"] == 55
+    assert row["articles_cost_aud"] == Decimal("4.0")  # total, not the authoring-only figure
+
+
+def test_record_article_lineage_counts_unpriced_articles_when_cost_is_none(table):
+    lineage = _lineage(calls=[_call()], cost_aud=None)  # an unpriced call left cost_aud blank
+
+    st.record_article_lineage(lineage)
+
+    row = _row(table)
+    assert row["articles_calls"] == 1
+    assert row["articles_unpriced_articles"] == 1
+    assert "articles_cost_aud" not in row  # never guessed at
+
+
+def test_record_article_lineage_does_nothing_for_a_lineage_with_no_calls(table):
+    # e.g. a non-financial topic's compliance review makes no Bedrock call at all.
+    st.record_article_lineage(_lineage(calls=[]))
+
+    assert table.get_item(Key={"stats_id": "current"}).get("Item") is None
+
+
+def test_record_article_lineage_never_raises_even_on_a_malformed_lineage(monkeypatch):
+    st.record_article_lineage({"calls": "not a list"})  # would raise inside, if not caught
+
+
+def test_record_article_lineage_never_raises_with_no_table_at_all(monkeypatch):
+    st.record_article_lineage(_lineage(calls=[_call()], cost_aud=1.0))
+
+
+def test_record_article_lineage_does_not_disturb_other_categories(table):
+    _put_model()
+    with patch("common.stats_tracking.invoke_model_tracked", return_value=_tracked_result()):
+        st.tracked_claude("musings", "p", "model-a")
+    st.record_article_lineage(_lineage(calls=[_call(input_tokens=1, output_tokens=1)], cost_aud=0.01))
+
+    row = _row(table)
+    assert row["musings_calls"] == 1
+    assert row["articles_calls"] == 1
+
+
+# --- split_for_rollover: additive counters vs. the API Gateway snapshot ------------------------
+
+
+def test_split_for_rollover_separates_the_api_gateway_snapshot_from_everything_else():
+    row = {
+        "stats_id": "current",
+        "week_start": "2026-09-15",
+        "musings_calls": 3,
+        "articles_cost_aud": Decimal("4.0"),
+        "feedback_given": 2,
+        st.API_GATEWAY_COST_USD_30D: Decimal("1.5"),
+        st.API_GATEWAY_COST_AUD_30D: Decimal("2.25"),
+        st.API_GATEWAY_COST_AS_OF: "2026-09-14T00:00:00+00:00",
+    }
+
+    additive, snapshot = st.split_for_rollover(row)
+
+    assert additive == {"musings_calls": 3, "articles_cost_aud": Decimal("4.0"), "feedback_given": 2}
+    assert snapshot == {
+        st.API_GATEWAY_COST_USD_30D: Decimal("1.5"),
+        st.API_GATEWAY_COST_AUD_30D: Decimal("2.25"),
+        st.API_GATEWAY_COST_AS_OF: "2026-09-14T00:00:00+00:00",
+    }
+
+
+def test_split_for_rollover_drops_metadata_fields_from_both_halves():
+    additive, snapshot = st.split_for_rollover(
+        {"stats_id": "current", "week_start": "2026-09-15", "rolled_over_at": "x", "loot_drops": 1}
+    )
+
+    assert additive == {"loot_drops": 1}
+    assert snapshot == {}
+
+
+# --- public_view: shaping a row for the public Stats page --------------------------------------
+
+
+def test_public_view_shapes_one_entry_per_category():
+    row = {
+        "musings_calls": 2,
+        "musings_input_tokens": 20,
+        "musings_output_tokens": 10,
+        "musings_cost_aud": Decimal("0.5"),
+        "articles_calls": 5,
+        "articles_cost_aud": Decimal("12.34"),
+    }
+
+    view = st.public_view(row)
+
+    by_category = {c["category"]: c for c in view["categories"]}
+    assert by_category["musings"] == {
+        "category": "musings",
+        "calls": 2,
+        "input_tokens": 20,
+        "output_tokens": 10,
+        "cost_aud": 0.5,
+        "unpriced": 0,
+    }
+    assert by_category["articles"]["calls"] == 5
+    assert by_category["articles"]["cost_aud"] == 12.34
+    # every category from BEDROCK_CATEGORIES plus "articles" appears even with nothing recorded
+    assert set(by_category) == {*st.BEDROCK_CATEGORIES, "articles"}
+
+
+def test_public_view_uses_the_articles_specific_unpriced_key():
+    row = {"articles_unpriced_articles": 2, "musings_unpriced_calls": 3}
+
+    view = st.public_view(row)
+
+    by_category = {c["category"]: c for c in view["categories"]}
+    assert by_category["articles"]["unpriced"] == 2
+    assert by_category["musings"]["unpriced"] == 3
+
+
+def test_public_view_totals_pipeline_hours_across_every_lambda_function():
+    row = {
+        "lambda_ms_research_tick": 3_600_000,  # 1 hour
+        "lambda_ms_daily_cycle": 1_800_000,  # 30 minutes
+    }
+
+    assert st.public_view(row)["pipeline_hours"] == 1.5
+
+
+def test_public_view_converts_api_gateway_cost_but_never_exposes_as_of():
+    row = {
+        st.API_GATEWAY_COST_USD_30D: Decimal("2.5"),
+        st.API_GATEWAY_COST_AUD_30D: Decimal("3.75"),
+        st.API_GATEWAY_COST_AS_OF: "2026-09-22T00:00:00+00:00",
+    }
+
+    view = st.public_view(row)
+
+    assert view["api_gateway_cost_usd_30d"] == 2.5
+    assert view["api_gateway_cost_aud_30d"] == 3.75
+    assert "api_gateway_cost_as_of" not in view
+    assert "api_gateway_cost_as_of" not in str(view)  # not tucked away under another key either
+
+
+# --- plan_articles_backfill / to_stats_updates: the one-time catch-up (PR 5) --------------------
+
+
+def test_plan_articles_backfill_sums_several_articles_into_one_totals_dict():
+    lineage_1 = _lineage(calls=[_call(input_tokens=1000, output_tokens=500)], cost_aud=3.0)
+    lineage_2 = _lineage(calls=[_call(input_tokens=200, output_tokens=100)], cost_aud=1.0)
+    articles = [
+        {"article_id": "a1", "lineage": lineage_1},
+        {"article_id": "a2", "lineage": lineage_2},
+    ]
+
+    plan = st.plan_articles_backfill(articles)
+
+    assert (plan["examined"], plan["included"]) == (2, 2)
+    assert plan["totals"]["articles_calls"] == 2
+    assert plan["totals"]["articles_input_tokens"] == 1200
+    assert plan["totals"]["articles_cost_aud"] == pytest.approx(4.0)
+
+
+def test_plan_articles_backfill_skips_articles_with_no_lineage_or_no_calls():
+    articles = [
+        {"article_id": "a1", "lineage": None},
+        {"article_id": "a2"},  # no "lineage" key at all
+        {"article_id": "a3", "lineage": _lineage(calls=[])},
+    ]
+
+    plan = st.plan_articles_backfill(articles)
+
+    assert (plan["examined"], plan["included"]) == (3, 0)
+    assert plan["totals"] == {}
+
+
+def test_plan_articles_backfill_counts_unpriced_articles_separately_from_priced_ones():
+    articles = [
+        {"article_id": "a1", "lineage": _lineage(calls=[_call()], cost_aud=1.0)},
+        {"article_id": "a2", "lineage": _lineage(calls=[_call()], cost_aud=None)},
+    ]
+
+    plan = st.plan_articles_backfill(articles)
+
+    assert plan["totals"]["articles_cost_aud"] == pytest.approx(1.0)  # only the priced one
+    assert plan["totals"]["articles_unpriced_articles"] == 1
+
+
+def test_to_stats_updates_wraps_only_the_float_in_decimal():
+    updates = st.to_stats_updates({"articles_calls": 3, "articles_cost_aud": 4.5})
+
+    assert updates == {"articles_calls": 3, "articles_cost_aud": Decimal("4.5")}
+    assert isinstance(updates["articles_calls"], int)
+    assert isinstance(updates["articles_cost_aud"], Decimal)
+
+
+def test_public_view_on_an_entirely_empty_row_is_all_zeros_and_nones():
+    view = st.public_view({"week_start": "all-time"})
+
+    assert view["feedback_given"] == 0
+    assert view["feedback_rejected_comment"] == 0
+    assert view["loot_drops"] == 0
+    assert view["pipeline_hours"] == 0
+    assert view["api_gateway_cost_usd_30d"] is None
+    assert view["api_gateway_cost_aud_30d"] is None
+    assert all(c["cost_aud"] is None and c["calls"] == 0 for c in view["categories"])

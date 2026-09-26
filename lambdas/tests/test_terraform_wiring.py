@@ -109,6 +109,16 @@ def test_the_module_stops_at_plan_time_with_a_plain_message_if_the_zone_is_missi
     assert "docs/production-runsheet.md" in module
 
 
+def test_the_distribution_compresses_text_responses():
+    """Confirmed missing against the real site (every static asset came back uncompressed
+    despite Accept-Encoding: gzip, br) -- compress is off by default on this resource, so it has
+    to be set, not just left alone."""
+    module = _read("modules", "static-site", "main.tf")
+    behavior = re.search(r"default_cache_behavior \{(.*?)\n  \}", module, re.S).group(1)
+
+    assert re.search(r"^\s*compress\s*=\s*true\s*$", behavior, re.M)
+
+
 def test_the_certificate_and_the_distribution_both_cover_www():
     module = _read("modules", "static-site", "main.tf")
 
@@ -151,6 +161,46 @@ def test_the_content_bucket_is_versioned_and_old_versions_expire():
     assert 'resource "aws_s3_bucket_versioning" "content"' in production
     assert "noncurrent_days = 30" in production
     assert "depends_on = [aws_s3_bucket_versioning.content]" in production
+
+
+# --- Cleanup PR: snapshots expire, TTLs were added, log retention was set ---------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env):
+    """21 days, not the Findings table's own 14-day FINDING_TTL_DAYS -- a safety margin over how
+    long a DynamoDB TTL deletion can lag past a Finding's actual expiry, so a live Finding's
+    raw_snapshot_s3_key is never left pointing at an already-deleted object."""
+    text = _read("environments", env, "main.tf")
+    start = re.search(r'id\s*=\s*"expire-old-snapshots"', text).start()
+    rule = text[start : start + 400]
+
+    assert 'prefix = "snapshots/"' in rule
+    assert "days = 21" in rule
+
+
+def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
+    """Findings and ModelConfig already had one; CandidateIdeas, ModerationQueue,
+    PromptRefinements and FailedExecutions are the four this PR adds."""
+    tables = _read("modules", "app-data", "main.tf")
+
+    assert tables.count('attribute_name = "expires_at"') == 6
+    assert tables.count("ttl {") == 6
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
+    """One for_each block, reusing the same function_name list module.observability's
+    lambda_function_names already uses, not one resource (or one list) per function -- see
+    that resource's own comment on why."""
+    text = _read("environments", env, "main.tf")
+
+    assert text.count("retention_in_days = 90") == 1
+    assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
+    assert "for_each          = toset(local.pipeline_lambda_function_names)" in text
+    function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
+    assert len(function_names) == 10  # named once each, in the one list both resources share
+    assert len(set(function_names)) == 10
 
 
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
@@ -264,6 +314,11 @@ def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env)
     found = 0
     for match in re.finditer(r'^resource "aws_cloudwatch_log_group" "[^"]+" \{\n(.*?)^\}', text, re.S | re.M):
         body = match.group(1)
+        if "for_each" in body:
+            # aws_cloudwatch_log_group.lambda (Cleanup PR): named "/aws/lambda/${each.value}" --
+            # a for_each this static-analysis loop can't resolve to a literal name. Checked
+            # properly instead by test_every_pipeline_lambdas_function_name_is_covered_too below.
+            continue
         region = (
             "us-east-1" if re.search(r"^\s*provider\s*=\s*aws\.us_east_1", body, re.M) else "ap-southeast-2"
         )
@@ -276,6 +331,20 @@ def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env)
     assert found >= 2
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_pipeline_lambdas_function_name_is_covered_too(env):
+    """The other half of the skip above: aws_cloudwatch_log_group.lambda's for_each can't be
+    resolved to a literal name by regex, so this checks the thing that actually decides whether
+    the deploy role can create it -- every function_name feeding that for_each really does start
+    with "bloggerbear-", which is exactly what infra/bootstrap/main.tf's LambdaLogGroups
+    statement (/aws/lambda/bloggerbear-*) covers."""
+    text = _read("environments", env, "main.tf")
+
+    names = re.findall(r'function_name\s*=\s*"([^"]+)"', text)
+    assert len(names) >= 10
+    assert all(name.startswith("bloggerbear-") for name in names)
+
+
 def test_the_shared_cloudfront_waf_log_group_really_is_in_us_east_1():
     production = _read("environments", "production", "main.tf")
     block = re.search(
@@ -284,3 +353,27 @@ def test_the_shared_cloudfront_waf_log_group_really_is_in_us_east_1():
 
     assert "provider = aws.us_east_1" in block
     assert ("us-east-1", "aws-waf-logs-bloggerbear-*") in _deploy_policy_log_group_patterns()
+
+
+# --- the frontend deploys from a minified build, not frontend/ itself -------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_frontend_deploys_from_the_minified_build_directory(env):
+    """frontend_dir has to point at frontend-dist/ (scripts/minify_frontend.py's output), not
+    frontend/ itself, or the deploy ships the unminified source -- see that local's own comment
+    on why, and CI's "Minify frontend assets" step (terraform.yml/terraform-production-release.yml)
+    for where frontend-dist/ actually gets built before apply."""
+    text = _read("environments", env, "main.tf")
+
+    assert 'frontend_dir = "${path.module}/../../../frontend-dist"' in text
+
+
+@pytest.mark.parametrize("workflow", ["terraform.yml", "terraform-production-release.yml"])
+def test_every_apply_workflow_minifies_the_frontend_first(workflow):
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+    assert "python scripts/minify_frontend.py" in text
+    minify_step = text.index("- name: Minify frontend assets")
+    apply_step = text.index("- name: Terraform apply")
+    assert minify_step < apply_step

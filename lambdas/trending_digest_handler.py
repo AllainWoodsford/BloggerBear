@@ -71,6 +71,7 @@ from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
+from common.stats_tracking import record_article_lineage
 
 DIGEST_LOOKBACK_HOURS = 48
 
@@ -162,6 +163,7 @@ def _run_trending_digest() -> dict:
     # same pattern as daily_cycle_handler.py's own lineage assembly.
     calls = [call for call in (synthesis_call, review["lineage_call"]) if call is not None]
     lineage = build_lineage(calls)
+    record_article_lineage(lineage)
 
     return _publish_or_moderate_digest(
         article_id=article_id,

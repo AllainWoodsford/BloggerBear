@@ -87,6 +87,14 @@ resource "aws_dynamodb_table" "candidate_ideas" {
     name = "created_at"
     type = "S"
   }
+
+  # Cleanup PR: a pure operational list (the pipeline's own ideation scratchpad, superseded by
+  # each topic's next research cycle) -- nothing aggregates it across history, so it expires via
+  # TTL once common/dynamo.py's put_candidate_idea sets expires_at on write, same as Findings.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
 }
 
 resource "aws_dynamodb_table" "articles" {
@@ -125,6 +133,17 @@ resource "aws_dynamodb_table" "moderation_queue" {
     name = "queue_id"
     type = "S"
   }
+
+  # Cleanup PR: common/dynamo.py's update_moderation_status sets expires_at only when an item
+  # is rejected (never on approve/pending), so a rejected item self-clears via TTL and a pending
+  # or approved one never does. Flagged as a real trade-off, not a free cleanup, in the PR that
+  # added this: admin_api_handler.py's _moderation_queue_stats reads rejected items' reasons
+  # "across all history" to inform compliance-prompt iteration -- that history will only reach
+  # back as far as this TTL window from here on. See that function's own updated docstring.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
 }
 
 # Phase 5: reader feedback (thumbs up/down + optional comment) on published
@@ -160,8 +179,9 @@ resource "aws_dynamodb_table" "feedback" {
 
 # Phase 5: versioned per-topic prompt refinements the weekly reflection job
 # writes after analyzing a topic's recent feedback -- each write is a new
-# version rather than an overwrite, so history is preserved. No TTL --
-# refinement history is meant to persist, not expire.
+# version rather than an overwrite, so history is preserved. An approved or
+# equipped version is meant to persist, not expire -- see the ttl block
+# below for what changed in the Cleanup PR.
 resource "aws_dynamodb_table" "prompt_refinements" {
   name         = "bloggerbear-${var.environment_name}-prompt-refinements"
   billing_mode = "PAY_PER_REQUEST"
@@ -185,12 +205,25 @@ resource "aws_dynamodb_table" "prompt_refinements" {
     name = "version"
     type = "S"
   }
+
+  # Cleanup PR: common/dynamo.py's update_prompt_refinement_status sets expires_at only when a
+  # version is rejected, never on approve/equip, so a rejected version self-clears via TTL while
+  # real, adopted history persists exactly as before. Nothing reads a rejected version back
+  # historically, unlike moderation_queue's rejected items above -- safe with no follow-on effect.
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
 }
 
 # Admin-visibility record of daily_cycle Step Functions executions that
 # exhausted their retries and landed on pipeline_dlq -- one item per
-# dlq_handler.py invocation (see lambdas/dlq_handler.py). No TTL -- these
-# are meant to persist for later review, not expire like Findings.
+# dlq_handler.py invocation (see lambdas/dlq_handler.py). Originally kept
+# without a TTL ("meant to persist for later review, not expire like
+# Findings") -- the Cleanup PR revisits that: nothing aggregates these
+# across history the way _moderation_queue_stats does for
+# ModerationQueue, so a bounded operational window is safe here, same as
+# CandidateIdeas above.
 resource "aws_dynamodb_table" "failed_executions" {
   name         = "bloggerbear-${var.environment_name}-failed-executions"
   billing_mode = "PAY_PER_REQUEST"
@@ -207,6 +240,11 @@ resource "aws_dynamodb_table" "failed_executions" {
   attribute {
     name = "failure_id"
     type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
   }
 }
 
