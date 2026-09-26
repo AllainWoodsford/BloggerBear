@@ -125,8 +125,10 @@
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
     });
-    // No topics (yet): no empty "Topics" label either.
-    topicsNavEl.hidden = navTopics.length === 0;
+    // No topics (yet): no empty "Topics" label either. A class, not the `hidden` attribute --
+    // this row's space is reserved from first paint (see styles.css), so revealing it here never
+    // moves #content/the footer the way toggling `hidden` after the fact used to.
+    topicsNavEl.classList.toggle("is-visible", navTopics.length > 0);
   }
 
   function loadNav() {
@@ -137,7 +139,7 @@
       .catch(function () {
         // Nav failing to load shouldn't block the rest of the page.
         clearChildren(navEl);
-        topicsNavEl.hidden = true;
+        topicsNavEl.classList.remove("is-visible");
       });
   }
 
@@ -276,6 +278,19 @@
     return costNote || "No data";
   }
 
+  // The cost figure for the compact one-line summary: the article's total cost (authoring +
+  // research) when a research tally exists, since that -- not the authoring-only costAud -- is
+  // what a reader means by "the cost" of the article. Mirrors common/static_pages.py's
+  // _summary_cost_label exactly, including checking hasResearch itself rather than just whether
+  // totalCostAud is a number: a research tally that couldn't be priced still means there IS a
+  // real, larger cost than costAud alone, so this says "No data" rather than understating it.
+  function summaryCostLabel(hasResearch, costAud, costNote, totalCostAud) {
+    if (hasResearch) {
+      return typeof totalCostAud === "number" ? "~$" + totalCostAud.toFixed(2) + " AUD" : "No data";
+    }
+    return costLabel(costAud, costNote);
+  }
+
   // "model: X in / Y out" per model actually used, summed across every call
   // that used it (an article can span more than one model, e.g. a fallback
   // kicking in partway through).
@@ -306,14 +321,17 @@
   // (totals, not per-call -- see public_api_handler.py's _list_articles), so
   // `tokensText` is passed in by whichever caller has the right level of
   // detail rather than computed here.
-  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costAud, costNote, hasLineage, modelLabels) {
+  function lineageSummaryText(modelsUsed, tokensText, publishedBy, costArgs, hasLineage, modelLabels) {
     if (!hasLineage && (publishedBy === null || publishedBy === undefined)) {
       return "No data";
     }
     var models = modelsUsed && modelsUsed.length > 0 ? modelNames(modelsUsed, modelLabels).join(", ") : "no data";
+    var costText = hasLineage
+      ? summaryCostLabel(costArgs.hasResearch, costArgs.costAud, costArgs.costNote, costArgs.totalCostAud)
+      : "No data";
     return (
       "models [" + models + "] · tokens [" + tokensText + "] · approved by " +
-      publishedByLabel(publishedBy) + " · " + (hasLineage ? costLabel(costAud, costNote) : "No data")
+      publishedByLabel(publishedBy) + " · " + costText
     );
   }
 
@@ -324,8 +342,12 @@
       hasLineage ? lineage.models_used : null,
       hasLineage ? perModelTokenText(lineage) : "no data",
       article.published_by,
-      hasLineage ? lineage.cost_aud : null,
-      hasLineage ? lineage.cost_note : null,
+      {
+        hasResearch: hasLineage && lineage.research !== null && lineage.research !== undefined,
+        costAud: hasLineage ? lineage.cost_aud : null,
+        costNote: hasLineage ? lineage.cost_note : null,
+        totalCostAud: hasLineage ? lineage.total_cost_aud : null,
+      },
       hasLineage,
       hasLineage ? lineage.model_labels : null
     );
@@ -341,8 +363,12 @@
       article.models_used,
       tokensText,
       article.published_by,
-      article.cost_aud,
-      article.cost_note,
+      {
+        hasResearch: !!article.has_research,
+        costAud: article.cost_aud,
+        costNote: article.cost_note,
+        totalCostAud: article.total_cost_aud,
+      },
       hasLineage,
       article.model_labels
     );
@@ -381,6 +407,58 @@
     ).forEach(function (row) {
       list.appendChild(el("dt", { text: row[0] }));
       list.appendChild(el("dd", { text: row[1] }));
+    });
+    footer.appendChild(list);
+    return footer;
+  }
+
+  // The noun shown for each slot -- mirrors common/static_pages.py's own
+  // _EQUIPMENT_SLOT_LABELS, kept as a separate small copy rather than reusing
+  // gear.js's SLOT_LABELS: that one only covers what can be *worn* (armor +
+  // ring, for the Stats page's doll), not "legacy" (guidance not tied to a
+  // worn slot), which equipment_used can carry too.
+  var _EQUIPMENT_SLOT_LABELS = {
+    helmet: "Helmet",
+    chest: "Chest",
+    gloves: "Gloves",
+    boots: "Boots",
+    sword: "Sword",
+    shield: "Shield",
+    ring: "Ring",
+    legacy: "Guidance",
+  };
+
+  // Mirrors common/static_pages.py's server-rendered "Equipment used" record (same CSS classes,
+  // same plain text -- no icons, no script, no live check). Returns null when the article used no
+  // gear, unlike renderLineageFooter (always shown, even as "No data") -- most articles, and every
+  // one from before this feature, simply have nothing here, and that's not a gap worth calling out
+  // (see static_pages.py's own _render_equipment_footer_html comment).
+  function renderEquipmentFooter(equipmentUsed) {
+    if (!equipmentUsed || equipmentUsed.length === 0) {
+      return null;
+    }
+    var footer = el("footer", { className: "equipment-footer", attrs: { "aria-label": "Equipment used" } });
+    footer.appendChild(el("h2", { text: "Equipment used" }));
+    var list = el("ul", { className: "equipment-list" });
+    equipmentUsed.forEach(function (piece) {
+      var rarity = (piece && piece.rarity) || "common";
+      var rarityLabel = BloggerGear.RARITY_LABELS[rarity] || "Common";
+      var slotLabel = _EQUIPMENT_SLOT_LABELS[piece && piece.slot] || "Gear";
+      var appliesTo = (piece && piece.topic_name) || "Every topic";
+      var item = el("li", { className: "equipment-item rarity-" + rarity });
+      item.appendChild(
+        el("p", { className: "equipment-name", text: (piece && piece.name) || "Unnamed gear" })
+      );
+      item.appendChild(
+        el("p", {
+          className: "equipment-meta",
+          text: rarityLabel + " · " + slotLabel + " · " + appliesTo,
+        })
+      );
+      if (piece && piece.description) {
+        item.appendChild(el("p", { className: "equipment-desc", text: piece.description }));
+      }
+      list.appendChild(item);
     });
     footer.appendChild(list);
     return footer;
@@ -1567,7 +1645,16 @@
       contentEl.appendChild(sourcesSection);
     }
 
-    contentEl.appendChild(renderLineageFooter(article.lineage, article.published_by, article.fact_check));
+    // Side by side on a wide screen, the equipment record flexing below lineage on a narrow one
+    // (see styles.css's own comment on .article-footers) -- same wrapper common/static_pages.py's
+    // static article page already uses for the two footers, just built as DOM nodes here.
+    var footers = el("div", { className: "article-footers" });
+    footers.appendChild(renderLineageFooter(article.lineage, article.published_by, article.fact_check));
+    var equipmentFooter = renderEquipmentFooter(article.equipment_used);
+    if (equipmentFooter) {
+      footers.appendChild(equipmentFooter);
+    }
+    contentEl.appendChild(footers);
     contentEl.appendChild(renderFeedback(article.article_id));
   }
 
@@ -2023,6 +2110,13 @@
   // infrastructure security logging this site does do. Shown once per
   // browser; dismissal is remembered in localStorage, the one and only
   // thing this site stores client-side (see the Privacy Policy, §6).
+  //
+  // Initial visibility is notice.js's job now, not this one's -- it runs
+  // the instant the element exists in the DOM, before first paint, which
+  // is what actually fixed the layout shift this used to cause by
+  // toggling `hidden` this late (DOMContentLoaded, after the whole script
+  // chain). This only wires the dismiss button, which is fine to leave
+  // until here: nothing shifts in response to a user's own click.
   var SITE_NOTICE_DISMISSED_KEY = "bloggerbear-site-notice-dismissed";
 
   function initSiteNotice() {
@@ -2030,19 +2124,6 @@
     var dismissButton = document.getElementById("site-notice-dismiss");
     if (!notice || !dismissButton) {
       return;
-    }
-
-    var alreadyDismissed = false;
-    try {
-      alreadyDismissed = window.localStorage.getItem(SITE_NOTICE_DISMISSED_KEY) === "1";
-    } catch (err) {
-      // Private browsing / storage disabled -- fall back to showing the
-      // notice every visit rather than breaking the page.
-      alreadyDismissed = false;
-    }
-
-    if (!alreadyDismissed) {
-      notice.hidden = false;
     }
 
     dismissButton.addEventListener("click", function () {

@@ -301,6 +301,49 @@ def test_the_summary_line_uses_model_names():
     assert "models [Claude Haiku 4.5]" in line and "Claude Haiku 4.5: 1,000 in / 1,000 out" in line
 
 
+def test_the_summary_line_shows_the_articles_total_cost_not_just_the_authoring_cost():
+    """A real production report: the summary line showed ~$0.09 (the authoring-only cost_aud)
+    for an article whose research made its true total noticeably higher -- readers have no way
+    to know that figure excludes research, so it read as the whole cost when it wasn't."""
+    research = costing.summarise_research(
+        [{"stage": "research", "model_id": PROFILE, "input_tokens": 20000, "output_tokens": 4000}],
+        findings=1,
+        untracked=0,
+    )
+    lineage = costing.build_lineage([_call(ARN, input_tokens=10000, output_tokens=10000)], research=research)
+    # Well apart, not a rounding fluke.
+    assert lineage["cost_aud"] == pytest.approx(0.09)
+    assert lineage["total_cost_aud"] == pytest.approx(0.15)
+
+    line = static_pages._render_lineage_summary_line_html(lineage, "ai_only")
+
+    assert "~$0.15 AUD" in line
+    assert "~$0.09 AUD" not in line
+
+
+def test_the_summary_line_says_no_data_rather_than_understate_an_unpriced_total():
+    research = costing.build_research_lineage([_research_finding()])
+    research["cost_aud"] = None  # simulate a research model that couldn't be priced
+    lineage = costing.build_lineage([_call(ARN)], research=research)
+    assert lineage["total_cost_aud"] is None and lineage["cost_aud"] is not None
+
+    line = static_pages._render_lineage_summary_line_html(lineage, "ai_only")
+
+    assert "No data" in line
+    assert f"~${lineage['cost_aud']:.2f} AUD" not in line  # never falls back to the partial figure
+
+
+def test_the_summary_line_shows_the_only_cost_figure_when_there_is_no_research_tally_at_all():
+    """trending_digest_handler.py's cross-topic synthesis never tallies research separately --
+    cost_aud there already *is* the whole cost, so the summary line should still show it."""
+    lineage = costing.build_lineage([_call(ARN)])
+    assert "research" not in lineage
+
+    line = static_pages._render_lineage_summary_line_html(lineage, "ai_only")
+
+    assert f"~${lineage['cost_aud']:.2f} AUD" in line
+
+
 # --- admin: audit and backfill ----------------------------------------------------------------
 
 

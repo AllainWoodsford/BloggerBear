@@ -88,6 +88,30 @@ def _no_recent_titles_by_default():
         yield mock_titles
 
 
+@pytest.fixture(autouse=True)
+def _no_prior_armor_by_default():
+    """The armor drawn for the previous article (read so the next draw can avoid repeating it)
+    -- empty by default, a real ModelConfig read/write otherwise. Tests of that feature itself
+    override this."""
+    with (
+        patch("daily_cycle_handler.get_last_armor_versions", return_value=[]) as mock_get,
+        patch("daily_cycle_handler.set_last_armor_versions") as mock_set,
+    ):
+        yield mock_get, mock_set
+
+
+@pytest.fixture(autouse=True)
+def _no_rotation_pool_by_default():
+    """The shared model-rotation pool (read after a publish to roll the topic's model_id
+    forward) -- unconfigured by default, a real ModelConfig read/Topics write otherwise.
+    Tests of that feature itself override this."""
+    with (
+        patch("daily_cycle_handler.get_model_rotation_candidates", return_value=[]) as mock_get,
+        patch("daily_cycle_handler.set_topic_model_id") as mock_set,
+    ):
+        yield mock_get, mock_set
+
+
 @pytest.fixture
 def s3_bucket():
     with mock_aws():
@@ -883,6 +907,130 @@ def test_a_legacy_approval_is_still_injected_and_recorded_as_legacy(s3_bucket):
     assert article["equipment_used"] == [
         {"topic_id": "github-trending", "version": "2026-08-01", "slot": "legacy"}
     ]
+
+
+# --- the armor draw avoids repeating the previous article's exact combination --------------
+
+
+def test_the_last_armor_drawn_is_read_and_passed_to_the_pick(s3_bucket, _no_prior_armor_by_default):
+    mock_get, _ = _no_prior_armor_by_default
+    mock_get.return_value = ["2026-09-01"]
+    gear = [_gear("t", "2026-09-01", "helmet", "global", "Keep it short.")]
+
+    real_guidance_for = daily_cycle_handler.equipment.guidance_for
+    with patch("daily_cycle_handler.equipment.guidance_for", wraps=real_guidance_for) as spy:
+        _run_with_gear(s3_bucket, gear)
+
+    assert spy.call_args.kwargs["avoid_armor_versions"] == {"2026-09-01"}
+
+
+def test_the_armor_actually_used_is_recorded_for_next_time_ring_and_legacy_excluded(
+    s3_bucket, _no_prior_armor_by_default
+):
+    _, mock_set = _no_prior_armor_by_default
+    gear = [
+        _gear("t", "2026-09-01", "helmet", "global", "Keep it short."),
+        _gear("github-trending", "2026-09-02", "ring", "topic", "Name the repository."),
+    ]
+
+    with patch("daily_cycle_handler.equipment.pick_armor", return_value=[gear[0]]):
+        _run_with_gear(s3_bucket, gear)
+
+    mock_set.assert_called_once_with(["2026-09-01"])  # the helmet, not the ring
+
+
+def test_recording_the_armor_drawn_never_fails_the_run(s3_bucket, _no_prior_armor_by_default):
+    _, mock_set = _no_prior_armor_by_default
+    mock_set.side_effect = RuntimeError("dynamo is down")
+
+    _, _, article = _run_with_gear(s3_bucket, [])
+
+    assert article["equipment_used"] == []
+
+
+def test_a_broken_read_of_the_last_armor_drawn_is_treated_as_no_history(
+    s3_bucket, _no_prior_armor_by_default
+):
+    mock_get, _ = _no_prior_armor_by_default
+    mock_get.side_effect = RuntimeError("dynamo is down")
+    gear = [_gear("t", "2026-09-01", "helmet", "global", "Keep it short.")]
+
+    real_guidance_for = daily_cycle_handler.equipment.guidance_for
+    with patch("daily_cycle_handler.equipment.guidance_for", wraps=real_guidance_for) as spy:
+        _run_with_gear(s3_bucket, gear)
+
+    assert spy.call_args.kwargs["avoid_armor_versions"] == set()
+
+
+# --- a published article rolls the topic's model forward from the shared rotation pool ----
+
+
+def test_no_rotation_pool_configured_rolls_nothing_forward(s3_bucket, _no_rotation_pool_by_default):
+    _, mock_set = _no_rotation_pool_by_default
+
+    result, _ = _run_a_full_cycle(compliant=True)
+
+    assert result["status"] == "published"
+    mock_set.assert_not_called()
+
+
+def test_publishing_rolls_the_topic_to_a_random_pick_from_the_pool(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.return_value = ["model-a", "model-b"]
+
+    with patch("daily_cycle_handler.random.choice", return_value="model-b") as mock_choice:
+        result, _ = _run_a_full_cycle(compliant=True)
+
+    assert result["status"] == "published"
+    mock_choice.assert_called_once_with(["model-a", "model-b"])
+    mock_set.assert_called_once_with("github-trending", "model-b")
+
+
+def test_being_held_for_moderation_never_rolls_the_model_forward(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.return_value = ["model-a", "model-b"]
+
+    result, _ = _run_a_full_cycle(compliant=False)
+
+    assert result["status"] == "pending_moderation"
+    mock_set.assert_not_called()
+
+
+def test_a_broken_rotation_pool_read_or_write_never_fails_a_publish(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.side_effect = RuntimeError("dynamo is down")
+
+    result, _ = _run_a_full_cycle(compliant=True)
+    assert result["status"] == "published"
+
+    mock_get.side_effect = None
+    mock_get.return_value = ["model-a"]
+    mock_set.side_effect = RuntimeError("dynamo is down")
+
+    result, _ = _run_a_full_cycle(compliant=True)
+    assert result["status"] == "published"
+
+
+def test_a_topics_own_model_id_candidates_are_never_touched_by_rotation(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    """set_topic_model_id only ever writes model_id (see common/dynamo.py) -- this just checks
+    that rotation doesn't read or otherwise concern itself with a topic's own candidates list;
+    common/model_routing.py's own precedence is what actually keeps that list in charge."""
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.return_value = ["model-a"]
+    topic_with_candidates = {**NON_FINANCIAL_TOPIC, "model_id_candidates": ["x", "y"]}
+
+    result, _ = _run_a_full_cycle(compliant=True, topic=topic_with_candidates)
+
+    assert result["status"] == "published"
+    mock_set.assert_called_once_with("github-trending", "model-a")
 
 
 def test_top_voted_article_excerpt_appended_to_draft_prompt_only(s3_bucket):

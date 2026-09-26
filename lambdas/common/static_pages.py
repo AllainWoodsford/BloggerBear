@@ -119,6 +119,24 @@ def _format_cost_label(lineage: dict) -> str:
     return lineage.get("cost_note") or "No data"
 
 
+def _summary_cost_label(lineage: dict) -> str:
+    """The cost figure for the compact one-line summary: the article's total cost (authoring +
+    research, common/costing.py's build_lineage) when a research tally exists, since that -- not
+    the authoring-only cost_aud -- is what a reader means by "the cost" of the article. Checked
+    via the "research" key itself, not just total_cost_aud being present: a research tally that
+    couldn't be priced still means there IS a real, larger cost than cost_aud alone, so this says
+    "No data" rather than silently understating it by falling back to the authoring figure.
+
+    Falls back to the plain cost label when there's no research tally at all (e.g.
+    trending_digest_handler.py's cross-topic synthesis, which was never split into research vs.
+    authoring in the first place) -- cost_aud there already *is* the whole cost.
+    """
+    if "research" in lineage:
+        total = lineage.get("total_cost_aud")
+        return f"~${total:.2f} AUD" if total is not None else "No data"
+    return _format_cost_label(lineage)
+
+
 def _model_name(lineage: dict, model_id: str) -> str:
     """A model's readable name (recorded in the lineage at build time), else its id."""
     return (lineage.get("model_labels") or {}).get(model_id) or model_id
@@ -182,7 +200,7 @@ def _render_lineage_summary_line_html(lineage: dict | None, published_by: str | 
         ", ".join(_model_name(lineage or {}, m) for m in models_used) if models_used else "no data"
     )
     tokens_text = _per_model_token_breakdown_text(lineage) if lineage is not None else "no data"
-    cost_text = _format_cost_label(lineage) if lineage is not None else "No data"
+    cost_text = _summary_cost_label(lineage) if lineage is not None else "No data"
     approved_text = _published_by_label(published_by)
 
     return escape(
@@ -261,12 +279,19 @@ _EQUIPMENT_SLOT_LABELS = {
 }
 
 
-def _equipment_snapshot(equipment_used: list[dict] | None) -> list[dict]:
+def equipment_snapshot(equipment_used: list[dict] | None) -> list[dict]:
     """The gear `equipment_used` names, as it is right now -- read once, here, so the caller can
     bake it into the page and never ask again. A piece that no longer exists (deleted before this
     page was ever rendered) is left out; there is nothing left to describe. Each piece appears
     once even if it is listed more than once (e.g. two armor pieces cited by the same version by
-    mistake never happens, but a defensive de-dupe costs nothing)."""
+    mistake never happens, but a defensive de-dupe costs nothing).
+
+    Public (not `_`-prefixed): also called live, per request, by public_api_handler.py's
+    `_get_article_detail` for the SPA's own article view -- unlike the static page below, which
+    calls this once and bakes the result into HTML that then sits in S3/CloudFront until the page
+    is re-rendered, the SPA re-fetches an article's JSON on every visit anyway, so showing today's
+    actual gear state there (rather than a frozen historical snapshot) is consistent with
+    everything else it already shows live (view count, feedback, ...)."""
     if not equipment_used:
         return []
     topic_names: dict[str, str] = {}
@@ -441,7 +466,7 @@ def render_and_publish_article_page(
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
-    equipment_footer_html = _render_equipment_footer_html(_equipment_snapshot(equipment_used))
+    equipment_footer_html = _render_equipment_footer_html(equipment_snapshot(equipment_used))
     footers_html = f'<div class="article-footers">{lineage_footer_html}{equipment_footer_html}</div>'
     site_sections_html = _site_sections_links_html()
     footer_sections_html = _site_sections_links_html(paws=True)
@@ -453,8 +478,13 @@ def render_and_publish_article_page(
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>{escape(title)} -- BloggerBear</title>
+<link rel="preload" href="/normalize.css" as="style" data-swap />
+<link rel="preload" href="/styles.css" as="style" data-swap />
+<script src="/preload-styles.js"></script>
+<noscript>
 <link rel="stylesheet" href="/normalize.css" />
 <link rel="stylesheet" href="/styles.css" />
+</noscript>
 <link rel="icon" href="/logo.svg" type="image/svg+xml" />
 </head>
 <body>

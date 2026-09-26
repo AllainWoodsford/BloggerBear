@@ -350,6 +350,22 @@ def set_topic_last_article_at(topic_id: str, timestamp: str) -> None:
     )
 
 
+def set_topic_model_id(topic_id: str, model_id: str) -> None:
+    """Set only a Topic's `model_id`, leaving `model_id_candidates` and every other
+    attribute alone (see daily_cycle_handler.py's _assign_rotated_model -- a topic
+    with its own `model_id_candidates` still wins every resolve_model call regardless
+    of what this writes; common/model_routing.py's precedence is untouched by this).
+    Fails rather than creating a Topic that no longer exists.
+    """
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET model_id = :m",
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeValues={":m": model_id},
+    )
+
+
 def delete_topic(topic_id: str) -> None:
     """Delete a Topic item by `topic_id`."""
     table = get_table(os.environ["TOPICS_TABLE"])
@@ -1186,6 +1202,50 @@ def put_pipeline_config(
         )
     return get_pipeline_config() or {"config_id": _PIPELINE_CONFIG_ID}
 
+
+# A third row in the same table: the armor piece versions the bear brought to its most recently
+# drafted article (any topic -- armor is global, see common/equipment.py's SCOPE_GLOBAL). Read
+# and rewritten every time common.equipment.pick_armor draws again, so that draw can avoid
+# repeating the exact same combination twice running. No TTL -- like the two rows above, this is
+# ongoing operational state, not something that should ever expire on its own.
+
+_LAST_ARMOR_CONFIG_ID = "last-armor"
+
+
+def get_last_armor_versions() -> list[str]:
+    """The armor piece versions drawn for the most recent article, or [] if none has ever been
+    recorded (a fresh deploy, or every draw so far came up "no armor")."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": _LAST_ARMOR_CONFIG_ID}).get("Item")
+    return list(item["versions"]) if item and item.get("versions") is not None else []
+
+
+def set_last_armor_versions(versions: list[str]) -> None:
+    """Record the armor piece versions just drawn (possibly an empty list -- "brought nothing"
+    is recorded too, so the next draw can avoid repeating *that* twice running as well)."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    table.put_item(Item={"config_id": _LAST_ARMOR_CONFIG_ID, "versions": versions})
+
+
+# A fourth row in the same table: the shared pool of model ids daily_cycle_handler.py rolls a
+# topic's `model_id` (Topics table) forward to, at random, once it has published an article --
+# see that module's _assign_rotated_model. Edited by hand in DynamoDB (or the admin CLI/API,
+# once it grows a route for it) rather than by Terraform, same as the "default" row above.
+_MODEL_ROTATION_CONFIG_ID = "model-rotation"
+
+
+def get_model_rotation_candidates() -> list[str]:
+    """The pool of model ids a topic's model_id may be rolled to after it publishes, or []
+    if nobody has configured one yet -- a valid state: rotation then simply does nothing."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    item = table.get_item(Key={"config_id": _MODEL_ROTATION_CONFIG_ID}).get("Item")
+    return list(item["candidates"]) if item and item.get("candidates") is not None else []
+
+
+def put_model_rotation_candidates(candidates: list[str]) -> None:
+    """Set (or, with [], clear) the pool of model ids rotation may pick from."""
+    table = get_table(os.environ["MODEL_CONFIG_TABLE"])
+    table.put_item(Item={"config_id": _MODEL_ROTATION_CONFIG_ID, "candidates": candidates})
 
 
 # --- Feedback limits (see common/feedback_limits.py) ---------------------------------------

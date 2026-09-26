@@ -32,6 +32,7 @@ model):
 
 import json
 import os
+import random
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -42,6 +43,8 @@ from common import compliance, equipment, fresh_review
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
 from common.dynamo import (
+    get_last_armor_versions,
+    get_model_rotation_candidates,
     get_pipeline_config,
     get_top_voted_articles,
     get_topic,
@@ -51,7 +54,9 @@ from common.dynamo import (
     put_article,
     put_candidate_idea,
     put_moderation_item,
+    set_last_armor_versions,
     set_topic_last_article_at,
+    set_topic_model_id,
 )
 from common.editorial_goals import (
     ARTICLE_STYLES,
@@ -566,8 +571,30 @@ def _get_approved_guidance(topic_id: str) -> tuple[str | None, list[dict]]:
     Worn armor (global) plus the topic's rings; a refinement approved before equipment existed
     still applies until the topic has a ring (common/equipment.py). (None, []) means nothing
     applies -- callers must leave their prompts completely unchanged in that case.
+
+    The armor draw avoids repeating the exact combination brought to the *previous* article
+    (any topic -- armor is global): reads it before drawing, then records the new draw for next
+    time, regardless of what happens to this article afterward -- what the bear brought is
+    already a fact by the time drafting starts, whether or not the draft goes on to publish.
+    Recording failures are logged and swallowed, never allowed to break drafting itself; so is a
+    failure to read back the last draw -- worst case the bear just doesn't avoid a repeat once.
     """
-    return equipment.guidance_for(topic_id, list_prompt_refinements(status="approved"))
+    try:
+        avoid_versions = set(get_last_armor_versions())
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break drafting
+        print(f"daily_cycle_handler: could not read the last armor drawn: {exc!r}")
+        avoid_versions = set()
+    guidance, equipment_used = equipment.guidance_for(
+        topic_id, list_prompt_refinements(status="approved"), avoid_armor_versions=avoid_versions
+    )
+    try:
+        new_armor_versions = [
+            piece["version"] for piece in equipment_used if piece.get("slot") in equipment.ARMOR_SLOTS
+        ]
+        set_last_armor_versions(new_armor_versions)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break drafting
+        print(f"daily_cycle_handler: could not record the armor drawn: {exc!r}")
+    return guidance, equipment_used
 
 
 def _get_few_shot_excerpt(topic_id: str) -> str | None:
@@ -805,6 +832,30 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
     return title, lineage_call, _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS)
 
 
+def _assign_rotated_model(topic_id: str) -> None:
+    """Once a topic has published an article, roll its `model_id` (Topics table) forward to a
+    random pick from the shared rotation pool -- common/dynamo.py's "model-rotation" ModelConfig
+    row -- so the *next* run for this topic tries a different model, without a Terraform apply or
+    an admin edit. No candidates configured is a valid state: rotation then does nothing, same as
+    before this existed.
+
+    Deliberately only ever writes `model_id`, the next rung down in common/model_routing.py's
+    resolve_model precedence -- a topic with its own `model_id_candidates` already rerolls every
+    run on its own and keeps doing exactly that; this never touches or clobbers that list.
+
+    Never allowed to affect an article that has already published: read and write failures, and
+    an empty pool, are logged (the latter isn't even logged -- it's the expected steady state
+    before anyone has configured a pool) and swallowed, same as the armor bookkeeping above.
+    """
+    try:
+        candidates = get_model_rotation_candidates()
+        if not candidates:
+            return
+        set_topic_model_id(topic_id, random.choice(candidates))
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a publish that already happened
+        print(f"daily_cycle_handler: could not roll the model forward for topic_id={topic_id}: {exc!r}")
+
+
 def _publish_or_moderate(
     *,
     topic_id: str,
@@ -901,6 +952,7 @@ def _publish_or_moderate(
             compliant=True,
             model_id=model_id,
         )
+        _assign_rotated_model(topic_id)
         return {
             "status": "published",
             "topic_id": topic_id,
