@@ -307,7 +307,7 @@ def test_only_the_armor_taken_in_is_recorded_and_injected():
 def test_a_benched_item_is_not_injected():
     items = [worn("helmet", "global", text="Worn."), benched(version="b", text="Benched.")]
 
-    assert eq.guidance_for("t1", items)[0] == "Worn."
+    assert eq.guidance_for("t1", items, TakeAll)[0] == "Worn."
 
 
 def test_a_legacy_approval_still_applies_until_the_topic_has_a_ring():
