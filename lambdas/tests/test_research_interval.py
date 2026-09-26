@@ -396,6 +396,45 @@ def test_the_last_armor_row_and_the_pipeline_row_do_not_overwrite_each_other(wor
     assert dynamo.get_last_armor_versions() == ["a"]
 
 
+def test_no_rotation_pool_configured_is_a_valid_state(world):
+    assert dynamo.get_model_rotation_candidates() == []
+
+
+def test_the_rotation_pool_round_trips_and_can_be_cleared(world):
+    dynamo.put_model_rotation_candidates(["a", "b"])
+
+    assert dynamo.get_model_rotation_candidates() == ["a", "b"]
+
+    dynamo.put_model_rotation_candidates([])
+    assert dynamo.get_model_rotation_candidates() == []
+
+
+def test_the_rotation_pool_row_and_the_pipeline_row_do_not_overwrite_each_other(world):
+    dynamo.put_pipeline_config(research_interval_hours=2)
+
+    dynamo.put_model_rotation_candidates(["a"])
+
+    assert dynamo.get_pipeline_config()["research_interval_hours"] == 2
+    assert dynamo.get_model_rotation_candidates() == ["a"]
+
+
+def test_set_topic_model_id_changes_only_that_field(world):
+    _put_topic(model_id_candidates=["keep", "me"])
+
+    dynamo.set_topic_model_id("t", "new-model")
+
+    topic = _topic()
+    assert topic["model_id"] == "new-model"
+    assert topic["model_id_candidates"] == ["keep", "me"]  # untouched
+
+
+def test_set_topic_model_id_does_not_create_a_missing_topic(world):
+    failed = boto3.client("dynamodb", region_name=REGION).exceptions.ConditionalCheckFailedException
+
+    with pytest.raises(failed):
+        dynamo.set_topic_model_id("deleted", "new-model")
+
+
 def test_set_topic_last_research_at_changes_only_that_field(world):
     _put_topic()
 

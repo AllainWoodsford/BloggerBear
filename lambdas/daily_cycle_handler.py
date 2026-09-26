@@ -32,6 +32,7 @@ model):
 
 import json
 import os
+import random
 import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
@@ -43,6 +44,7 @@ from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
 from common.dynamo import (
     get_last_armor_versions,
+    get_model_rotation_candidates,
     get_pipeline_config,
     get_top_voted_articles,
     get_topic,
@@ -54,6 +56,7 @@ from common.dynamo import (
     put_moderation_item,
     set_last_armor_versions,
     set_topic_last_article_at,
+    set_topic_model_id,
 )
 from common.editorial_goals import (
     ARTICLE_STYLES,
@@ -829,6 +832,30 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
     return title, lineage_call, _is_plausible_reply(title, max_words=_MAX_TITLE_WORDS)
 
 
+def _assign_rotated_model(topic_id: str) -> None:
+    """Once a topic has published an article, roll its `model_id` (Topics table) forward to a
+    random pick from the shared rotation pool -- common/dynamo.py's "model-rotation" ModelConfig
+    row -- so the *next* run for this topic tries a different model, without a Terraform apply or
+    an admin edit. No candidates configured is a valid state: rotation then does nothing, same as
+    before this existed.
+
+    Deliberately only ever writes `model_id`, the next rung down in common/model_routing.py's
+    resolve_model precedence -- a topic with its own `model_id_candidates` already rerolls every
+    run on its own and keeps doing exactly that; this never touches or clobbers that list.
+
+    Never allowed to affect an article that has already published: read and write failures, and
+    an empty pool, are logged (the latter isn't even logged -- it's the expected steady state
+    before anyone has configured a pool) and swallowed, same as the armor bookkeeping above.
+    """
+    try:
+        candidates = get_model_rotation_candidates()
+        if not candidates:
+            return
+        set_topic_model_id(topic_id, random.choice(candidates))
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a publish that already happened
+        print(f"daily_cycle_handler: could not roll the model forward for topic_id={topic_id}: {exc!r}")
+
+
 def _publish_or_moderate(
     *,
     topic_id: str,
@@ -925,6 +952,7 @@ def _publish_or_moderate(
             compliant=True,
             model_id=model_id,
         )
+        _assign_rotated_model(topic_id)
         return {
             "status": "published",
             "topic_id": topic_id,
