@@ -1198,10 +1198,10 @@ article (PR 1), and wear comes from a stored downvote (1 point), repaired by a s
 
 ### Observability: a Stats table, a Historic table, and everything Bedrock spends that isn't on an article
 
-**Status: PR 1, 2 and 3 of an owner-scoped series done (recording what was previously untracked; the
-weekly rollover job and Lambda billed-duration tracking; API Gateway cost via Cost Explorer); not yet
-built: the Stats-page UI for any of this.** Prompted by the owner asking how tokens are calculated and
-finding two real gaps: no dedicated Stats table existed (per-article `lineage`, aggregated live by
+**Status: all four PRs of an owner-scoped series done** (recording what was previously untracked; the
+weekly rollover job and Lambda billed-duration tracking; API Gateway cost via Cost Explorer; the
+Stats-page UI for all of it). Prompted by the owner asking how tokens are calculated and finding two
+real gaps: no dedicated Stats table existed (per-article `lineage`, aggregated live by
 `common/stats.py`, was the whole story), and four real Bedrock-calling code paths were never tracked at
 all.
 
@@ -1287,7 +1287,33 @@ own top-level try/except means a rejected call is logged and reported as `{"stat
 than crashing, the same as any other scheduled handler's real failure -- it is not silently masked as a
 $0 reading.
 
-**Still to come:** the Stats-page UI for any of this (Total Stats from History -- explicitly labelled as
-excluding the current week -- Weekly Stats from Current, Feedback Given/Rejected cards, a Loot Stat
-tracker, gear moved to the bottom of the page). Not everything on `StatsCurrent`/`StatsHistory` is meant
-to reach that page; `api_gateway_cost_as_of` in particular is for the owner's own troubleshooting.
+**PR 4 -- built:** the Stats-page UI. `record_article_lineage` (`common/stats_tracking.py`) folds each
+drafted article's own already-tracked cost into the same weekly row too, under a fifth category,
+`articles` -- the owner's call ("everything is therefore per week"): Weekly/Total Stats would otherwise
+leave out the largest share of AI spend just because it wasn't tracked the same way musings/
+weekly_reflection/etc. are. Unlike those four, an article is tallied per-article, not per Bedrock call
+within it (per-model/per-topic/per-day detail stays `common/stats.py`'s job, read live off Articles).
+
+`StatsHistory` also gained a permanent running-total row (`week_start = "all-time"`, a sentinel that
+can never collide with a real Monday date) -- the owner's steer, once they realised "Total Stats" would
+otherwise mean a scan-and-sum over every week there has ever been. `stats_rollover_handler.py` now
+folds each just-completed week onto it too (`common/dynamo.py`'s `increment_stats_totals`/
+`set_stats_totals_fields`, `common/stats_tracking.py`'s `split_for_rollover` deciding which fields are
+additive counters versus the API Gateway reading, a rolling-30-day snapshot kept as the latest value,
+never summed). "Total Stats" is therefore one `get_item` away, same as "Weekly Stats" (`StatsCurrent`),
+never a scan.
+
+The public `/stats` route now returns `weekly` and `historic` alongside the original per-article
+`totals`/`by_model`/`by_topic`/`daily` (`common/stats_tracking.py`'s `public_view`, applied to
+`StatsCurrent` and to `StatsHistory`'s all-time row -- the same shape either way). Not everything on
+those rows reaches the page: the per-function Lambda breakdown stays internal (only one combined
+pipeline-run-time figure is public, the owner's call), and `api_gateway_cost_as_of` never leaves
+`common/stats_tracking.py` at all (owner-only troubleshooting).
+
+On the page itself (`frontend/app.js`): a Quick Links nav under the title jumps to Total Stats, Weekly
+Stats and Gear. Total Stats now contains the original per-article detail (always fully live, unwindowed)
+*plus* the historic all-time categories/feedback/loot/pipeline-hours/API-Gateway figures, explicitly
+labelled as excluding the current week. Weekly Stats is the same category/feedback/loot/pipeline-hours/
+API-Gateway shape, just from `StatsCurrent`. Gear moved to the bottom of the page, superseding the
+earlier fix/stats-gear-first order, now that there's real financial data above it to lead with. The
+"Estimated spend per day" heading and its "View as table" twin now say how many days they cover.

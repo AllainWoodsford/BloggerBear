@@ -12,6 +12,12 @@ or reader-activity event starts the new week's row fresh (see common/stats_track
 both tables' shape). A week with nothing recorded (no `week_start` on the row -- the normal state if
 this ever ran twice, or before anything was tracked yet) rolls nothing over and clears nothing.
 
+PR 4 also folds the just-completed week onto StatsHistory's permanent all-time row (common/
+stats_tracking.py's split_for_rollover decides which of the week's fields are weekly counters, ADD'd
+onto the running total, versus a refreshed snapshot like the API Gateway reading, SET instead) --
+but only on a genuine new rollover, never on an already-rolled-over week: folding a duplicate in
+again would double-count it.
+
 Never raises unhandled -- like every other scheduled handler in this codebase, runs under a
 top-level try/except that logs the real exception and returns an error dict.
 """
@@ -20,8 +26,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from common.dynamo import delete_current_stats, get_current_stats, put_stats_history_row
+from common.dynamo import (
+    delete_current_stats,
+    get_current_stats,
+    increment_stats_totals,
+    put_stats_history_row,
+    set_stats_totals_fields,
+)
 from common.lambda_timing import track_lambda_duration
+from common.stats_tracking import split_for_rollover
 
 
 @track_lambda_duration("stats_rollover")
@@ -42,10 +55,16 @@ def _roll_over() -> dict:
 
     row = {**current, "rolled_over_at": datetime.now(UTC).isoformat()}
     written = put_stats_history_row(week_start, row)
-    if not written:
+    if written:
+        additive, snapshot = split_for_rollover(current)
+        increment_stats_totals(additive)
+        set_stats_totals_fields(snapshot)
+    else:
         # Already rolled over (a retried or duplicated invocation) -- the first write is kept,
-        # never silently replaced. Still clear StatsCurrent below: whatever wrote it a second
-        # time is stale either way, and leaving it would just get folded into next week by mistake.
+        # never silently replaced. Folding this week's numbers into the all-time total again
+        # would double-count them, so that step is skipped too, not just the history write.
+        # Still clear StatsCurrent below: whatever wrote it a second time is stale either way,
+        # and leaving it would just get folded into next week by mistake.
         print(f"stats_rollover_handler: {week_start} was already rolled over; not overwriting it")
 
     delete_current_stats()
