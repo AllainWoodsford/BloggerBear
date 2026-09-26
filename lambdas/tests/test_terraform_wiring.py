@@ -353,3 +353,27 @@ def test_the_shared_cloudfront_waf_log_group_really_is_in_us_east_1():
 
     assert "provider = aws.us_east_1" in block
     assert ("us-east-1", "aws-waf-logs-bloggerbear-*") in _deploy_policy_log_group_patterns()
+
+
+# --- the frontend deploys from a minified build, not frontend/ itself -------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_frontend_deploys_from_the_minified_build_directory(env):
+    """frontend_dir has to point at frontend-dist/ (scripts/minify_frontend.py's output), not
+    frontend/ itself, or the deploy ships the unminified source -- see that local's own comment
+    on why, and CI's "Minify frontend assets" step (terraform.yml/terraform-production-release.yml)
+    for where frontend-dist/ actually gets built before apply."""
+    text = _read("environments", env, "main.tf")
+
+    assert 'frontend_dir = "${path.module}/../../../frontend-dist"' in text
+
+
+@pytest.mark.parametrize("workflow", ["terraform.yml", "terraform-production-release.yml"])
+def test_every_apply_workflow_minifies_the_frontend_first(workflow):
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+    assert "python scripts/minify_frontend.py" in text
+    minify_step = text.index("- name: Minify frontend assets")
+    apply_step = text.index("- name: Terraform apply")
+    assert minify_step < apply_step
