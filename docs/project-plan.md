@@ -1348,3 +1348,120 @@ DynamoDB TTL after `FINDING_TTL_DAYS = 14` (`research_tick_handler.py`, unrelate
 older research-cost data has been quietly aging out of reach this whole time, regardless of this PR or
 the separate Cleanup PR's own retention proposals. Articles themselves carry no TTL and are kept
 indefinitely, so this backfill's own numbers are not racing against anything.
+
+### Cleanup: TTLs, an expiring snapshot prefix, and 90-day log retention
+
+**Status: built.** Prompted by the owner's own brain-dump review (checked, item by item, in an earlier
+review pass before any of the Observability PRs above): most items ended up bounded-TTL additions to
+existing DynamoDB tables rather than a new scheduled sweep job -- once an item carries its own
+`expires_at`, DynamoDB clears it on its own; nothing needed to run and decide "is this old enough yet."
+The one place that isn't true is the S3 lifecycle rule below, which is AWS's own equivalent for objects,
+not DynamoDB TTL -- so there is, in the end, no new Lambda anywhere in this PR at all.
+
+**CandidateIdeas and FailedExecutions get a TTL** (`ttl { attribute_name = "expires_at" }`,
+`infra/modules/app-data/main.tf`), `common/dynamo.py`'s `put_candidate_idea`/`put_failed_execution`
+setting `expires_at` to `CLEANUP_TTL_DAYS` (7) from write time on every item, unconditionally -- both are
+pure operational lists (a topic's own ideation scratchpad; an admin-visibility DLQ record), nothing
+aggregates either across history. `FailedExecutions` originally had a comment saying the opposite
+("meant to persist for later review, not expire like Findings") -- revisited here since, unlike
+ModerationQueue below, nothing actually reads it back historically either.
+
+**ModerationQueue and PromptRefinements get a *conditional* TTL** -- `common/dynamo.py`'s
+`update_moderation_status`/`update_prompt_refinement_status` only set `expires_at` when the new status is
+"rejected", never on "approved"/"pending"/equipped, so real, adopted history (an approved article's
+queue record; an equipped prompt refinement) persists exactly as before. For PromptRefinements this is a
+completely free cleanup -- nothing reads a rejected version back historically. For ModerationQueue it is
+**not**: `admin_api_handler.py`'s `_moderation_queue_stats` reads rejected items' reasons "across all
+history" to inform compliance-prompt iteration (Phase 6), and that history now only reaches back as far
+as `CLEANUP_TTL_DAYS`. Flagged clearly rather than quietly shipped -- that endpoint's own docstring now
+says so -- but implemented rather than left out, since dropping the cleanup item entirely was the only
+other option and the owner had not ruled either way by the time this PR was built.
+
+**Raw source snapshots expire via an S3 lifecycle rule**, not a DynamoDB TTL: a new rule on the content
+bucket scoped to the `snapshots/` prefix (`expiration { days = 21 }` in dev; the same, but only retiring
+the *current* version, in production's already-versioned bucket -- the existing 30-day noncurrent-version
+rule then clears that copy too, same as it already does for articles). 21 days, not the Findings table's
+own 14-day `FINDING_TTL_DAYS`: `daily_cycle_handler.py`'s fresh-data review reads a Finding's
+`raw_snapshot_s3_key` at draft time, and DynamoDB TTL deletion can lag up to roughly 48 hours past a
+Finding's actual expiry -- expiring the snapshot at exactly 14 days risked deleting one a
+still-technically-alive Finding could still be pointed at. The extra week is a safety margin over that
+lag, not a second independent retention decision, and it was accepted as such ("okay snapshots already
+deleting, I'm fine with that") in place of the original flat 7-day ask. This same rule also covers
+"delete orphaned snapshots once their topic is deleted" as the same case, not a separate mechanism: a
+deleted topic's Findings simply age out on their own normal clock like any other, dragging their
+snapshots down with them regardless of whether the topic that made them still exists.
+
+**Every pipeline/API Lambda's own log group gets `retention_in_days = 90`** (`aws_cloudwatch_log_group.lambda`,
+one `for_each` per environment over the same `local.pipeline_lambda_function_names` list
+`module.observability`'s alarms/dashboard already used -- extracted out of that module call so both share
+it and can never drift apart when a function is added or removed). Lambda creates a function's log group
+itself on first invocation with no retention at all, so this was growing forever; IAM for Terraform to
+manage it was already provisioned ahead of time in `infra/bootstrap/main.tf`'s `LambdaLogGroups`
+statement, unexercised until now. Since every one of these functions has almost certainly already run at
+least once in both environments, its log group already exists in AWS -- the first apply after this change
+needs each one imported first (`terraform import 'aws_cloudwatch_log_group.lambda["<function_name>"]'
+/aws/lambda/<function_name>`, once per function per environment), or it fails with
+`ResourceAlreadyExistsException`.
+
+**Left exactly as they were, on purpose:** Findings' own TTL stays at 14 days, not lowered to 7 --
+shortening it risked a topic whose article cadence runs slower than a week losing research cost before an
+article ever got to bill it. `ModelConfig`'s "tokens issued" (the feedback verification nonces / rate-limit
+counters) already had their own `expires_at` and self-clear via TTL, from before this PR existed -- the
+"tokens" in that table's `verification-secret` row is an unrelated, deliberately permanent HMAC signing
+key, not a rate-limit counter, and was never a cleanup candidate. Articles are kept indefinitely, per the
+owner's explicit call.
+
+### Bugfix: a refusal parsed as an angle or a title (two real production incidents)
+
+**Status: fixed.** Two things the owner found live on bloggerbear.com in the same week: two consecutive
+`github-trending` articles both wrote about the same repo (Google's Ax) back to back, and one
+`tech-market-news` article published with its **title** literally reading *"I'd be happy to help you write
+an article title, but I'm not sure I understand your request. You've indicated that you cannot propose
+article angles based on certain findings, but you haven't shared: 1. What those findings are..."* --
+Bedrock's own confused reply to a nonsensical prompt, stored and served as-is.
+
+Root cause, confirmed against the actual production `CandidateIdeas` row for that article: ideation
+refused outright that day ("I cannot propose article angles based on these findings... the findings
+consist almost entirely of..."), because it judged the day's research didn't support the topic's editorial
+mandate. `daily_cycle_handler.py`'s `_ideate` parser had no way to tell that refusal's own sentences apart
+from real proposed angles -- it just harvested whatever non-empty lines came out after stripping list
+markers, and (Phase 1's deterministic "pick candidate zero, no scoring model yet") the refusal's own first
+sentence became *the angle*, fed into both the draft and title calls. Drafting recovered by improvising a
+topic from the raw findings; title-writing had nothing to improvise around, and answered the nonsensical
+"angle" as literally and earnestly as a confused person would -- and `_draft_title` had zero validation on
+what came back, so that answer became the title.
+
+**`_is_plausible_reply(text, max_words)`** is the one guard behind both fixes: rejects multi-line text,
+text over the word cap, and text containing a short list of refusal/clarifying-question phrases (`"i
+cannot"`, `"i'm not sure"`, `"could you provide"`, `"as an ai"`, etc. -- not exhaustive, just what the two
+real incidents actually said). Applied at both ends of the pipe:
+
+- **`_ideate`** filters every candidate line through it (`_MAX_ANGLE_WORDS = 40`) before treating it as a
+  real angle; the old unconditional "use the whole raw reply as one angle" fallback -- the thing that let a
+  multi-paragraph refusal through in the first place -- now only fires when that whole reply itself passes
+  the same check. If nothing survives, `handler()` bails out cleanly (`{"status": "no_usable_angles", ...}`),
+  the same shape as the existing "nothing new since last run" bail-out, rather than drafting from a
+  candidate that was never really an angle.
+- **`_draft_title`** (`_MAX_TITLE_WORDS = 20`) checks its own reply, and gets one automatic retry with a
+  firmer prompt on the same model if it fails -- tokens from the discarded first attempt are still summed
+  into the lineage call, same "a wasted attempt still cost money" principle `invoke_model_tracked`'s own
+  `max_tokens` retry already follows. If the retry still fails, the (still bad) text is kept, not discarded
+  -- so a person reviewing it in moderation, where the article is now held (`IMPLAUSIBLE_TITLE_REASON`,
+  alongside `TRUNCATED_DRAFT_REASON` in the same `hold_reasons` list), sees exactly what the model actually
+  said, never something invented in its place.
+- The title prompt itself also now explicitly states the word cap and says not to ask clarifying questions
+  -- the original prompt never told the model either of those things, which is arguably why a
+  clarification felt like a reasonable reply to make in the first place.
+
+**Separately, the duplicate-topic problem**: `_ideate` only ever saw that day's research findings, with no
+memory of what the topic already published. A GitHub repo that stays trending for several consecutive days
+(Ax's star count kept climbing) looks like fresh material every single day, because the numbers genuinely
+are new -- the story just isn't. `common/dynamo.py`'s new `list_recent_article_titles(topic_id, limit=5)`
+(same Scan + FilterExpression shape as the existing `get_top_voted_articles`, sorted by `created_at`
+instead of `net_votes`) feeds the topic's own last few published titles into the ideation prompt under an
+"Already covered recently -- propose a genuinely different angle" header, only when there's something to
+show; a topic's first article, or one with nothing published recently, sees the exact prompt as before.
+
+The bad title already live in production was fixed by hand (DynamoDB `title` update, then re-rendering the
+static page and invalidating its CloudFront cache -- the same three steps every other publish path already
+does, just driven manually since there was no admin route for "fix just the title" at the time).

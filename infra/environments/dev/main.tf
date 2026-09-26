@@ -108,6 +108,30 @@ resource "aws_s3_bucket_public_access_block" "content" {
   restrict_public_buckets = true
 }
 
+# Cleanup PR: raw source snapshots (research_tick_handler.py's snapshots/{topic_id}/{captured_at}.json,
+# one file per capture, never overwritten) age out here rather than on their own independent clock.
+# 21 days, not the Findings table's 14-day FINDING_TTL_DAYS: daily_cycle_handler.py's fresh-data review
+# reads a Finding's raw_snapshot_s3_key at draft time, and DynamoDB TTL deletion can lag up to ~48h past
+# a Finding's actual expiry -- expiring the snapshot at exactly 14 days risked deleting one a
+# still-technically-alive Finding could still be pointed at. The extra week is a safety margin over that
+# lag, not a second independent retention decision. No versioning in dev, so this delete is immediate.
+resource "aws_s3_bucket_lifecycle_configuration" "content" {
+  bucket = aws_s3_bucket.content.id
+
+  rule {
+    id     = "expire-old-snapshots"
+    status = "Enabled"
+
+    filter {
+      prefix = "snapshots/"
+    }
+
+    expiration {
+      days = 21
+    }
+  }
+}
+
 # -----------------------------------------------------------------------
 # Lambda deployment package -- both functions ship from the same zip
 # (one `lambdas/` source tree with a shared `common/` package).
@@ -1274,6 +1298,32 @@ resource "aws_cloudwatch_log_group" "waf_public_api" {
   retention_in_days = 30
 }
 
+# -----------------------------------------------------------------------
+# Cleanup PR: every pipeline/API Lambda's own log group (/aws/lambda/<function
+# name>, distinct from the WAF logging above), which Lambda otherwise
+# creates itself on first invocation with no retention at all, growing
+# forever. IAM for this was already provisioned ahead of time in
+# infra/bootstrap/main.tf's LambdaLogGroups statement -- see its own comment.
+#
+# Every one of these functions has almost certainly already run at least
+# once in this environment, so its log group already exists in AWS. Terraform
+# cannot adopt an existing resource by just declaring it -- the first apply
+# after this change needs each one imported first, or it fails with
+# ResourceAlreadyExistsException:
+#
+#   terraform import 'aws_cloudwatch_log_group.lambda["bloggerbear-dev-research-tick"]' /aws/lambda/bloggerbear-dev-research-tick
+#   (repeat for each function_name below)
+# -----------------------------------------------------------------------
+resource "aws_cloudwatch_log_group" "lambda" {
+  # Reuses the same function_name list module.observability's lambda_function_names already
+  # defines below (Phase 6) -- one list, so a function added later can never update one and
+  # forget the other. toset() because for_each needs a set/map, not module.observability's own
+  # list(string).
+  for_each          = toset(local.pipeline_lambda_function_names)
+  name              = "/aws/lambda/${each.value}"
+  retention_in_days = 90
+}
+
 data "aws_iam_policy_document" "waf_logs" {
   statement {
     sid    = "AllowWAFLogging"
@@ -1522,11 +1572,11 @@ resource "aws_scheduler_schedule" "cost_explorer_poll" {
 # aws_wafv2_web_acl_logging_configuration.admin/public_api).
 # =========================================================================
 
-module "observability" {
-  source = "../../modules/observability"
-
-  environment_name = "dev"
-  lambda_function_names = [
+locals {
+  # Every pipeline/API Lambda's function_name -- shared by module.observability's alarms/
+  # dashboard below and this environment's own log-group retention (aws_cloudwatch_log_group.lambda,
+  # Cleanup PR), so the two can never drift out of sync when a function is added or removed.
+  pipeline_lambda_function_names = [
     aws_lambda_function.research_tick.function_name,
     aws_lambda_function.daily_cycle.function_name,
     aws_lambda_function.admin_api.function_name,
@@ -1538,9 +1588,16 @@ module "observability" {
     aws_lambda_function.stats_rollover.function_name,
     aws_lambda_function.cost_explorer_poll.function_name,
   ]
-  state_machine_arn = aws_sfn_state_machine.daily_cycle.arn
-  dlq_queue_name    = aws_sqs_queue.pipeline_dlq.name
-  alert_email       = var.alert_email
+}
+
+module "observability" {
+  source = "../../modules/observability"
+
+  environment_name      = "dev"
+  lambda_function_names = local.pipeline_lambda_function_names
+  state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
+  dlq_queue_name        = aws_sqs_queue.pipeline_dlq.name
+  alert_email           = var.alert_email
 }
 
 # =========================================================================
