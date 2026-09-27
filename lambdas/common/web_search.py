@@ -10,6 +10,15 @@ here plus one line in `PROVIDERS`; nothing that calls `search_web` changes.
 Select a backend with the `WEB_SEARCH_PROVIDER` env var (or the `provider`
 argument).
 
+**Fallback.** GDELT times out and rate-limits requests from Lambda often
+enough to leave whole topics with no findings, so when the AgentCore web
+search gateway is configured (`AGENTCORE_WEB_SEARCH_URL`, set by
+infra/modules/web-search) a failed GDELT search is retried once through it
+(`AgentCoreProvider`). GDELT then gets a short time budget of its own, so a
+bad GDELT day costs seconds, not minutes, before the fallback runs. AgentCore
+is priced per query, which is why it is the fallback rather than the
+default; a topic can still ask for it directly (`provider: "agentcore"`).
+
 Every result is a plain dict:
     {"title": str, "url": str, "source": str, "published_at": iso str | None,
      "snippet": str | None}
@@ -24,12 +33,18 @@ results whose title mentions none of `title_keywords`.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
 from abc import ABC, abstractmethod
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
+
+import boto3
+import requests
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 
 from common.http_retry import get_json_with_backoff
 from common.relevance import matches_keywords, normalize_keywords
@@ -120,7 +135,167 @@ def _parse_gdelt_date(raw: str | None) -> str | None:
         return None
 
 
-PROVIDERS: dict[str, type[WebSearchProvider]] = {"gdelt": GdeltProvider}
+class AgentCoreProvider(WebSearchProvider):
+    """Amazon Bedrock AgentCore's Web Search Tool, through this stack's gateway
+    (infra/modules/web-search): Amazon's own web index, with snippets and publish dates.
+
+    One SigV4-signed MCP `tools/call` per search -- no API key, no session handshake. Takes a
+    natural-language query of at most 200 characters, so GDELT-style operators are stripped
+    first (`natural_query`). The age window is sent as the connector's published-date filter.
+    No retries: it is the fallback, and a caller's deadline bounds it.
+    """
+
+    MCP_PROTOCOL_VERSION = "2025-11-25"
+    MAX_QUERY_CHARS = 200
+    MAX_RESULTS = 25
+
+    def search(
+        self, query: str, *, max_results: int, max_age_hours: int, deadline: float | None = None
+    ) -> list[dict]:
+        url = os.environ.get("AGENTCORE_WEB_SEARCH_URL")
+        region = os.environ.get("AGENTCORE_WEB_SEARCH_REGION")
+        tool = os.environ.get("AGENTCORE_WEB_SEARCH_TOOL")
+        if not (url and region and tool):
+            raise RuntimeError("AgentCore web search is not configured (AGENTCORE_WEB_SEARCH_*)")
+        timeout = _AGENTCORE_TIMEOUT_SECONDS
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("no time left in the search budget")
+            timeout = min(timeout, remaining)
+
+        now = datetime.now(UTC)
+        arguments = {
+            "query": natural_query(query, self.MAX_QUERY_CHARS),
+            "maxResults": min(self.MAX_RESULTS, max_results * _OVERFETCH_FACTOR),
+            "filters": {
+                "publishedDateFilter": {
+                    "from": _iso_z(now - timedelta(hours=max_age_hours)),
+                    "to": _iso_z(now),
+                }
+            },
+        }
+        body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "search",
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments},
+            }
+        )
+        endpoint = url if url.rstrip("/").endswith("/mcp") else f"{url.rstrip('/')}/mcp"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": self.MCP_PROTOCOL_VERSION,
+        }
+        signed = AWSRequest(method="POST", url=endpoint, data=body, headers=headers)
+        SigV4Auth(boto3.Session().get_credentials(), "bedrock-agentcore", region).add_auth(signed)
+        response = requests.post(endpoint, data=body, headers=dict(signed.headers), timeout=timeout)
+        response.raise_for_status()
+        return [_agentcore_result(item) for item in _agentcore_items(response)]
+
+
+# Per request; the fallback path's own deadline usually caps it first.
+_AGENTCORE_TIMEOUT_SECONDS = 20.0
+_OPERATOR = re.compile(r"\b[a-z]+:\S+", re.IGNORECASE)  # GDELT's sourcelang:english, domain:x.com, ...
+
+
+def natural_query(query: str, max_chars: int = AgentCoreProvider.MAX_QUERY_CHARS) -> str:
+    """`query` as plain words for a natural-language search: GDELT operators, parentheses and
+    OR dropped (quoted phrases kept), cut to `max_chars` at a word boundary."""
+    text = _OPERATOR.sub(" ", query)
+    text = re.sub(r"[()]", " ", text)
+    text = re.sub(r"\bOR\b", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= max_chars:
+        return text
+    cut = text[: max_chars + 1].rsplit(" ", 1)[0]
+    if cut.count('"') % 2:  # never leave a phrase's quote open
+        cut = cut.rsplit('"', 1)[0].rstrip()
+    return cut
+
+
+def _iso_z(moment: datetime) -> str:
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _jsonrpc_message(response) -> dict:
+    """The JSON-RPC reply, from a plain JSON body or a server-sent-events stream (the
+    gateway may answer either way; the last `data:` event carrying a result wins)."""
+    if "text/event-stream" in (response.headers.get("Content-Type") or ""):
+        message = None
+        for line in response.text.splitlines():
+            if line.startswith("data:"):
+                try:
+                    event = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and ("result" in event or "error" in event):
+                    message = event
+        if message is None:
+            raise RuntimeError("AgentCore web search: no result in the event stream")
+        return message
+    return response.json()
+
+
+def _agentcore_items(response) -> list[dict]:
+    """The connector's result rows, or an exception for any kind of failure."""
+    message = _jsonrpc_message(response)
+    if message.get("error"):
+        raise RuntimeError(f"AgentCore web search failed: {message['error']}")
+    result = message.get("result") or {}
+    if result.get("isError"):
+        detail = " ".join(c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict))
+        raise RuntimeError(f"AgentCore web search tool error: {detail[:300]}")
+    payload = result.get("structuredContent")
+    if not isinstance(payload, dict):
+        texts = [c.get("text") for c in result.get("content") or [] if isinstance(c, dict)]
+        text = next((t for t in texts if isinstance(t, str) and t.strip()), None)
+        try:
+            payload = json.loads(text) if text else {}
+        except ValueError as exc:
+            raise RuntimeError("AgentCore web search returned text that is not JSON") from exc
+    items = payload.get("results") if isinstance(payload, dict) else None
+    return [item for item in items or [] if isinstance(item, dict)]
+
+
+def _agentcore_result(item: dict) -> dict:
+    url = item.get("url") or ""
+    host = urlsplit(url).netloc.lower()
+    return {
+        "title": (item.get("title") or "").strip(),
+        "url": url,
+        "source": host[4:] if host.startswith("www.") else host,
+        "published_at": _parse_published_date(item.get("publishedDate")),
+        "snippet": (item.get("text") or "").strip() or None,
+    }
+
+
+def _parse_published_date(raw) -> str | None:
+    """A publish date ("2026-09-26" or a full ISO timestamp) as an ISO UTC string."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).isoformat()
+
+
+PROVIDERS: dict[str, type[WebSearchProvider]] = {"gdelt": GdeltProvider, "agentcore": AgentCoreProvider}
+
+FALLBACK_PROVIDER = "agentcore"
+# With a fallback available, GDELT gets at most this long (its own retries included)...
+PRIMARY_BUDGET_WITH_FALLBACK_SECONDS = 20.0
+# ...and always leaves at least this much of a caller's deadline for the fallback.
+FALLBACK_RESERVE_SECONDS = 8.0
+
+
+def _fallback_configured(name: str) -> bool:
+    return name != FALLBACK_PROVIDER and bool(os.environ.get("AGENTCORE_WEB_SEARCH_URL"))
 
 
 def _normalized_title(title: str) -> str:
@@ -154,6 +329,9 @@ def search_web(
     return tangential pages.
     `deadline` (an absolute `time.monotonic()` value) caps the whole search,
     retries included -- past it the search raises instead of waiting.
+    When the AgentCore gateway is configured, a failed search is retried once
+    through it (see the module docstring); the fallback's own failure is what
+    is raised then.
     Raises on backend failure (network, rate limit exhausted, bad response);
     an empty list means the search worked and found nothing.
     """
@@ -162,11 +340,22 @@ def search_web(
     if provider_cls is None:
         raise ValueError(f"unknown web search provider {name!r} (known: {sorted(PROVIDERS)})")
 
-    # Only passed when set, so a provider written before `deadline` existed still works.
-    budget = {"deadline": deadline} if deadline is not None else {}
-    raw_results = provider_cls().search(
-        query, max_results=max_results, max_age_hours=max_age_hours, **budget
-    )
+    def run(cls: type[WebSearchProvider], until: float | None) -> list[dict]:
+        # Only passed when set, so a provider written before `deadline` existed still works.
+        budget = {"deadline": until} if until is not None else {}
+        return cls().search(query, max_results=max_results, max_age_hours=max_age_hours, **budget)
+
+    if not _fallback_configured(name):
+        raw_results = run(provider_cls, deadline)
+    else:
+        primary_deadline = time.monotonic() + PRIMARY_BUDGET_WITH_FALLBACK_SECONDS
+        if deadline is not None:
+            primary_deadline = min(primary_deadline, deadline - FALLBACK_RESERVE_SECONDS)
+        try:
+            raw_results = run(provider_cls, primary_deadline)
+        except Exception as exc:  # noqa: BLE001 - any failure is what the fallback is for
+            print(f"web_search: {name} failed ({exc!r}); trying the AgentCore web search instead")
+            raw_results = run(PROVIDERS[FALLBACK_PROVIDER], deadline)
 
     keywords = normalize_keywords(title_keywords)
     seen_urls: set[str] = set()
