@@ -48,6 +48,7 @@ from botocore.awsrequest import AWSRequest
 
 from common.http_retry import get_json_with_backoff
 from common.relevance import matches_keywords, normalize_keywords
+from common.stats_tracking import record_web_search_fallback, record_web_search_query
 
 DEFAULT_PROVIDER = "gdelt"
 REQUEST_USER_AGENT = "BloggerBearResearchBot/1.0 (+https://github.com/AllainWoodsford/BloggerBear)"
@@ -193,6 +194,10 @@ class AgentCoreProvider(WebSearchProvider):
         SigV4Auth(boto3.Session().get_credentials(), "bedrock-agentcore", region).add_auth(signed)
         response = requests.post(endpoint, data=body, headers=dict(signed.headers), timeout=timeout)
         response.raise_for_status()
+        # Counted once the gateway has accepted the request (HTTP 2xx), before its reply is read:
+        # a tool-level error inside a 2xx still reached the paid search, so it is counted rather
+        # than risk under-reporting spend. A request refused outright (4xx/5xx, a timeout) is not.
+        record_web_search_query()
         return [_agentcore_result(item) for item in _agentcore_items(response)]
 
 
@@ -355,6 +360,7 @@ def search_web(
             raw_results = run(provider_cls, primary_deadline)
         except Exception as exc:  # noqa: BLE001 - any failure is what the fallback is for
             print(f"web_search: {name} failed ({exc!r}); trying the AgentCore web search instead")
+            record_web_search_fallback()
             raw_results = run(PROVIDERS[FALLBACK_PROVIDER], deadline)
 
     keywords = normalize_keywords(title_keywords)
