@@ -614,17 +614,8 @@ resource "aws_lambda_function" "research_tick" {
   filename         = data.archive_file.lambdas.output_path
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
-  # The CoinGecko key goes to research_tick alone (the only Lambda that runs
-  # the crypto adapter) rather than into the shared local, which every Lambda
-  # receives. No key set -> no variables added -> the adapter stays keyless.
   environment {
-    variables = merge(
-      local.lambda_env_variables,
-      var.coingecko_api_key == "" ? {} : {
-        COINGECKO_API_KEY  = var.coingecko_api_key
-        COINGECKO_API_PLAN = var.coingecko_api_plan
-      },
-    )
+    variables = merge(local.lambda_env_variables, local.coingecko_env_variables)
   }
 }
 
@@ -632,6 +623,18 @@ resource "aws_lambda_function" "research_tick" {
 # calls (ideate, draft, title, fresh-data review, compliance review) over a larger
 # data payload, the review's fetch of current data (time-boxed at 45s), and a
 # fallback-model retry if the primary call fails.
+# The CoinGecko key goes only to the two Lambdas that run the crypto adapter: research_tick
+# (its hourly fetch) and daily_cycle (the fresh-data review re-reads current prices). It is kept
+# out of the shared local, which every Lambda receives. No key set -> no variables added -> the
+# adapter stays keyless. daily_cycle used to be left out, so its review ran keyless even with a
+# key configured.
+locals {
+  coingecko_env_variables = var.coingecko_api_key == "" ? {} : {
+    COINGECKO_API_KEY  = var.coingecko_api_key
+    COINGECKO_API_PLAN = var.coingecko_api_plan
+  }
+}
+
 resource "aws_lambda_function" "daily_cycle" {
   function_name = "bloggerbear-production-daily-cycle"
   role          = aws_iam_role.lambda_exec.arn
@@ -644,7 +647,7 @@ resource "aws_lambda_function" "daily_cycle" {
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
   environment {
-    variables = local.lambda_env_variables
+    variables = merge(local.lambda_env_variables, local.coingecko_env_variables)
   }
 }
 
