@@ -478,13 +478,8 @@ def render_and_publish_article_page(
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>{escape(title)} -- BloggerBear</title>
-<link rel="preload" href="/normalize.css" as="style" data-swap />
-<link rel="preload" href="/styles.css" as="style" data-swap />
-<script src="/preload-styles.js"></script>
-<noscript>
 <link rel="stylesheet" href="/normalize.css" />
 <link rel="stylesheet" href="/styles.css" />
-</noscript>
 <link rel="icon" href="/logo.svg" type="image/svg+xml" />
 </head>
 <body>
