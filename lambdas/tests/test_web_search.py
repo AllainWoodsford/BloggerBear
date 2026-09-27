@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
 
 from common import web_search
-from common.web_search import GdeltProvider, WebSearchProvider, search_web
+from common.web_search import (
+    AgentCoreProvider,
+    GdeltProvider,
+    WebSearchProvider,
+    natural_query,
+    search_web,
+)
 
 
 def _article(title, url, domain="example.com", seendate="20260920T121500Z"):
@@ -208,3 +216,179 @@ def test_a_provider_without_a_deadline_parameter_still_works_when_none_is_given(
     monkeypatch.setitem(web_search.PROVIDERS, "old", OldProvider)
 
     assert search_web("x", provider="old") == []
+
+
+# --- AgentCore web search (the fallback) --------------------------------------------------------
+
+GATEWAY = "https://bb-web-search-abc.gateway.bedrock-agentcore.ap-northeast-1.amazonaws.com/mcp"
+
+
+@pytest.fixture
+def agentcore(monkeypatch):
+    monkeypatch.setenv("AGENTCORE_WEB_SEARCH_URL", GATEWAY)
+    monkeypatch.setenv("AGENTCORE_WEB_SEARCH_REGION", "ap-northeast-1")
+    monkeypatch.setenv("AGENTCORE_WEB_SEARCH_TOOL", "web-search___WebSearch")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+
+
+class _Reply:
+    def __init__(self, payload, content_type="application/json", status=200):
+        self.status_code = status
+        self.headers = {"Content-Type": content_type}
+        self._payload = payload
+        self.text = payload if isinstance(payload, str) else json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise web_search.requests.HTTPError(f"{self.status_code} Client Error")
+
+
+def _tool_result(rows, structured=False):
+    body = {"id": "x", "results": rows}
+    result = {"isError": False, "content": [{"type": "text", "text": json.dumps(body)}]}
+    if structured:
+        result["structuredContent"] = body
+    return {"jsonrpc": "2.0", "id": "search", "result": result}
+
+
+ROW = {
+    "title": "World of Warcraft: Forever is coming in November",
+    "url": "https://www.polygon.com/wow-forever",
+    "publishedDate": "2026-09-26",
+    "text": "Blizzard's new server type...",
+}
+
+
+def _post(reply):
+    return patch("common.web_search.requests.post", return_value=reply)
+
+
+def test_agentcore_signs_one_mcp_tool_call_with_the_age_window(agentcore):
+    with _post(_Reply(_tool_result([ROW]))) as mock_post:
+        AgentCoreProvider().search('"World of Warcraft" Forever', max_results=5, max_age_hours=24)
+
+    url, kwargs = mock_post.call_args.args[0], mock_post.call_args.kwargs
+    assert url == GATEWAY
+    assert kwargs["headers"]["Authorization"].startswith("AWS4-HMAC-SHA256")
+    assert "ap-northeast-1/bedrock-agentcore/aws4_request" in kwargs["headers"]["Authorization"]
+    body = json.loads(kwargs["data"])
+    assert body["method"] == "tools/call" and body["params"]["name"] == "web-search___WebSearch"
+    args = body["params"]["arguments"]
+    assert args["query"] == '"World of Warcraft" Forever' and args["maxResults"] == 15
+    window = args["filters"]["publishedDateFilter"]
+    start = datetime.fromisoformat(window["from"].replace("Z", "+00:00"))
+    end = datetime.fromisoformat(window["to"].replace("Z", "+00:00"))
+    assert (end - start).total_seconds() == 24 * 3600
+
+
+def test_agentcore_results_take_the_common_shape_with_snippets(agentcore):
+    with _post(_Reply(_tool_result([ROW]))):
+        (result,) = AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+
+    assert result == {
+        "title": "World of Warcraft: Forever is coming in November",
+        "url": "https://www.polygon.com/wow-forever",
+        "source": "polygon.com",
+        "published_at": "2026-09-26T00:00:00+00:00",
+        "snippet": "Blizzard's new server type...",
+    }
+
+
+def test_agentcore_reads_structured_content_and_event_streams(agentcore):
+    with _post(_Reply(_tool_result([ROW], structured=True))):
+        assert len(AgentCoreProvider().search("q", max_results=5, max_age_hours=24)) == 1
+
+    stream = "event: message\ndata: " + json.dumps(_tool_result([ROW, ROW])) + "\n\n"
+    with _post(_Reply(stream, content_type="text/event-stream")):
+        assert len(AgentCoreProvider().search("q", max_results=5, max_age_hours=24)) == 2
+
+
+@pytest.mark.parametrize(
+    "reply, match",
+    [
+        (_Reply({"jsonrpc": "2.0", "error": {"code": -32602, "message": "bad"}}), "failed"),
+        (_Reply({"result": {"isError": True, "content": [{"type": "text", "text": "quota"}]}}), "quota"),
+        (_Reply({}, status=403), "403"),
+    ],
+)
+def test_agentcore_failures_raise(agentcore, reply, match):
+    with _post(reply), pytest.raises(Exception, match=match):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+
+
+def test_agentcore_unconfigured_raises_without_a_request(monkeypatch):
+    monkeypatch.delenv("AGENTCORE_WEB_SEARCH_URL", raising=False)
+    with _post(_Reply({})) as mock_post, pytest.raises(RuntimeError, match="not configured"):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+    mock_post.assert_not_called()
+
+
+def test_agentcore_respects_a_deadline(agentcore):
+    with (
+        _post(_Reply(_tool_result([]))) as mock_post,
+        patch("common.web_search.time.monotonic", return_value=10.0),
+    ):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24, deadline=13.0)
+        assert mock_post.call_args.kwargs["timeout"] == 3.0
+        with pytest.raises(TimeoutError):
+            AgentCoreProvider().search("q", max_results=5, max_age_hours=24, deadline=9.0)
+
+
+def test_natural_query_drops_gdelt_syntax_and_fits_200_characters():
+    assert natural_query('("AI" OR Nvidia) sourcelang:english') == '"AI" Nvidia'
+    long = " OR ".join(f'"phrase number {n}"' for n in range(40))
+    short = natural_query(long)
+    assert 0 < len(short) <= 200 and short.count('"') % 2 == 0 and " OR " not in short
+
+
+# --- the fallback ---------------------------------------------------------------------------------
+
+
+def test_a_failed_gdelt_search_falls_back_to_agentcore(agentcore, capsys):
+    with (
+        patch("common.web_search.get_json_with_backoff", side_effect=RuntimeError("429 Too Many Requests")),
+        _post(_Reply(_tool_result([ROW]))),
+    ):
+        results = search_web("wow", max_results=5)
+
+    assert [r["url"] for r in results] == [ROW["url"]]
+    assert "trying the AgentCore web search instead" in capsys.readouterr().out
+
+
+def test_with_a_fallback_gdelt_gets_a_short_budget(agentcore):
+    with _gdelt([]) as mock_get, patch("common.web_search.time.monotonic", return_value=100.0):
+        search_web("x")
+
+    assert mock_get.call_args.kwargs["deadline"] == 100.0 + web_search.PRIMARY_BUDGET_WITH_FALLBACK_SECONDS
+
+
+def test_the_fallback_keeps_part_of_a_callers_deadline_for_itself(agentcore):
+    with _gdelt([]) as mock_get, patch("common.web_search.time.monotonic", return_value=100.0):
+        search_web("x", deadline=115.0)
+
+    assert mock_get.call_args.kwargs["deadline"] == 115.0 - web_search.FALLBACK_RESERVE_SECONDS
+
+
+def test_a_gdelt_search_that_works_never_calls_agentcore(agentcore):
+    with _gdelt([_article("Story", "https://a.com/1")]), _post(_Reply({})) as mock_post:
+        assert len(search_web("x")) == 1
+    mock_post.assert_not_called()
+
+
+def test_without_the_gateway_a_gdelt_failure_is_raised_as_before(monkeypatch):
+    monkeypatch.delenv("AGENTCORE_WEB_SEARCH_URL", raising=False)
+    with (
+        patch("common.web_search.get_json_with_backoff", side_effect=RuntimeError("429")),
+        pytest.raises(RuntimeError, match="429"),
+    ):
+        search_web("x")
+
+
+def test_a_topic_can_ask_for_agentcore_directly(agentcore):
+    with _gdelt([]) as mock_get, _post(_Reply(_tool_result([ROW]))):
+        assert len(search_web("x", provider="agentcore")) == 1
+    mock_get.assert_not_called()
