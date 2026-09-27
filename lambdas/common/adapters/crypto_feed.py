@@ -129,6 +129,12 @@ VOLUME_SURGE_RATIO = 2.0
 
 WEB_MAX_RESULTS = 15
 WEB_MAX_AGE_HOURS = 24
+# The fresh-data review's headlines get their own budget inside the review's overall 45s
+# fetch limit (common/fresh_review.py's FETCH_TIMEOUT_SECONDS). GDELT can take 80s+, and
+# without this a slow search used up the whole limit, so the review came back
+# "unavailable" even though the prices (the part that actually checks claims) had
+# arrived in under a second. Past this the review simply goes without headlines.
+REVIEW_HEADLINES_BUDGET_SECONDS = 15.0
 # Headlines not yet reported that make a tick worth a Finding. One: novelty is
 # already judged against everything reported (Adapter.known_keys), so a headline
 # that is genuinely new is information worth recording.
@@ -561,7 +567,9 @@ class CryptoFeedAdapter(Adapter):
                 evidence["coins_no_longer_in_the_top_200"] = missing
 
         try:
-            headlines = self._fetch_web_results(adapter_config, goal)
+            headlines = self._fetch_web_results(
+                adapter_config, goal, deadline=time.monotonic() + REVIEW_HEADLINES_BUDGET_SECONDS
+            )
         except Exception as exc:  # noqa: BLE001 - headlines are context, not the point
             print(f"crypto_feed: no headlines for the review ({exc})")
             headlines = []
@@ -717,9 +725,14 @@ class CryptoFeedAdapter(Adapter):
 
         return dict(await asyncio.gather(*(fetch_one(coin_id) for coin_id in coin_ids)))
 
-    def _fetch_web_results(self, adapter_config: dict, goal: EditorialGoal) -> list[dict]:
+    def _fetch_web_results(
+        self, adapter_config: dict, goal: EditorialGoal, deadline: float | None = None
+    ) -> list[dict]:
         """News for the web-based goals: crypto headlines for WEB_AGGREGATOR,
-        general finance headlines (crypto excluded) for MARKET_NEWS."""
+        general finance headlines (crypto excluded) for MARKET_NEWS.
+
+        `deadline` (time.monotonic()) caps the whole fetch: once it passes, the
+        remaining queries are skipped and whatever was already found is kept."""
         if goal is EditorialGoal.MARKET_NEWS:
             config_key, default_query = "market_news_queries", MARKET_NEWS_QUERY
             title_keywords, exclude_keywords = MARKET_NEWS_TITLE_KEYWORDS, CRYPTO_EXCLUSION_KEYWORDS
@@ -738,13 +751,17 @@ class CryptoFeedAdapter(Adapter):
 
         merged: list[dict] = []
         seen_urls: set[str] = set()
+        budget = {"deadline": deadline} if deadline is not None else {}
         for query in queries:
+            if merged and deadline is not None and time.monotonic() >= deadline:
+                break
             for result in search_web(
                 query,
                 max_results=fetch_count,
                 max_age_hours=WEB_MAX_AGE_HOURS,
                 title_keywords=title_keywords,
                 provider=adapter_config.get("web_search_provider"),
+                **budget,
             ):
                 if exclude_keywords and matches_keywords(result["title"], exclude_keywords):
                     continue

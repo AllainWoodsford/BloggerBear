@@ -161,3 +161,50 @@ def test_search_web_title_keywords_match_whole_words_only():
         results = search_web("q", max_results=10, title_keywords=["eth", "crypto*"])
 
     assert [r["url"] for r in results] == ["https://a.com/2", "https://a.com/3"]
+
+
+# --- the time budget (`deadline`) ---------------------------------------------------------------
+
+
+def test_without_a_deadline_gdelt_keeps_its_normal_timeout_and_no_budget():
+    with _gdelt([]) as mock_get:
+        GdeltProvider().search("x", max_results=5, max_age_hours=24)
+
+    assert mock_get.call_args.kwargs["timeout"] == 30.0
+    assert mock_get.call_args.kwargs["deadline"] is None
+
+
+def test_a_deadline_caps_the_request_timeout_and_is_passed_on_to_the_retries():
+    with _gdelt([]) as mock_get, patch("common.web_search.time.monotonic", return_value=100.0):
+        GdeltProvider().search("x", max_results=5, max_age_hours=24, deadline=108.0)
+
+    assert mock_get.call_args.kwargs["timeout"] == 8.0
+    assert mock_get.call_args.kwargs["deadline"] == 108.0
+
+
+def test_a_deadline_already_past_raises_without_a_request():
+    with (
+        _gdelt([]) as mock_get,
+        patch("common.web_search.time.monotonic", return_value=100.0),
+        pytest.raises(TimeoutError),
+    ):
+        GdeltProvider().search("x", max_results=5, max_age_hours=24, deadline=99.0)
+
+    mock_get.assert_not_called()
+
+
+def test_search_web_passes_a_deadline_through_to_the_provider():
+    with _gdelt([]) as mock_get, patch("common.web_search.time.monotonic", return_value=0.0):
+        search_web("x", deadline=5.0)
+
+    assert mock_get.call_args.kwargs["deadline"] == 5.0
+
+
+def test_a_provider_without_a_deadline_parameter_still_works_when_none_is_given(monkeypatch):
+    class OldProvider(WebSearchProvider):
+        def search(self, query, *, max_results, max_age_hours):
+            return []
+
+    monkeypatch.setitem(web_search.PROVIDERS, "old", OldProvider)
+
+    assert search_web("x", provider="old") == []
