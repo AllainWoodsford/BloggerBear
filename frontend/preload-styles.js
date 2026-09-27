@@ -1,23 +1,21 @@
 /**
- * Flips a preloaded stylesheet <link> to an active one once it has finished loading, so the two
- * site stylesheets (normalize.css, styles.css) never block the initial render (Lighthouse's
- * "render-blocking requests" flag -- est. 440ms). Used by index.html and
- * common/static_pages.py's article page template, both of which mark the two stylesheet <link>s
- * `rel="preload" as="style" data-swap` instead of `rel="stylesheet"` and include a <noscript>
- * fallback for when JS is disabled.
+ * LEGACY SHIM -- nothing new references this file. Article pages published while PR #125's
+ * preload+swap experiment was live are static HTML in S3 that mark their two stylesheet <link>s
+ * `rel="preload" as="style" data-swap` and load this script to activate them; it has to stay
+ * deployed or those pages render unstyled. index.html and common/static_pages.py's article
+ * template are back to plain `rel="stylesheet"` links.
  *
- * A tiny external file, not an inline onload="..." handler, because this site's CSP has no
- * 'unsafe-inline' for script-src (infra/modules/static-site/main.tf) -- an inline handler would
- * just be silently blocked. NOT used by about.html/error.html: both are deliberately built to
- * render correctly with zero JS dependency (see error.html's own comment), and this script
- * failing to load would leave their CSS preloaded but never activated -- worse than the plain
- * blocking <link> they keep instead.
+ * The original version waited for each link's `load` event before flipping `rel`, which raced:
+ * a preload that finished before this script ran (a cached stylesheet, or this file arriving
+ * late) had already fired its `load`, so the listener never ran and the page stayed unstyled
+ * ("preloaded but not used" in DevTools). Flipping immediately has no such window -- a
+ * rel="stylesheet" link reuses the in-flight/finished preload rather than fetching again.
+ *
+ * Safe to delete once every page carrying `data-swap` has been re-rendered.
  */
 (function () {
   var links = document.querySelectorAll('link[rel="preload"][as="style"][data-swap]');
   for (var i = 0; i < links.length; i++) {
-    links[i].addEventListener("load", function () {
-      this.rel = "stylesheet";
-    });
+    links[i].rel = "stylesheet";
   }
 })();
