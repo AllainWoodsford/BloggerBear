@@ -1,7 +1,7 @@
 ---
 doc: progress-tracker
 schema_version: 1
-last_updated: 2026-09-12
+last_updated: 2026-09-27
 source_of_truth: docs/project-plan.md
 phases:
   - id: phase-0
@@ -9,28 +9,28 @@ phases:
     status: in_progress
   - id: phase-1
     name: First adapter + manual pipeline
-    status: not_started
+    status: done
   - id: phase-2
     name: Admin console
-    status: not_started
+    status: done
   - id: phase-3
     name: Automation (scheduler + Step Functions)
-    status: not_started
+    status: done
   - id: phase-4
     name: Public frontend polish
-    status: not_started
+    status: done
   - id: phase-5
     name: Feedback loop
-    status: not_started
+    status: done
   - id: phase-6
     name: Observability & hardening
-    status: not_started
+    status: in_progress
   - id: phase-7
     name: Second & third adapters
-    status: not_started
+    status: done
   - id: phase-8
     name: Stretch
-    status: not_started
+    status: done
 ---
 
 # BloggerBear — Progress Tracker
@@ -57,6 +57,22 @@ this file *is* the plan-in-progress.
 Full rationale, architecture, and constraints for everything below live in
 `docs/project-plan.md` — treat that as the source of truth; this file only
 tracks *what's built vs. not*.
+
+## Current status (2026-09-27)
+
+- **Live:** production at bloggerbear.com with four topics (GitHub Trending,
+  crypto, tech market news, World of Warcraft) plus the daily Trending
+  Everywhere digest, all running unattended on their schedules. Dev is
+  deployed and runs the same pipeline.
+- **Phases 1–5, 7 and 8: done** — built, deployed, and in daily use.
+- **Phase 0: in progress** — the code and workflows are done; what's open is
+  GitHub/AWS configuration: branch protection, a required reviewer on the
+  `production` environment, a working destroy/rebuild of dev, and sharing
+  one WAF ACL across both distributions (details under Known issues and
+  Phase 0 below).
+- **Phase 6: in progress** — one item open: WAF rule tuning from real traffic.
+- **Since phase 8**, work has continued as enhancements; see "Enhancements
+  since Phase 8" below, and `docs/project-plan.md` §11 for the detail.
 
 ---
 
@@ -86,33 +102,44 @@ governs how every phase from here on ships:
 
 ## ⚠️ Known issues (fix with Phase 0)
 
-- [ ] Rename default branch `master` → `dev`; create `prod` from its tip
+- [x] Rename default branch `master` → `dev`; create `prod` from its tip —
+  `dev` is the default branch and `prod` exists
 - [ ] Branch protection on `dev` and `prod`: PR required, `terraform` +
-  `security` checks required, no direct pushes
+  `security` checks required, no direct pushes — **blocked:** GitHub offers
+  branch protection and rulesets on a private repository only with GitHub
+  Pro (the API answers "Upgrade to GitHub Pro", checked 2026-09-27). Until
+  then, the PR-only rule is a convention, not something GitHub enforces
 - [ ] GitHub Environments: `dev` (no protection) and `production` (required
-  reviewer) — the latter is what actually gates a production release
-- [ ] `docs/project-plan.md` in this repo is a condensed rewrite that had
-  drifted from the full spec (this Project's copy) — missing the financial-
-  topic compliance detail (§4.4), the feedback PII-scrub mechanics (§7.2),
-  and phases 3–8. Its CI/CD section (§8) has now been updated to match the
-  branch/release model above; the rest of the reconciliation is still open.
+  reviewer) — **partly done:** the `production` environment exists but has
+  no protection rules (required reviewers on a private repo are also a paid
+  GitHub feature), so a published release deploys without an approval step
+- [x] `docs/project-plan.md` reconciled (2026-09-27): it now covers the
+  financial-topic rules (§2, §7), feedback screening (§11), all phases
+  (§10), and every shipped enhancement (§11)
 
 ---
 
 ## Prerequisites (manual, one-time, blocking)
 
-- [ ] AWS root user MFA enabled; root no longer used day-to-day
+- [ ] AWS root user MFA enabled; root no longer used day-to-day — not
+  verifiable from the repo; confirm in the AWS console
 - [ ] IAM (or IAM Identity Center) admin user created for this project, MFA on
-- [ ] AWS Budget alarm set (e.g. $10 / $25 / $50) — **before** anything deploys
-- [ ] Bedrock model access requested in-console for the Claude models needed,
+  — not verifiable from the repo; confirm in the AWS console
+- [x] AWS Budget alarm set — the account has AWS's "My Zero-Spend Budget"
+  plus `bloggerbear-bedrock-spend` from `infra/bootstrap` (checked
+  2026-09-27). Consider a total-spend budget with real thresholds (e.g.
+  $10 / $25 / $50), since zero-spend alerts on any charge at all
+- [x] Bedrock model access requested in-console for the Claude models needed,
   **in `ap-southeast-2`** (manual, per-model, per-region, can sit pending —
   start this early; before Phase 1, confirm which specific model IDs are
-  directly invokable there vs. need a cross-region inference profile)
+  directly invokable there vs. need a cross-region inference profile) —
+  done: models run through Australian cross-region inference profiles and
+  are chosen at runtime from the Models registry
 - [x] AWS region decided: **`ap-southeast-2` (Sydney)** — fixed, not still
   open. Exception: the CloudFront-scope WAF ACL and ACM certificate must
   still be created in `us-east-1` (AWS platform constraint, see
   `docs/specs/phase-0-foundations.md` → "Region")
-- [ ] AWS CLI v2 installed locally, `aws configure` / `aws configure sso` run
+- [x] AWS CLI v2 installed locally, `aws configure` / `aws configure sso` run
 
 ---
 
@@ -121,34 +148,40 @@ governs how every phase from here on ships:
 Spec: `docs/specs/phase-0-foundations.md`
 
 - [ ] Known issues above resolved (branches, protections, environments) —
-  default branch rename to `dev` is done; `prod` branch, branch protection,
-  and GitHub Environments are still manual/pending (see PR #TBD)
+  branches done; branch protection and the production reviewer are blocked
+  on GitHub Pro (see Known issues)
 - [x] CI's pinned Terraform version bumped from `1.9.8` to ≥1.10.0 (required
   for native S3 locking below) — bumped to `1.16.2`
 - [x] `infra/bootstrap`: Terraform state S3 bucket **only** — no DynamoDB
   table; locking is native S3 (`use_lockfile = true`) — code complete; the
-  one-time local apply is still a manual step for the human
+  one-time local apply is done by hand (last applied 2026-09-27, adding the
+  AgentCore deploy permissions). Keep its variables in the git-ignored
+  `infra/bootstrap/terraform.tfvars`: a plan without `domain_name` and
+  `budget_alert_email` proposes destroying the DNS zone and budget
+  (`prevent_destroy` blocks it)
 - [x] `infra/modules/static-site`: reusable module (S3 + CloudFront + OAC),
   parameterized for `enable_custom_domain` and `force_destroy`
 - [x] `infra/environments/dev`: region `ap-southeast-2`, no custom domain,
   dev bucket `force_destroy = true`
 - [x] `infra/environments/production`: region `ap-southeast-2`, custom
   domain via Route 53 + ACM (ACM cert in `us-east-1` — CloudFront
-  requirement, not a region change) — domain/hosted zone values are still
-  TODO in `terraform.tfvars` pending the open domain-registrar question
+  requirement, not a region change) — live at bloggerbear.com; the hosted
+  zone lives in `infra/bootstrap` so it outlives production
 - [ ] One WAF Web ACL (created in `us-east-1`), associated with **both**
   distributions (not two ACLs) — production creates the ACL; wiring dev's
   distribution to the same ACL ARN is a manual `terraform.tfvars` edit
   after production's first apply (see `infra/environments/dev/variables.tf`)
+  — still open: dev's `web_acl_arn` is empty (checked 2026-09-27)
 - [x] Dev workflow: auto-apply on push to `dev`, no approval
 - [x] Production workflow: apply only on Release published from `prod`,
-  gated by `production` environment approval — workflow is wired up;
-  actually gating requires the human to create the `production` GitHub
-  Environment with a required reviewer (see known issues above)
+  gated by `production` environment approval — workflow is wired up and
+  in use; the `production` environment exists but has no required reviewer
+  yet (see Known issues)
 - [x] Concurrency groups on both apply paths (queue, don't race)
 - [x] `workflow_dispatch` "destroy dev" workflow
 - [ ] Round-trip proven: destroy dev, rebuild it via a push, confirm it
-  comes back clean — requires a real AWS deploy, not achievable from a PR
+  comes back clean — not yet: all four runs of the destroy-dev workflow
+  (2026-09-19) failed, so the destroy half needs fixing first
 
 ## Phase 1 — First adapter + manual pipeline
 
@@ -159,31 +192,29 @@ Spec: `docs/specs/phase-0-foundations.md`
   — `lambdas/common/adapters/github_trending.py`
 - [x] Hourly research-tick Lambda: diff-first, only calls Bedrock on material
   change, writes to `Findings` (rolling TTL 7–14 days) —
-  `lambdas/research_tick_handler.py`; code complete, not yet deployed (see
-  manual follow-ups in the PR)
+  `lambdas/research_tick_handler.py`; deployed. The research tick now runs
+  on a heartbeat + interval (see project-plan §4) rather than strictly
+  hourly
 - [x] DynamoDB tables: `Topics`, `Findings`, `CandidateIdeas`, `Articles` —
   plus `ModerationQueue` (required by the "route to moderation" scope line
   below, per the data model in §5) — `infra/modules/app-data/`
 - [x] S3 storage for article bodies + raw source snapshots — one private
   `bloggerbear-<env>-content` bucket, `articles/` and `snapshots/` prefixes
 - [x] Daily cycle (manually triggered for now): ideation → selection → draft
-  → compliance review → publish — `lambdas/daily_cycle_handler.py`; code
-  complete, not yet deployed
-- [ ] At least one manually-triggered end-to-end run produces an article
-  you'd actually be willing to publish — blocked on real AWS: `infra/bootstrap`
-  hasn't been re-applied with Phase 1's IAM changes, `BEDROCK_MODEL_ID` is
-  still an empty TODO in both `terraform.tfvars` pending model-access
-  confirmation, and no `Topics` item has been seeded yet
+  → compliance review → publish — `lambdas/daily_cycle_handler.py`;
+  deployed and scheduled (Phase 3). A fresh-data review now runs before
+  compliance
+- [x] At least one manually-triggered end-to-end run produces an article
+  you'd actually be willing to publish — production publishes (or holds for
+  review) articles daily across four topics
 
 ## Phase 2 — Admin console
 
 - [x] Admin API, separate from public API, authenticated (Cognito or IAM +
   WAF IP allowlist) — went with **IAM (SigV4) + a regional WAF IP allowlist**
   rather than Cognito (simpler/cheaper for a single-operator project, and
-  explicitly sanctioned as an equal alternative here); code complete, not
-  yet deployed — `admin_allowed_cidrs` is still an empty-list TODO in both
-  `terraform.tfvars`, which fails closed (nothing can reach the API) until
-  set to the operator's real IP
+  explicitly sanctioned as an equal alternative here); deployed, with the
+  operator's IP in `admin_allowed_cidrs` (fails closed when empty)
 - [x] Topic CRUD UI, including adapter selection — implemented as a local
   operator CLI (`scripts/admin_cli.py`), not a browser app, since IAM auth
   from a browser would otherwise need Cognito Identity Pool federation
@@ -192,7 +223,9 @@ Spec: `docs/specs/phase-0-foundations.md`
 - [x] Manual "trigger a run" button per topic — `admin_cli.py topics
   trigger <id> --pipeline {research_tick,daily_cycle}`, async Lambda invoke
 - [x] Moderation queue UI: approve / reject flagged drafts —
-  `admin_cli.py moderation list/approve/reject`
+  `admin_cli.py moderation list/approve/reject`, and since then the review
+  inbox (`admin_cli.py inbox` / `approve`: one keystroke per item, plus
+  Re-Write of a held article)
 - [x] "Candidates considered but not published" view (from `CandidateIdeas`)
   — `admin_cli.py topics candidates <id>`, returns every candidate
   regardless of status so rejected/unselected angles are visible too
@@ -203,7 +236,8 @@ Spec: `docs/specs/phase-0-foundations.md`
   own configured cadence — created/updated/deleted dynamically by
   `admin_api_handler.py` (`lambdas/common/scheduler.py`) at topic
   create/update/delete time, since topics are runtime data Terraform can't
-  enumerate; code complete, not yet deployed
+  enumerate; deployed. Production topics research every 4 hours and write
+  at 09:00–09:03 Sydney, staggered a minute apart
 - [x] Step Functions state machine: Research → Draft → Review → Publish, with
   retries and a DLQ — **scoped down**: wraps the existing single
   `daily_cycle_handler` Lambda (already the full ideate→select→draft→
@@ -225,7 +259,7 @@ Spec: `docs/specs/phase-0-foundations.md`
   frontend (`frontend/app.js`) fetches `GET /topics` from a new
   unauthenticated public API at load time rather than baking nav into the
   static build, so a topic created via the admin CLI appears without any
-  redeploy; code complete, not yet deployed
+  redeploy; deployed
 - [x] Article pages with sources footer (URL + title + accessed date) —
   `frontend/app.js`'s article view renders `source_refs` as a footer list
 - [x] Public, anonymous view counters per article — `POST
@@ -342,8 +376,7 @@ Spec: `docs/specs/phase-0-foundations.md`
 - [x] Thumbs up/down on articles, no identity attached —
   `frontend/app.js`'s `renderFeedback` posts `{vote: "up"|"down"}` to
   `POST /articles/{article_id}/feedback` (public API,
-  `public_api_handler.py`'s `_submit_feedback`); code complete, not yet
-  deployed
+  `public_api_handler.py`'s `_submit_feedback`); deployed
 - [x] Optional free-text comment on a vote — same route, `comment` field is
   optional and defaults to `null`
 - [x] PII-scrub Lambda: regex pass, then Bedrock pass, before anything is
@@ -367,10 +400,8 @@ Spec: `docs/specs/phase-0-foundations.md`
   — `common/dynamo.py`'s `get_top_voted_articles` (net-positive `net_votes`
   only) feeds a short excerpt into `daily_cycle_handler.py`'s draft prompt
 
-All six items above: code complete (143 lambda tests passing, ruff clean,
-`bandit -r lambdas/ --severity-level high --confidence-level high` clean,
-`terraform fmt`/`validate` clean on bootstrap/dev/production), not yet
-deployed to real AWS. Fixed post-first-pass: `admin_api_routes` /
+All six items above: deployed (originally shipped with 143 lambda tests;
+the suite is now over 2,300). Fixed post-first-pass: `admin_api_routes` /
 `public_api_routes` in both `infra/environments/dev/main.tf` and
 `infra/environments/production/main.tf` were missing the new
 `/prompt-refinements` and `/articles/{id}/feedback` routes, which would
@@ -385,11 +416,9 @@ them.
   `for_each`), a DLQ-depth alarm, a Step Functions `ExecutionsFailed`
   alarm, one SNS topic all of them publish to, and a dashboard
   summarizing all of it. Wired into both `infra/environments/dev` and
-  `production` as `module.observability`; code complete, not yet
-  deployed. A human still needs to set `var.alert_email` in
-  `terraform.tfvars` and confirm the SNS subscription email before
-  anyone actually gets paged — alarms fire either way, but silently,
-  until then
+  `production` as `module.observability`; deployed. Alerts reach a person
+  only once `var.alert_email` is set and the SNS subscription email is
+  confirmed
 - [x] Cost/budget alarms specifically watching Bedrock spend —
   `infra/bootstrap`'s new `aws_budgets_budget.bedrock_spend`
   (account-level, so it lives in bootstrap alongside the other one-time
@@ -397,7 +426,7 @@ them.
   service, notifying at 80% actual / 100% forecasted. Gated on
   `var.budget_alert_email` (empty by default → no budget resource is
   created at all, matching this project's fail-closed-by-omission
-  pattern) — set it before the next bootstrap apply. This is in addition
+  pattern) — created (checked 2026-09-27). This is in addition
   to the general account-wide AWS Budget alarm already listed as a manual
   prerequisite above
 - [ ] WAF rule tuning based on real traffic patterns — the tuning itself
@@ -409,9 +438,12 @@ them.
   API, and production's shared CLOUDFRONT-scope ACL), so the data needed
   to actually tune the rate-limit threshold and rule set will exist once
   deployed
-- [ ] Prompt iteration on the compliance-review step based on what's
-  actually been flagged so far — the prompt edit itself needs real
-  flagged data and stays open. What's done: added
+- [x] Prompt iteration on the compliance-review step based on what's
+  actually been flagged so far — done: real flagged drafts showed the
+  reviewer calling figures from the findings "invented", so the review now
+  sees the source material and plain code decides which nominated items
+  stand (project-plan §11, "The compliance review sees the sources"). The
+  visibility that made it possible: added
   `GET /moderation-queue/stats` (admin API, IAM-authenticated) and
   `admin_cli.py moderation stats`, which summarize ModerationQueue
   history (`common/dynamo.py`'s `list_all_moderation_items`) — total
@@ -478,7 +510,7 @@ them.
   gained a static "Trending Everywhere" nav link (the digest isn't a real
   Topic — no adapter, no cadence — so it never comes back from `GET
   /topics` and needs its own entry) pointing at the same `#/topic/{id}`
-  route every other topic already uses. Code complete, not yet deployed
+  route every other topic already uses. Deployed, daily at 07:00 UTC
 - [x] Public read API / RSS so other tools can consume output via API
   instead of scraping it — already fully satisfied by Phase 4's public
   API: `GET /topics`, `GET /articles`, `GET /articles/{article_id}`, and
@@ -516,9 +548,59 @@ Called out separately because it cuts across every phase, not just one:
 
 ---
 
+## Enhancements since Phase 8
+
+All shipped and deployed; the design and decisions for each are in
+`docs/project-plan.md` §11.
+
+- [x] Static article publishing — every publish path renders a static page
+- [x] Custom domain (bloggerbear.com) via Route 53 + ACM
+- [x] AI lineage and cost tracking, pluggable model routing (registry,
+  fallback, rotation after publish), and a public Stats page
+- [x] Lineage cost fixes and the research tally
+- [x] Rolling research, whole-window articles, and the fresh-data review
+  before publish (shadow by default; enforce mode available per topic)
+- [x] The compliance review sees the sources
+- [x] Feedback: comment screening, limits and lockdown, verification
+- [x] Musings (the bear's moods) and the tummy toy
+- [x] The review inbox (`admin_cli inbox` / `approve`)
+- [x] Equipment: approved prompt changes as gear the bear wears
+- [x] Observability: StatsCurrent/StatsHistory, Lambda timing, Cost
+  Explorer poll
+- [x] Cleanup: TTLs, expiring snapshots, 90-day log retention
+- [x] Refusal guard for angles and titles; recent titles fed to ideation
+- [x] Re-Write of a held article from the inbox (#130)
+- [x] GDELT time budgets; CoinGecko key passed to the daily cycle (#129)
+- [x] AgentCore Web Search as the fallback when GDELT fails (#132)
+- [x] Web search usage and spend on Stats: counted (#134) and read from the
+  AWS bill (#135)
+- [x] Staggered research and authoring schedules (production and dev)
+- [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
+
 ## Backlog / not yet scheduled
 
 *(Freeform — drop ideas here as they occur to you; promote them into a
 phase above, or a new phase, whenever you're ready to schedule them.)*
 
--
+- **Fix production's CoinGecko key (operator):** the deployed
+  `COINGECKO_API_KEY` is rejected by CoinGecko (HTTP 401, "API Key
+  Missing"; it doesn't have the `CG-` prefix real keys use). Crypto research
+  falls back to the keyless API and fails on altcoin days. Update the
+  `production` environment secret (and the plan, if it's a Pro key), then
+  run a release
+- **Confirm the AgentCore Cost Explorer service name:** #135 assumed
+  `"Amazon Bedrock AgentCore"`. Once AgentCore spend has been billed, check
+  that "Web search spend (actual)" is non-zero; if not, look the name up
+  with `aws ce get-dimension-values --dimension SERVICE`
+- **Confirm the AgentCore per-query price** ($0.007 USD assumed from the
+  launch announcement) against the pricing page
+- **Fix the destroy-dev workflow**, then prove the destroy/rebuild round trip
+- **Share one WAF ACL** across the dev and production distributions (set
+  dev's `web_acl_arn`)
+- **Branch protection and a production reviewer:** needs GitHub Pro, or a
+  public repository
+- **WAF rule tuning** from real traffic (Phase 6)
+- **Frontend tests for the Stats page** — the new web search tiles were
+  only syntax-checked
+- **Consider `adapter_config.provider = "agentcore"` for wow-forever:** the
+  fallback triggers only when GDELT fails, not when it answers with nothing
