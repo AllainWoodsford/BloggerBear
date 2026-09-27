@@ -392,3 +392,84 @@ def test_a_topic_can_ask_for_agentcore_directly(agentcore):
     with _gdelt([]) as mock_get, _post(_Reply(_tool_result([ROW]))):
         assert len(search_web("x", provider="agentcore")) == 1
     mock_get.assert_not_called()
+
+
+# --- web search usage is counted in the weekly Stats ------------------------------------------
+
+
+@pytest.fixture
+def recorders():
+    with (
+        patch("common.web_search.record_web_search_query") as query,
+        patch("common.web_search.record_web_search_fallback") as fallback,
+    ):
+        yield query, fallback
+
+
+def test_a_query_the_gateway_answered_is_counted_once(agentcore, recorders):
+    query, fallback = recorders
+    with _post(_Reply(_tool_result([ROW]))):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+
+    query.assert_called_once_with()
+    fallback.assert_not_called()
+
+
+def test_a_tool_error_inside_a_2xx_is_still_counted(agentcore, recorders):
+    query, _ = recorders
+    reply = _Reply({"result": {"isError": True, "content": [{"type": "text", "text": "quota"}]}})
+    with _post(reply), pytest.raises(RuntimeError):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+
+    query.assert_called_once_with()
+
+
+def test_a_request_the_gateway_refused_is_not_counted(agentcore, recorders):
+    query, _ = recorders
+    with _post(_Reply({}, status=403)), pytest.raises(Exception, match="403"):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+
+    query.assert_not_called()
+
+
+def test_an_unconfigured_gateway_is_not_counted(monkeypatch, recorders):
+    query, _ = recorders
+    monkeypatch.delenv("AGENTCORE_WEB_SEARCH_URL", raising=False)
+    with pytest.raises(RuntimeError):
+        AgentCoreProvider().search("q", max_results=5, max_age_hours=24)
+
+    query.assert_not_called()
+
+
+def test_a_gdelt_fallback_is_counted_along_with_its_query(agentcore, recorders):
+    query, fallback = recorders
+    with (
+        patch("common.web_search.get_json_with_backoff", side_effect=RuntimeError("429")),
+        _post(_Reply(_tool_result([ROW]))),
+    ):
+        search_web("wow")
+
+    fallback.assert_called_once_with()
+    query.assert_called_once_with()
+
+
+def test_a_working_gdelt_search_counts_nothing(agentcore, recorders):
+    query, fallback = recorders
+    with _gdelt([_article("Story", "https://a.com/1")]), _post(_Reply({})):
+        search_web("x")
+
+    query.assert_not_called()
+    fallback.assert_not_called()
+
+
+def test_a_stats_write_failure_never_breaks_the_search(agentcore, monkeypatch, capsys):
+    # the real recorders, with no Stats table configured: the write fails and is only logged
+    monkeypatch.delenv("STATS_CURRENT_TABLE", raising=False)
+    with (
+        patch("common.web_search.get_json_with_backoff", side_effect=RuntimeError("429")),
+        _post(_Reply(_tool_result([ROW]))),
+    ):
+        results = search_web("wow")
+
+    assert len(results) == 1
+    assert "stats_tracking: could not record" in capsys.readouterr().out

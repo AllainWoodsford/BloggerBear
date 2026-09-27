@@ -36,6 +36,12 @@ and "Total Stats" show one holistic AI-spend figure instead of leaving out the l
 Per-model/per-topic/per-day detail stays common/stats.py's job, aggregated live from Articles,
 unchanged; this is a coarse weekly total alongside it, not a replacement for it.
 
+Web search (AgentCore fallback, lambdas/common/web_search.py) is tallied here too, but not as a
+Bedrock category -- it is billed per query, not per token: `record_web_search_query` adds one
+query and its fixed per-query price, and `record_web_search_fallback` counts a GDELT search that
+failed over to AgentCore (how often GDELT is letting the site down). Plain weekly counters, so
+they roll over and into the all-time row like every other counter.
+
 Also PR 4: StatsHistory holds one more row beyond the normal one-per-completed-week ones --
 `week_start = "all-time"` (a sentinel that can never collide with a real Monday date), a running
 total kept in sync by stats_rollover_handler.py at every rollover (common/dynamo.py's
@@ -79,9 +85,26 @@ LAMBDA_MS_PREFIX = "lambda_ms_"
 # cost_explorer_poll_handler.py's latest reading -- a refreshed snapshot (SET), not a counter
 # (ADD) like everything else on this row. Not all of these are meant for the public Stats page;
 # api_gateway_cost_as_of in particular is for the owner's own troubleshooting.
+# Web search: AgentCore queries (and their cost) and GDELT searches that failed over to it --
+# counters (ADD), like everything else on the row except API Gateway's snapshot below.
+WEB_SEARCH_AGENTCORE_QUERIES = "web_search_agentcore_queries"
+WEB_SEARCH_AGENTCORE_COST_AUD = "web_search_agentcore_cost_aud"
+WEB_SEARCH_GDELT_FALLBACKS = "web_search_gdelt_fallbacks"
+# USD per AgentCore Web Search query: $7 per 1,000, from AWS's launch announcement for Web Search
+# on Amazon Bedrock AgentCore. Confirm against https://aws.amazon.com/bedrock/agentcore/pricing/
+# and update by hand if it changes -- a fixed approximation like USD_TO_AUD_RATE, not a live price.
+AGENTCORE_WEB_SEARCH_USD_PER_QUERY = 0.007
+
 API_GATEWAY_COST_USD_30D = "api_gateway_cost_usd_30d"
 API_GATEWAY_COST_AUD_30D = "api_gateway_cost_aud_30d"
 API_GATEWAY_COST_AS_OF = "api_gateway_cost_as_of"
+
+# The same poll's reading of the *actual* AgentCore charge (common/cost_explorer.py) -- a SET
+# snapshot like API Gateway's, shown beside the per-query estimate above so the two can be
+# compared. agentcore_cost_as_of is owner-only, like api_gateway_cost_as_of.
+AGENTCORE_COST_USD_30D = "agentcore_cost_usd_30d"
+AGENTCORE_COST_AUD_30D = "agentcore_cost_aud_30d"
+AGENTCORE_COST_AS_OF = "agentcore_cost_as_of"
 
 
 def _current_week_start(today: date | None = None) -> str:
@@ -133,7 +156,7 @@ def tracked_claude(category: str, prompt: str, model_id: str, *, max_tokens: int
     return result["text"]
 
 
-def _record(updates: dict[str, int]) -> None:
+def _record(updates: dict[str, int | Decimal]) -> None:
     try:
         increment_current_stats(updates, _current_week_start())
     except Exception as exc:  # noqa: BLE001 - never let a stats write break the real action
@@ -157,6 +180,19 @@ def record_loot_drop() -> None:
     _record({LOOT_DROPS: 1})
 
 
+def record_web_search_query() -> None:
+    """One billable AgentCore Web Search query (common/web_search.py's AgentCoreProvider, called
+    once per request the gateway answered with HTTP 2xx) and its fixed per-query price in AUD."""
+    cost_aud = AGENTCORE_WEB_SEARCH_USD_PER_QUERY * USD_TO_AUD_RATE
+    _record({WEB_SEARCH_AGENTCORE_QUERIES: 1, WEB_SEARCH_AGENTCORE_COST_AUD: Decimal(str(cost_aud))})
+
+
+def record_web_search_fallback() -> None:
+    """A GDELT search failed and was retried through AgentCore (common/web_search.py's
+    search_web) -- an activity count; the query itself is counted by record_web_search_query."""
+    _record({WEB_SEARCH_GDELT_FALLBACKS: 1})
+
+
 def record_lambda_duration(function_name: str, duration_ms: int) -> None:
     """One invocation's self-timed wall-clock duration, added to `function_name`'s running total
     for the week (common/lambda_timing.py's track_lambda_duration -- this is never called directly
@@ -166,7 +202,7 @@ def record_lambda_duration(function_name: str, duration_ms: int) -> None:
 
 def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
     """The latest Cost Explorer reading for API Gateway spend (common/cost_explorer.py's
-    fetch_api_gateway_cost_usd_30d, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
+    fetch_service_costs_usd_30d, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
     a rolling 30-day total, not a counter, so this SETs rather than ADDs: a repeat poll overwrites
     the previous reading instead of compounding it onto every prior one."""
     try:
@@ -180,6 +216,22 @@ def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
         print(f"stats_tracking: could not record api gateway cost: {exc!r}")
+
+
+def record_agentcore_cost(cost_usd: Decimal, as_of: str) -> None:
+    """The latest Cost Explorer reading of the actual AgentCore charge over 30 days -- SET, not
+    ADD, exactly like record_api_gateway_cost, for the same reason."""
+    try:
+        set_current_stats_fields(
+            {
+                AGENTCORE_COST_USD_30D: cost_usd,
+                AGENTCORE_COST_AUD_30D: cost_usd * Decimal(str(USD_TO_AUD_RATE)),
+                AGENTCORE_COST_AS_OF: as_of,
+            },
+            _current_week_start(),
+        )
+    except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
+        print(f"stats_tracking: could not record agentcore cost: {exc!r}")
 
 
 def record_article_lineage(lineage: dict) -> None:
@@ -289,7 +341,16 @@ ARTICLES_BACKFILL_MARKER = "articles-backfill"
 # additive across weeks -- everything else this module ever writes onto the row is a plain weekly
 # counter, safe to ADD. Metadata fields describe the row itself, not something to fold into a
 # total at all.
-_SNAPSHOT_FIELDS = frozenset({API_GATEWAY_COST_USD_30D, API_GATEWAY_COST_AUD_30D, API_GATEWAY_COST_AS_OF})
+_SNAPSHOT_FIELDS = frozenset(
+    {
+        API_GATEWAY_COST_USD_30D,
+        API_GATEWAY_COST_AUD_30D,
+        API_GATEWAY_COST_AS_OF,
+        AGENTCORE_COST_USD_30D,
+        AGENTCORE_COST_AUD_30D,
+        AGENTCORE_COST_AS_OF,
+    }
+)
 _METADATA_FIELDS = frozenset({"stats_id", "week_start", "rolled_over_at"})
 
 
@@ -352,6 +413,9 @@ def public_view(row: dict) -> dict:
     )
     api_gateway_cost_usd = row.get(API_GATEWAY_COST_USD_30D)
     api_gateway_cost_aud = row.get(API_GATEWAY_COST_AUD_30D)
+    web_search_queries = int(row.get(WEB_SEARCH_AGENTCORE_QUERIES, 0))
+    web_search_cost = row.get(WEB_SEARCH_AGENTCORE_COST_AUD)
+    agentcore_actual_aud = row.get(AGENTCORE_COST_AUD_30D)
 
     return {
         "categories": [_category_view(row, category) for category in _PUBLIC_CATEGORIES],
@@ -361,4 +425,20 @@ def public_view(row: dict) -> dict:
         "pipeline_hours": round(total_lambda_ms / 3_600_000, 2),
         "api_gateway_cost_usd_30d": float(api_gateway_cost_usd) if api_gateway_cost_usd is not None else None,
         "api_gateway_cost_aud_30d": float(api_gateway_cost_aud) if api_gateway_cost_aud is not None else None,
+        # Every query is priced (a fixed per-query rate), so no queries is a real $0, and a
+        # missing cost alongside queries (which record_web_search_query never writes) is None.
+        "web_search": {
+            "agentcore_queries": web_search_queries,
+            "agentcore_cost_aud": (
+                float(web_search_cost)
+                if web_search_cost is not None
+                else (0.0 if web_search_queries == 0 else None)
+            ),
+            "gdelt_fallbacks": int(row.get(WEB_SEARCH_GDELT_FALLBACKS, 0)),
+            # The actual charge from the AWS bill (Cost Explorer, rolling 30 days, ~24h lag) --
+            # None until the first poll has run; its as_of stays owner-only.
+            "agentcore_actual_cost_aud_30d": (
+                float(agentcore_actual_aud) if agentcore_actual_aud is not None else None
+            ),
+        },
     }

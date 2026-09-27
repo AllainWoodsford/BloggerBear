@@ -1,5 +1,10 @@
 """AWS Cost Explorer poll for the API Gateway spend that Bedrock/DynamoDB cost tracking above
-doesn't cover (Observability enhancement, PR 3).
+doesn't cover (Observability enhancement, PR 3), and for the actual AgentCore Web Search charge --
+the real bill to check common/stats_tracking.py's per-query *estimate* against (a wrong
+AGENTCORE_WEB_SEARCH_USD_PER_QUERY shows up as the two disagreeing).
+
+Both services come back from ONE GetCostAndUsage call (filtered to the two, grouped by SERVICE):
+each call is billed, and this runs daily.
 
 Cost Explorer is a global service reachable only via the us-east-1 endpoint, regardless of which
 region the rest of this stack runs in -- the client below is pinned there deliberately, not a bug.
@@ -28,7 +33,14 @@ from decimal import Decimal
 import boto3
 
 _LOOKBACK_DAYS = 30
-_SERVICE_NAME = "Amazon API Gateway"
+API_GATEWAY_SERVICE = "Amazon API Gateway"
+# ASSUMED, not yet confirmed from billing data: when this was written the account had no AgentCore
+# spend posted, so Cost Explorer listed no AgentCore service to copy the name from. A wrong name
+# simply reads as $0 (a service with no rows is 0, never an error) -- if the actual stays at $0
+# while the per-query estimate grows, check `aws ce get-dimension-values --dimension SERVICE`
+# and correct this.
+AGENTCORE_SERVICE = "Amazon Bedrock AgentCore"
+POLLED_SERVICES = (API_GATEWAY_SERVICE, AGENTCORE_SERVICE)
 
 
 def _ce_client():
@@ -37,20 +49,33 @@ def _ce_client():
     return boto3.client("ce", region_name="us-east-1")
 
 
-def fetch_api_gateway_cost_usd_30d(today: date | None = None) -> Decimal:
-    """Total unblended USD cost attributed to API Gateway over the 30 days ending yesterday
-    (today's own figure is never included -- see the module docstring on Cost Explorer's lag)."""
+def fetch_service_costs_usd_30d(
+    services: tuple[str, ...] = POLLED_SERVICES, today: date | None = None
+) -> dict[str, Decimal]:
+    """Total unblended USD cost per service over the 30 days ending yesterday (today's own figure
+    is never included -- see the module docstring on Cost Explorer's lag), in one call. Every
+    service asked for is in the result: one with no cost rows at all is Decimal("0")."""
     today = today or datetime.now(UTC).date()
     start = today - timedelta(days=_LOOKBACK_DAYS)
-    response = _ce_client().get_cost_and_usage(
-        TimePeriod={"Start": start.isoformat(), "End": today.isoformat()},
-        Granularity="DAILY",
-        Metrics=["UnblendedCost"],
-        Filter={"Dimensions": {"Key": "SERVICE", "Values": [_SERVICE_NAME]}},
-    )
-    total = Decimal("0")
-    for bucket in response.get("ResultsByTime", []):
-        amount = bucket.get("Total", {}).get("UnblendedCost", {}).get("Amount")
-        if amount is not None:
-            total += Decimal(amount)
-    return total
+    kwargs = {
+        "TimePeriod": {"Start": start.isoformat(), "End": today.isoformat()},
+        "Granularity": "DAILY",
+        "Metrics": ["UnblendedCost"],
+        "Filter": {"Dimensions": {"Key": "SERVICE", "Values": list(services)}},
+        "GroupBy": [{"Type": "DIMENSION", "Key": "SERVICE"}],
+    }
+    totals = {service: Decimal("0") for service in services}
+    while True:
+        response = _ce_client().get_cost_and_usage(**kwargs)
+        for bucket in response.get("ResultsByTime", []):
+            for group in bucket.get("Groups", []):
+                keys = group.get("Keys") or []
+                amount = group.get("Metrics", {}).get("UnblendedCost", {}).get("Amount")
+                if keys and keys[0] in totals and amount is not None:
+                    totals[keys[0]] += Decimal(amount)
+        # Grouped results can page (NextPageToken); 30 days x 2 services never should, but a
+        # silently truncated total would be worse than one more (billed) call.
+        token = response.get("NextPageToken")
+        if not token:
+            return totals
+        kwargs["NextPageToken"] = token
