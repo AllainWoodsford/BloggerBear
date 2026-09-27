@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta
     name="description"
-    content="What BloggerBear is and how it works: an autonomous research-and-publishing platform where each topic runs unattended, turning fresh findings into reviewed, published articles."
+    content="What BloggerBear is and how it works: an autonomous research-and-publishing platform where each topic runs unattended, turning fresh findings into fact-checked, reviewed, published articles."
   />
   <title>About — BloggerBear</title>
   <!--
@@ -46,11 +46,17 @@
       BloggerBear is a personal portfolio project: an autonomous, multi-domain
       research-and-publishing platform. Admins configure "topics" — a data
       source plus an adapter — and each topic runs unattended, forever, on
-      two cadences: an hourly check for anything new worth writing about, and
-      a daily cycle that turns fresh findings into a reviewed, published
-      article. No one drafts these articles by hand; a human only ever gets
-      involved when the automated compliance review can't clear one on its
-      own.
+      two cadences: a research check every few hours for anything new worth
+      writing about, and a daily cycle that turns fresh findings into a
+      fact-checked, reviewed article. No one drafts these articles by hand. A
+      person only gets involved when an article needs a decision: every
+      financial-topic article, and anything the automated reviews hold back.
+    </p>
+    <p>
+      It's live today with four topics — trending GitHub projects, crypto,
+      tech market news and World of Warcraft — plus a daily
+      <a href="/#/topic/digest">Trending Everywhere</a> digest that draws on
+      all of them.
     </p>
 
     <h2>The idea</h2>
@@ -69,16 +75,26 @@
     <h2>How it works</h2>
     <ul>
       <li>
-        <strong>Hourly research tick:</strong> each topic's adapter fetches
-        its source's current state and diffs it against the last snapshot.
-        No material change, no Bedrock call — cost and noise stay down, and
-        nothing gets written about a source that hasn't actually moved.
+        <strong>Research tick:</strong> every few hours (each topic on its
+        own schedule, staggered so they don't all start at once), a topic's
+        adapter fetches its source's current state and diffs it against the
+        last snapshot. No material change, no Bedrock call — cost and noise
+        stay down, and nothing gets written about a source that hasn't
+        actually moved.
+      </li>
+      <li>
+        <strong>Web search with a fallback:</strong> topics that watch the news
+        search GDELT first. When it's slow or refuses, the same search goes to
+        Amazon Bedrock AgentCore's web search instead, so one flaky free
+        service can't leave a topic with nothing to write about.
       </li>
       <li>
         <strong>Daily authoring cycle:</strong> on a material-change day, the
-        pipeline asks Claude (via Amazon Bedrock) for a few candidate angles,
-        drafts a full article for the strongest one, then runs a separate
-        compliance review pass before anything goes live.
+        pipeline asks Claude (via Amazon Bedrock) for a few candidate angles
+        and drafts a full article for the strongest one. Before anything goes
+        live, a fact-check re-reads current data and flags claims that have
+        gone stale, then a separate compliance review checks the draft against
+        the research it was written from.
       </li>
       <li>
         <strong>Compliance is a hard gate, not a suggestion:</strong>
@@ -87,6 +103,13 @@
         call could talk its way around — and carry a standing "not financial
         advice" disclaimer appended to the draft itself, not just requested
         of the model.
+      </li>
+      <li>
+        <strong>A held article can be sent back for a rewrite:</strong> the
+        operator can ask a chosen model to fix exactly what a review flagged.
+        The rewrite is checked in plain code (it may not introduce a figure or
+        link that isn't in the sources), reviewed again, and always comes back
+        to a person. It never publishes on its own.
       </li>
       <li>
         <strong>Anonymous feedback loop:</strong> readers can upvote/downvote
@@ -101,6 +124,13 @@
         one new file plus one registry line — nothing about the core
         research/authoring flow itself changed to support them.
       </li>
+      <li>
+        <strong>Every cost is on show:</strong> each article records which
+        models wrote it, how many tokens that took, and what it cost. The
+        public <a href="/#/stats">Stats</a> page adds up everything else too —
+        research, web searches (estimated, and the actual figure from the AWS
+        bill) and the rest of the AI spend.
+      </li>
     </ul>
 
     <h2>Architecture at a glance</h2>
@@ -112,12 +142,15 @@
       </li>
       <li>
         <strong>AI:</strong> Amazon Bedrock (Claude) for research
-        summarization, drafting, compliance review, and feedback redaction.
+        summarization, drafting, fact-checking, compliance review, rewrites,
+        and feedback screening, with models chosen at runtime from a registry
+        rather than fixed in code. Amazon Bedrock AgentCore provides web
+        search as the fallback to GDELT.
       </li>
       <li>
         <strong>Storage:</strong> DynamoDB for structured data (topics,
-        findings, articles, feedback, moderation), S3 for article bodies and
-        raw source snapshots.
+        findings, articles, feedback, moderation, weekly stats), S3 for
+        article bodies and raw source snapshots.
       </li>
       <li>
         <strong>Orchestration:</strong> EventBridge Scheduler for per-topic
@@ -137,8 +170,9 @@
       <li>
         <strong>CI/CD:</strong> GitHub Actions, OIDC role federation (no
         long-lived AWS keys anywhere in the repo), a two-environment
-        branch/release model — free-to-break <code>dev</code>, a gated,
-        approval-required <code>production</code> release.
+        branch/release model — free-to-break <code>dev</code>, and a
+        <code>production</code> that only changes when a release is
+        published.
       </li>
     </ul>
 
