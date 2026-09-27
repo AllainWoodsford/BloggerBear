@@ -493,7 +493,39 @@ locals {
     # activity counters -- see common/stats_tracking.py. Harmless on every other Lambda.
     STATS_CURRENT_TABLE = module.app_data.stats_current_table_name
     STATS_HISTORY_TABLE = module.app_data.stats_history_table_name
+
+    # The AgentCore web search gateway (module.web_search below): the
+    # fallback search backend common/web_search.py uses when GDELT fails,
+    # and the "agentcore" provider a topic can ask for directly. Read by
+    # every Lambda that searches (research_tick, daily_cycle); harmless on
+    # the rest.
+    AGENTCORE_WEB_SEARCH_URL    = module.web_search.gateway_url
+    AGENTCORE_WEB_SEARCH_REGION = module.web_search.region
+    AGENTCORE_WEB_SEARCH_TOOL   = module.web_search.tool_name
   }
+}
+
+module "web_search" {
+  source = "../../modules/web-search"
+  name   = "bloggerbear-dev"
+}
+
+# Lets the Lambdas call the web search gateway (IAM inbound auth -- see
+# infra/modules/web-search). A separate policy on the shared exec role, like
+# lambda_invoke_pipeline, so the grant stays visibly scoped to one gateway.
+data "aws_iam_policy_document" "lambda_web_search" {
+  statement {
+    sid       = "InvokeWebSearchGateway"
+    effect    = "Allow"
+    actions   = ["bedrock-agentcore:InvokeGateway"]
+    resources = [module.web_search.gateway_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_web_search" {
+  name   = "bloggerbear-dev-lambda-web-search"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_web_search.json
 }
 
 # Used only to construct RESEARCH_TICK_FUNCTION_ARN / STATE_MACHINE_ARN

@@ -377,3 +377,51 @@ def test_every_apply_workflow_minifies_the_frontend_first(workflow):
     minify_step = text.index("- name: Minify frontend assets")
     apply_step = text.index("- name: Terraform apply")
     assert minify_step < apply_step
+
+
+# --- the AgentCore web search gateway ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_each_environment_has_the_web_search_gateway_and_can_call_it(env):
+    text = _read("environments", env, "main.tf")
+
+    assert len(_module_blocks(text, "modules/web-search")) == 1
+    for var in ("AGENTCORE_WEB_SEARCH_URL", "AGENTCORE_WEB_SEARCH_REGION", "AGENTCORE_WEB_SEARCH_TOOL"):
+        assert re.search(rf"{var}\s*=\s*module\.web_search\.", text), var
+    grant = re.search(r'data "aws_iam_policy_document" "lambda_web_search" \{(.*?)\n\}', text, re.S)
+    assert grant and "bedrock-agentcore:InvokeGateway" in grant.group(1)
+    assert "module.web_search.gateway_arn" in grant.group(1)
+
+
+def test_the_web_search_connector_version_has_the_date_filter_the_app_sends():
+    module = _read("modules", "web-search", "main.tf")
+
+    assert re.search(r'connector_id\s*=\s*"web-search"', module)
+    major, minor, _ = re.search(r'version\s*=\s*"(\d+)\.(\d+)\.(\d+)"', module).groups()
+    assert (int(major), int(minor)) >= (1, 2)  # publishedDateFilter arrived in 1.2.0
+    assert re.search(r'authorizer_type\s*=\s*"AWS_IAM"', module)
+
+
+def test_the_gateway_speaks_the_mcp_version_the_app_sends():
+    module = _read("modules", "web-search", "main.tf")
+    source = (ROOT / "lambdas" / "common" / "web_search.py").read_text(encoding="utf-8")
+
+    sent = re.search(r'MCP_PROTOCOL_VERSION = "([^"]+)"', source).group(1)
+    assert f'"{sent}"' in re.search(r"supported_versions\s*=\s*\[([^\]]*)\]", module).group(1)
+
+
+def test_the_deploy_role_can_create_the_gateway_and_pass_it_its_role():
+    bootstrap = _read("bootstrap", "main.tf")
+
+    assert "arn:aws:iam::*:role/bloggerbear-*-agentcore-gateway" in bootstrap
+    statement = re.search(r'sid\s*=\s*"AgentCoreWebSearchGateway"(.*?)\n  \}', bootstrap, re.S).group(1)
+    region = re.search(r'variable\s*=\s*"aws:RequestedRegion"\s*values\s*=\s*\["([^"]+)"\]', statement).group(
+        1
+    )
+    default = re.search(
+        r'variable "region" \{.*?default\s*=\s*"([^"]+)"',
+        _read("modules", "web-search", "variables.tf"),
+        re.S,
+    )
+    assert region == default.group(1)

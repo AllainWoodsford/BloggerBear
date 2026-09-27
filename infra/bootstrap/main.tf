@@ -326,7 +326,30 @@ data "aws_iam_policy_document" "gha_deploy" {
       "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
       "arn:aws:iam::*:role/bloggerbear-*-states-exec",
       "arn:aws:iam::*:role/bloggerbear-*-scheduler-invoke",
+      # infra/modules/web-search's gateway execution role (created, and
+      # passed to the gateway, by the deploy).
+      "arn:aws:iam::*:role/bloggerbear-*-agentcore-gateway",
     ]
+  }
+
+  # The AgentCore web search gateway and its Web Search Tool target
+  # (infra/modules/web-search). bedrock-agentcore:* because creating a
+  # gateway also creates its workload identity and the exact set of
+  # internal calls isn't documented per action -- the same "stop
+  # discovering gaps one failed apply at a time" reasoning as
+  # DynamoDBAppTables above. Gateway ARNs carry a generated id, and some
+  # of these calls (Create*, List*) have no resource ARN yet, so this is
+  # scoped by Region instead: the connector's Region only, never Sydney.
+  statement {
+    sid       = "AgentCoreWebSearchGateway"
+    effect    = "Allow"
+    actions   = ["bedrock-agentcore:*"]
+    resources = ["*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestedRegion"
+      values   = ["ap-northeast-1"]
+    }
   }
 
   # Phase 2 (originally API Gateway HTTP API; migrated to REST API v1 --
