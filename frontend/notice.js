@@ -8,7 +8,7 @@
  * A tiny external file, not an inline <script>, because this site's CSP has no 'unsafe-inline'
  * for script-src (infra/modules/static-site/main.tf) -- placed directly after #site-notice in
  * index.html so it runs the instant the element exists, well before the render-blocking
- * stylesheets (also preloaded now, see preload-styles.js) would even allow a first paint.
+ * stylesheets would even allow a first paint.
  *
  * Only sets the initial visibility here; the dismiss button's own click handler is still wired
  * by app.js's initSiteNotice (DOMContentLoaded is soon enough for a user-triggered click).
