@@ -1400,8 +1400,8 @@ locals {
     "moods.js"      = "application/javascript"
     "tummy.js"      = "application/javascript"
     "gear.js"       = "application/javascript"
-    # Flips index.html's (and the article page template's) preloaded stylesheet <link>s to
-    # active ones once loaded -- see the file's own docstring for why this isn't inline.
+    # Legacy shim: only article pages published during PR #125's preload+swap experiment load
+    # this; keep it deployed until those are re-rendered (see the file's own docstring).
     "preload-styles.js" = "application/javascript"
     # Sets #site-notice's initial visibility before first paint (index.html only) -- see the
     # file's own docstring for the layout-shift bug this replaces.
