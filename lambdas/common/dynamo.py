@@ -295,11 +295,14 @@ def put_moderation_item(
     created_at: str,
     status: str = "pending",
     review_notes: list[str] | None = None,
+    rewrite: dict | None = None,
 ) -> dict:
     """Write a ModerationQueue item and return it.
 
     `review_notes` are the fresh-data review's findings in plain words, so whoever
     reads `moderation list` sees why an article may be stale. Stored only if non-empty.
+    `rewrite` is set on the item a Re-Write puts back in the inbox (common/rewrite.py):
+    which rewrite it was, the model, and what it cost.
     """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     item = {
@@ -312,6 +315,8 @@ def put_moderation_item(
     }
     if review_notes:
         item["review_notes"] = review_notes
+    if rewrite is not None:
+        item["rewrite"] = _floats_to_decimal(rewrite)
     table.put_item(Item=item)
     return item
 
@@ -478,6 +483,103 @@ def update_moderation_status(queue_id: str, status: str) -> None:
     )
 
 
+# --- Re-Write (scripts/review_inbox.py's [w], common/rewrite.py) -----------------------------------
+#
+# A held article's queue item moves pending -> rewriting (the API claims it) -> rewritten (the
+# background rewrite finished; a *new* pending item carries the rewritten article back to the
+# inbox), or back to pending if the rewrite failed or never finished. The Article itself stays
+# pending_moderation throughout: nothing here can make it public.
+
+
+def list_moderation_by_status(status: str) -> list[dict]:
+    """Every ModerationQueue item with `status` (Scan + filter, like list_pending_moderation)."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    return _paginated_scan(table, Attr("status").eq(status))
+
+
+def claim_moderation_for_rewrite(
+    queue_id: str, *, rewrite_id: str, model_id: str, requested_at: str
+) -> bool:
+    """Move a pending item to `rewriting`, recording which rewrite owns it. False if it was not
+    pending (already rewritten, approved, rejected, or claimed by a second trigger at the same
+    moment) -- a conditional write, so two triggers can never start two rewrites."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    try:
+        table.update_item(
+            Key={"queue_id": queue_id},
+            UpdateExpression=(
+                "SET #status = :rewriting, rewrite_id = :rewrite_id, "
+                "rewrite_model_id = :model_id, rewrite_requested_at = :requested_at"
+            ),
+            ConditionExpression="#status = :pending",
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues={
+                ":rewriting": "rewriting",
+                ":pending": "pending",
+                ":rewrite_id": rewrite_id,
+                ":model_id": model_id,
+                ":requested_at": requested_at,
+            },
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def finish_moderation_rewrite(
+    queue_id: str, *, rewrite_id: str, status: str, fields: dict | None = None
+) -> bool:
+    """Move an item out of `rewriting` -- to "rewritten" (done) or back to "pending" (failed) --
+    setting `fields` alongside. Only if it is still `rewriting` under this `rewrite_id`: False
+    means the rewrite no longer owns it (it was released as stuck, or this is a duplicate
+    delivery of the same rewrite), and the caller must not act on the result."""
+    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    fields = _floats_to_decimal(dict(fields or {}))
+    names = {"#status": "status"}
+    values = {":status": status, ":rewriting": "rewriting", ":rewrite_id": rewrite_id}
+    sets = ["#status = :status"]
+    for n, (key, value) in enumerate(fields.items()):
+        names[f"#f{n}"] = key
+        values[f":f{n}"] = value
+        sets.append(f"#f{n} = :f{n}")
+    try:
+        table.update_item(
+            Key={"queue_id": queue_id},
+            UpdateExpression="SET " + ", ".join(sets),
+            ConditionExpression="#status = :rewriting AND rewrite_id = :rewrite_id",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def update_article_after_rewrite(
+    article_id: str, *, title: str, lineage: dict, review: dict | None, rewrites: list[dict]
+) -> None:
+    """Record a finished rewrite on its Article: the new title, the lineage with the rewrite's
+    calls added, the fresh-data review of the new text (when one ran), and the rewrite history.
+    Never touches `status`: a rewritten article is still waiting for a person."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    expression = "SET title = :title, lineage = :lineage, rewrites = :rewrites"
+    values = {
+        ":title": title,
+        ":lineage": _lineage_to_item(lineage),
+        ":rewrites": _floats_to_decimal(rewrites),
+    }
+    if review is not None:
+        expression += ", #review = :review"
+        values[":review"] = _floats_to_decimal(review)
+    table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression=expression,
+        ConditionExpression="attribute_exists(article_id)",
+        ExpressionAttributeValues=values,
+        **({"ExpressionAttributeNames": {"#review": "review"}} if review is not None else {}),
+    )
+
+
 def get_article(article_id: str) -> dict | None:
     """Fetch an Articles item by `article_id`, or None if it doesn't exist."""
     table = get_table(os.environ["ARTICLES_TABLE"])
@@ -495,14 +597,13 @@ def get_moderation_item_by_article_id(article_id: str) -> dict | None:
     so this is a Scan + FilterExpression -- same pattern as
     list_pending_moderation above, acceptable at this project's scale.
     Backs the force-publish admin route's best-effort moderation-status
-    consistency (see admin_api_handler.py's _publish_article): at most one
-    ModerationQueue item should ever exist per article_id, so the first
-    match is returned.
+    consistency (see admin_api_handler.py's _publish_article). A Re-Write
+    (common/rewrite.py) leaves the old item behind as `rewritten` history and
+    adds a new one, so an article can have several: the newest is the live one.
     """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    response = table.scan(FilterExpression=Attr("article_id").eq(article_id))
-    items = response.get("Items", [])
-    return items[0] if items else None
+    items = _paginated_scan(table, Attr("article_id").eq(article_id))
+    return max(items, key=lambda item: item.get("created_at") or "") if items else None
 
 
 def update_article_status(

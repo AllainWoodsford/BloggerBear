@@ -667,6 +667,7 @@ module "admin_api" {
     "GET /moderation-queue",
     "POST /moderation-queue/{queue_id}/approve",
     "POST /moderation-queue/{queue_id}/reject",
+    "POST /moderation-queue/{queue_id}/rewrite",
     # Phase 6: "what's actually been flagged so far" visibility -- see
     # admin_api_handler.py's _moderation_queue_stats and
     # scripts/admin_cli.py's `moderation stats` subcommand.
