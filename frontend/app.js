@@ -125,6 +125,18 @@
       var link = el("a", { text: topic.name, href: "#/topic/" + encodeURIComponent(topic.topic_id) });
       navEl.appendChild(link);
     });
+    // More topics than the header shows: a "More..." link to the home page, whose Topics list
+    // (renderHome) is the full, uncapped one.
+    if (topics.length > NAV_TOPIC_LIMIT) {
+      navEl.appendChild(
+        el("a", {
+          text: "More…",
+          href: "#/",
+          className: "nav-more",
+          attrs: { "aria-label": "More topics: see every topic on the home page" },
+        })
+      );
+    }
     // No topics (yet): no empty "Topics" label either. A class, not the `hidden` attribute --
     // this row's space is reserved from first paint (see styles.css), so revealing it here never
     // moves #content/the footer the way toggling `hidden` after the fact used to.
