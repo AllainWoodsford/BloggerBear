@@ -99,6 +99,13 @@ API_GATEWAY_COST_USD_30D = "api_gateway_cost_usd_30d"
 API_GATEWAY_COST_AUD_30D = "api_gateway_cost_aud_30d"
 API_GATEWAY_COST_AS_OF = "api_gateway_cost_as_of"
 
+# The same poll's reading of the *actual* AgentCore charge (common/cost_explorer.py) -- a SET
+# snapshot like API Gateway's, shown beside the per-query estimate above so the two can be
+# compared. agentcore_cost_as_of is owner-only, like api_gateway_cost_as_of.
+AGENTCORE_COST_USD_30D = "agentcore_cost_usd_30d"
+AGENTCORE_COST_AUD_30D = "agentcore_cost_aud_30d"
+AGENTCORE_COST_AS_OF = "agentcore_cost_as_of"
+
 
 def _current_week_start(today: date | None = None) -> str:
     """The Monday of the current ISO week, as StatsCurrent's `week_start` (e.g. "2026-09-15")."""
@@ -195,7 +202,7 @@ def record_lambda_duration(function_name: str, duration_ms: int) -> None:
 
 def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
     """The latest Cost Explorer reading for API Gateway spend (common/cost_explorer.py's
-    fetch_api_gateway_cost_usd_30d, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
+    fetch_service_costs_usd_30d, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
     a rolling 30-day total, not a counter, so this SETs rather than ADDs: a repeat poll overwrites
     the previous reading instead of compounding it onto every prior one."""
     try:
@@ -209,6 +216,22 @@ def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
         print(f"stats_tracking: could not record api gateway cost: {exc!r}")
+
+
+def record_agentcore_cost(cost_usd: Decimal, as_of: str) -> None:
+    """The latest Cost Explorer reading of the actual AgentCore charge over 30 days -- SET, not
+    ADD, exactly like record_api_gateway_cost, for the same reason."""
+    try:
+        set_current_stats_fields(
+            {
+                AGENTCORE_COST_USD_30D: cost_usd,
+                AGENTCORE_COST_AUD_30D: cost_usd * Decimal(str(USD_TO_AUD_RATE)),
+                AGENTCORE_COST_AS_OF: as_of,
+            },
+            _current_week_start(),
+        )
+    except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
+        print(f"stats_tracking: could not record agentcore cost: {exc!r}")
 
 
 def record_article_lineage(lineage: dict) -> None:
@@ -318,7 +341,16 @@ ARTICLES_BACKFILL_MARKER = "articles-backfill"
 # additive across weeks -- everything else this module ever writes onto the row is a plain weekly
 # counter, safe to ADD. Metadata fields describe the row itself, not something to fold into a
 # total at all.
-_SNAPSHOT_FIELDS = frozenset({API_GATEWAY_COST_USD_30D, API_GATEWAY_COST_AUD_30D, API_GATEWAY_COST_AS_OF})
+_SNAPSHOT_FIELDS = frozenset(
+    {
+        API_GATEWAY_COST_USD_30D,
+        API_GATEWAY_COST_AUD_30D,
+        API_GATEWAY_COST_AS_OF,
+        AGENTCORE_COST_USD_30D,
+        AGENTCORE_COST_AUD_30D,
+        AGENTCORE_COST_AS_OF,
+    }
+)
 _METADATA_FIELDS = frozenset({"stats_id", "week_start", "rolled_over_at"})
 
 
@@ -383,6 +415,7 @@ def public_view(row: dict) -> dict:
     api_gateway_cost_aud = row.get(API_GATEWAY_COST_AUD_30D)
     web_search_queries = int(row.get(WEB_SEARCH_AGENTCORE_QUERIES, 0))
     web_search_cost = row.get(WEB_SEARCH_AGENTCORE_COST_AUD)
+    agentcore_actual_aud = row.get(AGENTCORE_COST_AUD_30D)
 
     return {
         "categories": [_category_view(row, category) for category in _PUBLIC_CATEGORIES],
@@ -402,5 +435,10 @@ def public_view(row: dict) -> dict:
                 else (0.0 if web_search_queries == 0 else None)
             ),
             "gdelt_fallbacks": int(row.get(WEB_SEARCH_GDELT_FALLBACKS, 0)),
+            # The actual charge from the AWS bill (Cost Explorer, rolling 30 days, ~24h lag) --
+            # None until the first poll has run; its as_of stays owner-only.
+            "agentcore_actual_cost_aud_30d": (
+                float(agentcore_actual_aud) if agentcore_actual_aud is not None else None
+            ),
         },
     }

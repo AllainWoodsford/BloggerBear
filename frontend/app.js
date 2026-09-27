@@ -895,6 +895,14 @@
       tiles.appendChild(
         statTile("Web search spend", formatAud(data.web_search.agentcore_cost_aud), "est., per-query price")
       );
+      // The real charge (Cost Explorer), to check the estimate above against. Absent until the
+      // daily poll has run once.
+      var actual = data.web_search.agentcore_actual_cost_aud_30d;
+      if (actual !== null && actual !== undefined) {
+        tiles.appendChild(
+          statTile("Web search spend (actual)", formatAud(actual), "last 30 days, from the AWS bill, ~24h lag")
+        );
+      }
     }
     wrap.appendChild(tiles);
     wrap.appendChild(
