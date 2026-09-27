@@ -1,4 +1,5 @@
-"""API Gateway Cost Explorer poll Lambda handler (Observability enhancement, PR 3).
+"""Cost Explorer poll Lambda handler: API Gateway spend (Observability enhancement, PR 3) and the
+actual AgentCore Web Search charge, both from one Cost Explorer call.
 
 Manually invocable (`event` is ignored) but designed to run on a static EventBridge Scheduler
 daily schedule wired up directly to this function -- same "one global job, not per-topic" pattern
@@ -17,9 +18,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from common.cost_explorer import fetch_api_gateway_cost_usd_30d
+from common.cost_explorer import AGENTCORE_SERVICE, API_GATEWAY_SERVICE, fetch_service_costs_usd_30d
 from common.lambda_timing import track_lambda_duration
-from common.stats_tracking import record_api_gateway_cost
+from common.stats_tracking import record_agentcore_cost, record_api_gateway_cost
 
 
 @track_lambda_duration("cost_explorer_poll")
@@ -32,7 +33,13 @@ def handler(event, context) -> dict:
 
 
 def _poll() -> dict:
-    cost_usd = fetch_api_gateway_cost_usd_30d()
+    costs = fetch_service_costs_usd_30d()
     as_of = datetime.now(UTC).isoformat()
-    record_api_gateway_cost(cost_usd, as_of)
-    return {"status": "recorded", "api_gateway_cost_usd_30d": str(cost_usd), "as_of": as_of}
+    record_api_gateway_cost(costs[API_GATEWAY_SERVICE], as_of)
+    record_agentcore_cost(costs[AGENTCORE_SERVICE], as_of)
+    return {
+        "status": "recorded",
+        "api_gateway_cost_usd_30d": str(costs[API_GATEWAY_SERVICE]),
+        "agentcore_cost_usd_30d": str(costs[AGENTCORE_SERVICE]),
+        "as_of": as_of,
+    }
