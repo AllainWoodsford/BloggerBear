@@ -881,6 +881,21 @@
     if (data.api_gateway_cost_aud_30d !== null && data.api_gateway_cost_aud_30d !== undefined) {
       tiles.appendChild(statTile("API Gateway spend", formatAud(data.api_gateway_cost_aud_30d), apiGatewayNote));
     }
+    // Web search (common/stats_tracking.py's public_view `web_search`): AgentCore is billed per
+    // query, not per token, so it is a tile of its own rather than a row in the tokens table.
+    if (data.web_search) {
+      var fallbacks = data.web_search.gdelt_fallbacks;
+      tiles.appendChild(
+        statTile(
+          "Web searches (AgentCore)",
+          formatCount(data.web_search.agentcore_queries),
+          formatCount(fallbacks) + (fallbacks === 1 ? " GDELT fallback" : " GDELT fallbacks")
+        )
+      );
+      tiles.appendChild(
+        statTile("Web search spend", formatAud(data.web_search.agentcore_cost_aud), "est., per-query price")
+      );
+    }
     wrap.appendChild(tiles);
     wrap.appendChild(
       statsTable(
