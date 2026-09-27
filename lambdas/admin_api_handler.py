@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -29,12 +30,14 @@ from common import equipment, feedback_limits, gear
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
+    claim_moderation_for_rewrite,
     delete_musings_for_article,
     delete_prompt_refinement,
     delete_topic,
     get_article,
     get_feedback_config,
     get_latest_finding,
+    get_model,
     get_model_config,
     get_moderation_item,
     get_moderation_item_by_article_id,
@@ -48,6 +51,7 @@ from common.dynamo import (
     list_candidate_ideas,
     list_failed_executions,
     list_models,
+    list_moderation_by_status,
     list_pending_moderation,
     list_prompt_refinements,
     list_topics,
@@ -82,6 +86,7 @@ from common.lineage_tools import audit_lineage, plan_backfill
 from common.musings import generate_and_store_article_musing, generate_and_store_loot_musing
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
+from common.rewrite import release_stale_rewrites, rewrite_issues
 from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
@@ -616,7 +621,9 @@ def _publish_article(event: dict) -> dict:
     _render_published_page(article, published_at=published_at)
 
     moderation_item = get_moderation_item_by_article_id(article_id)
-    if moderation_item is not None and moderation_item.get("status") == "pending":
+    # "rewriting" too: approving it here makes a Re-Write still running for it discard its
+    # result (common/rewrite.py only finishes an item that is still "rewriting").
+    if moderation_item is not None and moderation_item.get("status") in ("pending", "rewriting"):
         update_moderation_status(moderation_item["queue_id"], "approved")
 
     return _response(200, {"published": article_id})
@@ -778,7 +785,73 @@ def _review_report(event: dict) -> dict:
 
 
 def _list_moderation_queue(event: dict) -> dict:
-    return _response(200, {"items": list_pending_moderation()})
+    """The pending items, plus how many are being rewritten right now. Listing is also when a
+    Re-Write that never finished is put back (common/rewrite.py's release_stale_rewrites), so
+    opening the inbox is enough to recover one."""
+    try:
+        release_stale_rewrites()
+    except Exception as exc:  # noqa: BLE001 - listing must still work
+        print(f"admin_api_handler: could not release stale rewrites: {exc!r}")
+    rewriting = list_moderation_by_status("rewriting")
+    return _response(200, {"items": list_pending_moderation(), "rewriting": len(rewriting)})
+
+
+def _rewrite_moderation_item(event: dict) -> dict:
+    """Start a Re-Write of a held article with the model the operator chose (common/rewrite.py).
+
+    Claims the item (pending -> rewriting, so it leaves the inbox and a second trigger gets a
+    409) and hands the work to the daily-cycle Lambda asynchronously: a rewrite takes minutes,
+    far longer than API Gateway waits. The rewritten article comes back to the inbox as a new
+    pending item; a failure puts this one back, with the reason.
+    """
+    queue_id = _path_param(event, "queue_id")
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    model_id = body.get("model_id")
+    if not isinstance(model_id, str) or not model_id.strip():
+        return _error(400, "'model_id' is required: one of the models from GET /models")
+    model = get_model(model_id)
+    if model is None or model.get("enabled") is False:
+        return _error(400, f"model '{model_id}' is not a registered, enabled model (see GET /models)")
+
+    item = get_moderation_item(queue_id)
+    if item is None:
+        return _error(404, f"moderation queue item '{queue_id}' not found")
+    if item.get("status") != "pending":
+        return _error(409, f"moderation queue item '{queue_id}' is not pending")
+    if not rewrite_issues(item):
+        return _error(
+            400,
+            "nothing to fix: this article is only waiting because its topic is financial, "
+            "so approve or reject it instead",
+        )
+
+    rewrite_id = str(uuid.uuid4())
+    requested_at = datetime.now(UTC).isoformat()
+    if not claim_moderation_for_rewrite(
+        queue_id, rewrite_id=rewrite_id, model_id=model_id, requested_at=requested_at
+    ):
+        return _error(409, f"moderation queue item '{queue_id}' is not pending")
+
+    try:
+        _get_lambda_client().invoke(
+            FunctionName=os.environ["DAILY_CYCLE_FUNCTION_NAME"],
+            InvocationType="Event",
+            Payload=json.dumps(
+                {"action": "rewrite", "queue_id": queue_id, "rewrite_id": rewrite_id}
+            ).encode("utf-8"),
+        )
+    except Exception as exc:  # noqa: BLE001 - never leave it claimed with nothing running
+        print(f"admin_api_handler: could not start the rewrite for {queue_id}: {exc!r}")
+        update_moderation_status(queue_id, "pending")
+        return _error(502, "could not start the rewrite; the item is back in the inbox")
+
+    return _response(
+        202,
+        {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id},
+    )
 
 
 _STATS_RECENT_LIMIT = 20
@@ -1608,6 +1681,7 @@ _ROUTES = {
     "GET /moderation-queue/stats": _moderation_queue_stats,
     "POST /moderation-queue/{queue_id}/approve": _approve_moderation_item,
     "POST /moderation-queue/{queue_id}/reject": _reject_moderation_item,
+    "POST /moderation-queue/{queue_id}/rewrite": _rewrite_moderation_item,
     "GET /prompt-refinements": _list_prompt_refinements,
     "POST /prompt-refinements/{topic_id}/{version}/approve": _approve_prompt_refinement,
     "POST /prompt-refinements/{topic_id}/{version}/reject": _reject_prompt_refinement,

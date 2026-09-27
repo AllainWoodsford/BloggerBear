@@ -20,6 +20,11 @@ writes a musing), and the API is where that lives. The keys are y (approve), r (
 plus v (read the whole thing) and q (quit). Each choice is applied at once, so quitting, an error or a
 dropped connection never loses progress.
 
+A held article also has w (Re-Write): pick one of the registered models and the article is rewritten
+in the background to fix what it was held for (lambdas/common/rewrite.py), while you move on to the
+next item. It comes back to this inbox when it is done -- to approve, reject or rewrite again -- with
+the model and what the rewrite cost. If the rewrite fails, the original comes back with the reason.
+
 A skipped item is left exactly as it is, and hidden from your next reviews for a while (a small local
 file, never sent anywhere) so a rerun gives you the next batch instead of the same ones.
 """
@@ -44,6 +49,9 @@ PREVIEW_CHARS = 700
 _FINANCIAL_REASON = "financial topic"
 
 HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
+REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
+# One keystroke picks a model, so the picker shows at most this many.
+MAX_MODEL_CHOICES = 9
 
 
 class ApiError(Exception):
@@ -110,6 +118,7 @@ class Item:
     routine: bool = False  # waits for a person by design (a financial topic), nothing wrong
     caution: bool = False  # held for a reason a person should look at before approving
     approve_note: str = ""  # what approving does, when that is not obvious
+    can_rewrite: bool = False  # held for something a Re-Write can try to fix
     ref: dict = field(default_factory=dict)  # what the source needs to act on it
 
     @property
@@ -148,6 +157,15 @@ class ContentSource(ABC):
         person backed out: stay on the item. Called only for a real approval, never a dry run."""
         return True
 
+    def rewrite_models(self) -> list[dict]:
+        """The models a Re-Write can use (GET /models' rows). Only sources whose items can be
+        rewritten (Item.can_rewrite) need this."""
+        raise NotImplementedError
+
+    def rewrite(self, item: Item, model_id: str) -> str:
+        """Start a Re-Write of `item` with `model_id`. Returns a short message."""
+        raise NotImplementedError
+
 
 def _oldest_first(rows: list[dict], date_field: str) -> list[dict]:
     return sorted(rows, key=lambda row: row.get(date_field) or "")
@@ -161,6 +179,7 @@ class ModerationSource(ContentSource):
 
     def __init__(self, api: Api):
         self.api = api
+        self._models: list[dict] | None = None
 
     def fetch(self, limit: int, exclude: set[str]) -> list[Item]:
         rows = self.api.get("/moderation-queue").get("items") or []
@@ -186,8 +205,13 @@ class ModerationSource(ContentSource):
             notes=notes,
             routine=bool(routine) and not flagged and not notes,
             caution=bool(flagged or notes),
+            can_rewrite=bool(flagged or notes),
             ref={"queue_id": row.get("queue_id"), "article_id": row.get("article_id")},
         )
+        if row.get("last_rewrite_error"):
+            item.notes.append(f"The last Re-Write did not work: {row['last_rewrite_error']}")
+            item.caution = True
+        rewrite = row.get("rewrite") or {}
         try:
             article = self.api.get(f"/articles/{row.get('article_id')}")
         except ApiError as exc:
@@ -204,7 +228,19 @@ class ModerationSource(ContentSource):
             f"Sources cited: {len(article.get('source_refs') or [])}",
             f"Cost to write: ~${cost:.3f} AUD" if isinstance(cost, int | float) else "Cost: no data",
         ]
+        if rewrite:
+            item.facts.append(_rewrite_fact(rewrite))
         return item
+
+    def rewrite_models(self) -> list[dict]:
+        if self._models is None:
+            rows = self.api.get("/models").get("models") or []
+            self._models = [row for row in rows if row.get("enabled") is not False]
+        return self._models
+
+    def rewrite(self, item: Item, model_id: str) -> str:
+        self.api.post(f"/moderation-queue/{item.ref['queue_id']}/rewrite", {"model_id": model_id})
+        return "rewriting in the background: it will be back in your inbox when it is done"
 
     def approve(self, item: Item) -> str:
         self.api.post(f"/moderation-queue/{item.ref['queue_id']}/approve")
@@ -277,6 +313,38 @@ class RefinementSource(ContentSource):
     def reject(self, item: Item) -> str:
         self.api.post(f"/prompt-refinements/{item.ref['topic_id']}/{item.ref['version']}/reject")
         return "rejected"
+
+
+def _rewrite_fact(rewrite: dict) -> str:
+    """One line saying this is a rewritten article: which rewrite, by what, for how much."""
+    cost = rewrite.get("cost_aud")
+    cost_text = f"~${float(cost):.3f} AUD" if isinstance(cost, int | float) else "cost: no data"
+    model = rewrite.get("model_label") or rewrite.get("model_id")
+    line = f"Re-Write #{rewrite.get('number', '?')} by {model} ({cost_text})"
+    previous = rewrite.get("previous_title")
+    return line + (f'; was titled "{_short(previous, 60)}"' if previous else "")
+
+
+def _model_line(n: int, model: dict) -> str:
+    name = model.get("display_name") or model.get("model_id")
+    inp, outp = model.get("input_price_usd_per_1k_tokens"), model.get("output_price_usd_per_1k_tokens")
+    price = f"  (${inp}/${outp} USD per 1k tokens in/out)" if inp is not None and outp is not None else ""
+    return f"  [{n}] {name}{price}"
+
+
+def choose_model(models: list[dict], key_reader: Callable[[], str], out) -> str | None:
+    """Ask which model a Re-Write uses. Returns its model_id, or None when the person backs out
+    (or there is no model to choose)."""
+    if not models:
+        _emit("  ! No enabled models are registered (admin_cli models), so nothing can rewrite it.", out)
+        return None
+    shown = models[:MAX_MODEL_CHOICES]
+    _emit("  Re-Write with which model?", out)
+    for n, model in enumerate(shown, start=1):
+        _emit(_model_line(n, model), out)
+    valid = "".join(str(n) for n in range(1, len(shown) + 1))
+    pick = _ask(key_reader, out, f"  Model [1-{len(shown)}], c to cancel -> ", valid)
+    return None if pick is None else shown[int(pick) - 1]["model_id"]
 
 
 def _gear_line(gear: dict | None) -> str:
@@ -440,6 +508,7 @@ class MockSource(ContentSource):
                     ),
                     routine=routine and not caution,
                     caution=caution,
+                    can_rewrite=caution,
                 )
             )
 
@@ -453,6 +522,16 @@ class MockSource(ContentSource):
     def reject(self, item: Item) -> str:
         self.log.append(("reject", item.key))
         return "rejected (practice: nothing was sent)"
+
+    def rewrite_models(self) -> list[dict]:
+        return [
+            {"model_id": "practice-small", "display_name": "Practice Small"},
+            {"model_id": "practice-large", "display_name": "Practice Large"},
+        ]
+
+    def rewrite(self, item: Item, model_id: str) -> str:
+        self.log.append(("rewrite", f"{item.key}:{model_id}"))
+        return f"would rewrite with {model_id} (practice: nothing was sent)"
 
 
 class SkipStore:
@@ -633,6 +712,7 @@ def render_item(item: Item, index: int, total: int, now: datetime, width: int | 
 class Summary:
     approved: int = 0
     rejected: int = 0
+    rewritten: int = 0
     skipped: int = 0
     errors: int = 0
     already_handled: int = 0
@@ -642,6 +722,8 @@ class Summary:
 
     def line(self) -> str:
         parts = f"{self.approved} approved, {self.rejected} rejected, {self.skipped} skipped"
+        if self.rewritten:
+            parts += f", {self.rewritten} sent for a Re-Write"
         if self.errors:
             parts += f", {self.errors} failed"
         if self.already_handled:
@@ -705,7 +787,7 @@ def review(
     for number, (source, item) in enumerate(batch, start=1):
         _emit(render_item(item, number, len(batch), now()), out)
         while True:
-            print(HELP_LINE, end="", file=out, flush=True)
+            print(REWRITE_HELP_LINE if item.can_rewrite else HELP_LINE, end="", file=out, flush=True)
             try:
                 key = key_reader()
             except KeyboardInterrupt:
@@ -722,6 +804,10 @@ def review(
                 if not dry_run:
                     store.add(item.skip_key)
                 break
+            if key == "w" and item.can_rewrite:
+                if _rewrite(source, item, summary, store, dry_run, key_reader, out):
+                    break
+                continue
             if key in ("y", "r"):
                 if key == "y" and item.caution and not _confirmed(key_reader, out):
                     continue
@@ -731,7 +817,7 @@ def review(
                     break
                 # a failure: stay on this item so you can retry it, skip it, or quit
                 continue
-            _emit("  Press y, r, z, v or q.", out)
+            _emit("  Press y, r, w, z, v or q." if item.can_rewrite else "  Press y, r, z, v or q.", out)
         if summary.quit_early:
             break
 
@@ -752,6 +838,38 @@ def _confirmed(key_reader: Callable[[], str], out) -> bool:
         answer = "n"
     print(answer, file=out, flush=True)
     return answer == "y"
+
+
+def _rewrite(source, item, summary, store, dry_run, key_reader, out) -> bool:
+    """Ask for a model and start a Re-Write. True when it is settled (started, or already
+    handled elsewhere); False to stay on the item (backed out, or it failed)."""
+    try:
+        models = source.rewrite_models()
+    except ApiError as exc:
+        _emit(f"  ! Could not read the models: {exc.message}", out)
+        return False
+    model_id = choose_model(models, key_reader, out)
+    if model_id is None:
+        return False
+    if dry_run:
+        _emit(f"  (dry run) would rewrite with {model_id}.", out)
+        summary.rewritten += 1
+        return True
+    try:
+        message = source.rewrite(item, model_id)
+    except ApiError as exc:
+        if exc.status == 409:
+            _emit("  Already handled elsewhere: nothing to do.", out)
+            summary.already_handled += 1
+            store.forget(item.skip_key)
+            return True
+        _emit(f"  ! Could not start a Re-Write: {exc.message}", out)
+        summary.errors += 1
+        return False
+    _emit(f"  OK: {message}", out)
+    summary.rewritten += 1
+    store.forget(item.skip_key)
+    return True
 
 
 def _apply(source, item, key, summary, store, dry_run, out) -> bool:
@@ -790,7 +908,8 @@ def inbox_report(api: Api, now: datetime | None = None) -> str:
     lines = ["", "BloggerBear inbox", "=" * 40]
 
     try:
-        rows = api.get("/moderation-queue").get("items") or []
+        queue = api.get("/moderation-queue")
+        rows = queue.get("items") or []
         routine = held = 0
         oldest = None
         for row in rows:
@@ -805,6 +924,8 @@ def inbox_report(api: Api, now: datetime | None = None) -> str:
             lines.append(f"  {routine} on financial topics (always reviewed by a person)")
             lines.append(f"  {held} held by a review (look at these first: the reasons say why)")
             lines.append(f"  oldest: {_age(oldest, now)}")
+        if queue.get("rewriting"):
+            lines.append(f"Being rewritten in the background: {queue['rewriting']} (back here when done)")
     except ApiError as exc:
         lines.append(f"Articles waiting for you: could not check ({exc.message})")
 

@@ -19,6 +19,7 @@ from common.adapters.crypto_feed import (
     POOL_SIZE,
     PRO_BASE_URL,
     PUBLIC_BASE_URL,
+    REVIEW_HEADLINES_BUDGET_SECONDS,
     CoinGeckoClient,
     CryptoFeedAdapter,
     _anomaly_5d,
@@ -395,10 +396,12 @@ def test_history_requests_ask_for_a_year_of_daily_data():
 
 
 def test_without_a_pin_the_goal_follows_the_daily_draw():
-    # search is stubbed with one crypto and one market headline, whichever web goal is drawn
+    # search is stubbed with one crypto and one market headline, whichever web goal is drawn.
+    # Passed through _fetch, which installs its own search stub: patching search_web around
+    # it was silently overridden, so the test only passed on days that didn't draw MARKET_NEWS
+    # (the one goal where finding no headlines is an error).
     headlines = [_web_result(1), _market_result(2)]
-    with patch("common.adapters.crypto_feed.search_web", return_value=headlines):
-        state, _ = _fetch(_topic())
+    state, _ = _fetch(_topic(), headlines=headlines)
 
     assert state["editorial_goal"] == goal_for_date(datetime.now(UTC).date()).value
 
@@ -1264,6 +1267,61 @@ def test_a_failed_headline_search_does_not_stop_the_evidence(capsys):
 
     assert evidence["headlines"] == [] and len(evidence["coins"]) == 1
     assert "no headlines for the review" in capsys.readouterr().out
+
+
+def test_the_review_headline_search_runs_on_its_own_short_budget():
+    """GDELT can take 80s+; unbounded, it used up the review's whole 45s fetch limit and
+    made the review "unavailable" even though the prices had arrived."""
+    seen = []
+
+    def search(query, **kwargs):
+        seen.append(kwargs.get("deadline"))
+        return [_web_result(1)]
+
+    with (
+        patch(GET, side_effect=_fake_get(_markets())),
+        patch("common.adapters.crypto_feed.search_web", side_effect=search),
+        patch("common.adapters.crypto_feed.time.monotonic", return_value=1000.0),
+    ):
+        CryptoFeedAdapter().review_evidence(DEEP_DIVE, None)
+
+    assert seen == [1000.0 + REVIEW_HEADLINES_BUDGET_SECONDS]
+
+
+def test_research_ticks_still_search_without_a_budget():
+    seen = []
+
+    def search(query, **kwargs):
+        seen.append("deadline" in kwargs)
+        return [_web_result(1)]
+
+    with (
+        patch(GET, side_effect=_fake_get(_markets())),
+        patch("common.adapters.crypto_feed.search_web", side_effect=search),
+        _pinned_draw(),
+    ):
+        CryptoFeedAdapter().fetch_state(DEEP_DIVE)
+
+    assert seen == [False]
+
+
+def test_once_the_budget_is_spent_later_queries_are_skipped_and_found_headlines_kept():
+    queries = []
+
+    def search(query, **kwargs):
+        queries.append(query)
+        return [_web_result(len(queries))]
+
+    config = {**DEEP_DIVE["adapter_config"], "web_search_queries": ["first", "second"]}
+    with (
+        patch("common.adapters.crypto_feed.search_web", side_effect=search),
+        patch("common.adapters.crypto_feed.time.monotonic", return_value=100.0),  # past the deadline
+    ):
+        results = CryptoFeedAdapter()._fetch_web_results(
+            config, EditorialGoal.WEB_AGGREGATOR, deadline=10.0
+        )
+
+    assert queries == ["first"] and len(results) == 1
 
 
 def test_a_general_market_news_day_has_no_coins_and_makes_no_coingecko_call():
