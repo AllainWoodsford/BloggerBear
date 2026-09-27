@@ -6,11 +6,13 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
   when the topic's research interval has passed (see §4)
 - **Daily authoring cycle** to ideate, select, draft, fact-check, review, and publish (or hold) one article
 
-**Current state (September 2026):** phases 0–8 are built and running in production at bloggerbear.com with
+**Current state (September 2026):** phases 1–8 are built and running in production at bloggerbear.com with
 four topics (GitHub Trending, crypto, tech market news, World of Warcraft) plus the cross-topic Trending
 digest. Recent work: an operator-requested Re-Write of held articles, AgentCore web search as a fallback
 when GDELT fails, web search usage and spend on the Stats page, and staggered research/authoring schedules.
-The §11 entries below record each enhancement as it shipped.
+The §11 entries below record each enhancement as it shipped. Still open: some Phase 0 GitHub/AWS
+settings (branch protection, a production reviewer, a shared WAF ACL, a working destroy-dev) and Phase 6's
+WAF tuning -- `docs/PROGRESS.md` tracks them.
 
 ## 2) Hard Constraints
 1. No PII is collected or persisted.
@@ -162,18 +164,23 @@ Two long-lived branches, two environments:
   ship. Merging into `prod` does **not** deploy by itself.
 - A production deploy happens only when a GitHub Release is published from
   a commit on `prod` (tagged with semver, e.g. `v0.1.0`). That workflow
-  applies `infra/environments/production`, gated by the `production`
-  GitHub Environment's required-reviewer approval. Because every release
+  applies `infra/environments/production`, meant to be gated by the
+  `production` GitHub Environment's required-reviewer approval. **Not yet
+  enforced:** the environment exists without a required reviewer (a paid
+  GitHub feature on a private repository), so a published release deploys
+  straight away. Because every release
   targets the same Terraform-managed production state, a new release
   replaces whatever was previously deployed rather than running alongside
   it.
-- Both `dev` and `prod` require PRs and passing `terraform`/`security`
-  checks via branch protection — no direct pushes to either.
+- Both `dev` and `prod` are meant to require PRs and passing
+  `terraform`/`security` checks via branch protection — no direct pushes to
+  either. **Not yet enforced:** branch protection on a private repository
+  needs GitHub Pro, so this is currently a convention.
 - `infra/bootstrap` (the Terraform state backend itself — a single S3
   bucket, no DynamoDB table; locking is native to S3 via `use_lockfile`,
   Terraform ≥1.10) is the one exception to all of this: it's applied once,
   manually, locally, and is never wired into CI.
-- One shared WAF Web ACL is associated with both the dev and production
+- One shared WAF Web ACL is meant to be associated with both the dev and production
   CloudFront distributions, rather than one each, to avoid paying its flat
   fee twice.
 
@@ -185,9 +192,10 @@ Full detail: `docs/specs/phase-0-foundations.md`.
 - Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
 
 ## 10) Build Phases
-All phases are built and deployed. In summary:
+Phases 1–8 are built and deployed; Phase 0's code is done, with a few GitHub/AWS settings still open.
+In summary:
 
-### Phase 0 — Foundations (done)
+### Phase 0 — Foundations (code done; some settings open)
 - CI workflows (Terraform + security), the `dev`/`prod` branch and release model (§8)
 - Initial infra and lambda scaffolding, and the non-negotiable guardrails
 
