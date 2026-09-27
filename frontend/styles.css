@@ -252,8 +252,9 @@ header {
     padding-top: 10px;
     border-top: 1px solid var(--border);
     /* Overrides the wide-screen reservation above with this layout's own: stacked label + up to
-       NAV_TOPIC_LIMIT (3) block-level links (see #nav a below), not one baseline-aligned row. */
-    min-height: 10.5rem;
+       NAV_TOPIC_LIMIT (3) block-level links plus the "More..." link (see #nav a below), not one
+       baseline-aligned row. Sized for all four, so a "More..." link never shifts the layout. */
+    min-height: 13rem;
   }
 
   .nav-label {
