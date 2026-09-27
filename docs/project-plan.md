@@ -2,8 +2,15 @@
 
 ## 1) Purpose
 BloggerBear is an autonomous, multi-domain research-and-publishing platform. Topics are configured by admins and run two cadences:
-- **Hourly research tick** to refresh a rolling knowledge base
-- **Daily authoring cycle** to ideate, select, draft, review, and publish one article
+- **Research tick** to refresh a rolling knowledge base -- a fixed heartbeat schedule, doing real work only
+  when the topic's research interval has passed (see §4)
+- **Daily authoring cycle** to ideate, select, draft, fact-check, review, and publish (or hold) one article
+
+**Current state (September 2026):** phases 0–8 are built and running in production at bloggerbear.com with
+four topics (GitHub Trending, crypto, tech market news, World of Warcraft) plus the cross-topic Trending
+digest. Recent work: an operator-requested Re-Write of held articles, AgentCore web search as a fallback
+when GDELT fails, web search usage and spend on the Stats page, and staggered research/authoring schedules.
+The §11 entries below record each enhancement as it shipped.
 
 ## 2) Hard Constraints
 1. No PII is collected or persisted.
@@ -20,11 +27,16 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
 > per AWS's own requirement. Do not change these to `ap-southeast-2`.
 - **Region**: `ap-southeast-2` (Sydney) for everything, except the
   CloudFront-scope WAF Web ACL and ACM certificate, which AWS requires in
-  `us-east-1` regardless of hosting region
+  `us-east-1` regardless of hosting region, and the AgentCore web search
+  gateway, which lives in `ap-northeast-1` (Tokyo) because the Web Search
+  Tool connector isn't offered in Sydney (see §11, "Web search")
 - **Compute**: Python 3.11 AWS Lambda functions
-- **AI**: Amazon Bedrock (Claude) — confirm which model IDs are directly
-  invokable in `ap-southeast-2` vs. need a cross-region inference profile
-  before Phase 1 locks in a model choice
+- **AI**: Amazon Bedrock (Claude, via Australian cross-region inference
+  profiles). Models are chosen at runtime from a DynamoDB model registry
+  (per-topic model, fallback model, and rotation candidates), not fixed in
+  Terraform
+- **Search**: GDELT (keyless, the default) with Amazon Bedrock AgentCore's
+  Web Search Tool as the fallback
 - **Storage**: DynamoDB + S3
 - **Frontend**: Static site (S3 + CloudFront)
 - **Security**: CloudFront + WAF + Shield Standard
@@ -32,31 +44,57 @@ BloggerBear is an autonomous, multi-domain research-and-publishing platform. Top
   table) with GitHub Actions deployment
 
 ## 4) Pipelines
-### Hourly Research Tick
+### Research Tick
+0. Heartbeat: each topic has its own EventBridge schedule (`research_cadence`). The tick
+   does real work only when `research_interval_hours` (topic, else pipeline default) has
+   passed since the last run, with 5 minutes' slack for scheduler jitter
+   (`common/research_schedule.py`); otherwise it logs "not due" and stops
 1. Load topic + adapter config
-2. Fetch current source state via adapter
+2. Fetch current source state via adapter (web searches go to GDELT, falling back to
+   AgentCore web search when GDELT fails)
 3. Diff against prior structural snapshot
 4. If no material change: stop
 5. If changed: summarize with Bedrock and store findings
 
+Current schedules (runtime data, set through the Admin API, not Terraform):
+- **Production:** every topic researches every 4 hours on a fixed UTC cron, staggered a
+  minute apart (github-trending `:01`, crypto `:02`, tech-market-news `:03`, wow-forever
+  `:04`, at 00/04/08/12/16/20 UTC), with a 4-hour interval.
+- **Dev:** an hourly heartbeat at each topic's own minute (`:01`, `:02`, `:03`) with a
+  10-hour interval, so each topic researches every 10 hours. A `cron(M 0/10 …)` heartbeat
+  would *not* do this: it resets at midnight, giving 10h/10h/4h gaps.
+
 ### Daily Authoring Cycle
 1. Generate candidate angles
 2. Select one angle
-3. Draft article
-4. Run compliance review
-5. Publish if compliant; else moderation queue
+3. Draft article and title
+4. Fresh-data review: re-read current data and check the draft's claims (shadow or
+   enforce mode; enforce may apply one guarded revision or hold the article)
+5. Run compliance review (against the research the draft was written from)
+6. Publish if compliant; else moderation queue
+
+Production's daily articles run at 09:00–09:03 Sydney time, one topic per minute.
+
+### Operator Re-Write (on demand)
+From the review inbox, a held article can be sent for a Re-Write with a chosen model; it
+runs in the background and comes back to the inbox for approval (see §11, "Re-Write").
 
 ## 5) Data Model (DynamoDB)
 | Table | PK/SK | Purpose |
 |---|---|---|
-| Topics | `topic_id` | Topic config, cadence, adapter, optional `editorial_goals` |
-| Findings | `topic_id` / `captured_at` | Research summaries and source hashes |
+| Topics | `topic_id` | Topic config, cadences, research interval, adapter, models, optional `editorial_goals` |
+| Findings | `topic_id` / `captured_at` | Research summaries, source hashes, the research call's tokens |
 | CandidateIdeas | `topic_id` / `created_at` | Daily generated article ideas |
-| Articles | `article_id` | Draft/compliance/publish lifecycle |
-| ViewCounters | `article_id` | Aggregate read counters |
+| Articles | `article_id` | Draft/review/publish lifecycle, lineage (tokens, models, cost), view count, rewrite history |
 | Feedback | `article_id` / `feedback_id` | Scrubbed public feedback |
-| PromptRefinements | `topic_id` / `version` | Prompt iterations and rationale |
-| ModerationQueue | `queue_id` | Manual review tasks |
+| PromptRefinements | `topic_id` / `version` | Prompt iterations and rationale; approved ones are "equipment" |
+| ModerationQueue | `queue_id` | Manual review tasks: `pending` → `approved`/`rejected`, or `rewriting` → `rewritten` |
+| FailedExecutions | `failure_id` | Daily-cycle runs that exhausted their retries (dead-letter queue) |
+| Musings | `musing_id` | The bear's short posts about articles, feedback and loot |
+| Models / ModelConfig | `model_id` / `config_id` | Model registry and prices; single rows for the default model, pipeline config and feedback config |
+| StatsCurrent / StatsHistory | `stats_id` / `week_start` | This week's counters (Bedrock spend, Lambda time, web search queries/spend, feedback) and past weeks plus an all-time row |
+
+View counts live on the Articles item (`view_count`); there is no separate counters table.
 
 ## 6) Adapter Contract
 Each new domain provides an adapter implementing the same contract:
@@ -72,7 +110,8 @@ Optional hooks (defaults on `Adapter` keep existing adapters unchanged):
   slow-changing data it already fetched earlier in the day.
 
 Reusable capabilities live in `common/` rather than in one adapter:
-`web_search.py` (keyless web/news search behind a provider interface) and
+`web_search.py` (web/news search behind a provider interface: GDELT by default,
+AgentCore web search as the fallback, with an optional time budget) and
 `http_retry.py` (exponential backoff for rate-limited APIs). The generic
 `web_search` adapter turns any topic into "watch these search queries".
 
@@ -146,25 +185,25 @@ Full detail: `docs/specs/phase-0-foundations.md`.
 - Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
 
 ## 10) Build Phases
-### Phase 0 — Foundations (current)
-- Establish CI workflows (Terraform + security)
-- Set up the `dev`/`prod` branch and release model (§8)
-- Create initial infra and lambda scaffolding
-- Capture and enforce non-negotiable guardrails
+All phases are built and deployed. In summary:
 
-### Phase 1 — Core Pipeline (current scope)
-- Implement topic model and one adapter path
-- Implement hourly diff-first research tick
-- Implement daily ideation/selection/draft/compliance/publish chain
-- Route uncertain/financial outputs to moderation queue
+### Phase 0 — Foundations (done)
+- CI workflows (Terraform + security), the `dev`/`prod` branch and release model (§8)
+- Initial infra and lambda scaffolding, and the non-negotiable guardrails
 
-### Phase 2 — Refinement (out of scope until Phase 1 is stable)
-- Additional adapters/domains
-- Prompt refinement automation
-- Frontend polish and analytics improvements
+### Phase 1 — Core Pipeline (done)
+- Topic model and adapter path; diff-first research tick
+- Daily ideation/selection/draft/compliance/publish chain
+- Uncertain/financial outputs routed to the moderation queue
 
-See `docs/PROGRESS.md` for the full phase 0–8 breakdown and live status —
-this section is intentionally a summary, not the tracker.
+### Phases 2–8 — Refinement (done)
+- Admin console API and CLI, scheduling automation, the public frontend
+- The anonymous feedback loop and prompt-refinement automation (equipment)
+- Observability (Stats, lineage and cost), hardening, and further adapters
+  (crypto, web search, Hacker News, GitHub Trending)
+
+Since then, work has continued as the §11 enhancements. See `docs/PROGRESS.md`
+for the original phase 0–8 breakdown and acceptance criteria.
 
 ## 11) Proposed Enhancements
 
@@ -1046,7 +1085,8 @@ game to decide whether feedback goes through. Both were rejected in the anti-bot
 Two things wait for a person: **articles in the moderation queue** and **prompt-change proposals**. Both
 are in `admin_cli inbox` (a summary, plus heads-ups if feedback is locked down or verification is off)
 and `admin_cli approve` (`scripts/review_inbox.py`): one item at a time, one keystroke each (y approve,
-r reject, z skip, v read it all, q quit), up to 30 a time, oldest first.
+r reject, z skip, v read it all, q quit, and w Re-Write for an article held for a reason -- see "Re-Write"
+below), up to 30 a time, oldest first.
 
 It goes through the Admin API, never straight to DynamoDB or S3, because approving an article does more
 than flip a flag (it renders the page, publishes it, writes a musing). It needed one new admin-only route,
@@ -1465,3 +1505,106 @@ show; a topic's first article, or one with nothing published recently, sees the 
 The bad title already live in production was fixed by hand (DynamoDB `title` update, then re-rendering the
 static page and invalidating its CloudFront cache -- the same three steps every other publish path already
 does, just driven manually since there was no admin route for "fix just the title" at the time).
+
+### Re-Write: fixing a held article without writing it by hand
+
+**Status: implemented** (#130; `lambdas/common/rewrite.py`, `scripts/review_inbox.py`'s `w` key).
+
+A held article can be rewritten from the review inbox: press `w`, pick one of the registered, enabled
+models, and the inbox moves straight on. `POST /moderation-queue/{queue_id}/rewrite` claims the queue item
+(`pending` → `rewriting`, a conditional write, so a second trigger gets 409) and invokes the daily-cycle
+Lambda asynchronously with `{"action": "rewrite"}`. It runs there, not in a Lambda of its own, because it
+needs exactly that Lambda's timeout, permissions and CoinGecko key.
+
+- **Input to the model:** the article, the reasons it was held (minus the routine "financial topic"
+  routing reason) and its review notes, the findings it was written from, and fresh data from the adapter.
+- **Guards:** the same plain-code checks as the automatic revision (`revision_violations`: no figure or
+  link that appears in none of the sources, a sensible title), with a looser length bound and no heading
+  check, since fixing "investment advice" can mean removing a section. Then the fresh-data review and the
+  compliance review run again on the new text.
+- **Always back to a person:** the old item becomes `rewritten`, and a new `pending` item carries the
+  rewritten article back to the inbox with the model and cost (`Re-Write #n by <model> (~$x AUD)`). A
+  rewrite never publishes anything.
+- **Nothing lost:** the replaced text is kept at `articles/<id>.before-rewrite-<n>.md`. Any failure puts
+  the original item back to `pending` with `last_rewrite_error`; a rewrite still `rewriting` after 15
+  minutes is released the next time the queue is listed.
+- **Cost:** every call (stage `rewrite`, plus the review calls) is added to the article's lineage and the
+  week's Stats, rejected attempts included.
+
+Routing it through a "draft" status and the hourly tick was considered and rejected: it mixes unrelated
+jobs into the research tick, adds up to an hour's wait, and would need a new article status handled
+everywhere.
+
+### Web search: GDELT with an AgentCore fallback
+
+**Status: implemented** (#129, #132; `lambdas/common/web_search.py`, `infra/modules/web-search`).
+
+GDELT, the keyless default, proved unreliable from Lambda: connection timeouts and 429s, with one search
+taking 80s+ with retries. The crypto topic's fresh-data review timed out daily, and `wow-forever` never
+produced a finding. Our own volume (tens of searches a day) was far below GDELT's published limit, and
+the same failures reproduced from a home connection, so the cause was GDELT's own throttling, not load.
+
+- **Time budgets (#129):** `search_web` takes an optional `deadline` that caps a whole search, retries
+  included. The crypto review's headlines get 15s of the review's 45s, and the review goes on with prices
+  alone if they run out.
+- **AgentCore fallback (#132):** Amazon Bedrock AgentCore's managed Web Search Tool, through a gateway in
+  `ap-northeast-1` (the connector's closest region to Sydney), with IAM (SigV4) inbound auth and connector
+  version 1.2.0 for the published-date filter. `AgentCoreProvider` makes one signed MCP `tools/call` per
+  search, rewrites GDELT syntax into a plain query of at most 200 characters, and returns snippets, which
+  GDELT never did. When the gateway is configured, GDELT gets at most 20s before the fallback runs. A
+  topic can also use it directly (`adapter_config.provider = "agentcore"`).
+- **Why fallback, not default:** AgentCore is priced per query (about $7 / 1,000 at launch), so it's paid
+  for only when GDELT fails.
+- **Alternatives considered:** Bedrock's built-in Web Search tool works only with OpenAI GPT models in US
+  regions; Knowledge Base web crawlers and Kendra crawl fixed sites rather than search the news; Google
+  News RSS is free and fast but unofficial.
+- **Deploy permissions:** the bootstrap deploy roles may manage `bedrock-agentcore:*` only in
+  `ap-northeast-1`, plus the `*-agentcore-gateway` role. Bootstrap is applied by hand, and a plan run
+  without its usual `-var`s (`domain_name`, `budget_alert_email`) proposes destroying the DNS zone and the
+  budget alarm -- `prevent_destroy` stops it. Keep them in the git-ignored `infra/bootstrap/terraform.tfvars`.
+
+Also fixed alongside: the CoinGecko key reached only the research-tick Lambda, so the review (which runs
+in the daily-cycle Lambda) called CoinGecko keyless. Both Lambdas now share `local.coingecko_env_variables`.
+
+### Web search usage and spend on the Stats page
+
+**Status: implemented** (#134, #135).
+
+- **Counted as it happens (#134):** each AgentCore query that gets an HTTP 2xx from the gateway adds to
+  the week's `web_search_agentcore_queries` and `web_search_agentcore_cost_aud` (a fixed $0.007 USD per
+  query, `AGENTCORE_WEB_SEARCH_USD_PER_QUERY`, to confirm against the pricing page). Each GDELT failure
+  that falls back adds to `web_search_gdelt_fallbacks`. These are weekly counters that roll into the
+  all-time totals. The Stats page shows "Web searches (AgentCore)" and "Web search spend".
+- **Checked against the bill (#135):** the daily Cost Explorer poll reads AgentCore's actual 30-day spend
+  in the same single `GetCostAndUsage` call as API Gateway's (`agentcore_cost_usd_30d`,
+  `agentcore_cost_aud_30d`; snapshots, never summed). The Stats page shows it as "Web search spend
+  (actual)", labelled as coming from the AWS bill with about a day's lag.
+- **Open item:** the Cost Explorer service name (`"Amazon Bedrock AgentCore"`) was assumed, because no
+  AgentCore spend had been billed yet. If the actual stays at $0 while the estimate grows, look up the
+  real name with `aws ce get-dimension-values --dimension SERVICE` and fix `AGENTCORE_SERVICE`.
+- **Not per article:** a search belongs to a research run, not to one article, so search spend is not
+  added to article lineage.
+
+### Staggered schedules
+
+**Status: applied in production and dev** (runtime data via the Admin API, not code; see §4).
+
+Every production topic researches every 4 hours on a fixed UTC cron a minute apart, and the daily articles
+run a minute apart from 09:00 Sydney, so no two topics start their external calls at the same moment. The
+system-wide jobs (the digest at 07:00 UTC, the weekly reflection and stats rollover on Mondays, the cost
+poll at 10:00 UTC) are Terraform-managed, don't call GDELT or CoinGecko, and don't overlap, so they were
+left alone. Interval settings are whole hours with 5 minutes' slack, so "4 hours 1 minute" can't be
+expressed and wouldn't stagger anything: the minute a topic runs comes from its heartbeat schedule.
+
+### Frontend: render-blocking CSS kept, on purpose
+
+**Status: decided** (#125 tried it, #127 reverted it).
+
+Lighthouse flags the two stylesheets as render-blocking (~440ms). An async `preload` + swap script (#125)
+raced: a stylesheet that finished loading before the script attached its `load` listener was never
+switched on, leaving pages unstyled. The site's CSP forbids the inline `onload` handler the usual pattern
+needs. Plain `<link rel="stylesheet">` is back. Both files are about 5KB over the wire minified and gzipped
+(CloudFront compresses them), so the cost is one round trip, not size. Inlining was rejected: the CSP
+(`style-src 'self'`) would need a hash regenerated on every CSS change, and already-published article
+pages are static HTML that would need regenerating. `preload-styles.js` stays deployed as a legacy shim
+(it now switches the links on immediately) for article pages published while #125 was live.
