@@ -588,6 +588,7 @@ def test_public_view_shows_web_search_queries_cost_and_fallbacks():
         "agentcore_queries": 4,
         "agentcore_cost_aud": 0.042,
         "gdelt_fallbacks": 3,
+        "agentcore_actual_cost_aud_30d": None,  # no Cost Explorer poll yet
     }
 
 
@@ -596,6 +597,7 @@ def test_public_view_with_no_web_searches_is_a_real_zero_cost():
         "agentcore_queries": 0,
         "agentcore_cost_aud": 0.0,
         "gdelt_fallbacks": 0,
+        "agentcore_actual_cost_aud_30d": None,
     }
 
 
@@ -603,3 +605,78 @@ def test_public_view_never_invents_a_web_search_cost_it_does_not_have():
     view = st.public_view({st.WEB_SEARCH_AGENTCORE_QUERIES: Decimal("2")})
 
     assert view["web_search"]["agentcore_cost_aud"] is None
+
+
+# --- the actual AgentCore charge (Cost Explorer): a SET snapshot like API Gateway's -------------
+
+
+def test_agentcore_cost_is_recorded_in_usd_and_aud(table):
+    st.record_agentcore_cost(Decimal("0.40"), "2026-09-22T00:00:00+00:00")
+
+    row = _row(table)
+    assert row[st.AGENTCORE_COST_USD_30D] == Decimal("0.40")
+    assert row[st.AGENTCORE_COST_AUD_30D] == Decimal("0.60")  # 0.40 * 1.50 AUD/USD
+    assert row[st.AGENTCORE_COST_AS_OF] == "2026-09-22T00:00:00+00:00"
+
+
+def test_a_repeat_agentcore_poll_overwrites_rather_than_accumulates(table):
+    st.record_agentcore_cost(Decimal("0.40"), "2026-09-22T00:00:00+00:00")
+    st.record_agentcore_cost(Decimal("0.70"), "2026-09-23T00:00:00+00:00")
+
+    assert _row(table)[st.AGENTCORE_COST_USD_30D] == Decimal("0.70")  # not 1.10
+
+
+def test_the_agentcore_actual_leaves_the_per_query_estimate_alone(table):
+    st.record_web_search_query()
+    st.record_agentcore_cost(Decimal("0.40"), "2026-09-22T00:00:00+00:00")
+
+    row = _row(table)
+    assert row[st.WEB_SEARCH_AGENTCORE_QUERIES] == 1
+    assert row[st.AGENTCORE_COST_USD_30D] == Decimal("0.40")
+
+
+def test_agentcore_cost_never_raises_even_with_no_table(monkeypatch):
+    monkeypatch.delenv("STATS_CURRENT_TABLE")
+    st.record_agentcore_cost(Decimal("1.00"), "2026-09-22T00:00:00+00:00")
+
+
+def test_the_agentcore_actual_rolls_over_as_a_snapshot_never_summed():
+    row = {
+        "stats_id": "current",
+        "week_start": "2026-09-15",
+        st.WEB_SEARCH_AGENTCORE_QUERIES: 5,
+        st.AGENTCORE_COST_USD_30D: Decimal("0.40"),
+        st.AGENTCORE_COST_AUD_30D: Decimal("0.60"),
+        st.AGENTCORE_COST_AS_OF: "2026-09-14T00:00:00+00:00",
+    }
+
+    additive, snapshot = st.split_for_rollover(row)
+
+    assert additive == {st.WEB_SEARCH_AGENTCORE_QUERIES: 5}
+    assert snapshot == {
+        st.AGENTCORE_COST_USD_30D: Decimal("0.40"),
+        st.AGENTCORE_COST_AUD_30D: Decimal("0.60"),
+        st.AGENTCORE_COST_AS_OF: "2026-09-14T00:00:00+00:00",
+    }
+
+
+def test_public_view_shows_the_agentcore_actual_beside_the_estimate_but_never_its_as_of():
+    view = st.public_view(
+        {
+            st.WEB_SEARCH_AGENTCORE_QUERIES: Decimal("4"),
+            st.WEB_SEARCH_AGENTCORE_COST_AUD: Decimal("0.042"),
+            st.AGENTCORE_COST_USD_30D: Decimal("0.03"),
+            st.AGENTCORE_COST_AUD_30D: Decimal("0.045"),
+            st.AGENTCORE_COST_AS_OF: "2026-09-22T00:00:00+00:00",
+        }
+    )
+
+    assert view["web_search"]["agentcore_cost_aud"] == 0.042  # the estimate
+    assert view["web_search"]["agentcore_actual_cost_aud_30d"] == 0.045  # the bill
+    assert "2026-09-22T00:00:00" not in str(view)  # the as_of stays owner-only
+
+
+def test_public_view_shows_a_zero_actual_as_zero_not_missing():
+    view = st.public_view({st.AGENTCORE_COST_AUD_30D: Decimal("0")})
+
+    assert view["web_search"]["agentcore_actual_cost_aud_30d"] == 0.0
