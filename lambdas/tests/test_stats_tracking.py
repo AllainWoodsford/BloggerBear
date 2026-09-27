@@ -529,3 +529,77 @@ def test_public_view_on_an_entirely_empty_row_is_all_zeros_and_nones():
     assert view["api_gateway_cost_usd_30d"] is None
     assert view["api_gateway_cost_aud_30d"] is None
     assert all(c["cost_aud"] is None and c["calls"] == 0 for c in view["categories"])
+
+
+# --- web search (AgentCore queries and GDELT fallbacks) ---------------------------------------
+
+
+def test_each_agentcore_query_adds_one_query_and_its_per_query_price(table):
+    st.record_web_search_query()
+    st.record_web_search_query()
+
+    row = _row(table)
+    assert row[st.WEB_SEARCH_AGENTCORE_QUERIES] == 2
+    per_query_aud = Decimal(str(st.AGENTCORE_WEB_SEARCH_USD_PER_QUERY * st.USD_TO_AUD_RATE))
+    assert row[st.WEB_SEARCH_AGENTCORE_COST_AUD] == per_query_aud * 2
+
+
+def test_a_gdelt_fallback_is_its_own_counter(table):
+    st.record_web_search_fallback()
+
+    row = _row(table)
+    assert row[st.WEB_SEARCH_GDELT_FALLBACKS] == 1
+    assert st.WEB_SEARCH_AGENTCORE_QUERIES not in row  # the query itself is counted separately
+
+
+def test_the_web_search_recorders_never_raise_even_with_no_table(monkeypatch):
+    monkeypatch.delenv("STATS_CURRENT_TABLE")
+    st.record_web_search_query()
+    st.record_web_search_fallback()
+
+
+def test_web_search_counters_roll_over_as_additive_counters():
+    row = {
+        "stats_id": "current",
+        "week_start": "2026-09-21",
+        st.WEB_SEARCH_AGENTCORE_QUERIES: Decimal("3"),
+        st.WEB_SEARCH_AGENTCORE_COST_AUD: Decimal("0.0315"),
+        st.WEB_SEARCH_GDELT_FALLBACKS: Decimal("2"),
+    }
+
+    additive, snapshot = st.split_for_rollover(row)
+
+    assert additive == {
+        st.WEB_SEARCH_AGENTCORE_QUERIES: Decimal("3"),
+        st.WEB_SEARCH_AGENTCORE_COST_AUD: Decimal("0.0315"),
+        st.WEB_SEARCH_GDELT_FALLBACKS: Decimal("2"),
+    }
+    assert snapshot == {}
+
+
+def test_public_view_shows_web_search_queries_cost_and_fallbacks():
+    row = {
+        st.WEB_SEARCH_AGENTCORE_QUERIES: Decimal("4"),
+        st.WEB_SEARCH_AGENTCORE_COST_AUD: Decimal("0.042"),
+        st.WEB_SEARCH_GDELT_FALLBACKS: Decimal("3"),
+    }
+
+    assert st.public_view(row)["web_search"] == {
+        "agentcore_queries": 4,
+        "agentcore_cost_aud": 0.042,
+        "gdelt_fallbacks": 3,
+    }
+
+
+def test_public_view_with_no_web_searches_is_a_real_zero_cost():
+    assert st.public_view({})["web_search"] == {
+        "agentcore_queries": 0,
+        "agentcore_cost_aud": 0.0,
+        "gdelt_fallbacks": 0,
+    }
+
+
+def test_public_view_never_invents_a_web_search_cost_it_does_not_have():
+    view = st.public_view({st.WEB_SEARCH_AGENTCORE_QUERIES: Decimal("2")})
+
+    assert view["web_search"]["agentcore_cost_aud"] is None
