@@ -78,6 +78,7 @@ from common.relevance import (
     ideation_relevance_rule,
     topic_label,
 )
+from common.rewrite import run_rewrite
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
 from common.stats_tracking import record_article_lineage
@@ -160,6 +161,16 @@ _FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 
 @track_lambda_duration("daily_cycle")
 def handler(event: dict, context) -> dict:
+    # A Re-Write of a held article (common/rewrite.py), invoked asynchronously by the Admin
+    # API's POST /moderation-queue/{queue_id}/rewrite. It runs here rather than in a Lambda of
+    # its own because it needs exactly this one's timeout, permissions and CoinGecko key.
+    if (event or {}).get("action") == "rewrite":
+        queue_id, rewrite_id = event.get("queue_id"), event.get("rewrite_id")
+        if not queue_id or not rewrite_id:
+            return {"status": "error", "error": "rewrite event needs 'queue_id' and 'rewrite_id'"}
+        print(f"daily_cycle_handler: starting rewrite for queue_id={queue_id}")
+        return run_rewrite(queue_id, rewrite_id)
+
     topic_id = (event or {}).get("topic_id")
     if not topic_id:
         return {"status": "error", "error": "event missing required 'topic_id'"}

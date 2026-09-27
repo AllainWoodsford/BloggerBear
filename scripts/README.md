@@ -206,10 +206,19 @@ you, a preview) and waits for one key, no Enter:
 |---|---|
 | `y` | Approve. An article is published (page rendered, musing written); a prompt change goes live for future drafts |
 | `r` | Reject. An article stays private; a prompt change is dropped |
+| `w` | Re-Write (articles held for a reason only). Pick a model; the article is rewritten in the background to fix what it was held for, and you move on |
 | `z` | Skip: leave it exactly as it is |
 | `v` | Read the whole text, then choose |
 | `q` | Quit. Nothing you already decided is lost |
 
+- **Re-Write** (`w`) sends the article, its hold reasons, its research and current data to the model
+  you pick (any enabled model from `admin_cli models`). The result is checked like the automatic
+  revision (no figure or link that is in none of the sources), reviewed again, and comes back to
+  this inbox as a new item showing `Re-Write #n by <model> (~$cost)` and the old title, to approve,
+  reject or rewrite again. The article is never published by a rewrite, and the text it replaced is
+  kept in S3 (`articles/<id>.before-rewrite-<n>.md`). If it fails, the original comes back with the
+  reason; one that never finishes is put back after 15 minutes. Its tokens and cost go into the
+  article's lineage (stage `rewrite`) and the week's Stats.
 - **Up to 30 a time**, oldest first, articles before prompt changes. Run it again for the next batch
   (`--limit` changes the size; `--source moderation` or `--source refinements` picks one kind).
 - **Each choice is applied at once**, through the same signed Admin API as every other command, so a quit,

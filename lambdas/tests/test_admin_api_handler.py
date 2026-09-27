@@ -2738,3 +2738,147 @@ def test_a_bad_announce_flag_is_treated_as_yes(loot_musing):
     created = _worn_gear(announce="no thanks")
 
     assert created["loot_drop"] == "m-loot"
+
+
+# --- Re-Write (POST /moderation-queue/{queue_id}/rewrite) ------------------------------------------
+
+REWRITE_MODEL = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def _put_model_row(model_id=REWRITE_MODEL, enabled=True):
+    boto3.resource("dynamodb", region_name=REGION).Table("Models").put_item(
+        Item={"model_id": model_id, "display_name": "Haiku", "provider": "anthropic", "enabled": enabled}
+    )
+
+
+def _rewrite(queue_id="queue-1", body=None, client=None):
+    client = client or MagicMock()
+    event = _event(
+        "POST /moderation-queue/{queue_id}/rewrite",
+        path_params={"queue_id": queue_id},
+        body=body if body is not None else {"model_id": REWRITE_MODEL},
+    )
+    with patch("admin_api_handler._get_lambda_client", return_value=client):
+        result = admin_api_handler.handler(event, None)
+    return result, json.loads(result["body"]), client
+
+
+def _queue_row(queue_id="queue-1"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    return table.get_item(Key={"queue_id": queue_id})["Item"]
+
+
+def test_rewrite_claims_the_item_and_starts_the_rewrite_in_the_background(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+
+    result, body, client = _rewrite()
+
+    assert result["statusCode"] == 202
+    assert body == {"rewriting": "queue-1", "article_id": "article-1", "model_id": REWRITE_MODEL}
+    row = _queue_row()
+    assert row["status"] == "rewriting" and row["rewrite_model_id"] == REWRITE_MODEL
+    kwargs = client.invoke.call_args.kwargs
+    assert kwargs["FunctionName"] == "daily-cycle-fn" and kwargs["InvocationType"] == "Event"
+    assert json.loads(kwargs["Payload"]) == {
+        "action": "rewrite",
+        "queue_id": "queue-1",
+        "rewrite_id": row["rewrite_id"],
+    }
+
+
+def test_rewrite_needs_a_registered_enabled_model(aws_resources):
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    _put_model_row(model_id="disabled-model", enabled=False)
+
+    assert _rewrite(body={})[0]["statusCode"] == 400
+    assert _rewrite(body={"model_id": "unknown"})[0]["statusCode"] == 400
+    assert _rewrite(body={"model_id": "disabled-model"})[0]["statusCode"] == 400
+    assert _queue_row()["status"] == "pending"
+
+
+def test_rewrite_of_a_missing_or_resolved_item_is_refused(aws_resources):
+    _put_model_row()
+    _put_moderation_item(status="approved", reasons=["Fabricated claim: x"])
+
+    assert _rewrite(queue_id="nope")[0]["statusCode"] == 404
+    result, _, client = _rewrite()
+    assert result["statusCode"] == 409
+    client.invoke.assert_not_called()
+
+
+def test_a_second_rewrite_trigger_is_refused_while_the_first_runs(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+
+    _rewrite()
+    result, _, client = _rewrite()
+
+    assert result["statusCode"] == 409
+    client.invoke.assert_not_called()
+
+
+def test_an_article_held_only_for_being_financial_has_nothing_to_rewrite(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["financial topic - routed to manual moderation regardless of content"])
+
+    result, body, _ = _rewrite()
+
+    assert result["statusCode"] == 400 and "nothing to fix" in body["error"]
+
+
+def test_rewrite_that_cannot_be_started_puts_the_item_back(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+
+    result, _, _ = _rewrite(client=client)
+
+    assert result["statusCode"] == 502
+    assert _queue_row()["status"] == "pending"
+
+
+def test_the_queue_listing_counts_rewrites_in_progress_and_releases_stuck_ones(aws_resources):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    _put_moderation_item(queue_id="q-pending")
+    running = ("q-running", datetime.now(UTC).isoformat())
+    for queue_id, requested_at in (running, ("q-stuck", "2026-01-01T00:00:00+00:00")):
+        table.put_item(
+            Item={"queue_id": queue_id, "article_id": "a", "topic_id": "t", "reasons": ["x"],
+                  "status": "rewriting", "created_at": "2026-09-12T00:00:00+00:00",
+                  "rewrite_id": f"rw-{queue_id}", "rewrite_requested_at": requested_at}
+        )
+
+    body = json.loads(admin_api_handler.handler(_event("GET /moderation-queue"), None)["body"])
+
+    assert sorted(item["queue_id"] for item in body["items"]) == ["q-pending", "q-stuck"]
+    assert body["rewriting"] == 1
+    assert "never finished" in _queue_row("q-stuck")["last_rewrite_error"]
+
+
+def test_publish_article_mid_rewrite_approves_the_item_so_the_rewrite_is_discarded(aws_resources):
+    _put_article(article_id="article-1")
+    _put_moderation_item(queue_id="queue-1", article_id="article-1", status="rewriting")
+
+    with patch("admin_api_handler._render_published_page"):
+        admin_api_handler.handler(
+            _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}), None
+        )
+
+    assert _queue_row()["status"] == "approved"
+
+
+def test_publish_article_resolves_the_newest_item_after_a_rewrite(aws_resources):
+    _put_article(article_id="article-1")
+    _put_moderation_item(queue_id="old", article_id="article-1", status="rewritten",
+                         created_at="2026-09-12T00:00:00+00:00")
+    _put_moderation_item(queue_id="new", article_id="article-1", status="pending",
+                         created_at="2026-09-13T00:00:00+00:00")
+
+    with patch("admin_api_handler._render_published_page"):
+        admin_api_handler.handler(
+            _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"}), None
+        )
+
+    assert _queue_row("new")["status"] == "approved" and _queue_row("old")["status"] == "rewritten"

@@ -1183,3 +1183,135 @@ def test_no_loot_drop_line_when_none_was_posted():
     _, out = _approve_with(_prompt_change_api(approve_response=response), "t")
 
     assert "loot drop" not in out.lower()
+
+
+# --- Re-Write ([w]) ---------------------------------------------------------------------------
+
+MODELS = {
+    "models": [
+        {"model_id": "haiku", "display_name": "Claude Haiku", "enabled": True,
+         "input_price_usd_per_1k_tokens": 0.001, "output_price_usd_per_1k_tokens": 0.005},
+        {"model_id": "old", "display_name": "Retired", "enabled": False},
+        {"model_id": "sonnet", "display_name": "Claude Sonnet"},
+    ]
+}
+
+
+def _held(queue_id="q1", **extra):
+    return {**_row(queue_id, "2026-09-20T10:00:00+00:00", reasons=["Investment advice: buy it"]), **extra}
+
+
+def _rewrite_api(rows, rewrite_result=None):
+    api = _moderation(rows)
+    api.routes["GET /models"] = MODELS
+    for row in rows:
+        api.routes[f"POST /moderation-queue/{row['queue_id']}/rewrite"] = (
+            rewrite_result if rewrite_result is not None else {"rewriting": row["queue_id"]}
+        )
+    return api
+
+
+def test_only_an_article_held_for_a_reason_can_be_rewritten():
+    api = _moderation([_held("held"), _row("routine", "2026-09-21T10:00:00+00:00")])
+
+    held, routine = ri.ModerationSource(api).fetch(5, set())
+
+    assert held.can_rewrite is True and routine.can_rewrite is False
+
+
+def test_w_asks_for_a_model_starts_the_rewrite_and_moves_on(store):
+    api = _rewrite_api([_held("q1"), _held("q2")])
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "2", "z")
+
+    assert api.bodies[0] == ("/moderation-queue/q1/rewrite", {"model_id": "sonnet"})
+    assert summary.rewritten == 1 and summary.skipped == 1
+    assert "[w] Re-Write" in out and "[1] Claude Haiku" in out and "Retired" not in out
+    assert "back in your inbox" in out and "1 sent for a Re-Write" in out
+
+
+def test_cancelling_the_model_choice_stays_on_the_item(store):
+    api = _rewrite_api([_held("q1")])
+
+    summary, _ = _run([ri.ModerationSource(api)], store, "w", "c", "r")
+
+    assert summary.rewritten == 0 and summary.rejected == 1
+    assert not any(path.endswith("/rewrite") for path, _ in api.bodies)
+
+
+def test_w_does_nothing_on_a_routine_article(store):
+    api = _rewrite_api([_row("q1", "2026-09-20T10:00:00+00:00")])
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "z")
+
+    assert summary.rewritten == 0 and "[w] Re-Write" not in out
+    assert ("GET", "/models") not in api.calls
+
+
+def test_a_rewrite_already_handled_elsewhere_moves_on(store):
+    api = _rewrite_api([_held("q1")], rewrite_result=ri.ApiError(409, "not pending"))
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "1")
+
+    assert summary.already_handled == 1 and "Already handled elsewhere" in out
+
+
+def test_a_rewrite_that_fails_to_start_stays_on_the_item(store):
+    api = _rewrite_api([_held("q1")], rewrite_result=ri.ApiError(502, "could not start"))
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "1", "z")
+
+    assert summary.errors == 1 and summary.skipped == 1 and "Could not start a Re-Write" in out
+
+
+def test_a_dry_run_rewrite_sends_nothing(store):
+    api = _rewrite_api([_held("q1")])
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "1", dry_run=True)
+
+    assert summary.rewritten == 1 and "(dry run) would rewrite with haiku" in out
+    assert not api.bodies
+
+
+def test_with_no_enabled_models_there_is_nothing_to_choose(store):
+    api = _rewrite_api([_held("q1")])
+    api.routes["GET /models"] = {"models": [{"model_id": "old", "enabled": False}]}
+
+    summary, out = _run([ri.ModerationSource(api)], store, "w", "z")
+
+    assert summary.rewritten == 0 and "No enabled models" in out
+
+
+def test_a_rewritten_article_says_which_rewrite_by_what_and_for_how_much():
+    rewrite = {"number": 2, "model_label": "Claude Haiku", "cost_aud": 0.0042, "previous_title": "Buy Now"}
+    (item,) = ri.ModerationSource(_moderation([_held("q1", rewrite=rewrite)])).fetch(5, set())
+
+    assert 'Re-Write #2 by Claude Haiku (~$0.004 AUD); was titled "Buy Now"' in item.facts
+
+
+def test_a_failed_rewrite_is_shown_on_the_original():
+    row = _held("q1", last_rewrite_error="the rewrite could not be trusted: introduces figure(s)")
+    (item,) = ri.ModerationSource(_moderation([row])).fetch(5, set())
+
+    assert any("The last Re-Write did not work" in note for note in item.notes)
+
+
+def test_the_practice_inbox_can_rewrite_too(store):
+    source = ri.MockSource(count=3)
+
+    summary, _ = _run([source], store, "z", "z", "w", "1")
+
+    assert summary.rewritten == 1 and source.log == [("rewrite", "mock-3:practice-small")]
+
+
+def test_the_inbox_mentions_rewrites_in_progress():
+    api = FakeApi(
+        {
+            "GET /moderation-queue": {"items": [], "rewriting": 2},
+            "GET /prompt-refinements?status=pending": {"refinements": []},
+            "GET /failed-executions": {"items": []},
+            "GET /feedback-config": {"effective": {}},
+        }
+    )
+
+    assert "Being rewritten in the background: 2" in ri.inbox_report(api, NOW)

@@ -449,12 +449,16 @@ def revision_violations(
     new_body: str,
     *,
     sources: list[str],
+    body_length_bounds: tuple[float, float] = BODY_LENGTH_BOUNDS,
+    check_headings: bool = True,
 ) -> list[str]:
     """Why a revision cannot be trusted, in plain words; [] if it passes every check.
 
     Plain code, no model: it does not take the reviser's word that it added nothing.
     `sources` is the trusted text a figure or link may legitimately come from (the findings
-    and the fresh evidence); the original draft counts too.
+    and the fresh evidence); the original draft counts too. `body_length_bounds` and
+    `check_headings` are the shape checks: tight for this module's minor-fix revision, looser
+    for an operator's Re-Write (common/rewrite.py), which may remove a whole problem section.
     """
     violations: list[str] = []
     trusted = "\n".join([original_title, original_body, *sources])
@@ -479,12 +483,12 @@ def revision_violations(
     if new_urls:
         violations.append(f"introduces link(s) found in none of the sources: {', '.join(new_urls[:3])}")
 
-    low, high = BODY_LENGTH_BOUNDS
+    low, high = body_length_bounds
     if not low * len(original_body) <= len(new_body) <= high * len(original_body):
         violations.append(
             f"changes the article's length too much ({len(original_body)} -> {len(new_body)} characters)"
         )
-    if _headings(new_body) != _headings(original_body):
+    if check_headings and _headings(new_body) != _headings(original_body):
         violations.append("changes the number of headings")
 
     tlow, thigh = TITLE_LENGTH_BOUNDS
