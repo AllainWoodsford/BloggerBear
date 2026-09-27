@@ -17,20 +17,13 @@
     pulled from a CDN -- depending on a third party to deliver the
     fallback for "our own styles didn't load" would defeat the point.
 
-    Preloaded rather than linked as stylesheets outright (Lighthouse's
-    "render-blocking requests" flag, ~440ms): preload-styles.js flips
-    each `rel` to "stylesheet" once it has loaded, off the critical
-    render path the whole time it's fetching. The <noscript> block is
-    the real `rel="stylesheet"` pair for when JS is disabled, since a
-    preload alone never applies as a stylesheet on its own.
+    Plain blocking links on purpose. Lighthouse flags them as
+    render-blocking (~440ms), but an async preload+swap was tried in
+    PR #125 and raced, leaving pages unstyled. Both files are tiny once
+    minified + gzipped (~5KB total), so the cost is one round trip.
   -->
-  <link rel="preload" href="normalize.css" as="style" data-swap />
-  <link rel="preload" href="styles.css" as="style" data-swap />
-  <script src="preload-styles.js"></script>
-  <noscript>
-    <link rel="stylesheet" href="normalize.css" />
-    <link rel="stylesheet" href="styles.css" />
-  </noscript>
+  <link rel="stylesheet" href="normalize.css" />
+  <link rel="stylesheet" href="styles.css" />
   <!--
     Three-tier favicon: modern browsers use the scalable SVG; anything
     that doesn't understand SVG icons falls back to the classic ICO
