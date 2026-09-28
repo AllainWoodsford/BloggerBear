@@ -48,6 +48,7 @@ from common.dynamo import (
 )
 from common.editorial_resolver import resolve_editorial_goals
 from common.lambda_timing import track_lambda_duration
+from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
 from common.research_schedule import is_due, next_due_at, resolve_interval_hours
 
@@ -232,7 +233,11 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     if not changed:
         return {"status": "no_change"}
 
-    model_id = os.environ["BEDROCK_MODEL_ID"]
+    # The same precedence as the daily cycle (rotation candidates -> the topic's
+    # model_id, which rolls forward after each publish -> ModelConfig default ->
+    # env var), so research follows the topic's current model instead of always
+    # running on the Terraform default.
+    model_id, fallback_model_id = resolve_model(topic)
     prompt = _build_prompt(topic, diff_summary, new_state, adapter)
     # Tracked so the spend is recorded on the Finding itself: research runs hourly,
     # long before any article exists, and its cost is bundled into whichever
@@ -240,6 +245,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     result = invoke_model_tracked(
         prompt,
         model_id,
+        fallback_model_id=fallback_model_id,
         max_tokens=RESEARCH_MAX_TOKENS,
         retry_max_tokens=RESEARCH_RETRY_MAX_TOKENS,
     )
