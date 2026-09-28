@@ -49,6 +49,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("CANDIDATE_IDEAS_TABLE", "CandidateIdeas")
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
+    monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     # research_tick_handler / common.dynamo cache boto3 clients/resources at
@@ -87,6 +88,12 @@ def aws_resources(aws_env):
                 {"AttributeName": "topic_id", "AttributeType": "S"},
                 {"AttributeName": "captured_at", "AttributeType": "S"},
             ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="ModelConfig",
+            KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
 
@@ -157,6 +164,42 @@ def test_first_tick_is_always_material_and_calls_bedrock(aws_resources, monkeypa
     today = datetime.now(UTC).date().isoformat()
     # the snapshot also carries which items have now been reported (for the next tick)
     assert json.loads(stored["Body"].read()) == {**new_state, "_seen": {"a/b": today}}
+
+
+def test_research_runs_on_the_topics_current_model_with_its_fallback(aws_resources, monkeypatch):
+    """The topic's model_id (rolled forward after each publish) and fallback win over the
+    Terraform default, same as the daily cycle."""
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").update_item(
+        Key={"topic_id": "github-trending-python"},
+        UpdateExpression="SET model_id = :m, fallback_model_id = :f",
+        ExpressionAttributeValues={":m": "deepseek.v3-v1:0", ":f": "amazon.nova-micro-v1:0"},
+    )
+    new_state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: new_state)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")) as mock_invoke:
+        research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+
+    assert mock_invoke.call_args.args[1] == "deepseek.v3-v1:0"
+    assert mock_invoke.call_args.kwargs["fallback_model_id"] == "amazon.nova-micro-v1:0"
+
+
+def test_research_falls_back_to_the_model_config_default_then_the_env_var(aws_resources, monkeypatch):
+    new_state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: new_state)
+
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")) as mock_invoke:
+        research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+    assert mock_invoke.call_args.args[1] == "anthropic.claude-3-haiku-20240307-v1:0"
+    assert mock_invoke.call_args.kwargs["fallback_model_id"] is None
+
+    boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig").put_item(
+        Item={"config_id": "default", "model_id": "mistral.magistral-small-2509", "fallback_model_id": None}
+    )
+    new_state = {"repos": [_repo("c/d", 5)], "fetched_at": "2026-09-13T01:00:00+00:00"}
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("ok")) as mock_invoke:
+        research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+    assert mock_invoke.call_args.args[1] == "mistral.magistral-small-2509"
 
 
 def test_no_material_change_skips_bedrock_and_does_not_write_finding(aws_resources, monkeypatch):
