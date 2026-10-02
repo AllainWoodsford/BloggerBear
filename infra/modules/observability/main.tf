@@ -119,6 +119,71 @@ resource "aws_cloudwatch_metric_alarm" "daily_cycle_executions_failed" {
   ok_actions    = [aws_sns_topic.alerts.arn]
 }
 
+# Feedback spam. Rejected submissions are stored nowhere and count against no feedback limit (so
+# junk cannot use up the room real feedback needs), which also means nothing else notices a flood of
+# them. These read public_api_handler.py's own log line -- the reason code only, never the comment --
+# into two metrics: every rejection, and rejections because the day's model checks ran out
+# (common/feedback_limits.py's screening_limit), after which no comment can be kept until the day
+# resets. Proof-of-work starts well before that (feedback_limits.load_percent); this is the human's
+# signal.
+resource "aws_cloudwatch_log_metric_filter" "feedback_rejected" {
+  name           = "bloggerbear-${var.environment_name}-feedback-rejected"
+  log_group_name = var.feedback_log_group_name
+  pattern        = "\"rejected a feedback submission\""
+
+  metric_transformation {
+    name          = "FeedbackRejected"
+    namespace     = "BloggerBear/${var.environment_name}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_log_metric_filter" "feedback_screening_budget_used_up" {
+  name           = "bloggerbear-${var.environment_name}-feedback-screening-budget-used-up"
+  log_group_name = var.feedback_log_group_name
+  pattern        = "\"rejected a feedback submission (screening_budget)\""
+
+  metric_transformation {
+    name          = "FeedbackScreeningBudgetUsedUp"
+    namespace     = "BloggerBear/${var.environment_name}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "feedback_rejections_spike" {
+  alarm_name          = "bloggerbear-${var.environment_name}-feedback-rejections-spike"
+  alarm_description   = "bloggerbear-${var.environment_name}: at least ${var.feedback_rejections_alarm_threshold} feedback submissions were rejected in the last hour -- likely comment spam. Check the public API WAF log group for the source."
+  namespace           = "BloggerBear/${var.environment_name}"
+  metric_name         = aws_cloudwatch_log_metric_filter.feedback_rejected.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = var.feedback_rejections_alarm_threshold
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "feedback_screening_budget_used_up" {
+  alarm_name          = "bloggerbear-${var.environment_name}-feedback-screening-budget-used-up"
+  alarm_description   = "bloggerbear-${var.environment_name}: today's comment model checks are used up, so every comment is being rejected until the day resets (Australia/Sydney). See admin_cli.py feedback-config get."
+  namespace           = "BloggerBear/${var.environment_name}"
+  metric_name         = aws_cloudwatch_log_metric_filter.feedback_screening_budget_used_up.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
 # Single dashboard: one widget per Lambda (Invocations/Errors/Duration/
 # Throttles) plus one widget for the daily-cycle state machine + DLQ.
 # Region is hardcoded to ap-southeast-2 rather than pulled from a

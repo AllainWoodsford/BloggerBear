@@ -15,11 +15,12 @@ the token.
 * Not before. The token is issued at once but is valid only from a random moment 0.5 to 2 seconds
   later (`token_delay_min_ms`/`token_delay_max_ms`), which the server enforces. Nothing sleeps
   and a human never notices. A fast client is told how long to wait and simply retries.
-* Proof-of-work. When the site is at or past `pow_threshold_percent` of its daily or rate limit,
-  tokens are issued needing a nonce so that SHA-256(token + ":" + nonce) has `pow_difficulty_bits`
-  leading zero bits (about a second or two of browser CPU at 16). It asks nothing of the person:
-  no clicking, nothing to read, nothing for a screen reader or a switch user to do. The trigger is
-  the site's own counters, not anything observed about the visitor.
+* Proof-of-work. When the site is at or past `pow_threshold_percent` of its daily limit, rate limit
+  or daily model-check budget (feedback_limits.load_percent), tokens are issued needing a nonce so
+  that SHA-256(token + ":" + nonce) has `pow_difficulty_bits` leading zero bits (about a second or
+  two of browser CPU at 16). It asks nothing of the person: no clicking, nothing to read, nothing
+  for a screen reader or a switch user to do. The trigger is the site's own counters, not anything
+  observed about the visitor.
 * A decoy field on the form (the honeypot, see public_api_handler.py) catches scripts that fill
   every input.
 
