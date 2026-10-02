@@ -1419,7 +1419,43 @@ resource "aws_wafv2_web_acl" "public_api" {
 # requirement as the ACL itself. Log group names MUST start with
 # "aws-waf-logs-" -- an AWS WAFv2 requirement for logging directly to
 # CloudWatch Logs (no Kinesis Firehose needed).
+#
+# Data minimisation (the Privacy Policy's section 5 describes exactly this, so
+# change both together): the two ACLs anonymous visitors pass through -- the
+# public API and the shared CloudFront one -- log only requests a rule
+# blocked or counted (logging_filter drops ALLOW), with the browser-
+# fingerprinting headers in local.waf_log_redacted_headers redacted, and keep
+# them for 14 days. WAF cannot redact the source IP, or `matchedData` (the bit
+# of a blocked request that tripped a rule, which can be part of a comment).
+# The admin ACL is unchanged: only the operator's allowlisted IP gets through
+# it, and a full record of that is the audit trail.
 # -----------------------------------------------------------------------
+locals {
+  # Request headers that identify a browser more than they help explain a block. Matched
+  # case-insensitively by WAF; a header a request does not send is simply absent.
+  waf_log_redacted_headers = [
+    "user-agent",
+    "referer",
+    "accept",
+    "accept-language",
+    "accept-encoding",
+    "cookie",
+    "x-forwarded-for",
+    "dnt",
+    "sec-gpc",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
+    "sec-ch-ua-arch",
+    "sec-ch-ua-bitness",
+    "sec-ch-ua-model",
+    "sec-ch-ua-full-version-list",
+    "sec-ch-ua-wow64",
+  ]
+  waf_visitor_log_retention_days = 14
+}
+
 resource "aws_cloudwatch_log_group" "waf_admin" {
   name              = "aws-waf-logs-bloggerbear-production-admin"
   retention_in_days = 30
@@ -1427,7 +1463,7 @@ resource "aws_cloudwatch_log_group" "waf_admin" {
 
 resource "aws_cloudwatch_log_group" "waf_public_api" {
   name              = "aws-waf-logs-bloggerbear-production-public-api"
-  retention_in_days = 30
+  retention_in_days = local.waf_visitor_log_retention_days
 }
 
 data "aws_iam_policy_document" "waf_logs" {
@@ -1459,6 +1495,36 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
   resource_arn            = aws_wafv2_web_acl.public_api.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf_public_api.arn]
 
+  dynamic "redacted_fields" {
+    for_each = local.waf_log_redacted_headers
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
+
+  logging_filter {
+    default_behavior = "DROP"
+
+    filter {
+      behavior    = "KEEP"
+      requirement = "MEETS_ANY"
+
+      condition {
+        action_condition {
+          action = "BLOCK"
+        }
+      }
+
+      condition {
+        action_condition {
+          action = "COUNT"
+        }
+      }
+    }
+  }
+
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
 }
 
@@ -1468,7 +1534,7 @@ resource "aws_cloudwatch_log_group" "waf_shared" {
   provider = aws.us_east_1
 
   name              = "aws-waf-logs-bloggerbear-shared"
-  retention_in_days = 30
+  retention_in_days = local.waf_visitor_log_retention_days
 }
 
 # -----------------------------------------------------------------------
@@ -1522,6 +1588,36 @@ resource "aws_wafv2_web_acl_logging_configuration" "shared" {
 
   resource_arn            = aws_wafv2_web_acl.this.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf_shared.arn]
+
+  dynamic "redacted_fields" {
+    for_each = local.waf_log_redacted_headers
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
+
+  logging_filter {
+    default_behavior = "DROP"
+
+    filter {
+      behavior    = "KEEP"
+      requirement = "MEETS_ANY"
+
+      condition {
+        action_condition {
+          action = "BLOCK"
+        }
+      }
+
+      condition {
+        action_condition {
+          action = "COUNT"
+        }
+      }
+    }
+  }
 
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs_shared]
 }

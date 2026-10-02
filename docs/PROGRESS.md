@@ -437,7 +437,12 @@ them.
   to CloudWatch Logs on every ACL in both environments (admin, public
   API, and production's shared CLOUDFRONT-scope ACL), so the data needed
   to actually tune the rate-limit threshold and rule set will exist once
-  deployed
+  deployed. Since narrowed for privacy: the public API and shared
+  CloudFront ACLs now log only BLOCK/COUNT requests, with browser-
+  fingerprinting headers redacted, kept 14 days (the Privacy Policy's
+  section 5 describes exactly this). Tuning from allowed traffic now
+  relies on the ACLs' CloudWatch metrics and WAF's 3-hour sampled
+  requests; the admin ACL still logs everything
 - [x] Prompt iteration on the compliance-review step based on what's
   actually been flagged so far — done: real flagged drafts showed the
   reviewer calling figures from the findings "invented", so the review now

@@ -1323,7 +1323,37 @@ resource "aws_wafv2_web_acl" "public_api" {
 # WAFv2 service principal permission to write to any log group matching
 # that prefix in this account/region; without it, aws_wafv2_web_acl_
 # logging_configuration silently delivers nothing.
+#
+# Data minimisation, the same as production's (see its comment and the
+# Privacy Policy's section 5): the public API ACL logs only blocked/counted
+# requests, with browser-fingerprinting headers redacted, for 14 days. The
+# admin ACL is unchanged.
 # -----------------------------------------------------------------------
+locals {
+  # Keep in step with production's list.
+  waf_log_redacted_headers = [
+    "user-agent",
+    "referer",
+    "accept",
+    "accept-language",
+    "accept-encoding",
+    "cookie",
+    "x-forwarded-for",
+    "dnt",
+    "sec-gpc",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
+    "sec-ch-ua-arch",
+    "sec-ch-ua-bitness",
+    "sec-ch-ua-model",
+    "sec-ch-ua-full-version-list",
+    "sec-ch-ua-wow64",
+  ]
+  waf_visitor_log_retention_days = 14
+}
+
 resource "aws_cloudwatch_log_group" "waf_admin" {
   name              = "aws-waf-logs-bloggerbear-dev-admin"
   retention_in_days = 30
@@ -1331,7 +1361,7 @@ resource "aws_cloudwatch_log_group" "waf_admin" {
 
 resource "aws_cloudwatch_log_group" "waf_public_api" {
   name              = "aws-waf-logs-bloggerbear-dev-public-api"
-  retention_in_days = 30
+  retention_in_days = local.waf_visitor_log_retention_days
 }
 
 # -----------------------------------------------------------------------
@@ -1388,6 +1418,36 @@ resource "aws_wafv2_web_acl_logging_configuration" "admin" {
 resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
   resource_arn            = aws_wafv2_web_acl.public_api.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf_public_api.arn]
+
+  dynamic "redacted_fields" {
+    for_each = local.waf_log_redacted_headers
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
+
+  logging_filter {
+    default_behavior = "DROP"
+
+    filter {
+      behavior    = "KEEP"
+      requirement = "MEETS_ANY"
+
+      condition {
+        action_condition {
+          action = "BLOCK"
+        }
+      }
+
+      condition {
+        action_condition {
+          action = "COUNT"
+        }
+      }
+    }
+  }
 
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
 }

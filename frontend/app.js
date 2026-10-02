@@ -2048,7 +2048,7 @@
           list: [
             "We do not use cookies. This is verified directly against this site's own source code and infrastructure configuration, not just asserted — the CloudFront distribution in front of this site is explicitly configured to forward none, and the frontend code contains no cookie-setting logic anywhere.",
             "We do not run any third-party analytics, advertising, or tracking scripts.",
-            "We do not build profiles of individual visitors, and have no way to identify you from your use of this site.",
+            "We do not build profiles of individual visitors, or try to work out who you are from your use of this site.",
           ],
         },
         {
@@ -2060,25 +2060,28 @@
         {
           heading: "4. Feedback (votes and comments)",
           paragraphs: [
-            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, and only if it passed automated screening — see below), and when it was submitted. A comment that fails screening is not stored anywhere, and neither is the vote sent with it. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
+            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, and only if it passed automated screening — see below), and when it was submitted. Stored feedback carries no IP address, browser fingerprint, account, or any other identifier.",
+            "A submission whose comment fails screening is not stored by the site at all: neither the comment nor the vote sent with it. Feedback that goes through normally is not written to the security logs either. The one exception is a submission the firewall blocks before it reaches the site, for example a comment containing code or script, which is logged as described in section 5.",
           ],
         },
         {
           heading: "Please don't share personal information",
           paragraphs: [
-            "Any comment you submit goes through a real, if best-effort, attempt to remove obvious personal information automatically — a pattern-matching pass, then a second AI-based review pass — before anything is stored. If that review can't confirm a comment is safe, the comment is dropped and only the vote is kept. But this is an automated filter, not a guarantee. Please don't include your name, email address, phone number, physical address, or any other personal or identifying information — about yourself or anyone else — in a comment. Assume anything you type could end up published.",
+            "Any comment you submit goes through a real, if best-effort, attempt to remove obvious personal information automatically — a pattern-matching pass, then a second AI-based review pass — before anything is stored. If that review can't confirm a comment is safe, the comment is rejected and nothing is submitted (not even the vote), so you can try again without it. But this is an automated filter, not a guarantee. Please don't include your name, email address, phone number, physical address, or any other personal or identifying information — about yourself or anyone else — in a comment. Assume anything you type could end up published.",
           ],
         },
         {
-          heading: "5. Infrastructure and security logs",
+          heading: "5. Firewall and security logs",
           paragraphs: [
-            "Like effectively every website, the infrastructure this site runs on (a web application firewall in front of the site and its APIs) keeps its own short-term operational logs — the kind that record request metadata, such as source IP address, purely to detect and block abusive traffic. These logs:",
+            "A web application firewall (AWS WAF) sits in front of this site and its public API. It blocks traffic that looks abusive: too many requests from one address, or requests that look like an attack, such as code or script in a comment. We make a best effort to keep personal information out of its logs:",
           ],
           list: [
-            "live entirely at the infrastructure level, inside the cloud provider's (AWS) own logging systems",
-            "are never joined, matched, or cross-referenced with anything you submit through the site (feedback, view counts, or anything else)",
-            "are not used to identify or profile visitors",
-            "exist only for security and reliability, not analytics",
+            "Only requests the firewall blocks or flags are logged. Ordinary browsing, and feedback that passes the firewall, are not written to these logs.",
+            "A logged request records when it happened, its source IP address, the address it asked for (which can include an article's ID), which firewall rule acted on it, and the small part of the request that triggered that rule. For a blocked comment, that part can be a fragment of the comment's text.",
+            "Request headers that can be used to fingerprint a browser, such as the user agent, referrer, accepted languages and browser client hints, are redacted before the log is written.",
+            "The logs are kept in AWS CloudWatch Logs (in AWS's Sydney region for the API, and its US East region for the website's firewall) for 14 days, then deleted automatically.",
+            "Only the site operator can read them, and only to investigate abuse or attacks and to tune the firewall. They are not used for analytics, or to identify or profile visitors.",
+            "Separately, AWS's firewall keeps a small sample of recent requests (allowed and blocked) for up to 3 hours, which is how its console shows recent traffic. That sample is held by AWS and expires on its own.",
           ],
         },
         {
