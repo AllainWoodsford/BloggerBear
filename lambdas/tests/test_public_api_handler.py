@@ -876,7 +876,9 @@ def test_a_model_rejected_comment_uses_a_screening_check_but_a_rule_rejected_one
 
 def test_when_todays_model_checks_are_used_up_a_comment_is_rejected_unchecked(aws_resources, monkeypatch):
     _put_article()
-    _set_feedback_config(screening_limit=2)
+    # No proof-of-work here: a used-up budget now also makes the site "busy" (see the test after
+    # the next one), and this test is about what the budget itself does.
+    _set_feedback_config(screening_limit=2, pow_difficulty_bits=0)
     prompts = _model_says(monkeypatch, "KEEP")
 
     codes = [
@@ -890,7 +892,7 @@ def test_when_todays_model_checks_are_used_up_a_comment_is_rejected_unchecked(aw
 
 def test_a_vote_without_a_comment_still_works_when_the_model_checks_are_used_up(aws_resources, monkeypatch):
     _put_article()
-    _set_feedback_config(screening_limit=1)
+    _set_feedback_config(screening_limit=1, pow_difficulty_bits=0)
     _model_says(monkeypatch, "KEEP")
     assert _submit("up", comment="A first comment.")[0]["statusCode"] == 201
     assert _submit("up", comment="A second comment.")[0]["statusCode"] == 422
@@ -899,6 +901,21 @@ def test_a_vote_without_a_comment_still_works_when_the_model_checks_are_used_up(
 
     assert result["statusCode"] == 201 and body["comment_saved"] is False
     assert len(_feedback_items()) == 2
+
+
+def test_rejected_comments_using_up_the_model_checks_bring_in_proof_of_work(aws_resources, monkeypatch):
+    """Rejected feedback counts against no feedback limit, so before this, someone could send
+    comment after rejected comment, using up the day's model checks, and never be asked for work."""
+    _put_article()
+    _set_feedback_config(screening_limit=10, pow_threshold_percent=70, pow_difficulty_bits=8)
+    _model_says(monkeypatch, "DROP")
+    for n in range(7):
+        assert _submit("down", comment=f"Rejected comment {n}.")[0]["statusCode"] == 422
+
+    issued = _status_body()["verification"]
+    assert issued["pow_bits"] == 8
+    result, body = _post({"vote": "down", "token": issued["token"], "comment": "One more."})
+    assert result["statusCode"] == 403 and body["verification"]["reason"] == "work"
 
 
 def test_if_the_screening_budget_cannot_be_read_the_comment_is_rejected(aws_resources, monkeypatch):

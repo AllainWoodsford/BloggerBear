@@ -366,15 +366,22 @@ def _give_back(taken: list) -> None:
 
 
 def load_percent(settings: dict, now: datetime | None = None) -> int:
-    """How close the site is to its daily or rate limit, as a percentage (the higher of the two).
-    Site-wide counters only: nothing about any visitor. Verification uses it to ask for more
-    work from the browser when the site is busy (see common/feedback_verification.py)."""
+    """How close the site is to its daily limit, rate limit or daily model-check budget, as a
+    percentage (the highest of the three). Site-wide counters only: nothing about any visitor.
+    Verification uses it to ask for more work from the browser when the site is busy (see
+    common/feedback_verification.py).
+
+    The model-check budget is in here because rejected feedback counts against neither of the
+    other two: without it, someone sending comment after comment that gets dropped would never
+    be asked for any work while they used up the day's checks, and with them commenting for
+    everyone else."""
     now = now or datetime.now(UTC)
     day_key, _ = _day(settings, now)
     window_key, _ = _window(settings, now)
     day = get_feedback_counter(day_key) * 100 // settings["daily_limit"]
     window = get_feedback_counter(window_key) * 100 // settings["rate_limit_count"]
-    return max(day, window)
+    screening = get_feedback_counter(_screen_key(day_key)) * 100 // settings["screening_limit"]
+    return max(day, window, screening)
 
 
 def usage(now: datetime | None = None) -> dict:

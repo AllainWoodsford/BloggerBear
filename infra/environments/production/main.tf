@@ -1335,9 +1335,12 @@ resource "aws_wafv2_web_acl" "public_api" {
   # below -- that ACL already default-blocks everything except the
   # operator's own allowlisted IP, which is stricter than any managed
   # rule set could add.
-  # The feedback route only: at most 20 submissions per 5 minutes from one IP. The general limit
-  # above (500 across the whole API) is far too loose for something that costs a model call, and
-  # this stores nothing about the visitor: WAF counts the source address itself and forgets it.
+  # The feedback route only: at most 10 submissions per 5 minutes from one IP (WAF's lowest allowed
+  # limit; lowered from 20, since a rejected comment counts against no app-side limit and this is
+  # the only per-IP cap on retrying one).
+  # The general limit above (500 across the whole API) is far too loose for something that costs a
+  # model call, and this stores nothing about the visitor: WAF counts the source address itself
+  # and forgets it.
   # The path match is on the end of the path so it catches POST .../articles/{id}/feedback and
   # not GET .../feedback-status. Blocked requests are answered by WAF before they reach the Lambda.
   rule {
@@ -1350,7 +1353,7 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     statement {
       rate_based_statement {
-        limit                 = 20
+        limit                 = 10
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
 
@@ -1883,6 +1886,9 @@ module "observability" {
   state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name        = aws_sqs_queue.pipeline_dlq.name
   alert_email           = var.alert_email
+
+  # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
+  feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
 }
 
 # =========================================================================

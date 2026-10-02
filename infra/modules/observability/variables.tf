@@ -30,3 +30,14 @@ variable "alert_email" {
     terraform.tfvars and confirm the subscription once applied.
   EOT
 }
+
+variable "feedback_log_group_name" {
+  type        = string
+  description = "The public API Lambda's log group. public_api_handler.py writes one \"rejected a feedback submission (<reason>)\" line per rejected submission; metric filters on it drive the two feedback alarms."
+}
+
+variable "feedback_rejections_alarm_threshold" {
+  type        = number
+  default     = 150
+  description = "Rejected feedback submissions in one hour that raise the spam alarm. Half the default daily model-check budget (screening_limit, 300): a real reader rarely has more than a comment or two turned away."
+}
