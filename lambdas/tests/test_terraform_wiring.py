@@ -538,3 +538,19 @@ def test_the_feedback_alarms_watch_the_public_api_log_group(env):
         r"feedback_log_group_name\s*=\s*aws_cloudwatch_log_group\.lambda\[aws_lambda_function\.public_api\.function_name\]\.name",
         block,
     )
+
+
+# --- the deploy role can still read an event source mapping that has gone ----------------------
+
+
+def test_the_deploy_role_can_read_event_source_mappings_that_no_longer_exist():
+    """A deleted mapping is authorized against "*", not its ARN: without this, refresh fails with
+    AccessDeniedException instead of "not found", and Terraform can never recreate it."""
+    bootstrap = _read("bootstrap", "main.tf")
+    statement = re.search(r'sid\s*=\s*"LambdaEventSourceMappingReads"(.*?)\n  \}', bootstrap, re.S).group(1)
+
+    assert set(re.findall(r'"(lambda:[A-Za-z]+)"', statement)) == {
+        "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings",
+    }
+    assert re.search(r'resources\s*=\s*\["\*"\]', statement)
