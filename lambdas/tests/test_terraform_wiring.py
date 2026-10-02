@@ -190,16 +190,16 @@ def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
 
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
-    """One for_each block, reusing the same function_name list module.observability's
-    lambda_function_names already uses, not one resource (or one list) per function -- see
-    that resource's own comment on why."""
+    """One for_each block, not one resource per function. Its names are literals (a function that
+    depends on its log group can't also name it), checked against every function in
+    test_every_lambda_has_a_log_group_made_before_it."""
     text = _read("environments", env, "main.tf")
 
     assert text.count("retention_in_days = 90") == 1
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
-    assert "for_each          = toset(local.pipeline_lambda_function_names)" in text
+    assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 10  # named once each, in the one list both resources share
+    assert len(function_names) == 10  # module.observability's list: each function named once
     assert len(set(function_names)) == 10
 
 
@@ -554,3 +554,98 @@ def test_the_deploy_role_can_read_event_source_mappings_that_no_longer_exist():
         "lambda:ListEventSourceMappings",
     }
     assert re.search(r'resources\s*=\s*\["\*"\]', statement)
+
+
+# --- every schedule may invoke what it targets --------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_schedule_using_the_invoke_role_may_invoke_its_target(env):
+    """stats-rollover and cost-explorer-poll were scheduled with this role but never allowed to
+    invoke their Lambdas, so neither ever ran. Every target must be in the role's policy."""
+    text = _read("environments", env, "main.tf")
+    policy = re.search(r'data "aws_iam_policy_document" "scheduler_invoke" \{(.*?)\n\}', text, re.S).group(1)
+    allowed = set(re.findall(r"resources\s*=\s*\[([a-z_.]+)\.arn\]", policy))
+
+    targets = []
+    for match in re.finditer(r'^resource "aws_scheduler_schedule" "[a-z_]+" \{\n(.*?)^\}', text, re.S | re.M):
+        body = match.group(1)
+        if re.search(r"role_arn\s*=\s*aws_iam_role\.scheduler_invoke\.arn", body):
+            targets.append(re.search(r"\barn\s*=\s*([a-z_.]+)\.arn", body).group(1))
+
+    assert len(targets) >= 5  # research ticks are per topic, created at runtime, not here
+    assert set(targets) <= allowed, set(targets) - allowed
+
+
+# --- a Lambda's log group exists before the Lambda can be invoked ------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_lambda_has_a_log_group_made_before_it(env):
+    """A function invoked before its log group exists makes its own (no retention), and the next
+    apply fails with ResourceAlreadyExistsException -- dev hit this rebuilding after a destroy."""
+    text = _read("environments", env, "main.tf")
+    functions = re.findall(
+        r'^resource "aws_lambda_function" "[a-z_]+" \{\n  function_name = "([^"]+)"\n  depends_on\s*=\s*'
+        r"\[aws_cloudwatch_log_group\.lambda\]",
+        text,
+        re.M,
+    )
+    all_functions = re.findall(
+        r'^resource "aws_lambda_function" "[a-z_]+" \{\n  function_name = "([^"]+)"', text, re.M
+    )
+    listed = re.findall(
+        r'"([^"]+)"', re.search(r"lambda_log_group_function_names = \[(.*?)\]", text, re.S).group(1)
+    )
+
+    assert functions == all_functions and len(all_functions) >= 10
+    assert sorted(listed) == sorted(all_functions)
+    assert re.search(r"for_each\s*=\s*toset\(local\.lambda_log_group_function_names\)", text)
+
+
+# --- dashboards --------------------------------------------------------------------------------
+
+
+def test_the_dashboards_open_on_a_span_that_shows_something():
+    module = _read("modules", "observability", "main.tf")
+    pipeline = re.search(r'resource "aws_cloudwatch_dashboard" "pipeline" \{(.*?)\n\}\n', module, re.S).group(
+        1
+    )
+    runs = re.search(r'resource "aws_cloudwatch_dashboard" "lambda_runs" \{(.*?)\n\}\n', module, re.S).group(
+        1
+    )
+
+    assert 'start          = "-P7D"' in pipeline and "period = 3600" in pipeline
+    assert 'yAxis = "right"' in pipeline  # duration off the count axis
+    assert "setPeriodToTimeRange = true" in runs
+
+
+def test_the_runs_dashboard_counts_match_the_handlers_log_lines():
+    module = _read("modules", "observability", "main.tf")
+    handler = (ROOT / "lambdas" / "public_api_handler.py").read_text(encoding="utf-8")
+
+    assert 'kept = "comment kept" if final_comment else "vote only"' in handler
+    assert 'print(f"public_api_handler: accepted a feedback submission ({kept})")' in handler
+    assert r'pattern        = "\"accepted a feedback submission\""' in module
+    assert r'pattern        = "\"accepted a feedback submission (comment kept)\""' in module
+    assert r'pattern        = "\"rejected a feedback submission (model_dropped)\""' in module
+    assert 'MODEL_DROPPED = "model_dropped"' in (
+        ROOT / "lambdas" / "common" / "comment_screening.py"
+    ).read_text(encoding="utf-8")
+
+
+# --- a production release runs the same checks as a PR -----------------------------------------
+
+
+def test_a_production_release_waits_for_the_security_scans_and_tests():
+    workflows = ROOT / ".github" / "workflows"
+    release = (workflows / "terraform-production-release.yml").read_text(encoding="utf-8")
+
+    assert re.search(r"^  security:\n    uses: \./\.github/workflows/security\.yml", release, re.M)
+    assert re.search(r"^  lint-test:\n    uses: \./\.github/workflows/python-ci\.yml", release, re.M)
+    assert release.count("ref: ${{ github.event.release.tag_name }}") >= 3  # both checks and the apply
+    assert re.search(r"^  apply:\n    needs: \[security, lint-test\]", release, re.M)
+    for name in ("security.yml", "python-ci.yml"):
+        called = (workflows / name).read_text(encoding="utf-8")
+        assert "  workflow_call:" in called
+        assert "ref: ${{ inputs.ref }}" in called
