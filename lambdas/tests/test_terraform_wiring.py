@@ -425,3 +425,73 @@ def test_the_deploy_role_can_create_the_gateway_and_pass_it_its_role():
         re.S,
     )
     assert region == default.group(1)
+
+
+# --- WAF logs for visitor traffic: blocks only, fingerprint headers redacted, 14 days ------------
+# The Privacy Policy's section 5 (frontend/privacy.html) promises exactly this, so a change here that
+# quietly logged allowed requests again, or kept them longer, would make the policy untrue.
+
+_VISITOR_WAF_LOGGING = [
+    ("dev", "public_api", "waf_public_api"),
+    ("production", "public_api", "waf_public_api"),
+    ("production", "shared", "waf_shared"),
+]
+
+
+def _resource_block(text: str, kind: str, name: str) -> str:
+    return re.search(rf'^resource "{kind}" "{name}" \{{\n(.*?)^\}}', text, re.S | re.M).group(1)
+
+
+def _redacted_headers(text: str) -> list[str]:
+    body = re.search(r"waf_log_redacted_headers = \[(.*?)\]", text, re.S).group(1)
+    return re.findall(r'"([^"]+)"', body)
+
+
+@pytest.mark.parametrize(("env", "logging_config", "log_group"), _VISITOR_WAF_LOGGING)
+def test_visitor_waf_logs_keep_only_blocked_or_counted_requests(env, logging_config, log_group):
+    text = _read("environments", env, "main.tf")
+    block = _resource_block(text, "aws_wafv2_web_acl_logging_configuration", logging_config)
+
+    assert re.search(r'default_behavior\s*=\s*"DROP"', block)
+    assert re.search(r'behavior\s*=\s*"KEEP"', block)
+    kept = set(re.findall(r'action\s*=\s*"([A-Z_]+)"', block))
+    assert kept == {"BLOCK", "COUNT"}
+
+
+@pytest.mark.parametrize(("env", "logging_config", "log_group"), _VISITOR_WAF_LOGGING)
+def test_visitor_waf_logs_redact_fingerprinting_headers(env, logging_config, log_group):
+    text = _read("environments", env, "main.tf")
+    block = _resource_block(text, "aws_wafv2_web_acl_logging_configuration", logging_config)
+
+    assert re.search(r"for_each\s*=\s*local\.waf_log_redacted_headers", block)
+    assert "single_header" in block
+    headers = _redacted_headers(text)
+    for header in ("user-agent", "referer", "accept-language", "sec-ch-ua", "sec-ch-ua-platform"):
+        assert header in headers
+    assert all(header == header.lower() for header in headers)
+    assert len(headers) <= 100  # WAF's limit on redacted fields
+
+
+@pytest.mark.parametrize(("env", "logging_config", "log_group"), _VISITOR_WAF_LOGGING)
+def test_visitor_waf_logs_are_kept_for_14_days(env, logging_config, log_group):
+    text = _read("environments", env, "main.tf")
+    block = _resource_block(text, "aws_cloudwatch_log_group", log_group)
+
+    assert re.search(r"retention_in_days\s*=\s*local\.waf_visitor_log_retention_days", block)
+    assert re.search(r"waf_visitor_log_retention_days\s*=\s*14\b", text)
+
+
+def test_both_environments_redact_the_same_headers():
+    assert _redacted_headers(_read("environments", "dev", "main.tf")) == _redacted_headers(
+        _read("environments", "production", "main.tf")
+    )
+
+
+def test_the_privacy_policy_states_the_waf_log_retention():
+    policy = (ROOT / "frontend" / "privacy.html").read_text(encoding="utf-8")
+    days = re.search(
+        r"waf_visitor_log_retention_days\s*=\s*(\d+)", _read("environments", "production", "main.tf")
+    ).group(1)
+
+    assert f"for {days} days, then deleted automatically" in policy
+    assert "Only requests the firewall blocks or flags are logged" in policy

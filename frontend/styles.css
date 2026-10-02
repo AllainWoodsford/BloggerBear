@@ -374,6 +374,8 @@ a {
   font-size: 0.85rem;
 }
 
+/* privacy.html / terms.html: the "Last updated" line under the heading. */
+.legal-updated,
 .article-meta {
   color: var(--muted);
   font-size: 0.9rem;
