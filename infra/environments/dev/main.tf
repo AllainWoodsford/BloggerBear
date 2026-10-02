@@ -539,6 +539,7 @@ data "aws_caller_identity" "current" {}
 # ticks reuse that day history and are far cheaper.
 resource "aws_lambda_function" "research_tick" {
   function_name = "bloggerbear-dev-research-tick"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "research_tick_handler.handler"
   runtime       = "python3.11"
@@ -571,6 +572,7 @@ locals {
 
 resource "aws_lambda_function" "daily_cycle" {
   function_name = "bloggerbear-dev-daily-cycle"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "daily_cycle_handler.handler"
   runtime       = "python3.11"
@@ -599,6 +601,7 @@ resource "aws_lambda_function" "daily_cycle" {
 
 resource "aws_lambda_function" "admin_api" {
   function_name = "bloggerbear-dev-admin-api"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "admin_api_handler.handler"
   runtime       = "python3.11"
@@ -955,6 +958,7 @@ resource "aws_sfn_state_machine" "daily_cycle" {
 # infra/modules/observability's pipeline_dlq_messages alarm).
 resource "aws_lambda_function" "dlq_handler" {
   function_name = "bloggerbear-dev-dlq-handler"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "dlq_handler.handler"
   runtime       = "python3.11"
@@ -1054,6 +1058,25 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.musing_feedback.arn]
   }
+
+  # The weekly stats rollover and the daily Cost Explorer poll. Both schedules were added (with this
+  # role as their role_arn) without these statements, so neither Lambda was ever invoked: the
+  # scheduler failed and retried every attempt, the Historic totals stayed at zero and the actual
+  # (from the bill) costs stayed null. test_terraform_wiring.py now checks every schedule's target
+  # against this policy.
+  statement {
+    sid       = "InvokeStatsRollover"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.stats_rollover.arn]
+  }
+
+  statement {
+    sid       = "InvokeCostExplorerPoll"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.cost_explorer_poll.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_invoke" {
@@ -1117,6 +1140,7 @@ resource "aws_iam_role_policy" "scheduler_manage" {
 
 resource "aws_lambda_function" "public_api" {
   function_name = "bloggerbear-dev-public-api"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "public_api_handler.handler"
   runtime       = "python3.11"
@@ -1383,12 +1407,33 @@ resource "aws_cloudwatch_log_group" "waf_public_api" {
 #   terraform import 'aws_cloudwatch_log_group.lambda["bloggerbear-dev-research-tick"]' /aws/lambda/bloggerbear-dev-research-tick
 #   (repeat for each function_name below)
 # -----------------------------------------------------------------------
+# Every Lambda below depends_on this resource, so its log group exists before the function can be
+# invoked. Without that, a function created in the same apply and called straight away (the public
+# API, the moment its stage is deployed) makes its own log group first -- with no retention -- and
+# this resource then fails with ResourceAlreadyExistsException. Dev hit exactly that rebuilding
+# after a destroy (2026-10-02). It also orders a destroy: functions go first, so nothing can recreate
+# a log group after Terraform has deleted it.
+#
+# Literal names, not local.pipeline_lambda_function_names: that list reads each function's
+# function_name, and a function that depends on these groups can't also name them (a cycle).
+# test_terraform_wiring.py checks this list matches every aws_lambda_function's function_name.
+locals {
+  lambda_log_group_function_names = [
+    "bloggerbear-dev-research-tick",
+    "bloggerbear-dev-daily-cycle",
+    "bloggerbear-dev-admin-api",
+    "bloggerbear-dev-dlq-handler",
+    "bloggerbear-dev-public-api",
+    "bloggerbear-dev-weekly-reflection",
+    "bloggerbear-dev-stats-rollover",
+    "bloggerbear-dev-cost-explorer-poll",
+    "bloggerbear-dev-trending-digest",
+    "bloggerbear-dev-musing-feedback",
+  ]
+}
+
 resource "aws_cloudwatch_log_group" "lambda" {
-  # Reuses the same function_name list module.observability's lambda_function_names already
-  # defines below (Phase 6) -- one list, so a function added later can never update one and
-  # forget the other. toset() because for_each needs a set/map, not module.observability's own
-  # list(string).
-  for_each          = toset(local.pipeline_lambda_function_names)
+  for_each          = toset(local.lambda_log_group_function_names)
   name              = "/aws/lambda/${each.value}"
   retention_in_days = 90
 }
@@ -1579,6 +1624,7 @@ resource "aws_s3_object" "frontend_config" {
 
 resource "aws_lambda_function" "weekly_reflection" {
   function_name = "bloggerbear-dev-weekly-reflection"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "weekly_reflection_handler.handler"
   runtime       = "python3.11"
@@ -1617,6 +1663,7 @@ resource "aws_scheduler_schedule" "weekly_reflection" {
 # it is reflecting on, not the new week that is just starting -- see stats_rollover_handler.py.
 resource "aws_lambda_function" "stats_rollover" {
   function_name = "bloggerbear-dev-stats-rollover"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "stats_rollover_handler.handler"
   runtime       = "python3.11"
@@ -1651,6 +1698,7 @@ resource "aws_scheduler_schedule" "stats_rollover" {
 # and why a rolling 30-day window ending yesterday rather than today.
 resource "aws_lambda_function" "cost_explorer_poll" {
   function_name = "bloggerbear-dev-cost-explorer-poll"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "cost_explorer_poll_handler.handler"
   runtime       = "python3.11"
@@ -1740,6 +1788,7 @@ module "observability" {
 
 resource "aws_lambda_function" "trending_digest" {
   function_name = "bloggerbear-dev-trending-digest"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "trending_digest_handler.handler"
   runtime       = "python3.11"
@@ -1792,6 +1841,7 @@ resource "aws_scheduler_schedule" "trending_digest" {
 
 resource "aws_lambda_function" "musing_feedback" {
   function_name = "bloggerbear-dev-musing-feedback"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "musing_feedback_handler.handler"
   runtime       = "python3.11"
