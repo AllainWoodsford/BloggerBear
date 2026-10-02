@@ -115,6 +115,14 @@ def test_topics_with_stale_or_missing_findings_are_skipped(s3_bucket):
     assert result == {"status": "no_recent_findings"}
 
 
+# The model gave only an overview line here, so each topic's section falls back to its own finding.
+COMPOSED_BODY = (
+    "A synthesized digest.\n\n"
+    "## GitHub Trending\n\nRepo X is trending.\n\n"
+    "## Hacker News\n\nStory Y hit the front page."
+)
+
+
 def test_publishes_digest_when_compliant(s3_bucket):
     findings_by_topic = {
         "github-trending": _finding(
@@ -135,7 +143,7 @@ def test_publishes_digest_when_compliant(s3_bucket):
         patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
         patch(
             "trending_digest_handler.invoke_model_tracked",
-            return_value=_tracked_result("A synthesized digest."),
+            return_value=_tracked_result("OVERVIEW: A synthesized digest."),
         ) as mock_invoke,
         patch(
             "trending_digest_handler.compliance.review_draft",
@@ -181,7 +189,7 @@ def test_publishes_digest_when_compliant(s3_bucket):
     assert article_kwargs["lineage"] == _DUMMY_LINEAGE
 
     stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=article_kwargs["body_s3_key"])
-    assert stored["Body"].read().decode("utf-8") == "A synthesized digest."
+    assert stored["Body"].read().decode("utf-8") == COMPOSED_BODY
 
     # Bugfix regression check: a digest article that publishes cleanly on
     # the first pass must also get a static page and a musing, same as
@@ -191,7 +199,7 @@ def test_publishes_digest_when_compliant(s3_bucket):
     render_kwargs = mock_render_page.call_args.kwargs
     assert render_kwargs["article_id"] == article_kwargs["article_id"]
     assert render_kwargs["topic_name"] == "Trending Everywhere"
-    assert render_kwargs["body_markdown"] == "A synthesized digest."
+    assert render_kwargs["body_markdown"] == COMPOSED_BODY
     # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of 5).
     assert render_kwargs["lineage"] == article_kwargs["lineage"]
     assert render_kwargs["published_by"] == "ai_only"
@@ -228,7 +236,7 @@ def test_publishes_digest_with_deduped_source_refs(s3_bucket):
         patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
         patch(
             "trending_digest_handler.invoke_model_tracked",
-            return_value=_tracked_result("A synthesized digest."),
+            return_value=_tracked_result("OVERVIEW: A synthesized digest."),
         ),
         patch(
             "trending_digest_handler.compliance.review_draft",
@@ -262,7 +270,7 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
         patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
         patch(
             "trending_digest_handler.invoke_model_tracked",
-            return_value=_tracked_result("A synthesized digest."),
+            return_value=_tracked_result("OVERVIEW: A synthesized digest."),
         ) as mock_invoke,
         patch(
             "trending_digest_handler.compliance.review_draft",
@@ -328,7 +336,7 @@ def _run_digest(*, compliant=False):
         patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
         patch(
             "trending_digest_handler.invoke_model_tracked",
-            return_value=_tracked_result("A synthesized digest."),
+            return_value=_tracked_result("OVERVIEW: A synthesized digest."),
         ) as mock_invoke,
         patch(
             "trending_digest_handler.compliance.review_draft",
@@ -397,3 +405,68 @@ def test_unhandled_exception_returns_error_dict(s3_bucket):
         result = trending_digest_handler.handler({}, None)
 
     assert result == {"status": "error", "error": "boom"}
+
+
+# --- the layout is built in code, the same shape every day ----------------------------------------
+
+_CONTRIBUTIONS = [
+    {"topic": GITHUB_TOPIC, "finding": _finding("Repo X is trending. It gained 2k stars.")},
+    {"topic": CRYPTO_TOPIC, "finding": _finding("Bitcoin rose 3%. Ether was flat.")},
+    {"topic": HN_TOPIC, "finding": _finding("Story Y hit the front page.")},
+]
+
+
+def test_the_digest_is_an_overview_then_one_heading_per_topic_in_order():
+    body = trending_digest_handler._compose_digest(
+        _CONTRIBUTIONS,
+        "OVERVIEW: Tools and markets both moved.\n1: Repo X leads.\n2: Bitcoin climbed.\n"
+        "3: Story Y topped HN.",
+    )
+
+    assert body == (
+        "Tools and markets both moved.\n\n"
+        "## GitHub Trending\n\nRepo X leads.\n\n"
+        "## Crypto Markets\n\nBitcoin climbed.\n\n"
+        "## Hacker News\n\nStory Y topped HN."
+    )
+
+
+def test_the_models_formatting_is_stripped_and_its_preamble_ignored():
+    body = trending_digest_handler._compose_digest(
+        _CONTRIBUTIONS[:1],
+        "# Trending This Week\nSure, here it is:\n**OVERVIEW:** **Tools** moved.\n1) - **Repo X** leads.",
+    )
+
+    assert body == "Tools moved.\n\n## GitHub Trending\n\nRepo X leads."
+
+
+def test_a_topic_the_model_skipped_falls_back_to_its_own_finding():
+    reply = "OVERVIEW: Busy day.\n1: Repo X.\n3: Story Y."
+    body = trending_digest_handler._compose_digest(_CONTRIBUTIONS, reply)
+
+    assert "## Crypto Markets\n\nBitcoin rose 3%. Ether was flat." in body
+
+
+def test_an_unformatted_reply_still_gives_every_topic_its_section():
+    body = trending_digest_handler._compose_digest(_CONTRIBUTIONS, "Here is a digest in one paragraph.")
+
+    assert body.startswith("## GitHub Trending")
+    assert body.count("## ") == 3
+    assert "one paragraph" not in body
+
+
+def test_a_long_finding_fallback_is_cut_at_a_sentence_and_loses_its_markup():
+    long_summary = "## Heading\n" + " ".join(f"**Sentence** number {n} is here." for n in range(60))
+    contributions = [{"topic": GITHUB_TOPIC, "finding": _finding(long_summary)}]
+
+    text = trending_digest_handler._compose_digest(contributions, "").split("\n\n", 1)[1]
+
+    assert len(text) <= 400 and text.endswith(".")
+    assert "Heading" not in text and "**" not in text
+
+
+def test_the_prompt_numbers_the_topics_and_asks_for_the_line_format():
+    prompt = trending_digest_handler._DIGEST_PROMPT_TEMPLATE.format(topic_blocks="[1] GitHub Trending\nx")
+
+    assert "OVERVIEW:" in prompt and "1: <" in prompt
+    assert "no headings" in prompt
