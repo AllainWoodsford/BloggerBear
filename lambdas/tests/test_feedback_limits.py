@@ -557,6 +557,29 @@ def test_screening_slots_do_not_touch_the_feedback_counters():
     assert fl.status_for(_article(), NOON)["open"] is True
 
 
+def test_model_checks_used_count_towards_how_busy_the_site_is():
+    """Rejected feedback counts against neither the daily nor the rate limit, so a stream of
+    comments that all get dropped would never trigger proof-of-work without this."""
+    _configure(screening_limit=10)
+    settings = fl.effective_settings(dynamo.get_feedback_config())
+    assert fl.load_percent(settings, NOON) == 0
+
+    for _ in range(7):
+        fl.take_screening_slot(NOON)
+
+    assert fl.load_percent(settings, NOON) == 70
+    assert fl.status_for(_article(), NOON)["open"] is True  # busy, not closed
+
+
+def test_the_busiest_counter_decides_the_load():
+    _configure(screening_limit=10, daily_limit=4)
+    settings = fl.effective_settings(dynamo.get_feedback_config())
+    fl.take_screening_slot(NOON)  # 10% of the model checks
+    fl.acquire(_article(), NOON)  # 25% of the day
+
+    assert fl.load_percent(settings, NOON) == 25
+
+
 def test_no_screening_slot_if_the_counter_cannot_be_used():
     with patch.object(fl, "consume_feedback_counter", side_effect=RuntimeError("boom")):
         assert fl.take_screening_slot(NOON) is False
