@@ -106,6 +106,23 @@ AGENTCORE_COST_USD_30D = "agentcore_cost_usd_30d"
 AGENTCORE_COST_AUD_30D = "agentcore_cost_aud_30d"
 AGENTCORE_COST_AS_OF = "agentcore_cost_as_of"
 
+# AWS WAF, from the same poll (common/cost_explorer.py): the rolling 30 days, this week so far
+# (from the row's own Monday, so each week's history row keeps that week's WAF spend up to the
+# last poll before its rollover), this calendar month so far, and last month in full -- every one
+# a SET snapshot. The `*_month` / `*_previous_month` labels ("2026-10") say which month a figure
+# is. waf_cost_as_of is owner-only, like api_gateway_cost_as_of.
+WAF_COST_USD_30D = "waf_cost_usd_30d"
+WAF_COST_AUD_30D = "waf_cost_aud_30d"
+WAF_COST_USD_WEEK_TO_DATE = "waf_cost_usd_week_to_date"
+WAF_COST_AUD_WEEK_TO_DATE = "waf_cost_aud_week_to_date"
+WAF_COST_MONTH = "waf_cost_month"
+WAF_COST_USD_MONTH_TO_DATE = "waf_cost_usd_month_to_date"
+WAF_COST_AUD_MONTH_TO_DATE = "waf_cost_aud_month_to_date"
+WAF_COST_PREVIOUS_MONTH = "waf_cost_previous_month"
+WAF_COST_USD_PREVIOUS_MONTH = "waf_cost_usd_previous_month"
+WAF_COST_AUD_PREVIOUS_MONTH = "waf_cost_aud_previous_month"
+WAF_COST_AS_OF = "waf_cost_as_of"
+
 
 def _current_week_start(today: date | None = None) -> str:
     """The Monday of the current ISO week, as StatsCurrent's `week_start` (e.g. "2026-09-15")."""
@@ -202,7 +219,7 @@ def record_lambda_duration(function_name: str, duration_ms: int) -> None:
 
 def record_api_gateway_cost(cost_usd: Decimal, as_of: str) -> None:
     """The latest Cost Explorer reading for API Gateway spend (common/cost_explorer.py's
-    fetch_service_costs_usd_30d, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
+    fetch_costs, via cost_explorer_poll_handler.py) -- a refreshed snapshot of
     a rolling 30-day total, not a counter, so this SETs rather than ADDs: a repeat poll overwrites
     the previous reading instead of compounding it onto every prior one."""
     try:
@@ -232,6 +249,40 @@ def record_agentcore_cost(cost_usd: Decimal, as_of: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
         print(f"stats_tracking: could not record agentcore cost: {exc!r}")
+
+
+def record_waf_cost(
+    *,
+    usd_30d: Decimal,
+    usd_week_to_date: Decimal,
+    usd_month_to_date: Decimal,
+    usd_previous_month: Decimal,
+    month: str,
+    previous_month: str,
+    as_of: str,
+) -> None:
+    """The latest Cost Explorer readings of the AWS WAF charge -- SET, not ADD, like
+    record_api_gateway_cost: each is a fresh total of its window, so a repeat poll overwrites."""
+    rate = Decimal(str(USD_TO_AUD_RATE))
+    try:
+        set_current_stats_fields(
+            {
+                WAF_COST_USD_30D: usd_30d,
+                WAF_COST_AUD_30D: usd_30d * rate,
+                WAF_COST_USD_WEEK_TO_DATE: usd_week_to_date,
+                WAF_COST_AUD_WEEK_TO_DATE: usd_week_to_date * rate,
+                WAF_COST_MONTH: month,
+                WAF_COST_USD_MONTH_TO_DATE: usd_month_to_date,
+                WAF_COST_AUD_MONTH_TO_DATE: usd_month_to_date * rate,
+                WAF_COST_PREVIOUS_MONTH: previous_month,
+                WAF_COST_USD_PREVIOUS_MONTH: usd_previous_month,
+                WAF_COST_AUD_PREVIOUS_MONTH: usd_previous_month * rate,
+                WAF_COST_AS_OF: as_of,
+            },
+            _current_week_start(),
+        )
+    except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
+        print(f"stats_tracking: could not record waf cost: {exc!r}")
 
 
 def record_article_lineage(lineage: dict) -> None:
@@ -349,6 +400,17 @@ _SNAPSHOT_FIELDS = frozenset(
         AGENTCORE_COST_USD_30D,
         AGENTCORE_COST_AUD_30D,
         AGENTCORE_COST_AS_OF,
+        WAF_COST_USD_30D,
+        WAF_COST_AUD_30D,
+        WAF_COST_USD_WEEK_TO_DATE,
+        WAF_COST_AUD_WEEK_TO_DATE,
+        WAF_COST_MONTH,
+        WAF_COST_USD_MONTH_TO_DATE,
+        WAF_COST_AUD_MONTH_TO_DATE,
+        WAF_COST_PREVIOUS_MONTH,
+        WAF_COST_USD_PREVIOUS_MONTH,
+        WAF_COST_AUD_PREVIOUS_MONTH,
+        WAF_COST_AS_OF,
     }
 )
 _METADATA_FIELDS = frozenset({"stats_id", "week_start", "rolled_over_at"})
@@ -441,4 +503,25 @@ def public_view(row: dict) -> dict:
                 float(agentcore_actual_aud) if agentcore_actual_aud is not None else None
             ),
         },
+        "waf": _waf_view(row),
+    }
+
+
+def _waf_view(row: dict) -> dict | None:
+    """The AWS WAF readings, from the AWS bill (~24h lag); None until the first poll has run. Its
+    as_of stays owner-only, like the other cost readings'."""
+    if row.get(WAF_COST_AUD_30D) is None:
+        return None
+
+    def aud(key: str) -> float | None:
+        value = row.get(key)
+        return float(value) if value is not None else None
+
+    return {
+        "cost_aud_30d": aud(WAF_COST_AUD_30D),
+        "cost_aud_week_to_date": aud(WAF_COST_AUD_WEEK_TO_DATE),
+        "month": row.get(WAF_COST_MONTH),
+        "cost_aud_month_to_date": aud(WAF_COST_AUD_MONTH_TO_DATE),
+        "previous_month": row.get(WAF_COST_PREVIOUS_MONTH),
+        "cost_aud_previous_month": aud(WAF_COST_AUD_PREVIOUS_MONTH),
     }
