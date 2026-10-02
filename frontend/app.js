@@ -872,10 +872,46 @@
     ];
   }
 
+  var MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+
+  // "2026-10" -> "October 2026"; anything else is shown as it came.
+  function monthLabel(yearMonth) {
+    var match = /^(\d{4})-(\d{2})$/.exec(yearMonth || "");
+    if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) {
+      return yearMonth || "";
+    }
+    return MONTH_NAMES[Number(match[2]) - 1] + " " + match[1];
+  }
+
+  // AWS WAF, the web firewall: the largest line on the site's bill, so it gets tiles of its own
+  // (common/stats_tracking.py's public_view `waf`, from Cost Explorer, ~24h lag). Absent until the
+  // daily poll has run once. "This week" only in Weekly Stats: Total Stats carries the latest
+  // reading, and a week-so-far figure means nothing there.
+  function appendWafTiles(tiles, waf, isCurrentWeek) {
+    if (!waf) {
+      return;
+    }
+    tiles.appendChild(
+      statTile("Firewall (WAF) spend", formatAud(waf.cost_aud_30d), "last 30 days, from the AWS bill, ~24h lag")
+    );
+    if (isCurrentWeek) {
+      tiles.appendChild(statTile("Firewall spend this week", formatAud(waf.cost_aud_week_to_date), "so far, to yesterday"));
+    }
+    tiles.appendChild(
+      statTile("Firewall spend, " + monthLabel(waf.month), formatAud(waf.cost_aud_month_to_date), "so far, to yesterday")
+    );
+    tiles.appendChild(
+      statTile("Firewall spend, " + monthLabel(waf.previous_month), formatAud(waf.cost_aud_previous_month), "whole month")
+    );
+  }
+
   // `apiGatewayNote` distinguishes Weekly Stats' rolling-30-day reading from Total Stats'
   // reuse of that same reading (a snapshot, never summed across weeks -- see this section's
-  // own note in renderStats).
-  function renderObservabilitySection(data, apiGatewayNote) {
+  // own note in renderStats). `isCurrentWeek` is true for Weekly Stats.
+  function renderObservabilitySection(data, apiGatewayNote, isCurrentWeek) {
     var wrap = el("div", {});
     var tiles = el("div", { className: "stats-tiles" });
     tiles.appendChild(statTile("Feedback given", formatCount(data.feedback_given)));
@@ -893,6 +929,7 @@
     if (data.api_gateway_cost_aud_30d !== null && data.api_gateway_cost_aud_30d !== undefined) {
       tiles.appendChild(statTile("API Gateway spend", formatAud(data.api_gateway_cost_aud_30d), apiGatewayNote));
     }
+    appendWafTiles(tiles, data.waf, isCurrentWeek);
     // Web search (common/stats_tracking.py's public_view `web_search`): AgentCore is billed per
     // query, not per token, so it is a tile of its own rather than a row in the tokens table.
     if (data.web_search) {
@@ -1211,7 +1248,7 @@
       el("h3", { text: "Other AI spend and activity, all time", className: "section-heading" })
     );
     contentEl.appendChild(el("p", { className: "stats-note", text: historic.note || "" }));
-    contentEl.appendChild(renderObservabilitySection(historic, "latest reading, not summed across weeks"));
+    contentEl.appendChild(renderObservabilitySection(historic, "latest reading, not summed across weeks", false));
 
     // --- Weekly Stats: this week so far (StatsCurrent), resets every Monday -------------------
     contentEl.appendChild(
@@ -1220,7 +1257,7 @@
     contentEl.appendChild(
       el("p", { className: "stats-note", text: "This week so far -- resets every Monday." })
     );
-    contentEl.appendChild(renderObservabilitySection(stats.weekly || {}, "rolling 30 days"));
+    contentEl.appendChild(renderObservabilitySection(stats.weekly || {}, "rolling 30 days", true));
 
     // --- Gear: moved to the bottom now that there's real financial data above it to lead with -
     var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
