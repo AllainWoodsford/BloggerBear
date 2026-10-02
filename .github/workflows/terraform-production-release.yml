@@ -9,7 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  # The same checks a PR into dev gets (Trivy IaC + vuln/secret scans, Bandit; ruff + pytest), run
+  # again on exactly what is being released. Until these, a release applied production with no
+  # checks of its own. `apply` needs both, so a failure stops the deploy before anything changes.
+  security:
+    uses: ./.github/workflows/security.yml
+    with:
+      ref: ${{ github.event.release.tag_name }}
+
+  lint-test:
+    uses: ./.github/workflows/python-ci.yml
+    with:
+      ref: ${{ github.event.release.tag_name }}
+
   apply:
+    needs: [security, lint-test]
     runs-on: ubuntu-latest
     environment: production
     concurrency:
