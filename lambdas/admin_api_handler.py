@@ -83,7 +83,11 @@ from common.fresh_review import (
     review_mode_error,
 )
 from common.lineage_tools import audit_lineage, plan_backfill
-from common.musings import generate_and_store_article_musing, generate_and_store_loot_musing
+from common.musings import (
+    generate_and_store_article_musing,
+    generate_and_store_loot_musing,
+    generate_and_store_rejection_musing,
+)
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
 from common.rewrite import release_stale_rewrites, rewrite_issues
@@ -499,6 +503,14 @@ def _get_latest_finding_route(event: dict) -> dict:
 # --- Articles ---------------------------------------------------------
 
 
+def _topic_display_name(topic_id: str) -> str:
+    """A topic's display name, the digest's included (it has no Topics-table row), else its id."""
+    if topic_id == DIGEST_TOPIC_ID:
+        return DIGEST_TOPIC_NAME
+    topic = get_topic(topic_id)
+    return (topic or {}).get("name", topic_id)
+
+
 def _render_published_page(article: dict, *, published_at: str) -> None:
     """Regenerate the static article page (docs/project-plan.md §11) and
     generate an article musing for an article that just became published.
@@ -521,11 +533,7 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
     # the raw topic_id "digest" as its display name instead of the
     # friendly one, inconsistent with what a digest article gets when
     # trending_digest_handler.py publishes it directly on the first pass.
-    if article["topic_id"] == DIGEST_TOPIC_ID:
-        topic_name = DIGEST_TOPIC_NAME
-    else:
-        topic = get_topic(article["topic_id"])
-        topic_name = (topic or {}).get("name", article["topic_id"])
+    topic_name = _topic_display_name(article["topic_id"])
     body_markdown = read_article_body(article["body_s3_key"])
     render_and_publish_article_page(
         article_id=article["article_id"],
@@ -943,9 +951,27 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     else:
         update_article_status(article_id, article_status, published_at=published_at)
     update_moderation_status(queue_id, new_status)
+    if article_status == "rejected":
+        _post_rejection_musing(item.get("topic_id") or (get_article(article_id) or {}).get("topic_id"))
 
     action_key = "approved" if new_status == "approved" else "rejected"
     return _response(200, {action_key: queue_id, "article_id": article_id})
+
+
+def _post_rejection_musing(topic_id: str | None) -> None:
+    """BloggerBear's shocked musing about a rejected draft: the topic's name only, never the article's
+    id or title (common/musings.py). The rejection has already happened by now, so a failure here is
+    logged and swallowed -- it must never turn a successful reject into an error."""
+    if not topic_id:
+        return
+    try:
+        generate_and_store_rejection_musing(
+            topic_id=topic_id,
+            topic_name=_topic_display_name(topic_id),
+            model_id=os.environ["BEDROCK_MODEL_ID"],
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"admin_api_handler: could not post the rejection musing: {exc!r}")
 
 
 def _approve_moderation_item(event: dict) -> dict:
