@@ -680,3 +680,88 @@ def test_public_view_shows_a_zero_actual_as_zero_not_missing():
     view = st.public_view({st.AGENTCORE_COST_AUD_30D: Decimal("0")})
 
     assert view["web_search"]["agentcore_actual_cost_aud_30d"] == 0.0
+
+
+# --- AWS WAF (Cost Explorer): 30 days, this week, this month and last month, all snapshots -----
+
+
+def _record_waf(**overrides):
+    values = {
+        "usd_30d": Decimal("10.00"),
+        "usd_week_to_date": Decimal("2.00"),
+        "usd_month_to_date": Decimal("1.00"),
+        "usd_previous_month": Decimal("11.00"),
+        "month": "2026-10",
+        "previous_month": "2026-09",
+        "as_of": "2026-10-03T10:00:00+00:00",
+    }
+    st.record_waf_cost(**{**values, **overrides})
+
+
+def test_waf_cost_is_recorded_for_every_window_in_usd_and_aud(table):
+    _record_waf()
+
+    row = _row(table)
+    assert row[st.WAF_COST_USD_30D] == Decimal("10.00")
+    assert row[st.WAF_COST_AUD_30D] == Decimal("15.00")  # 1.50 AUD/USD
+    assert row[st.WAF_COST_AUD_WEEK_TO_DATE] == Decimal("3.00")
+    assert row[st.WAF_COST_AUD_MONTH_TO_DATE] == Decimal("1.50")
+    assert row[st.WAF_COST_AUD_PREVIOUS_MONTH] == Decimal("16.50")
+    assert (row[st.WAF_COST_MONTH], row[st.WAF_COST_PREVIOUS_MONTH]) == ("2026-10", "2026-09")
+    assert row[st.WAF_COST_AS_OF] == "2026-10-03T10:00:00+00:00"
+
+
+def test_a_repeat_waf_poll_overwrites_rather_than_accumulates(table):
+    _record_waf()
+    _record_waf(usd_30d=Decimal("12.00"), usd_month_to_date=Decimal("1.40"))
+
+    row = _row(table)
+    assert row[st.WAF_COST_USD_30D] == Decimal("12.00")  # not 22.00
+    assert row[st.WAF_COST_USD_MONTH_TO_DATE] == Decimal("1.40")
+
+
+def test_waf_cost_never_raises_even_with_no_table(monkeypatch):
+    monkeypatch.delenv("STATS_CURRENT_TABLE")
+    _record_waf()
+
+
+def test_the_waf_readings_roll_over_as_snapshots_never_summed():
+    row = {
+        "stats_id": "current",
+        "week_start": "2026-09-28",
+        st.FEEDBACK_GIVEN: 2,
+        st.WAF_COST_USD_30D: Decimal("10.00"),
+        st.WAF_COST_USD_WEEK_TO_DATE: Decimal("2.00"),
+        st.WAF_COST_MONTH: "2026-10",
+    }
+
+    additive, snapshot = st.split_for_rollover(row)
+
+    assert additive == {st.FEEDBACK_GIVEN: 2}
+    assert set(snapshot) == {st.WAF_COST_USD_30D, st.WAF_COST_USD_WEEK_TO_DATE, st.WAF_COST_MONTH}
+
+
+def test_public_view_shows_the_waf_readings_but_never_their_as_of(table):
+    _record_waf()
+
+    view = st.public_view(_row(table))
+
+    assert view["waf"] == {
+        "cost_aud_30d": 15.0,
+        "cost_aud_week_to_date": 3.0,
+        "month": "2026-10",
+        "cost_aud_month_to_date": 1.5,
+        "previous_month": "2026-09",
+        "cost_aud_previous_month": 16.5,
+    }
+    assert "2026-10-03T10:00" not in str(view)
+
+
+def test_public_view_has_no_waf_readings_until_the_first_poll():
+    assert st.public_view({"week_start": "2026-09-28"})["waf"] is None
+
+
+def test_public_view_shows_a_zero_waf_month_as_zero_not_missing(table):
+    _record_waf(usd_month_to_date=Decimal("0"))
+
+    assert st.public_view(_row(table))["waf"]["cost_aud_month_to_date"] == 0.0

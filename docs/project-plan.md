@@ -1619,7 +1619,8 @@ pages are static HTML that would need regenerating. `preload-styles.js` stays de
 
 ### Observability, security and content fixes (October 2026 batch)
 
-**Status: proposed** (four PRs, in this order; designs agreed 2026-10-03; PR 1 in review).
+**Status: in progress** (four PRs, in this order; designs agreed 2026-10-03). PR 1 merged (#145); PR 2 in
+review.
 
 Found while planning this batch, and the reason PR 1 goes first: the production `stats-rollover` and
 `cost-explorer-poll` schedules have never invoked their Lambdas. Both schedules exist, but
@@ -1667,11 +1668,16 @@ WAF is the largest line on the bill: US$10.90 of about US$17 over the 30 days to
 US$4.24). It joins the existing daily Cost Explorer poll as a third service (`"AWS WAF"`, confirmed from
 billing data) in the same single `GetCostAndUsage` call, so it costs nothing extra to fetch.
 
-- **Stored:** a rolling 30-day snapshot on the week's StatsCurrent row like API Gateway's, plus calendar
-  month-to-date and previous-month figures.
+- **Stored:** SET snapshots on the week's StatsCurrent row, like API Gateway's: the rolling 30 days, this
+  week so far (from the row's own Monday, so each week's history row keeps that week's WAF spend up to the
+  last poll before its rollover -- normally Monday to Saturday, given the ~24h lag), this calendar month so
+  far, and last month in full, with `waf_cost_month` / `waf_cost_previous_month` labels. One call still
+  serves everything: `fetch_costs` asks for daily buckets from whichever is earliest (30 days ago, the 1st
+  of last month, this Monday) to yesterday and counts each day into every window it falls in.
 - **One site-wide figure:** dev and production can't be told apart without cost-allocation tags, and the
   CloudFront ACL is shared by both anyway, so it is reported as the site's cost.
-- **Stats page:** shown alongside the other actual (from the bill) figures, labelled with the ~24h lag.
+- **Stats page:** "Firewall (WAF) spend" tiles beside the other actual (from the bill) figures, labelled
+  with the ~24h lag: last 30 days, this week (Weekly Stats only), this month so far, and last month.
 - Depends on PR 1: the poll has to run before there is anything to show.
 
 #### PR 3 -- The CoinGecko key in SSM
