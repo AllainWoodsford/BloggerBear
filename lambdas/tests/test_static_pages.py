@@ -384,7 +384,8 @@ def test_rendered_page_links_the_site_sections_in_header_and_footer(s3):
         assert 'href="/#/stats">Stats</a>' in region
     assert 'aria-label="Site sections"' in header
     assert 'aria-label="Explore"' in footer and 'aria-label="Legal"' in footer
-    assert 'href="/privacy.html"' in footer and 'href="/terms.html"' in footer and 'href="/about.html"' in footer
+    for href in ("/privacy.html", "/terms.html", "/about.html"):
+        assert f'href="{href}"' in footer
     assert 'class="skip-link"' in html
 
 
