@@ -829,6 +829,19 @@ def test_feedback_never_logs_the_comment_text(aws_resources, monkeypatch, capsys
     assert "rejected a feedback submission" in printed  # the reason code is logged
 
 
+def test_accepted_feedback_logs_a_tag_for_the_dashboard_and_nothing_else(aws_resources, monkeypatch, capsys):
+    _put_article()
+    _model_says(monkeypatch, "KEEP")
+
+    _submit("down", comment="my kept comment text")
+    _submit("up")
+
+    printed = capsys.readouterr().out
+    assert "public_api_handler: accepted a feedback submission (comment kept)" in printed
+    assert "public_api_handler: accepted a feedback submission (vote only)" in printed
+    assert "kept comment text" not in printed and "article-1" not in printed
+
+
 def test_rejected_feedback_does_not_use_up_the_limits_real_feedback_needs(aws_resources, monkeypatch):
     _put_article()
     _set_feedback_config(article_limit=1, rate_limit_count=1, daily_limit=1, screening_limit=1000)
