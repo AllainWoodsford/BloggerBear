@@ -1115,8 +1115,9 @@ def put_musing(
     topic_id: str | None = None,
     gear: dict | None = None,
 ) -> dict:
-    """Write a Musings item and return it. `kind` is "article", "feedback" or "loot". A loot musing
-    carries `gear`, a public snapshot of the piece it announces."""
+    """Write a Musings item and return it. `kind` is "article", "feedback", "loot" or "rejection" (a
+    draft turned away at moderation: topic only, never an article_id). A loot musing carries `gear`,
+    a public snapshot of the piece it announces."""
     table = get_table(os.environ["MUSINGS_TABLE"])
     item = {
         "musing_id": musing_id,

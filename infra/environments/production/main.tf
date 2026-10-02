@@ -1731,6 +1731,7 @@ locals {
     "bears/default.svg"     = "image/svg+xml"
     "bears/tummy.svg"       = "image/svg+xml"
     "bears/tummy-happy.svg" = "image/svg+xml"
+    "bears/shocked.svg"     = "image/svg+xml"
     # Static article publishing (docs/project-plan.md §11): the external
     # script the pages rendered by common/static_pages.py load -- must be
     # a real file at the bucket root, not inline, per the CSP comment on
