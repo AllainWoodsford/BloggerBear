@@ -7,9 +7,12 @@ import time
 from datetime import UTC, datetime
 from unittest.mock import patch
 
+import boto3
 import pytest
 import requests
+from moto import mock_aws
 
+from common.adapters import crypto_feed
 from common.adapters.crypto_feed import (
     HISTORY_CONCURRENCY,
     HISTORY_PATH,
@@ -42,7 +45,9 @@ HISTORY_URL = PUBLIC_BASE_URL + HISTORY_PATH
 @pytest.fixture(autouse=True)
 def _no_api_key_by_default(monkeypatch):
     monkeypatch.delenv("COINGECKO_API_KEY", raising=False)
+    monkeypatch.delenv("COINGECKO_API_KEY_PARAMETER", raising=False)
     monkeypatch.delenv("COINGECKO_API_PLAN", raising=False)
+    monkeypatch.setattr(crypto_feed, "_ssm_api_key", crypto_feed._UNREAD)  # a fresh "cold start"
 
 
 @pytest.fixture(autouse=True)
@@ -1344,3 +1349,80 @@ def test_a_markets_failure_is_raised_so_the_review_reports_unavailable():
         pytest.raises(RuntimeError, match="coingecko down"),
     ):
         CryptoFeedAdapter().review_evidence(DEEP_DIVE, None)
+
+
+# --- the key from SSM Parameter Store ------------------------------------------------------------
+
+PARAMETER = "/bloggerbear/test/coingecko-api-key"
+
+
+@pytest.fixture
+def ssm(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("COINGECKO_API_KEY_PARAMETER", PARAMETER)
+    with mock_aws():
+        yield boto3.client("ssm", region_name="ap-southeast-2")
+
+
+def test_the_key_is_read_from_its_securestring_parameter(ssm):
+    ssm.put_parameter(Name=PARAMETER, Value=SECRET, Type="SecureString")
+
+    with patch(GET, return_value=[]) as mock_get:
+        CoinGeckoClient.from_env().get_json("/x")
+
+    assert mock_get.call_args.kwargs["headers"]["x-cg-demo-api-key"] == SECRET
+
+
+def test_no_parameter_yet_means_keyless_and_is_not_asked_again(ssm, capsys):
+    assert CoinGeckoClient.from_env().uses_key is False
+    assert "no CoinGecko key at /bloggerbear/test/coingecko-api-key" in capsys.readouterr().out
+
+    ssm.put_parameter(Name=PARAMETER, Value=SECRET, Type="SecureString")
+    assert CoinGeckoClient.from_env().uses_key is False  # same container: the answer was kept
+
+
+def test_the_parameter_is_read_once_per_container(ssm):
+    ssm.put_parameter(Name=PARAMETER, Value=SECRET, Type="SecureString")
+    with patch.object(crypto_feed.boto3, "client", wraps=boto3.client) as make_client:
+        for _ in range(3):
+            assert CoinGeckoClient.from_env().uses_key is True
+
+    assert make_client.call_count == 1
+
+
+def test_a_failed_read_is_keyless_this_time_but_tried_again(ssm, capsys):
+    ssm.put_parameter(Name=PARAMETER, Value=SECRET, Type="SecureString")
+    with patch.object(crypto_feed.boto3, "client", side_effect=RuntimeError("no network")):
+        assert CoinGeckoClient.from_env().uses_key is False
+    assert "RuntimeError" in capsys.readouterr().out
+
+    assert CoinGeckoClient.from_env().uses_key is True
+
+
+def test_a_plain_key_in_the_environment_wins_without_asking_ssm(ssm, monkeypatch):
+    monkeypatch.setenv("COINGECKO_API_KEY", "local-key")
+    with patch.object(crypto_feed.boto3, "client") as make_client:
+        assert CoinGeckoClient.from_env().uses_key is True
+
+    make_client.assert_not_called()
+
+
+def test_no_parameter_configured_never_calls_ssm(monkeypatch):
+    with patch.object(crypto_feed.boto3, "client") as make_client:
+        assert CoinGeckoClient.from_env().uses_key is False
+
+    make_client.assert_not_called()
+
+
+def test_the_key_from_ssm_is_never_logged(ssm, capsys):
+    ssm.put_parameter(Name=PARAMETER, Value=SECRET, Type="SecureString")
+    with patch(GET, side_effect=requests.HTTPError("429")):
+        try:
+            CoinGeckoClient.from_env().get_json("/x")
+        except Exception:  # noqa: BLE001 - only the logging matters here
+            pass
+
+    assert SECRET not in capsys.readouterr().out
+
