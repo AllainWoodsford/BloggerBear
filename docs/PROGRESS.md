@@ -271,8 +271,11 @@ Spec: `docs/specs/phase-0-foundations.md`
 - [x] Site-wide RSS feed — `GET /rss.xml` on the same public API, hand-built
   valid RSS 2.0 (50 most recent published articles, XML-escaped)
 - [x] Legal pages, accessibility, and CSS resilience (ad hoc follow-up,
-  not originally scoped) — `#/terms` and `#/privacy` hash routes
-  (static content, no API call), grounded in what the codebase actually
+  not originally scoped) — Terms of Service and Privacy Policy, first as
+  `#/terms` and `#/privacy` hash routes and since moved to static
+  `frontend/terms.html` / `privacy.html` (no JavaScript needed, own URLs,
+  a linkable id per section, a "Last updated" date; the old routes
+  redirect), grounded in what the codebase actually
   does rather than boilerplate (confirmed via a real code/config scan:
   no cookies anywhere — the CloudFront distribution explicitly forwards
   none, and the frontend has no cookie-setting code — anonymous view
@@ -437,7 +440,12 @@ them.
   to CloudWatch Logs on every ACL in both environments (admin, public
   API, and production's shared CLOUDFRONT-scope ACL), so the data needed
   to actually tune the rate-limit threshold and rule set will exist once
-  deployed
+  deployed. Since narrowed for privacy: the public API and shared
+  CloudFront ACLs now log only BLOCK/COUNT requests, with browser-
+  fingerprinting headers redacted, kept 14 days (the Privacy Policy's
+  section 5 describes exactly this). Tuning from allowed traffic now
+  relies on the ACLs' CloudWatch metrics and WAF's 3-hour sampled
+  requests; the admin ACL still logs everything
 - [x] Prompt iteration on the compliance-review step based on what's
   actually been flagged so far — done: real flagged drafts showed the
   reviewer calling figures from the findings "invented", so the review now

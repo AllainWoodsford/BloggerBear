@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    name="description"
+    content="The terms for using BloggerBear, a personal portfolio project: AI-generated content, no financial advice, no warranty, anonymous feedback and acceptable use."
+  />
+  <title>Terms of Service — BloggerBear</title>
+  <!--
+    A plain static page, like about.html: no app.js or config.js, so the Terms of Service reads
+    the same with JavaScript off, gets indexed at its own URL, and each section can be linked to
+    by its id. The old #/terms route in app.js redirects here, so links to it keep working.
+  -->
+  <link rel="stylesheet" href="normalize.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="logo.svg" type="image/svg+xml" />
+  <link rel="alternate icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header id="top">
+    <a class="site-title" href="/">
+      <picture>
+        <source srcset="logo.webp" type="image/webp" />
+        <img class="site-logo" src="logo.svg" alt="" width="32" height="32" />
+      </picture>
+      BloggerBear
+    </a>
+    <nav id="nav-site" aria-label="Site sections">
+      <a href="/#/topic/digest">Trending Everywhere</a>
+      <a href="/#/musings">Musings</a>
+      <a href="/#/stats">Stats</a>
+    </nav>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <h1>Terms of Service</h1>
+    <p class="legal-updated">Last updated: <time datetime="2026-10-02">2 October 2026</time></p>
+
+    <section id="about-this-site">
+      <h2>1. About this site</h2>
+      <p>
+        BloggerBear is a personal, non-commercial portfolio and demonstration project — an experiment in autonomous, AI-assisted research and publishing. Software periodically checks public data sources (currently GitHub Trending, Hacker News, and public cryptocurrency market data), uses an AI model (Amazon Bedrock / Claude) to summarize findings and draft articles, and runs an automated compliance review before anything is published. It is not a commercial product, a news organization, or a registered business.
+      </p>
+    </section>
+
+    <section id="ai-generated-content">
+      <h2>2. AI-generated content</h2>
+      <p>
+        Most article content on this site is drafted by an AI model from publicly available source data, then automatically reviewed for compliance before publishing; some drafts are additionally held for manual human review. Despite that review, AI-generated content can still be inaccurate, incomplete, or out of date. Nothing on this site should be treated as professional advice of any kind.
+      </p>
+    </section>
+
+    <section id="not-financial-advice">
+      <h2>3. Not financial advice</h2>
+      <p>
+        Any article touching cryptocurrency or other financial/investment topics is generated under a stricter compliance rubric, is always held for manual human review before publishing regardless of how confident the automated review is, and carries a standing notice that it is not financial or investment advice. Nothing on this site is, or should be understood as, a recommendation to buy, sell, or hold any asset. Always do your own research and consult a qualified professional before making financial decisions.
+      </p>
+    </section>
+
+    <section id="no-warranty-availability-or-permanence">
+      <h2>4. No warranty, availability, or permanence</h2>
+      <p>
+        This is a hobby/portfolio project, run by a single operator — not a supported product.
+      </p>
+      <ul>
+        <li>No uptime, availability, or continuity is guaranteed.</li>
+        <li>The site, every article on it, and the infrastructure behind it may be taken offline, modified, reset, or permanently deleted at any time, without notice.</li>
+        <li>The site and its content are provided “as is” and “as available,” without warranties of any kind, express or implied — including accuracy, reliability, merchantability, or fitness for a particular purpose.</li>
+        <li>The operator is not liable for any loss or damage arising from your use of, or inability to use, this site or its content.</li>
+      </ul>
+    </section>
+
+    <section id="source-material-and-attribution">
+      <h2>5. Source material and attribution</h2>
+      <p>
+        Each article's “Sources” links point to the original public pages a piece of research was based on. That source material belongs to its respective owners — BloggerBear doesn't claim ownership of it, and links to it for attribution and further reading.
+      </p>
+    </section>
+
+    <section id="anonymous-feedback">
+      <h2>6. Anonymous feedback</h2>
+      <p>
+        You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the <a href="/privacy.html#feedback-votes-and-comments">Privacy Policy</a> for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. Every comment is screened automatically before it is saved, and is rejected (not saved, not published) if it contains personal information, is abusive, off-topic, spam or unlawful, breaks these terms, tries to instruct or attack the site or the software behind it, or can't be confirmed safe. When a comment is rejected, nothing is submitted: your vote isn't recorded with it, so you can try again without the comment.
+      </p>
+    </section>
+
+    <section id="acceptable-use">
+      <h2>7. Acceptable use</h2>
+      <p>
+        Please don't attempt to abuse, aggressively scrape, disrupt, or gain unauthorized access to this site or the systems behind it. Automated/programmatic use of the public read API and RSS feed is welcome — that's exactly what they're for.
+      </p>
+    </section>
+
+    <section id="changes-to-these-terms">
+      <h2>8. Changes to these terms</h2>
+      <p>
+        Since this is an evolving personal project, these terms may change at any time as the project changes. Continued use of the site after a change means you accept the updated terms.
+      </p>
+    </section>
+
+    <section id="contact">
+      <h2>9. Contact</h2>
+      <p>
+        This project is developed in the open. Questions, issues, or takedown requests can be raised via its GitHub repository.
+      </p>
+      <p><a href="https://github.com/AllainWoodsford/BloggerBear">github.com/AllainWoodsford/BloggerBear</a></p>
+    </section>
+
+    <p>
+      <a href="/">← Back to the homepage</a>
+    </p>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="footer-nav" aria-label="Explore">
+      <span class="footer-item"><a href="/#/topic/digest">Trending Everywhere</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <span class="footer-item"><a href="/#/musings">Musings</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <a href="/#/stats">Stats</a>
+    </nav>
+    <nav class="legal-nav" aria-label="Legal">
+      <span class="footer-item"><a href="/">Home</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <span class="footer-item"><a href="/about.html">About</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <span class="footer-item"><a href="/terms.html">Terms of Service</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <a href="/privacy.html">Privacy Policy</a>
+    </nav>
+    <div class="footer-links">
+      <a class="back-to-top" href="#top">Back to top ↑</a>
+    </div>
+  </footer>
+</body>
+</html>
