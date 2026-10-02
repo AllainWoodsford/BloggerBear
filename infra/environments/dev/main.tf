@@ -558,16 +558,42 @@ resource "aws_lambda_function" "research_tick" {
 # calls (ideate, draft, title, fresh-data review, compliance review) over a larger
 # data payload, the review's fetch of current data (time-boxed at 45s), and a
 # fallback-model retry if the primary call fails.
-# The CoinGecko key goes only to the two Lambdas that run the crypto adapter: research_tick
-# (its hourly fetch) and daily_cycle (the fresh-data review re-reads current prices). It is kept
-# out of the shared local, which every Lambda receives. No key set -> no variables added -> the
-# adapter stays keyless. daily_cycle used to be left out, so its review ran keyless even with a
-# key configured.
+# The CoinGecko key lives in SSM Parameter Store as a SecureString, at a fixed name, and only the
+# two Lambdas that run the crypto adapter are told where: research_tick (its hourly fetch) and
+# daily_cycle (the fresh-data review re-reads current prices). They read it once per cold start
+# (common/adapters/crypto_feed.py). It is never in Terraform state, a Lambda's environment or a
+# GitHub secret: Terraform doesn't create the parameter -- a managed SecureString's value is read
+# back into state on every refresh -- it only grants read access to this one name. The operator
+# creates it once (see README.md):
+#
+#   aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --value <key> --overwrite
+#
+# No parameter -> the adapter uses CoinGecko's keyless public API, exactly as with no key before.
 locals {
-  coingecko_env_variables = var.coingecko_api_key == "" ? {} : {
-    COINGECKO_API_KEY  = var.coingecko_api_key
-    COINGECKO_API_PLAN = var.coingecko_api_plan
+  coingecko_api_key_parameter = "/bloggerbear/dev/coingecko-api-key"
+  coingecko_env_variables = {
+    COINGECKO_API_KEY_PARAMETER = local.coingecko_api_key_parameter
+    COINGECKO_API_PLAN          = var.coingecko_api_plan
   }
+}
+
+# Read access to that one parameter, on the shared exec role (the Lambdas share one role, so this is
+# what "only the crypto Lambdas" can mean here: only they are told the name). SecureString with the
+# default aws/ssm key, whose key policy already lets the account's principals decrypt through SSM,
+# so no KMS grant is needed.
+data "aws_iam_policy_document" "lambda_coingecko_key" {
+  statement {
+    sid       = "ReadCoinGeckoKey"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:ap-southeast-2:${data.aws_caller_identity.current.account_id}:parameter${local.coingecko_api_key_parameter}"]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_coingecko_key" {
+  name   = "bloggerbear-dev-lambda-coingecko-key"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_coingecko_key.json
 }
 
 resource "aws_lambda_function" "daily_cycle" {
