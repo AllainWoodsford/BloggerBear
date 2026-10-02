@@ -1616,3 +1616,67 @@ needs. Plain `<link rel="stylesheet">` is back. Both files are about 5KB over th
 (`style-src 'self'`) would need a hash regenerated on every CSS change, and already-published article
 pages are static HTML that would need regenerating. `preload-styles.js` stays deployed as a legacy shim
 (it now switches the links on immediately) for article pages published while #125 was live.
+
+### Observability, security and content fixes (October 2026 batch)
+
+**Status: proposed** (four PRs, in this order; designs agreed 2026-10-03).
+
+Found while planning this batch, and the reason PR 1 goes first: the production `stats-rollover` and
+`cost-explorer-poll` schedules have never invoked their Lambdas. Both schedules exist, but
+`data.aws_iam_policy_document.scheduler_invoke` (dev and production) has no statement for either function,
+so EventBridge Scheduler fails every attempt and retries (about 76 failed attempts a day since 2026-09-29;
+zero invocations of `cost-explorer-poll` in the last 7 days). That is why the Stats page shows `null` for
+the actual API Gateway and AgentCore spend, and why the Historic totals are all zero.
+
+#### PR 1 -- Schedules and dashboards
+
+- **Scheduler fix:** add `InvokeStatsRollover` and `InvokeCostExplorerPoll` to `scheduler_invoke` in both
+  environments, with a test that every `aws_scheduler_schedule` target has a matching invoke statement, so
+  a new scheduled Lambda can't miss it again.
+- **Pipeline dashboard (`bloggerbear-<env>-pipeline`):** the metrics have data (24 research-tick runs in a
+  day), but the dashboard sets no time range or period, so it opens on CloudWatch's 3-hour default and
+  shows a few dots; and each widget draws Duration (thousands of ms) on the same axis as the counts,
+  flattening them. Set a 7-day default with hourly periods, move Duration to the right axis, and add text
+  headers.
+- **New Lambda runs dashboard:** invocation counts per Lambda (research ticks, daily cycle, digest, musings,
+  weekly reflection, rollover, cost poll, the two APIs), plus comment screening -- kept and rejected, from
+  the existing `FeedbackRejected` metric and one more metric filter -- over whatever span the dashboard's
+  time picker sets.
+
+#### PR 2 -- WAF spend on the Stats page
+
+WAF is the largest line on the bill: US$10.90 of about US$17 over the 30 days to 2026-10-03 (Haiku was
+US$4.24). It joins the existing daily Cost Explorer poll as a third service (`"AWS WAF"`, confirmed from
+billing data) in the same single `GetCostAndUsage` call, so it costs nothing extra to fetch.
+
+- **Stored:** a rolling 30-day snapshot on the week's StatsCurrent row like API Gateway's, plus calendar
+  month-to-date and previous-month figures.
+- **One site-wide figure:** dev and production can't be told apart without cost-allocation tags, and the
+  CloudFront ACL is shared by both anyway, so it is reported as the site's cost.
+- **Stats page:** shown alongside the other actual (from the bill) figures, labelled with the ~24h lag.
+- Depends on PR 1: the poll has to run before there is anything to show.
+
+#### PR 3 -- Security
+
+- **CoinGecko key in SSM Parameter Store** (SecureString, chosen over Secrets Manager: same job, no
+  monthly charge). Terraform creates the parameter's name and IAM only; the operator sets the value once
+  with `aws ssm put-parameter --overwrite`, so the key is never in Terraform state, a Lambda's environment
+  variables or a GitHub secret. The two crypto Lambdas (research tick, daily cycle) get the parameter's
+  name and `ssm:GetParameter` on that one parameter (encrypted with the default `aws/ssm` key, which needs
+  no extra KMS permission), and read it once per cold start. `TF_VAR_coingecko_api_key` and the `COINGECKO_API_KEY_PROD` secret are retired.
+- **Release checks:** the production release workflow runs no checks today; Trivy, Bandit, ruff and pytest
+  run only on PRs and pushes to `dev`. `security.yml` and `python-ci.yml` become reusable
+  (`workflow_call`), and `terraform-production-release.yml`'s apply job `needs` both, so a failing scan or
+  test blocks the deploy.
+
+#### PR 4 -- Content
+
+- **Digest layout:** the Trending Everywhere body is whatever shape the model picks that day -- usually one
+  long paragraph per topic behind an inline bold label, no headings, and the title repeated as a body
+  heading. The layout moves into code: a short "connections" paragraph from the model, then a
+  `## <Topic name>` section per topic holding that topic's finding summary, and no title in the body.
+- **A musing when an article is rejected:** a new `shocked` mood with its own bear
+  (`frontend/bears/shocked.svg`, in the existing bears' style), written when moderation rejects an article.
+  It names the topic only: no title and no link, because a rejected article isn't public and may contain
+  exactly what got it rejected. Checked like the loot musing: the text must name the topic and pass the
+  comment rules, or a plain fixed line is posted instead.
