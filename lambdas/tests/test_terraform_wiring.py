@@ -649,3 +649,39 @@ def test_a_production_release_waits_for_the_security_scans_and_tests():
         called = (workflows / name).read_text(encoding="utf-8")
         assert "  workflow_call:" in called
         assert "ref: ${{ inputs.ref }}" in called
+
+
+# --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_coingecko_key_is_read_from_ssm_not_passed_in(env):
+    text = _read("environments", env, "main.tf")
+    variables = _read("environments", env, "variables.tf")
+    parameter = f"/bloggerbear/{env}/coingecko-api-key"
+
+    # Terraform names the parameter and grants reading it -- nothing more.
+    assert f'coingecko_api_key_parameter = "{parameter}"' in text
+    assert "COINGECKO_API_KEY_PARAMETER = local.coingecko_api_key_parameter" in text
+    assert 'resource "aws_ssm_parameter"' not in text  # its value would be read back into state
+    assert 'variable "coingecko_api_key"' not in variables and "COINGECKO_API_KEY " not in text
+
+    policy = re.search(
+        r'data "aws_iam_policy_document" "lambda_coingecko_key" \{(.*?)\n\}', text, re.S
+    ).group(1)
+    assert re.findall(r'"(ssm:[A-Za-z]+)"', policy) == ["ssm:GetParameter"]
+    assert "parameter${local.coingecko_api_key_parameter}" in policy
+
+    # Only the two crypto Lambdas are told where the key is.
+    told = re.findall(
+        r'^resource "aws_lambda_function" "([a-z_]+)" \{(?:(?!^\}).)*local\.coingecko_env_variables',
+        text,
+        re.S | re.M,
+    )
+    assert sorted(told) == ["daily_cycle", "research_tick"]
+
+
+def test_no_workflow_passes_a_coingecko_key_any_more():
+    workflows = ROOT / ".github" / "workflows"
+    for path in workflows.glob("*.yml"):
+        assert "COINGECKO_API_KEY" not in path.read_text(encoding="utf-8"), path.name

@@ -33,7 +33,7 @@ days -- the research interval (common/research_schedule.py) is the dial for cost
 
 **History is fetched for each tick's new pool.** That is up to 10 CoinGecko
 history calls per tick, and the public keyless API answers 429 well below that
-(observed live: 3 of 10 failed even with backoff), so set `COINGECKO_API_KEY`
+(observed live: 3 of 10 failed even with backoff), so set a CoinGecko key (below)
 for this to be dependable. A coin whose history can't be fetched is dropped and
 the tick fails only if fewer than MIN_POOL_SIZE survive (the next heartbeat
 simply draws again). The adapter still opts into `uses_previous_state`: a coin
@@ -45,10 +45,12 @@ common/http_retry.py's exponential backoff; a coin whose history can't be
 fetched is dropped, and the run fails only if fewer than MIN_POOL_SIZE coins
 survive.
 
-**An optional CoinGecko API key** (env `COINGECKO_API_KEY`, plan in
-`COINGECKO_API_PLAN`) raises the rate limit. See CoinGeckoClient: if the keyed
-request is throttled, errors, or the key is rejected, the same request is
-retried against the public keyless API, so the key can only ever help.
+**An optional CoinGecko API key** raises the rate limit. In AWS it is a SecureString in SSM
+Parameter Store, named by `COINGECKO_API_KEY_PARAMETER` (set by Terraform on the two crypto
+Lambdas) and read once per cold start; a plain `COINGECKO_API_KEY` is still honoured, for local
+runs. The plan is in `COINGECKO_API_PLAN`. See CoinGeckoClient: if the keyed request is throttled,
+errors, or the key is rejected -- or there is no key at all -- the same request goes to the public
+keyless API, so the key can only ever help.
 
 This adapter contains no domain branches in the core pipeline
 (docs/project-plan.md §6): the daily goal draw lives in editorial_goals.py, and
@@ -73,7 +75,9 @@ import time
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import boto3
 import requests
+from botocore.exceptions import ClientError
 
 from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse_goal
 from common.editorial_resolver import resolve_editorial_goals
@@ -89,10 +93,12 @@ MARKETS_PATH = "/coins/markets"
 HISTORY_PATH = "/coins/{coin_id}/market_chart"
 USER_AGENT = "BloggerBearResearchBot/1.0 (+https://github.com/AllainWoodsford/BloggerBear)"
 
-# The API key comes from the environment (set by Terraform on the research-tick
-# Lambda from a CI secret), never from adapter_config: that is stored in
-# DynamoDB and readable through the admin API, so a secret there would leak.
+# The API key never comes from adapter_config: that is stored in DynamoDB and readable through
+# the admin API, so a secret there would leak. In AWS it is read from SSM Parameter Store (the
+# parameter's name in API_KEY_PARAMETER_ENV, set by Terraform on the two crypto Lambdas); a plain
+# API_KEY_ENV value, if set, wins -- that is for running locally.
 API_KEY_ENV = "COINGECKO_API_KEY"
+API_KEY_PARAMETER_ENV = "COINGECKO_API_KEY_PARAMETER"
 API_PLAN_ENV = "COINGECKO_API_PLAN"
 # plan -> (base URL, header the key travels in). "demo" is the free key and
 # uses the same host as the public API; "pro" is a paid key on its own host.
@@ -406,6 +412,40 @@ def _status_code(exc: Exception) -> int | None:
     return None
 
 
+# The key read from SSM, once per Lambda container (cold start) -- not once per request, and not
+# once per invocation: a warm container keeps it. _UNREAD until the first read; None afterwards means
+# "no key". Only a definite answer (the key, or no such parameter) is kept: a failed read is retried
+# on the next run rather than leaving the container keyless for its whole life.
+_UNREAD = object()
+_ssm_api_key: object = _UNREAD
+
+
+def _api_key_from_ssm() -> str | None:
+    """The CoinGecko key from the SecureString named by COINGECKO_API_KEY_PARAMETER, or None (no
+    parameter configured, none created yet, or SSM unreachable) -- the adapter then goes keyless.
+    The key is never logged: only the parameter's name and the error's type are."""
+    global _ssm_api_key
+    if _ssm_api_key is not _UNREAD:
+        return _ssm_api_key
+    name = (os.environ.get(API_KEY_PARAMETER_ENV) or "").strip()
+    if not name:
+        return None
+    try:
+        response = boto3.client("ssm").get_parameter(Name=name, WithDecryption=True)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ParameterNotFound":
+            print(f"crypto_feed: no CoinGecko key at {name}; using the public API")
+            _ssm_api_key = None
+            return None
+        print(f"crypto_feed: could not read the CoinGecko key at {name} ({type(exc).__name__}); keyless")
+        return None
+    except Exception as exc:  # noqa: BLE001 - an unreadable key only costs the rate limit
+        print(f"crypto_feed: could not read the CoinGecko key at {name} ({type(exc).__name__}); keyless")
+        return None
+    _ssm_api_key = (response.get("Parameter", {}).get("Value") or "").strip() or None
+    return _ssm_api_key
+
+
 class CoinGeckoClient:
     """GET JSON from CoinGecko with an optional API key and a keyless fallback.
 
@@ -431,7 +471,7 @@ class CoinGeckoClient:
     @classmethod
     def from_env(cls) -> CoinGeckoClient:
         plan = (os.environ.get(API_PLAN_ENV) or DEFAULT_API_PLAN).strip().lower()
-        return cls(api_key=os.environ.get(API_KEY_ENV), plan=plan)
+        return cls(api_key=os.environ.get(API_KEY_ENV) or _api_key_from_ssm(), plan=plan)
 
     @property
     def uses_key(self) -> bool:

@@ -138,13 +138,9 @@ jobs:
     # (empty secret) is fine -- every alarm/subscription it gates is
     # count-gated on `var.alert_email != ""`, so nothing is created without
     # it, same fail-closed-to-"off" pattern as admin_allowed_cidrs' `[]`.
-    # TF_VAR_coingecko_api_key: repo-level secret COINGECKO_API_KEY_DEV, same
-    # reasoning as above. Unset (empty) is fine: the crypto adapter then uses
-    # CoinGecko's keyless public API. See infra/environments/dev/variables.tf.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
-      TF_VAR_coingecko_api_key: ${{ secrets.COINGECKO_API_KEY_DEV }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
