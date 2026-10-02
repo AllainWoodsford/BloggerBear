@@ -495,3 +495,62 @@ def test_the_privacy_policy_states_the_waf_log_retention():
 
     assert f"for {days} days, then deleted automatically" in policy
     assert "Only requests the firewall blocks or flags are logged" in policy
+
+
+# --- feedback spam: the per-IP WAF cap, and the alarms on rejected feedback ---------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_waf_feedback_cap_is_ten_per_ip_per_five_minutes(env):
+    text = _read("environments", env, "main.tf")
+    rule = re.search(r'name\s*=\s*"feedback-rate-limit"(.*?)visibility_config', text, re.S).group(1)
+
+    assert re.search(r"limit\s*=\s*10\b", rule)  # WAF's lowest allowed rate limit
+    assert re.search(r"evaluation_window_sec\s*=\s*300\b", rule)
+    assert re.search(r'aggregate_key_type\s*=\s*"IP"', rule)
+
+
+def test_the_feedback_alarms_read_the_public_api_handlers_own_log_line():
+    module = _read("modules", "observability", "main.tf")
+    handler = (ROOT / "lambdas" / "public_api_handler.py").read_text(encoding="utf-8")
+    logged = "print(f\"public_api_handler: rejected a feedback submission ({screened['dropped_because']})\")"
+
+    assert logged in handler
+    assert r'pattern        = "\"rejected a feedback submission\""' in module
+    assert r'pattern        = "\"rejected a feedback submission (screening_budget)\""' in module
+    assert 'MODEL_BUDGET = "screening_budget"' in (
+        ROOT / "lambdas" / "common" / "comment_screening.py"
+    ).read_text(encoding="utf-8")
+    for alarm in ("feedback_rejections_spike", "feedback_screening_budget_used_up"):
+        block = re.search(
+            rf'resource "aws_cloudwatch_metric_alarm" "{alarm}" \{{(.*?)\n\}}', module, re.S
+        ).group(1)
+        assert "alarm_actions = [aws_sns_topic.alerts.arn]" in block
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_feedback_alarms_watch_the_public_api_log_group(env):
+    block = re.search(
+        r'module "observability" \{(.*?)\n\}', _read("environments", env, "main.tf"), re.S
+    ).group(1)
+
+    assert re.search(
+        r"feedback_log_group_name\s*=\s*aws_cloudwatch_log_group\.lambda\[aws_lambda_function\.public_api\.function_name\]\.name",
+        block,
+    )
+
+
+# --- the deploy role can still read an event source mapping that has gone ----------------------
+
+
+def test_the_deploy_role_can_read_event_source_mappings_that_no_longer_exist():
+    """A deleted mapping is authorized against "*", not its ARN: without this, refresh fails with
+    AccessDeniedException instead of "not found", and Terraform can never recreate it."""
+    bootstrap = _read("bootstrap", "main.tf")
+    statement = re.search(r'sid\s*=\s*"LambdaEventSourceMappingReads"(.*?)\n  \}', bootstrap, re.S).group(1)
+
+    assert set(re.findall(r'"(lambda:[A-Za-z]+)"', statement)) == {
+        "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings",
+    }
+    assert re.search(r'resources\s*=\s*\["\*"\]', statement)
