@@ -996,6 +996,55 @@ def test_reject_moderation_item(aws_resources):
     assert queue_item["expires_at"] > int(datetime.now(UTC).timestamp())
 
 
+def test_a_rejection_posts_a_shocked_musing_naming_only_the_topic(aws_resources):
+    _put_topic()
+    _put_article()
+    _put_moderation_item()
+
+    with patch("admin_api_handler.generate_and_store_rejection_musing") as mock_musing:
+        event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    mock_musing.assert_called_once()
+    kwargs = mock_musing.call_args.kwargs
+    assert kwargs["topic_id"] == "github-trending" and kwargs["topic_name"] == "GitHub Trending"
+    assert set(kwargs) == {"topic_id", "topic_name", "model_id"}  # no article id, no title
+
+
+def test_a_failed_rejection_musing_never_fails_the_rejection(aws_resources):
+    _put_topic()
+    _put_article()
+    _put_moderation_item()
+
+    with patch("admin_api_handler.generate_and_store_rejection_musing", side_effect=RuntimeError("down")):
+        event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    article = boto3.resource("dynamodb", region_name=REGION).Table("Articles").get_item(
+        Key={"article_id": "article-1"}
+    )["Item"]
+    assert article["status"] == "rejected"
+
+
+def test_approving_posts_no_rejection_musing(aws_resources):
+    _put_topic()
+    _put_article()
+    _put_moderation_item()
+
+    with (
+        patch("admin_api_handler.generate_and_store_rejection_musing") as mock_rejection,
+        patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.read_article_body", return_value="Body."),
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"})
+        assert admin_api_handler.handler(event, None)["statusCode"] == 200
+
+    mock_rejection.assert_not_called()
+
+
 def test_approve_unknown_queue_item_returns_404(aws_resources):
     event = _event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "nope"})
     result = admin_api_handler.handler(event, None)

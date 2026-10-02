@@ -1,7 +1,8 @@
 /* BloggerBear's moods, and the bear that goes with each (the Musings page).
 
    A musing carries a mood word (lambdas/common/musings.py: proud, thoughtful, pleased, reflective,
-   curious, excited; a loot drop is always excited). Each has a picture of the bear feeling it, frontend/bears/<mood>.svg, and a line of grey
+   curious, excited, shocked; a loot drop is always excited, a draft turned away at review always
+   shocked). Each has a picture of the bear feeling it, frontend/bears/<mood>.svg, and a line of grey
    text under the musing: "BloggerBear was feeling <mood>". To use your own art, replace the SVG
    with the same name; the pictures are square and shown at about 56px.
 
@@ -13,7 +14,7 @@
 (function (root) {
   "use strict";
 
-  var MOODS = ["proud", "thoughtful", "pleased", "reflective", "curious", "excited"];
+  var MOODS = ["proud", "thoughtful", "pleased", "reflective", "curious", "excited", "shocked"];
   var FALLBACK_IMAGE = "bears/default.svg";
   var PLAIN_WORD = /^[A-Za-z][A-Za-z -]{0,29}$/;
 

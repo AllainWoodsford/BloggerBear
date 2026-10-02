@@ -1619,8 +1619,8 @@ pages are static HTML that would need regenerating. `preload-styles.js` stays de
 
 ### Observability, security and content fixes (October 2026 batch)
 
-**Status: in progress** (four PRs, in this order; designs agreed 2026-10-03). PR 1 merged (#145); PR 2 in
-review.
+**Status: in progress** (four PRs, in this order; designs agreed 2026-10-03). PR 1 (#145) and PR 2 (#146)
+merged; PR 3 (#147) and PR 4 in review.
 
 Found while planning this batch, and the reason PR 1 goes first: the production `stats-rollover` and
 `cost-explorer-poll` schedules have never invoked their Lambdas. Both schedules exist, but
@@ -1699,8 +1699,12 @@ billing data) in the same single `GetCostAndUsage` call, so it costs nothing ext
 
 - **Digest layout:** the Trending Everywhere body is whatever shape the model picks that day -- usually one
   long paragraph per topic behind an inline bold label, no headings, and the title repeated as a body
-  heading. The layout moves into code: a short "connections" paragraph from the model, then a
-  `## <Topic name>` section per topic holding that topic's finding summary, and no title in the body.
+  heading. The layout moves into code (`_compose_digest`): the model now replies in a fixed line format
+  (`OVERVIEW: ...`, then `1: ...`, `2: ...`, one per numbered topic) and the code builds the body: the
+  overview paragraph, then a `## <Topic name>` section per topic, in order, holding the model's line for
+  it. A topic the model skipped gets the start of its own finding summary (plain prose, cut at a sentence
+  end within 400 characters), so an unformatted reply still yields every section. Bold, heading and
+  bullet marks are stripped, any preamble is ignored, and the title never appears in the body.
 - **A musing when an article is rejected:** a new `shocked` mood with its own bear
   (`frontend/bears/shocked.svg`, in the existing bears' style), written when moderation rejects an article.
   It names the topic only: no title and no link, because a rejected article isn't public and may contain

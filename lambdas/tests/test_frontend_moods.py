@@ -54,10 +54,11 @@ def _describe(*values) -> list[dict]:
 # --- the backend's moods, and the pictures -----------------------------------------------------------
 
 
-def test_bloggerbear_has_six_moods():
-    moods = {"proud", "thoughtful", "pleased", "reflective", "curious", "excited"}  # excited: a loot drop
+def test_bloggerbear_has_seven_moods():
+    # excited: a loot drop; shocked: a draft turned away at moderation
+    moods = {"proud", "thoughtful", "pleased", "reflective", "curious", "excited", "shocked"}
     assert set(musings.MOODS) == moods
-    assert len(musings.MOODS) == 6
+    assert len(musings.MOODS) == 7
 
 
 def test_every_backend_mood_has_a_bear_picture():
