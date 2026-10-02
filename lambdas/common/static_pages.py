@@ -410,8 +410,8 @@ def _site_sections_links_html(paws: bool = False) -> str:
 _LEGAL_LINKS = (
     ("/", "Home"),
     ("/about.html", "About"),
-    ("/#/terms", "Terms of Service"),
-    ("/#/privacy", "Privacy Policy"),
+    ("/terms.html", "Terms of Service"),
+    ("/privacy.html", "Privacy Policy"),
 )
 
 

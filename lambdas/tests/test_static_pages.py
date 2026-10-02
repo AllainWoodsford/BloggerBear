@@ -384,7 +384,7 @@ def test_rendered_page_links_the_site_sections_in_header_and_footer(s3):
         assert 'href="/#/stats">Stats</a>' in region
     assert 'aria-label="Site sections"' in header
     assert 'aria-label="Explore"' in footer and 'aria-label="Legal"' in footer
-    assert 'href="/#/privacy"' in footer and 'href="/about.html"' in footer
+    assert 'href="/privacy.html"' in footer and 'href="/terms.html"' in footer and 'href="/about.html"' in footer
     assert 'class="skip-link"' in html
 
 
@@ -436,7 +436,7 @@ def test_static_pages_are_stored_with_a_revalidate_cache_header(s3):
 
 def test_the_site_html_footers_have_a_paw_between_every_pair_of_links():
     frontend = Path(__file__).resolve().parents[2] / "frontend"
-    for name in ("index.html", "about.html", "error.html"):
+    for name in ("index.html", "about.html", "error.html", "terms.html", "privacy.html"):
         footer = _footer_navs((frontend / name).read_text(encoding="utf-8"))
         # Every group: one paw fewer than it has links; the paw is hidden and glued to a link.
         for group in re.split(r"</nav>|</div>", footer):
