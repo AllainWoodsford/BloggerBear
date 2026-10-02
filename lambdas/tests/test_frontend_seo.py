@@ -21,7 +21,7 @@ def _description(html: str) -> str | None:
 
 
 def test_every_static_page_has_a_meta_description():
-    for name in ("index.html", "about.html", "error.html"):
+    for name in ("index.html", "about.html", "error.html", "terms.html", "privacy.html"):
         html = (FRONTEND / name).read_text(encoding="utf-8")
         description = _description(html)
         assert description, f"{name} has no <meta name=\"description\">"
@@ -31,6 +31,6 @@ def test_every_static_page_has_a_meta_description():
 def test_the_description_appears_before_the_title_in_the_head():
     """Not load-bearing for SEO, just keeps <head> in the conventional order (charset, viewport,
     description, title, ...) across all three files rather than tacking it on wherever."""
-    for name in ("index.html", "about.html", "error.html"):
+    for name in ("index.html", "about.html", "error.html", "terms.html", "privacy.html"):
         html = (FRONTEND / name).read_text(encoding="utf-8")
         assert html.index('name="description"') < html.index("<title>")

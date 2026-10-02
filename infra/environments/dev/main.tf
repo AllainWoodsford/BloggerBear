@@ -1488,6 +1488,8 @@ locals {
     "index.html"    = "text/html"
     "error.html"    = "text/html"
     "about.html"    = "text/html"
+    "terms.html"    = "text/html"
+    "privacy.html"  = "text/html"
     "styles.css"    = "text/css"
     "normalize.css" = "text/css"
     "app.js"        = "application/javascript"

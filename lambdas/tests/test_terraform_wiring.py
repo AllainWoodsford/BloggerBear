@@ -428,7 +428,7 @@ def test_the_deploy_role_can_create_the_gateway_and_pass_it_its_role():
 
 
 # --- WAF logs for visitor traffic: blocks only, fingerprint headers redacted, 14 days ------------
-# The Privacy Policy's section 5 (frontend/app.js) promises exactly this, so a change here that
+# The Privacy Policy's section 5 (frontend/privacy.html) promises exactly this, so a change here that
 # quietly logged allowed requests again, or kept them longer, would make the policy untrue.
 
 _VISITOR_WAF_LOGGING = [
@@ -488,7 +488,7 @@ def test_both_environments_redact_the_same_headers():
 
 
 def test_the_privacy_policy_states_the_waf_log_retention():
-    policy = (ROOT / "frontend" / "app.js").read_text(encoding="utf-8")
+    policy = (ROOT / "frontend" / "privacy.html").read_text(encoding="utf-8")
     days = re.search(
         r"waf_visitor_log_retention_days\s*=\s*(\d+)", _read("environments", "production", "main.tf")
     ).group(1)
