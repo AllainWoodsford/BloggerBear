@@ -44,13 +44,9 @@ jobs:
     # description. Unset (empty secret) is fine -- count-gated on
     # `var.alert_email != ""`, same fail-closed-to-"off" pattern as
     # admin_allowed_cidrs' `[]`.
-    # TF_VAR_coingecko_api_key: a `production`-Environment-scoped secret
-    # COINGECKO_API_KEY_PROD, same reasoning as above. Unset (empty) is fine:
-    # the crypto adapter then uses CoinGecko's keyless public API.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_PROD }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD || vars.ALERT_EMAIL_PROD }}
-      TF_VAR_coingecko_api_key: ${{ secrets.COINGECKO_API_KEY_PROD }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

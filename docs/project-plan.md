@@ -1683,12 +1683,17 @@ billing data) in the same single `GetCostAndUsage` call, so it costs nothing ext
 #### PR 3 -- The CoinGecko key in SSM
 
 - **CoinGecko key in SSM Parameter Store** (SecureString, chosen over Secrets Manager: same job, no
-  monthly charge). Terraform creates the parameter's name and IAM only; the operator sets the value once
-  with `aws ssm put-parameter --overwrite`, so the key is never in Terraform state, a Lambda's environment
-  variables or a GitHub secret. The two crypto Lambdas (research tick, daily cycle) get the parameter's
-  name and `ssm:GetParameter` on that one parameter (encrypted with the default `aws/ssm` key, which needs
-  no extra KMS permission), and read it once per cold start. `TF_VAR_coingecko_api_key` and the
-  `COINGECKO_API_KEY_PROD` secret are retired.
+  monthly charge) at `/bloggerbear/<env>/coingecko-api-key`. Terraform does **not** create the
+  parameter -- a managed SecureString's value is read back into state on every refresh -- it only
+  grants `ssm:GetParameter` on that one name (the default `aws/ssm` key needs no KMS grant) and tells
+  the two crypto Lambdas (research tick, daily cycle) where it is, via `COINGECKO_API_KEY_PARAMETER`.
+  The operator creates it once with `aws ssm put-parameter` (README.md step 3). `crypto_feed` reads it
+  once per cold start, keeps a definite answer (the key, or "no such parameter") for the container's
+  life and retries a failed read next run; a plain `COINGECKO_API_KEY` still wins, for local runs. No
+  parameter means keyless, exactly as with no key before. `var.coingecko_api_key`,
+  `TF_VAR_coingecko_api_key` and the `COINGECKO_API_KEY_DEV`/`_PROD` secrets are retired (delete the
+  secrets once the parameters exist). The Lambdas share one exec role, so any of them *could* read the
+  parameter; only the two crypto ones are told its name.
 
 #### PR 4 -- Content
 
