@@ -14,6 +14,14 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/python-ci.yml'
+  # Also called by terraform-production-release.yml against the release tag, before it applies.
+  workflow_call:
+    inputs:
+      ref:
+        description: The ref to check out and test (empty means the caller's commit).
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -28,6 +36,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
 
       # Pinned to the actual v5.6.0 tag commit (actions/setup-python has
       # no v5 moving tag reliably resolvable without a live lookup at
