@@ -36,6 +36,48 @@ variable "feedback_log_group_name" {
   description = "The public API Lambda's log group. public_api_handler.py writes one \"rejected a feedback submission (<reason>)\" line per rejected submission; metric filters on it drive the two feedback alarms."
 }
 
+variable "api_dashboard_apis" {
+  type = list(object({
+    label            = string # e.g. "Public API"
+    api_name         = string # the REST API's name: the ApiName metric dimension
+    stage            = string
+    access_log_group = string
+  }))
+  default     = []
+  description = "The REST APIs on the API Gateway dashboard (api_waf_dashboards.tf). Empty: no dashboard."
+}
+
+variable "api_cdn" {
+  type = object({
+    distribution_id            = string
+    additional_metrics_enabled = bool
+    api_name                   = string # the API behind it, to set its origin requests beside the CDN's
+    stage                      = string
+  })
+  default     = null
+  description = "The public API's CloudFront distribution, for the cache widgets on the API Gateway dashboard. Null: no cache widgets."
+}
+
+variable "waf_regional_acls" {
+  type = list(object({
+    label       = string
+    metric_name = string # the ACL's visibility_config metric_name: the WebACL metric dimension
+    log_group   = string
+  }))
+  default     = []
+  description = "The REGIONAL web ACLs (ap-southeast-2) on the WAF dashboard."
+}
+
+variable "waf_cloudfront_acl" {
+  type = object({
+    label       = string
+    metric_name = string
+    log_group   = string # in us-east-1
+  })
+  default     = null
+  description = "The CLOUDFRONT-scope web ACL (metrics and logs in us-east-1) on the WAF dashboard. Null: left off."
+}
+
 variable "feedback_rejections_alarm_threshold" {
   type        = number
   default     = 150
