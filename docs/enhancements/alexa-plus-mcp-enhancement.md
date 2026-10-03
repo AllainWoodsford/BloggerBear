@@ -23,6 +23,11 @@ Two parts:
 If Alexa+ developer access does turn out to work from here, the same MCP server can be connected
 to a real Alexa+ as a bonus. Nothing depends on it.
 
+**See also:** [alexa-plus-operator-assistant-enhancement.md](alexa-plus-operator-assistant-enhancement.md),
+the operator's side: "what's in the admin inbox?", "any security events?", "anything unusual in the
+logs?". It's private data reached by voice, so it gets OAuth, a read-only role and a demo environment
+for the judges.
+
 ## Rules check (2026-10-04)
 
 Read against the [official rules](https://amazonappdev2026.devpost.com/rules). **Nothing found that
