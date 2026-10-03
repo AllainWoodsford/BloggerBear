@@ -701,3 +701,63 @@ def test_no_workflow_passes_a_coingecko_key_any_more():
     workflows = ROOT / ".github" / "workflows"
     for path in workflows.glob("*.yml"):
         assert "COINGECKO_API_KEY" not in path.read_text(encoding="utf-8"), path.name
+
+
+# --- DynamoDB indexes (Scaling PR A) ---------------------------------------------------------------
+
+
+def _table_indexes(table: str) -> list[tuple[str, str, str, str]]:
+    """(name, hash key, range key, projection) of every global_secondary_index on a table."""
+    block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", table)
+    indexes = []
+    for body in re.findall(r"global_secondary_index \{\n(.*?)\n  \}", block, re.S):
+        fields = dict(re.findall(r'^\s*(\w+)\s*=\s*"([^"]+)"', body, re.M))
+        indexes.append((fields["name"], fields["hash_key"], fields["range_key"], fields["projection_type"]))
+    return indexes
+
+
+@pytest.mark.parametrize(
+    ("table", "fixture_name"), [("articles", "Articles"), ("moderation_queue", "ModerationQueue")]
+)
+def test_the_test_fixtures_create_exactly_the_indexes_terraform_does(table, fixture_name):
+    """moto only knows the indexes a fixture creates, so a fixture that drifted from Terraform would
+    let a Query on a missing (or differently keyed) index pass here and fail in AWS."""
+    from table_schemas import INDEXES
+
+    assert sorted(_table_indexes(table)) == sorted(INDEXES[fixture_name])
+
+
+@pytest.mark.parametrize("table", ["articles", "moderation_queue"])
+def test_every_index_key_is_declared_as_a_string_attribute(table):
+    block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", table)
+    declared = dict(re.findall(r'attribute \{\n\s*name = "(\w+)"\n\s*type = "(\w)"', block))
+
+    for _, hash_key, range_key, _ in _table_indexes(table):
+        assert declared.get(hash_key) == "S" and declared.get(range_key) == "S"
+
+
+def test_the_index_names_the_code_queries_are_the_ones_terraform_creates():
+    from common import dynamo
+
+    articles = {name for name, *_ in _table_indexes("articles")}
+    moderation = {name for name, *_ in _table_indexes("moderation_queue")}
+
+    assert {dynamo.ARTICLES_BY_STATUS_INDEX, dynamo.ARTICLES_BY_TOPIC_INDEX} == articles
+    assert {dynamo.MODERATION_BY_STATUS_INDEX, dynamo.MODERATION_BY_ARTICLE_INDEX} == moderation
+
+
+def test_no_index_sorts_on_published_at_which_is_stored_as_null_until_publish():
+    """DynamoDB rejects a write whose index key attribute holds a null, and put_article stores
+    published_at as an explicit null for every draft -- an index on it would fail every draft."""
+    for table in ("articles", "moderation_queue"):
+        for _, hash_key, range_key, _ in _table_indexes(table):
+            assert "published_at" not in (hash_key, range_key)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_lambdas_may_query_the_table_indexes_and_nothing_more(env):
+    policy = _read("environments", env, "main.tf")
+    statement = re.search(r'sid\s*=\s*"DynamoDBAppIndexes"(.*?)\n  \}', policy, re.S).group(1)
+
+    assert re.search(r'actions\s*=\s*\["dynamodb:Query"\]', statement)
+    assert 'resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]' in statement

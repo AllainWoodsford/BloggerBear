@@ -398,6 +398,16 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = module.app_data.table_arns
   }
 
+  # Scaling PR A: common/dynamo.py Queries the Articles and ModerationQueue tables' global
+  # secondary indexes instead of Scanning them. An index has its own ARN (<table>/index/<name>),
+  # which the table ARNs above do not cover, and nothing but Query is ever run against one.
+  statement {
+    sid       = "DynamoDBAppIndexes"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]
+  }
+
   statement {
     sid    = "ContentBucket"
     effect = "Allow"

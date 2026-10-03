@@ -9,6 +9,7 @@ import boto3
 import pytest
 from boto3.dynamodb.conditions import Key
 from moto import mock_aws
+from table_schemas import create_table
 
 import public_api_handler
 
@@ -52,13 +53,15 @@ def aws_env(monkeypatch):
 def aws_resources(aws_env):
     with mock_aws():
         dynamodb = boto3.client("dynamodb", region_name=REGION)
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Topics",
             KeySchema=[{"AttributeName": "topic_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "topic_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Findings",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
@@ -70,13 +73,15 @@ def aws_resources(aws_env):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Feedback",
             KeySchema=[
                 {"AttributeName": "article_id", "KeyType": "HASH"},
@@ -89,13 +94,15 @@ def aws_resources(aws_env):
             BillingMode="PAY_PER_REQUEST",
         )
 
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Musings",
             KeySchema=[{"AttributeName": "musing_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "musing_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="ModelConfig",
             KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
@@ -106,32 +113,37 @@ def aws_resources(aws_env):
         boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig").put_item(
             Item={"config_id": "feedback", "token_delay_min_ms": 0, "token_delay_max_ms": 0}
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Models",
             KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="StatsCurrent",
             KeySchema=[{"AttributeName": "stats_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "stats_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="StatsHistory",
             KeySchema=[{"AttributeName": "week_start", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "week_start", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="ModerationQueue",
             KeySchema=[{"AttributeName": "queue_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "queue_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
 
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="PromptRefinements",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
