@@ -77,7 +77,10 @@ def _tracked_result(text="hi", model_id="model-a", input_tokens=100, output_toke
 
 
 def _row(t):
-    return {k: v for k, v in t.get_item(Key={"stats_id": "current"}).get("Item", {}).items()}
+    """The week's figures as every reader sees them: the base row and its shards, summed."""
+    import common.dynamo as dynamo
+
+    return dynamo.get_current_stats()
 
 
 # --- the current week's Monday --------------------------------------------------------------
@@ -221,12 +224,15 @@ def test_the_simple_counters_never_raise_even_with_no_table(monkeypatch):
     st.record_loot_drop()
 
 
-def test_week_start_is_set_once_and_left_alone(table):
+def test_week_start_is_set_once_and_left_alone(table, monkeypatch):
+    import common.dynamo as dynamo
+
     expected = st._current_week_start()
+    monkeypatch.setattr(dynamo.secrets, "randbelow", lambda n: 0)  # both writes on one shard
 
     st.record_feedback_given()
     table.update_item(
-        Key={"stats_id": "current"},
+        Key={"stats_id": "current#0"},
         UpdateExpression="SET week_start = :old",
         ExpressionAttributeValues={":old": "2000-01-03"},
     )
@@ -347,7 +353,7 @@ def test_record_article_lineage_does_nothing_for_a_lineage_with_no_calls(table):
     # e.g. a non-financial topic's compliance review makes no Bedrock call at all.
     st.record_article_lineage(_lineage(calls=[]))
 
-    assert table.get_item(Key={"stats_id": "current"}).get("Item") is None
+    assert table.scan()["Items"] == []
 
 
 def test_record_article_lineage_never_raises_even_on_a_malformed_lineage(monkeypatch):
