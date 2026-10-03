@@ -53,14 +53,17 @@ first-time setup run sheet.
 - **Public API**: a second, unauthenticated API Gateway — topics,
   articles, an anonymous view counter, anonymous feedback, and an RSS
   feed. Rate-limited by WAF rather than IP-gated, since it must stay
-  reachable by anonymous visitors.
+  reachable by anonymous visitors, and throttled at API Gateway. The
+  frontend reaches it through its own CloudFront distribution, which
+  caches the listings, articles and RSS the API marks cacheable.
 - **Security**: CloudFront + WAF (managed rule set + rate limiting +
   logging) + Shield Standard; the admin API additionally sits behind IAM
   auth and an IP allowlist that fails closed (empty allowlist = nothing
   gets in) until an operator IP is configured.
 - **Observability**: CloudWatch alarms (Lambda errors/throttles, DLQ
-  depth, Step Functions failures, feedback spam), a pipeline dashboard and
-  a Lambda runs dashboard per environment, a daily Cost Explorer poll
+  depth, Step Functions failures, feedback spam), pipeline and Lambda runs
+  dashboards per environment plus an edge dashboard (API Gateway and WAF)
+  in production, a daily Cost Explorer poll
   (API Gateway, AgentCore and WAF spend) feeding the Stats page, and an
   AWS Budget alarm scoped to Bedrock spend.
 - **IaC**: Terraform ≥1.10 (native S3 state locking — no DynamoDB lock

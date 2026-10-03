@@ -2249,3 +2249,63 @@ def test_several_submissions_accumulate_on_the_same_row(aws_resources, monkeypat
 
     stats = _current_stats()
     assert stats["feedback_given"] == 2 and stats["feedback_rejected_comment"] == 1
+
+
+# --- What the CDN may cache (Scaling PR C) ---------------------------------------------------------
+#
+# The public API's CloudFront distribution caches a response only when it carries a max-age (its
+# default TTL is 0), so these headers are the whole caching policy.
+
+_ARTICLE = {"article_id": "article-1"}
+
+
+@pytest.mark.parametrize(
+    ("route", "path_params", "query_params", "max_age"),
+    [
+        ("GET /topics", None, None, 60),
+        ("GET /topics/{topic_id}/activity", {"topic_id": "github-trending"}, None, 60),
+        ("GET /articles", None, {"topic_id": "github-trending"}, 60),
+        ("GET /articles/{article_id}", _ARTICLE, None, 60),
+        ("GET /musings", None, None, 60),
+        ("GET /rss.xml", None, None, 300),
+        ("GET /stats", None, None, 300),
+        ("GET /equipment", None, None, 60),
+    ],
+)
+def test_what_every_visitor_sees_alike_may_be_cached_briefly(
+    aws_resources, route, path_params, query_params, max_age
+):
+    _put_topic()
+    _put_article()
+    event = _event(route, path_params=path_params, query_params=query_params)
+
+    result = public_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert result["headers"]["Cache-Control"] == f"public, max-age={max_age}"
+
+
+@pytest.mark.parametrize(
+    ("route", "body"),
+    [
+        ("POST /articles/{article_id}/view", None),
+        ("GET /articles/{article_id}/feedback-status", None),  # hands out a fresh token each time
+        ("POST /articles/{article_id}/feedback", {"vote": "up"}),
+    ],
+)
+def test_counters_feedback_and_tokens_are_never_cached(aws_resources, route, body):
+    _put_article()
+    event = _event(route, path_params=_ARTICLE, body=body)
+
+    result = public_api_handler.handler(event, None)
+
+    assert result["headers"]["Cache-Control"] == "no-store"
+
+
+def test_an_error_is_never_cached_even_on_a_cacheable_route(aws_resources):
+    event = _event("GET /articles/{article_id}", path_params={"article_id": "missing"})
+
+    result = public_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 404
+    assert result["headers"]["Cache-Control"] == "no-store"
