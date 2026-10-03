@@ -404,6 +404,13 @@ def _cmd_articles_unpublish(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/articles/{args.article_id}/unpublish")
 
 
+def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
+    body = {"instructions": args.instructions}
+    if args.model_id:
+        body["model_id"] = args.model_id
+    _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
+
+
 # --- feedback subcommands -----------------------------------------------
 
 
@@ -1013,6 +1020,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     unpublish_parser.add_argument("article_id")
     unpublish_parser.set_defaults(func=_cmd_articles_unpublish)
+
+    rewrite_parser = articles_sub.add_parser(
+        "rewrite",
+        help=(
+            "Rewrite an article to fix what you say is wrong with it. A published article is "
+            "taken down first; the rewrite goes through the reviews again and waits in the inbox"
+        ),
+    )
+    rewrite_parser.add_argument("article_id")
+    rewrite_parser.add_argument(
+        "--instructions",
+        "-i",
+        required=True,
+        help='What is wrong with the article, e.g. "the second section confuses staking with lending"',
+    )
+    rewrite_parser.add_argument(
+        "--model",
+        dest="model_id",
+        help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+    )
+    rewrite_parser.set_defaults(func=_cmd_articles_rewrite)
 
     feedback_lock_parser = articles_sub.add_parser(
         "feedback-lock",

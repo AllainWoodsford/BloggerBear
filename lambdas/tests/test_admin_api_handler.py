@@ -2931,3 +2931,142 @@ def test_publish_article_resolves_the_newest_item_after_a_rewrite(aws_resources)
         )
 
     assert _queue_row("new")["status"] == "approved" and _queue_row("old")["status"] == "rewritten"
+
+
+def test_rewrite_with_instructions_works_on_an_item_the_reviews_did_not_flag(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["financial topic - routed to manual moderation regardless of content"])
+
+    result, _, _ = _rewrite(body={"model_id": REWRITE_MODEL, "instructions": "  The intro is wrong.  "})
+
+    assert result["statusCode"] == 202
+    assert _queue_row()["rewrite_instructions"] == "The intro is wrong."
+
+
+def test_a_rewrite_without_instructions_drops_the_note_an_earlier_one_left(aws_resources):
+    _put_model_row()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    table.update_item(
+        Key={"queue_id": "queue-1"},
+        UpdateExpression="SET rewrite_instructions = :i",
+        ExpressionAttributeValues={":i": "an old note"},
+    )
+
+    _rewrite()
+
+    assert "rewrite_instructions" not in _queue_row()
+
+
+# --- Steered rewrite of any article (POST /articles/{article_id}/rewrite) --------------------------
+
+
+def _rewrite_article(article_id="article-1", body=None, client=None):
+    client = client or MagicMock()
+    event = _event(
+        "POST /articles/{article_id}/rewrite",
+        path_params={"article_id": article_id},
+        body=body if body is not None else {"instructions": "The second section is out of date."},
+    )
+    with (
+        patch("admin_api_handler._get_lambda_client", return_value=client),
+        patch("admin_api_handler.remove_article_page") as mock_remove,
+        patch("admin_api_handler.delete_musings_for_article", return_value=2) as mock_musings,
+        patch("admin_api_handler.invalidate_article_page", return_value=True) as mock_invalidate,
+    ):
+        result = admin_api_handler.handler(event, None)
+    mocks = {"remove": mock_remove, "musings": mock_musings, "invalidate": mock_invalidate}
+    return result, json.loads(result["body"]), client, mocks
+
+
+def _article_row(article_id="article-1"):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    return table.get_item(Key={"article_id": article_id})["Item"]
+
+
+def _queue_rows():
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue")
+    return {row["queue_id"]: row for row in table.scan()["Items"]}
+
+
+def test_rewriting_a_published_article_takes_it_down_and_sends_it_to_the_inbox(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+
+    result, body, client, mocks = _rewrite_article()
+
+    assert result["statusCode"] == 202
+    assert body["unpublished"] is True and body["musings_removed"] == 2 and body["cache_invalidated"] is True
+    assert body["model_id"] == "anthropic.claude-3-haiku-20240307-v1:0"  # the topic's (here: the default)
+    mocks["remove"].assert_called_once_with("article-1")
+    mocks["invalidate"].assert_called_once_with("article-1")
+    assert _article_row()["status"] == "pending_moderation"
+    rows = _queue_rows()
+    assert rows["queue-1"]["status"] == "approved"  # the old decision is history, left alone
+    new = rows[body["rewriting"]]
+    assert new["status"] == "rewriting" and new["reasons"] == ["sent back by a person for a rewrite"]
+    assert new["rewrite_instructions"] == "The second section is out of date."
+    payload = json.loads(client.invoke.call_args.kwargs["Payload"])
+    assert payload == {"action": "rewrite", "queue_id": new["queue_id"], "rewrite_id": new["rewrite_id"]}
+
+
+def test_rewriting_an_article_waiting_in_the_inbox_uses_its_queue_item(aws_resources):
+    _put_model_row()
+    _put_article(status="pending_moderation")
+    _put_moderation_item(reasons=["financial topic - routed to manual moderation regardless of content"])
+
+    result, body, _, mocks = _rewrite_article(body={"instructions": "Too long.", "model_id": REWRITE_MODEL})
+
+    assert result["statusCode"] == 202
+    assert body["rewriting"] == "queue-1" and body["model_id"] == REWRITE_MODEL
+    assert "unpublished" not in body
+    mocks["remove"].assert_not_called()
+    assert list(_queue_rows()) == ["queue-1"]
+
+
+def test_rewriting_a_rejected_article_brings_it_back_for_review(aws_resources):
+    _put_article(status="rejected")
+    _put_moderation_item(status="rejected")
+
+    result, body, _, mocks = _rewrite_article()
+
+    assert result["statusCode"] == 202
+    assert _article_row()["status"] == "pending_moderation"
+    assert body["rewriting"] != "queue-1"
+    mocks["remove"].assert_not_called()
+
+
+def test_an_article_already_being_rewritten_is_refused(aws_resources):
+    _put_article(status="pending_moderation")
+    _put_moderation_item(status="rewriting")
+
+    result, _, client, _ = _rewrite_article()
+
+    assert result["statusCode"] == 409
+    client.invoke.assert_not_called()
+
+
+def test_an_article_rewrite_needs_instructions_and_a_real_model(aws_resources):
+    _put_article(status="published")
+    _put_model_row(model_id="disabled-model", enabled=False)
+
+    assert _rewrite_article(body={})[0]["statusCode"] == 400
+    assert _rewrite_article(body={"instructions": "   "})[0]["statusCode"] == 400
+    assert _rewrite_article(body={"instructions": "x" * 2001})[0]["statusCode"] == 400
+    assert _rewrite_article(body={"instructions": "x", "model_id": "unknown"})[0]["statusCode"] == 400
+    assert _rewrite_article(body={"instructions": "x", "model_id": "disabled-model"})[0]["statusCode"] == 400
+    assert _rewrite_article(article_id="nope")[0]["statusCode"] == 404
+    assert _article_row()["status"] == "published"  # nothing was taken down by a bad request
+
+
+def test_a_published_article_whose_rewrite_cannot_start_stays_down_and_waits_in_the_inbox(aws_resources):
+    _put_article(status="published")
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+
+    result, _, _, _ = _rewrite_article(client=client)
+
+    assert result["statusCode"] == 502
+    assert _article_row()["status"] == "pending_moderation"
+    (row,) = _queue_rows().values()
+    assert row["status"] == "pending"
