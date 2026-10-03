@@ -16,7 +16,7 @@ AWS platform friction gets its own section.
 | Theme | Entries | The pattern |
 |---|---|---|
 | AWS platform | 11 | errors that don't say what's wrong; limits found only at runtime |
-| Terraform and CI | 7 | `validate` passes, `plan` or `apply` fails |
+| Terraform and CI | 8 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
 | Tests vs reality | 5 | the test environment isn't the deployed one |
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
 | The model in the pipeline | 3 | model output trusted without checking it |
@@ -122,6 +122,20 @@ and frontend only) never deployed. **Fix:** the trigger covers everything the ap
 duplicate `with:`), ran `npm ci` in a Python/Terraform project, and used the wrong action inputs.
 Repaired in #14 and retired in #151, since its Claude review step had no credentials and did nothing.
 The copy left on `master` was a **0-byte file** that failed on every `master` push until #165.
+
+**2.8 Scanners that looked thorough, and covered far less.** Reading the logs (2026-10-04) showed:
+Trivy's dependency scan saw only `lambdas/requirements.txt` (it was pointed at `lambdas/`, and
+it only recognises files named exactly `requirements.txt`, so the dev requirements and
+`scripts/requirements.txt` were never checked); its secret scan skipped `frontend/`, `infra/`,
+`scripts/`, `docs/` and `.github/`; and its summary table lists only files with findings, so a
+clean secret scan looked like it had scanned one file. Only HIGH and CRITICAL were ever reported,
+so five MEDIUM CVEs (`requests` x2, `markdown`, `pytest`) went unseen. Bandit never scanned
+`scripts/`, and 3,908 test `assert`s buried its figures. Trufflehog's action was SHA-pinned but ran
+`version: latest`, pulling a moving Docker image; Trivy came from apt, also unpinned. **Fix:**
+whole-repo scans, the dev requirements included, MEDIUM reported without failing, pinned and
+hash-verified binaries, the three packages bumped, and an on-demand workflow that runs everything
+over the whole history at every severity. **Lesson:** a green check says nothing about what it
+looked at; read what it scanned at least once.
 
 ## 3. Tests vs reality
 

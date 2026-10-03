@@ -132,6 +132,19 @@ def test_the_local_denylist_file_is_used_and_can_never_be_committed(repo, capsys
     assert "must stay local" in capsys.readouterr().err
 
 
+def test_all_checks_every_tracked_file_as_it_is_now(repo, monkeypatch, capsys):
+    monkeypatch.setenv(pdc.DENYLIST_ENV, SECRET_NAME)
+    (repo / "logo.png").write_bytes(b"\x89PNG\0\0" + SECRET_NAME.encode())  # binary: skipped
+    (repo / "untracked.md").write_text(f"{SECRET_NAME}\n", encoding="utf-8")  # untracked: skipped
+    _git(repo, "add", "logo.png")
+
+    assert pdc.main(["--all"]) == 1  # README.md, committed in the fixture, mentions it
+    err = capsys.readouterr().err
+    assert "README.md:1 contains denylist entry #1" in err
+    assert "logo.png" not in err and "untracked.md" not in err
+    assert SECRET_NAME.lower() not in err.lower()
+
+
 def test_no_denylist_passes_with_a_notice(repo, capsys):
     _stage(repo, "notes.md", f"by {SECRET_NAME}\n")
     assert pdc.main(["--staged"]) == 0

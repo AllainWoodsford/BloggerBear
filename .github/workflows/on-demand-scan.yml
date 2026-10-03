@@ -1,0 +1,232 @@
+name: on-demand-scan
+
+# Every security, secret and personal-data check, run on demand, more thoroughly than a PR runs
+# them, and nothing else: no AWS credentials, no plan, no deploy. Two ways to start it:
+# - on a pull request: add the `security-scan` label (only collaborators can label);
+# - by hand: Actions tab -> on-demand-scan -> Run workflow (a branch, or a ref below), or
+#   gh workflow run on-demand-scan.yml --ref <branch>.
+#
+# How it goes further than pr-checks.yml and security.yml:
+# - secrets and personal data across the WHOLE history and every tracked file, not just what a
+#   PR adds (known, accepted history findings are fingerprinted in .gitleaksignore);
+# - every severity reported, LOW and up, before the same HIGH/CRITICAL gates;
+# - terraform fmt with diffs, validate for bootstrap too, and the module tests, verbose.
+#
+# Every check runs even when an earlier one fails, and the summary job lists them all; the run
+# fails if any check failed. Gitleaks and Trufflehog run as pinned, checksum-verified binaries, not
+# their actions: the actions switch to scanning only a PR's commits on a pull_request event.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to scan (empty means the branch picked above).
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Terraform
+        run: |
+          set -euo pipefail
+          VERSION=1.16.2
+          curl -fsSLo /tmp/terraform.zip "https://releases.hashicorp.com/terraform/${VERSION}/terraform_${VERSION}_linux_amd64.zip"
+          sudo apt-get update && sudo apt-get install -y unzip
+          unzip -o /tmp/terraform.zip -d /tmp
+          sudo mv /tmp/terraform /usr/local/bin/terraform
+          terraform version
+
+      - name: Terraform fmt (with diffs)
+        run: terraform fmt -check -recursive -diff infra/
+
+      # Same as pr-checks' validate, plus infra/bootstrap (applied locally, so CI never checks it).
+      - name: Terraform validate (bootstrap and every environment)
+        run: |
+          set -euo pipefail
+          for dir in infra/bootstrap infra/environments/*; do
+            [ -d "$dir" ] || continue
+            echo "::group::validate $dir"
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+            echo "::endgroup::"
+          done
+
+      - name: Terraform test (modules with tests)
+        run: |
+          set -euo pipefail
+          for dir in infra/modules/*; do
+            if ls "$dir"/tests/*.tftest.hcl >/dev/null 2>&1; then
+              echo "::group::test $dir"
+              terraform -chdir="$dir" init -backend=false -input=false
+              terraform -chdir="$dir" test -verbose
+              echo "::endgroup::"
+            fi
+          done
+
+  code-and-dependencies:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Same pinned, checksum-verified binary as security.yml.
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          VERSION=0.74.0
+          SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          curl -fsSLo /tmp/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-64bit.tar.gz"
+          echo "${SHA256}  /tmp/trivy.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Install Bandit
+        run: python3 -m pip install "bandit==1.7.10"
+
+      - name: Trivy IaC (every severity, report only)
+        run: trivy config --severity LOW,MEDIUM,HIGH,CRITICAL --exit-code 0 --skip-dirs '**/.terraform' infra/
+
+      - name: Trivy IaC (fail on HIGH and CRITICAL)
+        id: trivy_iac
+        continue-on-error: true
+        run: trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs '**/.terraform' infra/
+
+      # Every dependency Trivy found, vulnerable or not, then every finding of any severity.
+      - name: Trivy dependencies, vulnerabilities and secrets (every severity, report only)
+        run: |
+          set -euo pipefail
+          SKIP='**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build'
+          trivy fs --scanners vuln --list-all-pkgs --format json --skip-dirs "$SKIP" \
+            --file-patterns 'pip:requirements-dev\.txt' --output /tmp/trivy.json .
+          python3 - <<'EOF'
+          import json
+          report = json.load(open("/tmp/trivy.json"))
+          for result in report.get("Results") or []:
+              print(f"\n{result['Target']}")
+              for pkg in sorted(result.get("Packages") or [], key=lambda p: p["Name"].lower()):
+                  print(f"  {pkg['Name']}=={pkg.get('Version', '?')}")
+          EOF
+          trivy fs --scanners vuln,secret --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --exit-code 0 \
+            --skip-dirs "$SKIP" --file-patterns 'pip:requirements-dev\.txt' .
+
+      - name: Trivy vulnerabilities and secrets (fail on HIGH and CRITICAL)
+        id: trivy_fs
+        continue-on-error: true
+        run: |
+          trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
+            --skip-dirs '**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build' \
+            --file-patterns 'pip:requirements-dev\.txt' .
+
+      - name: Bandit (every severity and confidence, report only)
+        run: bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests --exit-zero
+
+      - name: Bandit (fail on high severity, high confidence)
+        id: bandit
+        continue-on-error: true
+        run: bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests --severity-level high --confidence-level high
+
+      - name: Result
+        if: steps.trivy_iac.outcome == 'failure' || steps.trivy_fs.outcome == 'failure' || steps.bandit.outcome == 'failure'
+        run: |
+          echo "trivy IaC: ${{ steps.trivy_iac.outcome }}, trivy fs: ${{ steps.trivy_fs.outcome }}, bandit: ${{ steps.bandit.outcome }}"
+          exit 1
+
+  secrets-and-personal-data:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      # The same versions pr-checks pins, as binaries, checksum-verified against hashes written here.
+      - name: Install Gitleaks and Trufflehog
+        run: |
+          set -euo pipefail
+          GITLEAKS=8.30.1
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          TRUFFLEHOG=3.97.4
+          TRUFFLEHOG_SHA256=dc24007c2f233bd61c05beabeb44aa27ea9b43288166279209abe0458c5ce76b
+          curl -fsSLo /tmp/gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS}/gitleaks_${GITLEAKS}_linux_x64.tar.gz"
+          curl -fsSLo /tmp/trufflehog.tar.gz "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG}/trufflehog_${TRUFFLEHOG}_linux_amd64.tar.gz"
+          echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          echo "${TRUFFLEHOG_SHA256}  /tmp/trufflehog.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          tar -xzf /tmp/trufflehog.tar.gz -C /tmp trufflehog
+          sudo mv /tmp/gitleaks /tmp/trufflehog /usr/local/bin/
+          gitleaks version && trufflehog --version
+
+      # Every commit on every fetched branch and tag; .gitleaksignore (read automatically) holds the
+      # accepted history findings. --redact: the log shows where, never what.
+      - name: Gitleaks (whole history)
+        id: gitleaks
+        continue-on-error: true
+        run: gitleaks git --redact --verbose --no-banner --config .gitleaks.toml --log-opts="--all" .
+
+      # Every commit, unverified results included (verification asks the provider whether a key is
+      # live; an unverified key can still be real).
+      - name: Trufflehog (whole history)
+        id: trufflehog
+        continue-on-error: true
+        run: trufflehog git file://. --results=verified,unverified,unknown --fail --no-update
+
+      # Every tracked file as it is now, against the PII_DENYLIST secret. Findings name the file,
+      # line and entry number, never the entry.
+      - name: Personal-data denylist (every tracked file)
+        id: denylist
+        continue-on-error: true
+        env:
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+        run: python3 scripts/pii_denylist_check.py --all
+
+      - name: Result
+        if: steps.gitleaks.outcome == 'failure' || steps.trufflehog.outcome == 'failure' || steps.denylist.outcome == 'failure'
+        run: |
+          echo "gitleaks: ${{ steps.gitleaks.outcome }}, trufflehog: ${{ steps.trufflehog.outcome }}, denylist: ${{ steps.denylist.outcome }}"
+          exit 1
+
+  summary:
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan')
+    needs: [terraform, code-and-dependencies, secrets-and-personal-data]
+    runs-on: ubuntu-latest
+    steps:
+      # The ref goes through env, never straight into the script: a branch name is user input.
+      - name: Summary
+        env:
+          SCANNED: ${{ inputs.ref || github.head_ref || github.ref_name }}
+        run: |
+          {
+            echo "## On-demand scan: \`${SCANNED}\`"
+            echo
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Terraform fmt, validate, tests | ${{ needs.terraform.result }} |"
+            echo "| Trivy IaC and dependencies, Bandit | ${{ needs.code-and-dependencies.result }} |"
+            echo "| Gitleaks, Trufflehog, personal-data denylist | ${{ needs.secrets-and-personal-data.result }} |"
+            echo
+            echo "Each job's log has the full report, every severity included."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Result
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
