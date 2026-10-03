@@ -2,9 +2,10 @@
 
 An autonomous, multi-domain research-and-publishing platform. Admins
 configure "topics" (a data domain + an adapter); each topic runs two
-unattended cadences — an hourly research tick that watches its source for
-material change, and a daily authoring cycle that turns fresh findings
-into a compliance-reviewed, published article. A small admin console
+unattended cadences — a research tick (hourly heartbeat, configurable
+interval) that watches its source for material change, and a daily
+authoring cycle that turns fresh findings into a reviewed, published
+article. A small admin console
 (CLI, not a web app) manages topics and moderation; a public static site
 serves the results, with RSS for anything that wants to consume it
 programmatically instead of scraping it.
@@ -13,12 +14,12 @@ Built out phase-by-phase as a portfolio project — see `docs/project-plan.md`
 (architecture/rules) and `docs/PROGRESS.md` (the live phase-by-phase
 tracker) for the full history and rationale behind every decision below.
 
-**Status: code-complete, running on dev, not yet on production.** Every phase
-(0 through 8) is implemented and tested, `infra/bootstrap` has been applied, and
-the dev environment is live and auto-deploys from `dev`. Production has not been
-released and the custom domain is not connected yet: **[docs/production-runsheet.md](docs/production-runsheet.md)**
-is the step-by-step for that, including pointing the GoDaddy domain at AWS. The
-"Deploying this" section below is the original first-time setup run sheet.
+**Status: live.** Every phase (0 through 8) is built, plus the enhancements in
+`docs/project-plan.md` §11. Dev auto-deploys from `dev`; production runs at
+**bloggerbear.com** and is deployed by GitHub Releases.
+**[docs/production-runsheet.md](docs/production-runsheet.md)** is the production
+and domain step-by-step. The "Deploying this" section below is the original
+first-time setup run sheet.
 
 ## Architecture
 
@@ -26,15 +27,24 @@ is the step-by-step for that, including pointing the GoDaddy domain at AWS. The
   platform-mandated exceptions — the CloudFront-scope WAF Web ACL and its
   ACM certificate, which AWS only reads from `us-east-1` regardless of
   hosting region.
-- **Compute**: 6 Python 3.11 AWS Lambda functions, one shared deployment
-  package (`lambdas/`), one shared execution role.
-- **AI**: Amazon Bedrock (Claude) — every Bedrock call goes through
-  `lambdas/common/bedrock.py`'s `invoke_claude`.
-- **Storage**: 7 DynamoDB tables (`infra/modules/app-data`) + a private S3
+- **Compute**: 10 Python 3.11 AWS Lambda functions from one shared
+  deployment package (`lambdas/`) and one shared execution role: research
+  tick, daily cycle, admin API, public API, DLQ handler, weekly reflection,
+  trending digest, musing feedback, Stats rollover and the Cost Explorer poll.
+- **AI**: Amazon Bedrock through the Converse API, so any provider's model
+  works. Every call goes through `lambdas/common/bedrock.py`; tracked calls
+  (`invoke_model_tracked`) record tokens and cost into each article's
+  lineage and the weekly Stats. Models live in a DynamoDB registry with a
+  global default, per-topic overrides and per-topic rotation
+  (`common/model_routing.py`). Research falls back from GDELT to AgentCore
+  Web Search.
+- **Storage**: 13 DynamoDB tables (`infra/modules/app-data`) + a private S3
   bucket for article bodies and raw source snapshots (separate from the
   public site's own S3 bucket, below).
 - **Frontend**: a static site (S3 + CloudFront + Origin Access Control) —
-  plain HTML/CSS/JS, no build step, no framework.
+  plain HTML/CSS/JS, no framework; JS/CSS are minified at deploy
+  (`scripts/minify_frontend.py`). Published articles are also rendered as
+  static pages. A public Stats page shows AI and AWS spend.
 - **Admin console**: not a web app — a local CLI (`scripts/admin_cli.py`)
   that signs requests with AWS SigV4, talking to an IAM-authenticated,
   IP-allowlisted API. A browser SPA would need Cognito Identity Pool
@@ -49,8 +59,10 @@ is the step-by-step for that, including pointing the GoDaddy domain at AWS. The
   auth and an IP allowlist that fails closed (empty allowlist = nothing
   gets in) until an operator IP is configured.
 - **Observability**: CloudWatch alarms (Lambda errors/throttles, DLQ
-  depth, Step Functions failures) + a dashboard per environment, plus an
-  AWS Budget alarm scoped specifically to Bedrock spend.
+  depth, Step Functions failures, feedback spam), a pipeline dashboard and
+  a Lambda runs dashboard per environment, a daily Cost Explorer poll
+  (API Gateway, AgentCore and WAF spend) feeding the Stats page, and an
+  AWS Budget alarm scoped to Bedrock spend.
 - **IaC**: Terraform ≥1.10 (native S3 state locking — no DynamoDB lock
   table), applied via GitHub Actions using OIDC role federation (no
   long-lived AWS keys anywhere in this repo).
@@ -58,51 +70,51 @@ is the step-by-step for that, including pointing the GoDaddy domain at AWS. The
 ### The pipeline
 
 ```
-Hourly research tick                Daily authoring cycle
-─────────────────────                ─────────────────────
-load topic + adapter                 load topic + recent findings
-fetch current source state           ideate 3 angles -> pick one
-diff vs prior snapshot               draft article (Bedrock)
-  no change?  -> stop                fold in: admin-approved prompt
-  changed?    -> summarize                    refinement (if any),
-               (Bedrock) & store              few-shot excerpt from a
-               a Finding                      top-voted past article,
-                                               financial-topic guidance
-                                               (if applicable)
-                                      compliance review
-                                        financial topic? -> always
-                                          manual moderation
-                                        else -> Bedrock compliance
-                                          review, pass/fail
-                                      publish, or queue for
-                                        manual moderation
+Research tick (heartbeat)            Daily authoring cycle (9 AM, topic's zone)
+─────────────────────────            ─────────────────────────────────────────
+due yet? (research_interval_hours)   load topic + every finding since its
+  no  -> stop                          last article (+ today's editorial goal)
+load topic + adapter                 ideate 3 angles -> pick one
+fetch current source state           draft article (Bedrock), folding in the
+diff vs prior snapshot                 bear's equipped prompt refinements,
+  no change?  -> stop                  a top-voted past excerpt, and
+  changed?    -> summarize             financial guidance (if applicable)
+               (Bedrock) & store     fresh-data review (claims vs. the
+               a Finding               source now; shadow or enforce)
+                                     compliance review
+                                       financial topic? -> always manual
+                                       else -> Bedrock review, pass/fail
+                                     publish (static page + musing), or
+                                       queue for moderation
 ```
 
-Both cadences are per-topic and admin-configurable (EventBridge
-Scheduler, created/updated/deleted dynamically as topics change — not
-fixed Terraform resources, since topics are runtime data). A Step
-Functions wrapper gives the daily cycle retries and a dead-letter queue;
-the hourly tick bypasses Step Functions entirely as a single
-self-contained operation.
+Both cadences are per-topic (EventBridge Scheduler schedules the Admin API
+creates, updates and deletes as topics change — topics are runtime data, not
+Terraform). The research schedule is a heartbeat; each tick decides from
+DynamoDB whether it is due. A Step Functions wrapper gives the daily cycle
+retries and a dead-letter queue; the research tick bypasses Step Functions.
 
-Two more jobs run on fixed, Terraform-managed schedules rather than
-per-topic: a **weekly reflection** job that reads a week of reader
-feedback and proposes prompt refinements (admin-approved before they
-take effect), and a **daily cross-topic digest** ("Trending Everywhere")
-that synthesizes what's trending across every topic at once and
-publishes through the same compliance/moderation path as any other
-article.
+Held articles wait in the review inbox (`admin_cli approve`), where they can
+be approved, rejected, or **re-written** in the background by a chosen model,
+which runs the reviews again.
+
+More jobs run on fixed, Terraform-managed schedules: a **daily cross-topic
+digest** ("Trending Everywhere") that publishes through the same review path;
+a **weekly reflection** that reads reader feedback and proposes prompt
+refinements, which become **gear** the bear wears once approved; **musings**
+(BloggerBear's short reflections on articles and feedback); a weekly **Stats
+rollover**; and a daily **Cost Explorer poll**.
 
 ### Hard constraints (enforced in code, not just documented)
 
-1. No PII is collected or persisted — public feedback comments go through
-   a regex pass, then a second Bedrock redaction-review pass, before
-   anything is ever written; raw text is never persisted, even
-   transiently.
+1. No PII is collected or persisted — a public feedback comment is kept
+   only if it passes code checks (length, PII shapes, links, injection
+   patterns) and then a one-word Bedrock KEEP/DROP screen; anything else
+   is dropped, never redacted-and-stored (`common/comment_screening.py`).
 2. Research ticks always diff-first — Bedrock is never called unless the
    adapter reports a material change.
 3. Drafts always pass compliance review before publish, or they land in
-   a moderation queue instead.
+   a moderation queue instead. A Re-Write never publishes; a person does.
 4. Financial/investment-adjacent topics (`is_financial`) are always
    routed to manual moderation, regardless of confidence — deterministic
    routing, not something an LLM call could override — plus
@@ -116,53 +128,68 @@ article.
    adding the 2nd and 3rd adapters (Phase 7) touched zero lines of
    `research_tick_handler.py`'s actual flow.
 6. Terraform never applies ad hoc — see the branch/release model below.
-7. Security checks block merges on HIGH/CRITICAL findings.
+7. Security scans (Trivy, Bandit) and lint/tests fail on HIGH/CRITICAL
+   findings and must pass before any apply, dev or production, in the same
+   workflow run. (They run on PRs too; GitHub branch protection isn't
+   available on this repo's plan, so they don't technically block a merge.)
 
 ## What's in the repo
 
 ```
 lambdas/                    Python 3.11, one shared deployment package
-  research_tick_handler.py    hourly: diff-first, per-topic
-  daily_cycle_handler.py      daily: ideate -> draft -> review -> publish
+  research_tick_handler.py    heartbeat: due? -> diff-first, per-topic
+  daily_cycle_handler.py      daily: ideate -> draft -> review -> publish;
+                                also runs Re-Writes (async event)
   admin_api_handler.py        IAM-authenticated admin API
-  public_api_handler.py       unauthenticated public API + RSS
+  public_api_handler.py       unauthenticated public API + RSS + feedback
+  dlq_handler.py              pipeline DLQ -> FailedExecutions records
   weekly_reflection_handler.py   weekly: feedback -> prompt refinements
   trending_digest_handler.py     daily: cross-topic digest
-  common/
-    adapters/                  base.py (contract) + one module per domain:
-                                github_trending.py, hacker_news.py,
-                                crypto_feed.py, web_search.py
-    editorial_goals.py          daily random editorial goal (crypto)
-    relevance.py                topic-relevance guardrails + keyword matching
-    web_search.py               reusable web/news search (provider-based)
-    http_retry.py               GET-JSON with exponential backoff
-    bedrock.py                 the one place invoke_model is called
-    compliance.py               PII redaction, compliance review,
-                                financial-topic guidance/disclaimer
+  musing_feedback_handler.py     the bear's musings on reader feedback
+  stats_rollover_handler.py      weekly: roll Stats into history
+  cost_explorer_poll_handler.py  daily: AWS spend (API GW, AgentCore, WAF)
+  common/                     shared modules; the main ones:
+    adapters/                  base.py (contract), registry.py, and one
+                                module per domain: github_trending.py,
+                                hacker_news.py, crypto_feed.py, web_search.py
+    bedrock.py                 every Bedrock call (Converse API)
+    model_routing.py, costing.py, stats_tracking.py
+                                which model, what it cost, weekly totals
+    compliance.py               compliance review, financial guidance/disclaimer
+    fresh_review.py             the fresh-data review of a draft
+    rewrite.py                  the background Re-Write of a held article
+    comment_screening.py        keep-or-drop screening of feedback comments
+    static_pages.py             rendering published articles to S3
+    musings.py, equipment.py, gear.py   the bear's musings and gear
     dynamo.py                   every DynamoDB access, one file
     scheduler.py                per-topic EventBridge Scheduler CRUD
-  tests/                      pytest + moto, one file per handler/adapter
+  tests/                      pytest + moto, one file per handler/module
 
 infra/
-  bootstrap/                 state bucket + OIDC provider + deploy roles
-                              -- applied once, locally, never via CI
+  bootstrap/                 state bucket + OIDC provider + deploy roles +
+                              Route 53 zone -- applied locally, never via CI
   modules/
-    app-data/                 the 7 DynamoDB tables
+    app-data/                 the 13 DynamoDB tables
     static-site/               S3 + CloudFront + OAC, reused by both envs
-    observability/             CloudWatch alarms/dashboard, reused by
-                                both envs
+    rest-api/                  the admin and public REST APIs
+    observability/             CloudWatch alarms and dashboards, reused
+                                by both envs
   environments/
     dev/                       auto-deploys on push to `dev`
     production/                deploys only on a GitHub Release from `prod`
 
-frontend/                   plain HTML/CSS/JS, no build step
+frontend/                   plain HTML/CSS/JS, no framework
   index.html, app.js, styles.css   hash-routed SPA: topics, articles,
-                                    feedback, the cross-topic digest
+                                    feedback, the digest, musings, Stats
+  terms.html, privacy.html, about.html   static pages
 
 scripts/
   admin_cli.py               the operator's "admin UI" -- SigV4-signed
                               requests against the admin API
-  tests/                     pytest coverage for the CLI itself
+  review_inbox.py            `inbox` / `approve`: the one-keystroke review loop
+  minify_frontend.py         builds frontend-dist/ for deploy
+  README.md                  the full CLI reference
+  tests/                     pytest coverage for the scripts
 
 .github/workflows/
   terraform.yml               validate on PR; on merge to dev, security +
@@ -183,6 +210,9 @@ docs/
                                 Phase 0-8 checklist and cost/teardown notes
   specs/phase-0-foundations.md   the detailed Phase 0 build spec (branch
                                 model, bootstrap, OIDC wiring)
+  production-runsheet.md        production + domain, step by step
+  risks/                        known weaknesses, e.g. scaling-findings-01.md
+  enhancements/                 designs not yet built, e.g. the dispatcher queue
 ```
 
 ### Branch & release model
@@ -197,8 +227,10 @@ docs/
   `production` GitHub Environment's required-reviewer approval. A new
   release replaces whatever was previously deployed — one Terraform
   state, no blue/green.
-- Both branches require a PR and passing `terraform`/`security` checks
-  (branch protection) — no direct pushes to either.
+- Changes reach both branches by PR, by convention: GitHub branch protection
+  isn't available on this repo's plan. What is enforced is that nothing is
+  applied without passing the security scans and lint/tests first, and that
+  production applies only from a Release on `prod`, after approval.
 
 ## Deploying this
 
@@ -322,8 +354,8 @@ current `dev` tip into itself via an empty PR) to exercise the `terraform`
 plan check, then merge. Merging to `dev` triggers `terraform.yml`'s
 `apply-dev` job automatically — no approval needed. Watch it in the
 Actions tab. First run creates everything: DynamoDB tables, the content
-bucket, all 6 Lambdas, both API Gateways, the WAF ACLs + logging, the
-CloudWatch dashboard, the static site.
+bucket, all 10 Lambdas, both API Gateways, the WAF ACLs + logging, the
+CloudWatch dashboards, the static site.
 
 If this is truly the first-ever apply, `bedrock_model_id` and
 `admin_allowed_cidrs` are still empty (step 3) — that's fine, the stack
@@ -376,18 +408,13 @@ the full CLI reference (topics/moderation/refinements subcommands).
 
 ## Local development
 
-```bash
-cd lambdas
-python -m venv .venv && . .venv/Scripts/activate   # or source .venv/bin/activate
-pip install -r requirements-dev.txt
-pytest                       # 172 tests, moto-mocked AWS, no real credentials needed
-ruff check .
-```
+From the repo root (what CI runs):
 
 ```bash
-cd scripts
-pip install -r requirements.txt pytest
-pytest                       # 26 tests for the admin CLI itself
+python -m venv .venv && . .venv/Scripts/activate   # or source .venv/bin/activate
+pip install -r lambdas/requirements.txt -r lambdas/requirements-dev.txt -r scripts/requirements.txt
+pytest lambdas/ scripts/     # ~2,450 tests, moto-mocked AWS, no real credentials needed
+ruff check lambdas/ scripts/
 ```
 
 ```bash
