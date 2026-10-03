@@ -540,6 +540,10 @@ locals {
     # get_view_count), read by the public and admin APIs. Harmless on every other Lambda.
     VIEW_COUNTS_TABLE = module.app_data.view_counts_table_name
 
+    # Security events (common/security_events.py): written by the security-events Lambda and the
+    # public API (screened comments). Harmless on every other Lambda.
+    SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name
+
     # The AgentCore web search gateway (module.web_search below): the
     # fallback search backend common/web_search.py uses when GDELT fails,
     # and the "agentcore" provider a topic can ask for directly. Read by
@@ -1718,6 +1722,7 @@ locals {
     "bloggerbear-dev-cost-explorer-poll",
     "bloggerbear-dev-trending-digest",
     "bloggerbear-dev-musing-feedback",
+    "bloggerbear-dev-security-events",
   ]
 }
 
@@ -2043,6 +2048,7 @@ locals {
     aws_lambda_function.musing_feedback.function_name,
     aws_lambda_function.stats_rollover.function_name,
     aws_lambda_function.cost_explorer_poll.function_name,
+    aws_lambda_function.security_events.function_name,
   ]
 }
 
@@ -2057,6 +2063,13 @@ module "observability" {
 
   # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
   feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
+
+  # The Lambdas that record security events, each logging one SECURITY_ALERT line per
+  # high-severity incident (see the Security events section below).
+  security_alert_log_groups = [
+    aws_cloudwatch_log_group.lambda[aws_lambda_function.security_events.function_name].name,
+    aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name,
+  ]
 
   # Scaling PR C: what the edge dashboard (API Gateway and WAF, api_waf_dashboards.tf in the
   # module) would show. Not created in dev (edge_dashboard_enabled defaults to false): dashboards
@@ -2207,4 +2220,60 @@ resource "aws_scheduler_schedule" "musing_feedback" {
     arn      = aws_lambda_function.musing_feedback.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
   }
+}
+
+# =========================================================================
+# Security events (lambdas/common/security_events.py): every request a REGIONAL WAF blocks (public
+# API, admin API) reaches security_events_handler.py through a CloudWatch Logs subscription filter,
+# which groups them into incidents in the SecurityEvents table: category, severity, suggested next
+# steps, status, a keyed hash of the client (never the IP), kept 120 days. The public API adds
+# comments that comment screening dropped as attacks. A high-severity incident raises
+# module.observability's security alarm once.
+#
+# The shared CloudFront ACL is not subscribed: its log group is in us-east-1, and a subscription
+# filter can only deliver to a Lambda in its own region. Public API traffic passes the regional ACL
+# too, so it is covered.
+# =========================================================================
+resource "aws_lambda_function" "security_events" {
+  function_name = "bloggerbear-dev-security-events"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "security_events_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 60
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+locals {
+  security_event_waf_log_groups = {
+    public_api = aws_cloudwatch_log_group.waf_public_api
+    admin      = aws_cloudwatch_log_group.waf_admin
+  }
+}
+
+resource "aws_lambda_permission" "security_events_from_waf_logs" {
+  for_each      = local.security_event_waf_log_groups
+  statement_id  = "AllowWafLogs-${each.key}"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.security_events.function_name
+  principal     = "logs.amazonaws.com"
+  source_arn    = "${each.value.arn}:*"
+}
+
+# BLOCK records only: the public ACL logs blocks and counts, the admin ACL logs everything.
+resource "aws_cloudwatch_log_subscription_filter" "security_events" {
+  for_each        = local.security_event_waf_log_groups
+  name            = "bloggerbear-dev-security-events-${each.key}"
+  log_group_name  = each.value.name
+  filter_pattern  = "{ $.action = \"BLOCK\" }"
+  destination_arn = aws_lambda_function.security_events.arn
+
+  depends_on = [aws_lambda_permission.security_events_from_waf_logs]
 }

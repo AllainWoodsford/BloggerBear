@@ -154,6 +154,17 @@ output "table_arns" {
     aws_dynamodb_table.stats_current.arn,
     aws_dynamodb_table.stats_history.arn,
     aws_dynamodb_table.view_counts.arn,
+    aws_dynamodb_table.security_events.arn,
   ]
-  description = "All 14 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 15 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+}
+
+output "security_events_table_name" {
+  value       = aws_dynamodb_table.security_events.name
+  description = "Name of the SecurityEvents DynamoDB table (grouped WAF blocks and screened attacks)."
+}
+
+output "security_events_table_arn" {
+  value       = aws_dynamodb_table.security_events.arn
+  description = "ARN of the SecurityEvents DynamoDB table."
 }

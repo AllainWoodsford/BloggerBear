@@ -1,4 +1,4 @@
-# Plans the module with a mocked AWS provider, so expressions are evaluated with real values the
+# Plans the observability module with a mocked AWS provider, so expressions are evaluated with real values the
 # way `terraform plan` does. `terraform validate` cannot: it passed while the edge dashboard's
 # widget lists failed every plan with "Inconsistent conditional result types". Run by
 # .github/workflows/pr-checks.yml (`terraform test` in each module that has a tests/ folder).
@@ -54,5 +54,24 @@ run "nothing_to_show_plans_cleanly" {
   assert {
     condition     = length(aws_cloudwatch_dashboard.edge) == 0
     error_message = "no widgets should mean no dashboard"
+  }
+}
+
+run "the_security_alarm_watches_every_recording_log_group" {
+  command = plan
+  variables {
+    security_alert_log_groups = ["/aws/lambda/bloggerbear-test-security-events", "/aws/lambda/bloggerbear-test-public-api"]
+  }
+  assert {
+    condition     = length(aws_cloudwatch_log_metric_filter.security_high_severity) == 2 && length(aws_cloudwatch_metric_alarm.security_high_severity) == 1
+    error_message = "one metric filter per recording log group, and one alarm"
+  }
+}
+
+run "no_security_alarm_without_log_groups" {
+  command = plan
+  assert {
+    condition     = length(aws_cloudwatch_metric_alarm.security_high_severity) == 0
+    error_message = "no alarm without log groups"
   }
 }

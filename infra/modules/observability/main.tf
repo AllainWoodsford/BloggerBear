@@ -386,3 +386,40 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
     ]
   })
 }
+
+# Security events (lambdas/common/security_events.py): an incident that is, or becomes, high
+# severity logs one "SECURITY_ALERT ..." line, once per incident, from whichever Lambda recorded
+# it (the security-events Lambda for WAF blocks, the public API for screened comments). One metric
+# filter per log group feeds one metric; the alarm fires on the first. Lower severities are only
+# recorded in the SecurityEvents table, never emailed.
+resource "aws_cloudwatch_log_metric_filter" "security_high_severity" {
+  for_each       = toset(var.security_alert_log_groups)
+  name           = "bloggerbear-${var.environment_name}-security-high-severity"
+  log_group_name = each.value
+  pattern        = "\"SECURITY_ALERT\""
+
+  metric_transformation {
+    name          = "SecurityHighSeverityIncidents"
+    namespace     = "BloggerBear/${var.environment_name}"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "security_high_severity" {
+  count               = length(var.security_alert_log_groups) > 0 ? 1 : 0
+  alarm_name          = "bloggerbear-${var.environment_name}-security-high-severity"
+  alarm_description   = "bloggerbear-${var.environment_name}: a high-severity security incident was recorded (an exploit attempt such as SQL injection, file inclusion, SSRF or RCE, or a sustained attack). Open incidents, with suggested next steps, are in the SecurityEvents table (index by_status_last_seen, status = open)."
+  namespace           = "BloggerBear/${var.environment_name}"
+  metric_name         = "SecurityHighSeverityIncidents"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+
+  depends_on = [aws_cloudwatch_log_metric_filter.security_high_severity]
+}

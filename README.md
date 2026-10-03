@@ -27,10 +27,11 @@ first-time setup run sheet.
   platform-mandated exceptions — the CloudFront-scope WAF Web ACL and its
   ACM certificate, which AWS only reads from `us-east-1` regardless of
   hosting region.
-- **Compute**: 10 Python 3.11 AWS Lambda functions from one shared
+- **Compute**: 11 Python 3.11 AWS Lambda functions from one shared
   deployment package (`lambdas/`) and one shared execution role: research
   tick, daily cycle, admin API, public API, DLQ handler, weekly reflection,
-  trending digest, musing feedback, Stats rollover and the Cost Explorer poll.
+  trending digest, musing feedback, Stats rollover, the Cost Explorer poll
+  and security events.
 - **AI**: Amazon Bedrock through the Converse API, so any provider's model
   works. Every call goes through `lambdas/common/bedrock.py`; tracked calls
   (`invoke_model_tracked`) record tokens and cost into each article's
@@ -38,7 +39,7 @@ first-time setup run sheet.
   global default, per-topic overrides and per-topic rotation
   (`common/model_routing.py`). Research falls back from GDELT to AgentCore
   Web Search.
-- **Storage**: 13 DynamoDB tables (`infra/modules/app-data`) + a private S3
+- **Storage**: 15 DynamoDB tables (`infra/modules/app-data`) + a private S3
   bucket for article bodies and raw source snapshots (separate from the
   public site's own S3 bucket, below).
 - **Frontend**: a static site (S3 + CloudFront + Origin Access Control) —
@@ -59,7 +60,12 @@ first-time setup run sheet.
 - **Security**: CloudFront + WAF (managed rule set + rate limiting +
   logging) + Shield Standard; the admin API additionally sits behind IAM
   auth and an IP allowlist that fails closed (empty allowlist = nothing
-  gets in) until an operator IP is configured.
+  gets in) until an operator IP is configured. Every request the regional
+  WAFs block, and every comment screening drops as an attack, is grouped
+  into an incident in the SecurityEvents table (category, severity,
+  suggested next steps, status; a keyed hash of the client, never the IP;
+  kept 120 days), and a high-severity incident emails an alarm
+  (`common/security_events.py`).
 - **Observability**: CloudWatch alarms (Lambda errors/throttles, DLQ
   depth, Step Functions failures, feedback spam), pipeline and Lambda runs
   dashboards per environment plus an edge dashboard (API Gateway and WAF)
@@ -150,7 +156,8 @@ lambdas/                    Python 3.11, one shared deployment package
   trending_digest_handler.py     daily: cross-topic digest
   musing_feedback_handler.py     the bear's musings on reader feedback
   stats_rollover_handler.py      weekly: roll Stats into history
-  cost_explorer_poll_handler.py  daily: AWS spend (API GW, AgentCore, WAF)
+  cost_explorer_poll_handler.py  daily: the AWS bill, every service
+  security_events_handler.py     WAF blocks -> SecurityEvents incidents
   common/                     shared modules; the main ones:
     adapters/                  base.py (contract), registry.py, and one
                                 module per domain: github_trending.py,
@@ -172,7 +179,7 @@ infra/
   bootstrap/                 state bucket + OIDC provider + deploy roles +
                               Route 53 zone -- applied locally, never via CI
   modules/
-    app-data/                 the 13 DynamoDB tables
+    app-data/                 the 15 DynamoDB tables
     static-site/               S3 + CloudFront + OAC, reused by both envs
     rest-api/                  the admin and public REST APIs
     observability/             CloudWatch alarms and dashboards, reused
@@ -359,7 +366,7 @@ current `dev` tip into itself via an empty PR) to exercise the `terraform`
 plan check, then merge. Merging to `dev` triggers `terraform.yml`'s
 `apply-dev` job automatically — no approval needed. Watch it in the
 Actions tab. First run creates everything: DynamoDB tables, the content
-bucket, all 10 Lambdas, both API Gateways, the WAF ACLs + logging, the
+bucket, all 11 Lambdas, both API Gateways, the WAF ACLs + logging, the
 CloudWatch dashboards, the static site.
 
 If this is truly the first-ever apply, `bedrock_model_id` and
