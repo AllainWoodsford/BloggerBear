@@ -182,7 +182,11 @@ locals {
 }
 
 locals {
-  api_gateway_widgets = length(var.api_dashboard_apis) == 0 ? [] : concat(
+  # `for _ in (cond ? [] : [1])`, not `cond ? [] : concat(...)`: the widgets are objects of different
+  # shapes, so their list is a tuple, and a conditional's two results must have the same type -- an
+  # empty tuple and a 17-element one don't (plan fails with "Inconsistent conditional result
+  # types"; validate can't see it). This is the same idiom the sections above use.
+  api_gateway_widgets = flatten([for _ in(length(var.api_dashboard_apis) == 0 ? [] : [1]) : concat(
     [
       {
         type   = "text"
@@ -213,7 +217,7 @@ locals {
     ],
     local.api_sections,
     local.cdn_section,
-  )
+  )])
 }
 
 locals {
@@ -362,7 +366,8 @@ locals {
 }
 
 locals {
-  waf_widgets = length(var.waf_regional_acls) == 0 && var.waf_cloudfront_acl == null ? [] : concat(
+  # The same idiom as api_gateway_widgets, for the same reason.
+  waf_widgets = flatten([for _ in(length(var.waf_regional_acls) == 0 && var.waf_cloudfront_acl == null ? [] : [1]) : concat(
     [
       {
         type   = "text"
@@ -375,7 +380,7 @@ locals {
     ],
     local.waf_regional_sections,
     local.waf_cloudfront_section,
-  )
+  )])
 }
 
 resource "aws_cloudwatch_dashboard" "edge" {
