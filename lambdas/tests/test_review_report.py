@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import admin_api_handler
 import common.dynamo as dynamo
@@ -347,7 +348,8 @@ def tables(monkeypatch):
     with mock_aws():
         client = boto3.client("dynamodb", region_name=REGION)
         for name, key in (("Articles", "article_id"), ("Topics", "topic_id")):
-            client.create_table(
+            create_table(
+                client,
                 TableName=name,
                 KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
                 AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],

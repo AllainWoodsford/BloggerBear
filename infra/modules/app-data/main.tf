@@ -114,6 +114,49 @@ resource "aws_dynamodb_table" "articles" {
     name = "article_id"
     type = "S"
   }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "topic_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at"
+    type = "S"
+  }
+
+  # Scaling PR A: the public API lists published articles (home page, topic pages, RSS) on
+  # nearly every request, which used to Scan the whole table and filter. These two indexes let
+  # common/dynamo.py Query instead. `created_at`, not `published_at`, is the sort key because
+  # put_article stores published_at as an explicit null until an article is published, and
+  # DynamoDB rejects a write whose index key attribute holds a null. Every writer goes through
+  # put_article, which always sets status, topic_id and created_at, so no article is left out
+  # of either index. ALL projection: callers need whole items (titles, lineage, vote counts),
+  # and articles are small since their bodies live in S3.
+  #
+  # Adding both to an existing table is fine in one apply: the AWS provider (checked against
+  # v6.64.0's table.go) sends one UpdateTable per new index and waits for each to become ACTIVE
+  # before starting the next, which is what DynamoDB requires.
+  global_secondary_index {
+    name            = "by_status_created_at"
+    hash_key        = "status"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  # Topic pages and the daily cycle's per-topic lookups (recent titles, top-voted example)
+  # read one topic's articles, then keep the published ones.
+  global_secondary_index {
+    name            = "by_topic_created_at"
+    hash_key        = "topic_id"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
 }
 
 resource "aws_dynamodb_table" "moderation_queue" {
@@ -132,6 +175,42 @@ resource "aws_dynamodb_table" "moderation_queue" {
   attribute {
     name = "queue_id"
     type = "S"
+  }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "article_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at"
+    type = "S"
+  }
+
+  # Scaling PR A: the review inbox (pending items), a topic page's "pending review" count and
+  # the stuck-rewrite sweep all ask for items in one status; this replaces their Scan + filter.
+  # put_moderation_item always sets status and created_at, so every item is indexed.
+  global_secondary_index {
+    name            = "by_status_created_at"
+    hash_key        = "status"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  # Finding an article's live queue item (the newest one: a Re-Write leaves the old item behind
+  # as history). KEYS_ONLY is enough -- common/dynamo.py takes the newest queue_id from here and
+  # reads the item itself with a strongly consistent GetItem, since index reads can lag the
+  # table and the caller acts on the item's status.
+  global_secondary_index {
+    name            = "by_article_created_at"
+    hash_key        = "article_id"
+    range_key       = "created_at"
+    projection_type = "KEYS_ONLY"
   }
 
   # Cleanup PR: common/dynamo.py's update_moderation_status sets expires_at only when an item

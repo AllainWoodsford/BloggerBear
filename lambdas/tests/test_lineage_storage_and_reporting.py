@@ -10,6 +10,7 @@ from datetime import date
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import admin_api_handler
 import common.dynamo as dynamo
@@ -60,19 +61,22 @@ def tables(monkeypatch):
     dynamo._dynamodb_resource = None
     with mock_aws():
         client = boto3.client("dynamodb", region_name=REGION)
-        client.create_table(
+        create_table(
+            client,
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        client.create_table(
+        create_table(
+            client,
             TableName="Models",
             KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        client.create_table(
+        create_table(
+            client,
             TableName="Findings",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
@@ -84,7 +88,8 @@ def tables(monkeypatch):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        client.create_table(
+        create_table(
+            client,
             TableName="StatsHistory",
             KeySchema=[{"AttributeName": "week_start", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "week_start", "AttributeType": "S"}],

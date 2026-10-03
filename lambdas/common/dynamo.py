@@ -51,6 +51,45 @@ def _expires_in(days: int) -> int:
     return int((datetime.now(UTC) + timedelta(days=days)).timestamp())
 
 
+# Scaling PR A: global secondary indexes (infra/modules/app-data/main.tf), so the reads the public
+# API and the review inbox make on every request are Queries rather than whole-table Scans. The
+# names must match Terraform's; lambdas/tests/test_terraform_wiring.py checks that they do.
+ARTICLES_BY_STATUS_INDEX = "by_status_created_at"  # Articles: status / created_at
+ARTICLES_BY_TOPIC_INDEX = "by_topic_created_at"  # Articles: topic_id / created_at
+MODERATION_BY_STATUS_INDEX = "by_status_created_at"  # ModerationQueue: status / created_at
+MODERATION_BY_ARTICLE_INDEX = "by_article_created_at"  # ModerationQueue: article_id / created_at
+
+
+def _paginated_query(
+    table,
+    index_name: str,
+    key_condition,
+    filter_expression=None,
+    *,
+    newest_first: bool = False,
+    limit: int | None = None,
+) -> list[dict]:
+    """Query an index to completion (or until `limit` items have been gathered) and return them.
+
+    Every index here sorts on `created_at`, so `newest_first` returns the most recent first.
+    `limit` is applied after the filter: DynamoDB's own Limit counts items *before* filtering,
+    which could stop a page short of a match, so this keeps paging until it has enough instead.
+    """
+    kwargs = {
+        "IndexName": index_name,
+        "KeyConditionExpression": key_condition,
+        "ScanIndexForward": not newest_first,
+    }
+    if filter_expression is not None:
+        kwargs["FilterExpression"] = filter_expression
+    response = table.query(**kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response and (limit is None or len(items) < limit):
+        response = table.query(**kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items if limit is None else items[:limit]
+
+
 # --- Topics / Findings (research-tick worker) -------------------------------
 
 
@@ -396,27 +435,28 @@ def list_candidate_ideas(topic_id: str) -> list[dict]:
 
 
 def list_pending_moderation() -> list[dict]:
-    """Return every ModerationQueue item with `status == "pending"`.
+    """Return every ModerationQueue item with `status == "pending"`, oldest first.
 
-    Scan + filter -- acceptable at this project's scale, no GSI.
+    A Query on the status index, which reads only the pending items rather than the whole queue
+    and its approved/rejected history.
     """
-    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    response = table.scan(FilterExpression=Attr("status").eq("pending"))
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=Attr("status").eq("pending"),
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
-    return items
+    return list_moderation_by_status("pending")
 
 
 def list_pending_moderation_for_topic(topic_id: str) -> list[dict]:
-    """Return every pending ModerationQueue item for a topic."""
+    """Return every pending ModerationQueue item for a topic.
+
+    Queries the pending items, then keeps this topic's. Pending items are few (they are waiting
+    for a person), so filtering them costs little; a topic index would be one more index to pay
+    for on every write, for no real saving.
+    """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
-    return _paginated_scan(table, filter_expression)
+    return _paginated_query(
+        table,
+        MODERATION_BY_STATUS_INDEX,
+        Key("status").eq("pending"),
+        Attr("topic_id").eq(topic_id),
+    )
 
 
 def count_pending_moderation_for_topic(topic_id: str) -> int:
@@ -426,9 +466,9 @@ def count_pending_moderation_for_topic(topic_id: str) -> int:
     public_api_handler.py's GET /topics/{topic_id}/activity surfaces this
     to anonymous visitors (an "N pending review" indicator), and a pending
     article hasn't cleared compliance review yet, so its title/content/
-    reasons must never leak through this path. Same Scan + combined-filter
-    pattern as list_prompt_refinements above, just returning len() instead
-    of the items.
+    reasons must never leak through this path. Same Query as
+    list_pending_moderation_for_topic, just returning len() instead of the
+    items.
     """
     return len(list_pending_moderation_for_topic(topic_id))
 
@@ -492,9 +532,9 @@ def update_moderation_status(queue_id: str, status: str) -> None:
 
 
 def list_moderation_by_status(status: str) -> list[dict]:
-    """Every ModerationQueue item with `status` (Scan + filter, like list_pending_moderation)."""
+    """Every ModerationQueue item with `status`, oldest first (a Query on the status index)."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    return _paginated_scan(table, Attr("status").eq(status))
+    return _paginated_query(table, MODERATION_BY_STATUS_INDEX, Key("status").eq(status))
 
 
 def claim_moderation_for_rewrite(
@@ -609,17 +649,28 @@ def get_article(article_id: str) -> dict | None:
 def get_moderation_item_by_article_id(article_id: str) -> dict | None:
     """Fetch the ModerationQueue item for `article_id`, or None if there isn't one.
 
-    The ModerationQueue table's only key is `queue_id` (no article_id GSI),
-    so this is a Scan + FilterExpression -- same pattern as
-    list_pending_moderation above, acceptable at this project's scale.
     Backs the force-publish admin route's best-effort moderation-status
     consistency (see admin_api_handler.py's _publish_article). A Re-Write
     (common/rewrite.py) leaves the old item behind as `rewritten` history and
     adds a new one, so an article can have several: the newest is the live one.
+
+    The article index sorts by `created_at`, so the newest is the first item of a descending
+    Query. That index holds keys only, and index reads can trail the table by a moment, so the
+    item itself comes from a strongly consistent GetItem: callers decide what to do from its
+    `status`, which must not be stale.
     """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    items = _paginated_scan(table, Attr("article_id").eq(article_id))
-    return max(items, key=lambda item: item.get("created_at") or "") if items else None
+    newest = _paginated_query(
+        table,
+        MODERATION_BY_ARTICLE_INDEX,
+        Key("article_id").eq(article_id),
+        newest_first=True,
+        limit=1,
+    )
+    if not newest:
+        return None
+    response = table.get_item(Key={"queue_id": newest[0]["queue_id"]}, ConsistentRead=True)
+    return response.get("Item")
 
 
 def update_article_status(
@@ -661,24 +712,21 @@ def update_article_status(
 def list_articles_by_status(status: str, topic_id: str | None = None) -> list[dict]:
     """Return every Articles item with the given status.
 
-    If `topic_id` is given, further filters to that topic. The Articles
-    table's only key is `article_id` (no sort key, no topic_id GSI -- see
-    infra/modules/app-data/main.tf), so this is a Scan + FilterExpression,
-    acceptable at this project's scale.
+    If `topic_id` is given, further filters to that topic. A Query, not a Scan
+    (Scaling PR A): without a topic, on the status index, reading only the
+    articles in that status; with one, on the topic index, reading that topic's
+    articles and keeping those in `status` (a topic's articles are mostly
+    published, so little is read and thrown away). Oldest first by `created_at`;
+    callers that care about order sort for themselves, as they did when this
+    was a Scan with no order at all.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("status").eq(status)
-    if topic_id is not None:
-        filter_expression = filter_expression & Attr("topic_id").eq(topic_id)
-
-    response = table.scan(FilterExpression=filter_expression)
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=filter_expression,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
+    if topic_id is None:
+        items = _paginated_query(table, ARTICLES_BY_STATUS_INDEX, Key("status").eq(status))
+    else:
+        items = _paginated_query(
+            table, ARTICLES_BY_TOPIC_INDEX, Key("topic_id").eq(topic_id), Attr("status").eq(status)
         )
-        items.extend(response.get("Items", []))
     # Same Decimal -> float/int conversion get_article applies -- needed
     # here too now that public_api_handler's _list_articles projects a
     # slim lineage summary (models_used/cost_aud/published_by) onto each
@@ -699,6 +747,10 @@ def list_all_articles() -> list[dict]:
     not just published ones. Same lineage Decimal -> int/float conversion as
     list_published_articles, for the same reason (json.dumps can't serialize
     a raw Decimal) -- callers only ever surface aggregates, never items.
+
+    Deliberately still a Scan after Scaling PR A: it wants every article in
+    every status, which no index narrows. Its one public caller (the Stats
+    page) is better served by caching its response than by an index.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
     items = _paginated_scan(table)
@@ -796,22 +848,26 @@ def put_prompt_refinement(
 def list_prompt_refinements(topic_id: str | None = None, status: str | None = None) -> list[dict]:
     """Return PromptRefinements items, optionally filtered by topic_id and/or status.
 
-    Scan + filter -- same pattern as list_pending_moderation /
-    list_published_articles above -- acceptable at this project's scale, no
-    GSI. Both filters are optional; either, neither, or both may be given.
+    Both filters are optional; either, neither, or both may be given. With a
+    `topic_id` this is a Query on the table's own hash key (no index needed);
+    without one it stays a Scan + filter -- the table is small (one row per
+    proposed refinement) and there is no single key every caller shares.
     """
     table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    status_filter = Attr("status").eq(status) if status is not None else None
 
-    filter_expression = None
-    if topic_id is not None:
-        filter_expression = Attr("topic_id").eq(topic_id)
-    if status is not None:
-        status_condition = Attr("status").eq(status)
-        filter_expression = (
-            status_condition if filter_expression is None else filter_expression & status_condition
-        )
+    if topic_id is None:
+        return _paginated_scan(table, status_filter)
 
-    return _paginated_scan(table, filter_expression)
+    kwargs = {"KeyConditionExpression": Key("topic_id").eq(topic_id)}
+    if status_filter is not None:
+        kwargs["FilterExpression"] = status_filter
+    response = table.query(**kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.query(**kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
 
 
 def get_prompt_refinement(topic_id: str, version: str) -> dict | None:
@@ -1018,24 +1074,17 @@ def update_article_net_votes(article_id: str, delta: int) -> None:
 def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
     """Return up to `limit` published articles for `topic_id`, best net_votes first.
 
-    The Articles table's only key is `article_id` (no sort key, no topic_id
-    GSI), so this is a Scan + FilterExpression, same pattern as
-    `list_published_articles` above, followed by an in-Python sort on
-    `net_votes` (missing/absent treated as 0). Only articles with
-    `net_votes > 0` are eligible -- a net-negative or neutral article isn't
-    worth reusing as a few-shot example for future drafts.
+    The topic's published articles come from a Query on the topic index
+    (Scaling PR A), followed by an in-Python sort on `net_votes`
+    (missing/absent treated as 0) -- votes change all the time, so they are
+    not worth an index of their own. Only articles with `net_votes > 0` are
+    eligible -- a net-negative or neutral article isn't worth reusing as a
+    few-shot example for future drafts.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
-
-    response = table.scan(FilterExpression=filter_expression)
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=filter_expression,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
+    items = _paginated_query(
+        table, ARTICLES_BY_TOPIC_INDEX, Key("topic_id").eq(topic_id), Attr("status").eq("published")
+    )
 
     positively_voted = [item for item in items if int(item.get("net_votes", 0)) > 0]
     positively_voted.sort(key=lambda item: int(item.get("net_votes", 0)), reverse=True)
@@ -1045,25 +1094,21 @@ def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
 def list_recent_article_titles(topic_id: str, limit: int = 5) -> list[str]:
     """Return up to `limit` of `topic_id`'s own published articles' titles, most recent first.
 
-    Same Scan + FilterExpression as get_top_voted_articles above (no topic_id GSI on this table),
-    just sorted by created_at instead of net_votes. Fed into daily_cycle_handler.py's ideation
+    A newest-first Query on the topic index (sorted by created_at), stopping as soon as `limit`
+    published ones are in hand. Fed into daily_cycle_handler.py's ideation
     prompt so a source that stays trending for days doesn't get written up again each day just
     because that day's numbers are technically new -- titles only, never full articles or ids,
     since that's all a "don't repeat this" reminder needs."""
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
-
-    response = table.scan(FilterExpression=filter_expression)
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=filter_expression,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
-
-    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return [item["title"] for item in items[:limit]]
+    items = _paginated_query(
+        table,
+        ARTICLES_BY_TOPIC_INDEX,
+        Key("topic_id").eq(topic_id),
+        Attr("status").eq("published"),
+        newest_first=True,
+        limit=limit,
+    )
+    return [item["title"] for item in items]
 
 
 # --- FailedExecutions (DLQ consumer) -------------------------------------

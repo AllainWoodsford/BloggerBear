@@ -87,10 +87,10 @@ runs in the background and comes back to the inbox for approval (see §11, "Re-W
 | Topics | `topic_id` | Topic config, cadences, research interval, adapter, models, optional `editorial_goals` |
 | Findings | `topic_id` / `captured_at` | Research summaries, source hashes, the research call's tokens |
 | CandidateIdeas | `topic_id` / `created_at` | Daily generated article ideas |
-| Articles | `article_id` | Draft/review/publish lifecycle, lineage (tokens, models, cost), view count, rewrite history |
+| Articles | `article_id`; indexes `status`/`created_at`, `topic_id`/`created_at` | Draft/review/publish lifecycle, lineage (tokens, models, cost), view count, rewrite history |
 | Feedback | `article_id` / `feedback_id` | Scrubbed public feedback |
 | PromptRefinements | `topic_id` / `version` | Prompt iterations and rationale; approved ones are "equipment" |
-| ModerationQueue | `queue_id` | Manual review tasks: `pending` → `approved`/`rejected`, or `rewriting` → `rewritten` |
+| ModerationQueue | `queue_id`; indexes `status`/`created_at`, `article_id`/`created_at` | Manual review tasks: `pending` → `approved`/`rejected`, or `rewriting` → `rewritten` |
 | FailedExecutions | `failure_id` | Daily-cycle runs that exhausted their retries (dead-letter queue) |
 | Musings | `musing_id` | The bear's short posts about articles, feedback and loot |
 | Models / ModelConfig | `model_id` / `config_id` | Model registry and prices; single rows for the default model, pipeline config and feedback config |
@@ -1710,3 +1710,45 @@ billing data) in the same single `GetCostAndUsage` call, so it costs nothing ext
   It names the topic only: no title and no link, because a rejected article isn't public and may contain
   exactly what got it rejected. Checked like the loot musing: the text must name the topic and pass the
   comment rules, or a plain fixed line is posted instead.
+
+### Scaling A: DynamoDB indexes instead of Scans
+
+**Status: built** (one of three scaling PRs; hot-key counters and the public API's caching, throttling
+and dashboards are the other two).
+
+**Problem:** no table had a secondary index, so every read that wasn't by primary key was a Scan of the
+whole table plus a filter. The worst was `list_articles_by_status`, behind the home page, every topic page
+and the RSS feed: each request read every article ever drafted, in every status. The review inbox, a topic
+page's "pending review" count, the stuck-rewrite sweep and an article's moderation lookup each scanned the
+whole moderation queue, history included.
+
+**What changed:**
+- **Articles** gets `by_status_created_at` (status / created_at) and `by_topic_created_at`
+  (topic_id / created_at), both `ALL` projection. Published listings Query the first; a topic's articles
+  (topic page, recent titles, the top-voted example) Query the second and keep the published ones.
+  `created_at`, not `published_at`, is the sort key: `put_article` stores `published_at` as an explicit
+  null until publish, and DynamoDB rejects a write whose index key is null. Callers already sorted for
+  themselves.
+- **ModerationQueue** gets `by_status_created_at` (`ALL`) for the pending/rewriting lists (a topic's pending
+  items are filtered from the pending ones: few, and not worth a third index) and `by_article_created_at`
+  (`KEYS_ONLY`). An article's live item is the newest by `created_at`; its full item is then read with a
+  strongly consistent GetItem, because index reads can trail the table and the caller acts on `status`.
+- `list_prompt_refinements(topic_id=...)` Queries the table's own hash key instead of scanning.
+- The Lambda role may `dynamodb:Query` on `<table>/index/*` (a separate statement: nothing else runs
+  against an index). The deploy role's `dynamodb:*` on `table/bloggerbear-*` already covers creating
+  indexes, so no bootstrap apply is needed.
+- Function signatures and return shapes are unchanged. Test fixtures create tables through
+  `lambdas/tests/table_schemas.py`, which holds the same index definitions; a wiring test fails if it and
+  Terraform drift apart.
+
+**Applying it:** DynamoDB creates one index per UpdateTable call. The AWS provider (checked in v6.64.0's
+`table.go`) sends one call per new index and waits for each to become ACTIVE before the next, so both
+indexes per table land in a single apply; it just takes a few minutes longer while they backfill.
+
+**Left as Scans, on purpose:** `list_all_articles` (wants every status; backs the Stats page and admin
+lineage/backfill tools), `list_all_moderation_items` (admin stats over all history), `list_topics`,
+`list_models`, `list_failed_executions` (tiny tables), `list_feedback_since` (the weekly and 4-day jobs),
+`list_prompt_refinements` without a topic (small table, filtered on status), and the Musings table
+(`list_musings`, `delete_musings_for_article`): it has no attribute every item shares to index on, so it
+would need a new attribute and a backfill. Its public feed and the Stats page are better served by caching
+their responses.
