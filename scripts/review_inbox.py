@@ -47,6 +47,9 @@ DEFAULT_SKIP_HOURS = 24
 PREVIEW_CHARS = 700
 # Compliance's fixed reason for a financial topic (lambdas/common/compliance.py): routine, by design.
 _FINANCIAL_REASON = "financial topic"
+# lambdas/common/rewrite.py's SENT_BACK_REASON: on an item `articles rewrite` made, whose rewrite
+# then failed. It says why the article is here, not what is wrong (rewrite_instructions does).
+_SENT_BACK_REASON = "sent back by a person for a rewrite"
 
 HELP_LINE = "[y] Approve | [r] Reject | [z] Skip | [v] View all | [q] Quit -> "
 REWRITE_HELP_LINE = "[y] Approve | [r] Reject | [w] Re-Write | [z] Skip | [v] View all | [q] Quit -> "
@@ -193,20 +196,31 @@ class ModerationSource(ContentSource):
     def _item(self, row: dict) -> Item:
         reasons = [str(r) for r in row.get("reasons") or []]
         routine = [r for r in reasons if _FINANCIAL_REASON in r.lower()]
-        flagged = [r for r in reasons if r not in routine]
+        sent_back = _SENT_BACK_REASON in reasons
+        flagged = [r for r in reasons if r not in routine and r != _SENT_BACK_REASON]
         notes = [str(n) for n in row.get("review_notes") or []]
+        # A Re-Write from here retries with the same note (lambdas/admin_api_handler.py drops any
+        # note a rewrite is not given).
+        instructions = str(row.get("rewrite_instructions") or "") if sent_back else ""
+        why = (["Financial topic: always reviewed by a person."] if routine else []) + flagged
+        if sent_back:
+            why.append(f'You sent it back for a rewrite: "{instructions or "(no note kept)"}"')
         item = Item(
             source=self.name,
             key=str(row.get("queue_id")),
             title="(article unavailable)",
             topic=row.get("topic_id"),
             created_at=row.get("created_at"),
-            why=(["Financial topic: always reviewed by a person."] if routine else []) + flagged,
+            why=why,
             notes=notes,
-            routine=bool(routine) and not flagged and not notes,
-            caution=bool(flagged or notes),
-            can_rewrite=bool(flagged or notes),
-            ref={"queue_id": row.get("queue_id"), "article_id": row.get("article_id")},
+            routine=bool(routine) and not flagged and not notes and not sent_back,
+            caution=bool(flagged or notes or sent_back),
+            can_rewrite=bool(flagged or notes or instructions),
+            ref={
+                "queue_id": row.get("queue_id"),
+                "article_id": row.get("article_id"),
+                "instructions": instructions,
+            },
         )
         if row.get("last_rewrite_error"):
             item.notes.append(f"The last Re-Write did not work: {row['last_rewrite_error']}")
@@ -239,7 +253,10 @@ class ModerationSource(ContentSource):
         return self._models
 
     def rewrite(self, item: Item, model_id: str) -> str:
-        self.api.post(f"/moderation-queue/{item.ref['queue_id']}/rewrite", {"model_id": model_id})
+        body = {"model_id": model_id}
+        if item.ref.get("instructions"):
+            body["instructions"] = item.ref["instructions"]
+        self.api.post(f"/moderation-queue/{item.ref['queue_id']}/rewrite", body)
         return "rewriting in the background: it will be back in your inbox when it is done"
 
     def approve(self, item: Item) -> str:
@@ -322,7 +339,9 @@ def _rewrite_fact(rewrite: dict) -> str:
     model = rewrite.get("model_label") or rewrite.get("model_id")
     line = f"Re-Write #{rewrite.get('number', '?')} by {model} ({cost_text})"
     previous = rewrite.get("previous_title")
-    return line + (f'; was titled "{_short(previous, 60)}"' if previous else "")
+    line += f'; was titled "{_short(previous, 60)}"' if previous else ""
+    instructions = rewrite.get("instructions")
+    return line + (f'; you asked: "{_short(instructions, 120)}"' if instructions else "")
 
 
 def _model_line(n: int, model: dict) -> str:
