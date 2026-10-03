@@ -438,3 +438,8 @@ bandit -r lambdas/ scripts/ --severity-level high --confidence-level high
 terraform fmt -check -recursive infra/
 cd infra/environments/dev && terraform init -backend=false && terraform validate
 ```
+
+## License
+
+The code is licensed under the [Apache License 2.0](LICENSE). Security reports: see
+[SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
