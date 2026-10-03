@@ -651,6 +651,22 @@ def test_a_production_release_waits_for_the_security_scans_and_tests():
         assert "ref: ${{ inputs.ref }}" in called
 
 
+def test_a_dev_apply_waits_for_the_same_checks_in_one_run():
+    workflows = ROOT / ".github" / "workflows"
+    dev = (workflows / "terraform.yml").read_text(encoding="utf-8")
+
+    assert re.search(r"^  security:\n.*\n    uses: \./\.github/workflows/security\.yml", dev, re.M)
+    assert re.search(r"^  lint-test:\n.*\n    uses: \./\.github/workflows/python-ci\.yml", dev, re.M)
+    assert "    needs: [security, lint-test]" in dev
+    for path in ("lambdas/**", "frontend/**"):  # a code- or site-only merge still deploys
+        assert f"      - '{path}'" in dev
+    # ...and the checks don't also run as separate workflows for the same push.
+    for name in ("security.yml", "python-ci.yml"):
+        called = (workflows / name).read_text(encoding="utf-8")
+        assert "[dev" not in called and "- dev" not in called
+    assert not (workflows / "dev-gatekeeper.yml").exists()
+
+
 # --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
 
 
