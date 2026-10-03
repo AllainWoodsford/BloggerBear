@@ -20,6 +20,7 @@ FINDINGS_TABLE, ...) -- never hardcode a table name here.
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
@@ -1806,6 +1807,41 @@ def get_stats_history_row(week_start: str) -> dict | None:
     """One completed week's StatsHistory row, or None if that week was never rolled over."""
     table = get_table(os.environ["STATS_HISTORY_TABLE"])
     return table.get_item(Key={"week_start": week_start}).get("Item")
+
+
+def set_stats_history_week_fields(week_start: str, fields: dict) -> bool:
+    """SET `fields` on an already rolled-over week's StatsHistory row -- the one exception to
+    "written once, never updated": the AWS bill for a week is only fully known a day or two after
+    the week ends (common/cost_explorer.py), so cost_explorer_poll_handler.py fills it in then.
+    Only ever updates a row the rollover made: returns False (and writes nothing) for a week with
+    no row, so it can never create one and make the rollover think that week was already done."""
+    if not fields:
+        return False
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    sets = ", ".join(f"#f{n} = :v{n}" for n in range(len(fields)))
+    try:
+        table.update_item(
+            Key={"week_start": week_start},
+            UpdateExpression=f"SET {sets}",
+            ConditionExpression="attribute_exists(week_start)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+_WEEK_KEY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def list_stats_history_weeks() -> list[dict]:
+    """Every completed week's StatsHistory row, without the all-time row or any other sentinel
+    (their `week_start` is never a date). A Scan: one row a week, so a few hundred at most."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    return [row for row in _paginated_scan(table) if _WEEK_KEY.match(str(row.get("week_start", "")))]
 
 
 # StatsHistory's permanent running-total row (Observability enhancement, PR 4): a sentinel
