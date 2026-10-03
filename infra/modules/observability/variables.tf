@@ -21,13 +21,14 @@ variable "dlq_queue_name" {
 variable "alert_email" {
   type        = string
   default     = ""
+  sensitive   = true
   description = <<-EOT
     Email address to subscribe to the alerts SNS topic. Left empty by
     default -- every alarm below is created and will still publish to the
     topic either way; this only controls whether a human is actually
     notified. AWS SNS requires manually confirming the subscription (a
-    confirmation email/link) before it goes active -- set this in
-    terraform.tfvars and confirm the subscription once applied.
+    confirmation email/link) before it goes active -- confirm the
+    subscription once applied. Sensitive: plans never print the address.
   EOT
 }
 

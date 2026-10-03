@@ -39,6 +39,7 @@ variable "bedrock_model_id" {
 variable "admin_allowed_cidrs" {
   type        = list(string)
   default     = []
+  sensitive   = true
   description = <<-EOT
     Public IP CIDRs (as /32s, e.g. ["203.0.113.7/32"]) allowed through the
     regional WAF Web ACL in front of the admin API. This MUST be set to
@@ -54,26 +55,33 @@ variable "admin_allowed_cidrs" {
     the operator's IP changes. Supplied instead as a `TF_VAR_
     admin_allowed_cidrs` environment variable in this repo's
     .github/workflows/terraform.yml apply-dev job, sourced from a
-    repo-level GitHub Actions secret `ADMIN_ALLOWED_CIDRS_DEV` (masked in
-    logs, never in the repo). Environment variables are Terraform's
+    repo-level GitHub Actions secret `ADMIN_ALLOWED_CIDRS_DEV` (never in
+    the repo). Environment variables are Terraform's
     lowest-precedence value source, so this only works because
     terraform.tfvars doesn't also set this variable -- if it did, the
     tfvars value would silently win and the CI-supplied one would be
     ignored. A local `terraform apply` without that env var set falls back
     to this variable's `[]` default (fail closed), same as before.
+
+    sensitive = true matters as much as the secret: GitHub masks only the
+    secret's exact text, and a plan prints each list element separately,
+    so before this the bare IP appeared in apply logs.
   EOT
 }
 
 variable "alert_email" {
   type        = string
   default     = ""
+  sensitive   = true
   description = <<-EOT
     Email address subscribed to the Phase 6 pipeline-health SNS topic
     (module.observability). Left empty by default -- alarms are created
     and fire either way, this only controls whether a human gets
     notified. AWS SNS requires confirming the subscription (a
-    confirmation email/link) before it goes active. Set the real value in
-    terraform.tfvars.
+    confirmation email/link) before it goes active. CI supplies it as
+    TF_VAR_alert_email from the `ALERT_EMAIL_DEV` secret; never put it in
+    terraform.tfvars (that commits it). Sensitive, so plans print
+    (sensitive value) instead of the address.
   EOT
 }
 

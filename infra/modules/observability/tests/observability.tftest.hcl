@@ -75,3 +75,24 @@ run "no_security_alarm_without_log_groups" {
     error_message = "no alarm without log groups"
   }
 }
+
+# alert_email is sensitive (kept out of plans and public CI logs) and drives the subscription's
+# count. Terraform accepts a sensitive count (unlike for_each); these keep it that way, set or not.
+run "a_sensitive_alert_email_still_subscribes" {
+  command = plan
+  variables {
+    alert_email = "alerts@example.com"
+  }
+  assert {
+    condition     = length(aws_sns_topic_subscription.alerts_email) == 1
+    error_message = "an alert email should create one subscription"
+  }
+}
+
+run "no_alert_email_no_subscription" {
+  command = plan
+  assert {
+    condition     = length(aws_sns_topic_subscription.alerts_email) == 0
+    error_message = "no alert email should mean no subscription"
+  }
+}
