@@ -297,23 +297,24 @@ variables.
 
 ### 2. Wire GitHub Actions up to AWS (you, GitHub UI)
 
-- **Settings → Secrets and variables → Actions → Variables** (repository
-  level): add `AWS_DEV_DEPLOY_ROLE_ARN` = the `dev_deploy_role_arn`
-  output. This is a variable, not a secret — the ARN itself isn't
-  sensitive, the IAM trust policy is what actually protects it.
 - **Settings → Secrets and variables → Actions → Secrets** (repository
-  level): add `ADMIN_ALLOWED_CIDRS_DEV` = your public IP as a Terraform
-  list-of-strings literal, e.g. `["203.0.113.7/32"]`. This is a secret,
-  not a variable — unlike the role ARN above, this is a real IP address,
-  and a secret is masked in Actions logs. `terraform.yml`'s `apply-dev`
-  job passes it through as the `TF_VAR_admin_allowed_cidrs` environment
-  variable, so it never needs to live in `terraform.tfvars` / git history.
+  level), all **secrets**, never variables — a variable prints in plain
+  text in every step's log, and on a public repo those logs are public:
+  - `AWS_DEV_DEPLOY_ROLE_ARN` = the `dev_deploy_role_arn` output. The
+    trust policy is what protects the role; a secret just keeps the ARN
+    (and its account ID) out of the logs.
+  - `ADMIN_ALLOWED_CIDRS_DEV` = your public IP as a Terraform
+    list-of-strings literal, e.g. `["203.0.113.7/32"]`. `terraform.yml`'s
+    `apply-dev` job passes it through as `TF_VAR_admin_allowed_cidrs`, so
+    it never lives in `terraform.tfvars` / git history, and the Terraform
+    variable is `sensitive`, so plans print `(sensitive value)` rather
+    than the IP (GitHub only masks the secret's exact text).
+  - `ALERT_EMAIL_DEV` = where alarm emails go (also `sensitive`).
 - **Settings → Environments**: create an environment named `production`,
-  add yourself as a required reviewer, add an environment-scoped variable
-  `AWS_PROD_DEPLOY_ROLE_ARN` = the `prod_deploy_role_arn` output, and an
-  environment-scoped **secret** `ADMIN_ALLOWED_CIDRS_PROD` (same format
-  as the dev one above). The variable/secret split and the reasoning are
-  the same as dev's, just Environment-scoped instead of repo-level. The
+  add yourself as a required reviewer, and add the **secrets**
+  `AWS_PROD_DEPLOY_ROLE_ARN` = the `prod_deploy_role_arn` output,
+  `ADMIN_ALLOWED_CIDRS_PROD` and `ALERT_EMAIL_PROD` (same formats and
+  reasoning as dev's, environment- or repo-level). The
   required-reviewer gate is what makes a production release a
   deliberate, approved act rather than an accidental push.
 - **Settings → Branches**: create the `prod` branch from `dev`'s current

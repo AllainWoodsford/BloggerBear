@@ -121,8 +121,8 @@ git fetch origin && git branch prod origin/dev && git push -u origin prod
 echo "{\"reviewers\":[{\"type\":\"User\",\"id\":$(gh api user --jq .id)}]}" |
   gh api -X PUT repos/AllainWoodsford/BloggerBear/environments/production --input -
 
-# the role the job assumes (a variable: the ARN is not sensitive, the trust policy protects it)
-gh variable set AWS_PROD_DEPLOY_ROLE_ARN --env production \
+# the role the job assumes (a secret: a variable would print in public logs)
+gh secret set AWS_PROD_DEPLOY_ROLE_ARN --env production \
   --body "$(terraform -chdir=infra/bootstrap output -raw prod_deploy_role_arn)"
 ```
 

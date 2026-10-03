@@ -913,6 +913,31 @@ def test_pull_request_only_checks_live_in_their_own_workflow():
     assert "  pull_request:" not in (workflows / "terraform.yml").read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_personal_values_never_print_in_public_ci_logs(env):
+    """The admin IP and alert email are secrets, but GitHub masks only a secret's exact text, and a
+    plan prints each list element on its own: both appeared in apply logs before they were sensitive."""
+    variables = _read("environments", env, "variables.tf")
+    for name in ("admin_allowed_cidrs", "alert_email"):
+        block = variables.split(f'variable "{name}" {{')[1].split("\n}\n")[0]
+        assert "\n  sensitive   = true\n" in block, name
+    module = _read("modules", "observability", "variables.tf")
+    assert "\n  sensitive   = true\n" in module.split('variable "alert_email" {')[1].split("\n}\n")[0]
+
+
+def test_deploy_role_arns_come_from_secrets():
+    """A variable prints in plain text in every step's log; on a public repo the logs are public."""
+    workflows = ROOT / ".github" / "workflows"
+    for name, role in (
+        ("terraform.yml", "AWS_DEV_DEPLOY_ROLE_ARN"),
+        ("destroy-dev.yml", "AWS_DEV_DEPLOY_ROLE_ARN"),
+        ("terraform-production-release.yml", "AWS_PROD_DEPLOY_ROLE_ARN"),
+    ):
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert f"role-to-assume: ${{{{ secrets.{role} ||" in text, name
+        assert f"role-to-assume: ${{{{ vars.{role} }}}}" not in text, name
+
+
 def test_pull_requests_are_checked_for_personal_data_without_publishing_it():
     """docs/friction.md 7.11: a PR added a personal email; no secret scanner looks for one."""
     pr_checks = (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(encoding="utf-8")
