@@ -1,13 +1,18 @@
 # -----------------------------------------------------------------------
-# Scaling PR C: two more dashboards, in the style of the pipeline and Lambda runs ones in main.tf --
-# open on a span long enough to show something (7 days, hourly points), counts on the left axis,
-# a text header saying what each part is and why a widget can be legitimately empty.
+# Scaling PR C: one more dashboard, bloggerbear-<env>-edge, in the style of the pipeline and Lambda
+# runs ones in main.tf -- open on a span long enough to show something (7 days, hourly points),
+# counts on the left axis, a text header saying what each part is and why a widget can be
+# legitimately empty. Two halves:
 #
-#   bloggerbear-<env>-api-gateway   both REST APIs: requests, 4XX/5XX, latency vs integration
-#                                   latency, a per-status split and 429s from the access logs, and the
-#                                   public API's CDN next to what still reached API Gateway.
-#   bloggerbear-<env>-waf           every web ACL: allowed/blocked/counted over time and per rule,
-#                                   plus the top blocked rules, addresses and paths from the WAF logs.
+#   API Gateway   both REST APIs: requests, 4XX/5XX, latency vs integration latency, a per-status
+#                 split and 429s from the access logs, and the public API's CDN next to what still
+#                 reached API Gateway.
+#   Firewall      every web ACL: allowed/blocked/counted over time and per rule, plus the top
+#                 blocked rules, addresses and paths from the WAF logs.
+#
+# One dashboard, not two, and only where var.edge_dashboard_enabled (production): CloudWatch bills
+# US$3 a month for every dashboard past the account's first three, and dev's edge traffic is mostly
+# the operator's own.
 #
 # Regions: API Gateway and the regional ACLs are ap-southeast-2. CloudFront's metrics, and the
 # CLOUDFRONT-scope ACL's metrics and log group, only exist in us-east-1 -- a widget pointed anywhere
@@ -176,46 +181,39 @@ locals {
   )])
 }
 
-resource "aws_cloudwatch_dashboard" "api_gateway" {
-  count          = length(var.api_dashboard_apis) > 0 ? 1 : 0
-  dashboard_name = "bloggerbear-${var.environment_name}-api-gateway"
-
-  dashboard_body = jsonencode({
-    start          = "-P7D"
-    periodOverride = "inherit"
-    widgets = concat(
-      [
-        {
-          type   = "text"
-          width  = 24
-          height = 2
-          properties = {
-            markdown = "## API Gateway (${var.environment_name})\nPer API: requests and 4XX/5XX per hour, latency (whole request) against integration latency (the Lambda's share), and from the access logs the split by status and the 429s API Gateway's own throttling sent. Firewall activity is on **bloggerbear-${var.environment_name}-waf**."
-          }
-        },
-        {
-          type   = "metric"
-          width  = 24
-          height = 4
-          properties = {
-            title                = "In the selected range"
-            region               = local.api_region
-            view                 = "singleValue"
-            setPeriodToTimeRange = true
-            metrics = flatten([
-              for api in var.api_dashboard_apis : [
-                ["AWS/ApiGateway", "Count", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} requests" }],
-                ["AWS/ApiGateway", "4XXError", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} 4XX" }],
-                ["AWS/ApiGateway", "5XXError", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} 5XX" }],
-              ]
-            ])
-          }
-        },
-      ],
-      local.api_sections,
-      local.cdn_section,
-    )
-  })
+locals {
+  api_gateway_widgets = length(var.api_dashboard_apis) == 0 ? [] : concat(
+    [
+      {
+        type   = "text"
+        width  = 24
+        height = 2
+        properties = {
+          markdown = "## API Gateway (${var.environment_name})\nPer API: requests and 4XX/5XX per hour, latency (whole request) against integration latency (the Lambda's share), and from the access logs the split by status and the 429s API Gateway's own throttling sent. The firewall is further down."
+        }
+      },
+      {
+        type   = "metric"
+        width  = 24
+        height = 4
+        properties = {
+          title                = "In the selected range"
+          region               = local.api_region
+          view                 = "singleValue"
+          setPeriodToTimeRange = true
+          metrics = flatten([
+            for api in var.api_dashboard_apis : [
+              ["AWS/ApiGateway", "Count", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} requests" }],
+              ["AWS/ApiGateway", "4XXError", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} 4XX" }],
+              ["AWS/ApiGateway", "5XXError", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} 5XX" }],
+            ]
+          ])
+        }
+      },
+    ],
+    local.api_sections,
+    local.cdn_section,
+  )
 }
 
 locals {
@@ -363,26 +361,30 @@ locals {
   ]])
 }
 
-resource "aws_cloudwatch_dashboard" "waf" {
-  count          = length(var.waf_regional_acls) > 0 || var.waf_cloudfront_acl != null ? 1 : 0
-  dashboard_name = "bloggerbear-${var.environment_name}-waf"
+locals {
+  waf_widgets = length(var.waf_regional_acls) == 0 && var.waf_cloudfront_acl == null ? [] : concat(
+    [
+      {
+        type   = "text"
+        width  = 24
+        height = 2
+        properties = {
+          markdown = "## Firewall (${var.environment_name})\nAllowed, blocked and counted requests per web ACL and per rule, rate limits included. WAF only reports a number when it is above zero, so a rule that blocked nothing draws no line. The visitor ACLs log **blocked requests only** (privacy policy, section 5); the admin ACL logs everything."
+        }
+      },
+    ],
+    local.waf_regional_sections,
+    local.waf_cloudfront_section,
+  )
+}
+
+resource "aws_cloudwatch_dashboard" "edge" {
+  count          = var.edge_dashboard_enabled && length(concat(local.api_gateway_widgets, local.waf_widgets)) > 0 ? 1 : 0
+  dashboard_name = "bloggerbear-${var.environment_name}-edge"
 
   dashboard_body = jsonencode({
     start          = "-P7D"
     periodOverride = "inherit"
-    widgets = concat(
-      [
-        {
-          type   = "text"
-          width  = 24
-          height = 2
-          properties = {
-            markdown = "## Firewall (${var.environment_name})\nAllowed, blocked and counted requests per web ACL and per rule, rate limits included. WAF only reports a number when it is above zero, so a rule that blocked nothing draws no line. The visitor ACLs log **blocked requests only** (privacy policy, section 5); the admin ACL logs everything. API Gateway itself is on **bloggerbear-${var.environment_name}-api-gateway**."
-          }
-        },
-      ],
-      local.waf_regional_sections,
-      local.waf_cloudfront_section,
-    )
+    widgets        = concat(local.api_gateway_widgets, local.waf_widgets)
   })
 }

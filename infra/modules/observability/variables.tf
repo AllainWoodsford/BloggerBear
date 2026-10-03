@@ -36,6 +36,12 @@ variable "feedback_log_group_name" {
   description = "The public API Lambda's log group. public_api_handler.py writes one \"rejected a feedback submission (<reason>)\" line per rejected submission; metric filters on it drive the two feedback alarms."
 }
 
+variable "edge_dashboard_enabled" {
+  type        = bool
+  default     = false
+  description = "Create the bloggerbear-<env>-edge dashboard (API Gateway and firewall, api_waf_dashboards.tf). Off by default: CloudWatch bills US$3 a month for every dashboard past the account's first three, so only production turns it on."
+}
+
 variable "api_dashboard_apis" {
   type = list(object({
     label            = string # e.g. "Public API"
@@ -65,7 +71,7 @@ variable "waf_regional_acls" {
     log_group   = string
   }))
   default     = []
-  description = "The REGIONAL web ACLs (ap-southeast-2) on the WAF dashboard."
+  description = "The REGIONAL web ACLs (ap-southeast-2) on the edge dashboard."
 }
 
 variable "waf_cloudfront_acl" {
@@ -75,7 +81,7 @@ variable "waf_cloudfront_acl" {
     log_group   = string # in us-east-1
   })
   default     = null
-  description = "The CLOUDFRONT-scope web ACL (metrics and logs in us-east-1) on the WAF dashboard. Null: left off."
+  description = "The CLOUDFRONT-scope web ACL (metrics and logs in us-east-1) on the edge dashboard. Null: left off."
 }
 
 variable "feedback_rejections_alarm_threshold" {

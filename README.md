@@ -61,8 +61,9 @@ first-time setup run sheet.
   auth and an IP allowlist that fails closed (empty allowlist = nothing
   gets in) until an operator IP is configured.
 - **Observability**: CloudWatch alarms (Lambda errors/throttles, DLQ
-  depth, Step Functions failures, feedback spam), pipeline, Lambda runs,
-  API Gateway and WAF dashboards per environment, a daily Cost Explorer poll
+  depth, Step Functions failures, feedback spam), pipeline and Lambda runs
+  dashboards per environment plus an edge dashboard (API Gateway and WAF)
+  in production, a daily Cost Explorer poll
   (API Gateway, AgentCore and WAF spend) feeding the Stats page, and an
   AWS Budget alarm scoped to Bedrock spend.
 - **IaC**: Terraform ≥1.10 (native S3 state locking — no DynamoDB lock

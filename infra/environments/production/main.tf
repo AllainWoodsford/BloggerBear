@@ -2202,7 +2202,9 @@ module "observability" {
   # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
   feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
 
-  # Scaling PR C: the API Gateway and WAF dashboards (api_waf_dashboards.tf in the module).
+  # Scaling PR C: the edge dashboard, API Gateway and WAF (api_waf_dashboards.tf in the module).
+  # Production only: dashboards past the account's first three cost US$3 a month each.
+  edge_dashboard_enabled = true
   api_dashboard_apis = [
     {
       label            = "Public API"
