@@ -908,6 +908,37 @@
     );
   }
 
+  // The whole AWS bill (common/stats_tracking.py's public_view `aws_bill`, from Cost Explorer):
+  // three groups and a total, never every service -- the per-service figures stay in the table.
+  // Absent until the daily poll has run once.
+  var AWS_BILL_LABELS = {
+    ai: "AI (Bedrock)",
+    security: "Security (firewall)",
+    infrastructure: "Infrastructure (hosting, data, monitoring)",
+  };
+
+  function appendAwsBill(wrap, bill, isCurrentWeek) {
+    if (!bill) {
+      return;
+    }
+    var rows = (bill.categories || []).map(function (category) {
+      return [AWS_BILL_LABELS[category.category] || category.category, formatAud(category.cost_aud)];
+    });
+    rows.push(["Total", formatAud(bill.total_aud)]);
+    wrap.appendChild(statsTable(["AWS bill", "Cost (AUD)"], rows));
+    var when = isCurrentWeek
+      ? "This week so far, to yesterday."
+      : bill.since
+        ? "Every complete week since " + bill.since + "."
+        : "";
+    wrap.appendChild(
+      el("p", {
+        className: "stats-note",
+        text: when + " From the AWS bill (~24h lag), before tax; dev and production together.",
+      })
+    );
+  }
+
   // `apiGatewayNote` distinguishes Weekly Stats' rolling-30-day reading from Total Stats'
   // reuse of that same reading (a snapshot, never summed across weeks -- see this section's
   // own note in renderStats). `isCurrentWeek` is true for Weekly Stats.
@@ -960,6 +991,7 @@
         (data.categories || []).map(categoryRow)
       )
     );
+    appendAwsBill(wrap, data.aws_bill, isCurrentWeek);
     return wrap;
   }
 

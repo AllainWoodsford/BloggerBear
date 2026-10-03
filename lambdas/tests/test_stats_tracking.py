@@ -771,3 +771,132 @@ def test_public_view_shows_a_zero_waf_month_as_zero_not_missing(table):
     _record_waf(usd_month_to_date=Decimal("0"))
 
     assert st.public_view(_row(table))["waf"]["cost_aud_month_to_date"] == 0.0
+
+
+# --- The whole AWS bill: this week, each complete week, and all time ---------------------------
+
+
+@pytest.fixture
+def bill_tables(monkeypatch):
+    monkeypatch.setenv("STATS_HISTORY_TABLE", "StatsHistory")
+    with mock_aws():
+        dynamodb = boto3.client("dynamodb", region_name=REGION)
+        for name, key in (("StatsCurrent", "stats_id"), ("StatsHistory", "week_start")):
+            dynamodb.create_table(
+                TableName=name,
+                KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
+                AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],
+                BillingMode="PAY_PER_REQUEST",
+            )
+        yield boto3.resource("dynamodb", region_name=REGION).Table("StatsHistory")
+
+
+AS_OF = "2026-10-03T10:00:00+00:00"
+
+
+def _history_week(history, week_start, **fields):
+    history.put_item(Item={"week_start": week_start, st.FEEDBACK_GIVEN: 1, **fields})
+
+
+def test_this_weeks_bill_is_kept_per_service_on_the_current_row(bill_tables):
+    week = {"AWS WAF": Decimal("2.10"), "AmazonCloudWatch": Decimal("0.70")}
+
+    st.record_aws_bill(week_to_date=week, complete_weeks={}, as_of=AS_OF)
+
+    assert _row(None)[st.AWS_BILL_WEEK_USD] == week
+
+
+def test_a_completed_week_gets_its_whole_bill_once_the_rollover_has_made_its_row(bill_tables):
+    # The rollover copied a partial week (it never sees the Sunday); the poll overwrites it.
+    _history_week(bill_tables, "2026-09-21", **{st.AWS_BILL_WEEK_USD: {"AWS WAF": Decimal("1.00")}})
+
+    result = st.record_aws_bill(
+        week_to_date={},
+        complete_weeks={
+            "2026-09-14": {"AWS WAF": Decimal("9.99")},  # no row: before Stats existed, left alone
+            "2026-09-21": {"AWS WAF": Decimal("2.50"), "Amazon DynamoDB": Decimal("0.40")},
+        },
+        as_of=AS_OF,
+    )
+
+    assert result["weeks_filled"] == ["2026-09-21"]
+    row = bill_tables.get_item(Key={"week_start": "2026-09-21"})["Item"]
+    assert row[st.AWS_BILL_WEEK_USD] == {"AWS WAF": Decimal("2.50"), "Amazon DynamoDB": Decimal("0.40")}
+    assert row[st.AWS_BILL_WEEK_COMPLETE] is True
+    assert row[st.FEEDBACK_GIVEN] == 1  # the rest of the week's row is untouched
+    assert "Item" not in bill_tables.get_item(Key={"week_start": "2026-09-14"})
+
+
+def test_the_all_time_bill_is_the_sum_of_every_complete_week_recomputed_each_time(bill_tables):
+    complete = {st.AWS_BILL_WEEK_COMPLETE: True}
+    _history_week(bill_tables, "2026-09-14", **{st.AWS_BILL_WEEK_USD: {"AWS WAF": Decimal("2")}}, **complete)
+    _history_week(bill_tables, "2026-09-21")  # rolled over, bill not known yet: not counted
+    _history_week(bill_tables, "2026-09-28", **{st.AWS_BILL_WEEK_USD: {"AWS WAF": Decimal("9")}})  # partial
+
+    for _ in range(2):  # a second poll must not double it
+        st.record_aws_bill(
+            week_to_date={},
+            complete_weeks={"2026-09-21": {"AWS WAF": Decimal("3"), "AWS Lambda": Decimal("0.5")}},
+            as_of=AS_OF,
+        )
+
+    totals = bill_tables.get_item(Key={"week_start": "all-time"})["Item"]
+    assert totals[st.AWS_BILL_TOTAL_USD] == {"AWS WAF": Decimal("5"), "AWS Lambda": Decimal("0.5")}
+    assert totals[st.AWS_BILL_TOTAL_SINCE] == "2026-09-14"
+    assert totals[st.AWS_BILL_TOTAL_WEEKS] == 2
+
+
+def test_the_bill_never_rolls_onto_the_all_time_row():
+    row = {
+        "stats_id": "current",
+        "week_start": "2026-09-28",
+        st.FEEDBACK_GIVEN: 2,
+        st.AWS_BILL_WEEK_USD: {"AWS WAF": Decimal("1")},
+        st.AWS_BILL_AS_OF: AS_OF,
+    }
+
+    additive, snapshot = st.split_for_rollover(row)
+
+    assert additive == {st.FEEDBACK_GIVEN: 2}
+    assert snapshot == {}
+
+
+def test_a_bill_failure_never_raises(monkeypatch):
+    monkeypatch.delenv("STATS_CURRENT_TABLE")
+    result = st.record_aws_bill(week_to_date={}, complete_weeks={"2026-09-21": {}}, as_of=AS_OF)
+    assert result["weeks_filled"] == []
+
+
+def test_public_view_shows_the_bill_as_three_groups_and_a_total_never_per_service():
+    week = {
+        "Amazon Bedrock": Decimal("1.00"),
+        "Claude Haiku 4.5 (Amazon Bedrock Edition)": Decimal("1.00"),
+        "AWS WAF": Decimal("2.00"),
+        "AmazonCloudWatch": Decimal("0.50"),
+        "Amazon CloudFront": Decimal("0.50"),
+    }
+
+    bill = st.public_view({st.AWS_BILL_WEEK_USD: week})["aws_bill"]
+
+    assert bill == {
+        "categories": [
+            {"category": "ai", "cost_aud": 3.0},
+            {"category": "security", "cost_aud": 3.0},
+            {"category": "infrastructure", "cost_aud": 1.5},
+        ],
+        "total_aud": 7.5,
+        "since": None,
+    }
+    assert "CloudWatch" not in str(bill)
+
+
+def test_public_view_of_the_all_time_row_shows_the_total_since_the_first_week():
+    row = {st.AWS_BILL_TOTAL_USD: {"AWS Lambda": Decimal("2")}, st.AWS_BILL_TOTAL_SINCE: "2026-09-14"}
+
+    bill = st.public_view(row)["aws_bill"]
+
+    assert bill["total_aud"] == 3.0 and bill["since"] == "2026-09-14"
+
+
+def test_public_view_has_no_bill_until_the_first_poll():
+    assert st.public_view({"week_start": "2026-09-28"})["aws_bill"] is None

@@ -1,5 +1,6 @@
-"""Tests for common/cost_explorer.py: one Cost Explorer read for API Gateway, AgentCore and AWS WAF,
-grouped by service, counted into a rolling 30 days, this week, this month and last month.
+"""Tests for common/cost_explorer.py: one Cost Explorer read of the whole bill, grouped by service,
+counted into a rolling 30 days, this week, this month, last month and each recent complete week,
+with API Gateway, AgentCore and AWS WAF always present.
 
 The real `ce` client is mocked directly, not via moto -- moto's Cost Explorer support (as of the
 version pinned here) always returns an empty ResultsByTime regardless of what's "in" the account,
@@ -15,9 +16,14 @@ from unittest.mock import MagicMock, patch
 
 from common.cost_explorer import (
     AGENTCORE_SERVICE,
+    AI_CATEGORY,
     API_GATEWAY_SERVICE,
+    INFRASTRUCTURE_CATEGORY,
     POLLED_SERVICES,
+    SECURITY_CATEGORY,
+    TAX_SERVICE,
     WAF_SERVICE,
+    bill_category,
     fetch_costs,
 )
 
@@ -100,16 +106,20 @@ def test_the_call_starts_at_the_earliest_window_and_ends_today_exclusive():
     _, client = _fetch(_grouped())
 
     kwargs = client.get_cost_and_usage.call_args.kwargs
-    assert kwargs["TimePeriod"] == {"Start": "2026-09-01", "End": "2026-10-03"}  # last month began first
+    # The six complete weeks before this one began first: Monday 2026-08-17.
+    assert kwargs["TimePeriod"] == {"Start": "2026-08-17", "End": "2026-10-03"}
     assert kwargs["Granularity"] == "DAILY"
-    assert kwargs["Filter"] == {"Dimensions": {"Key": "SERVICE", "Values": list(POLLED_SERVICES)}}
+    assert "Filter" not in kwargs  # the whole bill, every service
     assert kwargs["GroupBy"] == [{"Type": "DIMENSION", "Key": "SERVICE"}]
 
 
-def test_early_in_a_month_the_30_days_start_before_last_month_does():
-    _, client = _fetch(_grouped(), today=date(2026, 3, 1))
+def test_with_fewer_complete_weeks_the_30_days_can_start_first():
+    client = MagicMock()
+    client.get_cost_and_usage.return_value = _grouped()
+    with patch("common.cost_explorer._ce_client", return_value=client):
+        fetch_costs(today=date(2026, 3, 1), complete_weeks=1)  # 1 March 2026 is a Sunday
 
-    # 30 days before 1 March is 30 January, earlier than 1 February.
+    # 30 days before 1 March is 30 January: earlier than 1 February and the week of 16 February.
     assert client.get_cost_and_usage.call_args.kwargs["TimePeriod"] == {
         "Start": "2026-01-30",
         "End": "2026-03-01",
@@ -150,14 +160,57 @@ def test_the_service_names_match_the_bill():
     assert WAF_SERVICE == "AWS WAF"
 
 
-def test_a_service_not_asked_for_is_ignored():
+def test_every_other_service_on_the_bill_is_read_too_but_not_tax():
     reading, _ = _fetch(
-        _grouped(_day("2026-09-20", **{"Amazon DynamoDB": "9.99", API_GATEWAY_SERVICE: "1.00"}))
+        _grouped(
+            _day(
+                "2026-09-29",
+                **{"Amazon DynamoDB": "0.40", "AmazonCloudWatch": "0.10", TAX_SERVICE: "0.05"},
+            )
+        )
     )
 
-    assert "Amazon DynamoDB" not in reading.usd_30d and reading.usd_30d[API_GATEWAY_SERVICE] == Decimal(
-        "1.00"
+    assert reading.usd_30d == {
+        **_zero(),
+        "Amazon DynamoDB": Decimal("0.40"),
+        "AmazonCloudWatch": Decimal("0.10"),
+    }
+    assert reading.week_to_date["Amazon DynamoDB"] == Decimal("0.40")
+    assert TAX_SERVICE not in reading.week_to_date
+
+
+def test_each_complete_week_is_read_in_full_monday_to_sunday():
+    reading, _ = _fetch(
+        _grouped(
+            _day("2026-08-16", **{WAF_SERVICE: "100"}),  # the Sunday before the first week: nowhere
+            _day("2026-08-17", **{WAF_SERVICE: "1"}),  # Monday of the first complete week
+            _day("2026-09-21", **{WAF_SERVICE: "2", "Amazon S3": "0.01"}),  # last week's Monday
+            _day("2026-09-27", **{WAF_SERVICE: "4"}),  # last week's Sunday
+            _day("2026-09-28", **{WAF_SERVICE: "8"}),  # this week: not a complete week
+        )
     )
+
+    assert list(reading.complete_weeks) == [
+        "2026-08-17",
+        "2026-08-24",
+        "2026-08-31",
+        "2026-09-07",
+        "2026-09-14",
+        "2026-09-21",
+    ]
+    assert reading.complete_weeks["2026-08-17"] == {WAF_SERVICE: Decimal("1")}
+    assert reading.complete_weeks["2026-09-21"] == {WAF_SERVICE: Decimal("6"), "Amazon S3": Decimal("0.01")}
+    assert reading.complete_weeks["2026-09-14"] == {}
+
+
+def test_services_are_grouped_into_three_categories_for_the_stats_page():
+    assert bill_category("Amazon Bedrock") == AI_CATEGORY
+    assert bill_category(AGENTCORE_SERVICE) == AI_CATEGORY
+    assert bill_category("Claude Haiku 4.5 (Amazon Bedrock Edition)") == AI_CATEGORY
+    assert bill_category(WAF_SERVICE) == SECURITY_CATEGORY
+    assert bill_category("AWS Secrets Manager") == SECURITY_CATEGORY
+    for service in ("AmazonCloudWatch", "Amazon CloudFront", "AWS Lambda", "Amazon DynamoDB", "New"):
+        assert bill_category(service) == INFRASTRUCTURE_CATEGORY
 
 
 def test_a_missing_amount_key_or_date_is_skipped_not_a_crash():

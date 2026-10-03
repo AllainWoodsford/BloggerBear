@@ -30,7 +30,10 @@ READING = CostReading(
     week_start="2026-09-28",
     month="2026-10",
     previous_month_label="2026-09",
+    complete_weeks={"2026-09-21": {WAF_SERVICE: Decimal("2.50"), "Amazon DynamoDB": Decimal("0.40")}},
 )
+# The whole bill: a service with no reading of its own still counts in the 30-day total.
+READING.usd_30d["AmazonCloudWatch"] = Decimal("3.00")
 
 
 def _fetch(**kwargs):
@@ -42,16 +45,21 @@ def _recorders():
         patch("cost_explorer_poll_handler.record_api_gateway_cost"),
         patch("cost_explorer_poll_handler.record_agentcore_cost"),
         patch("cost_explorer_poll_handler.record_waf_cost"),
+        patch(
+            "cost_explorer_poll_handler.record_aws_bill",
+            return_value={"weeks_filled": ["2026-09-21"], "total_weeks": 1},
+        ),
     )
 
 
 def test_a_successful_poll_records_every_reading_and_reports_them():
-    api_gateway_patch, agentcore_patch, waf_patch = _recorders()
+    api_gateway_patch, agentcore_patch, waf_patch, bill_patch = _recorders()
     with (
         _fetch(return_value=READING) as mock_fetch,
         api_gateway_patch as mock_api_gateway,
         agentcore_patch as mock_agentcore,
         waf_patch as mock_waf,
+        bill_patch as mock_bill,
     ):
         result = cost_explorer_poll_handler.handler({}, None)
 
@@ -72,6 +80,13 @@ def test_a_successful_poll_records_every_reading_and_reports_them():
         "previous_month": "2026-09",
         "as_of": result["as_of"],
     }
+    assert mock_bill.call_args.kwargs == {
+        "week_to_date": READING.week_to_date,
+        "complete_weeks": READING.complete_weeks,
+        "as_of": result["as_of"],
+    }
+    assert result["aws_bill_usd_30d"] == "26.80"  # 12.34 + 0.56 + 10.90 + 3.00
+    assert result["aws_bill_weeks_filled"] == ["2026-09-21"]
 
 
 def test_a_failure_fetching_cost_is_reported_not_raised():
@@ -83,12 +98,13 @@ def test_a_failure_fetching_cost_is_reported_not_raised():
 
 
 def test_a_failure_recording_the_reading_is_reported_not_raised():
-    _, agentcore_patch, waf_patch = _recorders()
+    _, agentcore_patch, waf_patch, bill_patch = _recorders()
     with (
         _fetch(return_value=READING),
         patch("cost_explorer_poll_handler.record_api_gateway_cost", side_effect=RuntimeError("dynamo down")),
         agentcore_patch,
         waf_patch,
+        bill_patch,
     ):
         result = cost_explorer_poll_handler.handler({}, None)
 
