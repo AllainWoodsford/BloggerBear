@@ -32,7 +32,7 @@ variable "github_repo" {
 
 variable "domain_name" {
   type        = string
-  default     = ""
+  default     = "bloggerbear.com"
   description = <<-EOT
     The site's domain (e.g. "bloggerbear.com"). When set, this creates the Route 53 hosted zone for it
     HERE, not in an environment, on purpose: the zone's four name servers are what you type into your
