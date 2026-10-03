@@ -294,6 +294,9 @@ data "aws_iam_policy_document" "lambda_exec" {
       # test suite because moto's mocked DynamoDB doesn't enforce IAM.
       "dynamodb:Scan",
       "dynamodb:DeleteItem",
+      # Scaling PR B: the sharded counters (the week's Stats row, article view counts) are
+      # summed from several items, fetched in one BatchGetItem rather than one GetItem each.
+      "dynamodb:BatchGetItem",
     ]
     resources = module.app_data.table_arns
   }
@@ -493,6 +496,10 @@ locals {
     # activity counters -- see common/stats_tracking.py. Harmless on every other Lambda.
     STATS_CURRENT_TABLE = module.app_data.stats_current_table_name
     STATS_HISTORY_TABLE = module.app_data.stats_history_table_name
+
+    # Scaling PR B: sharded article view counters (common/dynamo.py's increment_view_count /
+    # get_view_count), read by the public and admin APIs. Harmless on every other Lambda.
+    VIEW_COUNTS_TABLE = module.app_data.view_counts_table_name
 
     # The AgentCore web search gateway (module.web_search below): the
     # fallback search backend common/web_search.py uses when GDELT fails,

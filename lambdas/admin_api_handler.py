@@ -45,6 +45,7 @@ from common.dynamo import (
     get_prompt_refinement,
     get_stats_history_row,
     get_topic,
+    get_view_count,
     increment_stats_totals,
     list_all_articles,
     list_all_moderation_items,
@@ -518,6 +519,18 @@ def _topic_display_name(topic_id: str) -> str:
     return (topic or {}).get("name", topic_id)
 
 
+def _baked_view_count(article: dict) -> int:
+    """The view count written into a freshly rendered page (the page's own script replaces it with
+    the live count on the first view). A counter read failing never stops a publish: the count kept
+    on the article from before view counts were sharded is used instead."""
+    stored = int(article.get("view_count", 0))
+    try:
+        return get_view_count(article["article_id"], stored_view_count=stored)
+    except Exception as exc:  # noqa: BLE001 - a view count must never block a publish
+        print(f"admin_api_handler: could not read view counters for {article['article_id']}: {exc!r}")
+        return stored
+
+
 def _render_published_page(article: dict, *, published_at: str) -> None:
     """Regenerate the static article page (docs/project-plan.md §11) and
     generate an article musing for an article that just became published.
@@ -549,7 +562,7 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         topic_name=topic_name,
         published_at=published_at,
         source_refs=article.get("source_refs"),
-        view_count=int(article.get("view_count", 0)),
+        view_count=_baked_view_count(article),
         # lineage was fixed at draft time and never changes -- reread from
         # the already-stored article, not recomputed here. published_by is
         # hardcoded "humans": both routes reaching this function (approve,

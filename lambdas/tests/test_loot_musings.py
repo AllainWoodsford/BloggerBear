@@ -167,8 +167,9 @@ def test_announcing_a_loot_drop_records_the_stat(monkeypatch):
         announce(RuntimeError("no model needed for this check"))
         announce(RuntimeError("no model needed for this check"))
 
-        stats_table = boto3.resource("dynamodb", region_name=REGION).Table("StatsCurrent")
-        row = stats_table.get_item(Key={"stats_id": "current"}).get("Item", {})
+        from common.dynamo import get_current_stats
+
+        row = get_current_stats()  # the base row and its shards, summed
         assert row.get("loot_drops") == 2
 
 

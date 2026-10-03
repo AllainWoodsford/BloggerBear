@@ -95,8 +95,12 @@ runs in the background and comes back to the inbox for approval (see §11, "Re-W
 | Musings | `musing_id` | The bear's short posts about articles, feedback and loot |
 | Models / ModelConfig | `model_id` / `config_id` | Model registry and prices; single rows for the default model, pipeline config and feedback config |
 | StatsCurrent / StatsHistory | `stats_id` / `week_start` | This week's counters (Bedrock spend, Lambda time, web search queries/spend, feedback) and past weeks plus an all-time row |
+| ViewCounts | `counter_id` (`<article_id>#<n>`) | Sharded article view counters |
 
-View counts live on the Articles item (`view_count`); there is no separate counters table.
+View counts are sharded: each view ADDs onto one of a few `ViewCounts` items (`counter_id` = `<article_id>#<n>`),
+and a read sums them plus the Articles item's own `view_count`, which holds the count from before sharding
+and is no longer written. StatsCurrent's counters are sharded the same way (`current#<n>`, summed with the
+`current` row). See §11, "Scaling B".
 
 ## 6) Adapter Contract
 Each new domain provides an adapter implementing the same contract:
@@ -1616,6 +1620,47 @@ needs. Plain `<link rel="stylesheet">` is back. Both files are about 5KB over th
 (`style-src 'self'`) would need a hash regenerated on every CSS change, and already-published article
 pages are static HTML that would need regenerating. `preload-styles.js` stays deployed as a legacy shim
 (it now switches the links on immediately) for article pages published while #125 was live.
+
+### Scaling B: sharded hot counters
+
+**Status: built** (one of three scaling PRs; secondary indexes and the public API's caching, throttling and
+dashboards are the other two).
+
+**Problem:** two counters were each one DynamoDB item written on every event. DynamoDB takes about 1,000
+writes a second on a single item, however much capacity the table has.
+- **The week's Stats row** (StatsCurrent, `stats_id = "current"`): every tracked Bedrock call (musings,
+  reflection, gear naming, comment screening), every feedback submission, every web search and every
+  pipeline Lambda run ADDed onto it. This, not StatsHistory's all-time row, is the per-call hotspot: the
+  all-time row is written once a week by the rollover (and once ever by the articles backfill), so it is
+  left as it is.
+- **Article view counts:** every page view ADDed onto the article's own Articles item, so one popular
+  article was one hot item, and each view rewrote an item that also carries the article's lineage.
+
+**What changed:**
+- **Stats:** increments land on one of 8 shard rows (`current#0` to `current#7`, picked at random).
+  `get_current_stats` fetches the `current` row and every shard in one strongly consistent BatchGetItem and
+  sums them into the single row shape every reader already used: numbers are added, `week_start` is the
+  earliest, and the snapshot fields (Cost Explorer readings), which stay SET on the `current` row, are taken
+  from it. The rollover copies and totals that sum and deletes every row. The Stats page and API output is
+  unchanged (a test compares one row against the same figures spread over shards).
+- **Views: sharded, not batched.** A view ADDs onto one of 4 items in a new `ViewCounts` table, keyed
+  `<article_id>#<n>`, so each shard is its own partition key and the writes really do spread. The returned
+  total is that shard's new value (read back from the write, so the reader's own view always counts), plus an
+  eventually consistent BatchGetItem of the other shards, plus the article's pre-sharding `view_count`. The
+  article detail reads the same total and falls back to the stored count if the counters can't be read.
+  Batching through SQS was the alternative. It would cut the write count further, but it adds a queue, a
+  consumer Lambda, a dead-letter path and alarms to run, makes the count lag, and costs about the same per
+  view (an SQS request against a DynamoDB write). Exact counts with no new moving parts won.
+- **No migration.** Both readers add in the old single item (the `current` row, the article's `view_count`),
+  so nothing is copied or rewritten and there is nothing to re-run.
+- IAM: the Lambda role gains `dynamodb:BatchGetItem` on the app tables; the new table is in `table_arns`. The
+  deploy role's `dynamodb:*` on `table/bloggerbear-*` already covers creating it.
+
+**Cost per view:** one write (as before) plus about 1.5 read units for the other shards. The Stats page reads
+9 small rows instead of 1.
+
+**Known limit, unchanged by this:** the rollover reads, writes history, then deletes, so an increment that
+lands between the read and the delete is lost, exactly as it was with one row.
 
 ### Observability, security and content fixes (October 2026 batch)
 
