@@ -6,6 +6,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import weekly_reflection_handler
 
@@ -47,13 +48,15 @@ def named_gear():
 def aws_resources(aws_env):
     with mock_aws():
         dynamodb = boto3.client("dynamodb", region_name=REGION)
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Feedback",
             KeySchema=[
                 {"AttributeName": "article_id", "KeyType": "HASH"},
@@ -65,7 +68,8 @@ def aws_resources(aws_env):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="PromptRefinements",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import admin_api_handler
 
@@ -59,13 +60,15 @@ def aws_env(monkeypatch):
 def aws_resources(aws_env):
     with mock_aws():
         dynamodb = boto3.client("dynamodb", region_name=REGION)
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Topics",
             KeySchema=[{"AttributeName": "topic_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "topic_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Findings",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
@@ -77,7 +80,8 @@ def aws_resources(aws_env):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="CandidateIdeas",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
@@ -89,19 +93,22 @@ def aws_resources(aws_env):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="ModerationQueue",
             KeySchema=[{"AttributeName": "queue_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "queue_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="PromptRefinements",
             KeySchema=[
                 {"AttributeName": "topic_id", "KeyType": "HASH"},
@@ -113,19 +120,22 @@ def aws_resources(aws_env):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="FailedExecutions",
             KeySchema=[{"AttributeName": "failure_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "failure_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="Models",
             KeySchema=[{"AttributeName": "model_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "model_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        dynamodb.create_table(
+        create_table(
+            dynamodb,
             TableName="ModelConfig",
             KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
