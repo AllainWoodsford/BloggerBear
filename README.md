@@ -236,13 +236,18 @@ docs/
   ship. Merging into `prod` does **not** deploy anything by itself.
 - A production deploy happens only when a GitHub Release is published
   from a commit on `prod` (semver tag, e.g. `v0.1.0`), gated by the
-  `production` GitHub Environment's required-reviewer approval. A new
-  release replaces whatever was previously deployed — one Terraform
-  state, no blue/green.
-- Changes reach both branches by PR, by convention: GitHub branch protection
-  isn't available on this repo's plan. What is enforced is that nothing is
-  applied without passing the security scans and lint/tests first, and that
-  production applies only from a Release on `prod`, after approval.
+  `production` GitHub Environment: it accepts only `v*` tags and waits for
+  the required reviewer's approval. A new release replaces whatever was
+  previously deployed — one Terraform state, no blue/green.
+- A repository ruleset (`protect-deploy-branches`) covers `dev`, `master`
+  and `prod`: changes arrive by PR, and force-pushes and deletions are
+  blocked. The repo admin can bypass it (a one-person project must never
+  lock itself out); it stops everyone else. On top of that, nothing is
+  applied without passing the security scans and lint/tests first.
+- Workflows get a read-only `GITHUB_TOKEN` unless they ask for more, and
+  workflows from fork PRs wait for approval. See
+  [docs/todo/public-repo-runsheet.md](docs/todo/public-repo-runsheet.md)
+  for how these settings were applied.
 
 ## Deploying this
 
