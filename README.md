@@ -239,8 +239,9 @@ docs/
   `production` GitHub Environment: it accepts only `v*` tags and waits for
   the required reviewer's approval. A new release replaces whatever was
   previously deployed — one Terraform state, no blue/green.
-- A repository ruleset (`protect-deploy-branches`) covers `dev`, `master`
-  and `prod`: changes arrive by PR, and force-pushes and deletions are
+- There are only these two long-lived branches (the old `master` was retired
+  on 2026-10-04). A repository ruleset (`protect-deploy-branches`) covers
+  both: changes arrive by PR, and force-pushes and deletions are
   blocked. The repo admin can bypass it (a one-person project must never
   lock itself out); it stops everyone else. On top of that, nothing is
   applied without passing the security scans and lint/tests first.

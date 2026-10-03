@@ -13,6 +13,8 @@ public repository with an open-source license (Amazon accepts a public one too).
   limited to the repo owner, and the budget alert email moved out of the repo.
 - Repo settings, checked 2026-10-03: the Actions default `GITHUB_TOKEN` is read-only; the
   `production` environment deploys only from `v*` tags (a hand-added `dev` branch rule was removed).
+- `master` deleted on 2026-10-04: 316 commits behind `dev`, nothing unique on it, no release from it.
+  `dev` (default) and `prod` are the only long-lived branches.
 - Local branches: everything carrying the old email was deleted. The one unmerged document
   (the multi-account IAM feasibility analysis) was recovered onto `docs/multi-account-iam-feasibility`
   with the account IDs replaced by placeholders.
@@ -61,14 +63,14 @@ EOF
 gh api -X PUT repos/$R/vulnerability-alerts
 gh api -X PUT repos/$R/private-vulnerability-reporting
 
-# 3d. Ruleset on dev, master, prod: no force-push, no deletion, changes via PR.
+# 3d. Ruleset on dev and prod: no force-push, no deletion, changes via PR.
 #     Admins (you) can bypass, so solo work is never locked out; the rules stop everyone else.
 gh api -X POST repos/$R/rulesets --input - <<'EOF'
 {
   "name": "protect-deploy-branches",
   "target": "branch",
   "enforcement": "active",
-  "conditions": {"ref_name": {"include": ["refs/heads/dev", "refs/heads/master", "refs/heads/prod"], "exclude": []}},
+  "conditions": {"ref_name": {"include": ["refs/heads/dev", "refs/heads/prod"], "exclude": []}},
   "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
   "rules": [
     {"type": "deletion"},
@@ -91,7 +93,7 @@ EOF
 
 ## 4. Check
 
-- **Settings → Rules:** `protect-deploy-branches` is active on `dev`, `master`, `prod`.
+- **Settings → Rules:** `protect-deploy-branches` is active on `dev` and `prod`.
 - **Settings → Environments → production:** you as required reviewer; allowed refs `v*` only.
 - **Settings → Code security:** secret scanning, push protection, Dependabot alerts and private
   vulnerability reporting all on.
