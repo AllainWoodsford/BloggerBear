@@ -13,8 +13,19 @@ terraform {
   # it keeps it) -- it can never depend on the bucket it's creating.
 }
 
+# The same tags as the environments' default_tags (see infra/environments/*/main.tf), with
+# Environment = "shared": the state bucket, OIDC provider, deploy roles, hosted zone and API
+# Gateway account settings serve dev and production alike.
 provider "aws" {
   region = var.aws_region
+  default_tags {
+    tags = {
+      ManagedBy     = "Terraform"
+      Project       = "BloggerBear"
+      Environment   = "shared"
+      TerraformRoot = "infra/bootstrap"
+    }
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -384,9 +395,14 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid     = "ApiGateway"
     effect  = "Allow"
     actions = ["apigateway:*"]
+    # /tags/*: API Gateway's tagging calls (TagResource/UntagResource/GetTags) address a separate
+    # /tags/<url-encoded resource ARN> path, not the API's own, so the environments' default_tags
+    # (ManagedBy, Project, Environment, TerraformRoot) need it to tag the REST APIs and stages.
+    # Only resources in this account and region; nothing else in it is API Gateway.
     resources = [
       "arn:aws:apigateway:ap-southeast-2::/restapis",
       "arn:aws:apigateway:ap-southeast-2::/restapis/*",
+      "arn:aws:apigateway:ap-southeast-2::/tags/*",
     ]
   }
 
