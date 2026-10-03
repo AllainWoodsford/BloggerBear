@@ -27,8 +27,25 @@ terraform {
   }
 }
 
+# Every resource this root creates carries these tags (the provider's default_tags), so the
+# account can be filtered by them -- by a person, or by an agent looking for orphaned resources
+# (Project = BloggerBear but no ManagedBy) or ones to import (TerraformRoot says which state owns
+# it). Resources the app creates at runtime (per-topic schedules) carry ManagedBy = "admin-api"
+# instead: they are not Terraform's, and must never be imported into it.
+locals {
+  default_tags = {
+    ManagedBy     = "Terraform"
+    Project       = "BloggerBear"
+    Environment   = "production"
+    TerraformRoot = "infra/environments/production"
+  }
+}
+
 provider "aws" {
   region = "ap-southeast-2"
+  default_tags {
+    tags = local.default_tags
+  }
 }
 
 # The CloudFront-scope WAF Web ACL and the ACM certificate used by
@@ -40,6 +57,9 @@ provider "aws" {
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
+  default_tags {
+    tags = local.default_tags
+  }
 }
 
 # -----------------------------------------------------------------------
