@@ -240,7 +240,7 @@ repo goes public (docs/todo/public-repo-runsheet.md).
 workflow on `dev` could have taken the production deploy role. Removed; only `v*` tags now.
 
 **7.3 Curly quotes in `user.email`.** The global git config held
-`“allain.woodsford@studytafensw.edu.au”`, smart quotes included, probably pasted in. Invalid, so
+`“****”` (a TAFE NSW address), smart quotes included, probably pasted in. Invalid, so
 GitHub couldn't link 175 commits to the account. **Fix:** the no-reply address, and GitHub's "block
 command line pushes that expose my email".
 
@@ -276,8 +276,9 @@ they expire after six months at most.
 the full TAFE address, on the same day 175 commits were rewritten to remove it, and merged in #166
 (Claude wrote it; nobody caught it in review). Nothing failed, because no check looked for personal
 data: Trufflehog and Trivy look for credentials, and an email address isn't one. The operator
-decided to leave it, since the address is unused and the repo carries their name anyway. What
-changed is the checks (#167):
+first decided to leave it (the address is unused, and the repo carries their name anyway), then had
+it replaced with `****` in 7.3; it remains in #166's commit in the history. What changed is the
+checks (#167):
 
 - **Gitleaks** in `pr-checks.yml`: its default secret rules plus email addresses (allowlisting
   reserved and no-reply domains) and AWS account IDs. Run against #166's commit, it fails on
