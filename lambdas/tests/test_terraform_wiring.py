@@ -146,10 +146,10 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
 def test_every_table_is_protected_when_asked_and_production_asks():
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('resource "aws_dynamodb_table"') == 14
-    assert tables.count("deletion_protection_enabled = var.protect_data") == 14
+    assert tables.count('resource "aws_dynamodb_table"') == 15
+    assert tables.count("deletion_protection_enabled = var.protect_data") == 15
     assert (
-        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 14
+        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 15
     )  # point-in-time recovery
     assert re.search(r"protect_data\s*=\s*true", _read("environments", "production", "main.tf"))
     assert "protect_data" not in _read("environments", "dev", "main.tf")
@@ -203,11 +203,12 @@ def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env)
 
 def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
     """Findings and ModelConfig already had one; CandidateIdeas, ModerationQueue,
-    PromptRefinements and FailedExecutions are the four this PR adds."""
+    PromptRefinements and FailedExecutions are the four this PR adds. SecurityEvents (120 days
+    after last seen) came later."""
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('attribute_name = "expires_at"') == 6
-    assert tables.count("ttl {") == 6
+    assert tables.count('attribute_name = "expires_at"') == 7
+    assert tables.count("ttl {") == 7
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
@@ -221,8 +222,8 @@ def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
     assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 10  # module.observability's list: each function named once
-    assert len(set(function_names)) == 10
+    assert len(function_names) == 11  # module.observability's list: each function named once
+    assert len(set(function_names)) == 11
 
 
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
@@ -962,7 +963,12 @@ def _table_indexes(table: str) -> list[tuple[str, str, str, str]]:
 
 
 @pytest.mark.parametrize(
-    ("table", "fixture_name"), [("articles", "Articles"), ("moderation_queue", "ModerationQueue")]
+    ("table", "fixture_name"),
+    [
+        ("articles", "Articles"),
+        ("moderation_queue", "ModerationQueue"),
+        ("security_events", "SecurityEvents"),
+    ],
 )
 def test_the_test_fixtures_create_exactly_the_indexes_terraform_does(table, fixture_name):
     """moto only knows the indexes a fixture creates, so a fixture that drifted from Terraform would
@@ -972,7 +978,7 @@ def test_the_test_fixtures_create_exactly_the_indexes_terraform_does(table, fixt
     assert sorted(_table_indexes(table)) == sorted(INDEXES[fixture_name])
 
 
-@pytest.mark.parametrize("table", ["articles", "moderation_queue"])
+@pytest.mark.parametrize("table", ["articles", "moderation_queue", "security_events"])
 def test_every_index_key_is_declared_as_a_string_attribute(table):
     block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", table)
     declared = dict(re.findall(r'attribute \{\n\s*name = "(\w+)"\n\s*type = "(\w)"', block))
@@ -1015,7 +1021,53 @@ def test_dashboard_widget_lists_never_branch_on_a_conditional():
     text = _dashboards()
 
     assert not re.search(r"= .*\? \[\] : concat\(", text)
-    assert (ROOT / "infra" / "modules" / "observability" / "tests" / "edge_dashboard.tftest.hcl").exists()
+    assert (ROOT / "infra" / "modules" / "observability" / "tests" / "observability.tftest.hcl").exists()
     assert "terraform -chdir=\"$dir\" test" in (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(
         encoding="utf-8"
     )
+
+
+# --- Security events (common/security_events.py) ------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_regional_waf_log_groups_feed_the_security_events_lambda_blocks_only(env):
+    text = _read("environments", env, "main.tf")
+
+    assert 'handler       = "security_events_handler.handler"' in text
+    assert "public_api = aws_cloudwatch_log_group.waf_public_api" in text
+    assert "admin      = aws_cloudwatch_log_group.waf_admin" in text
+    assert 'filter_pattern  = "{ $.action = \\"BLOCK\\" }"' in text
+    assert 'principal     = "logs.amazonaws.com"' in text
+    assert 'source_arn    = "${each.value.arn}:*"' in text
+    assert "SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name" in text
+    # The CloudFront ACL's log group is in us-east-1: a subscription can't reach this region's Lambda.
+    assert "waf_shared" not in text.split('resource "aws_lambda_function" "security_events"')[1]
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_high_severity_alarm_watches_both_lambdas_that_record_events(env):
+    block = re.search(
+        r'^module "observability" \{\n(.*?)^\}', _read("environments", env, "main.tf"), re.S | re.M
+    ).group(1)
+
+    assert "aws_lambda_function.security_events.function_name].name" in block
+    assert "security_alert_log_groups = [" in block
+
+
+def test_the_alarm_counts_the_marker_the_code_logs():
+    from common import security_events
+
+    module = _read("modules", "observability", "main.tf")
+    assert f'pattern        = "\\"{security_events.ALERT_MARKER}\\""' in module
+    assert 'metric_name         = "SecurityHighSeverityIncidents"' in module
+
+
+def test_security_events_expire_and_have_an_open_incidents_index():
+    from common import dynamo, security_events
+
+    block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", "security_events")
+    assert 'attribute_name = "expires_at"' in block
+    names = [name for name, *_ in _table_indexes("security_events")]
+    assert names == [dynamo.SECURITY_EVENTS_BY_STATUS_INDEX]
+    assert security_events.RETENTION_DAYS == 120

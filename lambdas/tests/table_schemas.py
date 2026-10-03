@@ -17,6 +17,9 @@ INDEXES: dict[str, list[tuple[str, str, str, str]]] = {
         ("by_status_created_at", "status", "created_at", "ALL"),
         ("by_article_created_at", "article_id", "created_at", "KEYS_ONLY"),
     ],
+    "SecurityEvents": [
+        ("by_status_last_seen", "status", "last_seen", "ALL"),
+    ],
 }
 
 
