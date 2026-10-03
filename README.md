@@ -192,15 +192,17 @@ scripts/
   tests/                     pytest coverage for the scripts
 
 .github/workflows/
-  terraform.yml               validate on PR; on merge to dev, security +
-                                lint/test, then apply -- one run
+  terraform.yml               on merge to dev: security + lint/test, then
+                                apply -- one run
   terraform-production-release.yml   the same checks, then apply to
                                 production on Release
+  pr-checks.yml                 PRs only: terraform fmt/validate and a
+                                trufflehog scan of the PR's commits
   destroy-dev.yml              manual, typed-confirmation teardown of dev
   python-ci.yml                 pytest + ruff on lambdas/scripts (PRs;
                                 called before each apply)
-  security.yml                   trivy (config + fs/secrets) + bandit, and
-                                trufflehog on PRs (called before each apply)
+  security.yml                   trivy (config + fs/secrets) + bandit (every
+                                PR; called before each apply)
 
 docs/
   project-plan.md              architecture, rules, data model -- source
