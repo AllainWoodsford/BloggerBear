@@ -21,7 +21,7 @@ AWS platform friction gets its own section.
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
 | The model in the pipeline | 3 | model output trusted without checking it |
 | Agentic coding | 8 | confident output that wasn't checked against reality |
-| GitHub and the repo | 10 | free private repos can't protect anything |
+| GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 
 ---
@@ -271,6 +271,26 @@ workflows. Limiting both to collaborators closes that surface, on top of the own
 go only through private vulnerability reporting. PRs use GitHub's permanent `collaborators_only`
 setting. **To check after going public:** how issues are restricted. If it's interaction limits,
 they expire after six months at most.
+
+**7.11 The address we'd just removed went back in, in this log.** Entry 7.3 was first written with
+the full TAFE address, on the same day 175 commits were rewritten to remove it, and merged in #166
+(Claude wrote it; nobody caught it in review). Nothing failed, because no check looked for personal
+data: Trufflehog and Trivy look for credentials, and an email address isn't one. The operator
+decided to leave it, since the address is unused and the repo carries their name anyway. What
+changed is the checks (#167):
+
+- **Gitleaks** in `pr-checks.yml`: its default secret rules plus email addresses (allowlisting
+  reserved and no-reply domains) and AWS account IDs. Run against #166's commit, it fails on
+  exactly that line.
+- **`scripts/pii_denylist_check.py`**: exact personal strings, read from the `PII_DENYLIST` secret
+  in CI or a gitignored `.pii-denylist` locally, so the list is never written anywhere public.
+  Findings name the file, line and entry number, never the entry.
+- **A pre-commit hook** (`.githooks/pre-commit`) running both, because a PR check runs after the
+  push, and on a public repo the push alone publishes the content.
+
+**Lesson:** a value you're protecting needs a check that runs before content leaves the machine,
+not a reviewer remembering. Writing a sensitive value into the doc about protecting it is easy
+when the doc's job is to describe exactly that value.
 
 ## 8. Multi-account and OIDC
 

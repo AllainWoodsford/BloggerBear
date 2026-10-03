@@ -83,3 +83,50 @@ jobs:
           path: ./
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
+
+  # Gitleaks over the pull request's commits: its default secret rules, plus email addresses and
+  # AWS account IDs (.gitleaks.toml). Trufflehog verifies live credentials; this catches personal
+  # data no secret scanner looks for (docs/friction.md 7.11). Findings are redacted by the action
+  # (`--redact`), so the log and job summary never repeat what they found. PR comments and the
+  # SARIF artifact are off: comments need write access, and the artifact adds nothing to the
+  # summary. pull-requests: read lets the action list the PR's commits.
+  # Pinned to gitleaks/gitleaks-action@v3.0.0's release commit; the gitleaks binary to 8.30.1.
+  gitleaks:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_CONFIG: .gitleaks.toml
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false
+
+  # The operator's exact personal strings (a name, a home IP, a personal address), from the
+  # PII_DENYLIST repository secret, so the list itself is never written anywhere public. Only
+  # what the PR adds is checked, and a finding names the file, line and entry number -- never the
+  # entry. With the secret unset this passes with a notice. PRs are limited to collaborators, so
+  # every PR runs with access to the secret.
+  pii-denylist:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          fetch-depth: 0
+
+      - name: Personal-data denylist
+        env:
+          PII_DENYLIST: ${{ secrets.PII_DENYLIST }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/pii_denylist_check.py --range "$BASE" "$HEAD"
