@@ -1,10 +1,15 @@
 # Contributing
 
 BloggerBear is a one-person portfolio project, open so people can read, learn from and reuse it.
-**Pull requests aren't expected**, and may be closed without review. Issues pointing out bugs or
-mistakes are welcome.
+**Pull requests and issues are limited to collaborators.** Everyone else is welcome in
+[Discussions](https://github.com/AllainWoodsford/BloggerBear/discussions):
 
-Security problems go through [SECURITY.md](SECURITY.md), never a public issue.
+- **Q&A:** questions about how it works, or running your own copy.
+- **General:** bugs and mistakes you've spotted, on the code or on bloggerbear.com.
+- **Ideas:** suggestions.
+
+Security problems go through [SECURITY.md](SECURITY.md) (private vulnerability reporting), never a
+public discussion.
 
 ## If you fork it
 
