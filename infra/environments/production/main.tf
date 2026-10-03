@@ -10,6 +10,12 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.4"
     }
+    # Scaling PR C: the secret the public API's CloudFront distribution sends to the API
+    # (random_password.api_origin_verify).
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.6"
+    }
   }
 
   backend "s3" {
@@ -21,8 +27,25 @@ terraform {
   }
 }
 
+# Every resource this root creates carries these tags (the provider's default_tags), so the
+# account can be filtered by them -- by a person, or by an agent looking for orphaned resources
+# (Project = BloggerBear but no ManagedBy) or ones to import (TerraformRoot says which state owns
+# it). Resources the app creates at runtime (per-topic schedules) carry ManagedBy = "admin-api"
+# instead: they are not Terraform's, and must never be imported into it.
+locals {
+  default_tags = {
+    ManagedBy     = "Terraform"
+    Project       = "BloggerBear"
+    Environment   = "production"
+    TerraformRoot = "infra/environments/production"
+  }
+}
+
 provider "aws" {
   region = "ap-southeast-2"
+  default_tags {
+    tags = local.default_tags
+  }
 }
 
 # The CloudFront-scope WAF Web ACL and the ACM certificate used by
@@ -34,6 +57,9 @@ provider "aws" {
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
+  default_tags {
+    tags = local.default_tags
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -124,6 +150,9 @@ module "static_site" {
   hosted_zone_id       = var.hosted_zone_id
   redirect_www         = true
   web_acl_id           = aws_wafv2_web_acl.this.arn
+
+  # The frontend calls the public API through its CDN (module.public_api_cdn).
+  extra_connect_src = [module.public_api_cdn.domain_name]
 }
 
 # =========================================================================
@@ -394,8 +423,21 @@ data "aws_iam_policy_document" "lambda_exec" {
       # test suite because moto's mocked DynamoDB doesn't enforce IAM.
       "dynamodb:Scan",
       "dynamodb:DeleteItem",
+      # Scaling PR B: the sharded counters (the week's Stats row, article view counts) are
+      # summed from several items, fetched in one BatchGetItem rather than one GetItem each.
+      "dynamodb:BatchGetItem",
     ]
     resources = module.app_data.table_arns
+  }
+
+  # Scaling PR A: common/dynamo.py Queries the Articles and ModerationQueue tables' global
+  # secondary indexes instead of Scanning them. An index has its own ARN (<table>/index/<name>),
+  # which the table ARNs above do not cover, and nothing but Query is ever run against one.
+  statement {
+    sid       = "DynamoDBAppIndexes"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]
   }
 
   statement {
@@ -592,6 +634,14 @@ locals {
     STATS_CURRENT_TABLE = module.app_data.stats_current_table_name
     STATS_HISTORY_TABLE = module.app_data.stats_history_table_name
 
+    # Scaling PR B: sharded article view counters (common/dynamo.py's increment_view_count /
+    # get_view_count), read by the public and admin APIs. Harmless on every other Lambda.
+    VIEW_COUNTS_TABLE = module.app_data.view_counts_table_name
+
+    # Security events (common/security_events.py): written by the security-events Lambda and the
+    # public API (screened comments). Harmless on every other Lambda.
+    SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name
+
     # The AgentCore web search gateway (module.web_search below): the
     # fallback search backend common/web_search.py uses when GDELT fails,
     # and the "agentcore" provider a topic can ask for directly. Read by
@@ -785,6 +835,11 @@ module "admin_api" {
   authorization        = "AWS_IAM"
   web_acl_id           = aws_wafv2_web_acl.admin.arn
   associate_web_acl    = true
+
+  # Scaling PR C: one operator's CLI and review inbox never come close to this; it only caps
+  # what a leaked credential or a runaway script could make the admin Lambda do.
+  throttling_rate_limit  = 10
+  throttling_burst_limit = 20
 
   routes = toset([
     "GET /topics",
@@ -1307,6 +1362,18 @@ module "public_api" {
   web_acl_id           = aws_wafv2_web_acl.public_api.arn
   associate_web_acl    = true
 
+  # Scaling PR C: a ceiling for the whole API, well above what the site needs (most reads are
+  # now answered by module.public_api_cdn's cache) and well below what would run up a bill.
+  # The feedback POST, which can cost a model call, gets its own lower one; per-visitor limits
+  # stay with aws_wafv2_web_acl.public_api. Access logs carry no visitor details and are kept
+  # as long as the visitor WAF logs.
+  throttling_rate_limit  = 25
+  throttling_burst_limit = 50
+  method_throttling = {
+    "POST /articles/{article_id}/feedback" = { rate_limit = 2, burst_limit = 5 }
+  }
+  access_log_retention_days = local.waf_visitor_log_retention_days
+
   routes = toset([
     "GET /topics",
     # Static article publishing (docs/project-plan.md §11): a derived
@@ -1334,6 +1401,33 @@ module "public_api" {
     "GET /equipment",
     "GET /rss.xml",
   ])
+}
+
+# -----------------------------------------------------------------------
+# Scaling PR C: the public API behind its own CloudFront distribution (see
+# infra/modules/api-cdn for why it isn't a behaviour on the site's), so listings, articles and
+# RSS are served from the edge. The frontend calls it (config.js below); the execute-api URL keeps
+# working for anything already pointed at it, such as RSS readers.
+#
+# The secret it sends with every request tells aws_wafv2_web_acl.public_api which requests came
+# through it, so their per-visitor limits can use the visitor address CloudFront records
+# (x-viewer-ip) rather than the edge address every visitor shares.
+# -----------------------------------------------------------------------
+resource "random_password" "api_origin_verify" {
+  length  = 32
+  special = false
+}
+
+module "public_api_cdn" {
+  source = "../../modules/api-cdn"
+
+  environment_name     = "production"
+  api_domain           = module.public_api.api_domain
+  stage_name           = module.public_api.stage_name
+  origin_verify_secret = random_password.api_origin_verify.result
+  # The shared CLOUDFRONT-scope ACL above: per-visitor rate limiting and the managed rules at the
+  # edge, in front of the cache.
+  web_acl_id = aws_wafv2_web_acl.this.arn
 }
 
 # -----------------------------------------------------------------------
@@ -1366,10 +1460,35 @@ resource "aws_wafv2_web_acl" "public_api" {
       block {}
     }
 
+    # Scaling PR C: direct calls only (no x-origin-verify). Through the CDN every request arrives
+    # from an edge address many visitors share, so those are limited per visitor by
+    # rate-limit-via-cdn below instead.
     statement {
       rate_based_statement {
         limit              = 500
         aggregate_key_type = "IP"
+
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = random_password.api_origin_verify.result
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  single_header {
+                    name = "x-origin-verify"
+                  }
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -1384,8 +1503,9 @@ resource "aws_wafv2_web_acl" "public_api" {
   # -- the same AWS Managed Common Rule Set already used by the
   # CLOUDFRONT-scope shared ACL (aws_wafv2_web_acl.this above), applied
   # here too since this REGIONAL ACL is the only thing directly in front
-  # of the public API Gateway (CloudFront doesn't sit in front of API
-  # Gateway in this architecture). Not added to aws_wafv2_web_acl.admin
+  # of the public API Gateway (including
+  # requests through module.public_api_cdn, which has an edge WAF only
+  # where the shared ACL is attached). Not added to aws_wafv2_web_acl.admin
   # below -- that ACL already default-blocks everything except the
   # operator's own allowlisted IP, which is stricter than any managed
   # rule set could add.
@@ -1411,18 +1531,45 @@ resource "aws_wafv2_web_acl" "public_api" {
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
 
+        # Direct calls only, as for rate-limit above; feedback-rate-limit-via-cdn covers the rest.
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/feedback"
-            positional_constraint = "ENDS_WITH"
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/feedback"
+                positional_constraint = "ENDS_WITH"
 
-            field_to_match {
-              uri_path {}
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
             }
 
-            text_transformation {
-              priority = 0
-              type     = "NONE"
+            statement {
+              not_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = random_password.api_origin_verify.result
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      single_header {
+                        name = "x-origin-verify"
+                      }
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -1454,6 +1601,121 @@ resource "aws_wafv2_web_acl" "public_api" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "bloggerbear-production-public-api-common-rule-set"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Scaling PR C: the same two limits for requests that came through module.public_api_cdn (they
+  # carry its secret), counted per visitor from the x-viewer-ip header its CloudFront Function
+  # sets. Only cache misses and POSTs get this far, so a visitor browsing cached pages uses none
+  # of it. A request whose header is missing or unreadable is never blocked by these (NO_MATCH).
+  rule {
+    name     = "rate-limit-via-cdn"
+    priority = 4
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 500
+        aggregate_key_type = "FORWARDED_IP"
+
+        forwarded_ip_config {
+          header_name       = "x-viewer-ip"
+          fallback_behavior = "NO_MATCH"
+        }
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = random_password.api_origin_verify.result
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              single_header {
+                name = "x-origin-verify"
+              }
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-production-public-api-rate-limit-via-cdn"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "feedback-rate-limit-via-cdn"
+    priority = 5
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = 10
+        evaluation_window_sec = 300
+        aggregate_key_type    = "FORWARDED_IP"
+
+        forwarded_ip_config {
+          header_name       = "x-viewer-ip"
+          fallback_behavior = "NO_MATCH"
+        }
+
+        scope_down_statement {
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/feedback"
+                positional_constraint = "ENDS_WITH"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = random_password.api_origin_verify.result
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  single_header {
+                    name = "x-origin-verify"
+                  }
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-production-public-api-feedback-rate-limit-via-cdn"
       sampled_requests_enabled   = true
     }
   }
@@ -1509,6 +1771,8 @@ locals {
     "sec-ch-ua-model",
     "sec-ch-ua-full-version-list",
     "sec-ch-ua-wow64",
+    # Not a fingerprint: the secret module.public_api_cdn sends, which must not end up in a log.
+    "x-origin-verify",
   ]
   waf_visitor_log_retention_days = 14
 }
@@ -1632,6 +1896,7 @@ locals {
     "bloggerbear-production-cost-explorer-poll",
     "bloggerbear-production-trending-digest",
     "bloggerbear-production-musing-feedback",
+    "bloggerbear-production-security-events",
   ]
 }
 
@@ -1802,7 +2067,7 @@ resource "aws_s3_object" "frontend_config" {
   cache_control = "no-cache"
 
   content = <<-EOT
-    window.PUBLIC_API_URL = "${module.public_api.invoke_url}";
+    window.PUBLIC_API_URL = "${module.public_api_cdn.url}";
     window.SITE_URL = "${local.site_url}";
   EOT
 }
@@ -1954,6 +2219,7 @@ locals {
     aws_lambda_function.musing_feedback.function_name,
     aws_lambda_function.stats_rollover.function_name,
     aws_lambda_function.cost_explorer_poll.function_name,
+    aws_lambda_function.security_events.function_name,
   ]
 }
 
@@ -1968,6 +2234,54 @@ module "observability" {
 
   # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
   feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
+
+  # The Lambdas that record security events, each logging one SECURITY_ALERT line per
+  # high-severity incident (see the Security events section below).
+  security_alert_log_groups = [
+    aws_cloudwatch_log_group.lambda[aws_lambda_function.security_events.function_name].name,
+    aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name,
+  ]
+
+  # Scaling PR C: the edge dashboard, API Gateway and WAF (api_waf_dashboards.tf in the module).
+  # Production only: dashboards past the account's first three cost US$3 a month each.
+  edge_dashboard_enabled = true
+  api_dashboard_apis = [
+    {
+      label            = "Public API"
+      api_name         = module.public_api.api_name
+      stage            = module.public_api.stage_name
+      access_log_group = module.public_api.access_log_group_name
+    },
+    {
+      label            = "Admin API"
+      api_name         = module.admin_api.api_name
+      stage            = module.admin_api.stage_name
+      access_log_group = module.admin_api.access_log_group_name
+    },
+  ]
+  api_cdn = {
+    distribution_id            = module.public_api_cdn.distribution_id
+    additional_metrics_enabled = module.public_api_cdn.additional_metrics_enabled
+    api_name                   = module.public_api.api_name
+    stage                      = module.public_api.stage_name
+  }
+  waf_regional_acls = [
+    {
+      label       = "Public API"
+      metric_name = aws_wafv2_web_acl.public_api.visibility_config[0].metric_name
+      log_group   = aws_cloudwatch_log_group.waf_public_api.name
+    },
+    {
+      label       = "Admin API"
+      metric_name = aws_wafv2_web_acl.admin.visibility_config[0].metric_name
+      log_group   = aws_cloudwatch_log_group.waf_admin.name
+    },
+  ]
+  waf_cloudfront_acl = {
+    label       = "Site (CloudFront)"
+    metric_name = aws_wafv2_web_acl.this.visibility_config[0].metric_name
+    log_group   = aws_cloudwatch_log_group.waf_shared.name
+  }
 }
 
 # =========================================================================
@@ -2074,4 +2388,60 @@ resource "aws_scheduler_schedule" "musing_feedback" {
     arn      = aws_lambda_function.musing_feedback.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
   }
+}
+
+# =========================================================================
+# Security events (lambdas/common/security_events.py): every request a REGIONAL WAF blocks (public
+# API, admin API) reaches security_events_handler.py through a CloudWatch Logs subscription filter,
+# which groups them into incidents in the SecurityEvents table: category, severity, suggested next
+# steps, status, a keyed hash of the client (never the IP), kept 120 days. The public API adds
+# comments that comment screening dropped as attacks. A high-severity incident raises
+# module.observability's security alarm once.
+#
+# The shared CloudFront ACL is not subscribed: its log group is in us-east-1, and a subscription
+# filter can only deliver to a Lambda in its own region. Public API traffic passes the regional ACL
+# too, so it is covered.
+# =========================================================================
+resource "aws_lambda_function" "security_events" {
+  function_name = "bloggerbear-production-security-events"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "security_events_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 60
+  memory_size   = 256
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  environment {
+    variables = local.lambda_env_variables
+  }
+}
+
+locals {
+  security_event_waf_log_groups = {
+    public_api = aws_cloudwatch_log_group.waf_public_api
+    admin      = aws_cloudwatch_log_group.waf_admin
+  }
+}
+
+resource "aws_lambda_permission" "security_events_from_waf_logs" {
+  for_each      = local.security_event_waf_log_groups
+  statement_id  = "AllowWafLogs-${each.key}"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.security_events.function_name
+  principal     = "logs.amazonaws.com"
+  source_arn    = "${each.value.arn}:*"
+}
+
+# BLOCK records only: the public ACL logs blocks and counts, the admin ACL logs everything.
+resource "aws_cloudwatch_log_subscription_filter" "security_events" {
+  for_each        = local.security_event_waf_log_groups
+  name            = "bloggerbear-production-security-events-${each.key}"
+  log_group_name  = each.value.name
+  filter_pattern  = "{ $.action = \"BLOCK\" }"
+  destination_arn = aws_lambda_function.security_events.arn
+
+  depends_on = [aws_lambda_permission.security_events_from_waf_logs]
 }

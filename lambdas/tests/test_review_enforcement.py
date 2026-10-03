@@ -9,6 +9,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import admin_api_handler
 import common.dynamo as dynamo
@@ -550,6 +551,7 @@ def tables(monkeypatch):
         "TOPICS_TABLE": "Topics",
         "MODEL_CONFIG_TABLE": "ModelConfig",
         "MODERATION_QUEUE_TABLE": "ModerationQueue",
+        "VIEW_COUNTS_TABLE": "ViewCounts",
         "BEDROCK_MODEL_ID": "anthropic.claude-test-model",
         "CONTENT_BUCKET": "bloggerbear-content-test",
     }.items():
@@ -562,8 +564,10 @@ def tables(monkeypatch):
             ("Topics", "topic_id"),
             ("ModelConfig", "config_id"),
             ("ModerationQueue", "queue_id"),
+            ("ViewCounts", "counter_id"),
         ):
-            client.create_table(
+            create_table(
+                client,
                 TableName=name,
                 KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
                 AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],

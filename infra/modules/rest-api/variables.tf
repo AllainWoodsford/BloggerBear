@@ -38,6 +38,31 @@ variable "enable_cors" {
   description = "Add a Lambda-proxied OPTIONS method on every unique path in var.routes, for browser CORS preflight. REST APIs have no declarative equivalent of HTTP APIs' cors_configuration block when every route (OPTIONS included) is AWS_PROXY -- the proxied Lambda function itself must handle OPTIONS and add CORS response headers to every response. Only meaningful for authorization = \"NONE\" APIs called from browser JS (this project's public API); the admin API is called via SigV4-signed CLI requests, never a browser, so never needs this."
 }
 
+variable "throttling_rate_limit" {
+  type        = number
+  description = "Steady-state requests per second the whole stage accepts before API Gateway answers 429 (every method, unless method_throttling sets its own)."
+}
+
+variable "throttling_burst_limit" {
+  type        = number
+  description = "How many requests the stage accepts at once above the steady rate (API Gateway's token-bucket size)."
+}
+
+variable "method_throttling" {
+  type = map(object({
+    rate_limit  = number
+    burst_limit = number
+  }))
+  default     = {}
+  description = "Per-route throttling that overrides the stage default, keyed by route exactly as in var.routes, e.g. { \"POST /articles/{article_id}/feedback\" = { rate_limit = 2, burst_limit = 5 } }."
+}
+
+variable "access_log_retention_days" {
+  type        = number
+  default     = 30
+  description = "How long the stage's access log (one line per request, no visitor details) is kept."
+}
+
 variable "web_acl_id" {
   type        = string
   default     = ""

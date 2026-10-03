@@ -9,6 +9,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import daily_cycle_handler
 from common import compliance, rewrite
@@ -56,7 +57,8 @@ def aws(monkeypatch):
             "Models": [("model_id", "HASH")],
             "ModelConfig": [("config_id", "HASH")],
         }.items():
-            client.create_table(
+            create_table(
+                client,
                 TableName=name,
                 KeySchema=[{"AttributeName": a, "KeyType": t} for a, t in keys],
                 AttributeDefinitions=[{"AttributeName": a, "AttributeType": "S"} for a, _ in keys],

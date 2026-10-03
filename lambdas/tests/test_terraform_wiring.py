@@ -146,13 +146,35 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
 def test_every_table_is_protected_when_asked_and_production_asks():
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('resource "aws_dynamodb_table"') == 13
-    assert tables.count("deletion_protection_enabled = var.protect_data") == 13
+    assert tables.count('resource "aws_dynamodb_table"') == 15
+    assert tables.count("deletion_protection_enabled = var.protect_data") == 15
     assert (
-        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 13
+        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 15
     )  # point-in-time recovery
     assert re.search(r"protect_data\s*=\s*true", _read("environments", "production", "main.tf"))
     assert "protect_data" not in _read("environments", "dev", "main.tf")
+
+
+# --- sharded counters (Scaling PR B) ---------------------------------------------------------------
+
+
+def test_view_counters_have_their_own_table_and_reach_the_lambda_policy():
+    tables = _read("modules", "app-data", "main.tf")
+    outputs = _read("modules", "app-data", "outputs.tf")
+
+    view_counts = _resource_block(tables, "aws_dynamodb_table", "view_counts")
+    assert 'hash_key = "counter_id"' in view_counts
+    table_arns = re.search(r'output "table_arns" \{(.*?)\n\}', outputs, re.S).group(1)
+    assert "aws_dynamodb_table.view_counts.arn" in table_arns
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_lambda_knows_the_view_counter_table_and_may_batch_read_counters(env):
+    text = _read("environments", env, "main.tf")
+    policy = re.search(r'sid\s*=\s*"DynamoDBAppTables"(.*?)\n  \}', text, re.S).group(1)
+
+    assert re.search(r"VIEW_COUNTS_TABLE\s*=\s*module\.app_data\.view_counts_table_name", text)
+    assert '"dynamodb:BatchGetItem"' in policy
 
 
 def test_the_content_bucket_is_versioned_and_old_versions_expire():
@@ -181,11 +203,12 @@ def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env)
 
 def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
     """Findings and ModelConfig already had one; CandidateIdeas, ModerationQueue,
-    PromptRefinements and FailedExecutions are the four this PR adds."""
+    PromptRefinements and FailedExecutions are the four this PR adds. SecurityEvents (120 days
+    after last seen) came later."""
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('attribute_name = "expires_at"') == 6
-    assert tables.count("ttl {") == 6
+    assert tables.count('attribute_name = "expires_at"') == 7
+    assert tables.count("ttl {") == 7
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
@@ -199,8 +222,8 @@ def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
     assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 10  # module.observability's list: each function named once
-    assert len(set(function_names)) == 10
+    assert len(function_names) == 11  # module.observability's list: each function named once
+    assert len(set(function_names)) == 11
 
 
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
@@ -634,6 +657,214 @@ def test_the_runs_dashboard_counts_match_the_handlers_log_lines():
     ).read_text(encoding="utf-8")
 
 
+def _dashboards() -> str:
+    return _read("modules", "observability", "api_waf_dashboards.tf")
+
+
+def _dashboard_resource(name: str) -> str:
+    pattern = rf'resource "aws_cloudwatch_dashboard" "{name}" \{{(.*?)\n\}}\n'
+    return re.search(pattern, _dashboards(), re.S).group(1)
+
+
+def test_one_edge_dashboard_opens_on_a_week_of_hourly_points():
+    body = _dashboard_resource("edge")
+
+    assert 'start          = "-P7D"' in body
+    assert 'dashboard_name = "bloggerbear-${var.environment_name}-edge"' in body
+    assert "concat(local.api_gateway_widgets, local.waf_widgets)" in body
+    assert "period = 3600" in _dashboards()
+    # One dashboard, not one each: every dashboard past the account's first three is US$3 a month.
+    assert _dashboards().count('resource "aws_cloudwatch_dashboard"') == 1
+
+
+def test_the_edge_dashboard_is_created_in_production_only():
+    assert "var.edge_dashboard_enabled &&" in _dashboard_resource("edge")
+    variables = _read("modules", "observability", "variables.tf")
+    variable = re.search(r'variable "edge_dashboard_enabled" \{(.*?)\n\}', variables, re.S).group(1)
+    assert "default     = false" in variable
+    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
+    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_dashboards_cover_both_apis_and_every_web_acl(env):
+    text = _read("environments", env, "main.tf")
+    block = re.search(r'^module "observability" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+
+    for api in ("public_api", "admin_api"):
+        assert f"api_name         = module.{api}.api_name" in block
+        assert f"access_log_group = module.{api}.access_log_group_name" in block
+    assert "distribution_id            = module.public_api_cdn.distribution_id" in block
+    assert "aws_wafv2_web_acl.public_api.visibility_config[0].metric_name" in block
+    assert "aws_wafv2_web_acl.admin.visibility_config[0].metric_name" in block
+    assert "waf_cloudfront_acl = {" in block
+
+
+def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimension():
+    """CloudFront's metrics (and a CLOUDFRONT-scope ACL's) exist only in us-east-1; a widget pointed
+    at the API's own region draws nothing, which is exactly how a dashboard ends up empty."""
+    text = _dashboards()
+
+    for line in text.splitlines():
+        if '"AWS/CloudFront"' in line:
+            assert '"Region", "Global"' in line, line
+    cdn = re.search(r"cdn_section = (.*?)\n  \)\]\)\n", text, re.S).group(1)
+    assert 'region = local.api_region' not in cdn.replace('region = local.api_region }', '')
+    assert cdn.count('region = "us-east-1"') >= 3
+    cloudfront_acl = re.search(r"waf_cloudfront_section = (.*?)\n  \]\]\)\n", text, re.S).group(1)
+    assert "local.api_region" not in cloudfront_acl
+    # Both possible dimension shapes for a CloudFront ACL's metrics, so neither guess leaves it blank.
+    assert "{AWS/WAFV2,Rule,WebACL}" in cloudfront_acl
+    assert "{AWS/WAFV2,Region,Rule,WebACL}" in cloudfront_acl
+
+
+def test_the_api_dashboard_has_every_widget_the_operator_asked_for():
+    text = _dashboards()
+
+    for metric in ("Count", "4XXError", "5XXError", "Latency", "IntegrationLatency"):
+        assert f'"AWS/ApiGateway", "{metric}"' in text
+    for stat in ("p50", "p90", "p99"):
+        assert f'"{stat}"' in text
+    assert "filter status = 429" in text  # API Gateway's own throttling
+    assert "stats count(*) as requests by status" in text  # the 400/403/429/500/502/504 split
+    assert '"AWS/CloudFront", "CacheHitRate"' in text  # when the additional metrics are on
+    assert '"AWS/CloudFront", "Requests"' in text  # always: the CDN against API Gateway
+
+
+def test_the_waf_dashboard_has_totals_per_rule_and_the_top_blocked_requests():
+    text = _dashboards()
+
+    for metric in ("AllowedRequests", "BlockedRequests", "CountedRequests"):
+        assert f'"{metric}"' in text
+    assert 'NOT Rule=\\"ALL\\"' in text  # per rule, rate limits included, without the total
+    assert 'filter action = \\"BLOCK\\"' in text
+    assert "stats count(*) as blocked by rule, address, path" in text
+    # Behind the CDN the client address is an edge: the visitor's is in x-viewer-ip.
+    assert "coalesce(viewerIp, httpRequest.clientIp)" in text
+
+
+# --- API Gateway throttling and access logs (Scaling PR C) -----------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_apis_are_throttled_and_the_feedback_post_more_tightly(env):
+    text = _read("environments", env, "main.tf")
+    public = re.search(r'^module "public_api" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+    admin = re.search(r'^module "admin_api" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+
+    for block in (public, admin):
+        assert re.search(r"throttling_rate_limit\s*=\s*\d+", block)
+        assert re.search(r"throttling_burst_limit\s*=\s*\d+", block)
+    assert '"POST /articles/{article_id}/feedback" = { rate_limit = 2, burst_limit = 5 }' in public
+    assert '"POST /articles/{article_id}/feedback",' in public  # the override names a real route
+
+
+def test_a_route_override_names_its_method_the_way_api_gateway_expects():
+    """API Gateway names a method by its path with every "/" written as "~1" (RFC 6901), and the
+    provider passes method_path through untouched."""
+    module = _read("modules", "rest-api", "main.tf")
+
+    assert 'method_path = "*/*"' in module
+    escaped = 'method_path = "${replace(split(" ", each.key)[1], "/", "~1")}/${split(" ", each.key)[0]}"'
+    assert escaped in module
+
+
+def test_access_logs_record_what_happened_never_who_asked():
+    module = _read("modules", "rest-api", "main.tf")
+    stage = re.search(r'resource "aws_api_gateway_stage" "this" \{(.*?)\n\}', module, re.S).group(1)
+
+    assert '"\\"status\\":$context.status,"' in stage  # a number Logs Insights can compare
+    assert "$context.error.responseType" in stage
+    assert "$context.identity" not in stage  # no source IP, user agent or caller
+    assert "userAgent" not in stage and "sourceIp" not in stage
+
+
+def test_the_deploy_role_may_create_the_access_log_groups_and_api_gateway_may_write_them():
+    bootstrap = _read("bootstrap", "main.tf")
+    module = _read("modules", "rest-api", "main.tf")
+
+    assert 'name              = "/aws/apigateway/${var.name}-access"' in module
+    assert '"arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*"' in bootstrap
+    assert 'resource "aws_api_gateway_account" "this"' in bootstrap
+    assert "AmazonAPIGatewayPushToCloudWatchLogs" in bootstrap
+
+
+# --- the public API's CDN (Scaling PR C) -----------------------------------------------------------
+
+
+def test_the_api_cdn_caches_only_what_the_api_marks_cacheable():
+    module = _read("modules", "api-cdn", "main.tf")
+    policy = _resource_block(module, "aws_cloudfront_cache_policy", "api")
+
+    assert "default_ttl = 0" in policy and "min_ttl     = 0" in policy
+    assert 'cached_methods           = ["GET", "HEAD"]' in module
+    # Its own distribution: the site's maps every 403/404 to an HTML page, and the feedback form
+    # reads the JSON body of a 403.
+    assert "custom_error_response {" not in module
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_frontend_calls_the_api_through_its_cdn_and_the_csp_allows_it(env):
+    text = _read("environments", env, "main.tf")
+
+    assert 'window.PUBLIC_API_URL = "${module.public_api_cdn.url}";' in text
+    assert "extra_connect_src = [module.public_api_cdn.domain_name]" in text
+    assert "api_domain           = module.public_api.api_domain" in text
+
+
+def test_the_cdn_origin_never_depends_on_the_lambda():
+    """The site's CSP names the API's CDN, and dev's Lambdas are told the site's URL: if the CDN
+    depended on the API's deployment (and so its Lambda), that would be a dependency cycle."""
+    outputs = _read("modules", "rest-api", "outputs.tf")
+    api_domain = re.search(r'output "api_domain" \{(.*?)\n\}', outputs, re.S).group(1)
+
+    assert "aws_api_gateway_rest_api.this.id" in api_domain
+    assert "deployment" not in api_domain and "stage" not in api_domain.split("description")[0]
+
+
+@needs_node
+def test_the_viewer_ip_header_is_always_cloudfronts_own_record_of_the_visitor():
+    source = (INFRA / "modules" / "api-cdn" / "viewer_ip.js").read_text(encoding="utf-8")
+    event = {"viewer": {"ip": "198.51.100.7"}, "request": {"headers": {"x-viewer-ip": {"value": "1.2.3.4"}}}}
+    script = f"{source}\nprocess.stdout.write(JSON.stringify(handler(JSON.parse(process.argv[1]))))"
+    result = subprocess.run(
+        [NODE, "-e", script, json.dumps(event)], capture_output=True, text=True, check=True, timeout=30
+    )
+
+    assert json.loads(result.stdout)["headers"]["x-viewer-ip"] == {"value": "198.51.100.7"}
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_waf_trusts_the_viewer_ip_only_on_requests_carrying_the_cdn_secret(env):
+    acl = _resource_block(_read("environments", env, "main.tf"), "aws_wafv2_web_acl", "public_api")
+    rules = dict(re.findall(r'rule \{\n    name     = "([^"]+)"(.*?)\n  \}\n', acl, re.S))
+
+    for name in ("rate-limit-via-cdn", "feedback-rate-limit-via-cdn"):
+        body = rules[name]
+        assert re.search(r'aggregate_key_type\s*=\s*"FORWARDED_IP"', body)
+        assert 'header_name       = "x-viewer-ip"' in body
+        assert 'fallback_behavior = "NO_MATCH"' in body
+        assert "search_string         = random_password.api_origin_verify.result" in body
+        assert "not_statement" not in body
+    for name in ("rate-limit", "feedback-rate-limit"):
+        body = rules[name]
+        assert re.search(r'aggregate_key_type\s*=\s*"IP"', body)
+        assert "not_statement" in body and "random_password.api_origin_verify.result" in body
+    assert '"/feedback"' in rules["feedback-rate-limit-via-cdn"]
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_cdn_secret_never_reaches_a_waf_log(env):
+    assert "x-origin-verify" in _redacted_headers(_read("environments", env, "main.tf"))
+
+
+def test_the_privacy_policy_describes_the_api_request_log():
+    policy = (ROOT / "frontend" / "privacy.html").read_text(encoding="utf-8")
+
+    assert "The public API also keeps a request log" in policy
+    assert "holds no IP address" in policy
+
+
 # --- a production release runs the same checks as a PR -----------------------------------------
 
 
@@ -655,8 +886,8 @@ def test_a_dev_apply_waits_for_the_same_checks_in_one_run():
     workflows = ROOT / ".github" / "workflows"
     dev = (workflows / "terraform.yml").read_text(encoding="utf-8")
 
-    assert re.search(r"^  security:\n.*\n    uses: \./\.github/workflows/security\.yml", dev, re.M)
-    assert re.search(r"^  lint-test:\n.*\n    uses: \./\.github/workflows/python-ci\.yml", dev, re.M)
+    assert re.search(r"^  security:\n    uses: \./\.github/workflows/security\.yml", dev, re.M)
+    assert re.search(r"^  lint-test:\n    uses: \./\.github/workflows/python-ci\.yml", dev, re.M)
     assert "    needs: [security, lint-test]" in dev
     for path in ("lambdas/**", "frontend/**"):  # a code- or site-only merge still deploys
         assert f"      - '{path}'" in dev
@@ -665,6 +896,126 @@ def test_a_dev_apply_waits_for_the_same_checks_in_one_run():
         called = (workflows / name).read_text(encoding="utf-8")
         assert "[dev" not in called and "- dev" not in called
     assert not (workflows / "dev-gatekeeper.yml").exists()
+
+
+def test_pull_request_only_checks_live_in_their_own_workflow():
+    """A push or release run shows only what it does: no skipped validate or secret-scan boxes."""
+    workflows = ROOT / ".github" / "workflows"
+    pr_checks = (workflows / "pr-checks.yml").read_text(encoding="utf-8")
+
+    assert re.search(r"^on:\n  pull_request:\n", pr_checks, re.M)
+    assert "\n  validate:\n" in pr_checks and "terraform -chdir=\"$dir\" validate" in pr_checks
+    assert "\n  secret-scan:\n" in pr_checks and "trufflesecurity/trufflehog@" in pr_checks
+    for name in ("terraform.yml", "security.yml", "terraform-production-release.yml"):
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert "\n  validate:\n" not in text and "\n  secret-scan:\n" not in text
+        assert "github.event_name == 'pull_request'" not in text
+    assert "  pull_request:" not in (workflows / "terraform.yml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_personal_values_never_print_in_public_ci_logs(env):
+    """The admin IP and alert email are secrets, but GitHub masks only a secret's exact text, and a
+    plan prints each list element on its own: both appeared in apply logs before they were sensitive."""
+    variables = _read("environments", env, "variables.tf")
+    for name in ("admin_allowed_cidrs", "alert_email"):
+        block = variables.split(f'variable "{name}" {{')[1].split("\n}\n")[0]
+        assert "\n  sensitive   = true\n" in block, name
+    module = _read("modules", "observability", "variables.tf")
+    assert "\n  sensitive   = true\n" in module.split('variable "alert_email" {')[1].split("\n}\n")[0]
+
+
+def test_deploy_role_arns_come_from_secrets():
+    """A variable prints in plain text in every step's log; on a public repo the logs are public."""
+    workflows = ROOT / ".github" / "workflows"
+    for name, role in (
+        ("terraform.yml", "AWS_DEV_DEPLOY_ROLE_ARN"),
+        ("destroy-dev.yml", "AWS_DEV_DEPLOY_ROLE_ARN"),
+        ("terraform-production-release.yml", "AWS_PROD_DEPLOY_ROLE_ARN"),
+    ):
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert f"role-to-assume: ${{{{ secrets.{role} ||" in text, name
+        assert f"role-to-assume: ${{{{ vars.{role} }}}}" not in text, name
+
+
+def test_security_scans_cover_the_whole_repo_with_pinned_tools():
+    """security.yml used to scan only lambdas/ (missing scripts/ and the dev requirements), report
+    nothing below HIGH, and install whatever Trivy apt had; Trufflehog ran `version: latest`."""
+    workflows = ROOT / ".github" / "workflows"
+    security = (workflows / "security.yml").read_text(encoding="utf-8")
+
+    assert "apt-get install -y trivy" not in security
+    assert re.search(r"VERSION=\d+\.\d+\.\d+\n\s+SHA256=[0-9a-f]{64}\n", security)
+    assert 'sha256sum -c -' in security
+    fs_runs = re.findall(r"trivy fs (.*?)\n\n", security, re.S)  # each command, up to its blank line
+    assert len(fs_runs) == 2
+    for run in fs_runs:
+        assert "--file-patterns 'pip:requirements-dev\\.txt'" in run and run.rstrip().endswith(".")
+    assert "--severity MEDIUM,HIGH,CRITICAL --exit-code 0" in fs_runs[0]  # reported
+    assert "--severity HIGH,CRITICAL --exit-code 1" in fs_runs[1]  # gated
+    assert "bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests" in security
+
+    pr_checks = (workflows / "pr-checks.yml").read_text(encoding="utf-8")
+    trufflehog = pr_checks.split("uses: trufflesecurity/trufflehog@")[1].split("\n  gitleaks:\n")[0]
+    assert re.search(r"\n          version: \d+\.\d+\.\d+\n", trufflehog)
+
+
+def test_the_on_demand_scan_checks_everything_and_deploys_nothing():
+    scan = (ROOT / ".github" / "workflows" / "on-demand-scan.yml").read_text(encoding="utf-8")
+
+    # Started by hand or by a collaborator's label, never by an ordinary PR event.
+    assert re.search(r"^on:\n  pull_request:\n    types: \[labeled\]\n  workflow_dispatch:\n", scan, re.M)
+    jobs = scan.split("\njobs:\n")[1]
+    assert jobs.count("github.event.label.name == 'security-scan'") == 4  # every job, summary too
+
+    # No AWS access, no plan, no apply.
+    for text in ("configure-aws-credentials", "id-token"):
+        assert text not in scan
+    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", scan, re.M)
+    assert "permissions:\n  contents: read\n" in scan
+
+    # Whole history and every file, with the same pinned tools, hash-verified.
+    assert 'gitleaks git --redact' in scan and '--log-opts="--all"' in scan
+    assert "trufflehog git file://. --results=verified,unverified,unknown --fail" in scan
+    assert "fetch-depth: 0" in scan
+    assert "scripts/pii_denylist_check.py --all" in scan and "secrets.PII_DENYLIST" in scan
+    assert len(re.findall(r"SHA256=[0-9a-f]{64}\n", scan)) == 3  # trivy, gitleaks, trufflehog
+    assert "terraform -chdir=\"$dir\" validate" in scan and "infra/bootstrap" in scan
+    # The ref reaches the summary through env, not interpolated into the script.
+    assert "SCANNED: ${{ inputs.ref" in scan and "echo \"## On-demand scan: \\`${SCANNED}\\`\"" in scan
+
+    assert (ROOT / ".gitleaksignore").is_file()
+
+
+def test_pull_requests_are_checked_for_personal_data_without_publishing_it():
+    """docs/friction.md 7.11: a PR added a personal email; no secret scanner looks for one."""
+    pr_checks = (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(encoding="utf-8")
+    gitleaks = pr_checks.split("\n  gitleaks:\n")[1].split("\n  pii-denylist:\n")[0]
+    denylist = pr_checks.split("\n  pii-denylist:\n")[1]
+
+    # Gitleaks pinned by commit, binary pinned, our config, and nothing it found ever re-published
+    # (no PR comments, no artifact; the action itself runs with --redact).
+    assert re.search(r"uses: gitleaks/gitleaks-action@[0-9a-f]{40}\n", gitleaks)
+    assert re.search(r"GITLEAKS_VERSION: \d+\.\d+\.\d+\n", gitleaks)
+    assert "GITLEAKS_CONFIG: .gitleaks.toml" in gitleaks
+    assert "GITLEAKS_ENABLE_COMMENTS: false" in gitleaks
+    assert "GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false" in gitleaks
+    assert "pull-requests: read" in gitleaks and "write" not in gitleaks
+
+    # The exact-string list comes from a secret, and only the PR's own range is checked.
+    assert "PII_DENYLIST: ${{ secrets.PII_DENYLIST }}" in denylist
+    assert 'scripts/pii_denylist_check.py --range "$BASE" "$HEAD"' in denylist
+
+    config = (ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
+    assert "useDefault = true" in config
+    for rule in ("email-address", "aws-account-id-in-arn", "aws-account-id-labelled"):
+        assert f'id = "{rule}"' in config
+
+    # The same checks run before a commit, and the local list can never be committed.
+    hook = (ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+    assert "scripts/pii_denylist_check.py --staged" in hook and "--config .gitleaks.toml" in hook
+    assert b"\r" not in (ROOT / ".githooks" / "pre-commit").read_bytes()  # sh can't run CRLF
+    assert re.search(r"^\.pii-denylist$", (ROOT / ".gitignore").read_text(encoding="utf-8"), re.M)
 
 
 # --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
@@ -701,3 +1052,127 @@ def test_no_workflow_passes_a_coingecko_key_any_more():
     workflows = ROOT / ".github" / "workflows"
     for path in workflows.glob("*.yml"):
         assert "COINGECKO_API_KEY" not in path.read_text(encoding="utf-8"), path.name
+
+
+# --- DynamoDB indexes (Scaling PR A) ---------------------------------------------------------------
+
+
+def _table_indexes(table: str) -> list[tuple[str, str, str, str]]:
+    """(name, hash key, range key, projection) of every global_secondary_index on a table."""
+    block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", table)
+    indexes = []
+    for body in re.findall(r"global_secondary_index \{\n(.*?)\n  \}", block, re.S):
+        fields = dict(re.findall(r'^\s*(\w+)\s*=\s*"([^"]+)"', body, re.M))
+        indexes.append((fields["name"], fields["hash_key"], fields["range_key"], fields["projection_type"]))
+    return indexes
+
+
+@pytest.mark.parametrize(
+    ("table", "fixture_name"),
+    [
+        ("articles", "Articles"),
+        ("moderation_queue", "ModerationQueue"),
+        ("security_events", "SecurityEvents"),
+    ],
+)
+def test_the_test_fixtures_create_exactly_the_indexes_terraform_does(table, fixture_name):
+    """moto only knows the indexes a fixture creates, so a fixture that drifted from Terraform would
+    let a Query on a missing (or differently keyed) index pass here and fail in AWS."""
+    from table_schemas import INDEXES
+
+    assert sorted(_table_indexes(table)) == sorted(INDEXES[fixture_name])
+
+
+@pytest.mark.parametrize("table", ["articles", "moderation_queue", "security_events"])
+def test_every_index_key_is_declared_as_a_string_attribute(table):
+    block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", table)
+    declared = dict(re.findall(r'attribute \{\n\s*name = "(\w+)"\n\s*type = "(\w)"', block))
+
+    for _, hash_key, range_key, _ in _table_indexes(table):
+        assert declared.get(hash_key) == "S" and declared.get(range_key) == "S"
+
+
+def test_the_index_names_the_code_queries_are_the_ones_terraform_creates():
+    from common import dynamo
+
+    articles = {name for name, *_ in _table_indexes("articles")}
+    moderation = {name for name, *_ in _table_indexes("moderation_queue")}
+
+    assert {dynamo.ARTICLES_BY_STATUS_INDEX, dynamo.ARTICLES_BY_TOPIC_INDEX} == articles
+    assert {dynamo.MODERATION_BY_STATUS_INDEX, dynamo.MODERATION_BY_ARTICLE_INDEX} == moderation
+
+
+def test_no_index_sorts_on_published_at_which_is_stored_as_null_until_publish():
+    """DynamoDB rejects a write whose index key attribute holds a null, and put_article stores
+    published_at as an explicit null for every draft -- an index on it would fail every draft."""
+    for table in ("articles", "moderation_queue"):
+        for _, hash_key, range_key, _ in _table_indexes(table):
+            assert "published_at" not in (hash_key, range_key)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_lambdas_may_query_the_table_indexes_and_nothing_more(env):
+    policy = _read("environments", env, "main.tf")
+    statement = re.search(r'sid\s*=\s*"DynamoDBAppIndexes"(.*?)\n  \}', policy, re.S).group(1)
+
+    assert re.search(r'actions\s*=\s*\["dynamodb:Query"\]', statement)
+    assert 'resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]' in statement
+
+
+def test_dashboard_widget_lists_never_branch_on_a_conditional():
+    """`cond ? [] : concat(...)` over widgets of different shapes passes validate and fails every
+    plan ("Inconsistent conditional result types"), which broke the dev apply once. The idiom that
+    works is `flatten([for _ in (cond ? [] : [1]) : ...])`; the module's terraform test plans it."""
+    text = _dashboards()
+
+    assert not re.search(r"= .*\? \[\] : concat\(", text)
+    assert (ROOT / "infra" / "modules" / "observability" / "tests" / "observability.tftest.hcl").exists()
+    assert "terraform -chdir=\"$dir\" test" in (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(
+        encoding="utf-8"
+    )
+
+
+# --- Security events (common/security_events.py) ------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_regional_waf_log_groups_feed_the_security_events_lambda_blocks_only(env):
+    text = _read("environments", env, "main.tf")
+
+    assert 'handler       = "security_events_handler.handler"' in text
+    assert "public_api = aws_cloudwatch_log_group.waf_public_api" in text
+    assert "admin      = aws_cloudwatch_log_group.waf_admin" in text
+    assert 'filter_pattern  = "{ $.action = \\"BLOCK\\" }"' in text
+    assert 'principal     = "logs.amazonaws.com"' in text
+    assert 'source_arn    = "${each.value.arn}:*"' in text
+    assert "SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name" in text
+    # The CloudFront ACL's log group is in us-east-1: a subscription can't reach this region's Lambda.
+    assert "waf_shared" not in text.split('resource "aws_lambda_function" "security_events"')[1]
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_high_severity_alarm_watches_both_lambdas_that_record_events(env):
+    block = re.search(
+        r'^module "observability" \{\n(.*?)^\}', _read("environments", env, "main.tf"), re.S | re.M
+    ).group(1)
+
+    assert "aws_lambda_function.security_events.function_name].name" in block
+    assert "security_alert_log_groups = [" in block
+
+
+def test_the_alarm_counts_the_marker_the_code_logs():
+    from common import security_events
+
+    module = _read("modules", "observability", "main.tf")
+    assert f'pattern        = "\\"{security_events.ALERT_MARKER}\\""' in module
+    assert 'metric_name         = "SecurityHighSeverityIncidents"' in module
+
+
+def test_security_events_expire_and_have_an_open_incidents_index():
+    from common import dynamo, security_events
+
+    block = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", "security_events")
+    assert 'attribute_name = "expires_at"' in block
+    names = [name for name, *_ in _table_indexes("security_events")]
+    assert names == [dynamo.SECURITY_EVENTS_BY_STATUS_INDEX]
+    assert security_events.RETENTION_DAYS == 120

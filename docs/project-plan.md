@@ -87,16 +87,20 @@ runs in the background and comes back to the inbox for approval (see §11, "Re-W
 | Topics | `topic_id` | Topic config, cadences, research interval, adapter, models, optional `editorial_goals` |
 | Findings | `topic_id` / `captured_at` | Research summaries, source hashes, the research call's tokens |
 | CandidateIdeas | `topic_id` / `created_at` | Daily generated article ideas |
-| Articles | `article_id` | Draft/review/publish lifecycle, lineage (tokens, models, cost), view count, rewrite history |
+| Articles | `article_id`; indexes `status`/`created_at`, `topic_id`/`created_at` | Draft/review/publish lifecycle, lineage (tokens, models, cost), view count, rewrite history |
 | Feedback | `article_id` / `feedback_id` | Scrubbed public feedback |
 | PromptRefinements | `topic_id` / `version` | Prompt iterations and rationale; approved ones are "equipment" |
-| ModerationQueue | `queue_id` | Manual review tasks: `pending` → `approved`/`rejected`, or `rewriting` → `rewritten` |
+| ModerationQueue | `queue_id`; indexes `status`/`created_at`, `article_id`/`created_at` | Manual review tasks: `pending` → `approved`/`rejected`, or `rewriting` → `rewritten` |
 | FailedExecutions | `failure_id` | Daily-cycle runs that exhausted their retries (dead-letter queue) |
 | Musings | `musing_id` | The bear's short posts about articles, feedback and loot |
 | Models / ModelConfig | `model_id` / `config_id` | Model registry and prices; single rows for the default model, pipeline config and feedback config |
 | StatsCurrent / StatsHistory | `stats_id` / `week_start` | This week's counters (Bedrock spend, Lambda time, web search queries/spend, feedback) and past weeks plus an all-time row |
+| ViewCounts | `counter_id` (`<article_id>#<n>`) | Sharded article view counters |
 
-View counts live on the Articles item (`view_count`); there is no separate counters table.
+View counts are sharded: each view ADDs onto one of a few `ViewCounts` items (`counter_id` = `<article_id>#<n>`),
+and a read sums them plus the Articles item's own `view_count`, which holds the count from before sharding
+and is no longer written. StatsCurrent's counters are sharded the same way (`current#<n>`, summed with the
+`current` row). See §11, "Scaling B".
 
 ## 6) Adapter Contract
 Each new domain provides an adapter implementing the same contract:
@@ -1617,6 +1621,47 @@ needs. Plain `<link rel="stylesheet">` is back. Both files are about 5KB over th
 pages are static HTML that would need regenerating. `preload-styles.js` stays deployed as a legacy shim
 (it now switches the links on immediately) for article pages published while #125 was live.
 
+### Scaling B: sharded hot counters
+
+**Status: built** (one of three scaling PRs; secondary indexes and the public API's caching, throttling and
+dashboards are the other two).
+
+**Problem:** two counters were each one DynamoDB item written on every event. DynamoDB takes about 1,000
+writes a second on a single item, however much capacity the table has.
+- **The week's Stats row** (StatsCurrent, `stats_id = "current"`): every tracked Bedrock call (musings,
+  reflection, gear naming, comment screening), every feedback submission, every web search and every
+  pipeline Lambda run ADDed onto it. This, not StatsHistory's all-time row, is the per-call hotspot: the
+  all-time row is written once a week by the rollover (and once ever by the articles backfill), so it is
+  left as it is.
+- **Article view counts:** every page view ADDed onto the article's own Articles item, so one popular
+  article was one hot item, and each view rewrote an item that also carries the article's lineage.
+
+**What changed:**
+- **Stats:** increments land on one of 8 shard rows (`current#0` to `current#7`, picked at random).
+  `get_current_stats` fetches the `current` row and every shard in one strongly consistent BatchGetItem and
+  sums them into the single row shape every reader already used: numbers are added, `week_start` is the
+  earliest, and the snapshot fields (Cost Explorer readings), which stay SET on the `current` row, are taken
+  from it. The rollover copies and totals that sum and deletes every row. The Stats page and API output is
+  unchanged (a test compares one row against the same figures spread over shards).
+- **Views: sharded, not batched.** A view ADDs onto one of 4 items in a new `ViewCounts` table, keyed
+  `<article_id>#<n>`, so each shard is its own partition key and the writes really do spread. The returned
+  total is that shard's new value (read back from the write, so the reader's own view always counts), plus an
+  eventually consistent BatchGetItem of the other shards, plus the article's pre-sharding `view_count`. The
+  article detail reads the same total and falls back to the stored count if the counters can't be read.
+  Batching through SQS was the alternative. It would cut the write count further, but it adds a queue, a
+  consumer Lambda, a dead-letter path and alarms to run, makes the count lag, and costs about the same per
+  view (an SQS request against a DynamoDB write). Exact counts with no new moving parts won.
+- **No migration.** Both readers add in the old single item (the `current` row, the article's `view_count`),
+  so nothing is copied or rewritten and there is nothing to re-run.
+- IAM: the Lambda role gains `dynamodb:BatchGetItem` on the app tables; the new table is in `table_arns`. The
+  deploy role's `dynamodb:*` on `table/bloggerbear-*` already covers creating it.
+
+**Cost per view:** one write (as before) plus about 1.5 read units for the other shards. The Stats page reads
+9 small rows instead of 1.
+
+**Known limit, unchanged by this:** the rollover reads, writes history, then deletes, so an increment that
+lands between the read and the delete is lost, exactly as it was with one row.
+
 ### Observability, security and content fixes (October 2026 batch)
 
 **Status: in progress** (four PRs, in this order; designs agreed 2026-10-03). PR 1 (#145) and PR 2 (#146)
@@ -1710,3 +1755,132 @@ billing data) in the same single `GetCostAndUsage` call, so it costs nothing ext
   It names the topic only: no title and no link, because a rejected article isn't public and may contain
   exactly what got it rejected. Checked like the loot musing: the text must name the topic and pass the
   comment rules, or a plain fixed line is posted instead.
+
+### Scaling A: DynamoDB indexes instead of Scans
+
+**Status: built** (one of three scaling PRs; hot-key counters and the public API's caching, throttling
+and dashboards are the other two).
+
+**Problem:** no table had a secondary index, so every read that wasn't by primary key was a Scan of the
+whole table plus a filter. The worst was `list_articles_by_status`, behind the home page, every topic page
+and the RSS feed: each request read every article ever drafted, in every status. The review inbox, a topic
+page's "pending review" count, the stuck-rewrite sweep and an article's moderation lookup each scanned the
+whole moderation queue, history included.
+
+**What changed:**
+- **Articles** gets `by_status_created_at` (status / created_at) and `by_topic_created_at`
+  (topic_id / created_at), both `ALL` projection. Published listings Query the first; a topic's articles
+  (topic page, recent titles, the top-voted example) Query the second and keep the published ones.
+  `created_at`, not `published_at`, is the sort key: `put_article` stores `published_at` as an explicit
+  null until publish, and DynamoDB rejects a write whose index key is null. Callers already sorted for
+  themselves.
+- **ModerationQueue** gets `by_status_created_at` (`ALL`) for the pending/rewriting lists (a topic's pending
+  items are filtered from the pending ones: few, and not worth a third index) and `by_article_created_at`
+  (`KEYS_ONLY`). An article's live item is the newest by `created_at`; its full item is then read with a
+  strongly consistent GetItem, because index reads can trail the table and the caller acts on `status`.
+- `list_prompt_refinements(topic_id=...)` Queries the table's own hash key instead of scanning.
+- The Lambda role may `dynamodb:Query` on `<table>/index/*` (a separate statement: nothing else runs
+  against an index). The deploy role's `dynamodb:*` on `table/bloggerbear-*` already covers creating
+  indexes, so no bootstrap apply is needed.
+- Function signatures and return shapes are unchanged. Test fixtures create tables through
+  `lambdas/tests/table_schemas.py`, which holds the same index definitions; a wiring test fails if it and
+  Terraform drift apart.
+
+**Applying it:** DynamoDB creates one index per UpdateTable call. The AWS provider (checked in v6.64.0's
+`table.go`) sends one call per new index and waits for each to become ACTIVE before the next, so both
+indexes per table land in a single apply; it just takes a few minutes longer while they backfill.
+
+**Left as Scans, on purpose:** `list_all_articles` (wants every status; backs the Stats page and admin
+lineage/backfill tools), `list_all_moderation_items` (admin stats over all history), `list_topics`,
+`list_models`, `list_failed_executions` (tiny tables), `list_feedback_since` (the weekly and 4-day jobs),
+`list_prompt_refinements` without a topic (small table, filtered on status), and the Musings table
+(`list_musings`, `delete_musings_for_article`): it has no attribute every item shares to index on, so it
+would need a new attribute and a backfill. Its public feed and the Stats page are better served by caching
+their responses.
+
+### Scaling C: the public API's cache and throttling, and two dashboards
+
+**Status: built** (the last of three scaling PRs). **Needs `infra/bootstrap` applied before it merges**:
+see "Applying it" below.
+
+**Problem:** the public API had no cache and no API Gateway throttling. Every listing, article and RSS
+request invoked the Lambda and read DynamoDB, the per-IP WAF rules were the only ceiling, and there was no
+dashboard for API Gateway or WAF at all.
+
+**Caching: CloudFront, in its own distribution** (`infra/modules/api-cdn`). The frontend now calls the API
+through it (`config.js`'s `PUBLIC_API_URL`, added to the site's CSP `connect-src`). The execute-api URL
+keeps working for anything already pointed at it, such as RSS readers.
+- **Not a behaviour on the site's distribution:** that distribution maps every 403 and 404 to
+  `/error.html`, and `custom_error_response` applies to the whole distribution. It would replace the API's
+  JSON errors with HTML, and the feedback form reads a 403's body to retry its verification. A second
+  distribution has no monthly fee.
+- **The API decides what is cached.** The cache policy's default TTL is 0, so only responses with a
+  `max-age` are kept:
+  - 60 s: topics, topic activity, article listings, an article, musings, equipment
+  - 300 s: RSS and stats
+  
+  Everything else is sent `no-store` and never cached: the view counter, feedback, `feedback-status` (a
+  fresh verification token each time) and every error. CloudFront never caches POSTs. The query string is
+  in the cache key; headers and cookies are not.
+- **API Gateway's own cache was rejected on cost.** It bills hourly whether used or not, about US$20 a month
+  for the smallest per stage, which is more than the whole site costs.
+
+**Per-visitor WAF limits behind the CDN.** Through CloudFront the regional WAF only sees edge addresses,
+which many visitors share, so the existing per-IP limits would have started blocking whole edges. The fix:
+- A CloudFront Function writes the visitor's address into `x-viewer-ip`, overwriting whatever the visitor
+  sent.
+- The distribution sends a secret `x-origin-verify` header (`random_password`, redacted from WAF logs).
+- `rate-limit` and `feedback-rate-limit` now apply only to requests **without** the secret, by source IP,
+  as before.
+- Two new rules, `rate-limit-via-cdn` and `feedback-rate-limit-via-cdn`, apply the same limits to requests
+  **with** it, aggregated on `x-viewer-ip` (`FORWARDED_IP`, `NO_MATCH` fallback).
+- A direct caller can't forge the visitor header: without the secret, its own IP is what's counted.
+- Cost: two more WAF rules per regional ACL, about US$1 each a month.
+- In production the API distribution also gets the shared CloudFront ACL (the 2000-per-IP edge limit and
+  managed rules); in dev it gets that ACL once `web_acl_arn` is set, the same as the site.
+
+**Throttling** (`aws_api_gateway_method_settings`):
+- Public API stage: 25 requests a second, burst 50. The feedback POST, which can cost a model call, gets
+  2 a second, burst 5.
+- Admin API: 10, burst 20.
+
+Anything above these gets a 429 before the Lambda runs. These are whole-API ceilings; per-visitor limits
+stay with WAF. Detailed per-method metrics and execution logging stay off, since they bill as custom
+metrics.
+
+**Access logs:** one JSON line per request (time, method, path, status, latency, integration latency,
+error type, WAF status). They hold **no IP or user agent** and are kept 14 days for the public API and 30
+for admin. The privacy policy now says so. API Gateway can only write them once the account names a
+CloudWatch Logs role for it, which is an account-wide singleton, so it lives in `infra/bootstrap`
+(`aws_api_gateway_account`), together with the deploy role's permission for `/aws/apigateway/bloggerbear-*`.
+
+**Dashboards** (`infra/modules/observability/api_waf_dashboards.tf`). Like the pipeline dashboard, both open
+on 7 days of hourly points.
+- **API Gateway**, per API:
+  - requests, 4XX and 5XX
+  - latency against integration latency at p50, p90 and p99
+  - from the access logs: a responses-by-status table (the 400/403/429/500/502/504 split; REST APIs publish
+    no per-status metric), 429s per hour, and 4XX/5XX by route and error type
+  - for the public API, CDN requests next to the requests that still reached API Gateway (the gap is the
+    cache), and CDN error rates
+  
+  CloudFront's `CacheHitRate` widget appears only if `enable_additional_metrics` is on (about US$2.40 a
+  month, off by default).
+- **WAF:**
+  - for each regional ACL: allowed, blocked and counted, blocked per rule (rate limits included) and
+    allowed/counted per rule, all by metric search so a new rule shows up by itself, plus a Logs Insights
+    table of the top blocked rule, address and path (the address is `x-viewer-ip` when the request came
+    through the CDN)
+  - the same for the shared CloudFront ACL, in us-east-1. Its metrics carry no `Region` dimension, so the
+    widgets search both dimension shapes; CloudFront's own metrics use `Region = Global`.
+  
+  Logs Insights widgets are billed per GB scanned, only when someone opens the dashboard. A metric filter
+  per status would cost a custom metric each, every month.
+
+**Applying it:**
+1. **Apply `infra/bootstrap` first.** It adds the API Gateway CloudWatch Logs role and account setting, and
+   the deploy role's `ApiAccessLogGroups` statement. Without them the stage update fails ("CloudWatch Logs
+   role ARN must be set in account settings") or the log group creation is denied.
+2. Then merge. The first apply creates the distribution, which takes a few minutes. `config.js` switches
+   the site to it, and an open page picks the change up on its next load (`config.js` is `no-cache`).
+3. The `random` provider is new (lock files updated).

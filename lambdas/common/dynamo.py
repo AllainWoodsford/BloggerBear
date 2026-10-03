@@ -20,7 +20,9 @@ FINDINGS_TABLE, ...) -- never hardcode a table name here.
 from __future__ import annotations
 
 import os
+import re
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -49,6 +51,45 @@ CLEANUP_TTL_DAYS = 7
 def _expires_in(days: int) -> int:
     """An `expires_at` epoch-seconds value `days` from now, for a TTL attribute."""
     return int((datetime.now(UTC) + timedelta(days=days)).timestamp())
+
+
+# Scaling PR A: global secondary indexes (infra/modules/app-data/main.tf), so the reads the public
+# API and the review inbox make on every request are Queries rather than whole-table Scans. The
+# names must match Terraform's; lambdas/tests/test_terraform_wiring.py checks that they do.
+ARTICLES_BY_STATUS_INDEX = "by_status_created_at"  # Articles: status / created_at
+ARTICLES_BY_TOPIC_INDEX = "by_topic_created_at"  # Articles: topic_id / created_at
+MODERATION_BY_STATUS_INDEX = "by_status_created_at"  # ModerationQueue: status / created_at
+MODERATION_BY_ARTICLE_INDEX = "by_article_created_at"  # ModerationQueue: article_id / created_at
+
+
+def _paginated_query(
+    table,
+    index_name: str,
+    key_condition,
+    filter_expression=None,
+    *,
+    newest_first: bool = False,
+    limit: int | None = None,
+) -> list[dict]:
+    """Query an index to completion (or until `limit` items have been gathered) and return them.
+
+    Every index here sorts on `created_at`, so `newest_first` returns the most recent first.
+    `limit` is applied after the filter: DynamoDB's own Limit counts items *before* filtering,
+    which could stop a page short of a match, so this keeps paging until it has enough instead.
+    """
+    kwargs = {
+        "IndexName": index_name,
+        "KeyConditionExpression": key_condition,
+        "ScanIndexForward": not newest_first,
+    }
+    if filter_expression is not None:
+        kwargs["FilterExpression"] = filter_expression
+    response = table.query(**kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response and (limit is None or len(items) < limit):
+        response = table.query(**kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items if limit is None else items[:limit]
 
 
 # --- Topics / Findings (research-tick worker) -------------------------------
@@ -396,27 +437,28 @@ def list_candidate_ideas(topic_id: str) -> list[dict]:
 
 
 def list_pending_moderation() -> list[dict]:
-    """Return every ModerationQueue item with `status == "pending"`.
+    """Return every ModerationQueue item with `status == "pending"`, oldest first.
 
-    Scan + filter -- acceptable at this project's scale, no GSI.
+    A Query on the status index, which reads only the pending items rather than the whole queue
+    and its approved/rejected history.
     """
-    table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    response = table.scan(FilterExpression=Attr("status").eq("pending"))
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=Attr("status").eq("pending"),
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
-    return items
+    return list_moderation_by_status("pending")
 
 
 def list_pending_moderation_for_topic(topic_id: str) -> list[dict]:
-    """Return every pending ModerationQueue item for a topic."""
+    """Return every pending ModerationQueue item for a topic.
+
+    Queries the pending items, then keeps this topic's. Pending items are few (they are waiting
+    for a person), so filtering them costs little; a topic index would be one more index to pay
+    for on every write, for no real saving.
+    """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    filter_expression = Attr("status").eq("pending") & Attr("topic_id").eq(topic_id)
-    return _paginated_scan(table, filter_expression)
+    return _paginated_query(
+        table,
+        MODERATION_BY_STATUS_INDEX,
+        Key("status").eq("pending"),
+        Attr("topic_id").eq(topic_id),
+    )
 
 
 def count_pending_moderation_for_topic(topic_id: str) -> int:
@@ -426,9 +468,9 @@ def count_pending_moderation_for_topic(topic_id: str) -> int:
     public_api_handler.py's GET /topics/{topic_id}/activity surfaces this
     to anonymous visitors (an "N pending review" indicator), and a pending
     article hasn't cleared compliance review yet, so its title/content/
-    reasons must never leak through this path. Same Scan + combined-filter
-    pattern as list_prompt_refinements above, just returning len() instead
-    of the items.
+    reasons must never leak through this path. Same Query as
+    list_pending_moderation_for_topic, just returning len() instead of the
+    items.
     """
     return len(list_pending_moderation_for_topic(topic_id))
 
@@ -492,9 +534,9 @@ def update_moderation_status(queue_id: str, status: str) -> None:
 
 
 def list_moderation_by_status(status: str) -> list[dict]:
-    """Every ModerationQueue item with `status` (Scan + filter, like list_pending_moderation)."""
+    """Every ModerationQueue item with `status`, oldest first (a Query on the status index)."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    return _paginated_scan(table, Attr("status").eq(status))
+    return _paginated_query(table, MODERATION_BY_STATUS_INDEX, Key("status").eq(status))
 
 
 def claim_moderation_for_rewrite(
@@ -609,17 +651,28 @@ def get_article(article_id: str) -> dict | None:
 def get_moderation_item_by_article_id(article_id: str) -> dict | None:
     """Fetch the ModerationQueue item for `article_id`, or None if there isn't one.
 
-    The ModerationQueue table's only key is `queue_id` (no article_id GSI),
-    so this is a Scan + FilterExpression -- same pattern as
-    list_pending_moderation above, acceptable at this project's scale.
     Backs the force-publish admin route's best-effort moderation-status
     consistency (see admin_api_handler.py's _publish_article). A Re-Write
     (common/rewrite.py) leaves the old item behind as `rewritten` history and
     adds a new one, so an article can have several: the newest is the live one.
+
+    The article index sorts by `created_at`, so the newest is the first item of a descending
+    Query. That index holds keys only, and index reads can trail the table by a moment, so the
+    item itself comes from a strongly consistent GetItem: callers decide what to do from its
+    `status`, which must not be stale.
     """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
-    items = _paginated_scan(table, Attr("article_id").eq(article_id))
-    return max(items, key=lambda item: item.get("created_at") or "") if items else None
+    newest = _paginated_query(
+        table,
+        MODERATION_BY_ARTICLE_INDEX,
+        Key("article_id").eq(article_id),
+        newest_first=True,
+        limit=1,
+    )
+    if not newest:
+        return None
+    response = table.get_item(Key={"queue_id": newest[0]["queue_id"]}, ConsistentRead=True)
+    return response.get("Item")
 
 
 def update_article_status(
@@ -661,24 +714,21 @@ def update_article_status(
 def list_articles_by_status(status: str, topic_id: str | None = None) -> list[dict]:
     """Return every Articles item with the given status.
 
-    If `topic_id` is given, further filters to that topic. The Articles
-    table's only key is `article_id` (no sort key, no topic_id GSI -- see
-    infra/modules/app-data/main.tf), so this is a Scan + FilterExpression,
-    acceptable at this project's scale.
+    If `topic_id` is given, further filters to that topic. A Query, not a Scan
+    (Scaling PR A): without a topic, on the status index, reading only the
+    articles in that status; with one, on the topic index, reading that topic's
+    articles and keeping those in `status` (a topic's articles are mostly
+    published, so little is read and thrown away). Oldest first by `created_at`;
+    callers that care about order sort for themselves, as they did when this
+    was a Scan with no order at all.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("status").eq(status)
-    if topic_id is not None:
-        filter_expression = filter_expression & Attr("topic_id").eq(topic_id)
-
-    response = table.scan(FilterExpression=filter_expression)
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=filter_expression,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
+    if topic_id is None:
+        items = _paginated_query(table, ARTICLES_BY_STATUS_INDEX, Key("status").eq(status))
+    else:
+        items = _paginated_query(
+            table, ARTICLES_BY_TOPIC_INDEX, Key("topic_id").eq(topic_id), Attr("status").eq(status)
         )
-        items.extend(response.get("Items", []))
     # Same Decimal -> float/int conversion get_article applies -- needed
     # here too now that public_api_handler's _list_articles projects a
     # slim lineage summary (models_used/cost_aud/published_by) onto each
@@ -699,6 +749,10 @@ def list_all_articles() -> list[dict]:
     not just published ones. Same lineage Decimal -> int/float conversion as
     list_published_articles, for the same reason (json.dumps can't serialize
     a raw Decimal) -- callers only ever surface aggregates, never items.
+
+    Deliberately still a Scan after Scaling PR A: it wants every article in
+    every status, which no index narrows. Its one public caller (the Stats
+    page) is better served by caching its response than by an index.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
     items = _paginated_scan(table)
@@ -713,20 +767,88 @@ def list_published_articles(topic_id: str | None = None) -> list[dict]:
     return list_articles_by_status("published", topic_id)
 
 
-def increment_view_count(article_id: str) -> int:
-    """Atomically increment an Articles item's `view_count` and return the new value.
+# Scaling PR B: an article's views are counted on VIEW_COUNT_SHARDS small items in the ViewCounts
+# table (counter_id "<article_id>#<n>", each its own partition key) instead of on the Articles item,
+# so a popular article's views spread over several items rather than queueing on one -- DynamoDB
+# takes about 1,000 writes a second on any single item. Sharding, not batching through a queue: the
+# count stays exact and immediate, and there is no queue, consumer Lambda or dead-letter path to
+# run for a counter. The count an article built up before this (its Articles item's `view_count`,
+# never written again) is the base every read adds the shards onto, so nothing is migrated.
+# Raising VIEW_COUNT_SHARDS later is safe; lowering it would hide the views on the dropped shards.
+VIEW_COUNT_SHARDS = 4
 
-    Uses `ADD view_count :incr`, which DynamoDB initializes to the operand
-    if the attribute doesn't exist yet.
+
+def _view_counter_ids(article_id: str) -> list[str]:
+    return [f"{article_id}#{shard}" for shard in range(VIEW_COUNT_SHARDS)]
+
+
+def _sum_views(rows: list[dict]) -> int:
+    return sum(int(row.get("views", 0)) for row in rows)
+
+
+def increment_view_count(article_id: str, *, stored_view_count: int | None = None) -> int:
+    """Count one view of an article and return its new total.
+
+    ADDs 1 onto one view-counter shard picked at random (created on first use), then adds the
+    other shards and the article's pre-sharding `view_count` to it. The shard just written is read
+    back from the write itself, so the reader's own view is always in the total; the other shards
+    are an eventually consistent BatchGetItem, which can at worst miss a view someone else made in
+    the same instant. `stored_view_count` is that pre-sharding count, when the caller already has
+    the article in hand; otherwise it is read from the Articles item.
     """
-    table = get_table(os.environ["ARTICLES_TABLE"])
-    response = table.update_item(
-        Key={"article_id": article_id},
-        UpdateExpression="ADD view_count :incr",
-        ExpressionAttributeValues={":incr": 1},
+    counters = get_table(os.environ["VIEW_COUNTS_TABLE"])
+    counter_ids = _view_counter_ids(article_id)
+    mine = counter_ids[secrets.randbelow(VIEW_COUNT_SHARDS)]
+    response = counters.update_item(
+        Key={"counter_id": mine},
+        UpdateExpression="SET article_id = :article ADD #views :one",
+        ExpressionAttributeNames={"#views": "views"},
+        ExpressionAttributeValues={":article": article_id, ":one": 1},
         ReturnValues="UPDATED_NEW",
     )
-    return int(response["Attributes"]["view_count"])
+    others = _batch_get_items(
+        os.environ["VIEW_COUNTS_TABLE"], "counter_id", [c for c in counter_ids if c != mine]
+    )
+    if stored_view_count is None:
+        stored_view_count = _stored_view_count(article_id)
+    return stored_view_count + int(response["Attributes"]["views"]) + _sum_views(others)
+
+
+def get_view_count(article_id: str, *, stored_view_count: int | None = None) -> int:
+    """An article's total views: its pre-sharding `view_count` plus every view-counter shard.
+    `stored_view_count` as for increment_view_count."""
+    rows = _batch_get_items(os.environ["VIEW_COUNTS_TABLE"], "counter_id", _view_counter_ids(article_id))
+    if stored_view_count is None:
+        stored_view_count = _stored_view_count(article_id)
+    return stored_view_count + _sum_views(rows)
+
+
+def _stored_view_count(article_id: str) -> int:
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    item = table.get_item(Key={"article_id": article_id}, ProjectionExpression="view_count").get("Item")
+    return int((item or {}).get("view_count", 0))
+
+
+def _batch_get_items(
+    table_name: str, key_name: str, key_values: list[str], *, consistent: bool = False
+) -> list[dict]:
+    """Fetch up to 100 items by hash key in one BatchGetItem, retrying any keys DynamoDB hands
+    back unprocessed (it may, when throttled) a few times with a short backoff. Missing items are
+    simply absent from the result."""
+    if not key_values:
+        return []
+    get_table(table_name)  # makes sure the shared resource exists
+    keys = [{key_name: value} for value in key_values]
+    request = {table_name: {"Keys": keys, "ConsistentRead": consistent}}
+    items: list[dict] = []
+    for attempt in range(5):
+        response = _dynamodb_resource.batch_get_item(RequestItems=request)
+        items.extend(response.get("Responses", {}).get(table_name, []))
+        request = response.get("UnprocessedKeys") or {}
+        if not request:
+            return items
+        time.sleep(0.05 * 2**attempt)
+    raise RuntimeError(f"BatchGetItem on {table_name} left keys unprocessed after retries")
 
 
 # --- PromptRefinements (Phase 5) ---------------------------------------
@@ -796,22 +918,26 @@ def put_prompt_refinement(
 def list_prompt_refinements(topic_id: str | None = None, status: str | None = None) -> list[dict]:
     """Return PromptRefinements items, optionally filtered by topic_id and/or status.
 
-    Scan + filter -- same pattern as list_pending_moderation /
-    list_published_articles above -- acceptable at this project's scale, no
-    GSI. Both filters are optional; either, neither, or both may be given.
+    Both filters are optional; either, neither, or both may be given. With a
+    `topic_id` this is a Query on the table's own hash key (no index needed);
+    without one it stays a Scan + filter -- the table is small (one row per
+    proposed refinement) and there is no single key every caller shares.
     """
     table = get_table(os.environ["PROMPT_REFINEMENTS_TABLE"])
+    status_filter = Attr("status").eq(status) if status is not None else None
 
-    filter_expression = None
-    if topic_id is not None:
-        filter_expression = Attr("topic_id").eq(topic_id)
-    if status is not None:
-        status_condition = Attr("status").eq(status)
-        filter_expression = (
-            status_condition if filter_expression is None else filter_expression & status_condition
-        )
+    if topic_id is None:
+        return _paginated_scan(table, status_filter)
 
-    return _paginated_scan(table, filter_expression)
+    kwargs = {"KeyConditionExpression": Key("topic_id").eq(topic_id)}
+    if status_filter is not None:
+        kwargs["FilterExpression"] = status_filter
+    response = table.query(**kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.query(**kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
 
 
 def get_prompt_refinement(topic_id: str, version: str) -> dict | None:
@@ -1003,9 +1129,9 @@ def update_article_net_votes(article_id: str, delta: int) -> None:
     """Atomically add `delta` to an Articles item's `net_votes` attribute.
 
     Uses `ADD net_votes :delta`, which DynamoDB initializes to the operand
-    if the attribute doesn't exist yet -- same pattern as
-    `increment_view_count` above. `delta` is +1 for an upvote, -1 for a
-    downvote.
+    if the attribute doesn't exist yet. `delta` is +1 for an upvote, -1 for a
+    downvote. Not sharded like view counts: a vote is a deliberate, rate-
+    limited act (common/feedback_limits.py), far rarer than a page view.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
     table.update_item(
@@ -1018,24 +1144,17 @@ def update_article_net_votes(article_id: str, delta: int) -> None:
 def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
     """Return up to `limit` published articles for `topic_id`, best net_votes first.
 
-    The Articles table's only key is `article_id` (no sort key, no topic_id
-    GSI), so this is a Scan + FilterExpression, same pattern as
-    `list_published_articles` above, followed by an in-Python sort on
-    `net_votes` (missing/absent treated as 0). Only articles with
-    `net_votes > 0` are eligible -- a net-negative or neutral article isn't
-    worth reusing as a few-shot example for future drafts.
+    The topic's published articles come from a Query on the topic index
+    (Scaling PR A), followed by an in-Python sort on `net_votes`
+    (missing/absent treated as 0) -- votes change all the time, so they are
+    not worth an index of their own. Only articles with `net_votes > 0` are
+    eligible -- a net-negative or neutral article isn't worth reusing as a
+    few-shot example for future drafts.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
-
-    response = table.scan(FilterExpression=filter_expression)
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=filter_expression,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
+    items = _paginated_query(
+        table, ARTICLES_BY_TOPIC_INDEX, Key("topic_id").eq(topic_id), Attr("status").eq("published")
+    )
 
     positively_voted = [item for item in items if int(item.get("net_votes", 0)) > 0]
     positively_voted.sort(key=lambda item: int(item.get("net_votes", 0)), reverse=True)
@@ -1045,25 +1164,21 @@ def get_top_voted_articles(topic_id: str, limit: int = 2) -> list[dict]:
 def list_recent_article_titles(topic_id: str, limit: int = 5) -> list[str]:
     """Return up to `limit` of `topic_id`'s own published articles' titles, most recent first.
 
-    Same Scan + FilterExpression as get_top_voted_articles above (no topic_id GSI on this table),
-    just sorted by created_at instead of net_votes. Fed into daily_cycle_handler.py's ideation
+    A newest-first Query on the topic index (sorted by created_at), stopping as soon as `limit`
+    published ones are in hand. Fed into daily_cycle_handler.py's ideation
     prompt so a source that stays trending for days doesn't get written up again each day just
     because that day's numbers are technically new -- titles only, never full articles or ids,
     since that's all a "don't repeat this" reminder needs."""
     table = get_table(os.environ["ARTICLES_TABLE"])
-    filter_expression = Attr("topic_id").eq(topic_id) & Attr("status").eq("published")
-
-    response = table.scan(FilterExpression=filter_expression)
-    items = response.get("Items", [])
-    while "LastEvaluatedKey" in response:
-        response = table.scan(
-            FilterExpression=filter_expression,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        items.extend(response.get("Items", []))
-
-    items.sort(key=lambda item: item.get("created_at", ""), reverse=True)
-    return [item["title"] for item in items[:limit]]
+    items = _paginated_query(
+        table,
+        ARTICLES_BY_TOPIC_INDEX,
+        Key("topic_id").eq(topic_id),
+        Attr("status").eq("published"),
+        newest_first=True,
+        limit=limit,
+    )
+    return [item["title"] for item in items]
 
 
 # --- FailedExecutions (DLQ consumer) -------------------------------------
@@ -1534,20 +1649,24 @@ def get_verification_secret() -> str:
     Deleting the row rotates the key (tokens already issued stop working, and they only live an
     hour or two).
     """
+    return _get_or_create_secret(_VERIFICATION_SECRET_ID)
+
+
+def _get_or_create_secret(config_id: str) -> str:
+    """A random key in the config table's `config_id` row, created on first use (see
+    get_verification_secret for why a conditional write keeps racing Lambdas on one key)."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
-    item = table.get_item(Key={"config_id": _VERIFICATION_SECRET_ID}).get("Item")
+    item = table.get_item(Key={"config_id": config_id}).get("Item")
     if item and item.get("secret"):
         return item["secret"]
     try:
         table.put_item(
-            Item={"config_id": _VERIFICATION_SECRET_ID, "secret": secrets.token_hex(32)},
+            Item={"config_id": config_id, "secret": secrets.token_hex(32)},
             ConditionExpression="attribute_not_exists(config_id)",
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         pass
-    return table.get_item(Key={"config_id": _VERIFICATION_SECRET_ID}, ConsistentRead=True)["Item"][
-        "secret"
-    ]
+    return table.get_item(Key={"config_id": config_id}, ConsistentRead=True)["Item"]["secret"]
 
 
 def consume_verification_nonce(nonce: str, expires_at: int) -> bool:
@@ -1580,46 +1699,88 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
 
 # --- StatsCurrent (Observability enhancement, PR 1) ---------------------------------------
 #
-# Owned by common/stats_tracking.py. One row (stats_id="current"), updated in place all week
-# with ADD expressions -- same pattern as the model_config counters above -- so the row and
-# every attribute on it come into existence on first use; nothing has to create it first.
+# Owned by common/stats_tracking.py. The week's counters, updated all week with ADD expressions --
+# same pattern as the model_config counters above -- so every row and attribute comes into
+# existence on first use; nothing has to create them first.
+#
+# Scaling PR B: the counters are sharded. Every tracked Bedrock call, feedback submission, web
+# search and pipeline Lambda run used to ADD onto the one "current" row, making it the busiest
+# single item in the app. Each increment now lands on one of STATS_CURRENT_SHARDS rows
+# ("current#0" ...), picked at random, and get_current_stats sums them back into the one row
+# shape every reader already expects. The plain "current" row is still read (and summed) as the
+# base: it holds the SET snapshots (Cost Explorer readings, set_current_stats_fields below), and
+# whatever was counted on it before sharding, so no migration is needed. Raising
+# STATS_CURRENT_SHARDS later is safe; lowering it would hide whatever the dropped shards hold.
+STATS_CURRENT_SHARDS = 8
+_STATS_CURRENT_ID = "current"
+
+
+def _stats_current_ids() -> list[str]:
+    """The base row first, then every shard."""
+    return [_STATS_CURRENT_ID] + [f"{_STATS_CURRENT_ID}#{n}" for n in range(STATS_CURRENT_SHARDS)]
 
 
 def increment_current_stats(updates: dict[str, int | Decimal], week_start: str) -> None:
-    """ADD each of `updates` onto the current week's StatsCurrent row (creating it, and any
-    attribute in `updates` not yet present, on first use -- same as consume_feedback_counter
-    above). `week_start` (the Monday of the ISO week this row covers, e.g. "2026-09-15") is
-    recorded once, the first time this week's row is touched, and left alone after that -- a
-    later week's rollover job resets it, this function never does."""
+    """ADD each of `updates` onto one of the current week's StatsCurrent shards, picked at random
+    (creating it, and any attribute in `updates` not yet present, on first use -- same as
+    consume_feedback_counter above). `week_start` (the Monday of the ISO week this row covers,
+    e.g. "2026-09-15") is recorded once, the first time a row is touched, and left alone after
+    that -- a later week's rollover job resets it, this function never does."""
     if not updates:
         return
     table = get_table(os.environ["STATS_CURRENT_TABLE"])
     names = {f"#f{n}": key for n, key in enumerate(updates)}
     values = {f":v{n}": value for n, value in enumerate(updates.values())}
     adds = ", ".join(f"#f{n} :v{n}" for n in range(len(updates)))
+    shard = f"{_STATS_CURRENT_ID}#{secrets.randbelow(STATS_CURRENT_SHARDS)}"
     table.update_item(
-        Key={"stats_id": "current"},
+        Key={"stats_id": shard},
         UpdateExpression=f"SET week_start = if_not_exists(week_start, :week) ADD {adds}",
         ExpressionAttributeNames=names,
         ExpressionAttributeValues={**values, ":week": week_start},
     )
 
 
+def _merge_stats_rows(rows: list[dict]) -> dict:
+    """Sum StatsCurrent rows (the base row and its shards) into one row shaped like the single
+    row this table used to hold: numbers are added, `week_start` is the earliest any row has,
+    and anything else (the snapshot labels and as-of dates, which only the base row carries) is
+    taken from the base row."""
+    rows = sorted(rows, key=lambda row: row.get("stats_id") != _STATS_CURRENT_ID)  # base first
+    merged: dict = {"stats_id": _STATS_CURRENT_ID}
+    for row in rows:
+        for key, value in row.items():
+            if key == "stats_id":
+                continue
+            if key == "week_start":
+                merged[key] = min(merged.get(key, value), value)
+            elif isinstance(value, int | Decimal) and not isinstance(value, bool) and key in merged:
+                merged[key] = merged[key] + value
+            else:
+                merged.setdefault(key, value)
+    return merged
+
+
 def get_current_stats() -> dict:
-    """The current week's StatsCurrent row, or an empty shell if nothing has been recorded yet
-    this week (never raises for "no row" -- that is the normal state right after a rollover)."""
-    table = get_table(os.environ["STATS_CURRENT_TABLE"])
-    response = table.get_item(Key={"stats_id": "current"})
-    return response.get("Item") or {"stats_id": "current"}
+    """The current week's StatsCurrent figures, summed across the base row and every shard, or
+    an empty shell if nothing has been recorded yet this week (never raises for "no row" -- that
+    is the normal state right after a rollover). One strongly consistent BatchGetItem: the
+    rollover copies exactly what this returns, so it must include every write already made."""
+    rows = _batch_get_items(
+        os.environ["STATS_CURRENT_TABLE"], "stats_id", _stats_current_ids(), consistent=True
+    )
+    return _merge_stats_rows(rows)
 
 
 def delete_current_stats() -> None:
-    """Clear the current week's StatsCurrent row (stats_rollover_handler.py, after copying it into
-    StatsHistory). Deleting it outright, not zeroing its attributes, so the next increment
-    recreates it fresh -- same "the row comes into existence on first use" rule
-    increment_current_stats already follows. Deleting an already-empty row is not an error."""
+    """Clear the current week's StatsCurrent rows, the base row and every shard
+    (stats_rollover_handler.py, after copying them into StatsHistory). Deleting them outright,
+    not zeroing their attributes, so the next increment recreates one fresh -- same "the row
+    comes into existence on first use" rule increment_current_stats already follows. Deleting an
+    already-empty row is not an error."""
     table = get_table(os.environ["STATS_CURRENT_TABLE"])
-    table.delete_item(Key={"stats_id": "current"})
+    for stats_id in _stats_current_ids():
+        table.delete_item(Key={"stats_id": stats_id})
 
 
 # --- StatsHistory (Observability enhancement, PR 2) ----------------------------------------
@@ -1652,12 +1813,50 @@ def get_stats_history_row(week_start: str) -> dict | None:
     return table.get_item(Key={"week_start": week_start}).get("Item")
 
 
+def set_stats_history_week_fields(week_start: str, fields: dict) -> bool:
+    """SET `fields` on an already rolled-over week's StatsHistory row -- the one exception to
+    "written once, never updated": the AWS bill for a week is only fully known a day or two after
+    the week ends (common/cost_explorer.py), so cost_explorer_poll_handler.py fills it in then.
+    Only ever updates a row the rollover made: returns False (and writes nothing) for a week with
+    no row, so it can never create one and make the rollover think that week was already done."""
+    if not fields:
+        return False
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    names = {f"#f{n}": key for n, key in enumerate(fields)}
+    values = {f":v{n}": value for n, value in enumerate(fields.values())}
+    sets = ", ".join(f"#f{n} = :v{n}" for n in range(len(fields)))
+    try:
+        table.update_item(
+            Key={"week_start": week_start},
+            UpdateExpression=f"SET {sets}",
+            ConditionExpression="attribute_exists(week_start)",
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+_WEEK_KEY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def list_stats_history_weeks() -> list[dict]:
+    """Every completed week's StatsHistory row, without the all-time row or any other sentinel
+    (their `week_start` is never a date). A Scan: one row a week, so a few hundred at most."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    return [row for row in _paginated_scan(table) if _WEEK_KEY.match(str(row.get("week_start", "")))]
+
+
 # StatsHistory's permanent running-total row (Observability enhancement, PR 4): a sentinel
 # `week_start` that can never collide with a real Monday date (those are always "YYYY-MM-DD"
 # ISO dates -- this is neither a valid date nor formatted like one). Kept in sync by
 # stats_rollover_handler.py at every rollover (common/stats_tracking.py's split_for_rollover
 # decides which fields get ADD'd here versus SET) so "Total Stats" is one get_item away, never a
 # scan-and-sum over every week there has ever been.
+#
+# Not sharded (Scaling PR B), unlike StatsCurrent: nothing writes this row per call. It is written
+# once a week by the rollover, and once ever by the articles backfill admin route.
 _STATS_ALL_TIME_KEY = "all-time"
 
 
@@ -1724,3 +1923,82 @@ def set_current_stats_fields(fields: dict, week_start: str) -> None:
         ExpressionAttributeNames=names,
         ExpressionAttributeValues={**values, ":week": week_start},
     )
+
+
+# --- Security events (common/security_events.py) --------------------------------------------------
+#
+# One row per incident. Written by security_events_handler.py (WAF logs) and the public API (comment
+# screening); never by a person. Rows expire by TTL (expires_at), 120 days after last seen.
+
+_SECURITY_HASH_KEY_ID = "security-events-hash-key"
+SECURITY_EVENTS_BY_STATUS_INDEX = "by_status_last_seen"
+
+
+def get_security_hash_key() -> str:
+    """The key client addresses are hashed with before a security event is stored (so the table
+    never holds an IP, yet the same client can be recognised again). Created on first use in the
+    config table, like the feedback verification secret; deleting the row starts a new key, after
+    which the same client hashes differently."""
+    return _get_or_create_secret(_SECURITY_HASH_KEY_ID)
+
+
+def upsert_security_incident(
+    event_id: str, *, new_fields: dict, count: int, last_seen: str, expires_at: int
+) -> dict:
+    """Add `count` requests to incident `event_id`, creating it with `new_fields` the first time
+    (every one of them set only if absent, so a later batch never rewrites what was first seen or
+    a status a person or agent has since changed). Returns the incident as it now stands."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    names = {"#count": "request_count", "#last": "last_seen", "#exp": "expires_at"}
+    values = {":n": count, ":last": last_seen, ":exp": expires_at}
+    sets = ["#last = :last", "#exp = :exp"]
+    for n, (key, value) in enumerate(new_fields.items()):
+        names[f"#f{n}"] = key
+        values[f":f{n}"] = value
+        sets.append(f"#f{n} = if_not_exists(#f{n}, :f{n})")
+    response = table.update_item(
+        Key={"event_id": event_id},
+        UpdateExpression=f"SET {', '.join(sets)} ADD #count :n",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return response["Attributes"]
+
+
+def set_security_incident_severity(event_id: str, severity: str) -> None:
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    table.update_item(
+        Key={"event_id": event_id},
+        UpdateExpression="SET severity = :s",
+        ConditionExpression="attribute_exists(event_id)",
+        ExpressionAttributeValues={":s": severity},
+    )
+
+
+def claim_security_alert(event_id: str, alerted_at: str) -> bool:
+    """Mark incident `event_id` as alerted on. True only the first time, so an incident raises
+    the alarm once however many batches add to it."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    try:
+        table.update_item(
+            Key={"event_id": event_id},
+            UpdateExpression="SET alerted_at = :t",
+            ConditionExpression="attribute_exists(event_id) AND attribute_not_exists(alerted_at)",
+            ExpressionAttributeValues={":t": alerted_at},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def list_security_incidents(status: str = "open", limit: int = 50) -> list[dict]:
+    """The newest incidents with `status` (open, acknowledged, resolved), newest first."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    response = table.query(
+        IndexName=SECURITY_EVENTS_BY_STATUS_INDEX,
+        KeyConditionExpression=Key("status").eq(status),
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+    return response.get("Items", [])

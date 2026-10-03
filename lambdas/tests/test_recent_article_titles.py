@@ -7,6 +7,7 @@ from __future__ import annotations
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import common.dynamo as dynamo
 
@@ -21,7 +22,8 @@ def articles_table(monkeypatch):
     monkeypatch.setenv("ARTICLES_TABLE", "Articles")
     dynamo._dynamodb_resource = None
     with mock_aws():
-        boto3.client("dynamodb", region_name=REGION).create_table(
+        create_table(
+            boto3.client("dynamodb", region_name=REGION),
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],

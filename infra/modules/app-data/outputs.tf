@@ -128,6 +128,16 @@ output "stats_history_table_arn" {
   description = "ARN of the StatsHistory DynamoDB table."
 }
 
+output "view_counts_table_name" {
+  value       = aws_dynamodb_table.view_counts.name
+  description = "Name of the ViewCounts DynamoDB table (sharded article view counters)."
+}
+
+output "view_counts_table_arn" {
+  value       = aws_dynamodb_table.view_counts.arn
+  description = "ARN of the ViewCounts DynamoDB table."
+}
+
 output "table_arns" {
   value = [
     aws_dynamodb_table.topics.arn,
@@ -143,6 +153,18 @@ output "table_arns" {
     aws_dynamodb_table.model_config.arn,
     aws_dynamodb_table.stats_current.arn,
     aws_dynamodb_table.stats_history.arn,
+    aws_dynamodb_table.view_counts.arn,
+    aws_dynamodb_table.security_events.arn,
   ]
-  description = "All 13 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "All 15 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+}
+
+output "security_events_table_name" {
+  value       = aws_dynamodb_table.security_events.name
+  description = "Name of the SecurityEvents DynamoDB table (grouped WAF blocks and screened attacks)."
+}
+
+output "security_events_table_arn" {
+  value       = aws_dynamodb_table.security_events.arn
+  description = "ARN of the SecurityEvents DynamoDB table."
 }

@@ -11,8 +11,13 @@ permissions:
   id-token: write 
 jobs:
   run-claude:
-    # Triggers if the issue description contains '@claude' OR if you add a 'claude' label
-    if: contains(github.event.issue.labels.*.name, 'claude') || contains(github.event.issue.body, '@claude')
+    # Triggers if the issue description contains '@claude' OR if you add a 'claude' label -- but
+    # only when the repo owner opened or labelled the issue. Anyone can open an issue on a public
+    # repo; without the sender check, a stranger's issue body would become this job's prompt, run
+    # with contents/PR write access and the owner's Claude token.
+    if: >-
+      github.event.sender.login == github.repository_owner &&
+      (contains(github.event.issue.labels.*.name, 'claude') || contains(github.event.issue.body, '@claude'))
     runs-on: ubuntu-latest
     steps:
       # Pinned to the same actions/checkout@v4.1.7 commit used everywhere

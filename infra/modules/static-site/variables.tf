@@ -37,3 +37,9 @@ variable "web_acl_id" {
   default     = ""
   description = "ARN of a pre-existing, shared WAFv2 Web ACL (CLOUDFRONT scope, created in us-east-1) to associate with this distribution. This module never creates the ACL itself -- it's created once, outside the module, and shared across environments. Leave empty to skip association."
 }
+
+variable "extra_connect_src" {
+  type        = list(string)
+  default     = []
+  description = "Extra hostnames (no scheme) the site's scripts may call, added to the Content-Security-Policy connect-src as https://<host> -- the public API's CloudFront distribution."
+}

@@ -114,6 +114,49 @@ resource "aws_dynamodb_table" "articles" {
     name = "article_id"
     type = "S"
   }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "topic_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at"
+    type = "S"
+  }
+
+  # Scaling PR A: the public API lists published articles (home page, topic pages, RSS) on
+  # nearly every request, which used to Scan the whole table and filter. These two indexes let
+  # common/dynamo.py Query instead. `created_at`, not `published_at`, is the sort key because
+  # put_article stores published_at as an explicit null until an article is published, and
+  # DynamoDB rejects a write whose index key attribute holds a null. Every writer goes through
+  # put_article, which always sets status, topic_id and created_at, so no article is left out
+  # of either index. ALL projection: callers need whole items (titles, lineage, vote counts),
+  # and articles are small since their bodies live in S3.
+  #
+  # Adding both to an existing table is fine in one apply: the AWS provider (checked against
+  # v6.64.0's table.go) sends one UpdateTable per new index and waits for each to become ACTIVE
+  # before starting the next, which is what DynamoDB requires.
+  global_secondary_index {
+    name            = "by_status_created_at"
+    hash_key        = "status"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  # Topic pages and the daily cycle's per-topic lookups (recent titles, top-voted example)
+  # read one topic's articles, then keep the published ones.
+  global_secondary_index {
+    name            = "by_topic_created_at"
+    hash_key        = "topic_id"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
 }
 
 resource "aws_dynamodb_table" "moderation_queue" {
@@ -132,6 +175,42 @@ resource "aws_dynamodb_table" "moderation_queue" {
   attribute {
     name = "queue_id"
     type = "S"
+  }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "article_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "created_at"
+    type = "S"
+  }
+
+  # Scaling PR A: the review inbox (pending items), a topic page's "pending review" count and
+  # the stuck-rewrite sweep all ask for items in one status; this replaces their Scan + filter.
+  # put_moderation_item always sets status and created_at, so every item is indexed.
+  global_secondary_index {
+    name            = "by_status_created_at"
+    hash_key        = "status"
+    range_key       = "created_at"
+    projection_type = "ALL"
+  }
+
+  # Finding an article's live queue item (the newest one: a Re-Write leaves the old item behind
+  # as history). KEYS_ONLY is enough -- common/dynamo.py takes the newest queue_id from here and
+  # reads the item itself with a strongly consistent GetItem, since index reads can lag the
+  # table and the caller acts on the item's status.
+  global_secondary_index {
+    name            = "by_article_created_at"
+    hash_key        = "article_id"
+    range_key       = "created_at"
+    projection_type = "KEYS_ONLY"
   }
 
   # Cleanup PR: common/dynamo.py's update_moderation_status sets expires_at only when an item
@@ -374,5 +453,78 @@ resource "aws_dynamodb_table" "stats_history" {
   attribute {
     name = "week_start"
     type = "S"
+  }
+}
+
+# Scaling PR B: article view counts, sharded. Every page view used to ADD onto the article's own
+# Articles item, so one popular article was one hot item (DynamoDB caps a single item at about
+# 1,000 writes a second) and every view rewrote an item that also carries the article's lineage.
+# A view now ADDs onto one of a few small counter items, picked at random -- counter_id is
+# "<article_id>#<shard>", a separate partition key per shard so the writes really do spread -- and
+# a read sums them (common/dynamo.py's increment_view_count / get_view_count). The count an
+# article had before this table existed stays on its Articles item and is added in on every read,
+# so nothing has to be migrated. No TTL: a count is permanent, like the article it belongs to.
+resource "aws_dynamodb_table" "view_counts" {
+  name                        = "bloggerbear-${var.environment_name}-view-counts"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "counter_id"
+
+  attribute {
+    name = "counter_id"
+    type = "S"
+  }
+}
+
+# Security events: one row per *incident* -- blocked requests grouped by source, rule, client and
+# 15-minute window (common/security_events.py) -- from the regional WAFs' logs
+# (security_events_handler.py) and the public API's comment screening. Each row carries a category,
+# a severity and fixed suggested next steps, a status (open / acknowledged / resolved) and room for
+# an agent's `analysis`, so a person or a monitoring agent can work through what happened.
+#
+# No IP address is ever stored: only a keyed hash of it (`client_hash`), enough to see the same
+# client again. Rows expire 120 days after they were last seen (TTL `expires_at`).
+resource "aws_dynamodb_table" "security_events" {
+  name                        = "bloggerbear-${var.environment_name}-security-events"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "event_id"
+
+  attribute {
+    name = "event_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "last_seen"
+    type = "S"
+  }
+
+  # "What is still open, newest first": status + last_seen.
+  global_secondary_index {
+    name            = "by_status_last_seen"
+    hash_key        = "status"
+    range_key       = "last_seen"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
   }
 }

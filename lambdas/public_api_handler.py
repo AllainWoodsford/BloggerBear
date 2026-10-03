@@ -40,14 +40,15 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common import equipment, feedback_limits, feedback_verification, gear, wear
-from common.comment_screening import screen_comment
+from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
+from common.comment_screening import INJECTION, MARKUP, SHELL, SQL, screen_comment
 from common.dynamo import (
     get_article,
     get_current_stats,
     get_latest_finding,
     get_stats_totals,
     get_topic,
+    get_view_count,
     increment_view_count,
     list_all_articles,
     list_models,
@@ -96,6 +97,16 @@ _CORS_HEADERS = {
 }
 
 
+# Scaling PR C: how long the public API's CDN (infra/modules/api-cdn) and browsers may reuse a
+# response. The CDN caches nothing unless told to (its default TTL is 0), so only the routes below
+# that pass cache_seconds are ever cached: the same answer for every visitor, where a minute or five
+# of staleness is invisible. Everything else -- the view counter, feedback, feedback-status (it hands
+# out a fresh verification token), every error -- is sent no-store, so neither the CDN nor a browser
+# keeps it.
+_LISTING_CACHE_SECONDS = 60
+_RSS_CACHE_SECONDS = 300
+
+
 def _response(
     status_code: int,
     payload,
@@ -105,8 +116,10 @@ def _response(
 ) -> dict:
     body = json.dumps(payload) if content_type == "application/json" else payload
     headers = {"Content-Type": content_type, **_CORS_HEADERS}
-    if cache_seconds is not None:
+    if cache_seconds is not None and status_code == 200:
         headers["Cache-Control"] = f"public, max-age={cache_seconds}"
+    else:
+        headers["Cache-Control"] = "no-store"
     return {"statusCode": status_code, "headers": headers, "body": body}
 
 
@@ -171,7 +184,7 @@ def _list_topics(event: dict) -> dict:
                 "researching": researching,
             }
         )
-    return _response(200, {"topics": public_topics})
+    return _response(200, {"topics": public_topics}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 def _ref_key(ref: dict) -> str:
@@ -262,6 +275,7 @@ def _topic_activity(event: dict) -> dict:
             "pending_review_count": pending_review_count,
             "pipeline_items": pipeline_items,
         },
+        cache_seconds=_LISTING_CACHE_SECONDS,
     )
 
 
@@ -302,7 +316,9 @@ def _list_articles(event: dict) -> dict:
         }
         for a in articles
     ]
-    return _response(200, {"topic_id": topic_id, "articles": summaries})
+    return _response(
+        200, {"topic_id": topic_id, "articles": summaries}, cache_seconds=_LISTING_CACHE_SECONDS
+    )
 
 
 def _get_article_detail(event: dict) -> dict:
@@ -320,7 +336,7 @@ def _get_article_detail(event: dict) -> dict:
             "body": body,
             "published_at": article.get("published_at"),
             "source_refs": dedupe_source_refs(article.get("source_refs")),
-            "view_count": int(article.get("view_count", 0)),
+            "view_count": _view_count(article),
             # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of
             # 5) -- explicit None (not omitted) on an article published
             # before this feature existed, so the frontend's "no data"
@@ -335,7 +351,21 @@ def _get_article_detail(event: dict) -> dict:
             # frozen-at-publish-time snapshot like the static article page's own copy.
             "equipment_used": equipment_snapshot(article.get("equipment_used")),
         },
+        # Its view_count can be a minute behind; the page shows the live count the view POST returns.
+        cache_seconds=_LISTING_CACHE_SECONDS,
     )
+
+
+def _view_count(article: dict) -> int:
+    """An article's total views (sharded counters plus the count kept on the article before them,
+    see common/dynamo.py's get_view_count). A counter that can't be read never breaks the article:
+    the pre-sharding count is shown instead, and the next view's POST corrects it on the page."""
+    stored = int(article.get("view_count", 0))
+    try:
+        return get_view_count(article["article_id"], stored_view_count=stored)
+    except Exception as exc:  # noqa: BLE001 - a view count must never break the page
+        print(f"public_api_handler: could not read view counters for {article['article_id']}: {exc!r}")
+        return stored
 
 
 def _view_article(event: dict) -> dict:
@@ -344,7 +374,9 @@ def _view_article(event: dict) -> dict:
     if article is None:
         return _error(404, f"article '{article_id}' not found")
 
-    new_count = increment_view_count(article_id)
+    new_count = increment_view_count(
+        article_id, stored_view_count=int(article.get("view_count", 0))
+    )
     return _response(200, {"article_id": article_id, "view_count": new_count})
 
 
@@ -372,6 +404,21 @@ _CLOSED_STATUS = {
 # The form's decoy field. It should look like any other optional field: nothing in its name says
 # what it is for, and a browser has no autofill for it (not "email", "phone", "name", "company"...).
 HONEYPOT_FIELD = "referral_code"
+
+
+# Comment-screening reasons that mean someone tried to attack the system, not just post a bad
+# comment: recorded as security events as well as rejected.
+_ATTACK_REASONS = frozenset({INJECTION, SQL, MARKUP, SHELL})
+
+
+def _client_ip(event: dict) -> str:
+    """The visitor's address. Behind the API's CloudFront distribution the connection comes from an
+    edge, and the visitor's own address is in x-viewer-ip -- believed only alongside x-origin-verify,
+    the header the distribution adds (the same rule the WAF's per-visitor limits follow)."""
+    headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+    if "x-origin-verify" in headers and headers.get("x-viewer-ip"):
+        return str(headers["x-viewer-ip"])
+    return str(((event.get("requestContext") or {}).get("identity") or {}).get("sourceIp") or "")
 
 
 def _closed_response(status: dict) -> dict:
@@ -482,6 +529,17 @@ def _submit_feedback(event: dict) -> dict:
         # rejected" means for the Stats page, not a closed site or a caught bot (see
         # common/stats_tracking.py's FEEDBACK_REJECTED_COMMENT).
         print(f"public_api_handler: rejected a feedback submission ({screened['dropped_because']})")
+        if screened["dropped_because"] in _ATTACK_REASONS:
+            # An attack, not just an unwanted comment: a security event (common/security_events.py).
+            # The reason and a hash of the address only -- the comment is never stored.
+            security_events.record_incident(
+                source=security_events.COMMENT_SCREENING,
+                rule=screened["dropped_because"],
+                client_ip=_client_ip(event),
+                at=datetime.now(UTC),
+                method="POST",
+                path=f"/articles/{article_id}/feedback",
+            )
         try:
             record_feedback_rejected_comment()
         except Exception as exc:  # noqa: BLE001 - the rejection itself must still be returned
@@ -541,7 +599,7 @@ def _list_musings(event: dict) -> dict:
         }
         for m in items
     ]
-    return _response(200, {"musings": musings})
+    return _response(200, {"musings": musings}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 # --- Stats ------------------------------------------------------------------
@@ -659,7 +717,9 @@ def _rss_feed(event: dict) -> dict:
         + "</channel>"
         "</rss>"
     )
-    return _response(200, xml, content_type="application/rss+xml; charset=utf-8")
+    return _response(
+        200, xml, content_type="application/rss+xml; charset=utf-8", cache_seconds=_RSS_CACHE_SECONDS
+    )
 
 
 _ROUTES = {

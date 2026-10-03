@@ -57,8 +57,15 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from common.bedrock import invoke_model_tracked
+from common.cost_explorer import BILL_CATEGORIES, bill_category
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
-from common.dynamo import increment_current_stats, set_current_stats_fields
+from common.dynamo import (
+    increment_current_stats,
+    list_stats_history_weeks,
+    set_current_stats_fields,
+    set_stats_history_week_fields,
+    set_stats_totals_fields,
+)
 
 BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening")
 
@@ -122,6 +129,21 @@ WAF_COST_PREVIOUS_MONTH = "waf_cost_previous_month"
 WAF_COST_USD_PREVIOUS_MONTH = "waf_cost_usd_previous_month"
 WAF_COST_AUD_PREVIOUS_MONTH = "waf_cost_aud_previous_month"
 WAF_COST_AS_OF = "waf_cost_as_of"
+
+# The whole AWS bill, every service by name (common/cost_explorer.py), in USD before tax; the
+# Stats page shows only bill_category's three groups and a total. Three places, each a SET:
+# - StatsCurrent: AWS_BILL_WEEK_USD, this week so far (to yesterday), refreshed by every poll.
+# - Each StatsHistory week row: AWS_BILL_WEEK_USD again, overwritten with the *whole* week once
+#   Cost Explorer has it (the rollover's copy misses the Sunday), and AWS_BILL_WEEK_COMPLETE.
+# - StatsHistory's all-time row: AWS_BILL_TOTAL_USD, the sum of every complete week's bill,
+#   recomputed by every poll, from AWS_BILL_TOTAL_SINCE (the first week counted).
+# None of these is ever ADDed or carried onto the all-time row by the rollover (_WEEK_ONLY_FIELDS).
+AWS_BILL_WEEK_USD = "aws_bill_week_usd"
+AWS_BILL_WEEK_COMPLETE = "aws_bill_week_complete"
+AWS_BILL_AS_OF = "aws_bill_as_of"
+AWS_BILL_TOTAL_USD = "aws_bill_total_usd"
+AWS_BILL_TOTAL_SINCE = "aws_bill_total_since"
+AWS_BILL_TOTAL_WEEKS = "aws_bill_total_weeks"
 
 
 def _current_week_start(today: date | None = None) -> str:
@@ -285,6 +307,58 @@ def record_waf_cost(
         print(f"stats_tracking: could not record waf cost: {exc!r}")
 
 
+def record_aws_bill(
+    *, week_to_date: dict[str, Decimal], complete_weeks: dict[str, dict[str, Decimal]], as_of: str
+) -> dict:
+    """Store one poll's whole-bill reading (see AWS_BILL_WEEK_USD above for where each part goes)
+    and return what was written: {"weeks_filled": [...], "total_weeks": n}. Each step fails open
+    on its own, like every recorder here: the poll's other readings must still land."""
+    result: dict = {"weeks_filled": [], "total_weeks": None}
+    try:
+        set_current_stats_fields(
+            {AWS_BILL_WEEK_USD: week_to_date, AWS_BILL_AS_OF: as_of}, _current_week_start()
+        )
+    except Exception as exc:  # noqa: BLE001 - never let a stats write break the real poll
+        print(f"stats_tracking: could not record this week's aws bill: {exc!r}")
+
+    for week_start, services in sorted(complete_weeks.items()):
+        try:
+            # False for a week the rollover never wrote (before Stats existed): nothing to fill.
+            if set_stats_history_week_fields(
+                week_start,
+                {AWS_BILL_WEEK_USD: services, AWS_BILL_WEEK_COMPLETE: True, AWS_BILL_AS_OF: as_of},
+            ):
+                result["weeks_filled"].append(week_start)
+        except Exception as exc:  # noqa: BLE001
+            print(f"stats_tracking: could not fill week {week_start}'s aws bill: {exc!r}")
+
+    # The all-time figure is the sum of every complete week, recomputed rather than ADDed: a week
+    # re-read with AWS's late corrections then can't be counted twice.
+    try:
+        total: dict[str, Decimal] = {}
+        weeks = []
+        for row in list_stats_history_weeks():
+            bill = row.get(AWS_BILL_WEEK_USD)
+            if not row.get(AWS_BILL_WEEK_COMPLETE) or not isinstance(bill, dict):
+                continue
+            weeks.append(row["week_start"])
+            for service, usd in bill.items():
+                total[service] = total.get(service, Decimal("0")) + Decimal(usd)
+        if weeks:
+            set_stats_totals_fields(
+                {
+                    AWS_BILL_TOTAL_USD: total,
+                    AWS_BILL_TOTAL_SINCE: min(weeks),
+                    AWS_BILL_TOTAL_WEEKS: len(weeks),
+                    AWS_BILL_AS_OF: as_of,
+                }
+            )
+        result["total_weeks"] = len(weeks)
+    except Exception as exc:  # noqa: BLE001
+        print(f"stats_tracking: could not total the aws bill: {exc!r}")
+    return result
+
+
 def record_article_lineage(lineage: dict) -> None:
     """Tally one just-drafted article's total spend (authoring + research, if any) onto this
     week's Stats row under `articles` -- called once per article, right after
@@ -414,6 +488,9 @@ _SNAPSHOT_FIELDS = frozenset(
     }
 )
 _METADATA_FIELDS = frozenset({"stats_id", "week_start", "rolled_over_at"})
+# Kept on the week's own row only, never folded onto the all-time row: the whole-bill reading is
+# a map (not a number to ADD), and its all-time figure is recomputed by the poll instead.
+_WEEK_ONLY_FIELDS = frozenset({AWS_BILL_WEEK_USD, AWS_BILL_WEEK_COMPLETE, AWS_BILL_AS_OF})
 
 
 def split_for_rollover(row: dict) -> tuple[dict, dict]:
@@ -423,7 +500,11 @@ def split_for_rollover(row: dict) -> tuple[dict, dict]:
     module records is safe to ADD across every week there has ever been; API Gateway's reading is
     a rolling 30-day snapshot, never additive, so the all-time row keeps only the latest one
     (SET), whichever week's rollover happens to carry it."""
-    additive = {k: v for k, v in row.items() if k not in _SNAPSHOT_FIELDS and k not in _METADATA_FIELDS}
+    additive = {
+        k: v
+        for k, v in row.items()
+        if k not in _SNAPSHOT_FIELDS and k not in _METADATA_FIELDS and k not in _WEEK_ONLY_FIELDS
+    }
     snapshot = {k: v for k, v in row.items() if k in _SNAPSHOT_FIELDS}
     return additive, snapshot
 
@@ -504,6 +585,30 @@ def public_view(row: dict) -> dict:
             ),
         },
         "waf": _waf_view(row),
+        "aws_bill": _aws_bill_view(row),
+    }
+
+
+def _aws_bill_view(row: dict) -> dict | None:
+    """The whole AWS bill in AUD, as bill_category's three groups and a total -- never per service
+    (that detail stays in the table). StatsHistory's all-time row carries the sum of every
+    complete week (`since` is the first one); StatsCurrent carries this week so far (`since` is
+    None). None until the first poll has run."""
+    services, since = row.get(AWS_BILL_TOTAL_USD), row.get(AWS_BILL_TOTAL_SINCE)
+    if services is None:
+        services, since = row.get(AWS_BILL_WEEK_USD), None
+    if not isinstance(services, dict):
+        return None
+    rate = Decimal(str(USD_TO_AUD_RATE))
+    totals = {category: Decimal("0") for category in BILL_CATEGORIES}
+    for service, usd in services.items():
+        totals[bill_category(service)] += Decimal(usd)
+    return {
+        "categories": [
+            {"category": category, "cost_aud": float(totals[category] * rate)} for category in BILL_CATEGORIES
+        ],
+        "total_aud": float(sum(totals.values()) * rate),
+        "since": since,
     }
 
 

@@ -27,10 +27,11 @@ first-time setup run sheet.
   platform-mandated exceptions — the CloudFront-scope WAF Web ACL and its
   ACM certificate, which AWS only reads from `us-east-1` regardless of
   hosting region.
-- **Compute**: 10 Python 3.11 AWS Lambda functions from one shared
+- **Compute**: 11 Python 3.11 AWS Lambda functions from one shared
   deployment package (`lambdas/`) and one shared execution role: research
   tick, daily cycle, admin API, public API, DLQ handler, weekly reflection,
-  trending digest, musing feedback, Stats rollover and the Cost Explorer poll.
+  trending digest, musing feedback, Stats rollover, the Cost Explorer poll
+  and security events.
 - **AI**: Amazon Bedrock through the Converse API, so any provider's model
   works. Every call goes through `lambdas/common/bedrock.py`; tracked calls
   (`invoke_model_tracked`) record tokens and cost into each article's
@@ -38,7 +39,7 @@ first-time setup run sheet.
   global default, per-topic overrides and per-topic rotation
   (`common/model_routing.py`). Research falls back from GDELT to AgentCore
   Web Search.
-- **Storage**: 13 DynamoDB tables (`infra/modules/app-data`) + a private S3
+- **Storage**: 15 DynamoDB tables (`infra/modules/app-data`) + a private S3
   bucket for article bodies and raw source snapshots (separate from the
   public site's own S3 bucket, below).
 - **Frontend**: a static site (S3 + CloudFront + Origin Access Control) —
@@ -53,14 +54,22 @@ first-time setup run sheet.
 - **Public API**: a second, unauthenticated API Gateway — topics,
   articles, an anonymous view counter, anonymous feedback, and an RSS
   feed. Rate-limited by WAF rather than IP-gated, since it must stay
-  reachable by anonymous visitors.
+  reachable by anonymous visitors, and throttled at API Gateway. The
+  frontend reaches it through its own CloudFront distribution, which
+  caches the listings, articles and RSS the API marks cacheable.
 - **Security**: CloudFront + WAF (managed rule set + rate limiting +
   logging) + Shield Standard; the admin API additionally sits behind IAM
   auth and an IP allowlist that fails closed (empty allowlist = nothing
-  gets in) until an operator IP is configured.
+  gets in) until an operator IP is configured. Every request the regional
+  WAFs block, and every comment screening drops as an attack, is grouped
+  into an incident in the SecurityEvents table (category, severity,
+  suggested next steps, status; a keyed hash of the client, never the IP;
+  kept 120 days), and a high-severity incident emails an alarm
+  (`common/security_events.py`).
 - **Observability**: CloudWatch alarms (Lambda errors/throttles, DLQ
-  depth, Step Functions failures, feedback spam), a pipeline dashboard and
-  a Lambda runs dashboard per environment, a daily Cost Explorer poll
+  depth, Step Functions failures, feedback spam), pipeline and Lambda runs
+  dashboards per environment plus an edge dashboard (API Gateway and WAF)
+  in production, a daily Cost Explorer poll
   (API Gateway, AgentCore and WAF spend) feeding the Stats page, and an
   AWS Budget alarm scoped to Bedrock spend.
 - **IaC**: Terraform ≥1.10 (native S3 state locking — no DynamoDB lock
@@ -147,7 +156,8 @@ lambdas/                    Python 3.11, one shared deployment package
   trending_digest_handler.py     daily: cross-topic digest
   musing_feedback_handler.py     the bear's musings on reader feedback
   stats_rollover_handler.py      weekly: roll Stats into history
-  cost_explorer_poll_handler.py  daily: AWS spend (API GW, AgentCore, WAF)
+  cost_explorer_poll_handler.py  daily: the AWS bill, every service
+  security_events_handler.py     WAF blocks -> SecurityEvents incidents
   common/                     shared modules; the main ones:
     adapters/                  base.py (contract), registry.py, and one
                                 module per domain: github_trending.py,
@@ -169,7 +179,7 @@ infra/
   bootstrap/                 state bucket + OIDC provider + deploy roles +
                               Route 53 zone -- applied locally, never via CI
   modules/
-    app-data/                 the 13 DynamoDB tables
+    app-data/                 the 15 DynamoDB tables
     static-site/               S3 + CloudFront + OAC, reused by both envs
     rest-api/                  the admin and public REST APIs
     observability/             CloudWatch alarms and dashboards, reused
@@ -192,15 +202,25 @@ scripts/
   tests/                     pytest coverage for the scripts
 
 .github/workflows/
-  terraform.yml               validate on PR; on merge to dev, security +
-                                lint/test, then apply -- one run
+  terraform.yml               on merge to dev: security + lint/test, then
+                                apply -- one run
   terraform-production-release.yml   the same checks, then apply to
                                 production on Release
+  pr-checks.yml                 PRs only: terraform fmt/validate/test, and
+                                trufflehog, gitleaks and the personal-data
+                                denylist over the PR's commits
+  on-demand-scan.yml            by hand or a `security-scan` PR label: every
+                                security, secret and personal-data check over
+                                the whole repo and history, every severity
+                                reported; terraform fmt/validate/test; never
+                                deploys
   destroy-dev.yml              manual, typed-confirmation teardown of dev
   python-ci.yml                 pytest + ruff on lambdas/scripts (PRs;
                                 called before each apply)
-  security.yml                   trivy (config + fs/secrets) + bandit, and
-                                trufflehog on PRs (called before each apply)
+  security.yml                   trivy (config; dependencies + secrets of the
+                                whole repo, MEDIUM reported, HIGH+ fails) +
+                                bandit on lambdas/ and scripts/ (every PR;
+                                called before each apply)
 
 docs/
   project-plan.md              architecture, rules, data model -- source
@@ -224,13 +244,19 @@ docs/
   ship. Merging into `prod` does **not** deploy anything by itself.
 - A production deploy happens only when a GitHub Release is published
   from a commit on `prod` (semver tag, e.g. `v0.1.0`), gated by the
-  `production` GitHub Environment's required-reviewer approval. A new
-  release replaces whatever was previously deployed — one Terraform
-  state, no blue/green.
-- Changes reach both branches by PR, by convention: GitHub branch protection
-  isn't available on this repo's plan. What is enforced is that nothing is
-  applied without passing the security scans and lint/tests first, and that
-  production applies only from a Release on `prod`, after approval.
+  `production` GitHub Environment: it accepts only `v*` tags and waits for
+  the required reviewer's approval. A new release replaces whatever was
+  previously deployed — one Terraform state, no blue/green.
+- There are only these two long-lived branches (the old `master` was retired
+  on 2026-10-04). A repository ruleset (`protect-deploy-branches`) covers
+  both: changes arrive by PR, and force-pushes and deletions are
+  blocked. The repo admin can bypass it (a one-person project must never
+  lock itself out); it stops everyone else. On top of that, nothing is
+  applied without passing the security scans and lint/tests first.
+- Workflows get a read-only `GITHUB_TOKEN` unless they ask for more, and
+  workflows from fork PRs wait for approval. See
+  [docs/todo/public-repo-runsheet.md](docs/todo/public-repo-runsheet.md)
+  for how these settings were applied.
 
 ## Deploying this
 
@@ -279,23 +305,24 @@ variables.
 
 ### 2. Wire GitHub Actions up to AWS (you, GitHub UI)
 
-- **Settings → Secrets and variables → Actions → Variables** (repository
-  level): add `AWS_DEV_DEPLOY_ROLE_ARN` = the `dev_deploy_role_arn`
-  output. This is a variable, not a secret — the ARN itself isn't
-  sensitive, the IAM trust policy is what actually protects it.
 - **Settings → Secrets and variables → Actions → Secrets** (repository
-  level): add `ADMIN_ALLOWED_CIDRS_DEV` = your public IP as a Terraform
-  list-of-strings literal, e.g. `["203.0.113.7/32"]`. This is a secret,
-  not a variable — unlike the role ARN above, this is a real IP address,
-  and a secret is masked in Actions logs. `terraform.yml`'s `apply-dev`
-  job passes it through as the `TF_VAR_admin_allowed_cidrs` environment
-  variable, so it never needs to live in `terraform.tfvars` / git history.
+  level), all **secrets**, never variables — a variable prints in plain
+  text in every step's log, and on a public repo those logs are public:
+  - `AWS_DEV_DEPLOY_ROLE_ARN` = the `dev_deploy_role_arn` output. The
+    trust policy is what protects the role; a secret just keeps the ARN
+    (and its account ID) out of the logs.
+  - `ADMIN_ALLOWED_CIDRS_DEV` = your public IP as a Terraform
+    list-of-strings literal, e.g. `["203.0.113.7/32"]`. `terraform.yml`'s
+    `apply-dev` job passes it through as `TF_VAR_admin_allowed_cidrs`, so
+    it never lives in `terraform.tfvars` / git history, and the Terraform
+    variable is `sensitive`, so plans print `(sensitive value)` rather
+    than the IP (GitHub only masks the secret's exact text).
+  - `ALERT_EMAIL_DEV` = where alarm emails go (also `sensitive`).
 - **Settings → Environments**: create an environment named `production`,
-  add yourself as a required reviewer, add an environment-scoped variable
-  `AWS_PROD_DEPLOY_ROLE_ARN` = the `prod_deploy_role_arn` output, and an
-  environment-scoped **secret** `ADMIN_ALLOWED_CIDRS_PROD` (same format
-  as the dev one above). The variable/secret split and the reasoning are
-  the same as dev's, just Environment-scoped instead of repo-level. The
+  add yourself as a required reviewer, and add the **secrets**
+  `AWS_PROD_DEPLOY_ROLE_ARN` = the `prod_deploy_role_arn` output,
+  `ADMIN_ALLOWED_CIDRS_PROD` and `ALERT_EMAIL_PROD` (same formats and
+  reasoning as dev's, environment- or repo-level). The
   required-reviewer gate is what makes a production release a
   deliberate, approved act rather than an accidental push.
 - **Settings → Branches**: create the `prod` branch from `dev`'s current
@@ -354,7 +381,7 @@ current `dev` tip into itself via an empty PR) to exercise the `terraform`
 plan check, then merge. Merging to `dev` triggers `terraform.yml`'s
 `apply-dev` job automatically — no approval needed. Watch it in the
 Actions tab. First run creates everything: DynamoDB tables, the content
-bucket, all 10 Lambdas, both API Gateways, the WAF ACLs + logging, the
+bucket, all 11 Lambdas, both API Gateways, the WAF ACLs + logging, the
 CloudWatch dashboards, the static site.
 
 If this is truly the first-ever apply, `bedrock_model_id` and
@@ -426,3 +453,25 @@ bandit -r lambdas/ scripts/ --severity-level high --confidence-level high
 terraform fmt -check -recursive infra/
 cd infra/environments/dev && terraform init -backend=false && terraform validate
 ```
+
+### Personal-data and secret checks before you commit
+
+`pr-checks.yml` runs Gitleaks (secrets, email addresses and AWS account IDs, per
+`.gitleaks.toml`) and `scripts/pii_denylist_check.py` (your own exact personal strings) on every
+PR. Those run after a push, when the content is already on GitHub, so run the same checks before
+each commit too:
+
+```bash
+git config core.hooksPath .githooks          # once per clone: enables .githooks/pre-commit
+winget install Gitleaks.Gitleaks              # or brew install gitleaks / your package manager
+```
+
+Then list your own personal strings (a name, a home IP, a personal address), one per line, in
+`.pii-denylist` at the repo root. It is gitignored, and the hook refuses to commit it. For CI, put
+the same list in the `PII_DENYLIST` repository secret (Settings → Secrets and variables →
+Actions). Neither check ever prints what it found, so the logs stay safe to publish.
+
+## License
+
+The code is licensed under the [Apache License 2.0](LICENSE). Security reports: see
+[SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

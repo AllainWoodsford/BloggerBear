@@ -1,4 +1,4 @@
-requests==2.32.3
+requests==2.34.2
 boto3==1.34.162
 # scripts/minify_frontend.py's build-time dependencies (Cleanup/frontend-performance PR) --
 # pure-Python, no C extension, doing exactly one mechanical thing each (strip comments/

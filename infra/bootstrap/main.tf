@@ -13,8 +13,19 @@ terraform {
   # it keeps it) -- it can never depend on the bucket it's creating.
 }
 
+# The same tags as the environments' default_tags (see infra/environments/*/main.tf), with
+# Environment = "shared": the state bucket, OIDC provider, deploy roles, hosted zone and API
+# Gateway account settings serve dev and production alike.
 provider "aws" {
   region = var.aws_region
+  default_tags {
+    tags = {
+      ManagedBy     = "Terraform"
+      Project       = "BloggerBear"
+      Environment   = "shared"
+      TerraformRoot = "infra/bootstrap"
+    }
+  }
 }
 
 # -----------------------------------------------------------------------
@@ -384,9 +395,27 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid     = "ApiGateway"
     effect  = "Allow"
     actions = ["apigateway:*"]
+    # /tags/*: API Gateway's tagging calls (TagResource/UntagResource/GetTags) address a separate
+    # /tags/<url-encoded resource ARN> path, not the API's own, so the environments' default_tags
+    # (ManagedBy, Project, Environment, TerraformRoot) need it to tag the REST APIs and stages.
+    # Only resources in this account and region; nothing else in it is API Gateway.
     resources = [
       "arn:aws:apigateway:ap-southeast-2::/restapis",
       "arn:aws:apigateway:ap-southeast-2::/restapis/*",
+      "arn:aws:apigateway:ap-southeast-2::/tags/*",
+    ]
+  }
+
+  # Scaling PR C: each REST API stage's access log group (infra/modules/rest-api's
+  # aws_cloudwatch_log_group.access, /aws/apigateway/bloggerbear-<env>-<api>-access). Same shape as
+  # LambdaLogGroups above: logs:* on both ARN forms, scoped to this project's prefix.
+  statement {
+    sid     = "ApiAccessLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*",
+      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*:*",
     ]
   }
 
@@ -753,4 +782,41 @@ resource "aws_budgets_budget" "bedrock_spend" {
     notification_type          = "FORECASTED"
     subscriber_email_addresses = [var.budget_alert_email]
   }
+}
+
+# -----------------------------------------------------------------------
+# Scaling PR C: API Gateway's account-wide CloudWatch Logs role. A REST API stage can only write
+# access logs once the account (per region) names a role API Gateway may log through; without it,
+# enabling a stage's access_log_settings fails with "CloudWatch Logs role ARN must be set in account
+# settings to enable logging". It is one setting for the whole account and region -- dev and
+# production share it -- so it lives here, applied once by hand, rather than in either environment
+# (two environments managing one singleton would overwrite each other). Apply this before the
+# environment change that turns access logging on.
+# -----------------------------------------------------------------------
+data "aws_iam_policy_document" "apigateway_logs_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["apigateway.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "apigateway_logs" {
+  name               = "bloggerbear-apigateway-cloudwatch-logs"
+  assume_role_policy = data.aws_iam_policy_document.apigateway_logs_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "apigateway_logs" {
+  role       = aws_iam_role.apigateway_logs.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+}
+
+resource "aws_api_gateway_account" "this" {
+  cloudwatch_role_arn = aws_iam_role.apigateway_logs.arn
+
+  depends_on = [aws_iam_role_policy_attachment.apigateway_logs]
 }
