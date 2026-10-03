@@ -1006,3 +1006,16 @@ def test_the_lambdas_may_query_the_table_indexes_and_nothing_more(env):
 
     assert re.search(r'actions\s*=\s*\["dynamodb:Query"\]', statement)
     assert 'resources = [for arn in module.app_data.table_arns : "${arn}/index/*"]' in statement
+
+
+def test_dashboard_widget_lists_never_branch_on_a_conditional():
+    """`cond ? [] : concat(...)` over widgets of different shapes passes validate and fails every
+    plan ("Inconsistent conditional result types"), which broke the dev apply once. The idiom that
+    works is `flatten([for _ in (cond ? [] : [1]) : ...])`; the module's terraform test plans it."""
+    text = _dashboards()
+
+    assert not re.search(r"= .*\? \[\] : concat\(", text)
+    assert (ROOT / "infra" / "modules" / "observability" / "tests" / "edge_dashboard.tftest.hcl").exists()
+    assert "terraform -chdir=\"$dir\" test" in (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(
+        encoding="utf-8"
+    )

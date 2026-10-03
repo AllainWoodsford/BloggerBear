@@ -50,6 +50,21 @@ jobs:
             fi
           done
 
+      # validate checks types, not values: an expression that only fails once real values flow
+      # through it (the edge dashboard's "Inconsistent conditional result types") passes validate
+      # and breaks the apply. A module's tests/*.tftest.hcl plan it with a mocked AWS provider --
+      # no credentials -- which evaluates those expressions the way a real plan does.
+      - name: Terraform test (modules with tests)
+        run: |
+          set -euo pipefail
+          for dir in infra/modules/*; do
+            if ls "$dir"/tests/*.tftest.hcl >/dev/null 2>&1; then
+              echo "Running terraform test in $dir"
+              terraform -chdir="$dir" init -backend=false -input=false
+              terraform -chdir="$dir" test
+            fi
+          done
+
   # Secrets in what the pull request adds, between its base and head commits, in any file (a
   # key can land in a script, the frontend or a doc, which the Trivy secret scan in
   # security.yml -- lambdas/ only -- would not see). Moved here from security.yml.
