@@ -643,13 +643,24 @@ def _dashboard_resource(name: str) -> str:
     return re.search(pattern, _dashboards(), re.S).group(1)
 
 
-@pytest.mark.parametrize("name", ["api_gateway", "waf"])
-def test_the_api_and_waf_dashboards_open_on_a_week_of_hourly_points(name):
-    body = _dashboard_resource(name)
+def test_one_edge_dashboard_opens_on_a_week_of_hourly_points():
+    body = _dashboard_resource("edge")
 
     assert 'start          = "-P7D"' in body
-    assert 'dashboard_name = "bloggerbear-${var.environment_name}-' in body
+    assert 'dashboard_name = "bloggerbear-${var.environment_name}-edge"' in body
+    assert "concat(local.api_gateway_widgets, local.waf_widgets)" in body
     assert "period = 3600" in _dashboards()
+    # One dashboard, not one each: every dashboard past the account's first three is US$3 a month.
+    assert _dashboards().count('resource "aws_cloudwatch_dashboard"') == 1
+
+
+def test_the_edge_dashboard_is_created_in_production_only():
+    assert "var.edge_dashboard_enabled &&" in _dashboard_resource("edge")
+    variables = _read("modules", "observability", "variables.tf")
+    variable = re.search(r'variable "edge_dashboard_enabled" \{(.*?)\n\}', variables, re.S).group(1)
+    assert "default     = false" in variable
+    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
+    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
