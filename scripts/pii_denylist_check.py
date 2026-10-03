@@ -16,6 +16,7 @@ line itself, because CI logs are public on a public repo.
 
     python scripts/pii_denylist_check.py --staged           # pre-commit: what's about to be committed
     python scripts/pii_denylist_check.py --range BASE HEAD  # CI: what a pull request adds
+    python scripts/pii_denylist_check.py --all              # on-demand: every tracked file as it is now
 """
 
 from __future__ import annotations
@@ -107,11 +108,28 @@ def staged_paths() -> list[str]:
     return _git("diff", "--cached", "--name-only").splitlines()
 
 
+def tracked_lines(root: Path) -> list[tuple[str, int, str]]:
+    """(path, line number, text) for every line of every tracked text file. Binary files (a NUL in
+    the first 8 KB) are skipped."""
+    out: list[tuple[str, int, str]] = []
+    for path in filter(None, _git("ls-files", "-z").split("\0")):
+        try:
+            data = (root / path).read_bytes()
+        except OSError:  # listed but missing from the working tree (deleted, not yet committed)
+            continue
+        if b"\0" in data[:8192]:
+            continue
+        for number, text in enumerate(data.decode("utf-8", errors="replace").splitlines(), start=1):
+            out.append((path, number, text))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--staged", action="store_true", help="check the staged changes (pre-commit)")
     group.add_argument("--range", nargs=2, metavar=("BASE", "HEAD"), help="check BASE...HEAD (CI)")
+    group.add_argument("--all", action="store_true", help="check every tracked file (on-demand scan)")
     args = parser.parse_args(argv)
 
     root = Path(_git("rev-parse", "--show-toplevel").strip())
@@ -126,14 +144,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pii-denylist: no denylist ({DENYLIST_ENV} unset, no {DENYLIST_FILE}); nothing to check.")
         return 0
 
-    base, head = args.range if args.range else (None, None)
-    hits = find_hits(added_lines(changed_diff(args.staged, base, head)), entries)
+    if args.all:
+        lines = tracked_lines(root)
+    else:
+        base, head = args.range if args.range else (None, None)
+        lines = added_lines(changed_diff(args.staged, base, head))
+    hits = find_hits(lines, entries)
     if not hits:
         print(f"pii-denylist: checked against {len(entries)} entries; nothing found.")
         return 0
 
+    verb = "contains" if args.all else "adds"
     for hit in hits:
-        print(f"pii-denylist: {hit.path}:{hit.line} adds denylist entry #{hit.entry}", file=sys.stderr)
+        print(f"pii-denylist: {hit.path}:{hit.line} {verb} denylist entry #{hit.entry}", file=sys.stderr)
     print(f"pii-denylist: {len(hits)} finding(s). Remove the personal data, then commit.", file=sys.stderr)
     return 1
 

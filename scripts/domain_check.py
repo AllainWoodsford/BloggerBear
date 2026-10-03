@@ -55,7 +55,7 @@ def doh(name: str, record_type: str, timeout: float = 10.0) -> list[str]:
     """The answers for `name`/`record_type` as the public DNS sees it, via dns.google. [] if none."""
     url = "https://dns.google/resolve?" + urllib.parse.urlencode({"name": name, "type": record_type})
     request = urllib.request.Request(url, headers={"Accept": "application/dns-json"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https URL
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310  # nosec B310 - fixed https URL
         payload = json.loads(response.read().decode("utf-8"))
     wanted = {"NS": 2, "A": 1, "AAAA": 28, "CNAME": 5}[record_type]
     return [a["data"] for a in payload.get("Answer", []) if a.get("type") == wanted]

@@ -938,6 +938,55 @@ def test_deploy_role_arns_come_from_secrets():
         assert f"role-to-assume: ${{{{ vars.{role} }}}}" not in text, name
 
 
+def test_security_scans_cover_the_whole_repo_with_pinned_tools():
+    """security.yml used to scan only lambdas/ (missing scripts/ and the dev requirements), report
+    nothing below HIGH, and install whatever Trivy apt had; Trufflehog ran `version: latest`."""
+    workflows = ROOT / ".github" / "workflows"
+    security = (workflows / "security.yml").read_text(encoding="utf-8")
+
+    assert "apt-get install -y trivy" not in security
+    assert re.search(r"VERSION=\d+\.\d+\.\d+\n\s+SHA256=[0-9a-f]{64}\n", security)
+    assert 'sha256sum -c -' in security
+    fs_runs = re.findall(r"trivy fs (.*?)\n\n", security, re.S)  # each command, up to its blank line
+    assert len(fs_runs) == 2
+    for run in fs_runs:
+        assert "--file-patterns 'pip:requirements-dev\\.txt'" in run and run.rstrip().endswith(".")
+    assert "--severity MEDIUM,HIGH,CRITICAL --exit-code 0" in fs_runs[0]  # reported
+    assert "--severity HIGH,CRITICAL --exit-code 1" in fs_runs[1]  # gated
+    assert "bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests" in security
+
+    pr_checks = (workflows / "pr-checks.yml").read_text(encoding="utf-8")
+    trufflehog = pr_checks.split("uses: trufflesecurity/trufflehog@")[1].split("\n  gitleaks:\n")[0]
+    assert re.search(r"\n          version: \d+\.\d+\.\d+\n", trufflehog)
+
+
+def test_the_on_demand_scan_checks_everything_and_deploys_nothing():
+    scan = (ROOT / ".github" / "workflows" / "on-demand-scan.yml").read_text(encoding="utf-8")
+
+    # Started by hand or by a collaborator's label, never by an ordinary PR event.
+    assert re.search(r"^on:\n  pull_request:\n    types: \[labeled\]\n  workflow_dispatch:\n", scan, re.M)
+    jobs = scan.split("\njobs:\n")[1]
+    assert jobs.count("github.event.label.name == 'security-scan'") == 4  # every job, summary too
+
+    # No AWS access, no plan, no apply.
+    for text in ("configure-aws-credentials", "id-token"):
+        assert text not in scan
+    assert not re.search(r"^\s*terraform [^\n]*\b(plan|apply)\b", scan, re.M)
+    assert "permissions:\n  contents: read\n" in scan
+
+    # Whole history and every file, with the same pinned tools, hash-verified.
+    assert 'gitleaks git --redact' in scan and '--log-opts="--all"' in scan
+    assert "trufflehog git file://. --results=verified,unverified,unknown --fail" in scan
+    assert "fetch-depth: 0" in scan
+    assert "scripts/pii_denylist_check.py --all" in scan and "secrets.PII_DENYLIST" in scan
+    assert len(re.findall(r"SHA256=[0-9a-f]{64}\n", scan)) == 3  # trivy, gitleaks, trufflehog
+    assert "terraform -chdir=\"$dir\" validate" in scan and "infra/bootstrap" in scan
+    # The ref reaches the summary through env, not interpolated into the script.
+    assert "SCANNED: ${{ inputs.ref" in scan and "echo \"## On-demand scan: \\`${SCANNED}\\`\"" in scan
+
+    assert (ROOT / ".gitleaksignore").is_file()
+
+
 def test_pull_requests_are_checked_for_personal_data_without_publishing_it():
     """docs/friction.md 7.11: a PR added a personal email; no secret scanner looks for one."""
     pr_checks = (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(encoding="utf-8")

@@ -68,7 +68,9 @@ jobs:
   # Secrets in what the pull request adds, between its base and head commits, in any file (a
   # key can land in a script, the frontend or a doc, which the Trivy secret scan in
   # security.yml -- lambdas/ only -- would not see). Moved here from security.yml.
-  # Pinned to trufflesecurity/trufflehog@v3.97.4's release commit (not the moving @main).
+  # Pinned to trufflesecurity/trufflehog@v3.97.4's release commit (not the moving @main), and the
+  # Docker image it runs to the same version: the action defaults to `version: latest`, which
+  # pulled whatever image was newest and undid the commit pin.
   secret-scan:
     runs-on: ubuntu-latest
     steps:
@@ -83,6 +85,7 @@ jobs:
           path: ./
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
+          version: 3.97.4
 
   # Gitleaks over the pull request's commits: its default secret rules, plus email addresses and
   # AWS account IDs (.gitleaks.toml). Trufflehog verifies live credentials; this catches personal

@@ -206,13 +206,21 @@ scripts/
                                 apply -- one run
   terraform-production-release.yml   the same checks, then apply to
                                 production on Release
-  pr-checks.yml                 PRs only: terraform fmt/validate and a
-                                trufflehog scan of the PR's commits
+  pr-checks.yml                 PRs only: terraform fmt/validate/test, and
+                                trufflehog, gitleaks and the personal-data
+                                denylist over the PR's commits
+  on-demand-scan.yml            by hand or a `security-scan` PR label: every
+                                security, secret and personal-data check over
+                                the whole repo and history, every severity
+                                reported; terraform fmt/validate/test; never
+                                deploys
   destroy-dev.yml              manual, typed-confirmation teardown of dev
   python-ci.yml                 pytest + ruff on lambdas/scripts (PRs;
                                 called before each apply)
-  security.yml                   trivy (config + fs/secrets) + bandit (every
-                                PR; called before each apply)
+  security.yml                   trivy (config; dependencies + secrets of the
+                                whole repo, MEDIUM reported, HIGH+ fails) +
+                                bandit on lambdas/ and scripts/ (every PR;
+                                called before each apply)
 
 docs/
   project-plan.md              architecture, rules, data model -- source

@@ -27,14 +27,18 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
+      # Pinned and checksum-verified, like the actions: the apt repo installed whatever was newest.
+      # The SHA-256 is written here, not fetched from the release, so a swapped file fails too.
       - name: Install Trivy
         run: |
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg lsb-release
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
+          set -euo pipefail
+          VERSION=0.74.0
+          SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          curl -fsSLo /tmp/trivy.tar.gz "https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/trivy_${VERSION}_Linux-64bit.tar.gz"
+          echo "${SHA256}  /tmp/trivy.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/trivy.tar.gz -C /tmp trivy
+          sudo mv /tmp/trivy /usr/local/bin/trivy
+          trivy --version
 
       - name: Install Bandit
         run: |
@@ -63,20 +67,31 @@ jobs:
             echo "infra/ not present; skipping IaC scan"
           fi
 
-      - name: Trivy vulnerability/secret scan
+      # The whole repo, not just lambdas/: scripts/requirements.txt (the admin CLI) and the secret
+      # scan of frontend/, infra/, scripts/, docs/ and .github/ were never covered. Trivy only
+      # recognises files named exactly requirements.txt, so --file-patterns adds the dev
+      # requirements. The secret table lists only files with findings: a clean run shows just the
+      # dependency files, with "-" under Secrets.
+      #
+      # First every MEDIUM-or-worse finding, reported without failing (a MEDIUM CVE used to pass
+      # unseen), then the gate on HIGH and CRITICAL.
+      - name: Trivy vulnerability/secret scan (report MEDIUM and up)
         run: |
-          if [ -d lambdas ]; then
-            trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
-              --skip-dirs lambdas/.venv,lambdas/venv,lambdas/node_modules,lambdas/dist,lambdas/build \
-              lambdas/
-          else
-            echo "lambdas/ not present; skipping fs scan"
-          fi
+          trivy fs --scanners vuln,secret --severity MEDIUM,HIGH,CRITICAL --exit-code 0 \
+            --skip-dirs '**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build' \
+            --file-patterns 'pip:requirements-dev\.txt' \
+            .
 
+      - name: Trivy vulnerability/secret scan (fail on HIGH and CRITICAL)
+        run: |
+          trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
+            --skip-dirs '**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build' \
+            --file-patterns 'pip:requirements-dev\.txt' \
+            .
+
+      # lambdas/ and scripts/ (the admin CLI signs AWS requests; it was never scanned). Tests are
+      # excluded: their thousands of `assert`s (B101) buried the real figures.
       - name: Bandit scan
         run: |
-          if [ -d lambdas ]; then
-            bandit -r lambdas/ --severity-level high --confidence-level high
-          else
-            echo "lambdas/ not present; skipping bandit"
-          fi
+          bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests \
+            --severity-level high --confidence-level high

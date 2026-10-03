@@ -7,6 +7,10 @@
 # scripts/pii_denylist_check.py.
 
 title = "BloggerBear: secrets, plus email addresses and AWS account IDs"
+# The rules below use [[rules.allowlists]], which older versions read differently.
+minVersion = "v8.30.0"
+
+# Known, accepted findings already in the history are listed by fingerprint in .gitleaksignore.
 
 [extend]
 useDefault = true

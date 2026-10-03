@@ -1,0 +1,15 @@
+# Known, accepted Gitleaks findings already in the history (fingerprint = commit:file:rule:line;
+# no secret values). Reviewed 2026-10-04. Anything not listed here still fails. A history
+# rewrite changes the commit hashes, so these would need regenerating after one.
+#
+# - email-address: the TAFE address in #166's docs/friction.md (since replaced with ****).
+# - aws-account-id-in-arn: the account ID in the Bedrock inference-profile ARNs (accepted).
+# - generic-api-key: fake values in two test fixtures (a stop reason, a forged token).
+25743aca9ab3e6ffc60ef6e5ad8190464c21dbe3:lambdas/tests/test_lineage_cost.py:aws-account-id-in-arn:15
+25743aca9ab3e6ffc60ef6e5ad8190464c21dbe3:lambdas/tests/test_lineage_storage_and_reporting.py:aws-account-id-in-arn:21
+40f37dfc77002f04a06008f5961db9d0b6541607:infra/environments/dev/variables.tf:aws-account-id-in-arn:17
+40f37dfc77002f04a06008f5961db9d0b6541607:infra/environments/production/variables.tf:aws-account-id-in-arn:11
+67d9e5a200cfe42e62691be6cacd972b14738cdc:docs/friction.md:email-address:243
+702b44e224331fa1fad6a7f74da693bf87c1d9c1:lambdas/tests/test_public_api_handler.py:generic-api-key:998
+a1c314977169b028cfc2b90f4ffd4b2c29f7b5a1:lambdas/tests/test_bedrock.py:aws-account-id-in-arn:114
+a1c314977169b028cfc2b90f4ffd4b2c29f7b5a1:lambdas/tests/test_daily_cycle_handler.py:generic-api-key:1573
