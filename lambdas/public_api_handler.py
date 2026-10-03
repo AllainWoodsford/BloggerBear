@@ -96,6 +96,16 @@ _CORS_HEADERS = {
 }
 
 
+# Scaling PR C: how long the public API's CDN (infra/modules/api-cdn) and browsers may reuse a
+# response. The CDN caches nothing unless told to (its default TTL is 0), so only the routes below
+# that pass cache_seconds are ever cached: the same answer for every visitor, where a minute or five
+# of staleness is invisible. Everything else -- the view counter, feedback, feedback-status (it hands
+# out a fresh verification token), every error -- is sent no-store, so neither the CDN nor a browser
+# keeps it.
+_LISTING_CACHE_SECONDS = 60
+_RSS_CACHE_SECONDS = 300
+
+
 def _response(
     status_code: int,
     payload,
@@ -105,8 +115,10 @@ def _response(
 ) -> dict:
     body = json.dumps(payload) if content_type == "application/json" else payload
     headers = {"Content-Type": content_type, **_CORS_HEADERS}
-    if cache_seconds is not None:
+    if cache_seconds is not None and status_code == 200:
         headers["Cache-Control"] = f"public, max-age={cache_seconds}"
+    else:
+        headers["Cache-Control"] = "no-store"
     return {"statusCode": status_code, "headers": headers, "body": body}
 
 
@@ -171,7 +183,7 @@ def _list_topics(event: dict) -> dict:
                 "researching": researching,
             }
         )
-    return _response(200, {"topics": public_topics})
+    return _response(200, {"topics": public_topics}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 def _ref_key(ref: dict) -> str:
@@ -262,6 +274,7 @@ def _topic_activity(event: dict) -> dict:
             "pending_review_count": pending_review_count,
             "pipeline_items": pipeline_items,
         },
+        cache_seconds=_LISTING_CACHE_SECONDS,
     )
 
 
@@ -302,7 +315,9 @@ def _list_articles(event: dict) -> dict:
         }
         for a in articles
     ]
-    return _response(200, {"topic_id": topic_id, "articles": summaries})
+    return _response(
+        200, {"topic_id": topic_id, "articles": summaries}, cache_seconds=_LISTING_CACHE_SECONDS
+    )
 
 
 def _get_article_detail(event: dict) -> dict:
@@ -335,6 +350,8 @@ def _get_article_detail(event: dict) -> dict:
             # frozen-at-publish-time snapshot like the static article page's own copy.
             "equipment_used": equipment_snapshot(article.get("equipment_used")),
         },
+        # Its view_count can be a minute behind; the page shows the live count the view POST returns.
+        cache_seconds=_LISTING_CACHE_SECONDS,
     )
 
 
@@ -541,7 +558,7 @@ def _list_musings(event: dict) -> dict:
         }
         for m in items
     ]
-    return _response(200, {"musings": musings})
+    return _response(200, {"musings": musings}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 # --- Stats ------------------------------------------------------------------
@@ -659,7 +676,9 @@ def _rss_feed(event: dict) -> dict:
         + "</channel>"
         "</rss>"
     )
-    return _response(200, xml, content_type="application/rss+xml; charset=utf-8")
+    return _response(
+        200, xml, content_type="application/rss+xml; charset=utf-8", cache_seconds=_RSS_CACHE_SECONDS
+    )
 
 
 _ROUTES = {

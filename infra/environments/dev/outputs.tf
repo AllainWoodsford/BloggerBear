@@ -41,3 +41,8 @@ output "public_api_url" {
   value       = module.public_api.invoke_url
   description = "Invoke URL for the public API's dev stage (REST API -- the stage name is part of this URL, unlike the HTTP API predecessor's $default stage). Same value baked into config.js as window.PUBLIC_API_URL for the frontend. Unauthenticated -- reachable by anyone, rate-limited (not IP-allowlisted) by aws_wafv2_web_acl.public_api."
 }
+
+output "public_api_cdn_url" {
+  value       = module.public_api_cdn.url
+  description = "The public API through its CloudFront distribution (Scaling PR C) -- what config.js gives the frontend as window.PUBLIC_API_URL. Cacheable GETs are answered from the edge; public_api_url above still works directly."
+}
