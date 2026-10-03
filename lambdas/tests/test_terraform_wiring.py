@@ -913,6 +913,37 @@ def test_pull_request_only_checks_live_in_their_own_workflow():
     assert "  pull_request:" not in (workflows / "terraform.yml").read_text(encoding="utf-8")
 
 
+def test_pull_requests_are_checked_for_personal_data_without_publishing_it():
+    """docs/friction.md 7.11: a PR added a personal email; no secret scanner looks for one."""
+    pr_checks = (ROOT / ".github" / "workflows" / "pr-checks.yml").read_text(encoding="utf-8")
+    gitleaks = pr_checks.split("\n  gitleaks:\n")[1].split("\n  pii-denylist:\n")[0]
+    denylist = pr_checks.split("\n  pii-denylist:\n")[1]
+
+    # Gitleaks pinned by commit, binary pinned, our config, and nothing it found ever re-published
+    # (no PR comments, no artifact; the action itself runs with --redact).
+    assert re.search(r"uses: gitleaks/gitleaks-action@[0-9a-f]{40}\n", gitleaks)
+    assert re.search(r"GITLEAKS_VERSION: \d+\.\d+\.\d+\n", gitleaks)
+    assert "GITLEAKS_CONFIG: .gitleaks.toml" in gitleaks
+    assert "GITLEAKS_ENABLE_COMMENTS: false" in gitleaks
+    assert "GITLEAKS_ENABLE_UPLOAD_ARTIFACT: false" in gitleaks
+    assert "pull-requests: read" in gitleaks and "write" not in gitleaks
+
+    # The exact-string list comes from a secret, and only the PR's own range is checked.
+    assert "PII_DENYLIST: ${{ secrets.PII_DENYLIST }}" in denylist
+    assert 'scripts/pii_denylist_check.py --range "$BASE" "$HEAD"' in denylist
+
+    config = (ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
+    assert "useDefault = true" in config
+    for rule in ("email-address", "aws-account-id-in-arn", "aws-account-id-labelled"):
+        assert f'id = "{rule}"' in config
+
+    # The same checks run before a commit, and the local list can never be committed.
+    hook = (ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+    assert "scripts/pii_denylist_check.py --staged" in hook and "--config .gitleaks.toml" in hook
+    assert b"\r" not in (ROOT / ".githooks" / "pre-commit").read_bytes()  # sh can't run CRLF
+    assert re.search(r"^\.pii-denylist$", (ROOT / ".gitignore").read_text(encoding="utf-8"), re.M)
+
+
 # --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
 
 

@@ -1,0 +1,56 @@
+# Gitleaks config: its default secret rules, plus two kinds of personal data this repo has leaked
+# before (docs/friction.md 7.3, 7.11). Used by pr-checks.yml's gitleaks job and by the pre-commit
+# hook (.githooks/pre-commit). Both scan only what a change adds, never the existing history.
+#
+# Exact personal strings (a name, a home IP, a personal address) are NOT listed here: this file is
+# public. They live in the PII_DENYLIST secret and a local, gitignored .pii-denylist, checked by
+# scripts/pii_denylist_check.py.
+
+title = "BloggerBear: secrets, plus email addresses and AWS account IDs"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "email-address"
+description = "Email address. Tests and docs use @example.com (or another reserved domain)."
+regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'''
+keywords = ["@"]
+tags = ["pii"]
+
+  [[rules.allowlists]]
+  description = "Reserved, placeholder and no-reply addresses"
+  regexTarget = "match"
+  regexes = [
+    '''@(?:[A-Za-z0-9-]+\.)*example\.(?:com|org|net|co\.uk)$''',
+    '''@(?:[A-Za-z0-9-]+\.)*(?:test|invalid|localhost)$''',
+    '''@users\.noreply\.github\.com$''',
+    '''^noreply@(?:github|anthropic)\.com$''',
+    '''^git@github\.com$''',
+    '''@bloggerbear\.com$''',
+    '''^a@b\.com$''',
+  ]
+
+[[rules]]
+id = "aws-account-id-in-arn"
+description = "AWS account ID inside an ARN. Tests and docs use 123456789012."
+regex = '''arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):'''
+secretGroup = 1
+keywords = ["arn:aws"]
+tags = ["pii"]
+
+  [[rules.allowlists]]
+  description = "AWS's documentation placeholders"
+  regexes = ['''^(?:123456789012|111111111111|000000000000)$''']
+
+[[rules]]
+id = "aws-account-id-labelled"
+description = "A 12-digit number labelled as an account. Tests and docs use 123456789012."
+regex = '''(?i)\baccount[ _-]?(?:id)?\b[^0-9\n]{0,30}\b(\d{12})\b'''
+secretGroup = 1
+keywords = ["account"]
+tags = ["pii"]
+
+  [[rules.allowlists]]
+  description = "AWS's documentation placeholders"
+  regexes = ['''^(?:123456789012|111111111111|000000000000)$''']

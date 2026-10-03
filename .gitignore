@@ -65,3 +65,5 @@ terraform.rc
 # Optional: ignore plan files saved before destroying Terraform configuration
 # Uncomment the line below if you want to ignore planout files.
 # planout
+# The local list of personal strings scripts/pii_denylist_check.py blocks. Never commit it.
+.pii-denylist

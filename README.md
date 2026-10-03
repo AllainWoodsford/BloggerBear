@@ -444,6 +444,23 @@ terraform fmt -check -recursive infra/
 cd infra/environments/dev && terraform init -backend=false && terraform validate
 ```
 
+### Personal-data and secret checks before you commit
+
+`pr-checks.yml` runs Gitleaks (secrets, email addresses and AWS account IDs, per
+`.gitleaks.toml`) and `scripts/pii_denylist_check.py` (your own exact personal strings) on every
+PR. Those run after a push, when the content is already on GitHub, so run the same checks before
+each commit too:
+
+```bash
+git config core.hooksPath .githooks          # once per clone: enables .githooks/pre-commit
+winget install Gitleaks.Gitleaks              # or brew install gitleaks / your package manager
+```
+
+Then list your own personal strings (a name, a home IP, a personal address), one per line, in
+`.pii-denylist` at the repo root. It is gitignored, and the hook refuses to commit it. For CI, put
+the same list in the `PII_DENYLIST` repository secret (Settings → Secrets and variables →
+Actions). Neither check ever prints what it found, so the logs stay safe to publish.
+
 ## License
 
 The code is licensed under the [Apache License 2.0](LICENSE). Security reports: see
