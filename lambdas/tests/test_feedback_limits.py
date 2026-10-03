@@ -7,6 +7,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 from common import dynamo
 from common import feedback_limits as fl
@@ -28,13 +29,15 @@ def tables(monkeypatch):
     dynamo._dynamodb_resource = None
     with mock_aws():
         client = boto3.client("dynamodb", region_name=REGION)
-        client.create_table(
+        create_table(
+            client,
             TableName="Articles",
             KeySchema=[{"AttributeName": "article_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "article_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
-        client.create_table(
+        create_table(
+            client,
             TableName="ModelConfig",
             KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],

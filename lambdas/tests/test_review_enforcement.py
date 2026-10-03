@@ -9,6 +9,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 from moto import mock_aws
+from table_schemas import create_table
 
 import admin_api_handler
 import common.dynamo as dynamo
@@ -563,7 +564,8 @@ def tables(monkeypatch):
             ("ModelConfig", "config_id"),
             ("ModerationQueue", "queue_id"),
         ):
-            client.create_table(
+            create_table(
+                client,
                 TableName=name,
                 KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
                 AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],
