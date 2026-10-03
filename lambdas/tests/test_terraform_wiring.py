@@ -146,13 +146,35 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
 def test_every_table_is_protected_when_asked_and_production_asks():
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('resource "aws_dynamodb_table"') == 13
-    assert tables.count("deletion_protection_enabled = var.protect_data") == 13
+    assert tables.count('resource "aws_dynamodb_table"') == 14
+    assert tables.count("deletion_protection_enabled = var.protect_data") == 14
     assert (
-        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 13
+        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 14
     )  # point-in-time recovery
     assert re.search(r"protect_data\s*=\s*true", _read("environments", "production", "main.tf"))
     assert "protect_data" not in _read("environments", "dev", "main.tf")
+
+
+# --- sharded counters (Scaling PR B) ---------------------------------------------------------------
+
+
+def test_view_counters_have_their_own_table_and_reach_the_lambda_policy():
+    tables = _read("modules", "app-data", "main.tf")
+    outputs = _read("modules", "app-data", "outputs.tf")
+
+    view_counts = _resource_block(tables, "aws_dynamodb_table", "view_counts")
+    assert 'hash_key = "counter_id"' in view_counts
+    table_arns = re.search(r'output "table_arns" \{(.*?)\n\}', outputs, re.S).group(1)
+    assert "aws_dynamodb_table.view_counts.arn" in table_arns
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_lambda_knows_the_view_counter_table_and_may_batch_read_counters(env):
+    text = _read("environments", env, "main.tf")
+    policy = re.search(r'sid\s*=\s*"DynamoDBAppTables"(.*?)\n  \}', text, re.S).group(1)
+
+    assert re.search(r"VIEW_COUNTS_TABLE\s*=\s*module\.app_data\.view_counts_table_name", text)
+    assert '"dynamodb:BatchGetItem"' in policy
 
 
 def test_the_content_bucket_is_versioned_and_old_versions_expire():

@@ -48,6 +48,7 @@ from common.dynamo import (
     get_latest_finding,
     get_stats_totals,
     get_topic,
+    get_view_count,
     increment_view_count,
     list_all_articles,
     list_models,
@@ -320,7 +321,7 @@ def _get_article_detail(event: dict) -> dict:
             "body": body,
             "published_at": article.get("published_at"),
             "source_refs": dedupe_source_refs(article.get("source_refs")),
-            "view_count": int(article.get("view_count", 0)),
+            "view_count": _view_count(article),
             # AI lineage/cost tracking (docs/project-plan.md §11, PR 3 of
             # 5) -- explicit None (not omitted) on an article published
             # before this feature existed, so the frontend's "no data"
@@ -338,13 +339,27 @@ def _get_article_detail(event: dict) -> dict:
     )
 
 
+def _view_count(article: dict) -> int:
+    """An article's total views (sharded counters plus the count kept on the article before them,
+    see common/dynamo.py's get_view_count). A counter that can't be read never breaks the article:
+    the pre-sharding count is shown instead, and the next view's POST corrects it on the page."""
+    stored = int(article.get("view_count", 0))
+    try:
+        return get_view_count(article["article_id"], stored_view_count=stored)
+    except Exception as exc:  # noqa: BLE001 - a view count must never break the page
+        print(f"public_api_handler: could not read view counters for {article['article_id']}: {exc!r}")
+        return stored
+
+
 def _view_article(event: dict) -> dict:
     article_id = _path_param(event, "article_id")
     article = _get_published_article(article_id)
     if article is None:
         return _error(404, f"article '{article_id}' not found")
 
-    new_count = increment_view_count(article_id)
+    new_count = increment_view_count(
+        article_id, stored_view_count=int(article.get("view_count", 0))
+    )
     return _response(200, {"article_id": article_id, "view_count": new_count})
 
 
