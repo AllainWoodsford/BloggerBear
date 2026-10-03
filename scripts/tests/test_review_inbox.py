@@ -1315,3 +1315,31 @@ def test_the_inbox_mentions_rewrites_in_progress():
     )
 
     assert "Being rewritten in the background: 2" in ri.inbox_report(api, NOW)
+
+
+def test_a_rewrite_you_asked_for_says_what_you_asked():
+    rewrite = {"number": 1, "model_label": "Haiku", "cost_aud": 0.001, "instructions": "Fix the intro."}
+    (item,) = ri.ModerationSource(_moderation([_held("q1", rewrite=rewrite)])).fetch(5, set())
+
+    assert any('you asked: "Fix the intro."' in fact for fact in item.facts)
+
+
+def test_a_sent_back_article_whose_rewrite_failed_retries_with_the_same_note(store):
+    row = {
+        **_row("q1", "2026-09-20T10:00:00+00:00", reasons=["sent back by a person for a rewrite"],
+               topic="github-trending"),
+        "rewrite_instructions": "Fix the intro.",
+        "last_rewrite_error": "the rewrite was cut off before it finished",
+    }
+    api = _rewrite_api([row])
+
+    (item,) = ri.ModerationSource(api).fetch(5, set())
+    assert item.can_rewrite and item.caution and not item.routine
+    assert item.why == ['You sent it back for a rewrite: "Fix the intro."']
+
+    _run([ri.ModerationSource(api)], store, "w", "2")
+
+    assert api.bodies[0] == (
+        "/moderation-queue/q1/rewrite",
+        {"model_id": "sonnet", "instructions": "Fix the intro."},
+    )

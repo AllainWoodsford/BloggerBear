@@ -498,28 +498,44 @@ def list_moderation_by_status(status: str) -> list[dict]:
 
 
 def claim_moderation_for_rewrite(
-    queue_id: str, *, rewrite_id: str, model_id: str, requested_at: str
+    queue_id: str,
+    *,
+    rewrite_id: str,
+    model_id: str,
+    requested_at: str,
+    instructions: str | None = None,
 ) -> bool:
     """Move a pending item to `rewriting`, recording which rewrite owns it. False if it was not
     pending (already rewritten, approved, rejected, or claimed by a second trigger at the same
-    moment) -- a conditional write, so two triggers can never start two rewrites."""
+    moment) -- a conditional write, so two triggers can never start two rewrites.
+
+    `instructions` is what a person said is wrong with the article (`articles rewrite
+    --instructions`), kept as `rewrite_instructions`. Without it, any left by an earlier attempt
+    is removed: a note is only ever used by the rewrite it was given for."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
+    expression = (
+        "SET #status = :rewriting, rewrite_id = :rewrite_id, "
+        "rewrite_model_id = :model_id, rewrite_requested_at = :requested_at"
+    )
+    values = {
+        ":rewriting": "rewriting",
+        ":pending": "pending",
+        ":rewrite_id": rewrite_id,
+        ":model_id": model_id,
+        ":requested_at": requested_at,
+    }
+    if instructions:
+        expression += ", rewrite_instructions = :instructions"
+        values[":instructions"] = instructions
+    else:
+        expression += " REMOVE rewrite_instructions"
     try:
         table.update_item(
             Key={"queue_id": queue_id},
-            UpdateExpression=(
-                "SET #status = :rewriting, rewrite_id = :rewrite_id, "
-                "rewrite_model_id = :model_id, rewrite_requested_at = :requested_at"
-            ),
+            UpdateExpression=expression,
             ConditionExpression="#status = :pending",
             ExpressionAttributeNames={"#status": "status"},
-            ExpressionAttributeValues={
-                ":rewriting": "rewriting",
-                ":pending": "pending",
-                ":rewrite_id": rewrite_id,
-                ":model_id": model_id,
-                ":requested_at": requested_at,
-            },
+            ExpressionAttributeValues=values,
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return False
