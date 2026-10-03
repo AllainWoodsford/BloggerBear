@@ -103,6 +103,9 @@
         <li>Only the site operator can read them, and only to investigate abuse or attacks and to tune the firewall. They are not used for analytics, or to identify or profile visitors.</li>
         <li>Separately, AWS's firewall keeps a small sample of recent requests (allowed and blocked) for up to 3 hours, which is how its console shows recent traffic. That sample is held by AWS and expires on its own.</li>
       </ul>
+      <p>
+        The public API also keeps a request log, so the operator can see that it is working: for each request, when it was made, which part of the API it asked for, the response code and how long it took. It holds no IP address, browser details or anything else about who made the request, and is kept for 14 days. To answer quickly, the public API is served through a content delivery network (Amazon CloudFront), which passes your IP address on to the firewall so its limits apply per visitor, as described above.
+      </p>
     </section>
 
     <section id="local-storage-on-your-device">

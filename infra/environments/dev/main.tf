@@ -10,6 +10,12 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.4"
     }
+    # Scaling PR C: the secret the public API's CloudFront distribution sends to the API
+    # (random_password.api_origin_verify).
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.6"
+    }
   }
 
   backend "s3" {
@@ -53,6 +59,9 @@ module "static_site" {
   enable_custom_domain = false
   force_destroy        = var.force_destroy
   web_acl_id           = var.web_acl_arn
+
+  # The frontend calls the public API through its CDN (module.public_api_cdn).
+  extra_connect_src = [module.public_api_cdn.domain_name]
 }
 
 # =========================================================================
@@ -705,6 +714,11 @@ module "admin_api" {
   web_acl_id           = aws_wafv2_web_acl.admin.arn
   associate_web_acl    = true
 
+  # Scaling PR C: one operator's CLI and review inbox never come close to this; it only caps
+  # what a leaked credential or a runaway script could make the admin Lambda do.
+  throttling_rate_limit  = 10
+  throttling_burst_limit = 20
+
   routes = toset([
     "GET /topics",
     "POST /topics",
@@ -1228,6 +1242,18 @@ module "public_api" {
   web_acl_id           = aws_wafv2_web_acl.public_api.arn
   associate_web_acl    = true
 
+  # Scaling PR C: a ceiling for the whole API, well above what the site needs (most reads are
+  # now answered by module.public_api_cdn's cache) and well below what would run up a bill.
+  # The feedback POST, which can cost a model call, gets its own lower one; per-visitor limits
+  # stay with aws_wafv2_web_acl.public_api. Access logs carry no visitor details and are kept
+  # as long as the visitor WAF logs.
+  throttling_rate_limit  = 25
+  throttling_burst_limit = 50
+  method_throttling = {
+    "POST /articles/{article_id}/feedback" = { rate_limit = 2, burst_limit = 5 }
+  }
+  access_log_retention_days = local.waf_visitor_log_retention_days
+
   routes = toset([
     "GET /topics",
     # Static article publishing (docs/project-plan.md §11): a derived
@@ -1255,6 +1281,32 @@ module "public_api" {
     "GET /equipment",
     "GET /rss.xml",
   ])
+}
+
+# -----------------------------------------------------------------------
+# Scaling PR C: the public API behind its own CloudFront distribution (see
+# infra/modules/api-cdn for why it isn't a behaviour on the site's), so listings, articles and
+# RSS are served from the edge. The frontend calls it (config.js below); the execute-api URL keeps
+# working for anything already pointed at it, such as RSS readers.
+#
+# The secret it sends with every request tells aws_wafv2_web_acl.public_api which requests came
+# through it, so their per-visitor limits can use the visitor address CloudFront records
+# (x-viewer-ip) rather than the edge address every visitor shares.
+# -----------------------------------------------------------------------
+resource "random_password" "api_origin_verify" {
+  length  = 32
+  special = false
+}
+
+module "public_api_cdn" {
+  source = "../../modules/api-cdn"
+
+  environment_name     = "dev"
+  api_domain           = module.public_api.api_domain
+  stage_name           = module.public_api.stage_name
+  origin_verify_secret = random_password.api_origin_verify.result
+  # The shared CLOUDFRONT-scope ACL, once var.web_acl_arn is set (same as the site distribution).
+  web_acl_id = var.web_acl_arn
 }
 
 # -----------------------------------------------------------------------
@@ -1288,10 +1340,35 @@ resource "aws_wafv2_web_acl" "public_api" {
       block {}
     }
 
+    # Scaling PR C: direct calls only (no x-origin-verify). Through the CDN every request arrives
+    # from an edge address many visitors share, so those are limited per visitor by
+    # rate-limit-via-cdn below instead.
     statement {
       rate_based_statement {
         limit              = 500
         aggregate_key_type = "IP"
+
+        scope_down_statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = random_password.api_origin_verify.result
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  single_header {
+                    name = "x-origin-verify"
+                  }
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -1306,8 +1383,9 @@ resource "aws_wafv2_web_acl" "public_api" {
   # -- the same AWS Managed Common Rule Set already used by the
   # CLOUDFRONT-scope shared ACL (see aws_wafv2_web_acl.this in
   # production/main.tf), applied here too since this REGIONAL ACL is the
-  # only thing directly in front of the public API Gateway (CloudFront
-  # doesn't sit in front of API Gateway in this architecture). Not added
+  # only thing directly in front of the public API Gateway (including
+  # requests through module.public_api_cdn, which has an edge WAF only
+  # where the shared ACL is attached). Not added
   # to aws_wafv2_web_acl.admin below -- that ACL already default-blocks
   # everything except the operator's own allowlisted IP, which is
   # stricter than any managed rule set could add.
@@ -1333,18 +1411,45 @@ resource "aws_wafv2_web_acl" "public_api" {
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
 
+        # Direct calls only, as for rate-limit above; feedback-rate-limit-via-cdn covers the rest.
         scope_down_statement {
-          byte_match_statement {
-            search_string         = "/feedback"
-            positional_constraint = "ENDS_WITH"
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/feedback"
+                positional_constraint = "ENDS_WITH"
 
-            field_to_match {
-              uri_path {}
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
             }
 
-            text_transformation {
-              priority = 0
-              type     = "NONE"
+            statement {
+              not_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = random_password.api_origin_verify.result
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      single_header {
+                        name = "x-origin-verify"
+                      }
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -1376,6 +1481,121 @@ resource "aws_wafv2_web_acl" "public_api" {
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "bloggerbear-dev-public-api-common-rule-set"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  # Scaling PR C: the same two limits for requests that came through module.public_api_cdn (they
+  # carry its secret), counted per visitor from the x-viewer-ip header its CloudFront Function
+  # sets. Only cache misses and POSTs get this far, so a visitor browsing cached pages uses none
+  # of it. A request whose header is missing or unreadable is never blocked by these (NO_MATCH).
+  rule {
+    name     = "rate-limit-via-cdn"
+    priority = 4
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 500
+        aggregate_key_type = "FORWARDED_IP"
+
+        forwarded_ip_config {
+          header_name       = "x-viewer-ip"
+          fallback_behavior = "NO_MATCH"
+        }
+
+        scope_down_statement {
+          byte_match_statement {
+            search_string         = random_password.api_origin_verify.result
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              single_header {
+                name = "x-origin-verify"
+              }
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-dev-public-api-rate-limit-via-cdn"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "feedback-rate-limit-via-cdn"
+    priority = 5
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit                 = 10
+        evaluation_window_sec = 300
+        aggregate_key_type    = "FORWARDED_IP"
+
+        forwarded_ip_config {
+          header_name       = "x-viewer-ip"
+          fallback_behavior = "NO_MATCH"
+        }
+
+        scope_down_statement {
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/feedback"
+                positional_constraint = "ENDS_WITH"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = random_password.api_origin_verify.result
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  single_header {
+                    name = "x-origin-verify"
+                  }
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "bloggerbear-dev-public-api-feedback-rate-limit-via-cdn"
       sampled_requests_enabled   = true
     }
   }
@@ -1424,6 +1644,8 @@ locals {
     "sec-ch-ua-model",
     "sec-ch-ua-full-version-list",
     "sec-ch-ua-wow64",
+    # Not a fingerprint: the secret module.public_api_cdn sends, which must not end up in a log.
+    "x-origin-verify",
   ]
   waf_visitor_log_retention_days = 14
 }
@@ -1649,7 +1871,7 @@ resource "aws_s3_object" "frontend_config" {
   cache_control = "no-cache"
 
   content = <<-EOT
-    window.PUBLIC_API_URL = "${module.public_api.invoke_url}";
+    window.PUBLIC_API_URL = "${module.public_api_cdn.url}";
     window.SITE_URL = "${local.site_url}";
   EOT
 }
@@ -1815,6 +2037,50 @@ module "observability" {
 
   # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
   feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
+
+  # Scaling PR C: what the edge dashboard (API Gateway and WAF, api_waf_dashboards.tf in the
+  # module) would show. Not created in dev (edge_dashboard_enabled defaults to false): dashboards
+  # past the account's first three cost US$3 a month each, and dev's traffic is mostly the
+  # operator's own. Set it to true here for a while to debug the edge in dev.
+  api_dashboard_apis = [
+    {
+      label            = "Public API"
+      api_name         = module.public_api.api_name
+      stage            = module.public_api.stage_name
+      access_log_group = module.public_api.access_log_group_name
+    },
+    {
+      label            = "Admin API"
+      api_name         = module.admin_api.api_name
+      stage            = module.admin_api.stage_name
+      access_log_group = module.admin_api.access_log_group_name
+    },
+  ]
+  api_cdn = {
+    distribution_id            = module.public_api_cdn.distribution_id
+    additional_metrics_enabled = module.public_api_cdn.additional_metrics_enabled
+    api_name                   = module.public_api.api_name
+    stage                      = module.public_api.stage_name
+  }
+  waf_regional_acls = [
+    {
+      label       = "Public API"
+      metric_name = aws_wafv2_web_acl.public_api.visibility_config[0].metric_name
+      log_group   = aws_cloudwatch_log_group.waf_public_api.name
+    },
+    {
+      label       = "Admin API"
+      metric_name = aws_wafv2_web_acl.admin.visibility_config[0].metric_name
+      log_group   = aws_cloudwatch_log_group.waf_admin.name
+    },
+  ]
+  # Production owns the shared CloudFront ACL; dev shows it too, since it is the same one
+  # (and protects dev's distributions once var.web_acl_arn is set).
+  waf_cloudfront_acl = {
+    label       = "Site (CloudFront)"
+    metric_name = "bloggerbear-shared-acl"          # production's aws_wafv2_web_acl.this
+    log_group   = "aws-waf-logs-bloggerbear-shared" # created by production, in us-east-1
+  }
 }
 
 # =========================================================================

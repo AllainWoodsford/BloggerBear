@@ -1797,3 +1797,90 @@ lineage/backfill tools), `list_all_moderation_items` (admin stats over all histo
 (`list_musings`, `delete_musings_for_article`): it has no attribute every item shares to index on, so it
 would need a new attribute and a backfill. Its public feed and the Stats page are better served by caching
 their responses.
+
+### Scaling C: the public API's cache and throttling, and two dashboards
+
+**Status: built** (the last of three scaling PRs). **Needs `infra/bootstrap` applied before it merges**:
+see "Applying it" below.
+
+**Problem:** the public API had no cache and no API Gateway throttling. Every listing, article and RSS
+request invoked the Lambda and read DynamoDB, the per-IP WAF rules were the only ceiling, and there was no
+dashboard for API Gateway or WAF at all.
+
+**Caching: CloudFront, in its own distribution** (`infra/modules/api-cdn`). The frontend now calls the API
+through it (`config.js`'s `PUBLIC_API_URL`, added to the site's CSP `connect-src`). The execute-api URL
+keeps working for anything already pointed at it, such as RSS readers.
+- **Not a behaviour on the site's distribution:** that distribution maps every 403 and 404 to
+  `/error.html`, and `custom_error_response` applies to the whole distribution. It would replace the API's
+  JSON errors with HTML, and the feedback form reads a 403's body to retry its verification. A second
+  distribution has no monthly fee.
+- **The API decides what is cached.** The cache policy's default TTL is 0, so only responses with a
+  `max-age` are kept:
+  - 60 s: topics, topic activity, article listings, an article, musings, equipment
+  - 300 s: RSS and stats
+  
+  Everything else is sent `no-store` and never cached: the view counter, feedback, `feedback-status` (a
+  fresh verification token each time) and every error. CloudFront never caches POSTs. The query string is
+  in the cache key; headers and cookies are not.
+- **API Gateway's own cache was rejected on cost.** It bills hourly whether used or not, about US$20 a month
+  for the smallest per stage, which is more than the whole site costs.
+
+**Per-visitor WAF limits behind the CDN.** Through CloudFront the regional WAF only sees edge addresses,
+which many visitors share, so the existing per-IP limits would have started blocking whole edges. The fix:
+- A CloudFront Function writes the visitor's address into `x-viewer-ip`, overwriting whatever the visitor
+  sent.
+- The distribution sends a secret `x-origin-verify` header (`random_password`, redacted from WAF logs).
+- `rate-limit` and `feedback-rate-limit` now apply only to requests **without** the secret, by source IP,
+  as before.
+- Two new rules, `rate-limit-via-cdn` and `feedback-rate-limit-via-cdn`, apply the same limits to requests
+  **with** it, aggregated on `x-viewer-ip` (`FORWARDED_IP`, `NO_MATCH` fallback).
+- A direct caller can't forge the visitor header: without the secret, its own IP is what's counted.
+- Cost: two more WAF rules per regional ACL, about US$1 each a month.
+- In production the API distribution also gets the shared CloudFront ACL (the 2000-per-IP edge limit and
+  managed rules); in dev it gets that ACL once `web_acl_arn` is set, the same as the site.
+
+**Throttling** (`aws_api_gateway_method_settings`):
+- Public API stage: 25 requests a second, burst 50. The feedback POST, which can cost a model call, gets
+  2 a second, burst 5.
+- Admin API: 10, burst 20.
+
+Anything above these gets a 429 before the Lambda runs. These are whole-API ceilings; per-visitor limits
+stay with WAF. Detailed per-method metrics and execution logging stay off, since they bill as custom
+metrics.
+
+**Access logs:** one JSON line per request (time, method, path, status, latency, integration latency,
+error type, WAF status). They hold **no IP or user agent** and are kept 14 days for the public API and 30
+for admin. The privacy policy now says so. API Gateway can only write them once the account names a
+CloudWatch Logs role for it, which is an account-wide singleton, so it lives in `infra/bootstrap`
+(`aws_api_gateway_account`), together with the deploy role's permission for `/aws/apigateway/bloggerbear-*`.
+
+**Dashboards** (`infra/modules/observability/api_waf_dashboards.tf`). Like the pipeline dashboard, both open
+on 7 days of hourly points.
+- **API Gateway**, per API:
+  - requests, 4XX and 5XX
+  - latency against integration latency at p50, p90 and p99
+  - from the access logs: a responses-by-status table (the 400/403/429/500/502/504 split; REST APIs publish
+    no per-status metric), 429s per hour, and 4XX/5XX by route and error type
+  - for the public API, CDN requests next to the requests that still reached API Gateway (the gap is the
+    cache), and CDN error rates
+  
+  CloudFront's `CacheHitRate` widget appears only if `enable_additional_metrics` is on (about US$2.40 a
+  month, off by default).
+- **WAF:**
+  - for each regional ACL: allowed, blocked and counted, blocked per rule (rate limits included) and
+    allowed/counted per rule, all by metric search so a new rule shows up by itself, plus a Logs Insights
+    table of the top blocked rule, address and path (the address is `x-viewer-ip` when the request came
+    through the CDN)
+  - the same for the shared CloudFront ACL, in us-east-1. Its metrics carry no `Region` dimension, so the
+    widgets search both dimension shapes; CloudFront's own metrics use `Region = Global`.
+  
+  Logs Insights widgets are billed per GB scanned, only when someone opens the dashboard. A metric filter
+  per status would cost a custom metric each, every month.
+
+**Applying it:**
+1. **Apply `infra/bootstrap` first.** It adds the API Gateway CloudWatch Logs role and account setting, and
+   the deploy role's `ApiAccessLogGroups` statement. Without them the stage update fails ("CloudWatch Logs
+   role ARN must be set in account settings") or the log group creation is denied.
+2. Then merge. The first apply creates the distribution, which takes a few minutes. `config.js` switches
+   the site to it, and an open page picks the change up on its next load (`config.js` is `no-cache`).
+3. The `random` provider is new (lock files updated).

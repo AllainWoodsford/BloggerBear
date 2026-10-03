@@ -184,6 +184,81 @@ resource "aws_api_gateway_stage" "this" {
   rest_api_id   = aws_api_gateway_rest_api.this.id
   deployment_id = aws_api_gateway_deployment.this.id
   stage_name    = var.stage_name
+
+  # Scaling PR C: one JSON line per request, for the API Gateway dashboard's per-status split
+  # (REST APIs publish only 4XXError/5XXError as metrics, never 400 vs 403 vs 429). No IP address,
+  # user agent or other visitor detail -- only what happened to the request -- so this is not a
+  # log of who browsed what. Written by hand rather than with jsonencode() so status and latency
+  # are JSON numbers Logs Insights can compare; integrationLatency stays quoted because API Gateway
+  # writes "-" for a request that never reached the Lambda (blocked, throttled).
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.access.arn
+    format = join("", [
+      "{",
+      "\"requestId\":\"$context.requestId\",",
+      "\"requestTime\":\"$context.requestTime\",",
+      "\"httpMethod\":\"$context.httpMethod\",",
+      "\"resourcePath\":\"$context.resourcePath\",",
+      "\"status\":$context.status,",
+      "\"responseLatency\":$context.responseLatency,",
+      "\"integrationLatency\":\"$context.integrationLatency\",",
+      "\"responseLength\":\"$context.responseLength\",",
+      "\"errorType\":\"$context.error.responseType\",",
+      "\"wafStatus\":\"$context.wafResponseCode\"",
+      "}",
+    ])
+  }
+}
+
+# Access logs for the stage above. API Gateway writes them through the account-wide CloudWatch Logs
+# role that infra/bootstrap sets (aws_api_gateway_account) -- without it the stage update fails with
+# "CloudWatch Logs role ARN must be set in account settings".
+resource "aws_cloudwatch_log_group" "access" {
+  name              = "/aws/apigateway/${var.name}-access"
+  retention_in_days = var.access_log_retention_days
+}
+
+# Scaling PR C: throttling. Every method in the stage gets the default rate (steady requests per
+# second) and burst (how many may arrive at once); API Gateway answers anything beyond them with a
+# 429 before the Lambda is invoked, so a flood costs neither Lambda time nor DynamoDB reads. This is
+# a whole-API ceiling, not a per-visitor one -- per-IP limits are WAF's job. Detailed per-method
+# CloudWatch metrics stay off (they bill as custom metrics), as does execution logging.
+resource "aws_api_gateway_method_settings" "all" {
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "*/*"
+
+  settings {
+    throttling_rate_limit  = var.throttling_rate_limit
+    throttling_burst_limit = var.throttling_burst_limit
+    metrics_enabled        = false
+    logging_level          = "OFF"
+  }
+}
+
+# Tighter limits for individual routes (e.g. the feedback POST, which can cost a model call). API
+# Gateway names a method by its resource path with every "/" written as "~1", then the HTTP method:
+# "POST /articles/{article_id}/feedback" -> "~1articles~1{article_id}~1feedback/POST".
+resource "aws_api_gateway_method_settings" "route" {
+  for_each = var.method_throttling
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  stage_name  = aws_api_gateway_stage.this.stage_name
+  method_path = "${replace(split(" ", each.key)[1], "/", "~1")}/${split(" ", each.key)[0]}"
+
+  settings {
+    throttling_rate_limit  = each.value.rate_limit
+    throttling_burst_limit = each.value.burst_limit
+    metrics_enabled        = false
+    logging_level          = "OFF"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = contains(tolist(var.routes), each.key)
+      error_message = "method_throttling key \"${each.key}\" is not one of this API's routes."
+    }
+  }
 }
 
 resource "aws_lambda_permission" "this" {

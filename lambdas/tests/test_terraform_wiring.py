@@ -656,6 +656,214 @@ def test_the_runs_dashboard_counts_match_the_handlers_log_lines():
     ).read_text(encoding="utf-8")
 
 
+def _dashboards() -> str:
+    return _read("modules", "observability", "api_waf_dashboards.tf")
+
+
+def _dashboard_resource(name: str) -> str:
+    pattern = rf'resource "aws_cloudwatch_dashboard" "{name}" \{{(.*?)\n\}}\n'
+    return re.search(pattern, _dashboards(), re.S).group(1)
+
+
+def test_one_edge_dashboard_opens_on_a_week_of_hourly_points():
+    body = _dashboard_resource("edge")
+
+    assert 'start          = "-P7D"' in body
+    assert 'dashboard_name = "bloggerbear-${var.environment_name}-edge"' in body
+    assert "concat(local.api_gateway_widgets, local.waf_widgets)" in body
+    assert "period = 3600" in _dashboards()
+    # One dashboard, not one each: every dashboard past the account's first three is US$3 a month.
+    assert _dashboards().count('resource "aws_cloudwatch_dashboard"') == 1
+
+
+def test_the_edge_dashboard_is_created_in_production_only():
+    assert "var.edge_dashboard_enabled &&" in _dashboard_resource("edge")
+    variables = _read("modules", "observability", "variables.tf")
+    variable = re.search(r'variable "edge_dashboard_enabled" \{(.*?)\n\}', variables, re.S).group(1)
+    assert "default     = false" in variable
+    assert "edge_dashboard_enabled = true" in _read("environments", "production", "main.tf")
+    assert "edge_dashboard_enabled = true" not in _read("environments", "dev", "main.tf")
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_dashboards_cover_both_apis_and_every_web_acl(env):
+    text = _read("environments", env, "main.tf")
+    block = re.search(r'^module "observability" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+
+    for api in ("public_api", "admin_api"):
+        assert f"api_name         = module.{api}.api_name" in block
+        assert f"access_log_group = module.{api}.access_log_group_name" in block
+    assert "distribution_id            = module.public_api_cdn.distribution_id" in block
+    assert "aws_wafv2_web_acl.public_api.visibility_config[0].metric_name" in block
+    assert "aws_wafv2_web_acl.admin.visibility_config[0].metric_name" in block
+    assert "waf_cloudfront_acl = {" in block
+
+
+def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimension():
+    """CloudFront's metrics (and a CLOUDFRONT-scope ACL's) exist only in us-east-1; a widget pointed
+    at the API's own region draws nothing, which is exactly how a dashboard ends up empty."""
+    text = _dashboards()
+
+    for line in text.splitlines():
+        if '"AWS/CloudFront"' in line:
+            assert '"Region", "Global"' in line, line
+    cdn = re.search(r"cdn_section = (.*?)\n  \)\]\)\n", text, re.S).group(1)
+    assert 'region = local.api_region' not in cdn.replace('region = local.api_region }', '')
+    assert cdn.count('region = "us-east-1"') >= 3
+    cloudfront_acl = re.search(r"waf_cloudfront_section = (.*?)\n  \]\]\)\n", text, re.S).group(1)
+    assert "local.api_region" not in cloudfront_acl
+    # Both possible dimension shapes for a CloudFront ACL's metrics, so neither guess leaves it blank.
+    assert "{AWS/WAFV2,Rule,WebACL}" in cloudfront_acl
+    assert "{AWS/WAFV2,Region,Rule,WebACL}" in cloudfront_acl
+
+
+def test_the_api_dashboard_has_every_widget_the_operator_asked_for():
+    text = _dashboards()
+
+    for metric in ("Count", "4XXError", "5XXError", "Latency", "IntegrationLatency"):
+        assert f'"AWS/ApiGateway", "{metric}"' in text
+    for stat in ("p50", "p90", "p99"):
+        assert f'"{stat}"' in text
+    assert "filter status = 429" in text  # API Gateway's own throttling
+    assert "stats count(*) as requests by status" in text  # the 400/403/429/500/502/504 split
+    assert '"AWS/CloudFront", "CacheHitRate"' in text  # when the additional metrics are on
+    assert '"AWS/CloudFront", "Requests"' in text  # always: the CDN against API Gateway
+
+
+def test_the_waf_dashboard_has_totals_per_rule_and_the_top_blocked_requests():
+    text = _dashboards()
+
+    for metric in ("AllowedRequests", "BlockedRequests", "CountedRequests"):
+        assert f'"{metric}"' in text
+    assert 'NOT Rule=\\"ALL\\"' in text  # per rule, rate limits included, without the total
+    assert 'filter action = \\"BLOCK\\"' in text
+    assert "stats count(*) as blocked by rule, address, path" in text
+    # Behind the CDN the client address is an edge: the visitor's is in x-viewer-ip.
+    assert "coalesce(viewerIp, httpRequest.clientIp)" in text
+
+
+# --- API Gateway throttling and access logs (Scaling PR C) -----------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_both_apis_are_throttled_and_the_feedback_post_more_tightly(env):
+    text = _read("environments", env, "main.tf")
+    public = re.search(r'^module "public_api" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+    admin = re.search(r'^module "admin_api" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+
+    for block in (public, admin):
+        assert re.search(r"throttling_rate_limit\s*=\s*\d+", block)
+        assert re.search(r"throttling_burst_limit\s*=\s*\d+", block)
+    assert '"POST /articles/{article_id}/feedback" = { rate_limit = 2, burst_limit = 5 }' in public
+    assert '"POST /articles/{article_id}/feedback",' in public  # the override names a real route
+
+
+def test_a_route_override_names_its_method_the_way_api_gateway_expects():
+    """API Gateway names a method by its path with every "/" written as "~1" (RFC 6901), and the
+    provider passes method_path through untouched."""
+    module = _read("modules", "rest-api", "main.tf")
+
+    assert 'method_path = "*/*"' in module
+    escaped = 'method_path = "${replace(split(" ", each.key)[1], "/", "~1")}/${split(" ", each.key)[0]}"'
+    assert escaped in module
+
+
+def test_access_logs_record_what_happened_never_who_asked():
+    module = _read("modules", "rest-api", "main.tf")
+    stage = re.search(r'resource "aws_api_gateway_stage" "this" \{(.*?)\n\}', module, re.S).group(1)
+
+    assert '"\\"status\\":$context.status,"' in stage  # a number Logs Insights can compare
+    assert "$context.error.responseType" in stage
+    assert "$context.identity" not in stage  # no source IP, user agent or caller
+    assert "userAgent" not in stage and "sourceIp" not in stage
+
+
+def test_the_deploy_role_may_create_the_access_log_groups_and_api_gateway_may_write_them():
+    bootstrap = _read("bootstrap", "main.tf")
+    module = _read("modules", "rest-api", "main.tf")
+
+    assert 'name              = "/aws/apigateway/${var.name}-access"' in module
+    assert '"arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*"' in bootstrap
+    assert 'resource "aws_api_gateway_account" "this"' in bootstrap
+    assert "AmazonAPIGatewayPushToCloudWatchLogs" in bootstrap
+
+
+# --- the public API's CDN (Scaling PR C) -----------------------------------------------------------
+
+
+def test_the_api_cdn_caches_only_what_the_api_marks_cacheable():
+    module = _read("modules", "api-cdn", "main.tf")
+    policy = _resource_block(module, "aws_cloudfront_cache_policy", "api")
+
+    assert "default_ttl = 0" in policy and "min_ttl     = 0" in policy
+    assert 'cached_methods           = ["GET", "HEAD"]' in module
+    # Its own distribution: the site's maps every 403/404 to an HTML page, and the feedback form
+    # reads the JSON body of a 403.
+    assert "custom_error_response {" not in module
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_frontend_calls_the_api_through_its_cdn_and_the_csp_allows_it(env):
+    text = _read("environments", env, "main.tf")
+
+    assert 'window.PUBLIC_API_URL = "${module.public_api_cdn.url}";' in text
+    assert "extra_connect_src = [module.public_api_cdn.domain_name]" in text
+    assert "api_domain           = module.public_api.api_domain" in text
+
+
+def test_the_cdn_origin_never_depends_on_the_lambda():
+    """The site's CSP names the API's CDN, and dev's Lambdas are told the site's URL: if the CDN
+    depended on the API's deployment (and so its Lambda), that would be a dependency cycle."""
+    outputs = _read("modules", "rest-api", "outputs.tf")
+    api_domain = re.search(r'output "api_domain" \{(.*?)\n\}', outputs, re.S).group(1)
+
+    assert "aws_api_gateway_rest_api.this.id" in api_domain
+    assert "deployment" not in api_domain and "stage" not in api_domain.split("description")[0]
+
+
+@needs_node
+def test_the_viewer_ip_header_is_always_cloudfronts_own_record_of_the_visitor():
+    source = (INFRA / "modules" / "api-cdn" / "viewer_ip.js").read_text(encoding="utf-8")
+    event = {"viewer": {"ip": "198.51.100.7"}, "request": {"headers": {"x-viewer-ip": {"value": "1.2.3.4"}}}}
+    script = f"{source}\nprocess.stdout.write(JSON.stringify(handler(JSON.parse(process.argv[1]))))"
+    result = subprocess.run(
+        [NODE, "-e", script, json.dumps(event)], capture_output=True, text=True, check=True, timeout=30
+    )
+
+    assert json.loads(result.stdout)["headers"]["x-viewer-ip"] == {"value": "198.51.100.7"}
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_waf_trusts_the_viewer_ip_only_on_requests_carrying_the_cdn_secret(env):
+    acl = _resource_block(_read("environments", env, "main.tf"), "aws_wafv2_web_acl", "public_api")
+    rules = dict(re.findall(r'rule \{\n    name     = "([^"]+)"(.*?)\n  \}\n', acl, re.S))
+
+    for name in ("rate-limit-via-cdn", "feedback-rate-limit-via-cdn"):
+        body = rules[name]
+        assert re.search(r'aggregate_key_type\s*=\s*"FORWARDED_IP"', body)
+        assert 'header_name       = "x-viewer-ip"' in body
+        assert 'fallback_behavior = "NO_MATCH"' in body
+        assert "search_string         = random_password.api_origin_verify.result" in body
+        assert "not_statement" not in body
+    for name in ("rate-limit", "feedback-rate-limit"):
+        body = rules[name]
+        assert re.search(r'aggregate_key_type\s*=\s*"IP"', body)
+        assert "not_statement" in body and "random_password.api_origin_verify.result" in body
+    assert '"/feedback"' in rules["feedback-rate-limit-via-cdn"]
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_cdn_secret_never_reaches_a_waf_log(env):
+    assert "x-origin-verify" in _redacted_headers(_read("environments", env, "main.tf"))
+
+
+def test_the_privacy_policy_describes_the_api_request_log():
+    policy = (ROOT / "frontend" / "privacy.html").read_text(encoding="utf-8")
+
+    assert "The public API also keeps a request log" in policy
+    assert "holds no IP address" in policy
+
+
 # --- a production release runs the same checks as a PR -----------------------------------------
 
 
