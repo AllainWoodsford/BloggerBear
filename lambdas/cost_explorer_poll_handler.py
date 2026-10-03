@@ -1,6 +1,7 @@
 """Cost Explorer poll Lambda handler: API Gateway spend (Observability enhancement, PR 3), the
-actual AgentCore Web Search charge, and AWS WAF's spend by 30 days, week and month -- all from one
-Cost Explorer call.
+actual AgentCore Web Search charge, AWS WAF's spend by 30 days, week and month, and the whole AWS
+bill by service (this week so far; each completed week in full; and the all-time total) -- all
+from one Cost Explorer call.
 
 Manually invocable (`event` is ignored) but designed to run on a static EventBridge Scheduler
 daily schedule wired up directly to this function -- same "one global job, not per-topic" pattern
@@ -21,7 +22,12 @@ from datetime import UTC, datetime
 
 from common.cost_explorer import AGENTCORE_SERVICE, API_GATEWAY_SERVICE, WAF_SERVICE, fetch_costs
 from common.lambda_timing import track_lambda_duration
-from common.stats_tracking import record_agentcore_cost, record_api_gateway_cost, record_waf_cost
+from common.stats_tracking import (
+    record_agentcore_cost,
+    record_api_gateway_cost,
+    record_aws_bill,
+    record_waf_cost,
+)
 
 
 @track_lambda_duration("cost_explorer_poll")
@@ -47,11 +53,16 @@ def _poll() -> dict:
         previous_month=reading.previous_month_label,
         as_of=as_of,
     )
+    bill = record_aws_bill(
+        week_to_date=reading.week_to_date, complete_weeks=reading.complete_weeks, as_of=as_of
+    )
     return {
         "status": "recorded",
         "api_gateway_cost_usd_30d": str(reading.usd_30d[API_GATEWAY_SERVICE]),
         "agentcore_cost_usd_30d": str(reading.usd_30d[AGENTCORE_SERVICE]),
         "waf_cost_usd_30d": str(reading.usd_30d[WAF_SERVICE]),
         "waf_cost_usd_month_to_date": str(reading.month_to_date[WAF_SERVICE]),
+        "aws_bill_usd_30d": str(sum(reading.usd_30d.values())),
+        "aws_bill_weeks_filled": bill["weeks_filled"],
         "as_of": as_of,
     }
