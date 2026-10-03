@@ -6,11 +6,20 @@ on:
     paths:
       - 'infra/**'
       - '.github/workflows/terraform.yml'
+  # Everything apply-dev deploys, not just infra/: the Lambdas are packaged from lambdas/ and
+  # the site from frontend/ (minified by scripts/minify_frontend.py) by this same apply. With
+  # only infra/** here, a merge that changed just code or the site never reached dev.
   push:
     branches: [dev]
     paths:
       - 'infra/**'
+      - 'lambdas/**'
+      - 'frontend/**'
+      - 'scripts/minify_frontend.py'
+      - 'scripts/requirements.txt'
       - '.github/workflows/terraform.yml'
+      - '.github/workflows/security.yml'
+      - '.github/workflows/python-ci.yml'
   # Manual-only: lets apply-dev run with debug_permissions=true without
   # waiting for an actual push to dev. Run this from the Actions tab
   # against the `dev` branch (branch selector must be `dev`, not just the
@@ -104,6 +113,18 @@ jobs:
             echo "No Terraform environment directories with .tf files found"
           fi
 
+  # The same checks a PR gets (Trivy IaC + vuln/secret scans, Bandit; ruff + pytest), run on
+  # exactly what is about to be applied, as one workflow run with apply-dev -- the same shape as
+  # terraform-production-release.yml. security.yml and python-ci.yml no longer run on their own
+  # for a push to dev; they still run on pull requests.
+  security:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/security.yml
+
+  lint-test:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/python-ci.yml
+
   # Deliberately NOT scoped to a GitHub `environment:` -- doing so changes
   # the OIDC sub claim to `environment:<name>` instead of `ref:<ref>`, which
   # would stop matching gha-bloggerbear-dev-deploy's trust condition
@@ -117,6 +138,8 @@ jobs:
     # since workflow_dispatch has no equivalent of push's "which branch
     # was pushed to" ambiguity to guard against.
     if: (github.event_name == 'push' && github.ref == 'refs/heads/dev') || github.event_name == 'workflow_dispatch'
+    # A failed scan, lint or test stops the deploy before anything changes.
+    needs: [security, lint-test]
     runs-on: ubuntu-latest
     permissions:
       id-token: write

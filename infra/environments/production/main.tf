@@ -809,6 +809,10 @@ module "admin_api" {
     # marks it rejected, removes its musings, invalidates the CDN cache). See
     # admin_api_handler.py's _unpublish_article and `articles unpublish`.
     "POST /articles/{article_id}/unpublish",
+    # A rewrite steered by what a person says is wrong: takes a published article
+    # down first, and the result waits in the inbox. See admin_api_handler.py's
+    # _rewrite_article and `articles rewrite`.
+    "POST /articles/{article_id}/rewrite",
     # Lineage/cost repair: `audit` lists articles with missing lineage or cost and
     # models with no known price; `backfill` recomputes cost from stored tokens
     # (a dry run unless {"apply": true}). See admin_api_handler.py's _lineage_*

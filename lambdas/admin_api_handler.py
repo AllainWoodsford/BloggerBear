@@ -58,6 +58,7 @@ from common.dynamo import (
     put_feedback_config,
     put_model,
     put_model_config,
+    put_moderation_item,
     put_pipeline_config,
     put_prompt_refinement,
     put_stats_history_row,
@@ -83,6 +84,7 @@ from common.fresh_review import (
     review_mode_error,
 )
 from common.lineage_tools import audit_lineage, plan_backfill
+from common.model_routing import resolve_model
 from common.musings import (
     generate_and_store_article_musing,
     generate_and_store_loot_musing,
@@ -90,7 +92,12 @@ from common.musings import (
 )
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
-from common.rewrite import release_stale_rewrites, rewrite_issues
+from common.rewrite import (
+    MAX_INSTRUCTIONS_CHARS,
+    SENT_BACK_REASON,
+    release_stale_rewrites,
+    rewrite_issues,
+)
 from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
@@ -669,17 +676,16 @@ def _unpublish_article(event: dict) -> dict:
     if moderation_item is not None and moderation_item.get("status") != "rejected":
         update_moderation_status(moderation_item["queue_id"], "rejected")
 
-    musings_removed = delete_musings_for_article(article_id)
-    cache_invalidated = invalidate_article_page(article_id)
+    return _response(200, {"unpublished": article_id, **_clear_article_traces(article_id)})
 
-    return _response(
-        200,
-        {
-            "unpublished": article_id,
-            "musings_removed": musings_removed,
-            "cache_invalidated": cache_invalidated,
-        },
-    )
+
+def _clear_article_traces(article_id: str) -> dict:
+    """What is left of an article once its page is gone: the musings written about it, and its
+    page in the CDN's cache. Shared by unpublish and a rewrite of a published article."""
+    return {
+        "musings_removed": delete_musings_for_article(article_id),
+        "cache_invalidated": invalidate_article_page(article_id),
+    }
 
 
 # --- Lineage audit / backfill ---------------------------------------------
@@ -820,26 +826,64 @@ def _rewrite_moderation_item(event: dict) -> dict:
     model_id = body.get("model_id")
     if not isinstance(model_id, str) or not model_id.strip():
         return _error(400, "'model_id' is required: one of the models from GET /models")
-    model = get_model(model_id)
-    if model is None or model.get("enabled") is False:
-        return _error(400, f"model '{model_id}' is not a registered, enabled model (see GET /models)")
+    model_error = _rewrite_model_error(model_id)
+    if model_error:
+        return _error(400, model_error)
+    instructions, instructions_error = _rewrite_instructions(body, required=False)
+    if instructions_error:
+        return _error(400, instructions_error)
 
     item = get_moderation_item(queue_id)
     if item is None:
         return _error(404, f"moderation queue item '{queue_id}' not found")
     if item.get("status") != "pending":
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
-    if not rewrite_issues(item):
+    if not rewrite_issues(item) and not instructions:
         return _error(
             400,
-            "nothing to fix: this article is only waiting because its topic is financial, "
-            "so approve or reject it instead",
+            "nothing to fix: the reviews flagged nothing on this article, so approve or reject "
+            "it, or say what is wrong with 'instructions' (admin_cli articles rewrite)",
         )
 
+    return _start_rewrite(item, model_id, instructions)
+
+
+def _rewrite_model_error(model_id: str) -> str | None:
+    model = get_model(model_id)
+    if model is None or model.get("enabled") is False:
+        return f"model '{model_id}' is not a registered, enabled model (see GET /models)"
+    return None
+
+
+def _rewrite_instructions(body: dict, *, required: bool) -> tuple[str, str | None]:
+    """The request's 'instructions' (what a person says is wrong), stripped, and an error if
+    they are missing when `required`, not a string, or too long."""
+    instructions = body.get("instructions")
+    if instructions is None:
+        instructions = ""
+    if not isinstance(instructions, str):
+        return "", "'instructions' must be a string"
+    instructions = instructions.strip()
+    if required and not instructions:
+        return "", "'instructions' is required: say what is wrong with the article"
+    if len(instructions) > MAX_INSTRUCTIONS_CHARS:
+        return "", f"'instructions' must be at most {MAX_INSTRUCTIONS_CHARS} characters"
+    return instructions, None
+
+
+def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | None = None) -> dict:
+    """Claim a pending queue item for a Re-Write and start it in the background (the daily-cycle
+    Lambda, asynchronously). 202, or 409 if someone else claimed it first, or 502 (and the item
+    back to pending) if the Lambda could not be invoked."""
+    queue_id = item["queue_id"]
     rewrite_id = str(uuid.uuid4())
     requested_at = datetime.now(UTC).isoformat()
     if not claim_moderation_for_rewrite(
-        queue_id, rewrite_id=rewrite_id, model_id=model_id, requested_at=requested_at
+        queue_id,
+        rewrite_id=rewrite_id,
+        model_id=model_id,
+        requested_at=requested_at,
+        instructions=instructions or None,
     ):
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
 
@@ -858,8 +902,70 @@ def _rewrite_moderation_item(event: dict) -> dict:
 
     return _response(
         202,
-        {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id},
+        {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
     )
+
+
+def _rewrite_article(event: dict) -> dict:
+    """Rewrite any article, steered by what a person says is wrong with it (`admin_cli articles
+    rewrite <id> --instructions "..."`). The rewrite goes through the reviews again and waits in
+    the inbox for approval, like any other draft (common/rewrite.py).
+
+    - published: taken down first (page deleted, musings removed, CDN cache cleared, the same as
+      `articles unpublish`), set back to `pending_moderation`, and given a new queue item.
+    - pending_moderation: its waiting queue item is rewritten (409 while one is already running).
+    - rejected: put back to `pending_moderation` with a new queue item.
+
+    `model_id` is optional: by default, the model the topic would write with today.
+    """
+    article_id = _path_param(event, "article_id")
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    instructions, instructions_error = _rewrite_instructions(body, required=True)
+    if instructions_error:
+        return _error(400, instructions_error)
+
+    article = get_article(article_id)
+    if article is None:
+        return _error(404, f"article '{article_id}' not found")
+    status = article.get("status")
+    if status not in ("published", "pending_moderation", "rejected"):
+        return _error(409, f"article '{article_id}' is '{status}' and cannot be rewritten")
+
+    model_id = body.get("model_id")
+    if model_id is not None:
+        if not isinstance(model_id, str) or not model_id.strip():
+            return _error(400, "'model_id' must be one of the models from GET /models, if given")
+        model_error = _rewrite_model_error(model_id)
+        if model_error:
+            return _error(400, model_error)
+    else:
+        model_id, _ = resolve_model(get_topic(article["topic_id"]))
+
+    item = get_moderation_item_by_article_id(article_id)
+    if status == "pending_moderation" and item is not None and item.get("status") == "rewriting":
+        return _error(409, f"article '{article_id}' is already being rewritten")
+
+    # Off the site first (page, then status), so a failure part-way leaves it down, not half-up.
+    extra = {}
+    if status == "published":
+        remove_article_page(article_id)
+        update_article_status(article_id, "pending_moderation")
+        extra = {"unpublished": True, **_clear_article_traces(article_id)}
+    elif status == "rejected":
+        update_article_status(article_id, "pending_moderation")
+
+    if status != "pending_moderation" or item is None or item.get("status") != "pending":
+        item = put_moderation_item(
+            queue_id=str(uuid.uuid4()),
+            article_id=article_id,
+            topic_id=article["topic_id"],
+            reasons=[SENT_BACK_REASON],
+            created_at=datetime.now(UTC).isoformat(),
+        )
+    return _start_rewrite(item, model_id, instructions, extra)
 
 
 _STATS_RECENT_LIMIT = 20
@@ -1699,6 +1805,7 @@ _ROUTES = {
     "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
+    "POST /articles/{article_id}/rewrite": _rewrite_article,
     "GET /review/report": _review_report,
     "GET /lineage/audit": _lineage_audit,
     "POST /lineage/backfill": _lineage_backfill,

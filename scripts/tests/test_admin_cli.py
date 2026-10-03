@@ -1023,3 +1023,17 @@ def test_articles_feedback_lock_and_unlock():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["articles", "feedback-unlock", "art-1", "--reset-count"])
     assert m.call_args.kwargs["body"] == {"locked": False, "reset_count": True}
+
+
+def test_articles_rewrite_posts_the_instructions_and_the_model_when_given():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+        _run(["articles", "rewrite", "article-1", "-i", "The intro is wrong."])
+        _run(["articles", "rewrite", "article-1", "--instructions", "x", "--model", "haiku"])
+    assert m.call_args_list[0].args[2] == "/articles/article-1/rewrite"
+    assert m.call_args_list[0].kwargs["body"] == {"instructions": "The intro is wrong."}
+    assert m.call_args_list[1].kwargs["body"] == {"instructions": "x", "model_id": "haiku"}
+
+
+def test_articles_rewrite_needs_instructions():
+    with pytest.raises(SystemExit):
+        _run(["articles", "rewrite", "article-1"])
