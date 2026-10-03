@@ -268,6 +268,19 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["arn:aws:lambda:ap-southeast-2:*:event-source-mapping:*"]
   }
 
+  # Reading a mapping that no longer exists is authorized against resource "*", not its ARN, so
+  # the statement above does not cover it: once dev's dlq_handler mapping was deleted (by a deploy
+  # run, 2026-09-29), every refresh failed with AccessDeniedException on GetEventSourceMapping
+  # instead of the "not found" that lets Terraform drop it from state and create it again.
+  # Read-only, so "*" grants nothing beyond seeing mappings in this account; ListEventSourceMappings
+  # only ever takes "*".
+  statement {
+    sid       = "LambdaEventSourceMappingReads"
+    effect    = "Allow"
+    actions   = ["lambda:GetEventSourceMapping", "lambda:ListEventSourceMappings"]
+    resources = ["*"]
+  }
+
   # Phase 1: the CloudWatch log groups Lambda creates on first invocation
   # (and that Terraform may come to manage directly for retention). Scoped
   # to the /aws/lambda/bloggerbear-* log group prefix. Now exercised (Cleanup

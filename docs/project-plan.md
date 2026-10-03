@@ -1005,7 +1005,7 @@ privacy-page change.
 |---|---|---|
 | **Signed token** | `GET .../feedback-status` hands out an HMAC-signed token for that article; `POST .../feedback` must send it back. A blind POST, a forged or edited token, a token for another article, an expired one, or a reused one is refused (`403`). Single use: the random value inside is recorded once when used, and expires with the token | nothing |
 | **Not before** | The token is issued instantly but is valid only from a random moment 0.5 to 2 seconds later (`token_delay_min_ms`/`token_delay_max_ms`), enforced by the server. Nothing sleeps: a script that fetches and posts at once is refused, a person (who took far longer than 2 seconds) never notices. A fast client is told how long to wait and quietly retries | nothing |
-| **Proof of work, when busy** | When the site is at or past `pow_threshold_percent` (70) of its daily or rate limit, tokens need a number so that SHA-256(token + ":" + number) starts with `pow_difficulty_bits` (16) zero bits: about a second or two of browser CPU. Triggered by the site's own counters, never by watching a visitor | nothing to read or click; nothing for a screen reader or a switch user to do |
+| **Proof of work, when busy** | When the site is at or past `pow_threshold_percent` (70) of its daily limit, rate limit or daily model-check budget (`screening_limit`, which rejected comments use up), tokens need a number so that SHA-256(token + ":" + number) starts with `pow_difficulty_bits` (16) zero bits: about a second or two of browser CPU. Triggered by the site's own counters, never by watching a visitor | nothing to read or click; nothing for a screen reader or a switch user to do |
 | **Honeypot** | A decoy field that looks like any other optional field (`referral_code`, labelled "Referral code (optional)"): no class, no telling name, and a label that says nothing about its purpose. Its wrapper carries the standard `hidden` attribute (which `normalize.css` already hides, so no rule of ours points at it, and it stays hidden if our stylesheet fails to load) and `aria-hidden="true"` (which removes the whole subtree from a screen reader's view); the input has `tabindex="-1"` and `autocomplete="off"`. A script that fills every input fills it: it is told it worked, and nothing is stored, counted, or spent | nothing |
 | **WAF rate rule** | At most 20 submissions per 5 minutes per IP on the feedback route only, on top of the general 500. WAF counts the address and forgets it | nothing unless one address sends 20 in 5 minutes |
 
@@ -1616,3 +1616,97 @@ needs. Plain `<link rel="stylesheet">` is back. Both files are about 5KB over th
 (`style-src 'self'`) would need a hash regenerated on every CSS change, and already-published article
 pages are static HTML that would need regenerating. `preload-styles.js` stays deployed as a legacy shim
 (it now switches the links on immediately) for article pages published while #125 was live.
+
+### Observability, security and content fixes (October 2026 batch)
+
+**Status: in progress** (four PRs, in this order; designs agreed 2026-10-03). PR 1 (#145) and PR 2 (#146)
+merged; PR 3 (#147) and PR 4 in review.
+
+Found while planning this batch, and the reason PR 1 goes first: the production `stats-rollover` and
+`cost-explorer-poll` schedules have never invoked their Lambdas. Both schedules exist, but
+`data.aws_iam_policy_document.scheduler_invoke` (dev and production) has no statement for either function,
+so EventBridge Scheduler fails every attempt and retries (about 76 failed attempts a day since 2026-09-29;
+zero invocations of `cost-explorer-poll` in the last 7 days). That is why the Stats page shows `null` for
+the actual API Gateway and AgentCore spend, and why the Historic totals are all zero.
+
+#### PR 1 -- Schedules, dashboards, deploy fixes and release checks
+
+- **Scheduler fix:** add `InvokeStatsRollover` and `InvokeCostExplorerPoll` to `scheduler_invoke` in both
+  environments, with a test that every `aws_scheduler_schedule` target has a matching invoke statement, so
+  a new scheduled Lambda can't miss it again.
+- **Pipeline dashboard (`bloggerbear-<env>-pipeline`):** the metrics have data (24 research-tick runs in a
+  day), but the dashboard sets no time range or period, so it opens on CloudWatch's 3-hour default and
+  shows a few dots; and each widget draws Duration (thousands of ms) on the same axis as the counts,
+  flattening them. Set a 7-day default with hourly periods, move Duration to the right axis, and add text
+  headers.
+- **New Lambda runs dashboard:** invocation counts per Lambda (research ticks, daily cycle, digest, musings,
+  weekly reflection, rollover, cost poll, the two APIs), plus feedback -- accepted, comments kept,
+  rejected, dropped by the screening model, model checks used up -- over whatever span the dashboard's
+  time picker sets. The public API now logs a tag-only `accepted a feedback submission (comment kept|vote
+  only)` line next to its rejection line, and three more metric filters count them. The pipeline
+  dashboard also gets a "recent errors" log table across every Lambda.
+- **A Lambda's log group before the Lambda:** dev's rebuild after a destroy (2026-10-02) failed with
+  `ResourceAlreadyExistsException` on `/aws/lambda/bloggerbear-dev-public-api`. The public API was created
+  and deployed, its first request arrived at 14:58:57, and Lambda made the log group itself (no retention)
+  nine seconds before Terraform tried to. Every `aws_lambda_function` now `depends_on` the log groups, whose
+  `for_each` uses a literal name list (a function that depends on them can't also name them) checked
+  against the functions by a test. That also orders destroy, so nothing recreates a group after Terraform
+  deletes it. The orphaned dev group needs a one-off `terraform import`.
+- **Destroy of dev (`destroy-dev.yml`):** the 2026-09-29 run deleted the DLQ event source mapping, then
+  failed waiting for the delete because `GetEventSourceMapping` on a mapping that no longer exists is
+  authorized against `"*"`. That left the stale mapping in state, which broke every later dev apply too.
+  Fixed by #144's read-only `LambdaEventSourceMappingReads` bootstrap statement (applied 2026-10-02); the
+  next dev apply recreated the mapping.
+- **Release checks (moved here from PR 3):** the production release workflow runs no checks today; Trivy,
+  Bandit, ruff and pytest run only on PRs and pushes to `dev`. `security.yml` and `python-ci.yml` become
+  reusable (`workflow_call`, checking out the release tag), and `terraform-production-release.yml`'s apply
+  job `needs` both, so a failing scan or test blocks the deploy before anything changes.
+
+#### PR 2 -- WAF spend on the Stats page
+
+WAF is the largest line on the bill: US$10.90 of about US$17 over the 30 days to 2026-10-03 (Haiku was
+US$4.24). It joins the existing daily Cost Explorer poll as a third service (`"AWS WAF"`, confirmed from
+billing data) in the same single `GetCostAndUsage` call, so it costs nothing extra to fetch.
+
+- **Stored:** SET snapshots on the week's StatsCurrent row, like API Gateway's: the rolling 30 days, this
+  week so far (from the row's own Monday, so each week's history row keeps that week's WAF spend up to the
+  last poll before its rollover -- normally Monday to Saturday, given the ~24h lag), this calendar month so
+  far, and last month in full, with `waf_cost_month` / `waf_cost_previous_month` labels. One call still
+  serves everything: `fetch_costs` asks for daily buckets from whichever is earliest (30 days ago, the 1st
+  of last month, this Monday) to yesterday and counts each day into every window it falls in.
+- **One site-wide figure:** dev and production can't be told apart without cost-allocation tags, and the
+  CloudFront ACL is shared by both anyway, so it is reported as the site's cost.
+- **Stats page:** "Firewall (WAF) spend" tiles beside the other actual (from the bill) figures, labelled
+  with the ~24h lag: last 30 days, this week (Weekly Stats only), this month so far, and last month.
+- Depends on PR 1: the poll has to run before there is anything to show.
+
+#### PR 3 -- The CoinGecko key in SSM
+
+- **CoinGecko key in SSM Parameter Store** (SecureString, chosen over Secrets Manager: same job, no
+  monthly charge) at `/bloggerbear/<env>/coingecko-api-key`. Terraform does **not** create the
+  parameter -- a managed SecureString's value is read back into state on every refresh -- it only
+  grants `ssm:GetParameter` on that one name (the default `aws/ssm` key needs no KMS grant) and tells
+  the two crypto Lambdas (research tick, daily cycle) where it is, via `COINGECKO_API_KEY_PARAMETER`.
+  The operator creates it once with `aws ssm put-parameter` (README.md step 3). `crypto_feed` reads it
+  once per cold start, keeps a definite answer (the key, or "no such parameter") for the container's
+  life and retries a failed read next run; a plain `COINGECKO_API_KEY` still wins, for local runs. No
+  parameter means keyless, exactly as with no key before. `var.coingecko_api_key`,
+  `TF_VAR_coingecko_api_key` and the `COINGECKO_API_KEY_DEV`/`_PROD` secrets are retired (delete the
+  secrets once the parameters exist). The Lambdas share one exec role, so any of them *could* read the
+  parameter; only the two crypto ones are told its name.
+
+#### PR 4 -- Content
+
+- **Digest layout:** the Trending Everywhere body is whatever shape the model picks that day -- usually one
+  long paragraph per topic behind an inline bold label, no headings, and the title repeated as a body
+  heading. The layout moves into code (`_compose_digest`): the model now replies in a fixed line format
+  (`OVERVIEW: ...`, then `1: ...`, `2: ...`, one per numbered topic) and the code builds the body: the
+  overview paragraph, then a `## <Topic name>` section per topic, in order, holding the model's line for
+  it. A topic the model skipped gets the start of its own finding summary (plain prose, cut at a sentence
+  end within 400 characters), so an unformatted reply still yields every section. Bold, heading and
+  bullet marks are stripped, any preamble is ignored, and the title never appears in the body.
+- **A musing when an article is rejected:** a new `shocked` mood with its own bear
+  (`frontend/bears/shocked.svg`, in the existing bears' style), written when moderation rejects an article.
+  It names the topic only: no title and no link, because a rejected article isn't public and may contain
+  exactly what got it rejected. Checked like the loot musing: the text must name the topic and pass the
+  comment rules, or a plain fixed line is posted instead.

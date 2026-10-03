@@ -190,16 +190,16 @@ def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
 
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
-    """One for_each block, reusing the same function_name list module.observability's
-    lambda_function_names already uses, not one resource (or one list) per function -- see
-    that resource's own comment on why."""
+    """One for_each block, not one resource per function. Its names are literals (a function that
+    depends on its log group can't also name it), checked against every function in
+    test_every_lambda_has_a_log_group_made_before_it."""
     text = _read("environments", env, "main.tf")
 
     assert text.count("retention_in_days = 90") == 1
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
-    assert "for_each          = toset(local.pipeline_lambda_function_names)" in text
+    assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 10  # named once each, in the one list both resources share
+    assert len(function_names) == 10  # module.observability's list: each function named once
     assert len(set(function_names)) == 10
 
 
@@ -425,3 +425,263 @@ def test_the_deploy_role_can_create_the_gateway_and_pass_it_its_role():
         re.S,
     )
     assert region == default.group(1)
+
+
+# --- WAF logs for visitor traffic: blocks only, fingerprint headers redacted, 14 days ------------
+# The Privacy Policy's section 5 (frontend/privacy.html) promises exactly this, so a change here that
+# quietly logged allowed requests again, or kept them longer, would make the policy untrue.
+
+_VISITOR_WAF_LOGGING = [
+    ("dev", "public_api", "waf_public_api"),
+    ("production", "public_api", "waf_public_api"),
+    ("production", "shared", "waf_shared"),
+]
+
+
+def _resource_block(text: str, kind: str, name: str) -> str:
+    return re.search(rf'^resource "{kind}" "{name}" \{{\n(.*?)^\}}', text, re.S | re.M).group(1)
+
+
+def _redacted_headers(text: str) -> list[str]:
+    body = re.search(r"waf_log_redacted_headers = \[(.*?)\]", text, re.S).group(1)
+    return re.findall(r'"([^"]+)"', body)
+
+
+@pytest.mark.parametrize(("env", "logging_config", "log_group"), _VISITOR_WAF_LOGGING)
+def test_visitor_waf_logs_keep_only_blocked_or_counted_requests(env, logging_config, log_group):
+    text = _read("environments", env, "main.tf")
+    block = _resource_block(text, "aws_wafv2_web_acl_logging_configuration", logging_config)
+
+    assert re.search(r'default_behavior\s*=\s*"DROP"', block)
+    assert re.search(r'behavior\s*=\s*"KEEP"', block)
+    kept = set(re.findall(r'action\s*=\s*"([A-Z_]+)"', block))
+    assert kept == {"BLOCK", "COUNT"}
+
+
+@pytest.mark.parametrize(("env", "logging_config", "log_group"), _VISITOR_WAF_LOGGING)
+def test_visitor_waf_logs_redact_fingerprinting_headers(env, logging_config, log_group):
+    text = _read("environments", env, "main.tf")
+    block = _resource_block(text, "aws_wafv2_web_acl_logging_configuration", logging_config)
+
+    assert re.search(r"for_each\s*=\s*local\.waf_log_redacted_headers", block)
+    assert "single_header" in block
+    headers = _redacted_headers(text)
+    for header in ("user-agent", "referer", "accept-language", "sec-ch-ua", "sec-ch-ua-platform"):
+        assert header in headers
+    assert all(header == header.lower() for header in headers)
+    assert len(headers) <= 100  # WAF's limit on redacted fields
+
+
+@pytest.mark.parametrize(("env", "logging_config", "log_group"), _VISITOR_WAF_LOGGING)
+def test_visitor_waf_logs_are_kept_for_14_days(env, logging_config, log_group):
+    text = _read("environments", env, "main.tf")
+    block = _resource_block(text, "aws_cloudwatch_log_group", log_group)
+
+    assert re.search(r"retention_in_days\s*=\s*local\.waf_visitor_log_retention_days", block)
+    assert re.search(r"waf_visitor_log_retention_days\s*=\s*14\b", text)
+
+
+def test_both_environments_redact_the_same_headers():
+    assert _redacted_headers(_read("environments", "dev", "main.tf")) == _redacted_headers(
+        _read("environments", "production", "main.tf")
+    )
+
+
+def test_the_privacy_policy_states_the_waf_log_retention():
+    policy = (ROOT / "frontend" / "privacy.html").read_text(encoding="utf-8")
+    days = re.search(
+        r"waf_visitor_log_retention_days\s*=\s*(\d+)", _read("environments", "production", "main.tf")
+    ).group(1)
+
+    assert f"for {days} days, then deleted automatically" in policy
+    assert "Only requests the firewall blocks or flags are logged" in policy
+
+
+# --- feedback spam: the per-IP WAF cap, and the alarms on rejected feedback ---------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_waf_feedback_cap_is_ten_per_ip_per_five_minutes(env):
+    text = _read("environments", env, "main.tf")
+    rule = re.search(r'name\s*=\s*"feedback-rate-limit"(.*?)visibility_config', text, re.S).group(1)
+
+    assert re.search(r"limit\s*=\s*10\b", rule)  # WAF's lowest allowed rate limit
+    assert re.search(r"evaluation_window_sec\s*=\s*300\b", rule)
+    assert re.search(r'aggregate_key_type\s*=\s*"IP"', rule)
+
+
+def test_the_feedback_alarms_read_the_public_api_handlers_own_log_line():
+    module = _read("modules", "observability", "main.tf")
+    handler = (ROOT / "lambdas" / "public_api_handler.py").read_text(encoding="utf-8")
+    logged = "print(f\"public_api_handler: rejected a feedback submission ({screened['dropped_because']})\")"
+
+    assert logged in handler
+    assert r'pattern        = "\"rejected a feedback submission\""' in module
+    assert r'pattern        = "\"rejected a feedback submission (screening_budget)\""' in module
+    assert 'MODEL_BUDGET = "screening_budget"' in (
+        ROOT / "lambdas" / "common" / "comment_screening.py"
+    ).read_text(encoding="utf-8")
+    for alarm in ("feedback_rejections_spike", "feedback_screening_budget_used_up"):
+        block = re.search(
+            rf'resource "aws_cloudwatch_metric_alarm" "{alarm}" \{{(.*?)\n\}}', module, re.S
+        ).group(1)
+        assert "alarm_actions = [aws_sns_topic.alerts.arn]" in block
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_feedback_alarms_watch_the_public_api_log_group(env):
+    block = re.search(
+        r'module "observability" \{(.*?)\n\}', _read("environments", env, "main.tf"), re.S
+    ).group(1)
+
+    assert re.search(
+        r"feedback_log_group_name\s*=\s*aws_cloudwatch_log_group\.lambda\[aws_lambda_function\.public_api\.function_name\]\.name",
+        block,
+    )
+
+
+# --- the deploy role can still read an event source mapping that has gone ----------------------
+
+
+def test_the_deploy_role_can_read_event_source_mappings_that_no_longer_exist():
+    """A deleted mapping is authorized against "*", not its ARN: without this, refresh fails with
+    AccessDeniedException instead of "not found", and Terraform can never recreate it."""
+    bootstrap = _read("bootstrap", "main.tf")
+    statement = re.search(r'sid\s*=\s*"LambdaEventSourceMappingReads"(.*?)\n  \}', bootstrap, re.S).group(1)
+
+    assert set(re.findall(r'"(lambda:[A-Za-z]+)"', statement)) == {
+        "lambda:GetEventSourceMapping",
+        "lambda:ListEventSourceMappings",
+    }
+    assert re.search(r'resources\s*=\s*\["\*"\]', statement)
+
+
+# --- every schedule may invoke what it targets --------------------------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_schedule_using_the_invoke_role_may_invoke_its_target(env):
+    """stats-rollover and cost-explorer-poll were scheduled with this role but never allowed to
+    invoke their Lambdas, so neither ever ran. Every target must be in the role's policy."""
+    text = _read("environments", env, "main.tf")
+    policy = re.search(r'data "aws_iam_policy_document" "scheduler_invoke" \{(.*?)\n\}', text, re.S).group(1)
+    allowed = set(re.findall(r"resources\s*=\s*\[([a-z_.]+)\.arn\]", policy))
+
+    targets = []
+    for match in re.finditer(r'^resource "aws_scheduler_schedule" "[a-z_]+" \{\n(.*?)^\}', text, re.S | re.M):
+        body = match.group(1)
+        if re.search(r"role_arn\s*=\s*aws_iam_role\.scheduler_invoke\.arn", body):
+            targets.append(re.search(r"\barn\s*=\s*([a-z_.]+)\.arn", body).group(1))
+
+    assert len(targets) >= 5  # research ticks are per topic, created at runtime, not here
+    assert set(targets) <= allowed, set(targets) - allowed
+
+
+# --- a Lambda's log group exists before the Lambda can be invoked ------------------------------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_lambda_has_a_log_group_made_before_it(env):
+    """A function invoked before its log group exists makes its own (no retention), and the next
+    apply fails with ResourceAlreadyExistsException -- dev hit this rebuilding after a destroy."""
+    text = _read("environments", env, "main.tf")
+    functions = re.findall(
+        r'^resource "aws_lambda_function" "[a-z_]+" \{\n  function_name = "([^"]+)"\n  depends_on\s*=\s*'
+        r"\[aws_cloudwatch_log_group\.lambda\]",
+        text,
+        re.M,
+    )
+    all_functions = re.findall(
+        r'^resource "aws_lambda_function" "[a-z_]+" \{\n  function_name = "([^"]+)"', text, re.M
+    )
+    listed = re.findall(
+        r'"([^"]+)"', re.search(r"lambda_log_group_function_names = \[(.*?)\]", text, re.S).group(1)
+    )
+
+    assert functions == all_functions and len(all_functions) >= 10
+    assert sorted(listed) == sorted(all_functions)
+    assert re.search(r"for_each\s*=\s*toset\(local\.lambda_log_group_function_names\)", text)
+
+
+# --- dashboards --------------------------------------------------------------------------------
+
+
+def test_the_dashboards_open_on_a_span_that_shows_something():
+    module = _read("modules", "observability", "main.tf")
+    pipeline = re.search(r'resource "aws_cloudwatch_dashboard" "pipeline" \{(.*?)\n\}\n', module, re.S).group(
+        1
+    )
+    runs = re.search(r'resource "aws_cloudwatch_dashboard" "lambda_runs" \{(.*?)\n\}\n', module, re.S).group(
+        1
+    )
+
+    assert 'start          = "-P7D"' in pipeline and "period = 3600" in pipeline
+    assert 'yAxis = "right"' in pipeline  # duration off the count axis
+    assert "setPeriodToTimeRange = true" in runs
+
+
+def test_the_runs_dashboard_counts_match_the_handlers_log_lines():
+    module = _read("modules", "observability", "main.tf")
+    handler = (ROOT / "lambdas" / "public_api_handler.py").read_text(encoding="utf-8")
+
+    assert 'kept = "comment kept" if final_comment else "vote only"' in handler
+    assert 'print(f"public_api_handler: accepted a feedback submission ({kept})")' in handler
+    assert r'pattern        = "\"accepted a feedback submission\""' in module
+    assert r'pattern        = "\"accepted a feedback submission (comment kept)\""' in module
+    assert r'pattern        = "\"rejected a feedback submission (model_dropped)\""' in module
+    assert 'MODEL_DROPPED = "model_dropped"' in (
+        ROOT / "lambdas" / "common" / "comment_screening.py"
+    ).read_text(encoding="utf-8")
+
+
+# --- a production release runs the same checks as a PR -----------------------------------------
+
+
+def test_a_production_release_waits_for_the_security_scans_and_tests():
+    workflows = ROOT / ".github" / "workflows"
+    release = (workflows / "terraform-production-release.yml").read_text(encoding="utf-8")
+
+    assert re.search(r"^  security:\n    uses: \./\.github/workflows/security\.yml", release, re.M)
+    assert re.search(r"^  lint-test:\n    uses: \./\.github/workflows/python-ci\.yml", release, re.M)
+    assert release.count("ref: ${{ github.event.release.tag_name }}") >= 3  # both checks and the apply
+    assert re.search(r"^  apply:\n    needs: \[security, lint-test\]", release, re.M)
+    for name in ("security.yml", "python-ci.yml"):
+        called = (workflows / name).read_text(encoding="utf-8")
+        assert "  workflow_call:" in called
+        assert "ref: ${{ inputs.ref }}" in called
+
+
+# --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_coingecko_key_is_read_from_ssm_not_passed_in(env):
+    text = _read("environments", env, "main.tf")
+    variables = _read("environments", env, "variables.tf")
+    parameter = f"/bloggerbear/{env}/coingecko-api-key"
+
+    # Terraform names the parameter and grants reading it -- nothing more.
+    assert f'coingecko_api_key_parameter = "{parameter}"' in text
+    assert "COINGECKO_API_KEY_PARAMETER = local.coingecko_api_key_parameter" in text
+    assert 'resource "aws_ssm_parameter"' not in text  # its value would be read back into state
+    assert 'variable "coingecko_api_key"' not in variables and "COINGECKO_API_KEY " not in text
+
+    policy = re.search(
+        r'data "aws_iam_policy_document" "lambda_coingecko_key" \{(.*?)\n\}', text, re.S
+    ).group(1)
+    assert re.findall(r'"(ssm:[A-Za-z]+)"', policy) == ["ssm:GetParameter"]
+    assert "parameter${local.coingecko_api_key_parameter}" in policy
+
+    # Only the two crypto Lambdas are told where the key is.
+    told = re.findall(
+        r'^resource "aws_lambda_function" "([a-z_]+)" \{(?:(?!^\}).)*local\.coingecko_env_variables',
+        text,
+        re.S | re.M,
+    )
+    assert sorted(told) == ["daily_cycle", "research_tick"]
+
+
+def test_no_workflow_passes_a_coingecko_key_any_more():
+    workflows = ROOT / ".github" / "workflows"
+    for path in workflows.glob("*.yml"):
+        assert "COINGECKO_API_KEY" not in path.read_text(encoding="utf-8"), path.name

@@ -40,6 +40,7 @@ _FEEDBACK_MUSING_MOOD_PLEASED = "pleased"
 _FEEDBACK_MUSING_MOOD_REFLECTIVE = "reflective"
 _FEEDBACK_MUSING_MOOD_CURIOUS = "curious"
 _LOOT_MUSING_MOOD = "excited"
+_REJECTED_MUSING_MOOD = "shocked"
 
 # Every mood BloggerBear can have. The Musings page shows a bear for each (frontend/bears/<mood>.svg
 # and frontend/moods.js); a test fails if a mood is added here without its picture.
@@ -50,6 +51,7 @@ MOODS = (
     _FEEDBACK_MUSING_MOOD_REFLECTIVE,
     _FEEDBACK_MUSING_MOOD_CURIOUS,
     _LOOT_MUSING_MOOD,
+    _REJECTED_MUSING_MOOD,
 )
 
 _VOICE_GUIDANCE = (
@@ -185,6 +187,56 @@ def generate_and_store_loot_musing(*, gear: dict, model_id: str) -> dict:
     except Exception as exc:  # noqa: BLE001 - the musing is already written; never lose it over this
         print(f"musings: could not record the loot drop stat: {exc!r}")
     return musing
+
+
+_REJECTED_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
+
+One of your drafts for the topic "{topic_name}" was just turned away at review: it won't be \
+published. You're shocked -- a wide-eyed, startled "whoa!" -- but you bounce back quickly and mean to \
+sniff out better next time.
+
+Name the topic "{topic_name}" exactly as written. Say nothing about what the draft said or what it \
+was about beyond the topic. Write your musing now.
+"""
+
+
+def _rejected_fallback_text(topic_name: str) -> str:
+    """The post when the model is unavailable or its answer will not do: plain, always accurate."""
+    return _truncate(
+        f"Whoa! One of my {topic_name} drafts didn't make it past review. "
+        "Back to the den to sniff out something better!"
+    )
+
+
+def _rejected_text_is_usable(text: str, topic_name: str) -> bool:
+    """A model-written post must name the topic, and pass the same screen a comment does."""
+    return bool(text) and topic_name.lower() in text.lower() and rule_drop_reason(text) is None
+
+
+def generate_and_store_rejection_musing(*, topic_id: str, topic_name: str, model_id: str) -> dict:
+    """BloggerBear reacts, shocked, to a draft that was turned away at moderation.
+
+    It names the topic only: no article id (so no link) and no title, because a rejected article
+    isn't public and may contain exactly what got it rejected -- the model is never even given the
+    title. If the model fails, or its answer does not name the topic or does not pass the comment
+    screen, a plain accurate post is used instead. Storing the musing is the only thing that can raise.
+    """
+    prompt = _REJECTED_MUSING_PROMPT_TEMPLATE.format(voice_guidance=_VOICE_GUIDANCE, topic_name=topic_name)
+    try:
+        text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    except Exception as exc:  # noqa: BLE001 - the post must not depend on the model
+        print(f"musings: could not write a rejection musing, using the plain one: {exc!r}")
+        text = ""
+    if not _rejected_text_is_usable(text, topic_name):
+        text = _rejected_fallback_text(topic_name)
+    return put_musing(
+        musing_id=str(uuid.uuid4()),
+        kind="rejection",
+        text=text,
+        mood=_REJECTED_MUSING_MOOD,
+        created_at=datetime.now(UTC).isoformat(),
+        topic_id=topic_id,
+    )
 
 
 def _truncate(text: str) -> str:

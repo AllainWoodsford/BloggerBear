@@ -51,6 +51,7 @@ error dict, since a scheduled job has no one watching synchronously.
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime, timedelta
 
 import boto3
@@ -75,17 +76,26 @@ from common.stats_tracking import record_article_lineage
 
 DIGEST_LOOKBACK_HOURS = 48
 
+# The layout is built in code (_compose_digest), not left to the model: left to it, every day's
+# digest came out a different shape -- usually one long paragraph per topic behind an inline bold
+# label, no headings, and the title repeated as a body heading. The model now only supplies the
+# words, one line each in a fixed format; the headings come from the topics' own names.
 _DIGEST_PROMPT_TEMPLATE = """You are writing a short cross-topic "trending everywhere" digest for a \
 research-and-publishing platform that independently tracks several unrelated domains.
 
-Below is the most recent research finding for each topic currently showing activity:
+Below is the most recent research finding for each topic currently showing activity, numbered:
 
 {topic_blocks}
 
-Write a concise digest (3-6 sentences) surveying what's currently trending across these domains. If \
-anything meaningfully connects across more than one topic (a shared theme, technology, or event), call \
-that out explicitly; otherwise just summarize the standout item from each topic in turn. Do not \
-speculate beyond what's given, and do not give financial or investment advice.
+Reply in exactly this format, one line each, and nothing else:
+OVERVIEW: <one or two sentences: what genuinely connects these topics (a shared theme, technology or \
+event), or, if nothing does, the single standout item>
+1: <one or two sentences on the standout from topic 1>
+2: <one or two sentences on the standout from topic 2>
+...and so on, one numbered line for every topic above, in the same order.
+
+Plain sentences only: no headings, no titles, no bold, no bullet points. Do not speculate beyond \
+what's given, and do not give financial or investment advice.
 """
 
 _DIGEST_FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
@@ -141,9 +151,10 @@ def _run_trending_digest() -> dict:
     # same precedence chain as any per-topic call minus the topic-override
     # step (docs/project-plan.md §11, PR 1 of 5).
     model_id, fallback_model_id = resolve_model(None)
-    draft_text, synthesis_call = _synthesize_digest(
+    model_text, synthesis_call = _synthesize_digest(
         contributions, model_id, fallback_model_id, financial=any_financial
     )
+    draft_text = _compose_digest(contributions, model_text)
     if any_financial:
         draft_text = compliance.append_financial_disclaimer(draft_text)
     title = f"Trending Everywhere -- {today}"
@@ -202,8 +213,8 @@ def _synthesize_digest(
     contributions: list[dict], model_id: str, fallback_model_id: str | None, *, financial: bool
 ) -> tuple[str, dict]:
     topic_blocks = "\n\n".join(
-        f"## {c['topic'].get('name', c['topic']['topic_id'])}\n{c['finding'].get('summary', '')}"
-        for c in contributions
+        f"[{number}] {_topic_name(c)}\n{c['finding'].get('summary', '')}"
+        for number, c in enumerate(contributions, start=1)
     )
     prompt = _DIGEST_PROMPT_TEMPLATE.format(topic_blocks=topic_blocks)
     if financial:
@@ -217,6 +228,63 @@ def _synthesize_digest(
         "used_fallback": result["used_fallback"],
     }
     return result["text"], lineage_call
+
+
+_LINE = re.compile(r"^\s*(OVERVIEW|\d{1,2})\s*[:.)\]-]\s*(.+?)\s*$", re.IGNORECASE)
+_MARKUP = re.compile(r"(\*\*|__|`)")
+_FALLBACK_MAX_CHARS = 400
+
+
+def _topic_name(contribution: dict) -> str:
+    topic = contribution["topic"]
+    name = " ".join(str(topic.get("name") or topic["topic_id"]).split())
+    return name.lstrip("#").strip() or topic["topic_id"]
+
+
+def _clean_sentence_text(text: str) -> str:
+    """A line from the model as plain prose: no emphasis markers, no leading heading or bullet marks."""
+    text = _MARKUP.sub("", text)
+    return re.sub(r"^[#>*\-\s]+", "", text).strip()
+
+
+def _fallback_from_summary(summary: str) -> str:
+    """A topic the model gave no line for still gets its section: the start of its own finding's
+    summary, as plain prose, cut at a sentence end where one comes early enough."""
+    lines = [line.strip() for line in str(summary or "").splitlines()]
+    text = " ".join(_clean_sentence_text(line) for line in lines if line and not line.startswith("#"))
+    text = " ".join(text.split())
+    if len(text) <= _FALLBACK_MAX_CHARS:
+        return text
+    cut = text[:_FALLBACK_MAX_CHARS]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    return cut[: end + 1] if end > _FALLBACK_MAX_CHARS // 3 else cut.rstrip() + "…"
+
+
+def _compose_digest(contributions: list[dict], model_text: str) -> str:
+    """The digest body, laid out by code so it is the same shape every day: the model's overview
+    paragraph (if it gave one), then a `## <Topic name>` section per contributing topic, in order,
+    with the model's line for that topic -- or, if it gave none, the start of that topic's own
+    finding summary. No title in the body (the page already shows it)."""
+    overview = ""
+    per_topic: dict[int, str] = {}
+    for line in (model_text or "").splitlines():
+        match = _LINE.match(_MARKUP.sub("", line))  # "**OVERVIEW:**" is still the overview
+        if not match:
+            continue
+        key, text = match.group(1).upper(), _clean_sentence_text(match.group(2))
+        if not text:
+            continue
+        if key == "OVERVIEW":
+            overview = overview or text
+        else:
+            per_topic.setdefault(int(key), text)
+
+    sections = [overview] if overview else []
+    for number, contribution in enumerate(contributions, start=1):
+        heading = f"## {_topic_name(contribution)}"
+        text = per_topic.get(number) or _fallback_from_summary(contribution["finding"].get("summary", ""))
+        sections.append(f"{heading}\n\n{text}" if text else heading)
+    return "\n\n".join(sections)
 
 
 def _publish_or_moderate_digest(

@@ -637,6 +637,7 @@ data "aws_caller_identity" "current" {}
 # ticks reuse that day history and are far cheaper.
 resource "aws_lambda_function" "research_tick" {
   function_name = "bloggerbear-production-research-tick"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "research_tick_handler.handler"
   runtime       = "python3.11"
@@ -655,20 +656,47 @@ resource "aws_lambda_function" "research_tick" {
 # calls (ideate, draft, title, fresh-data review, compliance review) over a larger
 # data payload, the review's fetch of current data (time-boxed at 45s), and a
 # fallback-model retry if the primary call fails.
-# The CoinGecko key goes only to the two Lambdas that run the crypto adapter: research_tick
-# (its hourly fetch) and daily_cycle (the fresh-data review re-reads current prices). It is kept
-# out of the shared local, which every Lambda receives. No key set -> no variables added -> the
-# adapter stays keyless. daily_cycle used to be left out, so its review ran keyless even with a
-# key configured.
+# The CoinGecko key lives in SSM Parameter Store as a SecureString, at a fixed name, and only the
+# two Lambdas that run the crypto adapter are told where: research_tick (its hourly fetch) and
+# daily_cycle (the fresh-data review re-reads current prices). They read it once per cold start
+# (common/adapters/crypto_feed.py). It is never in Terraform state, a Lambda's environment or a
+# GitHub secret: Terraform doesn't create the parameter -- a managed SecureString's value is read
+# back into state on every refresh -- it only grants read access to this one name. The operator
+# creates it once (see README.md):
+#
+#   aws ssm put-parameter --name /bloggerbear/production/coingecko-api-key --type SecureString --value <key> --overwrite
+#
+# No parameter -> the adapter uses CoinGecko's keyless public API, exactly as with no key before.
 locals {
-  coingecko_env_variables = var.coingecko_api_key == "" ? {} : {
-    COINGECKO_API_KEY  = var.coingecko_api_key
-    COINGECKO_API_PLAN = var.coingecko_api_plan
+  coingecko_api_key_parameter = "/bloggerbear/production/coingecko-api-key"
+  coingecko_env_variables = {
+    COINGECKO_API_KEY_PARAMETER = local.coingecko_api_key_parameter
+    COINGECKO_API_PLAN          = var.coingecko_api_plan
   }
+}
+
+# Read access to that one parameter, on the shared exec role (the Lambdas share one role, so this is
+# what "only the crypto Lambdas" can mean here: only they are told the name). SecureString with the
+# default aws/ssm key, whose key policy already lets the account's principals decrypt through SSM,
+# so no KMS grant is needed.
+data "aws_iam_policy_document" "lambda_coingecko_key" {
+  statement {
+    sid       = "ReadCoinGeckoKey"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:ap-southeast-2:${data.aws_caller_identity.current.account_id}:parameter${local.coingecko_api_key_parameter}"]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_coingecko_key" {
+  name   = "bloggerbear-production-lambda-coingecko-key"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_coingecko_key.json
 }
 
 resource "aws_lambda_function" "daily_cycle" {
   function_name = "bloggerbear-production-daily-cycle"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "daily_cycle_handler.handler"
   runtime       = "python3.11"
@@ -697,6 +725,7 @@ resource "aws_lambda_function" "daily_cycle" {
 
 resource "aws_lambda_function" "admin_api" {
   function_name = "bloggerbear-production-admin-api"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "admin_api_handler.handler"
   runtime       = "python3.11"
@@ -1051,6 +1080,7 @@ resource "aws_sfn_state_machine" "daily_cycle" {
 # infra/modules/observability's pipeline_dlq_messages alarm).
 resource "aws_lambda_function" "dlq_handler" {
   function_name = "bloggerbear-production-dlq-handler"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "dlq_handler.handler"
   runtime       = "python3.11"
@@ -1150,6 +1180,25 @@ data "aws_iam_policy_document" "scheduler_invoke" {
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.musing_feedback.arn]
   }
+
+  # The weekly stats rollover and the daily Cost Explorer poll. Both schedules were added (with this
+  # role as their role_arn) without these statements, so neither Lambda was ever invoked: the
+  # scheduler failed and retried every attempt, the Historic totals stayed at zero and the actual
+  # (from the bill) costs stayed null. test_terraform_wiring.py now checks every schedule's target
+  # against this policy.
+  statement {
+    sid       = "InvokeStatsRollover"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.stats_rollover.arn]
+  }
+
+  statement {
+    sid       = "InvokeCostExplorerPoll"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.cost_explorer_poll.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "scheduler_invoke" {
@@ -1214,6 +1263,7 @@ resource "aws_iam_role_policy" "scheduler_manage" {
 
 resource "aws_lambda_function" "public_api" {
   function_name = "bloggerbear-production-public-api"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "public_api_handler.handler"
   runtime       = "python3.11"
@@ -1335,9 +1385,12 @@ resource "aws_wafv2_web_acl" "public_api" {
   # below -- that ACL already default-blocks everything except the
   # operator's own allowlisted IP, which is stricter than any managed
   # rule set could add.
-  # The feedback route only: at most 20 submissions per 5 minutes from one IP. The general limit
-  # above (500 across the whole API) is far too loose for something that costs a model call, and
-  # this stores nothing about the visitor: WAF counts the source address itself and forgets it.
+  # The feedback route only: at most 10 submissions per 5 minutes from one IP (WAF's lowest allowed
+  # limit; lowered from 20, since a rejected comment counts against no app-side limit and this is
+  # the only per-IP cap on retrying one).
+  # The general limit above (500 across the whole API) is far too loose for something that costs a
+  # model call, and this stores nothing about the visitor: WAF counts the source address itself
+  # and forgets it.
   # The path match is on the end of the path so it catches POST .../articles/{id}/feedback and
   # not GET .../feedback-status. Blocked requests are answered by WAF before they reach the Lambda.
   rule {
@@ -1350,7 +1403,7 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     statement {
       rate_based_statement {
-        limit                 = 20
+        limit                 = 10
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
 
@@ -1419,7 +1472,43 @@ resource "aws_wafv2_web_acl" "public_api" {
 # requirement as the ACL itself. Log group names MUST start with
 # "aws-waf-logs-" -- an AWS WAFv2 requirement for logging directly to
 # CloudWatch Logs (no Kinesis Firehose needed).
+#
+# Data minimisation (the Privacy Policy's section 5 describes exactly this, so
+# change both together): the two ACLs anonymous visitors pass through -- the
+# public API and the shared CloudFront one -- log only requests a rule
+# blocked or counted (logging_filter drops ALLOW), with the browser-
+# fingerprinting headers in local.waf_log_redacted_headers redacted, and keep
+# them for 14 days. WAF cannot redact the source IP, or `matchedData` (the bit
+# of a blocked request that tripped a rule, which can be part of a comment).
+# The admin ACL is unchanged: only the operator's allowlisted IP gets through
+# it, and a full record of that is the audit trail.
 # -----------------------------------------------------------------------
+locals {
+  # Request headers that identify a browser more than they help explain a block. Matched
+  # case-insensitively by WAF; a header a request does not send is simply absent.
+  waf_log_redacted_headers = [
+    "user-agent",
+    "referer",
+    "accept",
+    "accept-language",
+    "accept-encoding",
+    "cookie",
+    "x-forwarded-for",
+    "dnt",
+    "sec-gpc",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-ch-ua-platform-version",
+    "sec-ch-ua-arch",
+    "sec-ch-ua-bitness",
+    "sec-ch-ua-model",
+    "sec-ch-ua-full-version-list",
+    "sec-ch-ua-wow64",
+  ]
+  waf_visitor_log_retention_days = 14
+}
+
 resource "aws_cloudwatch_log_group" "waf_admin" {
   name              = "aws-waf-logs-bloggerbear-production-admin"
   retention_in_days = 30
@@ -1427,7 +1516,7 @@ resource "aws_cloudwatch_log_group" "waf_admin" {
 
 resource "aws_cloudwatch_log_group" "waf_public_api" {
   name              = "aws-waf-logs-bloggerbear-production-public-api"
-  retention_in_days = 30
+  retention_in_days = local.waf_visitor_log_retention_days
 }
 
 data "aws_iam_policy_document" "waf_logs" {
@@ -1459,6 +1548,36 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
   resource_arn            = aws_wafv2_web_acl.public_api.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf_public_api.arn]
 
+  dynamic "redacted_fields" {
+    for_each = local.waf_log_redacted_headers
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
+
+  logging_filter {
+    default_behavior = "DROP"
+
+    filter {
+      behavior    = "KEEP"
+      requirement = "MEETS_ANY"
+
+      condition {
+        action_condition {
+          action = "BLOCK"
+        }
+      }
+
+      condition {
+        action_condition {
+          action = "COUNT"
+        }
+      }
+    }
+  }
+
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs]
 }
 
@@ -1468,7 +1587,7 @@ resource "aws_cloudwatch_log_group" "waf_shared" {
   provider = aws.us_east_1
 
   name              = "aws-waf-logs-bloggerbear-shared"
-  retention_in_days = 30
+  retention_in_days = local.waf_visitor_log_retention_days
 }
 
 # -----------------------------------------------------------------------
@@ -1487,12 +1606,33 @@ resource "aws_cloudwatch_log_group" "waf_shared" {
 #   terraform import 'aws_cloudwatch_log_group.lambda["bloggerbear-production-research-tick"]' /aws/lambda/bloggerbear-production-research-tick
 #   (repeat for each function_name below)
 # -----------------------------------------------------------------------
+# Every Lambda below depends_on this resource, so its log group exists before the function can be
+# invoked. Without that, a function created in the same apply and called straight away (the public
+# API, the moment its stage is deployed) makes its own log group first -- with no retention -- and
+# this resource then fails with ResourceAlreadyExistsException. Dev hit exactly that rebuilding
+# after a destroy (2026-10-02). It also orders a destroy: functions go first, so nothing can recreate
+# a log group after Terraform has deleted it.
+#
+# Literal names, not local.pipeline_lambda_function_names: that list reads each function's
+# function_name, and a function that depends on these groups can't also name them (a cycle).
+# test_terraform_wiring.py checks this list matches every aws_lambda_function's function_name.
+locals {
+  lambda_log_group_function_names = [
+    "bloggerbear-production-research-tick",
+    "bloggerbear-production-daily-cycle",
+    "bloggerbear-production-admin-api",
+    "bloggerbear-production-dlq-handler",
+    "bloggerbear-production-public-api",
+    "bloggerbear-production-weekly-reflection",
+    "bloggerbear-production-stats-rollover",
+    "bloggerbear-production-cost-explorer-poll",
+    "bloggerbear-production-trending-digest",
+    "bloggerbear-production-musing-feedback",
+  ]
+}
+
 resource "aws_cloudwatch_log_group" "lambda" {
-  # Reuses the same function_name list module.observability's lambda_function_names already
-  # defines below (Phase 6) -- one list, so a function added later can never update one and
-  # forget the other. toset() because for_each needs a set/map, not module.observability's own
-  # list(string).
-  for_each          = toset(local.pipeline_lambda_function_names)
+  for_each          = toset(local.lambda_log_group_function_names)
   name              = "/aws/lambda/${each.value}"
   retention_in_days = 90
 }
@@ -1522,6 +1662,36 @@ resource "aws_wafv2_web_acl_logging_configuration" "shared" {
 
   resource_arn            = aws_wafv2_web_acl.this.arn
   log_destination_configs = [aws_cloudwatch_log_group.waf_shared.arn]
+
+  dynamic "redacted_fields" {
+    for_each = local.waf_log_redacted_headers
+    content {
+      single_header {
+        name = redacted_fields.value
+      }
+    }
+  }
+
+  logging_filter {
+    default_behavior = "DROP"
+
+    filter {
+      behavior    = "KEEP"
+      requirement = "MEETS_ANY"
+
+      condition {
+        action_condition {
+          action = "BLOCK"
+        }
+      }
+
+      condition {
+        action_condition {
+          action = "COUNT"
+        }
+      }
+    }
+  }
 
   depends_on = [aws_cloudwatch_log_resource_policy.waf_logs_shared]
 }
@@ -1562,6 +1732,8 @@ locals {
     "index.html"    = "text/html"
     "error.html"    = "text/html"
     "about.html"    = "text/html"
+    "terms.html"    = "text/html"
+    "privacy.html"  = "text/html"
     "styles.css"    = "text/css"
     "normalize.css" = "text/css"
     "app.js"        = "application/javascript"
@@ -1585,6 +1757,7 @@ locals {
     "bears/default.svg"     = "image/svg+xml"
     "bears/tummy.svg"       = "image/svg+xml"
     "bears/tummy-happy.svg" = "image/svg+xml"
+    "bears/shocked.svg"     = "image/svg+xml"
     # Static article publishing (docs/project-plan.md §11): the external
     # script the pages rendered by common/static_pages.py load -- must be
     # a real file at the bucket root, not inline, per the CSP comment on
@@ -1648,6 +1821,7 @@ resource "aws_s3_object" "frontend_config" {
 
 resource "aws_lambda_function" "weekly_reflection" {
   function_name = "bloggerbear-production-weekly-reflection"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "weekly_reflection_handler.handler"
   runtime       = "python3.11"
@@ -1686,6 +1860,7 @@ resource "aws_scheduler_schedule" "weekly_reflection" {
 # it is reflecting on, not the new week that is just starting -- see stats_rollover_handler.py.
 resource "aws_lambda_function" "stats_rollover" {
   function_name = "bloggerbear-production-stats-rollover"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "stats_rollover_handler.handler"
   runtime       = "python3.11"
@@ -1720,6 +1895,7 @@ resource "aws_scheduler_schedule" "stats_rollover" {
 # and why a rolling 30-day window ending yesterday rather than today.
 resource "aws_lambda_function" "cost_explorer_poll" {
   function_name = "bloggerbear-production-cost-explorer-poll"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "cost_explorer_poll_handler.handler"
   runtime       = "python3.11"
@@ -1785,6 +1961,9 @@ module "observability" {
   state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
   dlq_queue_name        = aws_sqs_queue.pipeline_dlq.name
   alert_email           = var.alert_email
+
+  # Its own log group resource rather than a hand-built name, so the metric filters depend on it.
+  feedback_log_group_name = aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name
 }
 
 # =========================================================================
@@ -1806,6 +1985,7 @@ module "observability" {
 
 resource "aws_lambda_function" "trending_digest" {
   function_name = "bloggerbear-production-trending-digest"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "trending_digest_handler.handler"
   runtime       = "python3.11"
@@ -1858,6 +2038,7 @@ resource "aws_scheduler_schedule" "trending_digest" {
 
 resource "aws_lambda_function" "musing_feedback" {
   function_name = "bloggerbear-production-musing-feedback"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "musing_feedback_handler.handler"
   runtime       = "python3.11"

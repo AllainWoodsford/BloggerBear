@@ -4,8 +4,8 @@
  *   #/                 -> home / topic list
  *   #/topic/{id}       -> published article list for a topic
  *   #/article/{id}     -> full article view
- *   #/terms            -> Terms of Service (static content, no API call)
- *   #/privacy          -> Privacy Policy (static content, no API call)
+ *   #/terms            -> redirects to /terms.html (a static page)
+ *   #/privacy          -> redirects to /privacy.html (a static page)
  *
  * Talks to the public API at window.PUBLIC_API_URL (e.g.
  * "https://xxxx.execute-api.ap-southeast-2.amazonaws.com"), set by
@@ -158,7 +158,7 @@
   // --- Home -------------------------------------------------------------
 
   // One h1 per page is the rule this whole app follows (renderArticle,
-  // renderArticleList, renderLegalPage each have exactly one) -- on the
+  // renderArticleList, renderStats each have exactly one) -- on the
   // home route specifically, the hero tagline below is that h1, so the
   // topic list heading right after it is an h2, not a second h1.
   var HOME_TAGLINE =
@@ -872,10 +872,46 @@
     ];
   }
 
+  var MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+
+  // "2026-10" -> "October 2026"; anything else is shown as it came.
+  function monthLabel(yearMonth) {
+    var match = /^(\d{4})-(\d{2})$/.exec(yearMonth || "");
+    if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) {
+      return yearMonth || "";
+    }
+    return MONTH_NAMES[Number(match[2]) - 1] + " " + match[1];
+  }
+
+  // AWS WAF, the web firewall: the largest line on the site's bill, so it gets tiles of its own
+  // (common/stats_tracking.py's public_view `waf`, from Cost Explorer, ~24h lag). Absent until the
+  // daily poll has run once. "This week" only in Weekly Stats: Total Stats carries the latest
+  // reading, and a week-so-far figure means nothing there.
+  function appendWafTiles(tiles, waf, isCurrentWeek) {
+    if (!waf) {
+      return;
+    }
+    tiles.appendChild(
+      statTile("Firewall (WAF) spend", formatAud(waf.cost_aud_30d), "last 30 days, from the AWS bill, ~24h lag")
+    );
+    if (isCurrentWeek) {
+      tiles.appendChild(statTile("Firewall spend this week", formatAud(waf.cost_aud_week_to_date), "so far, to yesterday"));
+    }
+    tiles.appendChild(
+      statTile("Firewall spend, " + monthLabel(waf.month), formatAud(waf.cost_aud_month_to_date), "so far, to yesterday")
+    );
+    tiles.appendChild(
+      statTile("Firewall spend, " + monthLabel(waf.previous_month), formatAud(waf.cost_aud_previous_month), "whole month")
+    );
+  }
+
   // `apiGatewayNote` distinguishes Weekly Stats' rolling-30-day reading from Total Stats'
   // reuse of that same reading (a snapshot, never summed across weeks -- see this section's
-  // own note in renderStats).
-  function renderObservabilitySection(data, apiGatewayNote) {
+  // own note in renderStats). `isCurrentWeek` is true for Weekly Stats.
+  function renderObservabilitySection(data, apiGatewayNote, isCurrentWeek) {
     var wrap = el("div", {});
     var tiles = el("div", { className: "stats-tiles" });
     tiles.appendChild(statTile("Feedback given", formatCount(data.feedback_given)));
@@ -893,6 +929,7 @@
     if (data.api_gateway_cost_aud_30d !== null && data.api_gateway_cost_aud_30d !== undefined) {
       tiles.appendChild(statTile("API Gateway spend", formatAud(data.api_gateway_cost_aud_30d), apiGatewayNote));
     }
+    appendWafTiles(tiles, data.waf, isCurrentWeek);
     // Web search (common/stats_tracking.py's public_view `web_search`): AgentCore is billed per
     // query, not per token, so it is a tile of its own rather than a row in the tokens table.
     if (data.web_search) {
@@ -1211,7 +1248,7 @@
       el("h3", { text: "Other AI spend and activity, all time", className: "section-heading" })
     );
     contentEl.appendChild(el("p", { className: "stats-note", text: historic.note || "" }));
-    contentEl.appendChild(renderObservabilitySection(historic, "latest reading, not summed across weeks"));
+    contentEl.appendChild(renderObservabilitySection(historic, "latest reading, not summed across weeks", false));
 
     // --- Weekly Stats: this week so far (StatsCurrent), resets every Monday -------------------
     contentEl.appendChild(
@@ -1220,7 +1257,7 @@
     contentEl.appendChild(
       el("p", { className: "stats-note", text: "This week so far -- resets every Monday." })
     );
-    contentEl.appendChild(renderObservabilitySection(stats.weekly || {}, "rolling 30 days"));
+    contentEl.appendChild(renderObservabilitySection(stats.weekly || {}, "rolling 30 days", true));
 
     // --- Gear: moved to the bottom now that there's real financial data above it to lead with -
     var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });
@@ -1953,189 +1990,15 @@
 
   // --- Legal pages (Terms of Service / Privacy Policy) --------------------
   //
-  // Static content, not fetched from the API -- rendered with the same
-  // el()/DOM-construction helpers as everything else on this page, for
-  // consistency (and so this content, like everything else here, never
-  // goes through innerHTML). Grounded in what this codebase actually
-  // does, not boilerplate: no cookies (verified against both the
-  // frontend source and the CloudFront config, which explicitly forwards
-  // none), an anonymous per-article view counter, anonymous feedback
-  // that is screened (PII, abuse, spam, injection) and dropped, not stored, if it fails (see
-  // lambdas/common/comment_screening.py), and infrastructure-level WAF logging
-  // that's kept separate from application data (see
-  // docs/project-plan.md §7).
+  // These are static pages now (terms.html, privacy.html), like about.html: readable with
+  // JavaScript off, indexed at their own URLs, and linkable section by section. The old #/terms
+  // and #/privacy routes are still out there (in article pages published before the move, and
+  // anyone's bookmarks), so they redirect. replace() rather than assign, so Back doesn't land on
+  // the redirect again.
+  var LEGAL_PAGE_URLS = { terms: "/terms.html", privacy: "/privacy.html" };
 
-  var GITHUB_REPO_URL = "https://github.com/AllainWoodsford/BloggerBear";
-
-  var LEGAL_PAGES = {
-    terms: {
-      title: "Terms of Service",
-      sections: [
-        {
-          heading: "1. About this site",
-          paragraphs: [
-            "BloggerBear is a personal, non-commercial portfolio and demonstration project — an experiment in autonomous, AI-assisted research and publishing. Software periodically checks public data sources (currently GitHub Trending, Hacker News, and public cryptocurrency market data), uses an AI model (Amazon Bedrock / Claude) to summarize findings and draft articles, and runs an automated compliance review before anything is published. It is not a commercial product, a news organization, or a registered business.",
-          ],
-        },
-        {
-          heading: "2. AI-generated content",
-          paragraphs: [
-            "Most article content on this site is drafted by an AI model from publicly available source data, then automatically reviewed for compliance before publishing; some drafts are additionally held for manual human review. Despite that review, AI-generated content can still be inaccurate, incomplete, or out of date. Nothing on this site should be treated as professional advice of any kind.",
-          ],
-        },
-        {
-          heading: "3. Not financial advice",
-          paragraphs: [
-            "Any article touching cryptocurrency or other financial/investment topics is generated under a stricter compliance rubric, is always held for manual human review before publishing regardless of how confident the automated review is, and carries a standing notice that it is not financial or investment advice. Nothing on this site is, or should be understood as, a recommendation to buy, sell, or hold any asset. Always do your own research and consult a qualified professional before making financial decisions.",
-          ],
-        },
-        {
-          heading: "4. No warranty, availability, or permanence",
-          paragraphs: ["This is a hobby/portfolio project, run by a single operator — not a supported product."],
-          list: [
-            "No uptime, availability, or continuity is guaranteed.",
-            "The site, every article on it, and the infrastructure behind it may be taken offline, modified, reset, or permanently deleted at any time, without notice.",
-            "The site and its content are provided “as is” and “as available,” without warranties of any kind, express or implied — including accuracy, reliability, merchantability, or fitness for a particular purpose.",
-            "The operator is not liable for any loss or damage arising from your use of, or inability to use, this site or its content.",
-          ],
-        },
-        {
-          heading: "5. Source material and attribution",
-          paragraphs: [
-            "Each article's “Sources” links point to the original public pages a piece of research was based on. That source material belongs to its respective owners — BloggerBear doesn't claim ownership of it, and links to it for attribution and further reading.",
-          ],
-        },
-        {
-          heading: "6. Anonymous feedback",
-          paragraphs: [
-            "You may leave anonymous feedback (a thumbs up/down and an optional comment) on published articles — see the Privacy Policy for what happens to that data. By submitting a comment, you agree not to include personal information about yourself or anyone else, and not to submit anything unlawful, abusive, or that infringes someone else's rights. Every comment is screened automatically before it is saved, and is rejected (not saved, not published) if it contains personal information, is abusive, off-topic, spam or unlawful, breaks these terms, tries to instruct or attack the site or the software behind it, or can't be confirmed safe. When a comment is rejected, nothing is submitted: your vote isn't recorded with it, so you can try again without the comment.",
-          ],
-        },
-        {
-          heading: "7. Acceptable use",
-          paragraphs: [
-            "Please don't attempt to abuse, aggressively scrape, disrupt, or gain unauthorized access to this site or the systems behind it. Automated/programmatic use of the public read API and RSS feed is welcome — that's exactly what they're for.",
-          ],
-        },
-        {
-          heading: "8. Changes to these terms",
-          paragraphs: [
-            "Since this is an evolving personal project, these terms may change at any time as the project changes. Continued use of the site after a change means you accept the updated terms.",
-          ],
-        },
-        {
-          heading: "9. Contact",
-          paragraphs: ["This project is developed in the open. Questions, issues, or takedown requests can be raised via its GitHub repository."],
-          link: { text: "github.com/AllainWoodsford/BloggerBear", href: GITHUB_REPO_URL },
-        },
-      ],
-    },
-    privacy: {
-      title: "Privacy Policy",
-      sections: [
-        {
-          heading: "1. Short version",
-          paragraphs: ["This is a small personal project with a deliberately minimal data footprint:"],
-          list: [
-            "No accounts, no logins, no user profiles.",
-            "No cookies.",
-            "No advertising or analytics trackers.",
-            "No personal information is intentionally collected. If a comment appears to contain any, the whole comment is discarded rather than stored — and you're asked not to include it in the first place (see “Please don't share personal information” below).",
-          ],
-        },
-        {
-          heading: "2. What we don't do",
-          list: [
-            "We do not use cookies. This is verified directly against this site's own source code and infrastructure configuration, not just asserted — the CloudFront distribution in front of this site is explicitly configured to forward none, and the frontend code contains no cookie-setting logic anywhere.",
-            "We do not run any third-party analytics, advertising, or tracking scripts.",
-            "We do not build profiles of individual visitors, and have no way to identify you from your use of this site.",
-          ],
-        },
-        {
-          heading: "3. What we do track: anonymous view counts",
-          paragraphs: [
-            "Each article has a public, anonymous view counter. Opening an article increments one shared counter for that article by one. This counter is not tied to your browser, device, or identity in any way — it's a running total, the same as a hit counter.",
-          ],
-        },
-        {
-          heading: "4. Feedback (votes and comments)",
-          paragraphs: [
-            "If you leave feedback on an article (a thumbs up/down, with an optional written comment), we store the vote, the comment text (if any, and only if it passed automated screening — see below), and when it was submitted. A comment that fails screening is not stored anywhere, and neither is the vote sent with it. We do not store, log, or associate any of the following with your feedback: your IP address, browser fingerprint, account, or any other identifier. There is no way to trace a piece of feedback back to a specific visitor.",
-          ],
-        },
-        {
-          heading: "Please don't share personal information",
-          paragraphs: [
-            "Any comment you submit goes through a real, if best-effort, attempt to remove obvious personal information automatically — a pattern-matching pass, then a second AI-based review pass — before anything is stored. If that review can't confirm a comment is safe, the comment is dropped and only the vote is kept. But this is an automated filter, not a guarantee. Please don't include your name, email address, phone number, physical address, or any other personal or identifying information — about yourself or anyone else — in a comment. Assume anything you type could end up published.",
-          ],
-        },
-        {
-          heading: "5. Infrastructure and security logs",
-          paragraphs: [
-            "Like effectively every website, the infrastructure this site runs on (a web application firewall in front of the site and its APIs) keeps its own short-term operational logs — the kind that record request metadata, such as source IP address, purely to detect and block abusive traffic. These logs:",
-          ],
-          list: [
-            "live entirely at the infrastructure level, inside the cloud provider's (AWS) own logging systems",
-            "are never joined, matched, or cross-referenced with anything you submit through the site (feedback, view counts, or anything else)",
-            "are not used to identify or profile visitors",
-            "exist only for security and reliability, not analytics",
-          ],
-        },
-        {
-          heading: "6. Local storage on your device",
-          paragraphs: [
-            "This site uses a very small amount of your browser's local storage (localStorage) for exactly one purpose: remembering that you've dismissed the site notice banner, so it doesn't reappear on every visit. That preference lives only in your own browser — it is never sent to us, and clearing your browser data resets it.",
-          ],
-        },
-        {
-          heading: "7. Third-party AI processing",
-          paragraphs: [
-            "Article summaries and drafts are generated using Amazon Bedrock, a cloud AI service. Publicly available source data (trending repositories, news headlines, market prices) is sent to that service to generate content — no visitor data is ever sent there. If you submit a comment, the same service is also used purely to check the comment text (for personal information, abuse, spam and attempts to instruct the software) before deciding whether to store it.",
-          ],
-        },
-        {
-          heading: "8. Data retention and deletion",
-          paragraphs: [
-            "Because this is a disposable, single-operator portfolio project (see the Terms of Service), the infrastructure behind everything described above — including this policy's own hosting — may be reset, rebuilt, or permanently deleted at any time, without notice. There is no guarantee any particular piece of content, feedback, or data will persist.",
-          ],
-        },
-        {
-          heading: "9. Changes to this policy",
-          paragraphs: ["This policy may change as the project changes. Check back here for the current version."],
-        },
-        {
-          heading: "10. Contact",
-          paragraphs: ["Questions about this policy can be raised via the project's GitHub repository."],
-          link: { text: "github.com/AllainWoodsford/BloggerBear", href: GITHUB_REPO_URL },
-        },
-      ],
-    },
-  };
-
-  function renderLegalPage(pageKey) {
-    var page = LEGAL_PAGES[pageKey];
-    clearChildren(contentEl);
-    contentEl.appendChild(el("h1", { text: page.title }));
-
-    page.sections.forEach(function (section) {
-      contentEl.appendChild(el("h2", { text: section.heading }));
-      (section.paragraphs || []).forEach(function (paragraph) {
-        contentEl.appendChild(el("p", { text: paragraph }));
-      });
-      if (section.list) {
-        var list = el("ul");
-        section.list.forEach(function (itemText) {
-          var item = el("li", { text: itemText });
-          list.appendChild(item);
-        });
-        contentEl.appendChild(list);
-      }
-      if (section.link) {
-        var linkPara = el("p");
-        linkPara.appendChild(el("a", { text: section.link.text, href: section.link.href }));
-        contentEl.appendChild(linkPara);
-      }
-    });
+  function redirectToLegalPage(pageKey) {
+    window.location.replace(LEGAL_PAGE_URLS[pageKey]);
   }
 
   // --- Site notice ----------------------------------------------------
@@ -2233,7 +2096,8 @@
     } else if (current.name === "article") {
       loadArticle(current.articleId);
     } else if (current.name === "legal") {
-      renderLegalPage(current.pageKey);
+      redirectToLegalPage(current.pageKey);
+      return;
     } else if (current.name === "musings") {
       loadMusings();
     } else if (current.name === "stats") {

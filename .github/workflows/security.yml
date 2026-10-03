@@ -12,6 +12,15 @@ on:
       - 'infra/**'
       - 'lambdas/**'
       - '.github/workflows/security.yml'
+  # Also called by terraform-production-release.yml against the release tag, before it applies, so
+  # a release can't deploy anything these scans would have stopped on a PR.
+  workflow_call:
+    inputs:
+      ref:
+        description: The ref to check out and scan (empty means the caller's commit).
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -22,6 +31,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Install Trivy
         run: |
