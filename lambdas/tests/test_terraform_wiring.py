@@ -655,8 +655,8 @@ def test_a_dev_apply_waits_for_the_same_checks_in_one_run():
     workflows = ROOT / ".github" / "workflows"
     dev = (workflows / "terraform.yml").read_text(encoding="utf-8")
 
-    assert re.search(r"^  security:\n.*\n    uses: \./\.github/workflows/security\.yml", dev, re.M)
-    assert re.search(r"^  lint-test:\n.*\n    uses: \./\.github/workflows/python-ci\.yml", dev, re.M)
+    assert re.search(r"^  security:\n    uses: \./\.github/workflows/security\.yml", dev, re.M)
+    assert re.search(r"^  lint-test:\n    uses: \./\.github/workflows/python-ci\.yml", dev, re.M)
     assert "    needs: [security, lint-test]" in dev
     for path in ("lambdas/**", "frontend/**"):  # a code- or site-only merge still deploys
         assert f"      - '{path}'" in dev
@@ -665,6 +665,21 @@ def test_a_dev_apply_waits_for_the_same_checks_in_one_run():
         called = (workflows / name).read_text(encoding="utf-8")
         assert "[dev" not in called and "- dev" not in called
     assert not (workflows / "dev-gatekeeper.yml").exists()
+
+
+def test_pull_request_only_checks_live_in_their_own_workflow():
+    """A push or release run shows only what it does: no skipped validate or secret-scan boxes."""
+    workflows = ROOT / ".github" / "workflows"
+    pr_checks = (workflows / "pr-checks.yml").read_text(encoding="utf-8")
+
+    assert re.search(r"^on:\n  pull_request:\n", pr_checks, re.M)
+    assert "\n  validate:\n" in pr_checks and "terraform -chdir=\"$dir\" validate" in pr_checks
+    assert "\n  secret-scan:\n" in pr_checks and "trufflesecurity/trufflehog@" in pr_checks
+    for name in ("terraform.yml", "security.yml", "terraform-production-release.yml"):
+        text = (workflows / name).read_text(encoding="utf-8")
+        assert "\n  validate:\n" not in text and "\n  secret-scan:\n" not in text
+        assert "github.event_name == 'pull_request'" not in text
+    assert "  pull_request:" not in (workflows / "terraform.yml").read_text(encoding="utf-8")
 
 
 # --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
