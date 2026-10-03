@@ -29,6 +29,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("MODERATION_QUEUE_TABLE", "ModerationQueue")
     monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
+    monkeypatch.setenv("VIEW_COUNTS_TABLE", "ViewCounts")
     monkeypatch.setenv("STATS_CURRENT_TABLE", "StatsCurrent")
     monkeypatch.setenv("STATS_HISTORY_TABLE", "StatsHistory")
     monkeypatch.setenv("PROMPT_REFINEMENTS_TABLE", "PromptRefinements")
@@ -153,6 +154,12 @@ def aws_resources(aws_env):
                 {"AttributeName": "topic_id", "AttributeType": "S"},
                 {"AttributeName": "version", "AttributeType": "S"},
             ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="ViewCounts",
+            KeySchema=[{"AttributeName": "counter_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "counter_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
 
@@ -1619,6 +1626,40 @@ def test_view_increment_accumulates(aws_resources):
     assert json.loads(result["body"]) == {"article_id": "article-1", "view_count": 3}
 
 
+def _set_stored_view_count(count, article_id="article-1"):
+    """The count an article carried on its own item before view counts were sharded."""
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="SET view_count = :c",
+        ExpressionAttributeValues={":c": count},
+    )
+
+
+def test_the_article_detail_counts_views_from_before_and_after_sharding(aws_resources):
+    _put_article()
+    _set_stored_view_count(10)
+    view = _event("POST /articles/{article_id}/view", path_params={"article_id": "article-1"})
+    public_api_handler.handler(view, None)
+    public_api_handler.handler(view, None)
+
+    detail = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+    body = json.loads(public_api_handler.handler(detail, None)["body"])
+
+    assert body["view_count"] == 12
+
+
+def test_an_unreadable_view_counter_shows_the_earlier_count_rather_than_breaking_the_page(aws_resources):
+    _put_article()
+    _set_stored_view_count(10)
+    detail = _event("GET /articles/{article_id}", path_params={"article_id": "article-1"})
+
+    with patch("public_api_handler.get_view_count", side_effect=RuntimeError("throttled")):
+        result = public_api_handler.handler(detail, None)
+
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["view_count"] == 10
+
+
 def test_view_increment_non_published_returns_404(aws_resources):
     _put_article(status="pending_moderation")
     event = _event("POST /articles/{article_id}/view", path_params={"article_id": "article-1"})
@@ -2155,8 +2196,9 @@ def test_a_loot_drop_musing_is_listed_with_the_gear_it_announces(aws_resources):
 
 
 def _current_stats():
-    table = boto3.resource("dynamodb", region_name=REGION).Table("StatsCurrent")
-    return table.get_item(Key={"stats_id": "current"}).get("Item") or {}
+    from common.dynamo import get_current_stats
+
+    return get_current_stats()  # the base row and its shards, summed
 
 
 def test_a_stored_upvote_records_feedback_given(aws_resources):
@@ -2193,7 +2235,8 @@ def test_a_honeypot_catch_records_neither_given_nor_rejected(aws_resources):
 
     _submit("down", **{public_api_handler.HONEYPOT_FIELD: "gotcha"})
 
-    assert _current_stats() == {}  # a bot being caught is not a person's feedback either way
+    # A bot being caught is not a person's feedback either way.
+    assert _current_stats() == {"stats_id": "current"}
 
 
 def test_several_submissions_accumulate_on_the_same_row(aws_resources, monkeypatch):

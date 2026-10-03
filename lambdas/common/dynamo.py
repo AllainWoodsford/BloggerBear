@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -765,20 +766,88 @@ def list_published_articles(topic_id: str | None = None) -> list[dict]:
     return list_articles_by_status("published", topic_id)
 
 
-def increment_view_count(article_id: str) -> int:
-    """Atomically increment an Articles item's `view_count` and return the new value.
+# Scaling PR B: an article's views are counted on VIEW_COUNT_SHARDS small items in the ViewCounts
+# table (counter_id "<article_id>#<n>", each its own partition key) instead of on the Articles item,
+# so a popular article's views spread over several items rather than queueing on one -- DynamoDB
+# takes about 1,000 writes a second on any single item. Sharding, not batching through a queue: the
+# count stays exact and immediate, and there is no queue, consumer Lambda or dead-letter path to
+# run for a counter. The count an article built up before this (its Articles item's `view_count`,
+# never written again) is the base every read adds the shards onto, so nothing is migrated.
+# Raising VIEW_COUNT_SHARDS later is safe; lowering it would hide the views on the dropped shards.
+VIEW_COUNT_SHARDS = 4
 
-    Uses `ADD view_count :incr`, which DynamoDB initializes to the operand
-    if the attribute doesn't exist yet.
+
+def _view_counter_ids(article_id: str) -> list[str]:
+    return [f"{article_id}#{shard}" for shard in range(VIEW_COUNT_SHARDS)]
+
+
+def _sum_views(rows: list[dict]) -> int:
+    return sum(int(row.get("views", 0)) for row in rows)
+
+
+def increment_view_count(article_id: str, *, stored_view_count: int | None = None) -> int:
+    """Count one view of an article and return its new total.
+
+    ADDs 1 onto one view-counter shard picked at random (created on first use), then adds the
+    other shards and the article's pre-sharding `view_count` to it. The shard just written is read
+    back from the write itself, so the reader's own view is always in the total; the other shards
+    are an eventually consistent BatchGetItem, which can at worst miss a view someone else made in
+    the same instant. `stored_view_count` is that pre-sharding count, when the caller already has
+    the article in hand; otherwise it is read from the Articles item.
     """
-    table = get_table(os.environ["ARTICLES_TABLE"])
-    response = table.update_item(
-        Key={"article_id": article_id},
-        UpdateExpression="ADD view_count :incr",
-        ExpressionAttributeValues={":incr": 1},
+    counters = get_table(os.environ["VIEW_COUNTS_TABLE"])
+    counter_ids = _view_counter_ids(article_id)
+    mine = counter_ids[secrets.randbelow(VIEW_COUNT_SHARDS)]
+    response = counters.update_item(
+        Key={"counter_id": mine},
+        UpdateExpression="SET article_id = :article ADD #views :one",
+        ExpressionAttributeNames={"#views": "views"},
+        ExpressionAttributeValues={":article": article_id, ":one": 1},
         ReturnValues="UPDATED_NEW",
     )
-    return int(response["Attributes"]["view_count"])
+    others = _batch_get_items(
+        os.environ["VIEW_COUNTS_TABLE"], "counter_id", [c for c in counter_ids if c != mine]
+    )
+    if stored_view_count is None:
+        stored_view_count = _stored_view_count(article_id)
+    return stored_view_count + int(response["Attributes"]["views"]) + _sum_views(others)
+
+
+def get_view_count(article_id: str, *, stored_view_count: int | None = None) -> int:
+    """An article's total views: its pre-sharding `view_count` plus every view-counter shard.
+    `stored_view_count` as for increment_view_count."""
+    rows = _batch_get_items(os.environ["VIEW_COUNTS_TABLE"], "counter_id", _view_counter_ids(article_id))
+    if stored_view_count is None:
+        stored_view_count = _stored_view_count(article_id)
+    return stored_view_count + _sum_views(rows)
+
+
+def _stored_view_count(article_id: str) -> int:
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    item = table.get_item(Key={"article_id": article_id}, ProjectionExpression="view_count").get("Item")
+    return int((item or {}).get("view_count", 0))
+
+
+def _batch_get_items(
+    table_name: str, key_name: str, key_values: list[str], *, consistent: bool = False
+) -> list[dict]:
+    """Fetch up to 100 items by hash key in one BatchGetItem, retrying any keys DynamoDB hands
+    back unprocessed (it may, when throttled) a few times with a short backoff. Missing items are
+    simply absent from the result."""
+    if not key_values:
+        return []
+    get_table(table_name)  # makes sure the shared resource exists
+    keys = [{key_name: value} for value in key_values]
+    request = {table_name: {"Keys": keys, "ConsistentRead": consistent}}
+    items: list[dict] = []
+    for attempt in range(5):
+        response = _dynamodb_resource.batch_get_item(RequestItems=request)
+        items.extend(response.get("Responses", {}).get(table_name, []))
+        request = response.get("UnprocessedKeys") or {}
+        if not request:
+            return items
+        time.sleep(0.05 * 2**attempt)
+    raise RuntimeError(f"BatchGetItem on {table_name} left keys unprocessed after retries")
 
 
 # --- PromptRefinements (Phase 5) ---------------------------------------
@@ -1059,9 +1128,9 @@ def update_article_net_votes(article_id: str, delta: int) -> None:
     """Atomically add `delta` to an Articles item's `net_votes` attribute.
 
     Uses `ADD net_votes :delta`, which DynamoDB initializes to the operand
-    if the attribute doesn't exist yet -- same pattern as
-    `increment_view_count` above. `delta` is +1 for an upvote, -1 for a
-    downvote.
+    if the attribute doesn't exist yet. `delta` is +1 for an upvote, -1 for a
+    downvote. Not sharded like view counts: a vote is a deliberate, rate-
+    limited act (common/feedback_limits.py), far rarer than a page view.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
     table.update_item(
@@ -1625,46 +1694,88 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
 
 # --- StatsCurrent (Observability enhancement, PR 1) ---------------------------------------
 #
-# Owned by common/stats_tracking.py. One row (stats_id="current"), updated in place all week
-# with ADD expressions -- same pattern as the model_config counters above -- so the row and
-# every attribute on it come into existence on first use; nothing has to create it first.
+# Owned by common/stats_tracking.py. The week's counters, updated all week with ADD expressions --
+# same pattern as the model_config counters above -- so every row and attribute comes into
+# existence on first use; nothing has to create them first.
+#
+# Scaling PR B: the counters are sharded. Every tracked Bedrock call, feedback submission, web
+# search and pipeline Lambda run used to ADD onto the one "current" row, making it the busiest
+# single item in the app. Each increment now lands on one of STATS_CURRENT_SHARDS rows
+# ("current#0" ...), picked at random, and get_current_stats sums them back into the one row
+# shape every reader already expects. The plain "current" row is still read (and summed) as the
+# base: it holds the SET snapshots (Cost Explorer readings, set_current_stats_fields below), and
+# whatever was counted on it before sharding, so no migration is needed. Raising
+# STATS_CURRENT_SHARDS later is safe; lowering it would hide whatever the dropped shards hold.
+STATS_CURRENT_SHARDS = 8
+_STATS_CURRENT_ID = "current"
+
+
+def _stats_current_ids() -> list[str]:
+    """The base row first, then every shard."""
+    return [_STATS_CURRENT_ID] + [f"{_STATS_CURRENT_ID}#{n}" for n in range(STATS_CURRENT_SHARDS)]
 
 
 def increment_current_stats(updates: dict[str, int | Decimal], week_start: str) -> None:
-    """ADD each of `updates` onto the current week's StatsCurrent row (creating it, and any
-    attribute in `updates` not yet present, on first use -- same as consume_feedback_counter
-    above). `week_start` (the Monday of the ISO week this row covers, e.g. "2026-09-15") is
-    recorded once, the first time this week's row is touched, and left alone after that -- a
-    later week's rollover job resets it, this function never does."""
+    """ADD each of `updates` onto one of the current week's StatsCurrent shards, picked at random
+    (creating it, and any attribute in `updates` not yet present, on first use -- same as
+    consume_feedback_counter above). `week_start` (the Monday of the ISO week this row covers,
+    e.g. "2026-09-15") is recorded once, the first time a row is touched, and left alone after
+    that -- a later week's rollover job resets it, this function never does."""
     if not updates:
         return
     table = get_table(os.environ["STATS_CURRENT_TABLE"])
     names = {f"#f{n}": key for n, key in enumerate(updates)}
     values = {f":v{n}": value for n, value in enumerate(updates.values())}
     adds = ", ".join(f"#f{n} :v{n}" for n in range(len(updates)))
+    shard = f"{_STATS_CURRENT_ID}#{secrets.randbelow(STATS_CURRENT_SHARDS)}"
     table.update_item(
-        Key={"stats_id": "current"},
+        Key={"stats_id": shard},
         UpdateExpression=f"SET week_start = if_not_exists(week_start, :week) ADD {adds}",
         ExpressionAttributeNames=names,
         ExpressionAttributeValues={**values, ":week": week_start},
     )
 
 
+def _merge_stats_rows(rows: list[dict]) -> dict:
+    """Sum StatsCurrent rows (the base row and its shards) into one row shaped like the single
+    row this table used to hold: numbers are added, `week_start` is the earliest any row has,
+    and anything else (the snapshot labels and as-of dates, which only the base row carries) is
+    taken from the base row."""
+    rows = sorted(rows, key=lambda row: row.get("stats_id") != _STATS_CURRENT_ID)  # base first
+    merged: dict = {"stats_id": _STATS_CURRENT_ID}
+    for row in rows:
+        for key, value in row.items():
+            if key == "stats_id":
+                continue
+            if key == "week_start":
+                merged[key] = min(merged.get(key, value), value)
+            elif isinstance(value, int | Decimal) and not isinstance(value, bool) and key in merged:
+                merged[key] = merged[key] + value
+            else:
+                merged.setdefault(key, value)
+    return merged
+
+
 def get_current_stats() -> dict:
-    """The current week's StatsCurrent row, or an empty shell if nothing has been recorded yet
-    this week (never raises for "no row" -- that is the normal state right after a rollover)."""
-    table = get_table(os.environ["STATS_CURRENT_TABLE"])
-    response = table.get_item(Key={"stats_id": "current"})
-    return response.get("Item") or {"stats_id": "current"}
+    """The current week's StatsCurrent figures, summed across the base row and every shard, or
+    an empty shell if nothing has been recorded yet this week (never raises for "no row" -- that
+    is the normal state right after a rollover). One strongly consistent BatchGetItem: the
+    rollover copies exactly what this returns, so it must include every write already made."""
+    rows = _batch_get_items(
+        os.environ["STATS_CURRENT_TABLE"], "stats_id", _stats_current_ids(), consistent=True
+    )
+    return _merge_stats_rows(rows)
 
 
 def delete_current_stats() -> None:
-    """Clear the current week's StatsCurrent row (stats_rollover_handler.py, after copying it into
-    StatsHistory). Deleting it outright, not zeroing its attributes, so the next increment
-    recreates it fresh -- same "the row comes into existence on first use" rule
-    increment_current_stats already follows. Deleting an already-empty row is not an error."""
+    """Clear the current week's StatsCurrent rows, the base row and every shard
+    (stats_rollover_handler.py, after copying them into StatsHistory). Deleting them outright,
+    not zeroing their attributes, so the next increment recreates one fresh -- same "the row
+    comes into existence on first use" rule increment_current_stats already follows. Deleting an
+    already-empty row is not an error."""
     table = get_table(os.environ["STATS_CURRENT_TABLE"])
-    table.delete_item(Key={"stats_id": "current"})
+    for stats_id in _stats_current_ids():
+        table.delete_item(Key={"stats_id": stats_id})
 
 
 # --- StatsHistory (Observability enhancement, PR 2) ----------------------------------------
@@ -1703,6 +1814,9 @@ def get_stats_history_row(week_start: str) -> dict | None:
 # stats_rollover_handler.py at every rollover (common/stats_tracking.py's split_for_rollover
 # decides which fields get ADD'd here versus SET) so "Total Stats" is one get_item away, never a
 # scan-and-sum over every week there has ever been.
+#
+# Not sharded (Scaling PR B), unlike StatsCurrent: nothing writes this row per call. It is written
+# once a week by the rollover, and once ever by the articles backfill admin route.
 _STATS_ALL_TIME_KEY = "all-time"
 
 

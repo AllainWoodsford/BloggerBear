@@ -29,6 +29,7 @@ def aws_env(monkeypatch):
     monkeypatch.setenv("FAILED_EXECUTIONS_TABLE", "FailedExecutions")
     monkeypatch.setenv("MODELS_TABLE", "Models")
     monkeypatch.setenv("MODEL_CONFIG_TABLE", "ModelConfig")
+    monkeypatch.setenv("VIEW_COUNTS_TABLE", "ViewCounts")
     monkeypatch.setenv("CONTENT_BUCKET", "bloggerbear-content-test")
     monkeypatch.setenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
     monkeypatch.setenv("RESEARCH_TICK_FUNCTION_NAME", "research-tick-fn")
@@ -139,6 +140,12 @@ def aws_resources(aws_env):
             TableName="ModelConfig",
             KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
             AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.create_table(
+            TableName="ViewCounts",
+            KeySchema=[{"AttributeName": "counter_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "counter_id", "AttributeType": "S"}],
             BillingMode="PAY_PER_REQUEST",
         )
         yield

@@ -455,3 +455,28 @@ resource "aws_dynamodb_table" "stats_history" {
     type = "S"
   }
 }
+
+# Scaling PR B: article view counts, sharded. Every page view used to ADD onto the article's own
+# Articles item, so one popular article was one hot item (DynamoDB caps a single item at about
+# 1,000 writes a second) and every view rewrote an item that also carries the article's lineage.
+# A view now ADDs onto one of a few small counter items, picked at random -- counter_id is
+# "<article_id>#<shard>", a separate partition key per shard so the writes really do spread -- and
+# a read sums them (common/dynamo.py's increment_view_count / get_view_count). The count an
+# article had before this table existed stays on its Articles item and is added in on every read,
+# so nothing has to be migrated. No TTL: a count is permanent, like the article it belongs to.
+resource "aws_dynamodb_table" "view_counts" {
+  name                        = "bloggerbear-${var.environment_name}-view-counts"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "counter_id"
+
+  attribute {
+    name = "counter_id"
+    type = "S"
+  }
+}
