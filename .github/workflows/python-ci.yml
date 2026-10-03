@@ -8,13 +8,15 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/python-ci.yml'
   push:
-    branches: [dev, prod]
+    # Not dev: terraform.yml runs this before apply-dev, in the same workflow run.
+    branches: [prod]
     paths:
       - 'lambdas/**'
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/python-ci.yml'
-  # Also called by terraform-production-release.yml against the release tag, before it applies.
+  # Also called before every apply: by terraform.yml (dev) and by terraform-production-release.yml
+  # against the release tag.
   workflow_call:
     inputs:
       ref:

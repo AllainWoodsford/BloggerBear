@@ -29,9 +29,6 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Bugfix: `command` is not a valid input on this action --
-          # instructions go in `prompt` (see dev-gatekeeper.yml's own
-          # comment on this exact mistake, already fixed there but never
-          # propagated to this second workflow that also calls the
-          # action).
+          # instructions go in `prompt`.
           prompt: |
             /run-task-from-issue "${{ github.event.issue.number }}"

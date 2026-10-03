@@ -165,13 +165,15 @@ scripts/
   tests/                     pytest coverage for the CLI itself
 
 .github/workflows/
-  terraform.yml               plan on PR, auto-apply to dev on merge
-  terraform-production-release.yml   apply to production on Release
+  terraform.yml               validate on PR; on merge to dev, security +
+                                lint/test, then apply -- one run
+  terraform-production-release.yml   the same checks, then apply to
+                                production on Release
   destroy-dev.yml              manual, typed-confirmation teardown of dev
-  python-ci.yml                 pytest + ruff on lambdas/scripts
-  security.yml                   trivy (config + fs/secrets) + bandit
-  dev-gatekeeper.yml             additional adversarial review gate on
-                                  PRs into dev
+  python-ci.yml                 pytest + ruff on lambdas/scripts (PRs;
+                                called before each apply)
+  security.yml                   trivy (config + fs/secrets) + bandit, and
+                                trufflehog on PRs (called before each apply)
 
 docs/
   project-plan.md              architecture, rules, data model -- source
