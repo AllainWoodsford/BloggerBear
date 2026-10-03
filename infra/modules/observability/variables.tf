@@ -36,6 +36,12 @@ variable "feedback_log_group_name" {
   description = "The public API Lambda's log group. public_api_handler.py writes one \"rejected a feedback submission (<reason>)\" line per rejected submission; metric filters on it drive the two feedback alarms."
 }
 
+variable "security_alert_log_groups" {
+  type        = list(string)
+  default     = []
+  description = "Log groups of the Lambdas that record security events (common/security_events.py): each logs one \"SECURITY_ALERT\" line per high-severity incident, which drives the security alarm. Empty: no alarm."
+}
+
 variable "edge_dashboard_enabled" {
   type        = bool
   default     = false

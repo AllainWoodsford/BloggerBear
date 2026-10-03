@@ -480,3 +480,51 @@ resource "aws_dynamodb_table" "view_counts" {
     type = "S"
   }
 }
+
+# Security events: one row per *incident* -- blocked requests grouped by source, rule, client and
+# 15-minute window (common/security_events.py) -- from the regional WAFs' logs
+# (security_events_handler.py) and the public API's comment screening. Each row carries a category,
+# a severity and fixed suggested next steps, a status (open / acknowledged / resolved) and room for
+# an agent's `analysis`, so a person or a monitoring agent can work through what happened.
+#
+# No IP address is ever stored: only a keyed hash of it (`client_hash`), enough to see the same
+# client again. Rows expire 120 days after they were last seen (TTL `expires_at`).
+resource "aws_dynamodb_table" "security_events" {
+  name                        = "bloggerbear-${var.environment_name}-security-events"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key = "event_id"
+
+  attribute {
+    name = "event_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "status"
+    type = "S"
+  }
+
+  attribute {
+    name = "last_seen"
+    type = "S"
+  }
+
+  # "What is still open, newest first": status + last_seen.
+  global_secondary_index {
+    name            = "by_status_last_seen"
+    hash_key        = "status"
+    range_key       = "last_seen"
+    projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}

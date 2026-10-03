@@ -1649,20 +1649,24 @@ def get_verification_secret() -> str:
     Deleting the row rotates the key (tokens already issued stop working, and they only live an
     hour or two).
     """
+    return _get_or_create_secret(_VERIFICATION_SECRET_ID)
+
+
+def _get_or_create_secret(config_id: str) -> str:
+    """A random key in the config table's `config_id` row, created on first use (see
+    get_verification_secret for why a conditional write keeps racing Lambdas on one key)."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
-    item = table.get_item(Key={"config_id": _VERIFICATION_SECRET_ID}).get("Item")
+    item = table.get_item(Key={"config_id": config_id}).get("Item")
     if item and item.get("secret"):
         return item["secret"]
     try:
         table.put_item(
-            Item={"config_id": _VERIFICATION_SECRET_ID, "secret": secrets.token_hex(32)},
+            Item={"config_id": config_id, "secret": secrets.token_hex(32)},
             ConditionExpression="attribute_not_exists(config_id)",
         )
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         pass
-    return table.get_item(Key={"config_id": _VERIFICATION_SECRET_ID}, ConsistentRead=True)["Item"][
-        "secret"
-    ]
+    return table.get_item(Key={"config_id": config_id}, ConsistentRead=True)["Item"]["secret"]
 
 
 def consume_verification_nonce(nonce: str, expires_at: int) -> bool:
@@ -1919,3 +1923,82 @@ def set_current_stats_fields(fields: dict, week_start: str) -> None:
         ExpressionAttributeNames=names,
         ExpressionAttributeValues={**values, ":week": week_start},
     )
+
+
+# --- Security events (common/security_events.py) --------------------------------------------------
+#
+# One row per incident. Written by security_events_handler.py (WAF logs) and the public API (comment
+# screening); never by a person. Rows expire by TTL (expires_at), 120 days after last seen.
+
+_SECURITY_HASH_KEY_ID = "security-events-hash-key"
+SECURITY_EVENTS_BY_STATUS_INDEX = "by_status_last_seen"
+
+
+def get_security_hash_key() -> str:
+    """The key client addresses are hashed with before a security event is stored (so the table
+    never holds an IP, yet the same client can be recognised again). Created on first use in the
+    config table, like the feedback verification secret; deleting the row starts a new key, after
+    which the same client hashes differently."""
+    return _get_or_create_secret(_SECURITY_HASH_KEY_ID)
+
+
+def upsert_security_incident(
+    event_id: str, *, new_fields: dict, count: int, last_seen: str, expires_at: int
+) -> dict:
+    """Add `count` requests to incident `event_id`, creating it with `new_fields` the first time
+    (every one of them set only if absent, so a later batch never rewrites what was first seen or
+    a status a person or agent has since changed). Returns the incident as it now stands."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    names = {"#count": "request_count", "#last": "last_seen", "#exp": "expires_at"}
+    values = {":n": count, ":last": last_seen, ":exp": expires_at}
+    sets = ["#last = :last", "#exp = :exp"]
+    for n, (key, value) in enumerate(new_fields.items()):
+        names[f"#f{n}"] = key
+        values[f":f{n}"] = value
+        sets.append(f"#f{n} = if_not_exists(#f{n}, :f{n})")
+    response = table.update_item(
+        Key={"event_id": event_id},
+        UpdateExpression=f"SET {', '.join(sets)} ADD #count :n",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return response["Attributes"]
+
+
+def set_security_incident_severity(event_id: str, severity: str) -> None:
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    table.update_item(
+        Key={"event_id": event_id},
+        UpdateExpression="SET severity = :s",
+        ConditionExpression="attribute_exists(event_id)",
+        ExpressionAttributeValues={":s": severity},
+    )
+
+
+def claim_security_alert(event_id: str, alerted_at: str) -> bool:
+    """Mark incident `event_id` as alerted on. True only the first time, so an incident raises
+    the alarm once however many batches add to it."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    try:
+        table.update_item(
+            Key={"event_id": event_id},
+            UpdateExpression="SET alerted_at = :t",
+            ConditionExpression="attribute_exists(event_id) AND attribute_not_exists(alerted_at)",
+            ExpressionAttributeValues={":t": alerted_at},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def list_security_incidents(status: str = "open", limit: int = 50) -> list[dict]:
+    """The newest incidents with `status` (open, acknowledged, resolved), newest first."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    response = table.query(
+        IndexName=SECURITY_EVENTS_BY_STATUS_INDEX,
+        KeyConditionExpression=Key("status").eq(status),
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+    return response.get("Items", [])

@@ -40,8 +40,8 @@ from xml.sax.saxutils import escape
 
 import boto3
 
-from common import equipment, feedback_limits, feedback_verification, gear, wear
-from common.comment_screening import screen_comment
+from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
+from common.comment_screening import INJECTION, MARKUP, SHELL, SQL, screen_comment
 from common.dynamo import (
     get_article,
     get_current_stats,
@@ -406,6 +406,21 @@ _CLOSED_STATUS = {
 HONEYPOT_FIELD = "referral_code"
 
 
+# Comment-screening reasons that mean someone tried to attack the system, not just post a bad
+# comment: recorded as security events as well as rejected.
+_ATTACK_REASONS = frozenset({INJECTION, SQL, MARKUP, SHELL})
+
+
+def _client_ip(event: dict) -> str:
+    """The visitor's address. Behind the API's CloudFront distribution the connection comes from an
+    edge, and the visitor's own address is in x-viewer-ip -- believed only alongside x-origin-verify,
+    the header the distribution adds (the same rule the WAF's per-visitor limits follow)."""
+    headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+    if "x-origin-verify" in headers and headers.get("x-viewer-ip"):
+        return str(headers["x-viewer-ip"])
+    return str(((event.get("requestContext") or {}).get("identity") or {}).get("sourceIp") or "")
+
+
 def _closed_response(status: dict) -> dict:
     return _response(
         _CLOSED_STATUS.get(status["reason"], 423),
@@ -514,6 +529,17 @@ def _submit_feedback(event: dict) -> dict:
         # rejected" means for the Stats page, not a closed site or a caught bot (see
         # common/stats_tracking.py's FEEDBACK_REJECTED_COMMENT).
         print(f"public_api_handler: rejected a feedback submission ({screened['dropped_because']})")
+        if screened["dropped_because"] in _ATTACK_REASONS:
+            # An attack, not just an unwanted comment: a security event (common/security_events.py).
+            # The reason and a hash of the address only -- the comment is never stored.
+            security_events.record_incident(
+                source=security_events.COMMENT_SCREENING,
+                rule=screened["dropped_because"],
+                client_ip=_client_ip(event),
+                at=datetime.now(UTC),
+                method="POST",
+                path=f"/articles/{article_id}/feedback",
+            )
         try:
             record_feedback_rejected_comment()
         except Exception as exc:  # noqa: BLE001 - the rejection itself must still be returned
