@@ -265,6 +265,11 @@ dev; for what is left before production and the domain, use
 [docs/production-runsheet.md](docs/production-runsheet.md), which is current and
 adds the DNS steps). Each step says who does it (you, locally / GitHub UI / CI).
 
+**Deploying a fork to your own AWS account (or to two, one per environment)?**
+Read [docs/deploying-your-own.md](docs/deploying-your-own.md) first: it lists
+the GitHub secrets and variables that point the workflows at your account,
+your state bucket and your repository, and what still has to be changed by hand.
+
 ### 0. Prerequisites (you, one-time)
 
 - [ ] AWS root user MFA enabled; stop using root day-to-day.
@@ -298,10 +303,11 @@ Note the outputs — you'll need them in the next two steps:
 `state_bucket_name`, `oidc_provider_arn`, `dev_deploy_role_arn`,
 `prod_deploy_role_arn`. If `state_bucket_name` differs from the default
 `bloggerbear-terraform-state` (only happens if that name is already
-taken globally), update the literal `bucket = "..."` string in the
-`backend "s3"` blocks in both `infra/environments/dev/main.tf` and
-`infra/environments/production/main.tf` — those blocks can't reference
-variables.
+taken globally, which it always is for a fork), set the GitHub Actions
+variables `TF_STATE_BUCKET_DEV` and `TF_STATE_BUCKET_PROD` to it. The
+`backend "s3"` blocks can't reference variables, so CI passes the name
+to `terraform init` instead
+([docs/deploying-your-own.md](docs/deploying-your-own.md)).
 
 ### 2. Wire GitHub Actions up to AWS (you, GitHub UI)
 

@@ -26,7 +26,7 @@ terraform {
 # the full rationale).
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "site" {
-  bucket        = "bloggerbear-${var.environment_name}-site"
+  bucket        = "bloggerbear-${var.environment_name}-site${var.bucket_name_suffix}"
   force_destroy = var.force_destroy
 }
 

@@ -111,7 +111,7 @@ def test_invoke_model_tracked_both_primary_and_fallback_fail_propagates():
 # --- a reply that is cut off ---------------------------------------------------------------------
 
 _PROFILE = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
-_ARN = f"arn:aws:bedrock:ap-southeast-2:547610822592:inference-profile/{_PROFILE}"
+_ARN = f"arn:aws:bedrock:ap-southeast-2:123456789012:inference-profile/{_PROFILE}"
 
 
 def _invoke(responses, **kwargs):

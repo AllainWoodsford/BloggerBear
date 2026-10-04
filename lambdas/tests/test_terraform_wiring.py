@@ -939,6 +939,241 @@ def test_deploy_role_arns_come_from_secrets():
         assert f"role-to-assume: ${{{{ vars.{role} }}}}" not in text, name
 
 
+# --- Configurable AWS accounts (docs/deploying-your-own.md) ---------------------------------------
+#
+# A fork deploys to its own account, or to two, by setting GitHub secrets and variables. The
+# original deployment sets none of them, so every one must fall back to exactly what ran before.
+
+_ROOTS = (("bootstrap",), ("environments", "dev"), ("environments", "production"))
+
+# The only 12-digit account IDs allowed in the tree, the same ones .gitleaks.toml allows: AWS's
+# documentation placeholders, and the account the AWS Lambda Web Adapter project publishes its
+# public layer from (printed in its README; the layer ARN has to be written out in full).
+_PLACEHOLDER_ACCOUNTS = {"123456789012", "111111111111", "000000000000"}
+_PUBLIC_ACCOUNTS = {"753240598075"}
+_ACCOUNT_ID_PATTERNS = (
+    # In an ARN's account position, and next to the word "account": .gitleaks.toml's two rules.
+    re.compile(r"arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:(\d{12}):"),
+    re.compile(r"(?i)\baccount[ _-]?(?:id)?\b[^0-9\n]{0,30}\b(\d{12})\b"),
+    # And on its own, as a whole quoted string: how one would be written into a variable's default.
+    re.compile(r"[\"'](\d{12})[\"']"),
+)
+_SCANNED_SUFFIXES = {".tf", ".tfvars", ".hcl", ".yml", ".yaml", ".py", ".sh", ".md", ".json", ".toml", ".txt"}
+_SKIPPED_DIRS = {".terraform", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", ".ruff_cache"}
+
+
+def _provider_blocks(text: str) -> list[str]:
+    return re.findall(r'^provider "aws" \{\n.*?^\}\n', text, re.M | re.S)
+
+
+def test_no_aws_account_id_is_written_into_the_code():
+    """An account ID in the code ties it to one deployment: the Bedrock model's default was an ARN
+    in one account, which no other account could call."""
+    found = []
+    for top in ("infra", ".github", "scripts", "lambdas"):
+        for path in sorted((ROOT / top).rglob("*")):
+            if not path.is_file() or path.suffix not in _SCANNED_SUFFIXES:
+                continue
+            if _SKIPPED_DIRS & set(path.relative_to(ROOT).parts):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for pattern in _ACCOUNT_ID_PATTERNS:
+                for account in pattern.findall(text):
+                    if account not in _PLACEHOLDER_ACCOUNTS | _PUBLIC_ACCOUNTS:
+                        found.append(f"{path.relative_to(ROOT).as_posix()}: {account[:2]}..........")
+    assert not found, found
+
+
+def test_the_one_public_account_id_is_only_ever_the_web_adapter_layer():
+    for top in ("infra", ".github", "scripts", "lambdas"):
+        for path in sorted((ROOT / top).rglob("*")):
+            if not path.is_file() or path.suffix not in _SCANNED_SUFFIXES or path == Path(__file__):
+                continue
+            if _SKIPPED_DIRS & set(path.relative_to(ROOT).parts):
+                continue
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                for account in _PUBLIC_ACCOUNTS:
+                    if account in line:
+                        assert f":{account}:layer:LambdaAdapterLayerX86:" in line, (path.name, line)
+
+
+@pytest.mark.parametrize("root", _ROOTS, ids=lambda parts: parts[-1])
+def test_every_aws_provider_refuses_any_account_but_the_expected_one(root):
+    """Each alias is a provider of its own: one left out would still run against the wrong account."""
+    blocks = _provider_blocks(_read(*root, "main.tf"))
+    assert len(blocks) == (1 if root == ("bootstrap",) else 2)
+    for block in blocks:
+        assert (
+            '\n  allowed_account_ids = var.aws_account_id == "" ? null : [var.aws_account_id]\n' in block
+        ), block
+
+    variable = _read(*root, "variables.tf").split('variable "aws_account_id" {')[1].split("\n}\n")[0]
+    # Empty by default, and empty means no check: nothing changes for a deployment that sets nothing.
+    assert '\n  default     = ""\n' in variable
+    assert 'var.aws_account_id == "" || can(regex("^[0-9]{12}$", var.aws_account_id))' in variable
+
+
+def test_production_really_has_a_us_east_1_provider_and_it_is_guarded_too():
+    blocks = _provider_blocks(_read("environments", "production", "main.tf"))
+    alias = [block for block in blocks if 'alias  = "us_east_1"' in block]
+    assert len(alias) == 1 and 'region = "us-east-1"' in alias[0]
+    assert "allowed_account_ids" in alias[0]
+
+
+def test_no_module_configures_a_provider_of_its_own():
+    """Or the roots' account check would not cover it."""
+    for path in (INFRA / "modules").rglob("*.tf"):
+        assert not re.search(r'^provider "', path.read_text(encoding="utf-8"), re.M), path
+
+
+@pytest.mark.parametrize(
+    "workflow, account, bucket",
+    [
+        ("terraform.yml", "AWS_DEV_ACCOUNT_ID", "TF_STATE_BUCKET_DEV"),
+        ("destroy-dev.yml", "AWS_DEV_ACCOUNT_ID", "TF_STATE_BUCKET_DEV"),
+        ("terraform-production-release.yml", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_PROD"),
+    ],
+)
+def test_each_deploy_workflow_passes_the_account_settings_and_falls_back_to_what_it_did(
+    workflow, account, bucket
+):
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+    # A secret first: a variable prints in plain text in public logs (same rule as the role ARN).
+    assert f"      TF_VAR_aws_account_id: ${{{{ secrets.{account} || vars.{account} }}}}\n" in text
+    assert "      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}\n" in text
+    assert f"      TF_STATE_BUCKET: ${{{{ vars.{bucket} }}}}\n" in text
+
+    # Unset, the init is the bare command it always was; set, only the bucket is overridden.
+    assert (
+        '          if [ -n "${TF_STATE_BUCKET:-}" ]; then\n'
+        '            terraform -chdir="$target_dir" init -backend-config="bucket=${TF_STATE_BUCKET}"\n'
+        "          else\n"
+        '            terraform -chdir="$target_dir" init\n'
+        "          fi\n"
+    ) in text
+    assert text.count('terraform -chdir="$target_dir" init') == 2
+    assert text.count("-backend-config") == 1
+
+    # What they used before, untouched: the role, the region, and no account ID or role ARN
+    # written into the workflow itself.
+    role = "AWS_PROD_DEPLOY_ROLE_ARN" if "production" in workflow else "AWS_DEV_DEPLOY_ROLE_ARN"
+    assert f"          role-to-assume: ${{{{ secrets.{role} || vars.{role} }}}}\n" in text
+    assert "          aws-region: ap-southeast-2\n" in text
+    assert "arn:aws:iam::" not in text
+
+
+def test_dev_still_deploys_from_the_branch_and_production_from_its_environment():
+    """The deploy roles' trust is on these two claims; an `environment:` on dev would break its one."""
+    workflows = ROOT / ".github" / "workflows"
+    for name in ("terraform.yml", "destroy-dev.yml"):
+        assert not re.search(r"^    environment:", (workflows / name).read_text(encoding="utf-8"), re.M), name
+    release = (workflows / "terraform-production-release.yml").read_text(encoding="utf-8")
+    assert "\n    environment: production\n" in release
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_backends_and_state_keys_have_not_moved(env):
+    main = _read("environments", env, "main.tf")
+    backend = re.search(r'  backend "s3" \{\n(.*?)\n  \}', main, re.S).group(1)
+    assert [line.strip() for line in backend.splitlines()] == [
+        'bucket       = "bloggerbear-terraform-state"',
+        f'key          = "{env}/terraform.tfstate"',
+        'region       = "ap-southeast-2"',
+        "encrypt      = true",
+        "use_lockfile = true",
+    ]
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_globally_unique_names_are_the_old_ones_unless_a_suffix_is_set(env):
+    """A changed bucket name replaces the bucket, so the suffix must be empty by default."""
+    main = _read("environments", env, "main.tf")
+    variables = _read("environments", env, "variables.tf")
+    suffix = variables.split('variable "unique_name_suffix" {')[1].split("\n}\n")[0]
+    assert '\n  default     = ""\n' in suffix
+
+    content = _resource_block(main, "aws_s3_bucket", "content")
+    assert re.search(rf'bucket\s*=\s*"bloggerbear-{env}-content\$\{{var\.unique_name_suffix\}}"', content)
+    site_call = _module_blocks(main, "modules/static-site")[0]
+    assert re.search(r"^\s*bucket_name_suffix\s*=\s*var\.unique_name_suffix$", site_call, re.M)
+
+    module = _read("modules", "static-site", "main.tf")
+    assert 'bucket        = "bloggerbear-${var.environment_name}-site${var.bucket_name_suffix}"' in module
+    module_variables = _read("modules", "static-site", "variables.tf")
+    module_suffix = module_variables.split('variable "bucket_name_suffix" {')[1].split("\n}\n")[0]
+    assert '\n  default     = ""\n' in module_suffix
+    if env == "dev":
+        assert 'hosted_ui_domain_prefix = "bloggerbear-dev-ops${var.unique_name_suffix}"' in main
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_default_model_is_the_same_profile_in_whichever_account_is_applied_to(env):
+    """The default was this ARN with one account's ID in it. Built from the caller's account it is
+    the same string for that account, so its Lambdas' environment does not change."""
+    main = _read("environments", env, "main.tf")
+    variables = _read("environments", env, "variables.tf")
+    variable = variables.split('variable "bedrock_model_id" {')[1].split("\n}\n")[0]
+    assert '\n  default     = ""\n' in variable
+
+    assert (
+        '  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : '
+        '"arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}'
+        ':inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"\n'
+    ) in main
+    # Nothing reads the variable directly any more, or an empty one would reach a Lambda.
+    assert _uncommented(main).count("var.bedrock_model_id") == 2
+    assert re.search(r"BEDROCK_MODEL_ID\s*=\s*local\.bedrock_model_id", main)
+    # A tfvars value beats the default, and an empty one here once broke every invocation.
+    tfvars = _uncommented(_read("environments", env, "terraform.tfvars"))
+    assert "bedrock_model_id" not in tfvars and "aws_account_id" not in tfvars
+
+
+def test_the_deploy_roles_trust_whichever_repository_bootstrap_is_told():
+    """A fork passes its own owner/repo; the default is this repository."""
+    variables = _read("bootstrap", "variables.tf")
+    repo = variables.split('variable "github_repo" {')[1].split("\n}\n")[0]
+    assert '\n  default     = "AllainWoodsford/BloggerBear"\n' in repo
+
+    main = _read("bootstrap", "main.tf")
+    owner_repo = 'repo:${split("/", var.github_repo)[0]}@*/${split("/", var.github_repo)[1]}@*'
+    assert f'values   = ["{owner_repo}:ref:refs/heads/dev"]' in main
+    assert f'values   = ["{owner_repo}:environment:production"]' in main
+    # Those two are the only subjects trusted, and neither names an owner or a repository itself.
+    assert len(re.findall(r'values\s*=\s*\["repo:', main)) == 2
+    # And the state bucket's name is a variable too, with the name the backends are written for.
+    bucket = variables.split('variable "state_bucket_name" {')[1].split("\n}\n")[0]
+    assert '\n  default     = "bloggerbear-terraform-state"\n' in bucket
+
+
+def test_dev_refuses_a_shared_web_acl_from_another_account():
+    """CloudFront can only use a web ACL in its own account, so a two-account deployment leaves
+    web_acl_arn empty. Checked at plan time, and only when both values are set."""
+    variables = _read("environments", "dev", "variables.tf")
+    acl = variables.split('variable "web_acl_arn" {')[1].split("\n}\n")[0]
+    assert '\n  default     = ""\n' in acl
+    assert (
+        'condition     = var.web_acl_arn == "" || var.aws_account_id == "" || '
+        'try(split(":", var.web_acl_arn)[4], "") == var.aws_account_id'
+    ) in acl
+    # Today's value: dev does not use the shared ACL at all, so the rule has nothing to refuse.
+    assert re.search(r'^web_acl_arn = ""$', _read("environments", "dev", "terraform.tfvars"), re.M)
+
+
+def test_the_fork_guide_names_every_setting_the_workflows_read():
+    guide = (ROOT / "docs" / "deploying-your-own.md").read_text(encoding="utf-8")
+    assert "(docs/deploying-your-own.md)" in (ROOT / "README.md").read_text(encoding="utf-8")
+    settings = set()
+    for name in ("terraform.yml", "destroy-dev.yml", "terraform-production-release.yml"):
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        settings |= set(re.findall(r"\$\{\{[^}]*?\b(?:secrets|vars)\.([A-Z0-9_]+)", text))
+        settings |= set(re.findall(r"\|\| vars\.([A-Z0-9_]+)", text))
+    new = {"AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "UNIQUE_NAME_SUFFIX"}
+    assert new <= settings
+    for setting in sorted(settings):
+        assert f"`{setting}`" in guide, setting
+
+
 def test_security_scans_cover_the_whole_repo_with_pinned_tools():
     """security.yml used to scan only lambdas/ (missing scripts/ and the dev requirements), report
     nothing below HIGH, and install whatever Trivy apt had; Trufflehog ran `version: latest`."""
@@ -1838,8 +2073,8 @@ def test_dev_gives_the_agent_the_pipelines_model_and_the_sites_origin():
     dev = _read("environments", "dev", "main.tf")
     call = _module_blocks(dev, "modules/ops-assistant")[0]
 
-    assert re.search(r"^\s*agent_model_id\s*=\s*var\.bedrock_model_id$", call, re.M)
-    assert re.search(r"BEDROCK_MODEL_ID\s*=\s*var\.bedrock_model_id", dev)
+    assert re.search(r"^\s*agent_model_id\s*=\s*local\.bedrock_model_id$", call, re.M)
+    assert re.search(r"BEDROCK_MODEL_ID\s*=\s*local\.bedrock_model_id", dev)
     assert re.search(r"^\s*agent_allowed_origin\s*=\s*local\.site_url$", call, re.M)
     assert 'callback_urls = ["${local.site_url}/ask.html"]' in call
     # An origin has no path and no trailing slash, or a browser's Origin header never equals it.

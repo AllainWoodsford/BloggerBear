@@ -19,7 +19,7 @@ from common.stats import build_stats
 
 REGION = "ap-southeast-2"
 PROFILE = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
-ARN = f"arn:aws:bedrock:ap-southeast-2:547610822592:inference-profile/{PROFILE}"
+ARN = f"arn:aws:bedrock:ap-southeast-2:123456789012:inference-profile/{PROFILE}"
 
 
 def _call(model_id=PROFILE, input_tokens=1000, output_tokens=1000, stage="draft"):
