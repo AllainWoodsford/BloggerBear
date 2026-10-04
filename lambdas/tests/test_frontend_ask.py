@@ -262,7 +262,9 @@ def test_push_to_talk_works_from_the_keyboard_and_without_holding():
     # The browser taking the pointer (a scroll, a long press on a phone) is not the operator
     # letting go: it must not stop the microphone.
     assert 'talkButton.addEventListener("pointercancel", pressCancelled)' in code
-    assert re.search(r"function pressCancelled\(\) \{\s*pressedAt = 0;\s*lastPressAt = Date.now\(\);\s*\}", code)
+    assert re.search(
+        r"function pressCancelled\(\) \{\s*pressedAt = 0;\s*lastPressAt = Date.now\(\);\s*\}", code
+    )
     assert 'talkButton.addEventListener("contextmenu"' in code
     assert "touch-action: none;" in css and "-webkit-touch-callout: none;" in css
     assert ".ask-talk:focus-visible" in css and ".ask-button:focus-visible" in css
@@ -346,9 +348,7 @@ const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
     chunks: ask.speechChunks(input.longAnswer, 180),
     shortChunks: ask.speechChunks("One. Two!  Three?", 180),
     noChunks: ask.speechChunks("   ", 180),
-    messages: ["not-allowed", "network", "audio-capture", "no-speech", "aborted", "made-up", "constructor"].map(
-      (code) => ask.recognitionMessage(code)
-    ),
+    messages: input.errorCodes.map((code) => ask.recognitionMessage(code)),
     voices: input.voiceSets.map((set) => {
       const picked = ask.pickVoice(set.voices, set.lang);
       return picked ? picked.name : null;
@@ -408,9 +408,24 @@ def node_result():
         + "throttled around two in the morning while the retry ran out of attempts and gave up. "
         + "Spend is normal. "
         + ("word " * 60),
+        "errorCodes": [
+            "not-allowed",
+            "network",
+            "audio-capture",
+            "no-speech",
+            "aborted",
+            "made-up",
+            "constructor",
+        ],
         "voiceSets": [
             {"lang": "en-AU", "voices": [{"name": "us", "lang": "en-US"}, {"name": "au", "lang": "en_AU"}]},
-            {"lang": "en-NZ", "voices": [{"name": "fr", "lang": "fr-FR"}, {"name": "def", "lang": "en-GB", "default": True}]},
+            {
+                "lang": "en-NZ",
+                "voices": [
+                    {"name": "fr", "lang": "fr-FR"},
+                    {"name": "def", "lang": "en-GB", "default": True},
+                ],
+            },
             {"lang": "en-NZ", "voices": [{"name": "fr", "lang": "fr-FR"}, {"name": "gb", "lang": "en-GB"}]},
             {"lang": "en-AU", "voices": [{"name": "fr", "lang": "fr-FR"}]},
             {"lang": "en-AU", "voices": None},
