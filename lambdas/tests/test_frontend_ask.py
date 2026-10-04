@@ -316,6 +316,32 @@ def test_speech_is_spoken_in_pieces_on_the_next_tick_and_held_until_it_ends():
     assert "documentElement.lang" not in code
 
 
+def test_speech_is_unlocked_by_a_click_and_a_refused_answer_waits_for_the_next_tap():
+    """iOS speaks only from a user activation, and a touch's pointerdown is not one: the unlock
+    listens for click. It counts as done only once the silent utterance starts, and an answer the
+    browser refused (\"not-allowed\") is kept and spoken from the next tap."""
+    code = _code(_read("ask.js"))
+
+    assert 'doc.addEventListener("click", unlockSpeech, true)' in code
+    assert 'addEventListener("pointerdown", unlockSpeech' not in code
+    unlock = code[code.index("function unlockSpeech(event)") :]
+    unlock = unlock[: unlock.index("\n  }\n")]
+    assert "silent.onstart = function () {" in unlock and "speechUnlocked = true;" in unlock
+    assert "blockedSpeech" in unlock
+    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
+    assert 'event.error === "not-allowed"' in say and "blockedSpeech = text;" in say
+
+
+def test_the_voice_test_listens_only_after_its_sample_has_been_spoken():
+    code = _code(_read("ask.js"))
+    test = code[code.index("function testVoice()") :]
+
+    assert "whenSampleDone(function () {" in test
+    assert "}, 2500);" not in test
+    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
+    assert "position === chunks.length - 1" in say and "SPEECH_DONE_FALLBACK_MS" in say
+
+
 def test_recognition_shows_words_as_heard_and_asks_once_it_ends():
     code = _code(_read("ask.js"))
     start = code[code.index("function startListening(onHeard)") : code.index("function stopListening()")]
@@ -838,28 +864,3 @@ def test_the_voice_is_the_exact_tag_then_the_default_english_then_any_english(no
 def test_the_environment_label_is_a_short_word_or_nothing(node_result):
     assert node_result["environments"] == ["dev", "", "", ""]
 
-
-def test_speech_is_unlocked_by_a_click_and_a_refused_answer_waits_for_the_next_tap():
-    """iOS speaks only from a user activation, and a touch's pointerdown is not one: the unlock
-    listens for click. It counts as done only once the silent utterance starts, and an answer the
-    browser refused (\"not-allowed\") is kept and spoken from the next tap."""
-    code = _code(_read("ask.js"))
-
-    assert 'doc.addEventListener("click", unlockSpeech, true)' in code
-    assert 'addEventListener("pointerdown", unlockSpeech' not in code
-    unlock = code[code.index("function unlockSpeech(event)") :]
-    unlock = unlock[: unlock.index("\n  }\n")]
-    assert "silent.onstart = function () {" in unlock and "speechUnlocked = true;" in unlock
-    assert "blockedSpeech" in unlock
-    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
-    assert 'event.error === "not-allowed"' in say and "blockedSpeech = text;" in say
-
-
-def test_the_voice_test_listens_only_after_its_sample_has_been_spoken():
-    code = _code(_read("ask.js"))
-    test = code[code.index("function testVoice()") :]
-
-    assert "whenSampleDone(function () {" in test
-    assert "}, 2500);" not in test
-    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
-    assert "position === chunks.length - 1" in say and "SPEECH_DONE_FALLBACK_MS" in say
