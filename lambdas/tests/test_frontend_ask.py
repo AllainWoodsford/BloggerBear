@@ -95,9 +95,7 @@ def test_each_environment_gives_the_page_its_own_settings(env):
     assert 'askUrl: "${trimsuffix(module.ops_assistant.mcp_url, "/mcp")}/ask"' in config
     assert 'hostedUiDomain: "${module.ops_assistant.hosted_ui_domain}"' in config
     assert 'clientId: "${module.ops_assistant.app_client_id}"' in config
-    # Dev's label arrives with the voice change (frontend/ask.js readConfig's `environment`).
-    if env == "production":
-        assert 'environment: "production"' in config
+    assert f'environment: "{env}"' in config
 
 
 def test_productions_assistant_requires_mfa_and_is_the_only_one_with_account_wide_data():
