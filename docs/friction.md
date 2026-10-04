@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 9 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 13 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -455,6 +455,29 @@ for the operator's own words. Unconfirmed: whether it is available in ap-southea
 article could put `topics delete` on the screen. **Decided:** commands come from a fixed catalogue in
 code, with ids read from the tables; the model only chooses which findings to talk about, and
 nothing in the catalogue deletes.
+
+**10.10 The agent SDK caps the MCP SDK.** The newest `mcp` is 2.3.0, but `strands-agents` 1.57.2
+requires `mcp<2.2`, so installing both fails to resolve. **Decided:** pin `mcp==2.1.1`, which
+Strands accepts and which already speaks `2026-07-28`. **Feedback:** the cap is easy to miss until
+the two are installed together; it would help to see it stated next to Strands' MCP instructions.
+
+**10.11 Every `mcp` 1.x example fails to import on 2.x.** FastMCP was renamed `MCPServer` and
+moved. The SDK handles it well: the old import raises an error that names the new one and links
+the migration guide. Most examples found by searching are still 1.x.
+
+**10.12 The first request to the server was a 421.** The SDK checks the `Host` header against a
+list, as well as `Origin`, and a test client's host isn't `localhost`. Nothing in the spec's
+transport page mentions a Host check; it is the SDK's own protection against DNS rebinding. Behind
+API Gateway the host is the API's domain, so an unset list would have refused every request in
+the first deploy. **Fix:** the lists come from the environment, an empty one refuses everything
+on purpose, and a contract test holds both. **Lesson:** run the real SDK in a test before
+writing any Terraform for it.
+
+**10.13 A new requirements file is invisible to the vulnerability scan.** Same as 2.8: Trivy only
+reads files named `requirements.txt`, plus the patterns it is given, and the MCP server's
+dependencies live in `requirements-ops-mcp.txt` so the pipeline's shared zip doesn't carry them.
+**Fix:** the pattern in both scan workflows now names it. The file pins only `mcp` itself, so what
+`mcp` pulls in is still not scanned; a lock file for that Lambda's build is the proper fix.
 
 ---
 

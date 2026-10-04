@@ -164,9 +164,10 @@ which is also what the judges get (section 6).
 
 ### 1. The ops MCP server
 
-- **Python, the official `mcp` SDK** (FastMCP), Streamable HTTP, **stateless**, JSON responses.
-  In this repo (`lambdas/`, Terraform alongside the rest): it reads this app's tables, so it deploys
-  with them.
+- **Python, the official `mcp` SDK** (`MCPServer`), Streamable HTTP, **stateless**, JSON responses.
+  In this repo (`lambdas/ops_mcp/`, Terraform alongside the rest): it reads this app's tables, so it
+  deploys with them. **Built so far:** the server, the suggestion catalogue, and the first two
+  tools (`pipeline_health`, `admin_inbox`), with tests; not deployed yet.
 - **How it runs on Lambda** (the transport decision, 2026-10-04): the SDK's own web app, unchanged,
   inside an ordinary Lambda through the **AWS Lambda Web Adapter** layer. Still serverless: nothing
   runs, or is paid for, between questions. Four things to hold to:
@@ -200,6 +201,19 @@ which is also what the judges get (section 6).
   speak it; a server that answers both ("dual-era") if the SDK offers it; otherwise `2025-11-25` in
   stateless mode. Any of the three meets the rules. Pin the SDK version, and assert the protocol
   version in a contract test.
+
+  **Checked (2026-10-04), and it is the best case: both.** `mcp` 2.1.1 answers `2026-07-28`
+  statelessly with plain JSON, and the same server still answers a client that opens with
+  `initialize` at `2025-11-25`. It is pinned in `lambdas/requirements-ops-mcp.txt` at 2.1.1 and not
+  the newest (2.3.0) because Strands Agents 1.57.2 requires `mcp<2.2`: the agent's client and the
+  server are then the same release. What the check turned up:
+  - In `mcp` 2.x, FastMCP is `MCPServer` (`mcp.server.mcpserver`); 1.x examples don't import.
+  - The SDK refuses any request whose `Host` header isn't on a list (`421`), as well as an
+    unexpected `Origin` (`403`). Behind API Gateway the host is the API's own domain, so the
+    deployment must set `OPS_MCP_ALLOWED_HOSTS`; left unset, every request is refused.
+  - A tool that raises answers "Error executing tool" and nothing more: the reason is logged, not
+    sent to the caller.
+  - Still to check: that Strands' MCP client sends the caller's bearer token (the agent, PR 3).
 - **Tools.** Each returns `structuredContent` (data, findings and suggestions) plus a short `spoken`
   text. The optional arguments are what let the agent follow a lead from one tool into another.
 
@@ -589,7 +603,7 @@ that is already read on every pipeline run.
 
 ## Open questions
 
-- Which protocol versions do the Python `mcp` SDK and Strands' MCP client speak today (section 1)?
+- Does Strands' MCP client pass the caller's bearer token through to the server (section 1)?
 - AgentCore Memory as a second layer for the operator's preferences: worth a day, if there is one?
 - Which content checks, besides the empty musing and the fenced article, are worth having on day
   one?

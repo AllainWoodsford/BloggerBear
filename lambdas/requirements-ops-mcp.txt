@@ -1,0 +1,7 @@
+# The ops MCP server's own dependencies (ops_mcp/server.py). Kept out of requirements.txt: that
+# file is installed into the one zip every pipeline Lambda shares, and none of them need this.
+#
+# 2.1.1, not the newest: it speaks MCP 2026-07-28 (and still answers 2025-11-25), and it is the
+# newest the Strands Agents SDK accepts (strands-agents 1.57.2 requires mcp<2.2), so the agent's
+# client and this server are the same release.
+mcp==2.1.1

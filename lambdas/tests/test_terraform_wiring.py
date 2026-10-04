@@ -949,8 +949,19 @@ def test_security_scans_cover_the_whole_repo_with_pinned_tools():
     assert 'sha256sum -c -' in security
     fs_runs = re.findall(r"trivy fs (.*?)\n\n", security, re.S)  # each command, up to its blank line
     assert len(fs_runs) == 2
+    # Trivy reads requirements.txt by name and anything else only by this pattern, so every other
+    # requirements file in the repo must match it: a new one that doesn't would go unscanned.
+    others = sorted(
+        path.name
+        for path in workflows.parents[1].glob("*/requirements-*.txt")
+        if "node_modules" not in path.parts
+    )
+    assert "requirements-dev.txt" in others and "requirements-ops-mcp.txt" in others
     for run in fs_runs:
-        assert "--file-patterns 'pip:requirements-dev\\.txt'" in run and run.rstrip().endswith(".")
+        pattern = re.search(r"--file-patterns 'pip:(.+?)'", run)
+        assert pattern and run.rstrip().endswith(".")
+        for name in others:
+            assert re.fullmatch(pattern.group(1), name), f"{name} is not scanned"
     assert "--severity MEDIUM,HIGH,CRITICAL --exit-code 0" in fs_runs[0]  # reported
     assert "--severity HIGH,CRITICAL --exit-code 1" in fs_runs[1]  # gated
     assert "bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests" in security
