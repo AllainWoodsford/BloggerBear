@@ -405,6 +405,20 @@ Each article records which gear was in the prompts that wrote it (`equipment_use
 per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
 gear helps, and share out wear. It is never shown publicly.
 
+## The Alexa+ add-on: `alexa_addon_values.py`
+
+Putting the operator's assistant on Alexa+ is a one-time bootstrap per environment, written up in
+[alexa/README.md](../alexa/README.md). This script prints the values it asks for, from one
+environment's Terraform outputs, and checks they are https and all that environment's own:
+
+```bash
+python scripts/alexa_addon_values.py dev
+python scripts/alexa_addon_values.py dev --write-manifest ~/bloggerbear-addon-dev/addon-package/addon.json
+```
+
+It never prints the Alexa client secret unless you pass `--show-secret`, and it will not replace an
+existing manifest without `--force`. It needs Terraform and read access to that environment's state.
+
 ## After changing the CLI: `generate_cli_reference.py`
 
 The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you
