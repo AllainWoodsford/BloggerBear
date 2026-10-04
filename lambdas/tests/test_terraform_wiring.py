@@ -1733,7 +1733,9 @@ def test_the_agent_is_a_plain_python_function_with_a_ceiling():
     assert re.search(r"timeout\s*=\s*29$", function, re.M)
     assert re.search(r"memory_size\s*=\s*var\.agent_memory_size", function)
     assert re.search(r"reserved_concurrent_executions\s*=\s*var\.agent_reserved_concurrency", function)
-    for name, default in (("agent_memory_size", "1024"), ("agent_reserved_concurrency", "2")):
+    # No reservation by default: the account's whole concurrency quota is Lambda's minimum, so
+    # reserving any of it is refused at apply (the first dev apply of the agent failed on 2).
+    for name, default in (("agent_memory_size", "1024"), ("agent_reserved_concurrency", "-1")):
         block = re.search(rf'variable "{name}" \{{(.*?)\n\}}', variables, re.S).group(1)
         assert re.search(rf"default\s*=\s*{default}$", block, re.M), name
     # Its own log group, made first, and the policy before the first invocation.
@@ -1797,8 +1799,9 @@ def test_dev_gives_the_agent_the_pipelines_model_and_the_sites_origin():
     assert 'callback_urls = ["${local.site_url}/ask.html"]' in call
     # An origin has no path and no trailing slash, or a browser's Origin header never equals it.
     assert 'site_url = "https://${module.static_site.distribution_domain_name}"' in dev
-    # The ceiling is the module's default unless dev says otherwise, and dev does not remove it.
-    assert not re.search(r"agent_reserved_concurrency\s*=\s*(-1|0)\b", call)
+    # Dev leaves the reservation at the module's default (none), and never sets 0, which would
+    # switch the agent off.
+    assert not re.search(r"agent_reserved_concurrency\s*=", call)
 
 
 def test_ask_is_behind_the_same_authorizer_and_scope_and_only_the_preflight_is_open():
