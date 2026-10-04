@@ -132,11 +132,11 @@ variable "agent_memory_size" {
 
 variable "agent_reserved_concurrency" {
   type        = number
-  default     = 2
-  description = "How many questions the agent Lambda may be answering at once (its reserved concurrency). Low on purpose: a signed-in page calls Bedrock, and the daily authoring cycle shares the account's Bedrock quota. These executions are set aside from the account's pool, which must keep 100 unreserved."
+  default     = -1
+  description = "How many questions the agent Lambda may be answering at once (its reserved concurrency), or -1 for no reservation (the default). A reservation is a ceiling on how many questions can be at Bedrock at once, but it is taken out of the account's pool, and Lambda refuses any reservation that would leave the account less unreserved concurrency than its minimum. This account's whole quota is that minimum (10), so nothing can be reserved in it: the first dev apply failed on a reservation of 2. Without one, the stage's throttle is what bounds the agent. Set a number once the account's concurrency quota has been raised."
 
   validation {
-    condition     = var.agent_reserved_concurrency >= 1 && floor(var.agent_reserved_concurrency) == var.agent_reserved_concurrency
-    error_message = "agent_reserved_concurrency must be a whole number of at least 1: 0 would switch the agent off, and -1 would remove the limit this variable exists to set."
+    condition     = (var.agent_reserved_concurrency == -1 || var.agent_reserved_concurrency >= 1) && floor(var.agent_reserved_concurrency) == var.agent_reserved_concurrency
+    error_message = "agent_reserved_concurrency must be -1 (no reservation) or a whole number of at least 1: 0 would switch the agent off."
   }
 }

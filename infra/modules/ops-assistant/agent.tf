@@ -195,12 +195,14 @@ resource "aws_cloudwatch_log_group" "agent" {
 #   left to hear the answer. The agent's own waits are shorter than this (ops_agent/agent.py).
 # - memory: a cold start imports strands, the MCP client, pydantic and botocore before the first
 #   question can be answered, and Lambda gives CPU in proportion to memory.
-# - reserved_concurrent_executions: both a ceiling and a floor. A ceiling on how many questions
-#   can be at Bedrock at once, so a burst from the page cannot take the Bedrock quota the daily
-#   authoring cycle needs (design, section 6); beyond it Lambda refuses the invocation and API
-#   Gateway answers with an error, with no model call made. And those executions are set aside from
-#   the account's pool, which must keep at least 100 unreserved: an account whose concurrency
-#   quota is too small for that refuses this setting at apply.
+# - reserved_concurrent_executions: -1, no reservation, unless the variable says otherwise. A
+#   reservation would be a ceiling on how many questions can be at Bedrock at once, so a burst
+#   from the page could not take the Bedrock quota the daily authoring cycle needs (design,
+#   section 6). But it is set aside from the account's pool, and Lambda refuses one that leaves
+#   the account less unreserved concurrency than its minimum. This account's whole quota is that
+#   minimum, 10, so the first dev apply failed here (PutFunctionConcurrency: "decreases account's
+#   UnreservedConcurrentExecution below its minimum value of [10]"). Until the quota is raised,
+#   the stage's throttle below is the only bound on the agent.
 resource "aws_lambda_function" "ops_agent" {
   function_name = local.agent_name
   # The log group first, and the policy too: a function that exists before its role can read the
