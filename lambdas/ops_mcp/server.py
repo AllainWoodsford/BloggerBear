@@ -162,15 +162,16 @@ def build_server() -> MCPServer:
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def alarms(ctx: Context) -> dict[str, Any]:
-        """The CloudWatch alarms that are firing right now, and for how long each has been. Part
-        of a briefing."""
+        """This environment's CloudWatch alarms that are firing right now, and for how long each
+        has been. Part of a briefing."""
         return remembered(ctx, account.alarms())
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def spend(ctx: Context, period: Literal["week", "month"] = "week") -> dict[str, Any]:
-        """AI spend and the whole AWS bill, in Australian dollars: this `week` so far, or the
-        `month` (the last four weeks), and this week against a typical week. A finding only when
-        this week is more than twice a typical one."""
+        """AI spend in Australian dollars: this `week` so far, or the `month` (the last four
+        weeks), and this week against a typical week. Where this environment may report it, the
+        whole AWS bill too; where it may not, `aws` is null and the answer says so. A finding
+        only when this week is more than twice a typical one."""
         return remembered(ctx, account.spend(period))
 
     return server
