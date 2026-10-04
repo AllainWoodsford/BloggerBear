@@ -387,6 +387,19 @@ after any deploy). Set `coingecko_api_plan = "pro"` in `terraform.tfvars` if it'
 API -- and if a key is rate-limited or rejected at runtime, requests fall back to the public API
 automatically. Never put the key in a topic's `adapter_config` (that's stored in DynamoDB).
 
+**Optional GitHub API token** (for the GitHub Trending adapter, which calls GitHub's REST Search
+API): create a fine-grained personal access token with **no permissions** (public data only) and
+store it the same way:
+
+```bash
+MSYS_NO_PATHCONV=1 aws ssm put-parameter --region ap-southeast-2 --type SecureString --overwrite   --name /bloggerbear/dev/github-api-token --value '<your token>'
+MSYS_NO_PATHCONV=1 aws ssm put-parameter --region ap-southeast-2 --type SecureString --overwrite   --name /bloggerbear/production/github-api-token --value '<your token>'
+```
+
+Without it the adapter searches unauthenticated (10 requests a minute per IP, shared with whatever
+else uses that Lambda egress IP); with it, 30 a minute on the token's own budget. A token GitHub
+rejects falls back to unauthenticated search automatically.
+
 ### 4. First deploy: dev (CI, triggered by you)
 
 Open a PR into `dev` touching anything (or just merge this repo's

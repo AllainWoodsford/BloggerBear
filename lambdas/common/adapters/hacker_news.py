@@ -1,7 +1,8 @@
 """Adapter for Hacker News top stories (https://news.ycombinator.com).
 
 Phase 7's second adapter -- picked to prove the adapter pattern
-generalizes beyond an HTML scrape (github_trending.py): this one talks to
+generalizes beyond an HTML scrape (github_trending.py then; it has since
+moved to GitHub's Search API): this one talks to
 the official, public Hacker News API
 (https://github.com/HackerNews/API, Firebase-backed), no auth, no API
 key, no documented rate limit, no compliance sensitivity -- same low-risk
