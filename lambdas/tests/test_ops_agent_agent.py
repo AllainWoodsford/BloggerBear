@@ -598,6 +598,21 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         "`how_to` is help or a command the operator asked for, not a fix",
     ):
         assert rule in prompt, rule
+
+
+def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
+    """"I don't have access to logs, check CloudWatch" was the answer the owner did not want: the
+    assistant knows the architecture, so it says where to look (ops_mcp/runsheets.py)."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "You cannot read logs, metrics or dashboards",
+        "never stop at saying you can't: call investigate",
+        "a runsheet is on screen",
+        "call architecture with the name exactly as they gave it",
+        "it answers for this one",
+    ):
+        assert rule in prompt, rule
     # The budgets it is told are the ones the code enforces, unchanged.
     assert "8 for a first question, 3 for a later one" in prompt
     assert policy.BUDGETS == {"briefing": 8, "follow_up": 3}

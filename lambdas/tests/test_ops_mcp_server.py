@@ -16,7 +16,7 @@ from moto import mock_aws
 from starlette.testclient import TestClient
 from table_schemas import create_table
 
-from ops_mcp import server
+from ops_mcp import architecture, server
 
 HOST = "ops.example.test"
 MODERN = "2026-07-28"
@@ -124,12 +124,14 @@ PIPELINE_TOOLS = {"pipeline_health", "admin_inbox", "content_checks", "security_
 MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 # The guide to the Admin CLI (cli_guide.py): help, how-to commands, and the topics as a table.
 GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}
+# The architecture expert (architecture.py, runsheets.py): answered from the package's catalogue.
+EXPERT_TOOLS = {"architecture", "investigate"}
 
 
 def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
 
-    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS
+    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS
     for name, tool in tools.items():
         # Only the memory tools say they write, and each says what: its own list and nothing else.
         assert tool["annotations"]["readOnlyHint"] is (name not in MEMORY_TOOLS)
@@ -207,7 +209,7 @@ def test_the_only_thing_any_tool_can_write_is_the_assistants_own_table():
 
     registered = asyncio.run(server.build_server().list_tools())
 
-    assert {tool.name for tool in registered} == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS
+    assert {tool.name for tool in registered} == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS
 
     package = pathlib.Path(server.__file__).parent
     writes = re.compile(r"\.(put_item|update_item|delete_item|batch_writer|put_object|delete_object)\(")
@@ -321,3 +323,31 @@ def test_the_overview_passes_its_arguments_to_its_function(client):
 
     assert mock_overview.call_args_list[0].args == (3, None)
     assert mock_overview.call_args_list[1].args == (5, None)
+
+
+# --- the architecture expert, over the wire ------------------------------------------------------
+
+
+def test_the_architecture_tools_take_what_the_operator_pasted_and_answer_for_this_environment(
+    client, monkeypatch
+):
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    kinds = tools["architecture"]["inputSchema"]["properties"]["kind"]
+    assert set(json.dumps(kinds).split('"')) >= set(architecture.KINDS)
+
+    answer = tool_call(client, "architecture", {"name": "bloggerbear-prod-candidate-ideas"})
+    assert answer["matches"][0]["name"] == "bloggerbear-dev-candidate-ideas"
+    assert answer["rewritten"] is True and answer["data_allowed"] is True
+
+    runsheet = tool_call(client, "investigate", {"symptom": "any 400 errors in the logs?", "status": 400})
+    assert runsheet["runsheet"]["id"] == "api-errors"
+    assert all(card["kind"] == "how_to" for card in runsheet["findings"])
+
+
+def test_the_architecture_tools_are_not_passed_through_the_memory(client):
+    with patch("ops_mcp.memory.remember") as mock_remember:
+        tool_call(client, "architecture", {"name": "topics"})
+        tool_call(client, "investigate", {"symptom": "api-errors"})
+
+    mock_remember.assert_not_called()
