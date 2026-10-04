@@ -35,11 +35,32 @@ A REST API puts the address at `identity.sourceIp`; an HTTP API (payload 2.0) pu
 `http.sourceIp`. Both are read, since both come from the same trusted header.
 
     OPS_ASSISTANT_ALLOWED_CIDRS  comma-separated addresses and CIDR blocks, IPv4 or IPv6
+
+**The agent asks on the operator's behalf, from an address of its own.** The agent Lambda
+(ops_agent_handler.py) calls this server over the internet, so the address API Gateway records
+for that call is Lambda's, which is on nobody's allowlist: under `allowlist`, every question would
+be refused here after the agent had already admitted it. So the agent, which has checked the
+operator's real address itself, passes that address on, with a key only it and this server hold:
+
+    OPS_AGENT_FORWARD_KEY  a random key, the same on both functions (Terraform makes it)
+    x-ops-agent-key        the key, on each of the agent's requests
+    x-ops-caller-address   the operator's address, as the agent saw it
+
+A request whose key header matches is judged by the address it vouches for; any other request
+is judged by its own, as before. The key is compared in constant time, must be at least
+MIN_FORWARD_KEY_CHARS of printable ASCII to count at all, and an unset key turns the whole thing
+off. Holding the key never admits anyone by itself: the vouched-for address still has to be on
+the list, and the caller still needs a token the authorizer accepts. What the key does give its
+holder is the choice of which address to be judged by, so somebody with a valid token, the key
+and a listed address to name would get past `allowlist` (never past `off`). The key is therefore
+never logged and never sent back: the refusal line holds the reason alone, and the agent sends
+the address only for a request its own check has admitted (ops_agent_handler.py).
 """
 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import ipaddress
 import json
 import os
@@ -50,6 +71,10 @@ from common.dynamo import get_pipeline_config
 
 ALLOWED_CIDRS_ENV = "OPS_ASSISTANT_ALLOWED_CIDRS"
 REQUEST_CONTEXT_HEADER = b"x-amzn-request-context"
+FORWARD_KEY_ENV = "OPS_AGENT_FORWARD_KEY"
+FORWARD_KEY_HEADER = b"x-ops-agent-key"
+FORWARDED_ADDRESS_HEADER = b"x-ops-caller-address"
+MIN_FORWARD_KEY_CHARS = 32
 
 # Why a request was admitted or refused. They go to the log, never to the caller.
 OPEN = "open"
@@ -131,6 +156,56 @@ def allowed_cidrs_from_env(name: str = ALLOWED_CIDRS_ENV) -> list[str]:
     return [entry.strip() for entry in os.environ.get(name, "").split(",") if entry.strip()]
 
 
+def forward_key_from_env(name: str = FORWARD_KEY_ENV) -> str:
+    """The key the agent and the server share, or "" when there is none (or one too short to
+    be a secret), which means no request is ever taken as the agent's."""
+    return _usable_key(os.environ.get(name, "").strip())
+
+
+def _usable_key(key) -> str:
+    """`key` if it can be a shared secret and an HTTP header value, else "". Printable ASCII with
+    no spaces only: anything else could not be sent as a header by the agent (the HTTP client
+    would raise, or a line break would start a header of its own), so the two sides would
+    disagree about a key that looks set."""
+    if not isinstance(key, str) or len(key) < MIN_FORWARD_KEY_CHARS:
+        return ""
+    return key if all("!" <= char <= "~" for char in key) else ""
+
+
+def forwarding_headers(source_ip, key: str | None = None) -> dict[str, str]:
+    """The headers the agent adds to its requests to this server: the key, and the operator's
+    address as the agent saw it. Empty when there is no usable key or `source_ip` is not an IP
+    address, so the server then judges the request by the agent's own address (and `allowlist`
+    refuses it). The address is sent as `ipaddress` writes it, never as it arrived, so nothing
+    but an address can ride along in the header."""
+    key = forward_key_from_env() if key is None else _usable_key(key)
+    address = _address(source_ip)
+    if not key or address is None:
+        return {}
+    return {FORWARD_KEY_HEADER.decode(): key, FORWARDED_ADDRESS_HEADER.decode(): str(address)}
+
+
+def _single(headers, name: bytes) -> bytes | None:
+    values = [value for header, value in headers if header == name]
+    return values[0] if len(values) == 1 and isinstance(values[0], bytes) else None
+
+
+def caller_address(headers, key: str) -> str | None:
+    """The address to judge a request by. From the agent (its key header matches `key`): the
+    address it vouches for, or None if it sent none. From anyone else: the request's own.
+
+    The key is compared as bytes, so a header of any length or with any bytes in it is simply
+    not the key (`hmac.compare_digest` on text raises on non-ASCII). `key` is checked again
+    here, so a caller that passes a short one gets nothing taken as the agent's."""
+    key = _usable_key(key)
+    offered = _single(headers, FORWARD_KEY_HEADER)
+    if key and offered is not None and hmac.compare_digest(offered, key.encode("ascii")):
+        vouched = _single(headers, FORWARDED_ADDRESS_HEADER)
+        # Not ASCII: not an address. `decide` turns the replacement characters into a refusal.
+        return vouched.decode("ascii", "replace") if vouched is not None else None
+    return source_ip_from_headers(headers)
+
+
 def source_ip_from_headers(headers) -> str | None:
     """The caller's address from the request context the Lambda Web Adapter forwards, or None.
 
@@ -174,11 +249,13 @@ class AccessMiddleware:
         *,
         read_config: Callable[[], dict | None] = get_pipeline_config,
         allowed_cidrs: Callable[[], list[str]] = allowed_cidrs_from_env,
+        forward_key: Callable[[], str] = forward_key_from_env,
         label: str = "assistant",
     ) -> None:
         self.app = app
         self._read_config = read_config
         self._allowed_cidrs = allowed_cidrs
+        self._forward_key = forward_key
         self._label = label
 
     async def __call__(self, scope, receive, send) -> None:
@@ -219,6 +296,7 @@ class AccessMiddleware:
         if setting is None or setting == ACCESS_OPEN:
             return True, OPEN  # nothing else is looked at: open costs the one read above
         try:
-            return decide(setting, source_ip_from_headers(scope.get("headers") or []), self._allowed_cidrs())
+            address = caller_address(scope.get("headers") or [], self._forward_key())
+            return decide(setting, address, self._allowed_cidrs())
         except Exception:  # noqa: BLE001 - a check that fails is a refusal, never a way in
             return False, CONFIG_UNREADABLE

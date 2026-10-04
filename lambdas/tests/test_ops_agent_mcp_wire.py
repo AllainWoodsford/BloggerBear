@@ -250,3 +250,43 @@ def test_with_the_assistant_switched_off_the_question_fails_and_the_model_is_nev
         agent.answer("Anything need my attention?", [], TOKEN)
 
     assert recorder.requests and model.calls == 0
+
+
+def test_under_allowlist_the_agent_gets_through_by_vouching_for_the_operators_address(
+    ops_server, monkeypatch
+):
+    """The gap this closes: the server sees the agent's address (here: none at all), so
+    `allowlist` refused every question the agent had already admitted. With the shared key the
+    server judges the request by the operator's address, and still refuses one not on the list."""
+    from ops_mcp import access
+
+    url, recorder = ops_server
+    key = "k" * 40
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", key)
+    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", "203.0.113.7")
+    put_pipeline_config(assistant_access="allowlist")
+
+    with agent.mcp_client(url, TOKEN, access.forwarding_headers("203.0.113.7")) as client:
+        names = [tool.tool_name for tool in agent.list_tools(client)]
+    assert "pipeline_health" in names
+    assert all(request["headers"].get("x-ops-agent-key") == key for request in recorder.requests)
+    assert all(request["headers"].get("authorization") == TOKEN for request in recorder.requests)
+    vouched_for = {request["headers"].get("x-ops-caller-address") for request in recorder.requests}
+    assert vouched_for == {"203.0.113.7"}
+
+    # Not listed; not vouched for; vouched for with a key that is not the server's. Each is the
+    # question failing as an AgentError that says nothing, before the model is asked anything.
+    monkeypatch.setenv("OPS_MCP_URL", url)
+    model = ScriptedModel(["never asked"])
+    monkeypatch.setattr(agent, "bedrock_model", lambda: model)
+    refused = (
+        access.forwarding_headers("198.51.100.9"),
+        {},
+        access.forwarding_headers("203.0.113.7", "j" * 40),
+    )
+    for headers in refused:
+        del recorder.requests[:]
+        with pytest.raises(agent.AgentError) as raised:
+            agent.answer("Anything need my attention?", [], TOKEN, headers)
+        assert recorder.requests and model.calls == 0
+        assert key not in str(raised.value) and "j" * 40 not in str(raised.value)

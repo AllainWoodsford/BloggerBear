@@ -8,6 +8,7 @@ never reach a tool.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import patch
 
@@ -443,3 +444,260 @@ def test_through_the_real_app_an_unreadable_setting_refuses(mcp_client, monkeypa
 
     assert response.status_code == 403
     tool.assert_not_called()
+
+
+# --- the agent vouching for the operator's address -----------------------------------------------
+
+KEY = "k" * 40
+LAMBDAS_OWN = "198.51.100.200"  # where the agent's own request comes from: on nobody's list
+
+
+def vouched(address, *, key=KEY, own=LAMBDAS_OWN) -> list[tuple[bytes, bytes]]:
+    headers = context_header(own)
+    if key is not None:
+        headers["x-ops-agent-key"] = key
+    if address is not None:
+        headers["x-ops-caller-address"] = address
+    return as_asgi(headers)
+
+
+def test_a_request_with_the_key_is_judged_by_the_address_it_vouches_for():
+    assert access.caller_address(vouched("203.0.113.7"), KEY) == "203.0.113.7"
+    assert access.decide("allowlist", access.caller_address(vouched("203.0.113.7"), KEY), ALLOWLIST)[0]
+    # The key admits nobody by itself: the address it vouches for must still be on the list.
+    assert not access.decide("allowlist", access.caller_address(vouched("198.51.100.9"), KEY), ALLOWLIST)[0]
+
+
+@pytest.mark.parametrize("offered", ["wrong" * 8, "", "k" * 39, None])
+def test_without_the_right_key_the_vouched_address_is_ignored(offered):
+    """A signed-in caller who writes their own x-ops-caller-address gets nowhere."""
+    assert access.caller_address(vouched("203.0.113.7", key=offered), KEY) == LAMBDAS_OWN
+
+
+def test_with_no_key_configured_nothing_is_ever_taken_as_the_agents(monkeypatch):
+    monkeypatch.delenv("OPS_AGENT_FORWARD_KEY", raising=False)
+    assert access.forward_key_from_env() == ""
+    assert access.caller_address(vouched("203.0.113.7", key=""), "") == LAMBDAS_OWN
+    assert access.forwarding_headers("203.0.113.7") == {}
+
+
+def test_a_key_too_short_to_be_a_secret_does_not_count(monkeypatch):
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "short")
+    assert access.forward_key_from_env() == ""
+    assert access.forwarding_headers("203.0.113.7") == {}
+
+
+def test_the_key_with_no_address_or_two_is_an_unknown_address():
+    assert access.caller_address(vouched(None), KEY) is None
+    twice = vouched("203.0.113.7") + [(b"x-ops-caller-address", b"192.0.2.1")]
+    assert access.caller_address(twice, KEY) is None
+    two_keys = vouched("203.0.113.7") + [(b"x-ops-agent-key", KEY.encode())]
+    assert access.caller_address(two_keys, KEY) == LAMBDAS_OWN  # two keys: not the agent
+
+
+def test_the_agents_headers_carry_the_key_and_the_address(monkeypatch):
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", KEY)
+    assert access.forwarding_headers(" 203.0.113.7 ") == {
+        "x-ops-agent-key": KEY,
+        "x-ops-caller-address": "203.0.113.7",
+    }
+    assert access.forwarding_headers(None) == {} and access.forwarding_headers("") == {}
+
+
+@pytest.mark.parametrize(
+    "source_ip",
+    [
+        "not an address",
+        "203.0.113.7, 198.51.100.9",  # a list, as X-Forwarded-For would hold
+        "203.0.113.7\r\nx-ops-agent-key: other",  # a line break would start a header of its own
+        "203.0.113.0/24",
+        "203.0.113.7:443",
+        "２０３.0.113.7",  # digits that are not ASCII
+        "9" * 5000,
+        203,
+        ["203.0.113.7"],
+    ],
+    ids=["words", "two", "line_break", "block", "with_port", "not_ascii", "oversized", "number", "list"],
+)
+def test_only_an_ip_address_is_ever_sent_as_the_vouched_address(source_ip):
+    assert access.forwarding_headers(source_ip, KEY) == {}
+
+
+def test_the_vouched_address_is_sent_as_ipaddress_writes_it():
+    sent = access.forwarding_headers("2001:0DB8:AAAA:0000:0000:0000:0000:0001", KEY)
+    assert sent["x-ops-caller-address"] == "2001:db8:aaaa::1"
+    # An IPv4 address written the IPv6 way goes as the IPv4 address `decide` would judge it as.
+    assert access.forwarding_headers("::ffff:203.0.113.7", KEY)["x-ops-caller-address"] == "203.0.113.7"
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "k" * 31,
+        "k" * 20 + " " + "k" * 20,
+        "k" * 40 + "\r\nx-ops-caller-address: 203.0.113.7",
+        "k" * 40 + "\n",
+        "é" * 40,
+        "k" * 40 + "\x00",
+    ],
+)
+def test_a_key_that_could_not_be_a_header_value_is_no_key_on_either_side(key):
+    """Short, or holding a space, a line break or anything not printable ASCII: the agent sends
+    nothing, and the server takes no request as the agent's, even one offering that same key."""
+    assert access.forwarding_headers("203.0.113.7", key) == {}
+    offered = context_header(LAMBDAS_OWN) | {"x-ops-caller-address": "203.0.113.7"}
+    headers = as_asgi(offered) + [(b"x-ops-agent-key", key.encode())]
+    assert access.caller_address(headers, key) == LAMBDAS_OWN
+
+
+@pytest.mark.parametrize("stored", ["k" * 20 + " " + "k" * 20, "é" * 40, "k" * 40 + "\tx"])
+def test_such_a_key_in_the_environment_is_no_key(stored, monkeypatch):
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", stored)
+    assert access.forward_key_from_env() == ""
+    assert access.forwarding_headers("203.0.113.7") == {}
+
+
+def test_space_around_the_key_in_the_environment_is_not_part_of_it(monkeypatch):
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", f"  {KEY}\n")
+    assert access.forward_key_from_env() == KEY
+
+
+@pytest.mark.parametrize(
+    "offered",
+    [
+        b"\xff\xfe\x00 not text at all",
+        "é".encode() * 40,
+        KEY.encode() + b"\x00",
+        KEY.encode() * 2000,  # far longer than any header API Gateway lets through
+        b"",
+    ],
+    ids=["not_text", "not_ascii", "key_then_nul", "oversized", "empty"],
+)
+def test_a_key_header_of_any_bytes_or_length_is_just_the_wrong_key(offered):
+    headers = as_asgi(context_header(LAMBDAS_OWN)) + [
+        (b"x-ops-agent-key", offered),
+        (b"x-ops-caller-address", b"203.0.113.7"),
+    ]
+    assert access.caller_address(headers, KEY) == LAMBDAS_OWN
+
+
+@pytest.mark.parametrize(
+    "address",
+    [b"\xff\xfe", "２０３.0.113.7".encode(), b"203.0.113.7, 192.0.2.1", b"9" * 100_000, b""],
+    ids=["not_text", "not_ascii", "a_list", "oversized", "empty"],
+)
+def test_with_the_right_key_a_vouched_address_that_is_not_one_is_refused_not_raised(address):
+    headers = as_asgi(context_header("203.0.113.7")) + [  # the request's own address is listed
+        (b"x-ops-agent-key", KEY.encode()),
+        (b"x-ops-caller-address", address),
+    ]
+    # The key was right, so the request's own address is not looked at: the agent vouched badly.
+    assert access.decide("allowlist", access.caller_address(headers, KEY), ALLOWLIST) == (
+        False,
+        access.ADDRESS_UNKNOWN,
+    )
+
+
+def through_the_middleware(app, headers: list[tuple[bytes, bytes]]) -> int:
+    """One GET straight into the ASGI app, with header bytes no HTTP client would agree to send.
+    Returns the status."""
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "GET", "path": "/", "query_string": b"", "headers": headers}
+    asyncio.run(app(scope, receive, send))
+    return sent[0]["status"]
+
+
+def test_through_the_app_allowlist_admits_the_agent_vouching_for_a_listed_address(
+    guarded, monkeypatch, capsys
+):
+    inner, client = guarded
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", KEY)
+    put_pipeline_config(assistant_access="allowlist")
+
+    def get(address, key=KEY, own=LAMBDAS_OWN):
+        headers = {**context_header(own), "x-ops-caller-address": address}
+        if key:
+            headers["x-ops-agent-key"] = key
+        return client.get("/", headers=headers)
+
+    assert get("203.0.113.7").status_code == 200  # the operator, through the agent
+    assert inner.reached == 1
+    assert capsys.readouterr().out == ""  # admitted: nothing is logged, the key least of all
+
+    refusals = [
+        get("198.51.100.9"),  # someone else, through the agent
+        get("203.0.113.7", key="wrong" * 8),  # a caller claiming to be the agent
+        get("203.0.113.7", key=""),  # a caller who wrote the address header themselves
+        get("not an address"),
+        get("198.51.100.9", own="203.0.113.7"),  # the key is right: its address is the one judged
+    ]
+
+    assert [response.status_code for response in refusals] == [403] * 5
+    assert inner.reached == 1
+    # Neither the key nor either address comes back or is logged, whichever rule refused.
+    printed = capsys.readouterr().out
+    assert printed.splitlines() == [
+        f"ops_access: test request refused ({access.ADDRESS_NOT_LISTED})",
+        f"ops_access: test request refused ({access.ADDRESS_NOT_LISTED})",
+        f"ops_access: test request refused ({access.ADDRESS_NOT_LISTED})",
+        f"ops_access: test request refused ({access.ADDRESS_UNKNOWN})",
+        f"ops_access: test request refused ({access.ADDRESS_NOT_LISTED})",
+    ]
+    for response in refusals:
+        assert response.json() == {"error": "forbidden"}
+        assert KEY not in response.text and KEY not in str(response.headers)
+
+
+def test_through_the_app_the_key_does_nothing_when_the_assistant_is_off(guarded, monkeypatch):
+    inner, client = guarded
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", KEY)
+    put_pipeline_config(assistant_access="off")
+    headers = {**context_header(LAMBDAS_OWN), "x-ops-agent-key": KEY, "x-ops-caller-address": "203.0.113.7"}
+
+    assert client.get("/", headers=headers).status_code == 403
+    assert inner.reached == 0
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [(b"x-ops-agent-key", b"\xff\xfe\x00"), (b"x-ops-caller-address", b"203.0.113.7")],
+        [(b"x-ops-agent-key", KEY.encode() * 2000), (b"x-ops-caller-address", b"203.0.113.7")],
+        [(b"x-ops-agent-key", KEY.encode()), (b"x-ops-caller-address", b"\xff\xfe")],
+        [(b"x-ops-agent-key", KEY.encode()), (b"x-ops-caller-address", b"9" * 100_000)],
+        [(b"x-ops-agent-key", "é".encode() * 40), (b"x-ops-caller-address", "é".encode())],
+    ],
+    ids=["key_not_text", "key_oversized", "address_not_text", "address_oversized", "both_not_ascii"],
+)
+def test_through_the_app_headers_that_are_not_text_or_are_huge_are_refused_not_raised(
+    guarded, monkeypatch, extra
+):
+    inner, _ = guarded
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", KEY)
+    put_pipeline_config(assistant_access="allowlist")
+    app = access.AccessMiddleware(inner, label="test")
+
+    assert through_the_middleware(app, as_asgi(context_header(LAMBDAS_OWN)) + extra) == 403
+    assert inner.reached == 0
+
+
+def test_a_key_check_that_raises_is_a_refusal(guarded, capsys):
+    """Whatever goes wrong while working out whose address to judge, nobody gets in by it."""
+    inner, _ = guarded
+    put_pipeline_config(assistant_access="allowlist")
+
+    def broken() -> str:
+        raise RuntimeError("no key to be had")
+
+    app = access.AccessMiddleware(inner, label="test", forward_key=broken)
+
+    assert through_the_middleware(app, as_asgi(context_header("203.0.113.7"))) == 403
+    assert inner.reached == 0
+    assert capsys.readouterr().out.strip() == f"ops_access: test request refused ({access.CONFIG_UNREADABLE})"

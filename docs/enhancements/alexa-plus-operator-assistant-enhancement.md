@@ -246,7 +246,7 @@ which is also what the judges get (section 6).
 | `alarms()` | CloudWatch `DescribeAlarms` (`bloggerbear-*` only) | anything in ALARM, and since when |
 | `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend and the whole AWS bill, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week |
 | `log_review(hours=24, function?)` | fixed Logs Insights queries over the Lambda log groups, plus the 7-day baseline | what's unusual: error and throttle spikes per function, DLQ depth. **Not the firewall.** |
-| `follow_up()` | OperatorSuggestions (the caller's rows), then the source tables to re-check each open suggestion with the same code that found it | `fixed` (reported, and the row deleted), `open` (each with how long it has waited) and, as `findings`, the open ones again with their suggestions rebuilt from the catalogue (section 4) |
+| `follow_up()` | OperatorSuggestions (the caller's rows), then the source tables to re-check each open suggestion with the same code that found it | `fixed` (reported, and the row deleted), `cleared` (the same, for the kinds that stop being true by themselves: section 4), `open` (each with how long it has waited) and, as `findings`, the open ones again with their suggestions rebuilt from the catalogue (section 4) |
 | `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the row is marked dismissed, and the tool that finds it leaves it out of `findings` from then on |
 | `watch(kind, id)` / `unwatch(kind, id)` | writes OperatorSuggestions; `watch` checks the id (a topic must exist, an incident must be open, spend is `ai` or `aws`) | whether it is now watched |
 | `watch_list()` | OperatorSuggestions, then the readers above for each item | each watched item and how it is now: a topic's research and article state, an incident's severity, whether spend is unusual. A watched function is listed but not checked until `log_review` exists |
@@ -434,8 +434,13 @@ more exact than the above or differs from it:
   booleans and timestamps". The code that writes checks every value against that list and refuses
   anything else, and a test fills every source with hostile text and reads the table back.
 - **Fixed means the check no longer finds it.** A topic that published, a draft no longer held as
-  truncated, an article that came down for its rewrite, a musing that has text. A failed run that
-  has simply aged out of the last 26 hours also counts, so "you fixed" can be generous there.
+  truncated, an article that came down for its rewrite, a musing that has text.
+- **Fixed or cleared.** Three kinds stop being true without anyone acting: late research (the
+  next scheduled run happens), no article today (the next daily run publishes), and a failed run
+  (it ages out of the hours the check looks back over). `follow_up` cannot tell that from the operator running the
+  suggested command, so it does not say "you fixed" for them: they are returned in a separate
+  `cleared` list and spoken as "2 things I flagged have cleared". `fixed`, and "you fixed", are
+  kept for the kinds only a person can change. Either way the row is deleted.
 - **A check that cannot be made is not a fix.** If a body cannot be read, or a kind has no checker,
   the suggestion is reported as still open and its row is kept.
 - **Being mentioned keeps a row.** Each time a finding is returned or followed up, its expiry moves
@@ -514,11 +519,25 @@ a public version, where the speaker is a visitor, would have no memory of any ki
     rule (`access.decide`) itself, first thing in `ops_agent_handler.py`, with the address from
     the event's `requestContext.identity.sourceIp`: with the switch `off`, a question never
     reaches the model. Only the `OPTIONS` preflight is answered without the check.
-  - **Known gap under `allowlist`:** the agent calls the MCP server from Lambda's own address,
-    not the operator's, so the server's check refuses the agent's calls and `/ask` answers 502.
-    It fails closed, but `allowlist` is not usable for `/ask` until the server is given a way to
-    trust the agent's calls (or the agent's check is made the only one for them). `open` and
-    `off` behave as described.
+  - **`allowlist` through the agent:** the agent calls the MCP server from Lambda's own address,
+    not the operator's, so the server's check alone would refuse every question the agent had
+    just admitted. The agent therefore passes on the address it checked, with a key only the two
+    functions hold: Terraform makes it (`random_password.ops_agent_forward_key`, 48 letters and
+    digits) and sets it on both as `OPS_AGENT_FORWARD_KEY`. The agent sends it as
+    `x-ops-agent-key`, with the operator's address as `x-ops-caller-address`; a request whose
+    key matches is judged by that address, and any other request by its own, as before.
+    - The key admits nobody by itself: the address still has to be on the list, the token still
+      has to pass the authorizer, and `off` refuses whatever is sent.
+    - The agent vouches only for a request its own check admitted, and only for an address that
+      parses as one (`ipaddress`), taken from API Gateway's request context.
+    - The server compares the key in constant time, as bytes. A key header that is missing,
+      repeated, wrong, not text or enormous is just not the key; a vouched address that is
+      missing, repeated or not an address is a refusal, not a fall back to the request's own.
+    - A key under 32 characters, or with anything but printable ASCII in it, is treated as no
+      key on both sides, and with no key `allowlist` refuses the agent as it did before.
+    - The key is never logged or returned. It sits in the two functions' configuration and in
+      Terraform state, like the public API's origin-verify secret; whoever can read either
+      could, with a valid token, choose which address `allowlist` judges them by.
   - **The caller's address** is the `sourceIp` in API Gateway's request context, which the Lambda
     Web Adapter forwards to the web app as JSON in the `x-amzn-request-context` header (its
     `docs/guide/src/features/request-context.md`). The adapter sets that header itself, replacing

@@ -57,6 +57,7 @@ def pipeline_config(monkeypatch):
     row = {}
     monkeypatch.setattr(ops_agent_handler.dynamo, "get_pipeline_config", lambda: dict(row) or None)
     monkeypatch.delenv("OPS_ASSISTANT_ALLOWED_CIDRS", raising=False)
+    monkeypatch.delenv("OPS_AGENT_FORWARD_KEY", raising=False)
     return row
 
 
@@ -75,7 +76,7 @@ def test_a_question_is_answered_and_the_callers_token_is_passed_on(answer):
     assert response["statusCode"] == 200
     assert json.loads(response["body"]) == ANSWER
     assert response["headers"]["Cache-Control"] == "no-store"
-    answer.assert_called_once_with(QUESTION, [], f"Bearer {TOKEN}")
+    answer.assert_called_once_with(QUESTION, [], f"Bearer {TOKEN}", {})
 
 
 def test_history_is_passed_on_in_order(answer):
@@ -87,7 +88,7 @@ def test_history_is_passed_on_in_order(answer):
     response = ops_agent_handler.handler(event({"question": "Tell me more", "history": history}), None)
 
     assert response["statusCode"] == 200
-    answer.assert_called_once_with("Tell me more", history, f"Bearer {TOKEN}")
+    answer.assert_called_once_with("Tell me more", history, f"Bearer {TOKEN}", {})
 
 
 def test_the_limits_themselves_are_accepted(answer):
@@ -105,7 +106,7 @@ def test_a_base64_body_and_a_lower_case_header_are_read(answer):
     request["isBase64Encoded"] = True
 
     assert ops_agent_handler.handler(request, None)["statusCode"] == 200
-    answer.assert_called_once_with(QUESTION, [], f"Bearer {TOKEN}")
+    answer.assert_called_once_with(QUESTION, [], f"Bearer {TOKEN}", {})
 
 
 TURN = {"role": "user", "text": "hello"}
@@ -230,7 +231,7 @@ def test_allowlist_admits_a_listed_address(answer, pipeline_config, monkeypatch)
     response = ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
 
     assert response["statusCode"] == 200
-    answer.assert_called_once_with(QUESTION, [], f"Bearer {TOKEN}")
+    answer.assert_called_once_with(QUESTION, [], f"Bearer {TOKEN}", {})
 
 
 def test_allowlist_refuses_an_unlisted_address(nothing_downstream, pipeline_config, monkeypatch, capsys):
@@ -421,7 +422,7 @@ def test_the_logs_hold_tool_names_and_counts_and_no_words(monkeypatch, capsys, c
     connected = {}
 
     @contextlib.contextmanager
-    def fake_client(url, authorization):
+    def fake_client(url, authorization, extra_headers=None):
         connected["url"], connected["authorization"] = url, authorization
         yield object()
 
@@ -447,3 +448,142 @@ def test_the_logs_hold_tool_names_and_counts_and_no_words(monkeypatch, capsys, c
     assert printed.out.strip() == (
         "ops_agent: turn=follow_up tool_calls=2 tools=pipeline_health,admin_inbox findings=3 fixes=1"
     )
+
+
+# --- vouching for the operator's address to the MCP server ---------------------------------------
+
+
+def test_the_operators_address_is_passed_on_with_the_key_when_one_is_set(answer, monkeypatch):
+    """The MCP server sees this function's address, not the operator's, so under `allowlist` it
+    would refuse what this handler has just admitted (ops_mcp/access.py)."""
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "k" * 40)
+
+    ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
+
+    answer.assert_called_once_with(
+        QUESTION,
+        [],
+        f"Bearer {TOKEN}",
+        {"x-ops-agent-key": "k" * 40, "x-ops-caller-address": LISTED_ADDRESS},
+    )
+
+
+def test_with_no_key_nothing_is_vouched_for(answer, monkeypatch):
+    monkeypatch.delenv("OPS_AGENT_FORWARD_KEY", raising=False)
+
+    ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
+
+    assert answer.call_args.args[3] == {}
+
+
+def test_the_key_never_reaches_the_caller_or_the_log(answer, monkeypatch, capsys):
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "plover-key-marker-" + "k" * 30)
+
+    response = ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
+
+    assert "plover-key-marker" in answer.call_args.args[3]["x-ops-agent-key"]  # it was sent
+    assert "plover-key-marker" not in json.dumps(response)
+    printed = capsys.readouterr()
+    assert "plover-key-marker" not in printed.out + printed.err
+
+
+@pytest.mark.parametrize("failure", [agent.AgentError("ConnectError"), RuntimeError("plover-key-marker")])
+def test_the_key_stays_out_of_a_failure_too(monkeypatch, capsys, failure):
+    key = "plover-key-marker-" + "k" * 30
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", key)
+
+    with patch.object(agent, "answer", side_effect=failure) as failing:
+        response = ops_agent_handler.handler(event({"question": QUESTION}, source_ip=LISTED_ADDRESS), None)
+
+    assert failing.call_args.args[3]["x-ops-agent-key"] == key  # it was sent
+    assert response["statusCode"] == 502
+    printed = capsys.readouterr()
+    assert "plover-key-marker" not in json.dumps(response) + printed.out + printed.err
+    assert LISTED_ADDRESS not in json.dumps(response) + printed.out + printed.err
+
+
+@pytest.mark.parametrize(
+    ("stored", "cidrs", "source_ip"),
+    [
+        ({"assistant_access": "off"}, ALLOWED_CIDRS, LISTED_ADDRESS),
+        ({"assistant_access": "allowlist"}, ALLOWED_CIDRS, UNLISTED_ADDRESS),
+        ({"assistant_access": "allowlist"}, "", LISTED_ADDRESS),
+        ({"assistant_access": "locked"}, ALLOWED_CIDRS, LISTED_ADDRESS),
+    ],
+)
+def test_a_refused_request_is_never_vouched_for(
+    nothing_downstream, pipeline_config, monkeypatch, stored, cidrs, source_ip
+):
+    """The key says "this function checked the address": it is not even read for a request the
+    check turned away."""
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "k" * 40)
+    monkeypatch.setenv("OPS_ASSISTANT_ALLOWED_CIDRS", cidrs)
+    pipeline_config.update(stored)
+
+    with patch.object(access, "forwarding_headers") as forwarding:
+        response = ops_agent_handler.handler(event({"question": QUESTION}, source_ip=source_ip), None)
+
+    assert response["statusCode"] == 403
+    forwarding.assert_not_called()
+    for mock in nothing_downstream:
+        mock.assert_not_called()
+
+
+def test_asking_without_the_access_check_having_passed_vouches_for_nothing(answer, monkeypatch):
+    """`_ask` vouches only when told the check passed, so a route added later that reaches it
+    another way sends the MCP server no address."""
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "k" * 40)
+    request = event({"question": QUESTION}, source_ip=LISTED_ADDRESS)
+
+    ops_agent_handler._ask(request)
+    ops_agent_handler._ask(request, admitted=False)
+
+    assert [call.args[3] for call in answer.call_args_list] == [{}, {}]
+    assert ops_agent_handler._vouching_headers(request, "yes") == {}  # only True will do
+    assert ops_agent_handler._vouching_headers(request, True) == {
+        "x-ops-agent-key": "k" * 40,
+        "x-ops-caller-address": LISTED_ADDRESS,
+    }
+
+
+@pytest.mark.parametrize(
+    "request_context",
+    [
+        None,
+        {},
+        {"identity": None},
+        {"identity": {}},
+        {"identity": {"sourceIp": "not an address"}},
+        {"identity": {"sourceIp": f"{LISTED_ADDRESS}, {UNLISTED_ADDRESS}"}},
+        {"identity": {"sourceIp": f"{LISTED_ADDRESS}\r\nx-injected: 1"}},
+        {"identity": {"sourceIp": 7}},
+    ],
+)
+def test_an_address_that_is_not_one_is_not_vouched_for_and_the_question_still_goes_on(
+    answer, monkeypatch, request_context
+):
+    """Under `open` the address is not looked at to admit the request, so whatever is there
+    reaches this point. Nothing is sent, and nothing raises."""
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "k" * 40)
+    request = event({"question": QUESTION})
+    request["requestContext"] = request_context
+
+    response = ops_agent_handler.handler(request, None)
+
+    assert response["statusCode"] == 200
+    assert answer.call_args.args[3] == {}
+
+
+def test_only_the_address_in_the_request_context_is_vouched_for(answer, monkeypatch):
+    """Not X-Forwarded-For, and not vouching headers the caller wrote themselves."""
+    monkeypatch.setenv("OPS_AGENT_FORWARD_KEY", "k" * 40)
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "X-Forwarded-For": LISTED_ADDRESS,
+        "x-ops-caller-address": LISTED_ADDRESS,
+        "x-ops-agent-key": "j" * 40,
+    }
+
+    ops_agent_handler.handler(event({"question": QUESTION}, headers=headers), None)
+
+    assert answer.call_args.args[3] == {"x-ops-agent-key": "k" * 40, "x-ops-caller-address": UNLISTED_ADDRESS}
