@@ -1302,6 +1302,56 @@ def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
         assert f"arn = module.app_data.{table}_table_arn }}" in tables
     module = _ops_module()
     assert "{ for env_name, table in var.tables : env_name => table.name }," in module
+    # Article bodies are in the content bucket, and the function is told which one.
+    assert re.search(r"CONTENT_BUCKET\s*=\s*var\.content_bucket_name", module)
+    assert re.search(r"content_bucket_name\s*=\s*aws_s3_bucket\.content\.bucket", call)
+    # common/static_pages.py imports markdown at module top: the package installs requirements.txt
+    # (checked with the build, below), and that file is what names it.
+    requirements = (ROOT / "lambdas" / "requirements.txt").read_text(encoding="utf-8")
+    assert re.search(r"^markdown==", requirements, re.M)
+
+
+def test_the_assistant_can_read_its_access_switch_and_can_never_change_it():
+    """The assistant_access setting lives in the config table's pipeline row. The server reads it
+    on every request, so it needs the table's name and GetItem on it; it must not be able to write
+    it, or a stolen token could switch the allowlist off. Only the operator's CLI changes it."""
+    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
+    policy = _uncommented(_ops_policy())
+    function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
+
+    assert re.search(
+        r"MODEL_CONFIG_TABLE\s*=\s*\{ name = module\.app_data\.model_config_table_name, "
+        r"arn = module\.app_data\.model_config_table_arn \}",
+        call,
+    )
+    assert '"dynamodb:GetItem"' in policy
+    # One DynamoDB statement, over the tables handed in, and every action in it is a read: there
+    # is no second statement that could grant a write on this table or any other.
+    dynamodb_actions = set(re.findall(r'"(dynamodb:[A-Za-z*]+)"', policy))
+    assert dynamodb_actions == {
+        "dynamodb:GetItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:BatchGetItem",
+    }
+    assert policy.count("dynamodb:GetItem") == 1 and policy.count("var.tables") == 2
+    # The operator's addresses come from the list the admin API's WAF allowlist uses.
+    dev = _read("environments", "dev", "main.tf")
+    assert re.search(r"addresses\s*=\s*var\.admin_allowed_cidrs", dev)
+    assert re.search(r"^\s*allowed_cidrs\s*=\s*var\.admin_allowed_cidrs$", call, re.M)
+    assert re.search(r'OPS_ASSISTANT_ALLOWED_CIDRS\s*=\s*join\(",", var\.allowed_cidrs\)', function)
+    variable = re.search(
+        r'variable "allowed_cidrs" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
+    ).group(1)
+    assert re.search(r"sensitive\s*=\s*true", variable)  # a plan must not print a home address
+
+
+def test_a_cold_start_cannot_be_held_up_by_the_access_check():
+    """The adapter's default readiness check is a GET through the app, which the access check
+    would answer. A TCP check asks only whether uvicorn is listening."""
+    function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
+
+    assert re.search(r'AWS_LWA_READINESS_CHECK_PROTOCOL\s*=\s*"tcp"', function)
 
 
 def test_the_web_adapter_layer_is_the_sydney_x86_one_at_a_pinned_version():

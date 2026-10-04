@@ -256,12 +256,9 @@ resource "aws_cloudwatch_log_group" "lambda" {
 # - handler = run.sh: so that is what it execs. Not a Python "module.function" on purpose.
 # - AWS_LWA_PORT: where the adapter sends requests; run.sh starts uvicorn on the same port.
 #
-# Left at the adapter's defaults, deliberately:
-#
-# - Invoke mode stays "buffered" (AWS_LWA_INVOKE_MODE unset): the server answers every request
-#   with one JSON object, so nothing here is, or should become, a response stream.
-# - The readiness check stays GET / on that port. The app has no such route and answers 404,
-#   which the adapter counts as ready (anything from 100 to 499 means "a server is answering").
+# Left at the adapter's default, deliberately: invoke mode stays "buffered" (AWS_LWA_INVOKE_MODE
+# unset). The server answers every request with one JSON object, so nothing here is, or should
+# become, a response stream.
 #
 # 512 MB, not the 256 MB the other API Lambdas have: a cold start imports the SDK, pydantic and
 # uvicorn before the first request can be answered, and Lambda gives CPU in proportion to memory.
@@ -291,6 +288,21 @@ resource "aws_lambda_function" "ops_mcp" {
       {
         AWS_LAMBDA_EXEC_WRAPPER = "/opt/bootstrap"
         AWS_LWA_PORT            = local.web_adapter_port
+
+        # "Is the app up?" is asked by opening the port, not by sending it a request. The
+        # adapter's default is GET /, counted as ready on any status from 100 to 499. That
+        # request would go through the server's access check like any other (it reads the
+        # config table, and answers 403 to a caller it cannot place), so a cold start would cost
+        # a DynamoDB read and depend on what the check answers. A TCP check depends on nothing
+        # but uvicorn listening.
+        AWS_LWA_READINESS_CHECK_PROTOCOL = "tcp"
+
+        # The assistant_access switch (design, section 5): the server reads the config table's
+        # `pipeline` row on every request (MODEL_CONFIG_TABLE, from var.tables above) and, when
+        # the row says "allowlist", admits only these addresses. It takes the caller's address
+        # from the x-amzn-request-context header, which the adapter adds to every request it
+        # forwards (identity.sourceIp, as API Gateway recorded it; a caller cannot set it).
+        OPS_ASSISTANT_ALLOWED_CIDRS = join(",", var.allowed_cidrs)
 
         CONTENT_BUCKET   = var.content_bucket_name
         ENVIRONMENT_NAME = var.environment_name

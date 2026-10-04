@@ -2338,6 +2338,12 @@ module "ops_assistant" {
 
   mfa_configuration = var.ops_assistant_mfa
 
+  # The operator's addresses, for when the assistant_access setting is "allowlist": the same
+  # list aws_wafv2_ip_set.admin_allowlist is built from, so the two cannot disagree. Empty
+  # (a local apply without TF_VAR_admin_allowed_cidrs) is fine while the setting is "open", the
+  # default; under "allowlist" an empty list admits nobody, which is the safe way to be wrong.
+  allowed_cidrs = var.admin_allowed_cidrs
+
   # A handful of requests per question, from one operator and a few judges. Low on purpose: this
   # is what bounds the cost of a stolen token or a client stuck in a loop.
   throttling_rate_limit  = 5
