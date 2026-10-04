@@ -1,0 +1,11 @@
+# The ops agent's own dependencies (ops_agent/). Kept out of requirements.txt for the same reason
+# as requirements-ops-mcp.txt: that file is the one zip every pipeline Lambda shares, and none of
+# them need an agent framework.
+#
+# 1.57.2: it accepts mcp 2.x (mcp<2.2,>=1.23.0), so its MCP client and the server
+# (requirements-ops-mcp.txt, mcp==2.1.1) are the same release of the same SDK, and with that
+# release its client speaks MCP 2026-07-28 to the server with no handshake
+# (tests/test_ops_agent_mcp_wire.py holds that, and that the caller's bearer token is sent on
+# every request). Its MCPClient takes `url=` and `headers=` directly.
+-r requirements-ops-mcp.txt
+strands-agents==1.57.2

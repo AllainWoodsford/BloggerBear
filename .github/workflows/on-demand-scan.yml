@@ -115,7 +115,7 @@ jobs:
           set -euo pipefail
           SKIP='**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build'
           trivy fs --scanners vuln --list-all-pkgs --format json --skip-dirs "$SKIP" \
-            --file-patterns 'pip:requirements-(dev|ops-mcp)\.txt' --output /tmp/trivy.json .
+            --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent)\.txt' --output /tmp/trivy.json .
           python3 - <<'EOF'
           import json
           report = json.load(open("/tmp/trivy.json"))
@@ -125,7 +125,7 @@ jobs:
                   print(f"  {pkg['Name']}=={pkg.get('Version', '?')}")
           EOF
           trivy fs --scanners vuln,secret --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --exit-code 0 \
-            --skip-dirs "$SKIP" --file-patterns 'pip:requirements-(dev|ops-mcp)\.txt' .
+            --skip-dirs "$SKIP" --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent)\.txt' .
 
       - name: Trivy vulnerabilities and secrets (fail on HIGH and CRITICAL)
         id: trivy_fs
@@ -133,7 +133,7 @@ jobs:
         run: |
           trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
             --skip-dirs '**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build' \
-            --file-patterns 'pip:requirements-(dev|ops-mcp)\.txt' .
+            --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent)\.txt' .
 
       - name: Bandit (every severity and confidence, report only)
         run: bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests --exit-zero
