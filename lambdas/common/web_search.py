@@ -292,6 +292,26 @@ def _parse_published_date(raw) -> str | None:
 
 PROVIDERS: dict[str, type[WebSearchProvider]] = {"gdelt": GdeltProvider, "agentcore": AgentCoreProvider}
 
+# Who to credit for web search results (the shape is Adapter.sources, common/adapters/base.py).
+# Declared here, beside the providers, so every adapter that searches the web -- the generic
+# web_search adapter and the crypto feed's headlines -- credits the same thing and cannot drift.
+#
+# GDELT, the default provider. Terms of use, https://www.gdeltproject.org/about.html (read
+# 2026-10-04): "any use or redistribution of the data must include a citation to the GDELT
+# Project and a link to this website (https://www.gdeltproject.org/)." They prescribe no wording,
+# so this is a citation with that link.
+#
+# The AgentCore fallback is not credited: it is a paid AWS service called from this account, and
+# its results are links to the publishers' own pages, which each article already lists under
+# "Sources". UNVERIFIED: its service terms were not read for an attribution duty. If they have
+# one, add it here and every page picks it up.
+GDELT_SOURCE = {
+    "text": "News search by the GDELT Project",
+    "label": "GDELT Project",
+    "url": "https://www.gdeltproject.org/",
+}
+WEB_SEARCH_SOURCES: tuple[dict, ...] = (GDELT_SOURCE,)
+
 FALLBACK_PROVIDER = "agentcore"
 # With a fallback available, GDELT gets at most this long (its own retries included)...
 PRIMARY_BUDGET_WITH_FALLBACK_SECONDS = 20.0

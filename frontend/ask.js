@@ -36,6 +36,8 @@
   var ASK_TIMEOUT_MS = 40000; // API Gateway gives up at 29 s; this is only a backstop
   var HOLD_MS = 400; // a press shorter than this is a tap: start now, stop on the next press
   var CLICK_AFTER_PRESS_MS = 700; // a click this soon after a press belongs to that press
+  var SPEECH_CHUNK_CHARS = 180; // Chrome's online voices stop partway through a long utterance
+  var SPEECH_DELAY_MS = 80; // Chrome drops an utterance spoken in the same tick as cancel()
   var TABLE_MAX_ROWS = 50; // what POST /ask sends at most (lambdas/ops_agent/policy.py)
   var TABLE_MAX_COLUMNS = 16;
 
@@ -105,6 +107,10 @@
       clientId: raw.clientId,
       scope: raw.scope,
       redirectUri: raw.redirectUri,
+      // Optional: which environment's pipeline this page asks about, shown so a command copied
+      // from a dev card is not run against production. Anything but a short word is left out.
+      environment:
+        typeof raw.environment === "string" && /^[a-z][a-z0-9-]{0,15}$/.test(raw.environment) ? raw.environment : "",
     };
   }
 
@@ -415,7 +421,113 @@
     return wrap;
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // The voice: the pure parts. (Recognition and speech themselves are the browser's, below.)
+  // ---------------------------------------------------------------------------------------------
+
+  // The language tag for recognition and speech: the browser's own English tag ("en-AU"), else
+  // "en-US". Never <html lang>'s bare "en": Safari's recognition wants a full tag.
+  function speechLang(navigatorLanguage) {
+    var tag = typeof navigatorLanguage === "string" ? navigatorLanguage.trim() : "";
+    return /^en-[A-Za-z]{2,3}$/.test(tag) ? tag : "en-US";
+  }
+
+  // An answer as the pieces it is spoken in: whole sentences, joined while they fit in maxChars,
+  // and a sentence longer than that cut at its last space that fits. Chrome's online voices stop
+  // about 15 seconds into one utterance, so a briefing spoken as one would be cut off.
+  function speechChunks(text, maxChars) {
+    var limit = maxChars > 20 ? maxChars : 20;
+    var words = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+    if (!words) {
+      return [];
+    }
+    var sentences = words.match(/[^.!?]+(?:[.!?]+|$)/g) || [words];
+    var chunks = [];
+    var current = "";
+    sentences.forEach(function (sentence) {
+      var piece = sentence.trim();
+      while (piece.length > limit) {
+        var cut = piece.lastIndexOf(" ", limit);
+        if (cut <= 0) {
+          cut = limit;
+        }
+        if (current) {
+          chunks.push(current);
+          current = "";
+        }
+        chunks.push(piece.slice(0, cut).trim());
+        piece = piece.slice(cut).trim();
+      }
+      if (!piece) {
+        return;
+      }
+      if (current && current.length + 1 + piece.length > limit) {
+        chunks.push(current);
+        current = piece;
+      } else {
+        current = current ? current + " " + piece : piece;
+      }
+    });
+    if (current) {
+      chunks.push(current);
+    }
+    return chunks;
+  }
+
+  // What to tell the operator for each error the browser's recognition reports
+  // (SpeechRecognitionErrorEvent.error). "aborted" is the page stopping it: nothing to say.
+  var RECOGNITION_MESSAGES = {
+    "not-allowed":
+      "The microphone is blocked for this page. Allow it in the browser's site settings (the icon beside the address), or type your question.",
+    "service-not-allowed":
+      "This browser will not let the page use speech recognition. Try Chrome or Edge, or type your question.",
+    "audio-capture": "No microphone was found. Plug one in or check it is switched on, or type your question.",
+    network:
+      "Speech recognition needs the browser's online speech service, which could not be reached. Some browsers (Brave, and many Chromium builds) do not include one: try Chrome or Edge, or type your question.",
+    "language-not-supported": "Speech recognition does not support this language here. Type your question instead.",
+    "no-speech": "Heard nothing. Try again, or type your question.",
+    aborted: "",
+  };
+
+  function recognitionMessage(code) {
+    if (Object.prototype.hasOwnProperty.call(RECOGNITION_MESSAGES, code)) {
+      return RECOGNITION_MESSAGES[code];
+    }
+    return "Speech recognition failed. Type your question instead.";
+  }
+
+  // The voice to speak with: one for the exact tag, then the browser's default English voice,
+  // then any English one. Null leaves the choice to the browser.
+  function pickVoice(voices, lang) {
+    var list = Array.isArray(voices) ? voices : [];
+    function find(test) {
+      for (var i = 0; i < list.length; i++) {
+        var voice = list[i];
+        if (voice && typeof voice.lang === "string" && test(voice, voice.lang.replace("_", "-").toLowerCase())) {
+          return voice;
+        }
+      }
+      return null;
+    }
+    var wanted = String(lang || "").toLowerCase();
+    return (
+      find(function (voice, tag) {
+        return tag === wanted;
+      }) ||
+      find(function (voice, tag) {
+        return voice["default"] === true && tag.indexOf("en") === 0;
+      }) ||
+      find(function (voice, tag) {
+        return tag.indexOf("en") === 0;
+      })
+    );
+  }
+
   var api = {
+    speechLang: speechLang,
+    speechChunks: speechChunks,
+    recognitionMessage: recognitionMessage,
+    pickVoice: pickVoice,
     isHowTo: isHowTo,
     isDestructive: isDestructive,
     cardHeading: cardHeading,
@@ -489,20 +601,84 @@
     }
   }
 
-  function stopSpeaking() {
-    if (root.speechSynthesis) {
-      root.speechSynthesis.cancel();
+  // -- speaking --------------------------------------------------------------------------------
+  // An answer is spoken a sentence or two at a time (speechChunks). Every utterance is held in
+  // `speechQueue` until it ends: Chrome can collect one nobody refers to and stop mid-word.
+
+  var LANG = speechLang(root.navigator && root.navigator.language);
+  var synth = root.speechSynthesis && root.SpeechSynthesisUtterance ? root.speechSynthesis : null;
+  var speechQueue = [];
+  var speechTimer = 0;
+  var speechUnlocked = false;
+  var voice = null;
+
+  function chooseVoice() {
+    if (synth) {
+      voice = pickVoice(synth.getVoices(), LANG);
     }
   }
 
-  function speak(text) {
-    if (muted || !text || !root.speechSynthesis || !root.SpeechSynthesisUtterance) {
-      return;
+  function stopSpeaking() {
+    root.clearTimeout(speechTimer);
+    speechQueue = [];
+    // Cancel only what is there: Chrome can drop the next utterance after a needless cancel().
+    if (synth && (synth.speaking || synth.pending)) {
+      synth.cancel();
+    }
+  }
+
+  // Speaks whatever it is given, muted or not (the voice test uses it directly).
+  function say(text) {
+    if (!synth) {
+      return false;
     }
     stopSpeaking();
-    var utterance = new root.SpeechSynthesisUtterance(text);
-    utterance.lang = doc.documentElement.lang || "en";
-    root.speechSynthesis.speak(utterance);
+    var chunks = speechChunks(text, SPEECH_CHUNK_CHARS);
+    if (!chunks.length) {
+      return false;
+    }
+    if (!voice) {
+      chooseVoice();
+    }
+    // On the next tick, never in the same one as cancel(): Chrome drops that utterance.
+    speechTimer = root.setTimeout(function () {
+      chunks.forEach(function (chunk) {
+        var utterance = new root.SpeechSynthesisUtterance(chunk);
+        utterance.lang = LANG;
+        if (voice) {
+          utterance.voice = voice;
+        }
+        utterance.onend = utterance.onerror = function () {
+          var index = speechQueue.indexOf(utterance);
+          if (index >= 0) {
+            speechQueue.splice(index, 1);
+          }
+        };
+        speechQueue.push(utterance);
+        synth.speak(utterance);
+      });
+    }, SPEECH_DELAY_MS);
+    return true;
+  }
+
+  function speak(text) {
+    if (muted || !text) {
+      return;
+    }
+    say(text);
+  }
+
+  // iOS speaks only if speech was first started from a tap; an answer arrives seconds after one.
+  // The first tap on a control (not the talk button, whose tap starts the microphone) speaks one
+  // silent space, and later answers are then allowed.
+  function unlockSpeech(event) {
+    if (speechUnlocked || !synth || (event && event.target && event.target.closest && event.target.closest("#ask-talk"))) {
+      return;
+    }
+    speechUnlocked = true;
+    var silent = new root.SpeechSynthesisUtterance(" ");
+    silent.volume = 0;
+    synth.speak(silent);
   }
 
   // Back to the gate: forgets the token and the conversation.
@@ -633,7 +809,9 @@
     }
     if (root.navigator.clipboard && root.navigator.clipboard.writeText) {
       root.navigator.clipboard.writeText(code.textContent).then(function () {
-        status.textContent = "Command copied. Run it in your own terminal.";
+        status.textContent =
+          "Command copied. Run it in your own terminal" +
+          (config.environment ? ", against the " + config.environment + " admin API." : ".");
         button.textContent = "Copied";
         root.setTimeout(function () {
           button.textContent = label;
@@ -802,9 +980,10 @@
     muteButton.textContent = muted ? "Unmute voice" : "Mute voice";
   }
 
-  // -- push to talk ----------------------------------------------------------------------------
-  // Hold the button (pointer, Space or Enter) and let go to finish; or press briefly to start and
-  // again to stop. The browser also stops by itself when you stop speaking.
+  // -- talking -------------------------------------------------------------------------------
+  // Tap to start and tap again to stop, or let the browser stop when you stop speaking; or hold
+  // (pointer, Space or Enter) and let go to finish. The words are shown as they are heard, and
+  // the question is asked once recognition ends with something heard.
 
   var Recognition = root.SpeechRecognition || root.webkitSpeechRecognition;
   var recognition = null;
@@ -819,40 +998,64 @@
     talkButton.textContent = value ? "Listening. Press to stop" : "Push to talk";
   }
 
-  function startListening() {
+  // Starts the microphone. `onHeard(text)` gets what was said once recognition ends: by default
+  // the question is asked; the voice test only reports it.
+  function startListening(onHeard) {
     if (listening || busy || !Recognition) {
       return;
     }
     stopSpeaking();
-    recognition = new Recognition();
-    recognition.lang = doc.documentElement.lang || "en";
-    recognition.interimResults = false;
-    recognition.maxAlternatives = 1;
-    recognition.onresult = function (event) {
-      var heard = event.results && event.results[0] && event.results[0][0];
-      if (heard && isText(heard.transcript)) {
-        questionInput.value = heard.transcript;
-        ask(heard.transcript);
+    var heard = "";
+    var failed = false;
+    var current = new Recognition();
+    recognition = current;
+    current.lang = LANG;
+    current.interimResults = true; // shown as they come, so it is clear the microphone is working
+    current.continuous = false;
+    current.maxAlternatives = 1;
+    current.onresult = function (event) {
+      var finalText = "";
+      var interim = "";
+      var results = event.results || [];
+      for (var i = 0; i < results.length; i++) {
+        var best = results[i] && results[i][0];
+        var text = best && typeof best.transcript === "string" ? best.transcript : "";
+        if (results[i].isFinal === false) {
+          interim += text;
+        } else {
+          finalText += text;
+        }
+      }
+      heard = finalText.trim();
+      questionInput.value = (finalText + interim).trim();
+      status.textContent = "Heard: " + questionInput.value;
+    };
+    current.onerror = function (event) {
+      failed = true;
+      var message = recognitionMessage(event && event.error);
+      if (message) {
+        status.textContent = message;
       }
     };
-    recognition.onerror = function (event) {
-      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        status.textContent = "The microphone is not allowed here. Type your question instead.";
-      } else if (event.error === "no-speech") {
-        status.textContent = "Heard nothing. Try again, or type your question.";
-      } else if (event.error !== "aborted") {
-        status.textContent = "Speech recognition failed. Type your question instead.";
+    current.onend = function () {
+      if (recognition === current) {
+        recognition = null;
       }
-    };
-    recognition.onend = function () {
       setListening(false);
+      if (heard) {
+        (onHeard || ask)(heard);
+      } else if (!failed) {
+        status.textContent = recognitionMessage("no-speech");
+      }
     };
     try {
-      recognition.start();
+      current.start();
       setListening(true);
       status.textContent = "Listening.";
     } catch (err) {
+      recognition = null;
       setListening(false);
+      status.textContent = recognitionMessage("");
     }
   }
 
@@ -889,6 +1092,13 @@
     }
   }
 
+  // The browser took the pointer (a scroll, or a long press on a phone): that is not the
+  // operator letting go, so the microphone stays on until they tap again or stop speaking.
+  function pressCancelled() {
+    pressedAt = 0;
+    lastPressAt = Date.now();
+  }
+
   function isTalkKey(event) {
     return event.key === " " || event.key === "Spacebar" || event.key === "Enter";
   }
@@ -907,8 +1117,17 @@
       }
     });
     talkButton.addEventListener("pointerup", pressUp);
-    talkButton.addEventListener("pointercancel", pressUp);
-    talkButton.addEventListener("pointerleave", pressUp);
+    talkButton.addEventListener("pointercancel", pressCancelled);
+    talkButton.addEventListener("pointerleave", function (event) {
+      // A mouse dragged off the button lets go of it; a finger lifting off a screen also
+      // "leaves", after its pointerup, and is already dealt with.
+      if (event.pointerType === "mouse") {
+        pressUp();
+      }
+    });
+    talkButton.addEventListener("contextmenu", function (event) {
+      event.preventDefault(); // a long press must not open a menu
+    });
     talkButton.addEventListener("keydown", function (event) {
       if (isTalkKey(event)) {
         event.preventDefault(); // Space must not scroll the page
@@ -935,12 +1154,92 @@
     });
   }
 
+  // -- the voice test --------------------------------------------------------------------------
+  // Says which part of the voice works here: speaking, the microphone's permission, and
+  // recognition. Each line is the page's own text, or what the browser heard.
+
+  function report(lines) {
+    var list = el("ask-voice-report");
+    clear(list);
+    lines.forEach(function (line) {
+      list.appendChild(make("li", "", line));
+    });
+    list.hidden = false;
+  }
+
+  function testVoice() {
+    if (busy || listening) {
+      return;
+    }
+    var lines = [];
+    lines.push(
+      synth
+        ? "Speaking: the browser can speak answers" + (muted ? " (the voice is muted for answers)." : ".") + " You should hear a short sentence now."
+        : "Speaking: this browser cannot speak answers. They are shown as text."
+    );
+    speechUnlocked = true;
+    say("This is how the assistant's answers will sound.");
+    if (!Recognition) {
+      lines.push("Listening: this browser has no speech recognition. Type your questions; Chrome or Edge can listen.");
+      report(lines);
+      return;
+    }
+    var permissions = root.navigator && root.navigator.permissions;
+    var checked = permissions && permissions.query ? permissions.query({ name: "microphone" }) : null;
+    var listen = function (state) {
+      if (state === "denied") {
+        lines.push("Microphone: blocked for this page. Allow it in the site settings (the icon beside the address).");
+        report(lines);
+        return;
+      }
+      lines.push(
+        "Microphone: " +
+          (state === "granted" ? "allowed." : "the browser will ask; allow it.") +
+          " Say something short after the sentence ends; the words heard will appear here."
+      );
+      report(lines);
+      root.setTimeout(function () {
+        startListening(function (heard) {
+          lines.push("Listening works. Heard: " + heard);
+          report(lines);
+          status.textContent = "Voice test finished.";
+        });
+      }, 2500);
+    };
+    if (checked && checked.then) {
+      checked.then(
+        function (result) {
+          listen(result && result.state);
+        },
+        function () {
+          listen("");
+        }
+      );
+    } else {
+      listen("");
+    }
+  }
+
   // -- wiring ----------------------------------------------------------------------------------
 
   el("ask-sign-in").addEventListener("click", signIn);
   el("ask-sign-out").addEventListener("click", signOut);
   el("ask-new").addEventListener("click", newBriefing);
   muteButton.addEventListener("click", toggleMute);
+  el("ask-voice-test").addEventListener("click", testVoice);
+  app.addEventListener("pointerdown", unlockSpeech, true);
+  app.addEventListener("keydown", unlockSpeech, true);
+  if (synth) {
+    chooseVoice();
+    if (synth.addEventListener) {
+      synth.addEventListener("voiceschanged", chooseVoice); // voices load after the page in Chrome
+    }
+  }
+  if (config.environment) {
+    var envLabel = el("ask-environment");
+    envLabel.textContent = "Environment: " + config.environment;
+    envLabel.hidden = false;
+  }
   // The API treats a question with no history as a briefing, so the shortcut starts afresh.
   el("ask-briefing").addEventListener("click", function () {
     if (busy) {

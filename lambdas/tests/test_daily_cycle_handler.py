@@ -893,6 +893,43 @@ def test_an_article_written_with_no_gear_records_an_empty_list(s3_bucket):
     assert article["equipment_used"] == []  # "wore nothing", not "written before gear existed"
 
 
+def test_the_topics_adapters_source_credit_is_stored_on_the_article(s3_bucket):
+    """common/attribution.py: an article keeps the credit it was written with, so the daily
+    cycle copies the topic's adapter's sources (github_trending here) onto the Articles item."""
+    _, _, article = _run_with_gear(s3_bucket, [])
+
+    assert article["attribution"] == [
+        {
+            "text": "Data sourced from GitHub Trending",
+            "label": "GitHub Trending",
+            "url": "https://github.com/trending",
+        }
+    ]
+
+
+def test_the_stored_source_credit_is_the_one_rendered_on_the_static_page(s3_bucket):
+    credit = [{"text": "Data from X", "label": "X", "url": "https://x.example/"}]
+    with (
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.render_and_publish_article_page") as mock_render,
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+    ):
+        daily_cycle_handler._publish_or_moderate(
+            topic_id="github-trending",
+            topic_name="GitHub Trending",
+            title="A Title",
+            draft_text="Body.",
+            findings=[],
+            review={"compliant": True, "reasons": []},
+            model_id="anthropic.claude-test-model",
+            lineage=_DUMMY_LINEAGE,
+            attribution=credit,
+        )
+
+    assert mock_put_article.call_args.kwargs["attribution"] == credit
+    assert mock_render.call_args.kwargs["attribution"] == credit
+
+
 def test_a_legacy_approval_is_still_injected_and_recorded_as_legacy(s3_bucket):
     legacy = {
         "topic_id": "github-trending",

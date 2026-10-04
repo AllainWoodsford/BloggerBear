@@ -36,6 +36,7 @@ from html import escape
 import boto3
 import markdown
 
+from .attribution import clean_sources
 from .dynamo import get_prompt_refinement, get_topic
 from .gear import public_view as _gear_public_view
 from .source_refs import dedupe_source_refs
@@ -207,6 +208,35 @@ def _render_lineage_summary_line_html(lineage: dict | None, published_by: str | 
         f"models [{models_text}] · tokens [{tokens_text}] · "
         f"approved by {approved_text} · {cost_text}"
     )
+
+
+def render_attribution_html(attribution: list[dict] | None) -> str:
+    """The source credit line that sits under the title block (common/attribution.py), or ""
+    when there is nothing to credit.
+
+    One italic sentence per source, the declared `label` inside it linked to the declared URL.
+    Every piece is escaped here, and `clean_sources` has already dropped anything that is not a
+    plain {"text", "label", "url"} with an https URL, so neither a careless declaration nor a
+    tampered Articles item can put markup or a `javascript:` link on the page. The links open in
+    a new tab with rel="noopener noreferrer": the source's site gets no handle on this page and
+    no referrer.
+
+    The italics are in the markup (<em>) as well as the stylesheet, so the credit reads as one
+    even on a cached older styles.css. CoinGecko's terms set a minimum size for it: see
+    .source-attribution in frontend/styles.css.
+    """
+    credits = []
+    for source in clean_sources(attribution):
+        before, label, after = source["text"].partition(source["label"])
+        credits.append(
+            f"<em>{escape(before)}"
+            f'<a href="{escape(source["url"], quote=True)}" target="_blank" rel="noopener noreferrer">'
+            f"{escape(label)}</a>"
+            f"{escape(after)}</em>"
+        )
+    if not credits:
+        return ""
+    return f'<p class="source-attribution" data-role="source-attribution">{" &#183; ".join(credits)}</p>'
 
 
 def _render_lineage_footer_html(
@@ -428,9 +458,14 @@ def render_and_publish_article_page(
     published_by: str | None = None,
     fact_check: str | None = None,
     equipment_used: list[dict] | None = None,
+    attribution: list[dict] | None = None,
 ) -> str:
     """Render `article_id` as a static HTML page and upload it to the site
     bucket. Returns the S3 key it was written to.
+
+    `attribution` is the article's source credit (common/attribution.py: what was stored on the
+    article when it was drafted, or its topic's adapter's sources for an older one). It is
+    shown in italics just under the title block; see render_attribution_html.
 
     The body is converted from markdown to HTML server-side and trusted
     as-is -- it's Bedrock-authored content that has already passed
@@ -465,6 +500,7 @@ def render_and_publish_article_page(
 
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
+    attribution_html = render_attribution_html(attribution)
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
     equipment_footer_html = _render_equipment_footer_html(equipment_snapshot(equipment_used))
     footers_html = f'<div class="article-footers">{lineage_footer_html}{equipment_footer_html}</div>'
@@ -498,6 +534,7 @@ def render_and_publish_article_page(
 <span data-role="topic-name">{escape(topic_name or "")}</span>
 </p>
 <p class="lineage-summary">{lineage_summary_line_html}</p>
+{attribution_html}
 <div class="article-body">{body_html}</div>
 {source_refs_html}
 {footers_html}

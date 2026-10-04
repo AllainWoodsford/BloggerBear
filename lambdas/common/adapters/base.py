@@ -43,6 +43,16 @@ class Adapter(ABC):
     # that leave this False keep the plain `fetch_state(topic_config)`.
     uses_previous_state: bool = False
 
+    # Required: where this adapter's data comes from, as the credit shown to readers (see
+    # common/attribution.py). One {"text", "label", "url"} dict per source: `text` is the whole
+    # sentence, `label` is the part of it that becomes the link, `url` is an https address.
+    # Plain data, never HTML: every page escapes it. Use the source's own required wording where
+    # its terms prescribe one, and quote the sentence relied on (with its URL) in a comment beside
+    # the declaration. An adapter that can draw on several sources lists each. A registered
+    # adapter with no source fails tests/test_attribution.py, so a new adapter cannot ship
+    # uncredited.
+    sources: tuple[dict, ...] = ()
+
     @abstractmethod
     def fetch_state(self, topic_config: dict) -> dict:
         """Fetch and return a normalized snapshot of the source's current state.

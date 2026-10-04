@@ -1,7 +1,8 @@
 """Adapter for Hacker News top stories (https://news.ycombinator.com).
 
 Phase 7's second adapter -- picked to prove the adapter pattern
-generalizes beyond an HTML scrape (github_trending.py): this one talks to
+generalizes beyond an HTML scrape (github_trending.py then; it has since
+moved to GitHub's Search API): this one talks to
 the official, public Hacker News API
 (https://github.com/HackerNews/API, Firebase-backed), no auth, no API
 key, no documented rate limit, no compliance sensitivity -- same low-risk
@@ -35,8 +36,23 @@ SCORE_JUMP_ABSOLUTE_THRESHOLD = 100
 SCORE_JUMP_RATIO_THRESHOLD = 1.5
 
 
+# The Hacker News API's documentation (read 2026-10-04) asks for no attribution and sets no terms
+# of its own: https://github.com/HackerNews/API says only "There is currently no rate limit.", and
+# the repository carries the MIT licence. Y Combinator's site terms
+# (https://www.ycombinator.com/legal/) forbid scraping the site "Except as expressly authorized by
+# Y Combinator"; the API is the channel they publish for this, which is why this adapter uses it
+# and never the HTML. With no wording prescribed, this is a plain source credit.
+HACKER_NEWS_SOURCE = {
+    "text": "Data sourced from Hacker News",
+    "label": "Hacker News",
+    "url": "https://news.ycombinator.com/",
+}
+
+
 class HackerNewsAdapter(Adapter):
     """Fetches the current Hacker News top stories via the official API."""
+
+    sources = (HACKER_NEWS_SOURCE,)
 
     def fetch_state(self, topic_config: dict) -> dict:
         adapter_config = topic_config.get("adapter_config") or {}

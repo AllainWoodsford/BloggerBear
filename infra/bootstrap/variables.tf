@@ -44,7 +44,7 @@ variable "domain_name" {
   description = <<-EOT
     The site's domain (e.g. "bloggerbear.com"). When set, this creates the Route 53 hosted zone for it
     HERE, not in an environment, on purpose: the zone's four name servers are what you type into your
-    registrar (GoDaddy), and they must not change when production is destroyed and rebuilt. A zone that
+    registrar, and they must not change when production is destroyed and rebuilt. A zone that
     lived in the production environment would be deleted with it and come back with different name
     servers, which means changing the registrar again. Empty (the default) creates nothing.
 

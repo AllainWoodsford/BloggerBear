@@ -67,16 +67,21 @@
       <div class="ask-toolbar">
         <button type="button" id="ask-new" class="ask-button">New briefing</button>
         <button type="button" id="ask-mute" class="ask-button" aria-pressed="false">Mute voice</button>
+        <button type="button" id="ask-voice-test" class="ask-button">Test voice</button>
         <button type="button" id="ask-sign-out" class="ask-button">Sign out</button>
+        <span id="ask-environment" class="ask-environment" hidden></span>
       </div>
+      <!-- What the voice test found: the page's own sentences, and the words the browser heard. -->
+      <ul id="ask-voice-report" class="ask-voice-report" aria-live="polite" hidden></ul>
 
       <div class="ask-controls">
         <button type="button" id="ask-talk" class="ask-talk" aria-pressed="false" aria-describedby="ask-talk-hint" hidden>
           Push to talk
         </button>
         <p id="ask-talk-hint" class="ask-hint" hidden>
-          Hold the button (or Space or Enter) while you speak, or press it once to start and again
-          to stop.
+          Tap the button, ask your question, and it stops when you stop speaking (or tap again).
+          You can also hold it (or Space or Enter) while you speak. "Test voice" checks the
+          microphone and the spoken answers.
         </p>
         <p id="ask-no-speech" class="ask-hint" hidden>
           This browser has no speech recognition, so type your question instead.

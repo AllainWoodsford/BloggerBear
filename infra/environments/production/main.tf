@@ -286,7 +286,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "content" {
 # (one `lambdas/` source tree with a shared `common/` package).
 #
 # Bugfix: this used to zip lambdas/ directly, which meant NONE of
-# requirements.txt's third-party dependencies (requests, beautifulsoup4 --
+# requirements.txt's third-party dependencies (requests --
 # every adapter's HTTP client: common/adapters/github_trending.py,
 # hacker_news.py, crypto_feed.py all import requests) ever made it into
 # the deployment package -- the Lambda Python 3.11 runtime does not
@@ -727,7 +727,7 @@ resource "aws_lambda_function" "research_tick" {
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
   environment {
-    variables = merge(local.lambda_env_variables, local.coingecko_env_variables)
+    variables = merge(local.lambda_env_variables, local.coingecko_env_variables, local.github_env_variables)
   }
 }
 
@@ -773,6 +773,38 @@ resource "aws_iam_role_policy" "lambda_coingecko_key" {
   policy = data.aws_iam_policy_document.lambda_coingecko_key.json
 }
 
+# The optional GitHub API token, the same way: a SecureString at a fixed name that Terraform never
+# creates, only grants read access to. The GitHub Trending adapter calls the REST Search API, which
+# allows 10 requests a minute per IP unauthenticated (and Lambda's egress IPs are shared); a token,
+# fine-grained with no permissions, raises that to 30 on its own budget. research_tick fetches and
+# daily_cycle's fresh-data review re-fetches, so both are told where it is
+# (common/adapters/github_trending.py). The operator creates it once (see README.md):
+#
+#   aws ssm put-parameter --name /bloggerbear/production/github-api-token --type SecureString --value <token> --overwrite
+#
+# No parameter -> unauthenticated search; a token GitHub rejects falls back to unauthenticated too.
+locals {
+  github_api_token_parameter = "/bloggerbear/production/github-api-token"
+  github_env_variables = {
+    GITHUB_API_TOKEN_PARAMETER = local.github_api_token_parameter
+  }
+}
+
+data "aws_iam_policy_document" "lambda_github_token" {
+  statement {
+    sid       = "ReadGitHubToken"
+    effect    = "Allow"
+    actions   = ["ssm:GetParameter"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.github_api_token_parameter}"]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_github_token" {
+  name   = "bloggerbear-production-lambda-github-token"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_github_token.json
+}
+
 resource "aws_lambda_function" "daily_cycle" {
   function_name = "bloggerbear-production-daily-cycle"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
@@ -786,7 +818,7 @@ resource "aws_lambda_function" "daily_cycle" {
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
   environment {
-    variables = merge(local.lambda_env_variables, local.coingecko_env_variables)
+    variables = merge(local.lambda_env_variables, local.coingecko_env_variables, local.github_env_variables)
   }
 }
 
