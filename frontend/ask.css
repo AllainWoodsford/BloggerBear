@@ -85,7 +85,24 @@
   /* A long press must talk, not select the label or open a touch menu. */
   user-select: none;
   -webkit-user-select: none;
-  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  /* none, not manipulation: a finger that moves while holding must not turn the press into a
+     scroll, which cancels the pointer and used to stop the microphone. */
+  touch-action: none;
+}
+
+/* Which environment the page asks about: dev's commands are for dev's admin API. */
+.ask-environment {
+  align-self: center;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+.ask-voice-report {
+  margin: 12px 0;
+  padding-left: 1.2rem;
 }
 
 .ask-talk[aria-pressed="true"] {
