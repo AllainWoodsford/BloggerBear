@@ -2573,8 +2573,8 @@ _REGION_LITERAL_ALLOWED = {
         r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
         r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
     ],
-    # Help text shown to a person: what leaving AWS_REGION blank means.
-    "scripts/setup_repo.py": [r"\"original deployment's region, ap-southeast-2 \(Sydney\)\. .*"],
+    # The setup script's one copy of the default, which its own tests hold to Terraform's.
+    "scripts/setup_repo.py": [r'DEFAULT_REGION = "ap-southeast-2"'],
     # An example to `source` by hand: whatever region is already exported wins, else the default.
     "scripts/force_publish_example.sh": [
         r'export AWS_DEFAULT_REGION="\$\{AWS_DEFAULT_REGION:-ap-southeast-2\}"'

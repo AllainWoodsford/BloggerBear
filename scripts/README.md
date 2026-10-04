@@ -9,10 +9,14 @@ else.
 ## First-time setup of your repository: `setup_repo.py`
 
 Deploying your own copy? This one comes before the admin CLI. It asks for the GitHub secrets and
-variables a deployment needs (your allowed address ranges, alert emails, the AWS account IDs and
+variables a deployment needs (the AWS region first, then your allowed address ranges, alert emails, the AWS account IDs and
 deploy role ARNs, the state bucket names, the name suffix and `PII_DENYLIST`), checks each answer,
 shows what is already set, and sets what is missing. It also tells you how to turn on the git hook
 that stops personal data being committed.
+
+The region question is optional: Enter keeps the default, `ap-southeast-2`. Answer with another
+region and the script puts it in the bootstrap command it prints, and lists the few things you
+must then change by hand (the Bedrock model profile for your part of the world, above all).
 
 ```bash
 python scripts/setup_repo.py --dry-run     # step through it all; changes nothing

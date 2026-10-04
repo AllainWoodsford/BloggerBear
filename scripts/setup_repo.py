@@ -53,6 +53,9 @@ ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION = "production"  # the GitHub environment terraform-production-release.yml deploys through
 HOOKS_PATH = ".githooks"  # what the README and .githooks/pre-commit say to set core.hooksPath to
 REDACTED = "<redacted>"
+# The region a deployment uses when AWS_REGION is left unset: the default of every aws_region
+# variable in infra/, and the workflows' fallback. The test suite keeps the three in step.
+DEFAULT_REGION = "ap-southeast-2"
 MIN_DENYLIST_ENTRY = 4  # shorter than this and an entry matches ordinary text all over the repo
 
 
@@ -120,9 +123,24 @@ _BUCKET_HELP = (
     "belongs to the original deployment, so a fork must set its own."
 )
 
-# THE list. Order matters: an account ID comes before the role ARN that is checked against it, and
-# a dev setting before the production one that can reuse its answer.
+# THE list. Order matters: the region comes first, because later steps print commands that name it;
+# an account ID comes before the role ARN that is checked against it, and a dev setting before the
+# production one that can reuse its answer.
 SETTINGS: tuple[Setting, ...] = (
+    Setting("AWS_REGION", "variable", "repo", "optional", "region",
+            "The AWS region everything is deployed to, such as eu-west-1. Leave it blank for the\n"
+            f"default, {DEFAULT_REGION} (Sydney), which is where the original deployment lives.\n"
+            "Choose it BEFORE your first deploy: AWS cannot move a resource between regions, so\n"
+            "changing it later rebuilds everything, empty, in the new one. It must be the region the\n"
+            "bootstrap is applied with (its aws_region), because the deploy roles may only work there.\n"
+            "It is a variable, not a secret: a region is public. This sets it for the whole repository;\n"
+            f"a variable of the same name on the '{PRODUCTION}' environment would win for production.",
+            tf_var="aws_region"),
+    Setting("TF_STATE_REGION", "variable", "repo", "optional", "region",
+            "The region of the S3 bucket that holds Terraform's state, only if it is NOT the region\n"
+            "above. Almost nobody needs it: the bootstrap makes the bucket in its own region, and\n"
+            "blank means \"the same as AWS_REGION\" (or, with that blank too, the region written in\n"
+            "the backend block). A variable, like the region itself."),
     Setting("ADMIN_ALLOWED_CIDRS_DEV", "secret", "repo", "required", "cidrs",
             _CIDR_HELP, env="dev", tf_var="admin_allowed_cidrs"),
     Setting("ADMIN_ALLOWED_CIDRS_PROD", "secret", PRODUCTION, "required", "cidrs",
@@ -154,21 +172,6 @@ SETTINGS: tuple[Setting, ...] = (
             "deploy and never change it: a bucket cannot be renamed, so changing it later deletes the\n"
             "buckets and makes empty ones. It is a variable, not a secret: it ends up in public names.",
             tf_var="unique_name_suffix"),
-    Setting("AWS_REGION", "variable", "repo", "optional", "region",
-            "The AWS region everything is deployed to, such as eu-west-1. Leave it blank for the\n"
-            "original deployment's region, ap-southeast-2 (Sydney). Choose it BEFORE your first\n"
-            "deploy: AWS cannot move a resource between regions, so changing it later rebuilds\n"
-            "everything, empty, in the new one. It must be the region the bootstrap was applied with\n"
-            "(its aws_region), because the deploy roles may only work there. Outside Australia you\n"
-            "must also set bedrock_inference_profile_id in each environment's terraform.tfvars: the\n"
-            "default model profile exists only in Australian regions (docs/deploying-your-own.md,\n"
-            "\"Deploying to another region\"). It is a variable, not a secret: a region is public.",
-            tf_var="aws_region"),
-    Setting("TF_STATE_REGION", "variable", "repo", "optional", "region",
-            "The region of the S3 bucket that holds Terraform's state, only if it is NOT the region\n"
-            "above. Almost nobody needs it: the bootstrap makes the bucket in its own region, and\n"
-            "blank means \"the same as AWS_REGION\" (or, with that blank too, the region written in\n"
-            "the backend block)."),
     Setting("PII_DENYLIST", "secret", "repo", "optional", "denylist",
             "A list of strings, such as your real name or home address, that must never be committed\n"
             "or pushed. The pre-commit hook and the pii-denylist check on pull requests refuse any\n"
@@ -312,16 +315,50 @@ def check_suffix(raw: str) -> str:
     return text
 
 
+# The shape infra's aws_region variables accept (their validation's regex, without the anchors).
+REGION_SHAPE = r"[a-z]{2}(-[a-z]+)+-[0-9]+"
+
+
 def check_region(raw: str) -> str:
     """The same rule as the Terraform variable's validation (aws_region): region shaped, and no
     more than that, since which regions exist is AWS's list."""
     text = raw.strip()
-    if not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-[0-9]+", text):
+    if not re.fullmatch(REGION_SHAPE, text):
         raise Invalid(
             "That does not look like an AWS region. Use its code, in lowercase, such as eu-west-1 "
             "or us-west-2 (not its name, and not an availability zone such as eu-west-1a)."
         )
     return text
+
+
+def deploy_region(answers: dict[str, str], state: State | None = None) -> str:
+    """THE region this deployment uses, for anything the script prints or runs that names one.
+
+    The answer given in this run; else the AWS_REGION variable already on the repository (it was
+    skipped, or left out by --only); else the default. Never ask for it a second time, and never
+    write a region out: call this.
+    """
+    return answers.get("AWS_REGION") or (state.region if state else "") or DEFAULT_REGION
+
+
+def region_notes(region: str) -> str:
+    """What else has to change by hand when the region is not the default. "" for the default."""
+    if region == DEFAULT_REGION:
+        return ""
+    return "\n".join([
+        f"Because {region} is not the default region, four things are yours to do by hand:",
+        "  1. The model. In infra/environments/dev/terraform.tfvars and .../production/terraform.tfvars,",
+        "     set bedrock_inference_profile_id to your geography's profile (the default starts with",
+        "     au. and exists only in Australian regions; yours starts with us., eu., apac., ...), and",
+        f"     enable that model for your account in {region} (Bedrock model access).",
+        f'  2. Apply the bootstrap with -var="aws_region={region}": the deploy roles only work there.',
+        "  3. Check the Lambda Web Adapter layer version pinned in infra/modules/ops-assistant/main.tf",
+        f"     has been published in {region} (its README lists the regions).",
+        "  4. frontend/privacy.html tells readers the logs are kept in Sydney. Reword it.",
+        "CloudFront's certificate and the firewall in front of the site stay in us-east-1 whatever",
+        "you choose: AWS only hosts them there. Nothing to do for those.",
+        'More: docs/deploying-your-own.md, "Deploying to another region".',
+    ])
 
 
 def check_denylist(raw: str) -> str:
@@ -433,13 +470,14 @@ def read_only(run: Run) -> Run:
 
 @dataclass
 class State:
-    """Names (never values) of what exists. None means "could not find out"."""
+    """Names of what exists (and one public value, the region). None means "could not find out"."""
 
     repo_secrets: set[str] | None = None
     repo_variables: set[str] | None = None
     env_exists: bool | None = None
     env_secrets: set[str] | None = None
     env_variables: set[str] | None = None
+    region: str = ""  # the AWS_REGION repository variable's value, when it exists
 
 
 def _names(run: Run, path: str, key: str) -> set[str] | None:
@@ -453,6 +491,11 @@ def read_state(run: Run, repo: str) -> State:
         repo_secrets=_names(run, f"repos/{repo}/actions/secrets", "secrets"),
         repo_variables=_names(run, f"repos/{repo}/actions/variables", "variables"),
     )
+    if "AWS_REGION" in (state.repo_variables or set()):
+        found = run(["gh", "api", f"repos/{repo}/actions/variables/AWS_REGION", "--jq", ".value"])
+        value = found.out.strip()
+        # Only a value this script would itself accept: anything else is treated as not known.
+        state.region = value if found.code == 0 and re.fullmatch(REGION_SHAPE, value) else ""
     environment = run(["gh", "api", f"repos/{repo}/environments/{PRODUCTION}", "--jq", ".name"])
     if environment.code == 0:
         state.env_exists = True
@@ -613,7 +656,7 @@ class Prompter:
             self.say("Please answer y or n.")
 
 
-def role_steps(setting: Setting, repo: str, have_account: bool) -> str:
+def role_steps(setting: Setting, repo: str, have_account: bool, region: str = DEFAULT_REGION) -> str:
     """How to create the role and find its ARN: what infra/bootstrap does, with placeholders."""
     role = ROLES[setting.env]
     # A placeholder, never the ID itself: the steps are printed, and the ID is treated as a secret.
@@ -630,6 +673,13 @@ def role_steps(setting: Setting, repo: str, have_account: bool) -> str:
         '         -var="state_bucket_name=<a bucket name of your own>" \\',
         '         -var="domain_name=<example.com, or empty for no domain>" \\',
         '         -var="budget_alert_email=<you@example.com>"',
+    ]
+    if region != DEFAULT_REGION:
+        # The default needs no argument (it is the bootstrap's own default); any other region does,
+        # or the roles are made for the wrong one and every deploy is refused.
+        lines[-1] += " \\"
+        lines.append(f'         -var="aws_region={region}"')
+    lines += [
         "  2. Read the ARN from the bootstrap's outputs:",
         f"       terraform output {role.output}",
         f"  3. Bootstrap always names this role {role.name}, so the ARN is:",
@@ -680,7 +730,7 @@ def ask_denylist(prompter: Prompter, root: Path) -> tuple[str, int]:
 
 
 def ask_setting(
-    setting: Setting, prompter: Prompter, answers: dict[str, str], repo: str
+    setting: Setting, prompter: Prompter, answers: dict[str, str], repo: str, region: str = DEFAULT_REGION
 ) -> str:
     """Ask for one ordinary setting until the answer passes its check. "" means leave it unset."""
     account = ""
@@ -703,7 +753,7 @@ def ask_setting(
                     break
                 except Invalid as problem:
                     prompter.say(f"  {problem}")
-        prompter.say(role_steps(setting, repo, bool(account)))
+        prompter.say(role_steps(setting, repo, bool(account), region))
         if account:
             default = f"arn:aws:iam::{account}:role/{ROLES[setting.env].name}"
 
@@ -864,6 +914,11 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
     # 3. Ask. Nothing is written in this part.
     answers: dict[str, str] = {}
     actions: list[Action] = []
+    existing = deploy_region(answers, state)
+    if all(setting.name != "AWS_REGION" for setting in asking) and region_notes(existing):
+        # Not asked in this run, but already set to another region: the same reminders apply.
+        prompter.say(f"\nAWS_REGION is already set to {existing}.")
+        prompter.say(region_notes(existing))
     for setting in asking:
         where = "repository" if setting.where == "repo" else f"{PRODUCTION} environment"
         prompter.say(f"\n== {setting.name} ({setting.kind}, {where}, {_NEED_LABEL[setting.need]}) ==")
@@ -871,7 +926,14 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
         if setting.check == "denylist":
             value, from_file = ask_denylist(prompter, root)
         else:
-            value, from_file = ask_setting(setting, prompter, answers, repo), 0
+            region = deploy_region(answers, state)
+            value, from_file = ask_setting(setting, prompter, answers, repo, region), 0
+        if setting.name == "AWS_REGION":
+            # Said once, here, where the choice is made. Left blank, it is whatever it already was.
+            chosen = value or deploy_region(answers, state)
+            prompter.say(f"The region is {chosen}." + ("" if value else " (Nothing to set.)"))
+            if region_notes(chosen):
+                prompter.say(region_notes(chosen))
         if not value:
             prompter.say("Left unset.")
             continue
@@ -904,6 +966,11 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
             prompter.say(f"  {action.name}  [{action.kind}, {place}]  {value}")
         else:
             prompter.say(f"  {action.label()}")
+    if region_notes(deploy_region(answers, state)):
+        prompter.say(
+            f"\nRemember: {deploy_region(answers, state)} is not the default region. The four things to "
+            "change by hand are listed above, under AWS_REGION."
+        )
 
     if dry:
         prompter.say("\nA real run would now ask you to confirm, then run:")
