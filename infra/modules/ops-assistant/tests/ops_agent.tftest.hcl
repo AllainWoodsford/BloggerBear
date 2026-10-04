@@ -42,6 +42,7 @@ variables {
   allowed_cidrs           = ["203.0.113.0/24", "2001:db8::/32"]
   agent_model_id          = "au.example.test-model-v1:0"
   agent_allowed_origin    = "https://example.com"
+  agent_forward_key       = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 }
 
 run "the_agent_role_can_invoke_the_model_and_read_one_row" {
@@ -237,8 +238,25 @@ run "the_agent_is_told_what_it_needs_and_tracing_is_not_switched_on" {
       "OPS_AGENT_ALLOWED_ORIGIN",
       "MODEL_CONFIG_TABLE",
       "OPS_ASSISTANT_ALLOWED_CIDRS",
+      "OPS_AGENT_FORWARD_KEY",
     ])
     error_message = "the agent's environment holds a variable this test does not expect, or lacks one it does"
+  }
+
+  # The key the agent vouches for the operator's address with: the caller's, on both functions.
+  assert {
+    condition     = nonsensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_AGENT_FORWARD_KEY) == "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+    error_message = "the agent is given the caller's forward key, unchanged"
+  }
+
+  assert {
+    condition     = nonsensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_AGENT_FORWARD_KEY == aws_lambda_function.ops_mcp.environment[0].variables.OPS_AGENT_FORWARD_KEY)
+    error_message = "the agent and the MCP server must hold the same forward key, or allowlist refuses every question"
+  }
+
+  assert {
+    condition     = issensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_AGENT_FORWARD_KEY) && issensitive(aws_lambda_function.ops_mcp.environment[0].variables.OPS_AGENT_FORWARD_KEY)
+    error_message = "the forward key is sensitive, so a plan must not print it on either function"
   }
 
   assert {
@@ -292,4 +310,34 @@ run "the_agent_cannot_be_switched_off_by_a_reservation_of_zero" {
     agent_reserved_concurrency = 0
   }
   expect_failures = [var.agent_reserved_concurrency]
+}
+
+# The code ignores a key under 32 characters (ops_mcp/access.py), so one would look set and do
+# nothing; and the key is sent as an HTTP header, so it is letters and digits only.
+run "a_forward_key_too_short_to_count_is_refused" {
+  command = plan
+  variables {
+    agent_forward_key = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+  }
+  expect_failures = [var.agent_forward_key]
+}
+
+run "a_forward_key_that_could_not_be_a_header_is_refused" {
+  command = plan
+  variables {
+    agent_forward_key = "kkkkkkkkkkkkkkkkkkkk kkkkkkkkkkkkkkkkkkkk"
+  }
+  expect_failures = [var.agent_forward_key]
+}
+
+run "with_no_forward_key_both_functions_hold_none" {
+  command = plan
+  variables {
+    agent_forward_key = ""
+  }
+
+  assert {
+    condition     = nonsensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_AGENT_FORWARD_KEY) == "" && nonsensitive(aws_lambda_function.ops_mcp.environment[0].variables.OPS_AGENT_FORWARD_KEY) == ""
+    error_message = "an empty key is passed on as empty, which switches vouching off on both sides"
+  }
 }

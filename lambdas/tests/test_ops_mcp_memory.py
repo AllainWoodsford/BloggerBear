@@ -315,6 +315,7 @@ def test_a_first_follow_up_with_an_empty_table_works(tables):
         "spoken": "I have no open suggestions to follow up.",
         "findings": [],
         "fixed": [],
+        "cleared": [],
         "open": [],
         "as_of": NOW.isoformat(),
     }
@@ -427,10 +428,16 @@ def test_each_checker_tells_fixed_from_still_true(tables):
     tables.Table("FailedExecutions").delete_item(Key={"failure_id": "f1"})
     done = memory.follow_up(ALICE, now=NOW)
 
-    assert sorted((entry["kind"], entry["id"]) for entry in done["fixed"]) == sorted(kinds(still))
+    # What only a person could have changed is "fixed"; what stops being true by itself (the
+    # next scheduled run, a failure ageing out of the last day) has "cleared".
+    resolved = done["fixed"] + done["cleared"]
+    assert sorted((entry["kind"], entry["id"]) for entry in resolved) == sorted(kinds(still))
+    assert {entry["kind"] for entry in done["cleared"]} <= memory.SELF_CLEARING_KINDS
+    assert not {entry["kind"] for entry in done["fixed"]} & memory.SELF_CLEARING_KINDS
     assert done["findings"] == [] and rows(tables) == []
     assert done["spoken"] == (
-        "You fixed 3 things I suggested, for Crypto and Hacker News. Nothing else I suggested is waiting."
+        "You fixed 1 thing I suggested, for Crypto. 2 things I flagged have cleared, for Crypto and "
+        "Hacker News. Nothing else I suggested is waiting."
     )
 
 
@@ -558,12 +565,12 @@ def test_one_user_never_reads_or_deletes_anothers_rows(tables):
     memory.dismiss(BOB, "research_overdue", "crypto", now=NOW)
     memory.unwatch(BOB, "topic", "crypto")
     put_topic(tables, researched=ago(minutes=1))
-    assert memory.follow_up(BOB, now=NOW)["fixed"] == []
+    assert memory.follow_up(BOB, now=NOW)["cleared"] == []
 
     assert rows(tables, ALICE) == before
     assert [row["item"] for row in rows(tables, BOB)] == ["suggestion#research_overdue#crypto"]
     # And Alice's follow-up is hers: the fix is reported to her, once.
-    assert [entry["kind"] for entry in memory.follow_up(ALICE, now=NOW)["fixed"]] == ["research_overdue"]
+    assert [entry["kind"] for entry in memory.follow_up(ALICE, now=NOW)["cleared"]] == ["research_overdue"]
 
 
 # --- what a row may hold -------------------------------------------------------------------------

@@ -1761,6 +1761,7 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
         "OPS_AGENT_ALLOWED_ORIGIN": "var.agent_allowed_origin",
         "MODEL_CONFIG_TABLE": 'var.tables["MODEL_CONFIG_TABLE"].name',
         "OPS_ASSISTANT_ALLOWED_CIDRS": 'join(",", var.allowed_cidrs)',
+        "OPS_AGENT_FORWARD_KEY": "var.agent_forward_key",
     }
     # A trace of an agent run carries the question and the answer: nothing switches one on.
     assert "OTEL_" not in _uncommented(_agent_module())
@@ -1770,6 +1771,50 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
     # The same allowlist, written the same way, as the MCP server's.
     mcp_function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
     assert re.search(r'OPS_ASSISTANT_ALLOWED_CIDRS\s*=\s*join\(",", var\.allowed_cidrs\)', mcp_function)
+
+
+def test_the_agent_and_the_server_share_one_forward_key_and_no_plan_prints_it():
+    """Under `allowlist` the server judges the agent's requests by the address the agent vouches
+    for, and believes it only for the key (ops_mcp/access.py). Two different keys, or a key on
+    one function only, and every question asked through the agent is refused."""
+    from ops_mcp import access
+
+    mcp_function = _uncommented(_resource_block(_ops_module(), "aws_lambda_function", "ops_mcp"))
+    agent_function = _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
+    wired = rf"^\s*{access.FORWARD_KEY_ENV}\s*=\s*var\.agent_forward_key$"
+    assert access.FORWARD_KEY_ENV == "OPS_AGENT_FORWARD_KEY"
+    assert len(re.findall(wired, mcp_function, re.M)) == 1
+    assert len(re.findall(wired, agent_function, re.M)) == 1
+    # Nowhere else: not an output, not a tag, not a description.
+    for name in ("main.tf", "agent.tf", "memory.tf", "outputs.tf"):
+        code = _uncommented(_read("modules", "ops-assistant", name))
+        assert code.count("agent_forward_key") == (1 if name in ("main.tf", "agent.tf") else 0), name
+
+    variable = re.search(
+        r'variable "agent_forward_key" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
+    ).group(1)
+    assert re.search(r"^\s*sensitive\s*=\s*true$", variable, re.M)
+    assert re.search(r'^\s*default\s*=\s*""$', variable, re.M)  # no key: vouching is off
+    # Empty, or as long as the code needs before it counts the key at all, and nothing a header
+    # could not carry.
+    pattern = re.search(r'regex\("([^"]+)", var\.agent_forward_key\)', variable).group(1)
+    assert pattern == f"^[A-Za-z0-9]{{{access.MIN_FORWARD_KEY_CHARS},}}$"
+    assert 'var.agent_forward_key == "" ||' in variable
+
+    dev = _read("environments", "dev", "main.tf")
+    call = _module_blocks(dev, "modules/ops-assistant")[0]
+    assert re.search(
+        r"^\s*agent_forward_key\s*=\s*random_password\.ops_agent_forward_key\.result$", call, re.M
+    )
+    password = _uncommented(_resource_block(dev, "random_password", "ops_agent_forward_key"))
+    length = int(re.search(r"length\s*=\s*(\d+)", password).group(1))
+    assert length == 48 and length >= access.MIN_FORWARD_KEY_CHARS
+    assert re.search(r"special\s*=\s*false", password)  # letters and digits: what the variable takes
+    assert "keepers" not in password  # made once: it does not change from one apply to the next
+    # The key is used for the module and nothing else, and no output shows it.
+    assert _uncommented(dev).count("random_password.ops_agent_forward_key") == 1
+    assert "forward_key" not in _read("environments", "dev", "outputs.tf")
+    assert re.search(r'source\s*=\s*"hashicorp/random"', dev)
 
 
 def test_the_agent_calls_this_modules_own_mcp_endpoint_at_the_host_the_server_accepts():

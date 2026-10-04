@@ -96,6 +96,23 @@ def _error(status_code: int, message: str) -> dict:
     return _response(status_code, {"error": message})
 
 
+def _vouching_headers(event: dict, admitted: bool) -> dict[str, str]:
+    """What the agent adds to its requests to the MCP server so that `allowlist` judges them by
+    the operator's address, which this function has already checked, and not by its own
+    (ops_mcp/access.py). Empty when no key is configured or the address is not known.
+
+    `admitted` is this function's own verdict on the request (`_admitted`), and without it
+    nothing is vouched for: the server then judges the request by this function's address.
+    Never raises, for the same reason."""
+    if admitted is not True:
+        return {}
+    try:
+        identity = (event.get("requestContext") or {}).get("identity") or {}
+        return access.forwarding_headers(identity.get("sourceIp"))
+    except Exception:  # noqa: BLE001 - nothing vouched for is the safe answer
+        return {}
+
+
 def _admitted(event: dict) -> tuple[bool, str]:
     """Whether the `assistant_access` setting lets this request go on, and why (ops_mcp/access.py
     holds the rule). Everything that goes wrong refuses: a setting that cannot be read, an event
@@ -172,7 +189,9 @@ def _validated(body: dict) -> tuple[str, list[dict]]:
     return question, turns
 
 
-def _ask(event: dict) -> dict:
+def _ask(event: dict, *, admitted: bool = False) -> dict:
+    """Answer the question. `admitted` says the access check passed for this event; only then
+    is the caller's address vouched for to the MCP server."""
     authorization = _authorization(event)
     if authorization is None:
         # API Gateway's authorizer turns such a request away before it gets here; this is for
@@ -184,7 +203,7 @@ def _ask(event: dict) -> dict:
         return _error(400, str(exc))
 
     try:
-        result = agent.answer(question, history, authorization)
+        result = agent.answer(question, history, authorization, _vouching_headers(event, admitted))
     except agent.AgentError as exc:
         print(f"ops_agent: failed error={exc}")  # the error's class name, nothing it said
         return _error(502, _UNAVAILABLE)
@@ -216,7 +235,7 @@ def handler(event, context) -> dict:
     if _route_key(event) != "POST /ask":
         return _error(404, "no such route")
     try:
-        return _ask(event)
+        return _ask(event, admitted=allowed)
     except Exception as exc:  # noqa: BLE001 - never raise out of the handler
         print(f"ops_agent: failed error={type(exc).__name__}")
         return _error(502, _UNAVAILABLE)

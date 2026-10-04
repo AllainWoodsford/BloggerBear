@@ -232,6 +232,13 @@ run "the_function_runs_the_web_app_through_the_adapter" {
     condition     = aws_lambda_function.ops_mcp.environment[0].variables.TOPICS_TABLE == "bloggerbear-test-topics" && aws_lambda_function.ops_mcp.environment[0].variables.ARTICLES_TABLE == "bloggerbear-test-articles"
     error_message = "every table in var.tables becomes an environment variable holding its name"
   }
+
+  # The agent's key (tests/ops_agent.tftest.hcl holds that both functions get the same one). No
+  # key is given in this file, and the default is none: nothing is taken as the agent's.
+  assert {
+    condition     = nonsensitive(aws_lambda_function.ops_mcp.environment[0].variables.OPS_AGENT_FORWARD_KEY) == ""
+    error_message = "the server is always told the forward key, and with none given it is empty"
+  }
 }
 
 run "mfa_is_optional_when_asked" {

@@ -2382,4 +2382,16 @@ module "ops_assistant" {
   # The dev site's origin, where ask.html is served from: the same value the callback URL above
   # is built on, so the page that signs in is the page that may read the answers.
   agent_allowed_origin = local.site_url
+
+  # The key the agent sends the MCP server with the operator's address, so that "allowlist"
+  # admits a question asked through the agent (the server otherwise sees Lambda's address).
+  agent_forward_key = random_password.ops_agent_forward_key.result
+}
+
+# Made once and kept in state, like random_password.api_origin_verify: both functions are given
+# it as an environment variable. To change it, taint this resource and apply; the two functions
+# are updated in the same apply.
+resource "random_password" "ops_agent_forward_key" {
+  length  = 48
+  special = false
 }

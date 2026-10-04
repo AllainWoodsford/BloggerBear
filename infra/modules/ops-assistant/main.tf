@@ -305,6 +305,12 @@ resource "aws_lambda_function" "ops_mcp" {
         # forwards (identity.sourceIp, as API Gateway recorded it; a caller cannot set it).
         OPS_ASSISTANT_ALLOWED_CIDRS = join(",", var.allowed_cidrs)
 
+        # The key the agent (agent.tf) sends with the operator's address, since its own requests
+        # arrive here from an address of Lambda's. A request carrying this key is judged, under
+        # "allowlist", by the address it vouches for (ops_mcp/access.py). Empty: no request is
+        # taken as the agent's, and "allowlist" refuses every question asked through it.
+        OPS_AGENT_FORWARD_KEY = var.agent_forward_key
+
         CONTENT_BUCKET   = var.content_bucket_name
         ENVIRONMENT_NAME = var.environment_name
 

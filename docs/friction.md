@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 13 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 14 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -478,6 +478,17 @@ reads files named `requirements.txt`, plus the patterns it is given, and the MCP
 dependencies live in `requirements-ops-mcp.txt` so the pipeline's shared zip doesn't carry them.
 **Fix:** the pattern in both scan workflows now names it. The file pins only `mcp` itself, so what
 `mcp` pulls in is still not scanned; a lock file for that Lambda's build is the proper fix.
+
+**10.14 The `allowlist` setting refused the assistant's own agent.** The access check was written
+for the MCP server and tested there, then repeated in the agent's handler and tested there. Each
+passed. Together, the agent admitted the operator and then called the server from Lambda's address,
+which is on nobody's list, so every question under `allowlist` ended in a 502. It failed closed,
+and it was noticed while writing the design doc, not by a test: no test ran the two checks in one
+request with a setting other than `open` or `off`. **Fix:** the agent sends the server a key only
+the two functions hold (Terraform makes it) and the address of the operator it has admitted; a
+request with the right key is judged by that address. The key admits nobody by itself, and a wire
+test now runs agent and server together under `allowlist`. **Lesson:** a rule enforced in two
+places needs one test that goes through both, with every value of the setting.
 
 ---
 

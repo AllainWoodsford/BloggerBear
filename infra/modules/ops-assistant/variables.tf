@@ -112,6 +112,18 @@ variable "agent_allowed_origin" {
   description = "The one origin (e.g. \"https://bloggerbear.com\": scheme and host, no path, no trailing slash) whose pages may read the agent's responses, passed to the agent Lambda as OPS_AGENT_ALLOWED_ORIGIN and answered in its CORS headers. Empty means no browser can read a response."
 }
 
+variable "agent_forward_key" {
+  type        = string
+  default     = ""
+  sensitive   = true
+  description = "A random key shared by the agent Lambda and the MCP server, set on both as OPS_AGENT_FORWARD_KEY. The agent sends it with the address of the operator it has admitted, and under the \"allowlist\" setting the server judges a request carrying it by that address, since the agent's own requests arrive from an address of Lambda's. Empty switches this off: \"allowlist\" then refuses every question asked through the agent. Letters and digits only, at least 32 of them (a shorter key is ignored by the code). It ends up in both functions' configuration and in Terraform state."
+
+  validation {
+    condition     = var.agent_forward_key == "" || can(regex("^[A-Za-z0-9]{32,}$", var.agent_forward_key))
+    error_message = "agent_forward_key must be empty or at least 32 letters and digits: it is sent as an HTTP header, and the code ignores a key shorter than 32 characters."
+  }
+}
+
 variable "agent_memory_size" {
   type        = number
   default     = 1024

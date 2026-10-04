@@ -123,18 +123,20 @@ class AgentError(Exception):
     """The model or the MCP server failed. The handler answers 502 and says nothing more."""
 
 
-def bearer_headers(authorization: str) -> dict[str, str]:
+def bearer_headers(authorization: str, extra: dict[str, str] | None = None) -> dict[str, str]:
     """The headers every MCP request carries: the caller's own `Authorization` value, as it
-    arrived. The server's authorizer checks it again; this code never reads what is in it."""
-    return {"Authorization": authorization}
+    arrived (the server's authorizer checks it again; this code never reads what is in it), and
+    whatever the handler adds so the server can judge the request by the operator's address and
+    not this function's (ops_mcp/access.py)."""
+    return {**(extra or {}), "Authorization": authorization}
 
 
-def mcp_client(url: str, authorization: str) -> MCPClient:
+def mcp_client(url: str, authorization: str, extra_headers: dict[str, str] | None = None) -> MCPClient:
     """Strands' MCP client for the ops server, over Streamable HTTP, sending the caller's token.
     Used as a context manager: it connects on entry and disconnects on exit."""
     return MCPClient(
         url=url,
-        headers=bearer_headers(authorization),
+        headers=bearer_headers(authorization, extra_headers),
         startup_timeout=_MCP_STARTUP_TIMEOUT_SECONDS,
         application_name="bloggerbear-ops-agent",
     )
@@ -259,11 +261,16 @@ def _cut_off(exc: Exception) -> bool:
     return isinstance(exc, MaxTokensReachedException) or isinstance(exc.__cause__, MaxTokensReachedException)
 
 
-def answer(question: str, history: list[dict] | None, authorization: str) -> dict:
+def answer(
+    question: str,
+    history: list[dict] | None,
+    authorization: str,
+    extra_headers: dict[str, str] | None = None,
+) -> dict:
     """Answer one question against the ops MCP server, as the caller: connect with their token,
     list the server's tools, run the agent, disconnect."""
     try:
-        with mcp_client(os.environ["OPS_MCP_URL"], authorization) as client:
+        with mcp_client(os.environ["OPS_MCP_URL"], authorization, extra_headers) as client:
             return run(question, history, list_tools(client))
     except AgentError:
         raise

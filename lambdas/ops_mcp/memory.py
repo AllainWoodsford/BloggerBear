@@ -97,6 +97,12 @@ _REQUEST_CONTEXT = REQUEST_CONTEXT_HEADER.decode()
 
 FIXED, OPEN, GONE = "fixed", "open", "gone"
 
+# Kinds that stop being true without anyone doing anything: a failed run drops out of the last
+# day, the next scheduled research or daily run happens. follow_up cannot tell that from the
+# operator running the suggested command, so it does not say "you fixed": it says they cleared.
+# The other kinds only change when a person acts on the article.
+SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"})
+
 
 # --- who is asking -------------------------------------------------------------------------------
 
@@ -424,13 +430,13 @@ def _unchecked(kind: str, target_id: str) -> Check:
 
 
 def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
-    """What became of the caller's open suggestions: which are fixed (and forgotten), which are
-    still waiting and for how long."""
+    """What became of the caller's open suggestions: which are fixed or have cleared (and are
+    forgotten), which are still waiting and for how long."""
     if user_id is None:
         return _needs_user()
     now = tools._now(now)
     sources = _Sources(now)
-    fixed, still_open, findings = [], [], []
+    fixed, cleared, still_open, findings = [], [], [], []
 
     rows = [row for row in _rows(user_id, SUGGESTION) if not row.get("dismissed")]
     rows.sort(key=lambda row: str(row.get("first_suggested_at") or ""))  # the oldest first
@@ -458,15 +464,16 @@ def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
         except Exception as exc:  # noqa: BLE001 - the answer is still right; the row is tried again next time
             print(f"ops_memory: could not update a {kind} suggestion ({type(exc).__name__})")
         if check.state == FIXED:
-            fixed.append(entry)
+            (cleared if kind in SELF_CLEARING_KINDS else fixed).append(entry)
         elif check.state == OPEN:
             still_open.append({**entry, "waiting": tools._age(since, now)})
             findings.append(check.finding)
 
     return {
-        "spoken": _follow_up_spoken(fixed, still_open),
+        "spoken": _follow_up_spoken(fixed, still_open, cleared),
         "findings": findings,
         "fixed": fixed,
+        "cleared": cleared,
         "open": still_open,
         "as_of": now.isoformat(),
     }
@@ -476,15 +483,26 @@ def _things(count: int) -> str:
     return f"{count} thing{'s' if count != 1 else ''}"
 
 
-def _follow_up_spoken(fixed: list[dict], still_open: list[dict]) -> str:
-    """Fixed first, then what is waiting and for how long. Counts and topic names only."""
-    if not fixed and not still_open:
+def _about(entries: list[dict]) -> str:
+    names = list(dict.fromkeys(entry["topic"] for entry in entries if entry["topic"]))
+    return f", for {tools._join(names[:FOLLOW_UP_SPOKEN_LINES])}" if names else ""
+
+
+def _follow_up_spoken(fixed: list[dict], still_open: list[dict], cleared: list[dict] | None = None) -> str:
+    """Fixed first, then what cleared, then what is waiting and for how long. Counts and topic
+    names only. "You fixed" is kept for what only a person could have changed."""
+    cleared = cleared or []
+    if not fixed and not still_open and not cleared:
         return "I have no open suggestions to follow up."
     sentences = []
     if fixed:
-        names = list(dict.fromkeys(entry["topic"] for entry in fixed if entry["topic"]))
-        about = f", for {tools._join(names[:FOLLOW_UP_SPOKEN_LINES])}" if names else ""
-        sentences.append(f"You fixed {_things(len(fixed))} I suggested{about}.")
+        sentences.append(f"You fixed {_things(len(fixed))} I suggested{_about(fixed)}.")
+    if cleared:
+        count = len(cleared)
+        sentences.append(
+            f"{_things(count).capitalize()} I flagged {'have' if count != 1 else 'has'} "
+            f"cleared{_about(cleared)}."
+        )
     if still_open:
         count = len(still_open)
         lines = [

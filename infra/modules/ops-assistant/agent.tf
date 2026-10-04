@@ -241,6 +241,11 @@ resource "aws_lambda_function" "ops_agent" {
       # event's requestContext.identity.sourceIp, as API Gateway recorded it.
       MODEL_CONFIG_TABLE          = var.tables["MODEL_CONFIG_TABLE"].name
       OPS_ASSISTANT_ALLOWED_CIDRS = join(",", var.allowed_cidrs)
+
+      # The key this function sends to the MCP server with the address of an operator it has
+      # admitted, so that under "allowlist" the server judges the request by that address and
+      # not by this function's own (ops_mcp/access.py). The same value the server is given.
+      OPS_AGENT_FORWARD_KEY = var.agent_forward_key
     }
   }
 }
