@@ -1408,7 +1408,8 @@ def put_model_config(*, model_id: str | None, fallback_model_id: str | None) -> 
 
 # A second row in the same table, separate from the "default" model row above so
 # neither overwrites the other. Holds pipeline-wide settings edited from the admin
-# API/CLI or straight in DynamoDB -- today just the research interval default.
+# API/CLI or straight in DynamoDB: the research interval default, the draft review settings,
+# and who may reach the operator's assistant (common/assistant_access.py).
 _PIPELINE_CONFIG_ID = "pipeline"
 
 
@@ -1430,6 +1431,7 @@ def put_pipeline_config(
     research_interval_hours=_UNSET,
     review_mode=_UNSET,
     review_on_unavailable=_UNSET,
+    assistant_access=_UNSET,
 ) -> dict:
     """Update pipeline-wide settings and return the row.
 
@@ -1440,6 +1442,7 @@ def put_pipeline_config(
         "research_interval_hours": research_interval_hours,
         "review_mode": review_mode,
         "review_on_unavailable": review_on_unavailable,
+        "assistant_access": assistant_access,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):

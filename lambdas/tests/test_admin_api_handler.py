@@ -3151,3 +3151,84 @@ def test_a_forced_rewrite_that_cannot_start_stays_down_and_waits_in_the_inbox(aw
     assert _article_row()["status"] == "pending_moderation"
     (row,) = _queue_rows().values()
     assert row["status"] == "pending"
+
+
+# --- pipeline-config: assistant_access (who may reach the operator's assistant) ------------
+
+
+def _pipeline_config(method="GET", body=None):
+    result = admin_api_handler.handler(_event(f"{method} /pipeline-config", body=body), None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def _stored_pipeline_row():
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig")
+    return table.get_item(Key={"config_id": "pipeline"}).get("Item")
+
+
+def test_assistant_access_is_open_until_it_is_set(aws_resources):
+    status, body = _pipeline_config()
+
+    assert status == 200
+    assert body["assistant_access"] is None
+    assert body["effective_assistant_access"] == "open"
+
+
+@pytest.mark.parametrize("value", ["open", "allowlist", "off"])
+def test_assistant_access_can_be_set_to_each_of_its_values(aws_resources, value):
+    status, body = _pipeline_config("PUT", {"assistant_access": value})
+
+    assert status == 200
+    assert body["assistant_access"] == value and body["effective_assistant_access"] == value
+    assert _stored_pipeline_row()["assistant_access"] == value
+    assert _pipeline_config()[1]["assistant_access"] == value
+
+
+def test_assistant_access_is_cleared_with_null_back_to_open(aws_resources):
+    _pipeline_config("PUT", {"assistant_access": "off"})
+
+    status, body = _pipeline_config("PUT", {"assistant_access": None})
+
+    assert status == 200
+    assert body["assistant_access"] is None and body["effective_assistant_access"] == "open"
+    assert "assistant_access" not in _stored_pipeline_row()  # removed, not stored as null
+
+
+@pytest.mark.parametrize("bad", ["", "Open", "OFF", "allow-list", "closed", True, 1, ["off"], {"m": "off"}])
+def test_an_assistant_access_that_is_not_one_of_the_three_is_refused(aws_resources, bad):
+    _pipeline_config("PUT", {"assistant_access": "allowlist"})
+
+    status, body = _pipeline_config("PUT", {"assistant_access": bad})
+
+    assert status == 400
+    assert "'assistant_access' must be one of open, allowlist, off" in body["error"]
+    assert _stored_pipeline_row()["assistant_access"] == "allowlist"  # what was there stays
+
+
+def test_setting_assistant_access_leaves_the_other_settings_alone_and_the_reverse(aws_resources):
+    _pipeline_config("PUT", {"research_interval_hours": 3, "review_mode": "enforce"})
+
+    _, body = _pipeline_config("PUT", {"assistant_access": "allowlist"})
+    assert body["research_interval_hours"] == 3 and body["review_mode"] == "enforce"
+
+    _, body = _pipeline_config("PUT", {"review_mode": None})
+    assert body["assistant_access"] == "allowlist" and body["research_interval_hours"] == 3
+
+
+def test_a_bad_assistant_access_stops_the_whole_update(aws_resources):
+    status, _ = _pipeline_config("PUT", {"review_mode": "off", "assistant_access": "nope"})
+
+    assert status == 400
+    assert _stored_pipeline_row() is None  # nothing was written, not even the valid setting
+
+
+def test_a_stored_assistant_access_nobody_understands_is_shown_as_off(aws_resources):
+    """Written straight to the table. The assistant refuses every request on such a value
+    (it never falls back to open), so that is what the operator is shown."""
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig")
+    table.put_item(Item={"config_id": "pipeline", "assistant_access": "locked"})
+
+    _, body = _pipeline_config()
+
+    assert body["assistant_access"] == "locked"
+    assert body["effective_assistant_access"] == "off"
