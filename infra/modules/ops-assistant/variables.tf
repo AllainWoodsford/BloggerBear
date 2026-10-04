@@ -188,3 +188,9 @@ variable "alexa_refresh_token_days" {
     error_message = "alexa_refresh_token_days must be between 1 and 90."
   }
 }
+
+variable "keep_warm" {
+  type        = bool
+  default     = false
+  description = "Whether to keep one instance of the MCP function warm with an EventBridge Scheduler invoke every five minutes (briefings.tf). For an environment linked to Alexa+, whose latency limit a cold start breaks; about 8,600 invocations a month. Off by default: the page waits for the agent anyway."
+}

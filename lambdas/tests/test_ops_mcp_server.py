@@ -265,7 +265,11 @@ def test_the_only_thing_any_tool_can_write_is_the_assistants_own_table():
         path.name: writes.findall(path.read_text(encoding="utf-8")) for path in sorted(package.glob("*.py"))
     }
     assert {name: calls for name, calls in found.items() if calls} == {
-        "memory.py": ["update_item", "delete_item"]
+        "memory.py": ["update_item", "delete_item"],
+        # The latest briefing per user (briefings.py): its own table, OPS_BRIEFINGS_TABLE, which
+        # the MCP server marks as started and the agent writes. Tools listed only where it is
+        # configured, which it is not here; test_ops_briefings.py holds those.
+        "briefings.py": ["update_item", "update_item", "put_item", "update_item"],
     }
     memory_source = (package / "memory.py").read_text(encoding="utf-8")
     assert memory_source.count("os.environ[") == 1 and "os.environ[TABLE_ENV]" in memory_source

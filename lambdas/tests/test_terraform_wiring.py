@@ -1731,10 +1731,42 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
                     ("main.tf", "ops_mcp"),
                     ("memory.tf", "ops_mcp_memory"),
                     ("isolation.tf", "ops_mcp_other_environments_denied"),
+                    # The latest briefing per user (the test below holds what it may do).
+                    ("briefings.tf", "ops_mcp_briefings"),
                 }
-        if path.name != "memory.tf":
+        if path.name not in ("memory.tf", "briefings.tf"):
             for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
                 assert f"dynamodb:{write}" not in text or "aws_iam_role.ops_mcp." not in text, path.name
+
+
+def test_the_briefings_rights_are_one_table_and_one_function_for_each_role():
+    """The async briefing (briefings.tf; docs/enhancements/alexa-plus.md, section 4.3). The MCP
+    server may read and mark one table and invoke one function; the agent may write that table
+    and never read it back. Nothing else, and nothing on "*"."""
+    text = _uncommented(_read("modules", "ops-assistant", "briefings.tf"))
+
+    def document(name: str) -> str:
+        pattern = rf'^data "aws_iam_policy_document" "{name}" \{{\n(.*?)^\}}'
+        return re.search(pattern, text, re.S | re.M).group(1)
+
+    server = document("ops_mcp_briefings")
+    assert set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', server)) == {
+        "dynamodb:GetItem",
+        "dynamodb:UpdateItem",
+        "lambda:InvokeFunction",
+    }
+    assert sorted(re.findall(r"resources\s*=\s*(.*)", server)) == [
+        "[aws_dynamodb_table.briefings.arn]",
+        "[aws_lambda_function.ops_agent.arn]",
+    ]
+    agent_side = document("ops_agent_briefings")
+    agent_actions = set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', agent_side))
+    assert agent_actions == {"dynamodb:PutItem", "dynamodb:UpdateItem"}
+    assert re.findall(r"resources\s*=\s*(.*)", agent_side) == ["[aws_dynamodb_table.briefings.arn]"]
+    for policy in (server, agent_side):
+        assert "*" not in policy and "not_actions" not in policy and "Deny" not in policy
+    # A failed async run is not retried into another model run.
+    assert re.search(r"maximum_retry_attempts\s*=\s*0", text)
 
 
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and
@@ -2240,12 +2272,21 @@ def test_the_agent_is_a_plain_python_function_with_a_ceiling():
 def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_on():
     environment = _agent_environment()
     read_by_code = set()
-    for path in ("ops_agent_handler.py", "ops_agent/agent.py", "ops_agent/policy.py", "ops_mcp/access.py"):
+    for path in (
+        "ops_agent_handler.py",
+        "ops_agent/agent.py",
+        "ops_agent/policy.py",
+        "ops_mcp/access.py",
+        "ops_mcp/briefings.py",
+    ):
         text = (ROOT / "lambdas" / path).read_text(encoding="utf-8")
         read_by_code |= set(re.findall(r'os\.environ(?:\.get\(|\[)"([A-Z_]+)"', text))
         read_by_code |= set(re.findall(r'^[A-Z_]+_ENV = "([A-Z_]+)"', text, re.M))
     read_by_code -= {"AWS_REGION", "AWS_DEFAULT_REGION"}  # set by Lambda itself
     read_by_code.add("MODEL_CONFIG_TABLE")  # common/dynamo.py's get_pipeline_config
+    # briefings.py's agent to start: read only by the MCP server, which starts one, never by the
+    # agent, which is the one started.
+    read_by_code.discard("OPS_AGENT_FUNCTION")
 
     assert set(environment) == read_by_code, set(environment) ^ read_by_code
     assert environment == {
@@ -2255,6 +2296,7 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
         "MODEL_CONFIG_TABLE": 'var.tables["MODEL_CONFIG_TABLE"].name',
         "OPS_ASSISTANT_ALLOWED_CIDRS": 'join(",", var.allowed_cidrs)',
         "OPS_AGENT_FORWARD_KEY": "var.agent_forward_key",
+        "OPS_BRIEFINGS_TABLE": "aws_dynamodb_table.briefings.name",
     }
     # A trace of an agent run carries the question and the answer: nothing switches one on.
     assert "OTEL_" not in _uncommented(_agent_module())
@@ -2441,6 +2483,7 @@ def test_the_agents_package_holds_what_the_handler_imports_built_for_the_runtime
         'cp -r "${local.lambdas_dir}/common" "$build_dir/common"',
         'cp "${local.lambdas_dir}/ops_mcp/__init__.py" "$build_dir/ops_mcp/__init__.py"',
         'cp "${local.lambdas_dir}/ops_mcp/access.py" "$build_dir/ops_mcp/access.py"',
+        'cp "${local.lambdas_dir}/ops_mcp/briefings.py" "$build_dir/ops_mcp/briefings.py"',
         "--platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all:",
         '-r "${local.lambdas_dir}/requirements-ops-agent.txt"',
         '-t "$build_dir"',
@@ -2487,10 +2530,17 @@ def test_the_agents_package_holds_what_the_handler_imports_built_for_the_runtime
         "ops_agent.policy",
         "ops_mcp",
         "ops_mcp.access",
+        "ops_mcp.briefings",
     }
     assert (ROOT / "lambdas" / "ops_mcp" / "__init__.py").read_text(encoding="utf-8").strip().endswith('"""')
     allowed = set(sys.stdlib_module_names) | {"boto3", "botocore", "common"}
-    for path in ("common/__init__.py", "common/dynamo.py", "common/assistant_access.py", "ops_mcp/access.py"):
+    for path in (
+        "common/__init__.py",
+        "common/dynamo.py",
+        "common/assistant_access.py",
+        "ops_mcp/access.py",
+        "ops_mcp/briefings.py",
+    ):
         roots = {name.split(".")[0] for name in imported(path)}
         assert roots <= allowed, (path, roots - allowed)
     access_imports = {name for name in imported("ops_mcp/access.py") if name.startswith("common")}
