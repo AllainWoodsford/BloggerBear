@@ -33,10 +33,8 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 
-
 from ops_mcp import account, content, tools
 from ops_mcp.access import AccessMiddleware
-
 
 SERVER_NAME = "bloggerbear-ops"
 SERVER_VERSION = "0.1.0"
