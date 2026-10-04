@@ -31,7 +31,9 @@ Read `/docs/project-plan.md` before making non-trivial changes. Check
 
 ## Build/validation defaults
 - Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
-- Python: `ruff check .`, `pytest`
+- Python: `ruff check --fix lambdas/ scripts/` with the ruff version pinned in
+  `lambdas/requirements-dev.txt` (never `--unsafe-fixes`; don't run `ruff format` repo-wide), then
+  `pytest`
 - Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
 
 ## Scope control
