@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 15 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 17 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -505,6 +505,26 @@ for DynamoDB and logs, and does nothing for S3, Bedrock or a list of alarms. **L
 shared account, "named resources only" covers what has a name to scope by; list every call that is
 account-wide (list calls, billing, anything shared) and decide each one in code. Separate accounts
 are the only hard wall.
+
+**10.16 An apostrophe stopped the first deploy of the assistant.** The Cognito resource server was
+named "BloggerBear operator's assistant". Cognito only allows that name to match `[\w\s+=,.@-]+`,
+and says so at apply: `validate`, `plan` and every CI check passed. The apply stopped part-way, with
+the user pool and the API created and the resource server, app client and authorizer not. **Fix:**
+no apostrophes, and a `terraform test` that holds the patterns Cognito enforces for the pool, the
+client, the resource server and the sign-in prefix. **Lesson:** the same as 2.9: what only AWS
+checks, and only at apply, needs a test of its own. (#183)
+
+**10.17 Reserved concurrency on an account with none to spare.** The agent's Lambda asked for a
+reserved concurrency of 2, as a ceiling on how many questions could be at Bedrock at once. The apply
+failed: "decreases account's UnreservedConcurrentExecution below its minimum value of [10]". This
+account's whole Lambda quota is 10, which is also the minimum Lambda keeps unreserved, so nothing can
+be reserved in it at all. The failure left `/ask` on the API but not on the deployed stage, so the
+page reported "could not reach the assistant" while sign-in worked: the browser's preflight met API
+Gateway's 403 "Missing Authentication Token", which is its answer for a route the stage does not
+have. **Fix:** no reservation by default; the stage's throttle is the only bound until the quota is
+raised. **Lesson:** a new account's quotas are part of the design, and the default Lambda quota is
+far below the 1,000 the documentation leads with. **Feedback:** "Missing Authentication Token" for a
+route that does not exist sent the first look in the wrong direction. (#187)
 
 ---
 
