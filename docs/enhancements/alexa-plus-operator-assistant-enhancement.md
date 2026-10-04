@@ -217,7 +217,12 @@ which is also what the judges get (section 6).
     deployment must set `OPS_MCP_ALLOWED_HOSTS`; left unset, every request is refused.
   - A tool that raises answers "Error executing tool" and nothing more: the reason is logged, not
     sent to the caller.
-  - Still to check: that Strands' MCP client sends the caller's bearer token (the agent, PR 3).
+  - Strands' MCP client sends the caller's bearer token, on every request. `MCPClient(url=...,
+    headers={"Authorization": ...})` builds a Streamable HTTP transport whose HTTP client carries
+    those headers; no second client is needed. With `mcp` 2.1.1 it speaks `2026-07-28` to this
+    server: one `server/discover`, then `tools/list` and each `tools/call` as standalone POSTs
+    carrying their version, with no `initialize` and no session.
+    `lambdas/tests/test_ops_agent_mcp_wire.py` holds both against the real server.
 - **Tools.** Each returns `structuredContent` (data, findings and suggestions) plus a short `spoken`
   text. The optional arguments are what let the agent follow a lead from one tool into another.
 
@@ -432,8 +437,8 @@ a public version, where the speaker is a visitor, would have no memory of any ki
   public static file like the rest of the site; what's protected is every call it makes.
 - **An API Gateway Cognito authorizer** on both the agent endpoint and the MCP server, requiring the
   `bloggerbear-ops` scope. API Gateway checks the token before either Lambda runs; the agent passes
-  the caller's token on to the MCP server. **Day 1: confirm Strands' MCP client can send a bearer
-  header.**
+  the caller's token on to the MCP server. Strands' MCP client sends it as a header on every
+  request (checked; section 1).
 - **Production's user pool:** one user (the operator), **MFA required**, self-sign-up off. Dev has
   its own pool; a token from one is worthless at the other.
 - **No IP allowlist by default, and a switch to lock it down.** The assistant can be asked from
@@ -636,7 +641,6 @@ that is already read on every pipeline run.
 
 ## Open questions
 
-- Does Strands' MCP client pass the caller's bearer token through to the server (section 1)?
 - AgentCore Memory as a second layer for the operator's preferences: worth a day, if there is one?
 - Which content checks, besides the empty musing and the fenced article, are worth having on day
   one?
