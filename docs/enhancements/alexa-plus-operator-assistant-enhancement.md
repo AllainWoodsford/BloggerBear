@@ -169,9 +169,19 @@ which is also what the judges get (section 6).
   deploys with them. **Built so far:** the server, the suggestion catalogue, six read-only
   tools (`pipeline_health`, `admin_inbox`, `content_checks`, `security_events`, `alarms`, `spend`)
   and the memory (section 4: the suggestions table and `follow_up`, `dismiss`, `watch`, `unwatch`,
-  `watch_list`), with tests. `log_review` and `firewall_review` are not built. Besides the tables, the function's role will need to read article
-  bodies from the content bucket (`content_checks`) and to call CloudWatch `DescribeAlarms`
-  (`alarms`), and its package needs `markdown`, which `common/static_pages.py` imports.
+  `watch_list`), with tests. `log_review` and `firewall_review` are not built. **Deployed on dev**
+  by `infra/modules/ops-assistant/` (`main.tf`, `memory.tf`): the function behind the Web Adapter,
+  `POST /mcp` behind the Cognito authorizer, and a role of its own that is read-only except for
+  the suggestions table; besides the tables, it may read article bodies from the content bucket
+  (`content_checks`) and call CloudWatch `DescribeAlarms` (`alarms`). Its package includes
+  `markdown`, which `common/static_pages.py` imports.
+- **The agent is deployed next to it** (the same module's `agent.tf`): `POST /ask` on the same REST
+  API, behind the same authorizer and scope, with `OPTIONS /ask` open for the browser's preflight.
+  It is a plain Python Lambda (`ops_agent_handler.handler`, no Web Adapter), with its own package
+  (`requirements-ops-agent.txt`; about 63 MB unpacked, 29 MB zipped) and a third role: invoke the
+  model, read the config table's row for the access switch, write its own log. No table to read
+  for an answer, no bucket: everything it knows about the pipeline it asks the MCP server for,
+  with the caller's token. It calls the model the pipeline uses (`var.bedrock_model_id`).
 - **How it runs on Lambda** (the transport decision, 2026-10-04): the SDK's own web app, unchanged,
   inside an ordinary Lambda through the **AWS Lambda Web Adapter** layer. Still serverless: nothing
   runs, or is paid for, between questions. Four things to hold to:
@@ -500,7 +510,15 @@ a public version, where the speaker is a visitor, would have no memory of any ki
     middleware (`lambdas/ops_mcp/access.py`, with nothing about MCP in it) wraps each Lambda's web
     app, reads the setting on every request and compares the caller's address with the list. A
     refusal is a 403 with the same short body whatever the reason, and one log line with the
-    reason and no address.
+    reason and no address. The agent is a plain handler and not a web app, so it applies the same
+    rule (`access.decide`) itself, first thing in `ops_agent_handler.py`, with the address from
+    the event's `requestContext.identity.sourceIp`: with the switch `off`, a question never
+    reaches the model. Only the `OPTIONS` preflight is answered without the check.
+  - **Known gap under `allowlist`:** the agent calls the MCP server from Lambda's own address,
+    not the operator's, so the server's check refuses the agent's calls and `/ask` answers 502.
+    It fails closed, but `allowlist` is not usable for `/ask` until the server is given a way to
+    trust the agent's calls (or the agent's check is made the only one for them). `open` and
+    `off` behave as described.
   - **The caller's address** is the `sourceIp` in API Gateway's request context, which the Lambda
     Web Adapter forwards to the web app as JSON in the `x-amzn-request-context` header (its
     `docs/guide/src/features/request-context.md`). The adapter sets that header itself, replacing
@@ -538,6 +556,13 @@ The same Terraform module, in both environments, like everything else here.
   a low incident, a topic that failed to publish, an error spike — so the judges' briefing always
   has something to find and something to suggest. It is run before recording the video, and again
   before judging starts.
+- **What dev has today:** the MCP server and the agent, both from `infra/modules/ops-assistant/`
+  (`module.ops_assistant` in `infra/environments/dev/main.tf`), on one REST API: `POST /mcp` and
+  `POST /ask`, whose URLs are the outputs `ops_mcp_url` and `ops_ask_url`. The agent may read its
+  answers from the dev site's origin only (`OPS_AGENT_ALLOWED_ORIGIN`). Of the controls below, the
+  ones in place are the stage's throttle (5 requests a second), the agent's reserved concurrency
+  (2), its 29-second timeout and `max_tokens`; the daily cap per user is not built yet. Production
+  has neither function yet. The page (`ask.html`) and the memory table are separate changes.
 - **A judges' login** (in the submission's testing instructions) in the dev user pool. No MFA on it,
   since the judges must be able to sign in; it reaches dev only.
 - **Cost and abuse controls**, because a signed-in page calls Bedrock: a daily cap on questions per

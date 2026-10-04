@@ -32,3 +32,20 @@ output "role_name" {
   value       = aws_iam_role.ops_mcp.name
   description = "The MCP server Lambda's own, read-only role."
 }
+
+# --- The agent (agent.tf) ---
+
+output "ops_ask_url" {
+  value       = "${aws_api_gateway_stage.this.invoke_url}/ask"
+  description = "The agent endpoint: POST a question here, with an access token carrying the read scope in the Authorization header."
+}
+
+output "agent_function_name" {
+  value       = aws_lambda_function.ops_agent.function_name
+  description = "The agent Lambda's name."
+}
+
+output "agent_role_name" {
+  value       = aws_iam_role.ops_agent.name
+  description = "The agent Lambda's own role: invoke the model, read the access switch, write its own log."
+}

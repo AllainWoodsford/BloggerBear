@@ -1617,3 +1617,434 @@ def test_dev_outputs_what_the_page_and_the_agent_need():
         ("ops_hosted_ui_domain", "hosted_ui_domain"),
     ):
         assert re.search(rf'output "{name}" \{{\n\s*value\s*=\s*module\.ops_assistant\.{source}\n', outputs)
+
+
+# --- The operator's assistant, the agent (infra/modules/ops-assistant/agent.tf) -----------------
+# The agent can spend money on the model. These hold that it can do nothing else, that the only
+# way to it is the authorizer the MCP server sits behind, and that what the code reads is what the
+# deployment sets. The module's tests/ops_agent.tftest.hcl checks the same with planned values.
+
+_OPS_AGENT_ALLOWED_ACTIONS = {
+    "bedrock:InvokeModel",
+    "dynamodb:GetItem",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents",
+}
+
+
+def _agent_module() -> str:
+    return _read("modules", "ops-assistant", "agent.tf")
+
+
+def _agent_policy() -> str:
+    return re.search(
+        r'^data "aws_iam_policy_document" "ops_agent" \{\n(.*?)^\}', _agent_module(), re.S | re.M
+    ).group(1)
+
+
+def _agent_environment() -> dict[str, str]:
+    function = _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
+    variables = re.search(r"environment \{\n\s*variables = \{\n(.*?)\n    \}", function, re.S).group(1)
+    return dict(re.findall(r"^\s*([A-Z_]+)\s*=\s*(.+)$", variables, re.M))
+
+
+def test_the_agent_runs_as_a_role_of_its_own():
+    """Not the shared role (write and delete on every table) and not the MCP server's (which must
+    never be able to call Bedrock): a third, which the deploy role may create and pass."""
+    import fnmatch
+
+    module = _agent_module()
+    function = _resource_block(module, "aws_lambda_function", "ops_agent")
+    role = _resource_block(module, "aws_iam_role", "ops_agent")
+
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.ops_agent\.arn$", function, re.M)
+    attached = _resource_block(module, "aws_iam_role_policy", "ops_agent")
+    assert re.search(r"role\s*=\s*aws_iam_role\.ops_agent\.id", attached)
+    assert 'agent_name      = "bloggerbear-${var.environment_name}-ops-agent"' in module
+    name = re.search(r'name\s*=\s*"([^"]+)"', role).group(1)
+    dev_name = name.replace("${local.agent_name}", "bloggerbear-dev-ops-agent")
+    assert dev_name == "bloggerbear-dev-ops-agent-lambda-exec"
+    patterns = re.findall(r'"arn:aws:iam::\*:role/([^"]+)"', _read("bootstrap", "main.tf"))
+    assert any(fnmatch.fnmatch(dev_name, pattern) for pattern in patterns)
+    # The MCP server's policy is not attached to it, and its own is not attached to the server.
+    assert "aws_iam_role.ops_mcp" not in _uncommented(module)
+    assert "ops_agent" not in _uncommented(_ops_policy())
+
+
+def test_the_agents_role_may_invoke_the_model_read_the_switch_and_log():
+    policy = _uncommented(_agent_policy())
+    actions = set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', policy))
+
+    assert actions == _OPS_AGENT_ALLOWED_ACTIONS, actions ^ _OPS_AGENT_ALLOWED_ACTIONS
+    assert not re.search(r"dynamodb:(Put|Update|Delete|BatchWrite|TransactWrite|Query|Scan)", policy)
+    assert "s3:" not in policy and "content_bucket" not in policy
+    assert "logs:*" not in policy and "logs:CreateLogGroup" not in policy
+    assert '"*"' not in policy  # no statement is on every resource
+    assert "not_actions" not in policy and "not_resources" not in policy
+    assert policy.count("statement {") == 3
+    assert len(re.findall(r'effect\s*=\s*"Allow"', policy)) == 3
+    # One row's table, its own log group, and nothing handed in wholesale.
+    assert 'resources = [var.tables["MODEL_CONFIG_TABLE"].arn]' in policy
+    assert 'resources = ["${aws_cloudwatch_log_group.agent.arn}:*"]' in policy
+    assert "values(var.tables)" not in policy
+    # Nothing else in the file grants the role anything: one inline policy, no managed one.
+    module = _uncommented(_agent_module())
+    assert module.count('resource "aws_iam_role_policy"') == 1
+    assert "aws_iam_role_policy_attachment" not in module and "managed_policy_arns" not in module
+
+
+def test_the_agents_bedrock_statement_names_what_the_shared_roles_does():
+    """Invoking through an inference profile needs the profile and the foundation models behind
+    it. The shared role's statement is the one proven against the account; the agent's is the same
+    two resources, with the region read from the module's own local."""
+
+    def bedrock_resources(text: str) -> set[str]:
+        statement = re.search(r'sid\s*=\s*"BedrockInvoke"(.*?)\n  \}', text, re.S).group(1)
+        assert re.search(r'actions\s*=\s*\["bedrock:InvokeModel"\]', statement)
+        return set(re.findall(r'"(arn:aws:bedrock:[^"]+)"', statement))
+
+    shared = bedrock_resources(_read("environments", "dev", "main.tf"))
+    agent = {
+        resource.replace("${local.aws_region}", "ap-southeast-2")
+        for resource in bedrock_resources(_agent_module())
+    }
+
+    assert agent == shared and len(shared) == 2
+    assert re.search(r'aws_region\s*=\s*"ap-southeast-2"', _ops_module())
+    # Converse without streaming is InvokeModel; streaming would need a second action.
+    agent_code = (ROOT / "lambdas" / "ops_agent" / "agent.py").read_text(encoding="utf-8")
+    assert "streaming=False" in agent_code
+
+
+def test_the_agent_is_a_plain_python_function_with_a_ceiling():
+    module = _agent_module()
+    function = _uncommented(_resource_block(module, "aws_lambda_function", "ops_agent"))
+    variables = _read("modules", "ops-assistant", "variables.tf")
+
+    assert re.search(r'handler\s*=\s*"ops_agent_handler\.handler"', function)
+    handler = (ROOT / "lambdas" / "ops_agent_handler.py").read_text(encoding="utf-8")
+    assert handler.count("\ndef handler(") == 1
+    assert re.search(r'runtime\s*=\s*"python3\.11"', function)
+    assert re.search(r'architectures\s*=\s*\["x86_64"\]', function)
+    # No web adapter: no layer, no exec wrapper, no run.sh.
+    assert "layers" not in function and "AWS_LAMBDA_EXEC_WRAPPER" not in function
+    assert "AWS_LWA" not in function and "run.sh" not in _uncommented(module)
+    # API Gateway gives up at 29 seconds; the agent's own waits must fit inside that.
+    assert re.search(r"timeout\s*=\s*29$", function, re.M)
+    assert re.search(r"memory_size\s*=\s*var\.agent_memory_size", function)
+    assert re.search(r"reserved_concurrent_executions\s*=\s*var\.agent_reserved_concurrency", function)
+    for name, default in (("agent_memory_size", "1024"), ("agent_reserved_concurrency", "2")):
+        block = re.search(rf'variable "{name}" \{{(.*?)\n\}}', variables, re.S).group(1)
+        assert re.search(rf"default\s*=\s*{default}$", block, re.M), name
+    # Its own log group, made first, and the policy before the first invocation.
+    assert 'name              = "/aws/lambda/${local.agent_name}"' in module
+    depends_on = re.search(r"depends_on\s*=\s*\[(.*?)\]", function).group(1)
+    assert "aws_cloudwatch_log_group.agent" in depends_on and "aws_iam_role_policy.ops_agent" in depends_on
+
+
+def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_on():
+    environment = _agent_environment()
+    read_by_code = set()
+    for path in ("ops_agent_handler.py", "ops_agent/agent.py", "ops_agent/policy.py", "ops_mcp/access.py"):
+        text = (ROOT / "lambdas" / path).read_text(encoding="utf-8")
+        read_by_code |= set(re.findall(r'os\.environ(?:\.get\(|\[)"([A-Z_]+)"', text))
+        read_by_code |= set(re.findall(r'^[A-Z_]+_ENV = "([A-Z_]+)"', text, re.M))
+    read_by_code -= {"AWS_REGION", "AWS_DEFAULT_REGION"}  # set by Lambda itself
+    read_by_code.add("MODEL_CONFIG_TABLE")  # common/dynamo.py's get_pipeline_config
+
+    assert set(environment) == read_by_code, set(environment) ^ read_by_code
+    assert environment == {
+        "OPS_AGENT_MODEL_ID": "var.agent_model_id",
+        "OPS_MCP_URL": "local.agent_mcp_url",
+        "OPS_AGENT_ALLOWED_ORIGIN": "var.agent_allowed_origin",
+        "MODEL_CONFIG_TABLE": 'var.tables["MODEL_CONFIG_TABLE"].name',
+        "OPS_ASSISTANT_ALLOWED_CIDRS": 'join(",", var.allowed_cidrs)',
+    }
+    # A trace of an agent run carries the question and the answer: nothing switches one on.
+    assert "OTEL_" not in _uncommented(_agent_module())
+    assert "tracing_config" not in _uncommented(_agent_module())
+    dynamo = (ROOT / "lambdas" / "common" / "dynamo.py").read_text(encoding="utf-8")
+    assert 'get_table(os.environ["MODEL_CONFIG_TABLE"])' in dynamo
+    # The same allowlist, written the same way, as the MCP server's.
+    mcp_function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
+    assert re.search(r'OPS_ASSISTANT_ALLOWED_CIDRS\s*=\s*join\(",", var\.allowed_cidrs\)', mcp_function)
+
+
+def test_the_agent_calls_this_modules_own_mcp_endpoint_at_the_host_the_server_accepts():
+    """The server refuses any Host not on OPS_MCP_ALLOWED_HOSTS, which is local.api_host. The URL
+    the agent is given is built on the same local, and not on the stage's invoke_url: the stage
+    depends on the deployment, which depends on the agent's integrations, which depend on the
+    function this URL is an input of."""
+    module = _agent_module()
+    function = _uncommented(_resource_block(module, "aws_lambda_function", "ops_agent"))
+
+    assert 'agent_mcp_url = "https://${local.api_host}/${var.stage_name}/mcp"' in module
+    assert "aws_api_gateway_stage" not in function and "aws_api_gateway_deployment" not in function
+    assert re.search(r"OPS_MCP_ALLOWED_HOSTS\s*=\s*local\.api_host", _ops_module())
+    outputs = _read("modules", "ops-assistant", "outputs.tf")
+    assert 'value       = "${aws_api_gateway_stage.this.invoke_url}/mcp"' in outputs
+    stage = _resource_block(_ops_module(), "aws_api_gateway_stage", "this")
+    assert re.search(r"stage_name\s*=\s*var\.stage_name", stage)
+
+
+def test_dev_gives_the_agent_the_pipelines_model_and_the_sites_origin():
+    dev = _read("environments", "dev", "main.tf")
+    call = _module_blocks(dev, "modules/ops-assistant")[0]
+
+    assert re.search(r"^\s*agent_model_id\s*=\s*var\.bedrock_model_id$", call, re.M)
+    assert re.search(r"BEDROCK_MODEL_ID\s*=\s*var\.bedrock_model_id", dev)
+    assert re.search(r"^\s*agent_allowed_origin\s*=\s*local\.site_url$", call, re.M)
+    assert 'callback_urls = ["${local.site_url}/ask.html"]' in call
+    # An origin has no path and no trailing slash, or a browser's Origin header never equals it.
+    assert 'site_url = "https://${module.static_site.distribution_domain_name}"' in dev
+    # The ceiling is the module's default unless dev says otherwise, and dev does not remove it.
+    assert not re.search(r"agent_reserved_concurrency\s*=\s*(-1|0)\b", call)
+
+
+def test_ask_is_behind_the_same_authorizer_and_scope_and_only_the_preflight_is_open():
+    module = _agent_module()
+    post = _resource_block(module, "aws_api_gateway_method", "ask")
+    options = _resource_block(module, "aws_api_gateway_method", "ask_options")
+    mcp = _resource_block(_ops_module(), "aws_api_gateway_method", "mcp")
+
+    assert module.count('resource "aws_api_gateway_method"') == 2
+    assert re.search(r'path_part\s*=\s*"ask"', _resource_block(module, "aws_api_gateway_resource", "ask"))
+    assert re.search(r"rest_api_id\s*=\s*aws_api_gateway_rest_api\.this\.id", post)  # the module's one API
+    assert 'resource "aws_api_gateway_rest_api"' not in module
+    assert 'resource "aws_api_gateway_authorizer"' not in module
+    assert re.search(r'http_method\s*=\s*"POST"', post)
+    for line in (
+        r'authorization\s*=\s*"COGNITO_USER_POOLS"',
+        r"authorizer_id\s*=\s*aws_api_gateway_authorizer\.cognito\.id",
+        r"authorization_scopes\s*=\s*\[local\.read_scope\]",
+    ):
+        assert re.search(line, post), line
+        assert re.search(line, mcp), line
+    assert re.search(r'http_method\s*=\s*"OPTIONS"', options)
+    assert re.search(r'authorization\s*=\s*"NONE"', options)
+    assert "authorizer_id" not in options and "authorization_scopes" not in options
+    # The handler answers the preflight before it reads anything, and routes on "POST /ask".
+    handler = (ROOT / "lambdas" / "ops_agent_handler.py").read_text(encoding="utf-8")
+    assert '_route_key(event) != "POST /ask"' in handler
+    body = handler[handler.index("\ndef handler(") :]
+    assert body.index('== "OPTIONS"') < body.index("_admitted(event)") < body.index("_route_key(event)")
+    for name in ("ask", "ask_options"):
+        integration = _resource_block(module, "aws_api_gateway_integration", name)
+        assert re.search(r'type\s*=\s*"AWS_PROXY"', integration)
+        assert re.search(r"uri\s*=\s*aws_lambda_function\.ops_agent\.invoke_arn", integration)
+    assert "response_transfer_mode" not in module and "aws_lambda_function_url" not in module
+
+
+def test_the_stage_is_redeployed_when_the_agents_routes_change_and_throttles_them():
+    """A deployment is a snapshot. Routes added to the API and not to the deployment's trigger
+    exist and are not served; a scope changed in place would go on being served as it was."""
+    deployment = _resource_block(_ops_module(), "aws_api_gateway_deployment", "this")
+    module = _agent_module()
+    redeployment = re.search(r"agent_redeployment = \{\n(.*?)\n  \}", module, re.S).group(1)
+
+    assert re.search(r"agent\s*=\s*local\.agent_redeployment", deployment)
+    for needed in (
+        "aws_api_gateway_resource.ask.id",
+        "aws_api_gateway_method.ask.id",
+        "aws_api_gateway_method.ask.authorization",
+        "aws_api_gateway_method.ask.authorizer_id",
+        "aws_api_gateway_method.ask.authorization_scopes",
+        "aws_api_gateway_integration.ask.id",
+        "aws_api_gateway_integration.ask.uri",
+        "aws_api_gateway_method.ask_options.id",
+        "aws_api_gateway_method.ask_options.authorization",
+        "aws_api_gateway_integration.ask_options.id",
+        "aws_api_gateway_integration.ask_options.uri",
+    ):
+        assert re.search(rf"=\s*{re.escape(needed)}$", redeployment, re.M), needed
+    # The stage's throttle is on every method of the stage, so on these two as well.
+    settings = _resource_block(_ops_module(), "aws_api_gateway_method_settings", "all")
+    assert re.search(r'method_path\s*=\s*"\*/\*"', settings)
+
+
+def test_only_the_two_ask_methods_may_invoke_the_agent():
+    module = _uncommented(_agent_module())
+    permissions = re.findall(r'^resource "aws_lambda_permission" "[^"]+" \{\n(.*?)^\}', module, re.S | re.M)
+
+    assert len(permissions) == 2
+    sources = set()
+    statement_ids = set()
+    for permission in permissions:
+        assert re.search(r"function_name\s*=\s*aws_lambda_function\.ops_agent\.function_name", permission)
+        assert re.search(r'principal\s*=\s*"apigateway\.amazonaws\.com"', permission)
+        assert re.search(r'action\s*=\s*"lambda:InvokeFunction"', permission)
+        sources.add(re.search(r'source_arn\s*=\s*"([^"]+)"', permission).group(1))
+        statement_ids.add(re.search(r'statement_id\s*=\s*"([^"]+)"', permission).group(1))
+    assert sources == {
+        "${aws_api_gateway_rest_api.this.execution_arn}/*/POST/ask",
+        "${aws_api_gateway_rest_api.this.execution_arn}/*/OPTIONS/ask",
+    }
+    assert len(statement_ids) == 2
+    # And the MCP server's permission still names its own route only.
+    mcp_permission = _resource_block(_ops_module(), "aws_lambda_permission", "apigw")
+    assert '/*/POST/mcp"' in mcp_permission
+
+
+def test_the_agents_package_holds_what_the_handler_imports_built_for_the_runtime():
+    import ast
+    import sys
+
+    module = _agent_module()
+    build = re.search(
+        r'^resource "terraform_data" "agent_package" \{\n(.*?)^\}', module, re.S | re.M
+    ).group(1)
+
+    for needed in (
+        'cp -r "${local.lambdas_dir}/ops_agent" "$build_dir/ops_agent"',
+        'cp "${local.lambdas_dir}/ops_agent_handler.py" "$build_dir/ops_agent_handler.py"',
+        'cp -r "${local.lambdas_dir}/common" "$build_dir/common"',
+        'cp "${local.lambdas_dir}/ops_mcp/__init__.py" "$build_dir/ops_mcp/__init__.py"',
+        'cp "${local.lambdas_dir}/ops_mcp/access.py" "$build_dir/ops_mcp/access.py"',
+        "--platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all:",
+        '-r "${local.lambdas_dir}/requirements-ops-agent.txt"',
+        '-t "$build_dir"',
+        "always_run = timestamp()",
+    ):
+        assert needed in build, needed
+    # Not the MCP server, and not the pipeline's own requirements.
+    assert "/ops_mcp\" " not in build and "server.py" not in build
+    assert "/requirements.txt" not in build and "run.sh" not in build
+    archive = re.search(r'^data "archive_file" "agent_package" \{\n(.*?)^\}', module, re.S | re.M).group(1)
+    assert "source_dir  = local.agent_build_dir" in archive
+    assert "${terraform_data.agent_package.id}.zip" in archive  # read at apply, after the build
+    function = _resource_block(module, "aws_lambda_function", "ops_agent")
+    assert "data.archive_file.agent_package.output_path" in function
+    assert "data.archive_file.agent_package.output_base64sha256" in function
+    assert "lambda-build/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    # The requirements file brings the agent framework and, through the MCP server's own file, the
+    # same release of the MCP SDK.
+    requirements = (ROOT / "lambdas" / "requirements-ops-agent.txt").read_text(encoding="utf-8")
+    assert re.search(r"^strands-agents==", requirements, re.M)
+    assert re.search(r"^-r requirements-ops-mcp\.txt$", requirements, re.M)
+
+    # What the handler imports of this repo is what is copied, and the copied modules it reaches
+    # need nothing pip does not install here: the standard library, boto3 (which strands-agents
+    # brings), and each other.
+    def imported(path: str) -> set[str]:
+        tree = ast.parse((ROOT / "lambdas" / path).read_text(encoding="utf-8"))
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names |= {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names |= {f"{node.module}.{alias.name}" for alias in node.names} | {node.module}
+        return names
+
+    ours = {"common", "ops_agent", "ops_mcp"}
+    handler_imports = {name for name in imported("ops_agent_handler.py") if name.split(".")[0] in ours}
+    assert handler_imports == {
+        "common",
+        "common.dynamo",
+        "ops_agent",
+        "ops_agent.agent",
+        "ops_agent.policy",
+        "ops_mcp",
+        "ops_mcp.access",
+    }
+    assert (ROOT / "lambdas" / "ops_mcp" / "__init__.py").read_text(encoding="utf-8").strip().endswith('"""')
+    allowed = set(sys.stdlib_module_names) | {"boto3", "botocore", "common"}
+    for path in ("common/__init__.py", "common/dynamo.py", "common/assistant_access.py", "ops_mcp/access.py"):
+        roots = {name.split(".")[0] for name in imported(path)}
+        assert roots <= allowed, (path, roots - allowed)
+    access_imports = {name for name in imported("ops_mcp/access.py") if name.startswith("common")}
+    assert {name.rsplit(".", 1)[0] for name in access_imports if "." in name} <= {
+        "common",
+        "common.assistant_access",
+        "common.dynamo",
+    }
+
+
+def test_the_deploy_role_can_already_make_everything_the_agent_adds():
+    """Nothing is added to infra/bootstrap for the agent: each thing it creates falls under a
+    statement that is already there. If one of those is narrowed, this says what the agent needs."""
+    import fnmatch
+
+    bootstrap = _read("bootstrap", "main.tf")
+
+    def statement(sid: str) -> str:
+        return re.search(rf'sid\s*=\s*"{sid}"(.*?)\n  \}}', bootstrap, re.S).group(1)
+
+    # The function, its code, its permissions and its reserved concurrency
+    # (lambda:PutFunctionConcurrency) are all lambda:* on the function's ARN.
+    functions = statement("LambdaFunctions")
+    assert re.search(r'actions\s*=\s*\["lambda:\*"\]', functions)
+    pattern = re.search(r'"arn:aws:lambda:ap-southeast-2:\*:function:([^"]+)"', functions).group(1)
+    assert fnmatch.fnmatch("bloggerbear-dev-ops-agent", pattern)
+    # Its log group.
+    log_groups = statement("LambdaLogGroups")
+    log_patterns = re.findall(r'"arn:aws:logs:ap-southeast-2:\*:log-group:([^"]+)"', log_groups)
+    assert any(fnmatch.fnmatch("/aws/lambda/bloggerbear-dev-ops-agent", name) for name in log_patterns)
+    # Its role: created, given an inline policy and passed to Lambda.
+    roles = statement("LambdaExecRole")
+    assert re.search(r'actions\s*=\s*\["iam:\*"\]', roles)
+    assert '"arn:aws:iam::*:role/bloggerbear-*-lambda-exec"' in roles
+    # The routes: resources, methods and integrations on a REST API, and its deployments.
+    assert '"arn:aws:apigateway:ap-southeast-2::/restapis/*"' in statement("ApiGateway")
+    # No layer is used, so nothing like the Web Adapter's layer statement is needed.
+    assert "layers" not in _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
+
+
+def test_the_module_and_dev_output_the_agents_url():
+    module_outputs = _read("modules", "ops-assistant", "outputs.tf")
+    dev_outputs = _read("environments", "dev", "outputs.tf")
+
+    assert re.search(
+        r'output "ops_ask_url" \{\n\s*value\s*=\s*"\$\{aws_api_gateway_stage\.this\.invoke_url\}/ask"\n',
+        module_outputs,
+    )
+    assert re.search(
+        r'output "ops_ask_url" \{\n\s*value\s*=\s*module\.ops_assistant\.ops_ask_url\n', dev_outputs
+    )
+
+
+def test_nothing_the_agent_names_for_aws_holds_an_apostrophe():
+    """An apostrophe in a name or description given to an AWS service stopped an apply of this
+    module once (Cognito). Comments may have them; strings may not."""
+    code = _uncommented(_agent_module())
+    # The one place quotes belong: API Gateway's way of writing a fixed header value.
+    code = code.replace("\"'${var.agent_allowed_origin}'\"", "")
+
+    assert "'" not in code
+
+
+def test_api_gateways_own_errors_carry_the_cors_header_for_the_one_origin():
+    """A 401 from the authorizer, a 403 for a missing scope, a 429 from the throttle and a 5xx
+    never reach the handler, so its CORS headers are not on them. Without the header the page is
+    told "network error" and cannot tell an expired token from an outage."""
+    module = _agent_module()
+    responses = _resource_block(module, "aws_api_gateway_gateway_response", "cors")
+    code = _uncommented(responses)
+
+    types = re.search(r"for_each\s*=\s*toset\(\[(.*?)\]\)", code).group(1)
+    assert set(re.findall(r'"([A-Z0-9_]+)"', types)) == {
+        "UNAUTHORIZED",
+        "ACCESS_DENIED",
+        "THROTTLED",
+        "DEFAULT_5XX",
+    }
+    assert re.search(r"response_type\s*=\s*each\.key", code)
+    assert re.search(r"rest_api_id\s*=\s*aws_api_gateway_rest_api\.this\.id", code)
+    # The one origin the function itself answers with: never "*", and left off when there is none.
+    assert (
+        '"gatewayresponse.header.Access-Control-Allow-Origin" = "\'${var.agent_allowed_origin}\'"' in code
+    )
+    assert code.count("gatewayresponse.") == 1 and "*" not in code
+    assert re.search(r'response_parameters\s*=\s*var\.agent_allowed_origin == "" \? \{\} : \{', code)
+    assert re.search(r"OPS_AGENT_ALLOWED_ORIGIN\s*=\s*var\.agent_allowed_origin", module)
+    # The status and the body stay API Gateway's own.
+    assert "status_code" not in code and "response_templates" not in code
+    # And the stage is redeployed when they change.
+    redeployment = re.search(r"agent_redeployment = \{\n(.*?)\n  \}\n\}", module, re.S).group(1)
+    assert "in aws_api_gateway_gateway_response.cors" in redeployment
+    assert "response.response_parameters" in redeployment
+    # The deploy role may write them: they are under the REST API's own path.
+    bootstrap = _read("bootstrap", "main.tf")
+    api_gateway = re.search(r'sid\s*=\s*"ApiGateway"(.*?)\n  \}', bootstrap, re.S).group(1)
+    assert re.search(r'actions\s*=\s*\["apigateway:\*"\]', api_gateway)
+    assert '"arn:aws:apigateway:ap-southeast-2::/restapis/*"' in api_gateway

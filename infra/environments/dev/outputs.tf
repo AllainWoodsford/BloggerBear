@@ -52,6 +52,11 @@ output "ops_mcp_url" {
   description = "The operator's assistant's MCP endpoint (POST, Streamable HTTP, JSON responses). Every request needs an access token from the user pool below, carrying the bloggerbear-ops/read scope, in the Authorization header."
 }
 
+output "ops_ask_url" {
+  value       = module.ops_assistant.ops_ask_url
+  description = "The operator's assistant's agent endpoint: POST {\"question\": ...} here with the same access token the MCP endpoint takes. What the assistant's page calls."
+}
+
 output "ops_user_pool_id" {
   value       = module.ops_assistant.user_pool_id
   description = "The assistant's Cognito user pool. It starts empty: create the operator's user by hand (aws cognito-idp admin-create-user --user-pool-id <this> --username <name>). Terraform never creates one."

@@ -28,7 +28,14 @@ variables {
       name = "bloggerbear-test-articles"
       arn  = "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-articles"
     }
+    # The config table is not optional: the access switch is a row in it, and the agent
+    # (agent.tf) is given this one table by name.
+    MODEL_CONFIG_TABLE = {
+      name = "bloggerbear-test-model-config"
+      arn  = "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-model-config"
+    }
   }
+  agent_model_id          = "au.example.test-model-v1:0"
   content_bucket_name     = "bloggerbear-test-content"
   content_bucket_arn      = "arn:aws:s3:::bloggerbear-test-content"
   stage_name              = "test"
@@ -141,6 +148,8 @@ run "the_role_can_only_read_and_write_its_own_table" {
       "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-topics/index/*",
       "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-articles",
       "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-articles/index/*",
+      "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-model-config",
+      "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-model-config/index/*",
     ])
     error_message = "the DynamoDB statement should cover exactly the tables passed in and their indexes"
   }
