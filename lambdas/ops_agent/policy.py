@@ -24,6 +24,14 @@ of turns (max_model_calls), and the answer is then put together from what the to
 commands inside them, are copied from tool results as the server returned them. The model's
 answer is only ever the words spoken. The one other thing of the model's that is shown is the
 arguments it gave each tool call, and those are cut down to numbers and single words (_plain).
+`tables` are collected the same way as findings: a tool's `table` block, copied from its result
+and cut to a size the page can show (_table).
+
+**A how-to question is not a briefing, and the rule above does not change for it.** "How do I
+create gear?" asked first in a tab is still a turn of kind `briefing` here: the kind decides the
+budget and whether deep dives are offered, nothing else, and a first question may well need the
+larger budget. What keeps it from becoming a tour of the pipeline is the prompt (agent.py); the
+guide tools are ordinary tools, offered on every turn.
 """
 
 from __future__ import annotations
@@ -52,6 +60,17 @@ _MODEL_CALLS_OVER_BUDGET = 2
 # name, a period): never a sentence, so never a command.
 _ARGUMENT_WORD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 _ARGUMENTS_MAX = 8
+
+# The kind of finding the CLI guide returns (ops_mcp/cli_guide.py): a command's help, or a command
+# the operator asked how to write. Shown on a card like any other, but not a fix for something wrong.
+HOW_TO = "how_to"
+
+# A table is for the page to show next to an answer, not a report: a few of them, each small.
+TABLES_MAX = 4
+TABLE_MAX_ROWS = 50
+TABLE_MAX_COLUMNS = 16
+TABLE_TITLE_MAX_CHARS = 120
+TABLE_CELL_MAX_CHARS = 300
 
 
 def turn_kind(history: list | None) -> str:
@@ -97,6 +116,43 @@ def _plain(arguments: Any) -> dict:
     return plain
 
 
+def _cell(value: Any) -> str | int | float:
+    """One table cell as the page may show it: a number, or text cut to length. Anything that is
+    neither (a list, an object) is left empty: the page shows cells, not structures."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= TABLE_CELL_MAX_CHARS else value[: TABLE_CELL_MAX_CHARS - 1] + "…"
+    return ""
+
+
+def _table(block: Any) -> dict | None:
+    """A tool's `table` block as the page is sent it, or None if it is not shaped like one:
+    `title`, `columns` (text) and `rows` (lists of cells), each cut to the limits above. Every row
+    is made exactly as wide as the columns."""
+    if not isinstance(block, Mapping):
+        return None
+    columns, rows = block.get("columns"), block.get("rows")
+    if not isinstance(columns, list) or not isinstance(rows, list) or not columns:
+        return None
+    columns = [str(_cell(column)) for column in columns[:TABLE_MAX_COLUMNS]]
+    kept = []
+    for row in rows[:TABLE_MAX_ROWS]:
+        if not isinstance(row, list):
+            continue
+        cells = [_cell(value) for value in row[: len(columns)]]
+        kept.append(cells + [""] * (len(columns) - len(cells)))
+    title = block.get("title")
+    return {
+        "title": title[:TABLE_TITLE_MAX_CHARS] if isinstance(title, str) else "",
+        "columns": columns,
+        "rows": kept,
+        "rows_left_out": max(len(rows) - TABLE_MAX_ROWS, 0),
+    }
+
+
 class Ledger:
     """One question's account: the calls allowed and made, and what the tools returned.
 
@@ -110,6 +166,7 @@ class Ledger:
         self.offered = frozenset(offered(tool_names, turn))
         self.tool_calls: list[dict] = []  # the calls made, in order: {"name", "arguments"}
         self.findings: list[dict] = []  # de-duplicated by (kind, id), in the order found
+        self.tables: list[dict] = []  # each tool's `table`, cut to size, in the order returned
         self.spoken: list[str] = []  # each result's own summary, written by the server's code
         self.refused = 0
         self._seen: set[tuple] = set()
@@ -136,13 +193,17 @@ class Ledger:
 
     def record(self, structured: Any) -> None:
         """Take what one tool call returned (its `structuredContent`): its findings, minus any
-        already collected, and its `spoken` summary. Anything not shaped like a tool's result is
-        ignored: only what the server's code built reaches the page."""
+        already collected, its `table` if it has one, and its `spoken` summary. Anything not
+        shaped like a tool's result is ignored: only what the server's code built reaches the
+        page."""
         if not isinstance(structured, Mapping):
             return
         spoken = structured.get("spoken")
         if isinstance(spoken, str) and spoken.strip() and spoken.strip() not in self.spoken:
             self.spoken.append(spoken.strip())
+        table = _table(structured.get("table"))
+        if table is not None and table not in self.tables and len(self.tables) < TABLES_MAX:
+            self.tables.append(table)
         findings = structured.get("findings")
         if not isinstance(findings, list):
             return
@@ -166,9 +227,14 @@ def suggested_fixes(findings: Iterable[Any]) -> int:
       at, with nothing to run;
     - None: a kind that has a command, about an id that failed the server's check.
 
-    All three are passed to the page unchanged; this only counts."""
+    A `how_to` finding (the CLI guide's help, or a command the operator asked how to write) has a
+    command too, but nothing is wrong: it is not a fix and is not counted.
+
+    All of them are passed to the page unchanged; this only counts."""
     count = 0
     for finding in findings:
+        if isinstance(finding, Mapping) and finding.get("kind") == HOW_TO:
+            continue
         suggestion = finding.get("suggestion") if isinstance(finding, Mapping) else None
         command = suggestion.get("command") if isinstance(suggestion, Mapping) else None
         if isinstance(command, str) and command.strip():

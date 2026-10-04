@@ -1,0 +1,2504 @@
+{
+  "about": "Generated from scripts/admin_cli.py by `python scripts/generate_cli_reference.py`. Do not edit by hand.",
+  "program": "python scripts/admin_cli.py",
+  "help_python": "3.13",
+  "help_columns": 100,
+  "destructive_verbs": [
+    "clear",
+    "delete",
+    "destroy",
+    "drop",
+    "purge",
+    "reject",
+    "remove",
+    "unpublish",
+    "wipe"
+  ],
+  "destructive_flags": [
+    "--force"
+  ],
+  "description": "BloggerBear admin operator CLI",
+  "global_options": [
+    {
+      "name": "--api-url",
+      "dest": "api_url",
+      "kind": "option",
+      "flags": [
+        "--api-url"
+      ],
+      "help": "Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)",
+      "type": "str",
+      "choices": null,
+      "default": null,
+      "required": false,
+      "nargs": null,
+      "metavar": null,
+      "destructive": false
+    },
+    {
+      "name": "--region",
+      "dest": "region",
+      "kind": "option",
+      "flags": [
+        "--region"
+      ],
+      "help": "AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)",
+      "type": "str",
+      "choices": null,
+      "default": null,
+      "required": false,
+      "nargs": null,
+      "metavar": null,
+      "destructive": false
+    }
+  ],
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "commands": {
+    "topics": {
+      "help": "Manage Topics",
+      "group": true,
+      "subcommands": [
+        "list",
+        "get",
+        "create",
+        "update",
+        "delete",
+        "trigger",
+        "candidates",
+        "findings"
+      ],
+      "help_text": "usage: admin_cli.py topics [-h] {list,get,create,update,delete,trigger,candidates,findings} ...\n\npositional arguments:\n  {list,get,create,update,delete,trigger,candidates,findings}\n    list                List all topics\n    get                 Get one topic\n    create              Create a topic\n    update              Update a topic\n    delete              Delete a topic\n    trigger             Manually trigger a pipeline run\n    candidates          List candidate ideas considered for a topic\n    findings            Show the most recent research Finding for a topic\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "topics list": {
+      "help": "List all topics",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "topics get": {
+      "help": "Get one topic",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics get [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "topics create": {
+      "help": "Create a topic",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--topic-id",
+          "dest": "topic_id",
+          "kind": "option",
+          "flags": [
+            "--topic-id"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--name",
+          "dest": "name",
+          "kind": "option",
+          "flags": [
+            "--name"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--adapter",
+          "dest": "adapter",
+          "kind": "option",
+          "flags": [
+            "--adapter"
+          ],
+          "help": "Adapter key (default: web_search -- independent web research on the topic's name)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--config-json",
+          "dest": "config_json",
+          "kind": "option",
+          "flags": [
+            "--config-json"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--editorial-goals-json",
+          "dest": "editorial_goals_json",
+          "kind": "option",
+          "flags": [
+            "--editorial-goals-json"
+          ],
+          "help": "Topic-specific goal, e.g. '{\"primary_focus\": \"...\", \"exclusion_criteria\": \"...\"}'; omit to inherit the adapter/global default",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--financial",
+          "dest": "financial",
+          "kind": "flag",
+          "flags": [
+            "--financial"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--research-cadence",
+          "dest": "research_cadence",
+          "kind": "option",
+          "flags": [
+            "--research-cadence"
+          ],
+          "help": "EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1 hour))",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--research-interval-hours",
+          "dest": "research_interval_hours",
+          "kind": "option",
+          "flags": [
+            "--research-interval-hours"
+          ],
+          "help": "Whole hours between real research runs (the --research-cadence schedule is only the heartbeat). Omit to inherit the pipeline-wide default",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-mode",
+          "dest": "review_mode",
+          "kind": "option",
+          "flags": [
+            "--review-mode"
+          ],
+          "help": "This topic's fresh-data review mode; omit to inherit the pipeline-wide mode",
+          "type": "str",
+          "choices": [
+            "off",
+            "shadow",
+            "enforce"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--daily-cadence",
+          "dest": "daily_cadence",
+          "kind": "option",
+          "flags": [
+            "--daily-cadence"
+          ],
+          "help": "EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default: cron(0 9 * * ? *))",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--daily-timezone",
+          "dest": "daily_timezone",
+          "kind": "option",
+          "flags": [
+            "--daily-timezone"
+          ],
+          "help": "IANA zone the daily cron is read in (default: Australia/Sydney)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--model-id",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model-id"
+          ],
+          "help": "Pin this topic to one Bedrock model (overrides the global default); '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--fallback-model-id",
+          "dest": "fallback_model_id",
+          "kind": "option",
+          "flags": [
+            "--fallback-model-id"
+          ],
+          "help": "Model to retry with if this topic's primary model call fails; '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--model-candidates",
+          "dest": "model_candidates",
+          "kind": "option",
+          "flags": [
+            "--model-candidates"
+          ],
+          "help": "Comma-separated model IDs to rotate between -- one is picked at random per daily run, ahead of --model-id; '' clears rotation",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics create [-h] --topic-id TOPIC_ID --name NAME [--adapter ADAPTER]\n                                  [--config-json CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--review-mode {off,shadow,enforce}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n\noptions:\n  -h, --help            show this help message and exit\n  --topic-id TOPIC_ID\n  --name NAME\n  --adapter ADAPTER     Adapter key (default: web_search -- independent web research on the\n                        topic's name)\n  --config-json CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Topic-specific goal, e.g. '{\"primary_focus\": \"...\", \"exclusion_criteria\":\n                        \"...\"}'; omit to inherit the adapter/global default\n  --financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1\n                        hour))\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (the --research-cadence schedule is\n                        only the heartbeat). Omit to inherit the pipeline-wide default\n  --review-mode {off,shadow,enforce}\n                        This topic's fresh-data review mode; omit to inherit the pipeline-wide\n                        mode\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default:\n                        cron(0 9 * * ? *))\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in (default: Australia/Sydney)\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+    },
+    "topics update": {
+      "help": "Update a topic",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--name",
+          "dest": "name",
+          "kind": "option",
+          "flags": [
+            "--name"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--adapter-config-json",
+          "dest": "adapter_config_json",
+          "kind": "option",
+          "flags": [
+            "--adapter-config-json"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--editorial-goals-json",
+          "dest": "editorial_goals_json",
+          "kind": "option",
+          "flags": [
+            "--editorial-goals-json"
+          ],
+          "help": "Replaces the topic's whole editorial_goals block; '{}' clears it (back to the default)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--financial",
+          "dest": "financial",
+          "kind": "flag",
+          "flags": [
+            "--financial"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--no-financial",
+          "dest": "financial",
+          "kind": "flag",
+          "flags": [
+            "--no-financial"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": true,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": false
+        },
+        {
+          "name": "--research-cadence",
+          "dest": "research_cadence",
+          "kind": "option",
+          "flags": [
+            "--research-cadence"
+          ],
+          "help": "EventBridge Scheduler expression, e.g. 'rate(1 hour)'",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--research-interval-hours",
+          "dest": "research_interval_hours",
+          "kind": "option",
+          "flags": [
+            "--research-interval-hours"
+          ],
+          "help": "Whole hours between real research runs for this topic; '' clears it (inherit the pipeline-wide default)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-mode",
+          "dest": "review_mode",
+          "kind": "option",
+          "flags": [
+            "--review-mode"
+          ],
+          "help": "This topic's fresh-data review mode, overriding the pipeline-wide one: 'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it (inherit)",
+          "type": "str",
+          "choices": [
+            "off",
+            "shadow",
+            "enforce",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--daily-cadence",
+          "dest": "daily_cadence",
+          "kind": "option",
+          "flags": [
+            "--daily-cadence"
+          ],
+          "help": "EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--daily-timezone",
+          "dest": "daily_timezone",
+          "kind": "option",
+          "flags": [
+            "--daily-timezone"
+          ],
+          "help": "IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic created before this option existed is on UTC until you set it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--model-id",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model-id"
+          ],
+          "help": "Pin this topic to one Bedrock model (overrides the global default); '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--fallback-model-id",
+          "dest": "fallback_model_id",
+          "kind": "option",
+          "flags": [
+            "--fallback-model-id"
+          ],
+          "help": "Model to retry with if this topic's primary model call fails; '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--model-candidates",
+          "dest": "model_candidates",
+          "kind": "option",
+          "flags": [
+            "--model-candidates"
+          ],
+          "help": "Comma-separated model IDs to rotate between -- one is picked at random per daily run, ahead of --model-id; '' clears rotation",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+    },
+    "topics delete": {
+      "help": "Delete a topic",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py topics delete [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "topics trigger": {
+      "help": "Manually trigger a pipeline run",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--pipeline",
+          "dest": "pipeline",
+          "kind": "option",
+          "flags": [
+            "--pipeline"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": [
+            "research_tick",
+            "daily_cycle"
+          ],
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-wait",
+          "dest": "wait",
+          "kind": "flag",
+          "flags": [
+            "--no-wait"
+          ],
+          "help": "Don't poll for completion after triggering -- just fire the request and return immediately (the old behavior). Default is to wait and report when the pipeline has actually finished, since the trigger itself is asynchronous.",
+          "type": "str",
+          "choices": null,
+          "default": true,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": false
+        },
+        {
+          "name": "--force",
+          "dest": "force",
+          "kind": "flag",
+          "flags": [
+            "--force"
+          ],
+          "help": "daily_cycle only: write an article from the whole last-24h window even if the topic already has one since (the default is to write only from findings newer than its last article, so a repeat run with nothing new is a no-op)",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": true,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics trigger [-h] --pipeline {research_tick,daily_cycle} [--no-wait]\n                                   [--force]\n                                   topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --pipeline {research_tick,daily_cycle}\n  --no-wait             Don't poll for completion after triggering -- just fire the request and\n                        return immediately (the old behavior). Default is to wait and report when\n                        the pipeline has actually finished, since the trigger itself is\n                        asynchronous.\n  --force               daily_cycle only: write an article from the whole last-24h window even if\n                        the topic already has one since (the default is to write only from\n                        findings newer than its last article, so a repeat run with nothing new is\n                        a no-op)\n"
+    },
+    "topics candidates": {
+      "help": "List candidate ideas considered for a topic",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics candidates [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "topics findings": {
+      "help": "Show the most recent research Finding for a topic",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics findings [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "articles": {
+      "help": "Manage articles",
+      "group": true,
+      "subcommands": [
+        "publish",
+        "unpublish",
+        "rewrite",
+        "feedback-lock",
+        "feedback-unlock"
+      ],
+      "help_text": "usage: admin_cli.py articles [-h] {publish,unpublish,rewrite,feedback-lock,feedback-unlock} ...\n\npositional arguments:\n  {publish,unpublish,rewrite,feedback-lock,feedback-unlock}\n    publish             Force-publish an article regardless of its current status\n    unpublish           Take a published article down: delete its page, mark it rejected, remove\n                        its musings and clear the CDN cache\n    rewrite             Rewrite an article to fix what you say is wrong with it. A published\n                        article stays up until its rewrite is ready, then comes down; the rewrite\n                        goes through the reviews again and waits in the inbox\n    feedback-lock       Stop taking feedback on one article (its feedback_locked flag, set to\n                        true)\n    feedback-unlock     Take feedback on one article again (feedback_locked false). An article\n                        locked because it reached its limit also needs --reset-count, or it stays\n                        at the limit\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "articles publish": {
+      "help": "Force-publish an article regardless of its current status",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles publish [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "articles unpublish": {
+      "help": "Take a published article down: delete its page, mark it rejected, remove its musings and clear the CDN cache",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py articles unpublish [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "articles rewrite": {
+      "help": "Rewrite an article to fix what you say is wrong with it. A published article stays up until its rewrite is ready, then comes down; the rewrite goes through the reviews again and waits in the inbox",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--instructions",
+          "dest": "instructions",
+          "kind": "option",
+          "flags": [
+            "--instructions",
+            "-i"
+          ],
+          "help": "What is wrong with the article, e.g. \"the second section confuses staking with lending\"",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--model",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model"
+          ],
+          "help": "A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--force",
+          "dest": "force",
+          "kind": "flag",
+          "flags": [
+            "--force"
+          ],
+          "help": "Published articles only: take it down now, before rewriting, instead of leaving it up until the rewrite is ready. If the rewrite then fails, it waits in the inbox, down",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": true,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
+    },
+    "articles feedback-lock": {
+      "help": "Stop taking feedback on one article (its feedback_locked flag, set to true)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles feedback-lock [-h] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "articles feedback-unlock": {
+      "help": "Take feedback on one article again (feedback_locked false). An article locked because it reached its limit also needs --reset-count, or it stays at the limit",
+      "group": false,
+      "arguments": [
+        {
+          "name": "article_id",
+          "dest": "article_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--reset-count",
+          "dest": "reset_count",
+          "kind": "flag",
+          "flags": [
+            "--reset-count"
+          ],
+          "help": "Also zero the article's feedback count, so it has its full allowance again",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py articles feedback-unlock [-h] [--reset-count] article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help     show this help message and exit\n  --reset-count  Also zero the article's feedback count, so it has its full allowance again\n"
+    },
+    "feedback-config": {
+      "help": "When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-article limit",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py feedback-config [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the feedback settings, the ones in force, and today's usage\n    set       Set feedback settings (any of them; a setting not sent is unchanged)\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "feedback-config get": {
+      "help": "Show the feedback settings, the ones in force, and today's usage",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py feedback-config get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "feedback-config set": {
+      "help": "Set feedback settings (any of them; a setting not sent is unchanged)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--locked-down",
+          "dest": "locked_down",
+          "kind": "option",
+          "flags": [
+            "--locked-down"
+          ],
+          "help": "true stops taking feedback site-wide (the page says so); false reopens; '' clears",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--lockdown-reason",
+          "dest": "lockdown_reason",
+          "kind": "option",
+          "flags": [
+            "--lockdown-reason"
+          ],
+          "help": "What the page says while locked down (up to 100 characters); '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--rate-limit",
+          "dest": "rate_limit",
+          "kind": "option",
+          "flags": [
+            "--rate-limit"
+          ],
+          "help": "At most this many pieces of feedback per rate window (default 20); '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--rate-window-minutes",
+          "dest": "rate_window_minutes",
+          "kind": "option",
+          "flags": [
+            "--rate-window-minutes"
+          ],
+          "help": "The rate window, in minutes (default 5); '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--daily-limit",
+          "dest": "daily_limit",
+          "kind": "option",
+          "flags": [
+            "--daily-limit"
+          ],
+          "help": "At most this many a day, resetting at the start of the day (default 100)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--article-limit",
+          "dest": "article_limit",
+          "kind": "option",
+          "flags": [
+            "--article-limit"
+          ],
+          "help": "At most this many on one article before it is locked (default 50)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--screening-limit",
+          "dest": "screening_limit",
+          "kind": "option",
+          "flags": [
+            "--screening-limit"
+          ],
+          "help": "At most this many comments a day are sent to the model check (default 300). Rejected feedback does not count against the other limits, so this bounds its cost",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--verification-required",
+          "dest": "verification_required",
+          "kind": "option",
+          "flags": [
+            "--verification-required"
+          ],
+          "help": "true (the default) requires the token from the feedback-status call on every submission; false switches that off, in an emergency; '' clears it",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--token-delay-min-ms",
+          "dest": "token_delay_min_ms",
+          "kind": "option",
+          "flags": [
+            "--token-delay-min-ms"
+          ],
+          "help": "A token becomes valid at least this many ms after it is issued (default 500)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--token-delay-max-ms",
+          "dest": "token_delay_max_ms",
+          "kind": "option",
+          "flags": [
+            "--token-delay-max-ms"
+          ],
+          "help": "...and at most this many (default 2000); each token gets a random time between",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--pow-threshold-percent",
+          "dest": "pow_threshold_percent",
+          "kind": "option",
+          "flags": [
+            "--pow-threshold-percent"
+          ],
+          "help": "When the site is this percent full (of its daily or rate limit), tokens need proof of work (default 70)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--pow-difficulty-bits",
+          "dest": "pow_difficulty_bits",
+          "kind": "option",
+          "flags": [
+            "--pow-difficulty-bits"
+          ],
+          "help": "How much work: leading zero bits, about a second or two at 16 (default 16); 0 = never",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--daily-timezone",
+          "dest": "daily_timezone",
+          "kind": "option",
+          "flags": [
+            "--daily-timezone"
+          ],
+          "help": "Where a day starts, an IANA zone (default Australia/Sydney)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py feedback-config set [-h] [--locked-down LOCKED_DOWN]\n                                        [--lockdown-reason LOCKDOWN_REASON]\n                                        [--rate-limit RATE_LIMIT]\n                                        [--rate-window-minutes RATE_WINDOW_MINUTES]\n                                        [--daily-limit DAILY_LIMIT]\n                                        [--article-limit ARTICLE_LIMIT]\n                                        [--screening-limit SCREENING_LIMIT]\n                                        [--verification-required VERIFICATION_REQUIRED]\n                                        [--token-delay-min-ms TOKEN_DELAY_MIN_MS]\n                                        [--token-delay-max-ms TOKEN_DELAY_MAX_MS]\n                                        [--pow-threshold-percent POW_THRESHOLD_PERCENT]\n                                        [--pow-difficulty-bits POW_DIFFICULTY_BITS]\n                                        [--daily-timezone DAILY_TIMEZONE]\n\noptions:\n  -h, --help            show this help message and exit\n  --locked-down LOCKED_DOWN\n                        true stops taking feedback site-wide (the page says so); false reopens; ''\n                        clears\n  --lockdown-reason LOCKDOWN_REASON\n                        What the page says while locked down (up to 100 characters); '' clears it\n  --rate-limit RATE_LIMIT\n                        At most this many pieces of feedback per rate window (default 20); ''\n                        clears it\n  --rate-window-minutes RATE_WINDOW_MINUTES\n                        The rate window, in minutes (default 5); '' clears it\n  --daily-limit DAILY_LIMIT\n                        At most this many a day, resetting at the start of the day (default 100)\n  --article-limit ARTICLE_LIMIT\n                        At most this many on one article before it is locked (default 50)\n  --screening-limit SCREENING_LIMIT\n                        At most this many comments a day are sent to the model check (default\n                        300). Rejected feedback does not count against the other limits, so this\n                        bounds its cost\n  --verification-required VERIFICATION_REQUIRED\n                        true (the default) requires the token from the feedback-status call on\n                        every submission; false switches that off, in an emergency; '' clears it\n  --token-delay-min-ms TOKEN_DELAY_MIN_MS\n                        A token becomes valid at least this many ms after it is issued (default\n                        500)\n  --token-delay-max-ms TOKEN_DELAY_MAX_MS\n                        ...and at most this many (default 2000); each token gets a random time\n                        between\n  --pow-threshold-percent POW_THRESHOLD_PERCENT\n                        When the site is this percent full (of its daily or rate limit), tokens\n                        need proof of work (default 70)\n  --pow-difficulty-bits POW_DIFFICULTY_BITS\n                        How much work: leading zero bits, about a second or two at 16 (default\n                        16); 0 = never\n  --daily-timezone DAILY_TIMEZONE\n                        Where a day starts, an IANA zone (default Australia/Sydney)\n"
+    },
+    "inbox": {
+      "help": "What is waiting for you (articles, prompt changes, failed runs), at a glance",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--mock",
+          "dest": "mock",
+          "kind": "flag",
+          "flags": [
+            "--mock"
+          ],
+          "help": "Made-up numbers; no AWS needed",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py inbox [-h] [--mock]\n\noptions:\n  -h, --help  show this help message and exit\n  --mock      Made-up numbers; no AWS needed\n"
+    },
+    "approve": {
+      "help": "Go through what is waiting for you, one keystroke each: y approve, r reject, z skip, v read it all, q quit. Up to 30 at a time; run it again for the next batch",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--limit",
+          "dest": "limit",
+          "kind": "option",
+          "flags": [
+            "--limit"
+          ],
+          "help": "How many to go through this time (default 30)",
+          "type": "int",
+          "choices": null,
+          "default": 30,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--source",
+          "dest": "source",
+          "kind": "option",
+          "flags": [
+            "--source"
+          ],
+          "help": "Only articles (moderation) or only prompt changes (refinements). Default: both",
+          "type": "str",
+          "choices": [
+            "all",
+            "moderation",
+            "refinements"
+          ],
+          "default": "all",
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--skip-hours",
+          "dest": "skip_hours",
+          "kind": "option",
+          "flags": [
+            "--skip-hours"
+          ],
+          "help": "A skipped item is hidden from your next reviews for this many hours (default 24; 0 = until cleared)",
+          "type": "int",
+          "choices": null,
+          "default": 24,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--include-skipped",
+          "dest": "include_skipped",
+          "kind": "flag",
+          "flags": [
+            "--include-skipped"
+          ],
+          "help": "Show items you skipped earlier too",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--reset-skipped",
+          "dest": "reset_skipped",
+          "kind": "flag",
+          "flags": [
+            "--reset-skipped"
+          ],
+          "help": "Forget everything you skipped before starting",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--dry-run",
+          "dest": "dry_run",
+          "kind": "flag",
+          "flags": [
+            "--dry-run"
+          ],
+          "help": "Go through the motions but change nothing",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--mock",
+          "dest": "mock",
+          "kind": "flag",
+          "flags": [
+            "--mock"
+          ],
+          "help": "Practise the keys on made-up items: no AWS, nothing sent (or set BLOGGERBEAR_REVIEW_MOCK=1)",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py approve [-h] [--limit LIMIT] [--source {all,moderation,refinements}]\n                            [--skip-hours SKIP_HOURS] [--include-skipped] [--reset-skipped]\n                            [--dry-run] [--mock]\n\noptions:\n  -h, --help            show this help message and exit\n  --limit LIMIT         How many to go through this time (default 30)\n  --source {all,moderation,refinements}\n                        Only articles (moderation) or only prompt changes (refinements). Default:\n                        both\n  --skip-hours SKIP_HOURS\n                        A skipped item is hidden from your next reviews for this many hours\n                        (default 24; 0 = until cleared)\n  --include-skipped     Show items you skipped earlier too\n  --reset-skipped       Forget everything you skipped before starting\n  --dry-run             Go through the motions but change nothing\n  --mock                Practise the keys on made-up items: no AWS, nothing sent (or set\n                        BLOGGERBEAR_REVIEW_MOCK=1)\n"
+    },
+    "pipeline-config": {
+      "help": "Pipeline-wide settings (the default research interval, the draft review mode, who may reach the assistant)",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py pipeline-config [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the pipeline-wide settings\n    set       Set pipeline-wide settings (send any of them; a setting not sent is unchanged)\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "pipeline-config get": {
+      "help": "Show the pipeline-wide settings",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py pipeline-config get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "pipeline-config set": {
+      "help": "Set pipeline-wide settings (send any of them; a setting not sent is unchanged)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--research-interval-hours",
+          "dest": "research_interval_hours",
+          "kind": "option",
+          "flags": [
+            "--research-interval-hours"
+          ],
+          "help": "Whole hours between real research runs (1-168); '' clears it (back to 1)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-mode",
+          "dest": "review_mode",
+          "kind": "option",
+          "flags": [
+            "--review-mode"
+          ],
+          "help": "Fresh-data review of drafts: 'shadow' runs and records it without changing any outcome (the default), 'enforce' acts on it (revises minor problems, holds major ones), 'off' skips it; '' clears it (back to the default). A topic's own --review-mode overrides this",
+          "type": "str",
+          "choices": [
+            "off",
+            "shadow",
+            "enforce",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--review-on-unavailable",
+          "dest": "review_on_unavailable",
+          "kind": "option",
+          "flags": [
+            "--review-on-unavailable"
+          ],
+          "help": "In enforce mode, when the review could not run: 'hold' the article for a person (the default) or 'note' the gap and publish; '' clears it",
+          "type": "str",
+          "choices": [
+            "hold",
+            "note",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--assistant-access",
+          "dest": "assistant_access",
+          "kind": "option",
+          "flags": [
+            "--assistant-access"
+          ],
+          "help": "Who may reach the operator's assistant: 'open' any signed-in caller from anywhere (the default), 'allowlist' only from the operator's addresses, 'off' nobody; '' clears it (back to open). Applies from the next request, no deploy",
+          "type": "str",
+          "choices": [
+            "open",
+            "allowlist",
+            "off",
+            ""
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py pipeline-config set [-h] [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                        [--review-mode {off,shadow,enforce,}]\n                                        [--review-on-unavailable {hold,note,}]\n                                        [--assistant-access {open,allowlist,off,}]\n\noptions:\n  -h, --help            show this help message and exit\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (1-168); '' clears it (back to 1)\n  --review-mode {off,shadow,enforce,}\n                        Fresh-data review of drafts: 'shadow' runs and records it without changing\n                        any outcome (the default), 'enforce' acts on it (revises minor problems,\n                        holds major ones), 'off' skips it; '' clears it (back to the default). A\n                        topic's own --review-mode overrides this\n  --review-on-unavailable {hold,note,}\n                        In enforce mode, when the review could not run: 'hold' the article for a\n                        person (the default) or 'note' the gap and publish; '' clears it\n  --assistant-access {open,allowlist,off,}\n                        Who may reach the operator's assistant: 'open' any signed-in caller from\n                        anywhere (the default), 'allowlist' only from the operator's addresses,\n                        'off' nobody; '' clears it (back to open). Applies from the next request,\n                        no deploy\n"
+    },
+    "review": {
+      "help": "How the fresh-data review of drafts is doing",
+      "group": true,
+      "subcommands": [
+        "report"
+      ],
+      "help_text": "usage: admin_cli.py review [-h] {report} ...\n\npositional arguments:\n  {report}\n    report    Counts by outcome and topic, and what enforcement would have held and revised, from\n              the records stored on articles\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "review report": {
+      "help": "Counts by outcome and topic, and what enforcement would have held and revised, from the records stored on articles",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--sample",
+          "dest": "sample",
+          "kind": "option",
+          "flags": [
+            "--sample"
+          ],
+          "help": "How many recent flagged claims to include for checking by eye (default 10, max 50)",
+          "type": "int",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py review report [-h] [--sample SAMPLE]\n\noptions:\n  -h, --help       show this help message and exit\n  --sample SAMPLE  How many recent flagged claims to include for checking by eye (default 10, max\n                   50)\n"
+    },
+    "lineage": {
+      "help": "Audit and repair article lineage/cost data",
+      "group": true,
+      "subcommands": [
+        "audit",
+        "backfill"
+      ],
+      "help_text": "usage: admin_cli.py lineage [-h] {audit,backfill} ...\n\npositional arguments:\n  {audit,backfill}\n    audit           Show articles with no lineage or no cost, and models with no known price\n    backfill        Recompute each article's cost from its recorded tokens at today's prices (a\n                    dry run unless --apply)\n\noptions:\n  -h, --help        show this help message and exit\n"
+    },
+    "lineage audit": {
+      "help": "Show articles with no lineage or no cost, and models with no known price",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py lineage audit [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "lineage backfill": {
+      "help": "Recompute each article's cost from its recorded tokens at today's prices (a dry run unless --apply)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--apply",
+          "dest": "apply",
+          "kind": "flag",
+          "flags": [
+            "--apply"
+          ],
+          "help": "Write the recomputed lineage (default: only report what would change)",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py lineage backfill [-h] [--apply]\n\noptions:\n  -h, --help  show this help message and exit\n  --apply     Write the recomputed lineage (default: only report what would change)\n"
+    },
+    "stats": {
+      "help": "Observability: one-time catch-up jobs",
+      "group": true,
+      "subcommands": [
+        "backfill-articles"
+      ],
+      "help_text": "usage: admin_cli.py stats [-h] {backfill-articles} ...\n\npositional arguments:\n  {backfill-articles}\n    backfill-articles  Fold every existing article's already-recorded cost into StatsHistory's\n                       all-time total (a dry run unless --apply; refuses to run twice)\n\noptions:\n  -h, --help           show this help message and exit\n"
+    },
+    "stats backfill-articles": {
+      "help": "Fold every existing article's already-recorded cost into StatsHistory's all-time total (a dry run unless --apply; refuses to run twice)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--apply",
+          "dest": "apply",
+          "kind": "flag",
+          "flags": [
+            "--apply"
+          ],
+          "help": "Write the totals onto StatsHistory (default: only report what they would be)",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py stats backfill-articles [-h] [--apply]\n\noptions:\n  -h, --help  show this help message and exit\n  --apply     Write the totals onto StatsHistory (default: only report what they would be)\n"
+    },
+    "moderation": {
+      "help": "Manage the moderation queue",
+      "group": true,
+      "subcommands": [
+        "list",
+        "approve",
+        "reject",
+        "stats"
+      ],
+      "help_text": "usage: admin_cli.py moderation [-h] {list,approve,reject,stats} ...\n\npositional arguments:\n  {list,approve,reject,stats}\n    list                List pending moderation items\n    approve             Approve a moderation item\n    reject              Reject a moderation item\n    stats               Summarize what compliance review has flagged, across all history\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "moderation list": {
+      "help": "List pending moderation items",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py moderation list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "moderation approve": {
+      "help": "Approve a moderation item",
+      "group": false,
+      "arguments": [
+        {
+          "name": "queue_id",
+          "dest": "queue_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py moderation approve [-h] queue_id\n\npositional arguments:\n  queue_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "moderation reject": {
+      "help": "Reject a moderation item",
+      "group": false,
+      "arguments": [
+        {
+          "name": "queue_id",
+          "dest": "queue_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py moderation reject [-h] queue_id\n\npositional arguments:\n  queue_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "moderation stats": {
+      "help": "Summarize what compliance review has flagged, across all history",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py moderation stats [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "failed-executions": {
+      "help": "View daily_cycle executions that exhausted their retries",
+      "group": true,
+      "subcommands": [
+        "list"
+      ],
+      "help_text": "usage: admin_cli.py failed-executions [-h] {list} ...\n\npositional arguments:\n  {list}\n    list      List failed daily_cycle executions recorded by the DLQ consumer\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "failed-executions list": {
+      "help": "List failed daily_cycle executions recorded by the DLQ consumer",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py failed-executions list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "models": {
+      "help": "Manage the AI model registry",
+      "group": true,
+      "subcommands": [
+        "list",
+        "add"
+      ],
+      "help_text": "usage: admin_cli.py models [-h] {list,add} ...\n\npositional arguments:\n  {list,add}\n    list      List the supported-models registry\n    add       Add or update a model in the registry\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "models list": {
+      "help": "List the supported-models registry",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py models list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "models add": {
+      "help": "Add or update a model in the registry",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--model-id",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model-id"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--display-name",
+          "dest": "display_name",
+          "kind": "option",
+          "flags": [
+            "--display-name"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--provider",
+          "dest": "provider",
+          "kind": "option",
+          "flags": [
+            "--provider"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--input-price",
+          "dest": "input_price",
+          "kind": "option",
+          "flags": [
+            "--input-price"
+          ],
+          "help": "USD per 1k input tokens",
+          "type": "float",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--output-price",
+          "dest": "output_price",
+          "kind": "option",
+          "flags": [
+            "--output-price"
+          ],
+          "help": "USD per 1k output tokens",
+          "type": "float",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--disabled",
+          "dest": "enabled",
+          "kind": "flag",
+          "flags": [
+            "--disabled"
+          ],
+          "help": "Register the model as disabled (default: enabled)",
+          "type": "str",
+          "choices": null,
+          "default": true,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME\n                               --provider PROVIDER --input-price INPUT_PRICE\n                               --output-price OUTPUT_PRICE [--disabled]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n"
+    },
+    "model-config": {
+      "help": "Manage the global default/fallback model",
+      "group": true,
+      "subcommands": [
+        "get",
+        "set"
+      ],
+      "help_text": "usage: admin_cli.py model-config [-h] {get,set} ...\n\npositional arguments:\n  {get,set}\n    get       Show the current global default/fallback model\n    set       Set the global default and/or fallback model\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "model-config get": {
+      "help": "Show the current global default/fallback model",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py model-config get [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "model-config set": {
+      "help": "Set the global default and/or fallback model",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--model-id",
+          "dest": "model_id",
+          "kind": "option",
+          "flags": [
+            "--model-id"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--fallback-model-id",
+          "dest": "fallback_model_id",
+          "kind": "option",
+          "flags": [
+            "--fallback-model-id"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py model-config set [-h] [--model-id MODEL_ID]\n                                     [--fallback-model-id FALLBACK_MODEL_ID]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --fallback-model-id FALLBACK_MODEL_ID\n"
+    },
+    "refinements": {
+      "help": "Manage prompt refinements",
+      "group": true,
+      "subcommands": [
+        "list",
+        "approve",
+        "reject"
+      ],
+      "help_text": "usage: admin_cli.py refinements [-h] {list,approve,reject} ...\n\npositional arguments:\n  {list,approve,reject}\n    list                List prompt refinement proposals\n    approve             Approve a pending prompt refinement\n    reject              Reject a pending prompt refinement\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "refinements list": {
+      "help": "List prompt refinement proposals",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--topic-id",
+          "dest": "topic_id",
+          "kind": "option",
+          "flags": [
+            "--topic-id"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--status",
+          "dest": "status",
+          "kind": "option",
+          "flags": [
+            "--status"
+          ],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py refinements list [-h] [--topic-id TOPIC_ID] [--status STATUS]\n\noptions:\n  -h, --help           show this help message and exit\n  --topic-id TOPIC_ID\n  --status STATUS\n"
+    },
+    "refinements approve": {
+      "help": "Approve a pending prompt refinement",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--scope",
+          "dest": "scope",
+          "kind": "option",
+          "flags": [
+            "--scope"
+          ],
+          "help": "topic: a ring for the item's own topic; global: an armor slot for every topic; backpack: approve but do not wear",
+          "type": "str",
+          "choices": [
+            "topic",
+            "global",
+            "backpack"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--slot",
+          "dest": "slot",
+          "kind": "option",
+          "flags": [
+            "--slot"
+          ],
+          "help": "the armor slot, for global guidance (default: the first empty one)",
+          "type": "str",
+          "choices": [
+            "helmet",
+            "chest",
+            "gloves",
+            "boots",
+            "sword",
+            "shield"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--replace",
+          "dest": "replace",
+          "kind": "option",
+          "flags": [
+            "--replace"
+          ],
+          "help": "when all rings are worn, the worn ring this one replaces",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": 2,
+          "metavar": [
+            "TOPIC_ID",
+            "VERSION"
+          ],
+          "destructive": false
+        },
+        {
+          "name": "--no-announce",
+          "dest": "no_announce",
+          "kind": "flag",
+          "flags": [
+            "--no-announce"
+          ],
+          "help": "do not post a loot drop to the Musings when it is put on",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py refinements approve [-h] [--scope {topic,global,backpack}]\n                                        [--slot {helmet,chest,gloves,boots,sword,shield}]\n                                        [--replace TOPIC_ID VERSION] [--no-announce]\n                                        topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help            show this help message and exit\n  --scope {topic,global,backpack}\n                        topic: a ring for the item's own topic; global: an armor slot for every\n                        topic; backpack: approve but do not wear\n  --slot {helmet,chest,gloves,boots,sword,shield}\n                        the armor slot, for global guidance (default: the first empty one)\n  --replace TOPIC_ID VERSION\n                        when all rings are worn, the worn ring this one replaces\n  --no-announce         do not post a loot drop to the Musings when it is put on\n"
+    },
+    "refinements reject": {
+      "help": "Reject a pending prompt refinement",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py refinements reject [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "equipment": {
+      "help": "What the bear wears: armor (global guidance), rings (topic guidance), the backpack",
+      "group": true,
+      "subcommands": [
+        "list",
+        "equip",
+        "create",
+        "announce",
+        "delete",
+        "bump",
+        "repair",
+        "unequip"
+      ],
+      "help_text": "usage: admin_cli.py equipment [-h] {list,equip,create,announce,delete,bump,repair,unequip} ...\n\npositional arguments:\n  {list,equip,create,announce,delete,bump,repair,unequip}\n    list                Show every slot, the rings, and what is in the backpack\n    equip               Wear an approved refinement (from the backpack or elsewhere); it replaces\n                        what is in the slot\n    create              Make a new piece of gear yourself and (by default) put it on. With no\n                        --text it asks you what it needs, one question at a time\n    announce            Post a loot drop to the Musings for a piece of gear (again, if it was\n                        already announced)\n    delete              Delete a piece of gear for good (it asks first). Articles written with it\n                        keep their record\n    bump                Raise a piece of gear's rarity (only up): a higher maximum durability, one\n                        step by default\n    repair              Restore a piece of gear's durability (all of it by default), never above\n                        its maximum\n    unequip             Take a worn refinement off; it goes to the backpack and is no longer used\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "equipment list": {
+      "help": "Show every slot, the rings, and what is in the backpack",
+      "group": false,
+      "arguments": [],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment list [-h]\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "equipment equip": {
+      "help": "Wear an approved refinement (from the backpack or elsewhere); it replaces what is in the slot",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--scope",
+          "dest": "scope",
+          "kind": "option",
+          "flags": [
+            "--scope"
+          ],
+          "help": "topic: a ring for the item's own topic; global: an armor slot for every topic",
+          "type": "str",
+          "choices": [
+            "topic",
+            "global"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--slot",
+          "dest": "slot",
+          "kind": "option",
+          "flags": [
+            "--slot"
+          ],
+          "help": "the armor slot, for global guidance (default: the first empty one)",
+          "type": "str",
+          "choices": [
+            "helmet",
+            "chest",
+            "gloves",
+            "boots",
+            "sword",
+            "shield"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--replace",
+          "dest": "replace",
+          "kind": "option",
+          "flags": [
+            "--replace"
+          ],
+          "help": "when all rings are worn, the worn ring this one replaces",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": 2,
+          "metavar": [
+            "TOPIC_ID",
+            "VERSION"
+          ],
+          "destructive": false
+        },
+        {
+          "name": "--no-announce",
+          "dest": "no_announce",
+          "kind": "flag",
+          "flags": [
+            "--no-announce"
+          ],
+          "help": "do not post a loot drop to the Musings when it is put on",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment equip [-h] [--scope {topic,global}]\n                                    [--slot {helmet,chest,gloves,boots,sword,shield}]\n                                    [--replace TOPIC_ID VERSION] [--no-announce]\n                                    topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help            show this help message and exit\n  --scope {topic,global}\n                        topic: a ring for the item's own topic; global: an armor slot for every\n                        topic\n  --slot {helmet,chest,gloves,boots,sword,shield}\n                        the armor slot, for global guidance (default: the first empty one)\n  --replace TOPIC_ID VERSION\n                        when all rings are worn, the worn ring this one replaces\n  --no-announce         do not post a loot drop to the Musings when it is put on\n"
+    },
+    "equipment create": {
+      "help": "Make a new piece of gear yourself and (by default) put it on. With no --text it asks you what it needs, one question at a time",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--text",
+          "dest": "text",
+          "kind": "option",
+          "flags": [
+            "--text"
+          ],
+          "help": "what the gear tells BloggerBear to do (omit to be asked)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--scope",
+          "dest": "scope",
+          "kind": "option",
+          "flags": [
+            "--scope"
+          ],
+          "help": "global: armor for every topic; topic: a ring",
+          "type": "str",
+          "choices": [
+            "global",
+            "topic"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--topic-id",
+          "dest": "topic_id",
+          "kind": "option",
+          "flags": [
+            "--topic-id"
+          ],
+          "help": "the topic, for a ring (implies --scope topic)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--slot",
+          "dest": "slot",
+          "kind": "option",
+          "flags": [
+            "--slot"
+          ],
+          "help": "the armor slot (default: the bear suggests one)",
+          "type": "str",
+          "choices": [
+            "helmet",
+            "chest",
+            "gloves",
+            "boots",
+            "sword",
+            "shield"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--rarity",
+          "dest": "rarity",
+          "kind": "option",
+          "flags": [
+            "--rarity"
+          ],
+          "help": "the rarity (default: rolled at random, like a drop)",
+          "type": "str",
+          "choices": [
+            "common",
+            "uncommon",
+            "rare",
+            "epic",
+            "legendary"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--theme",
+          "dest": "theme",
+          "kind": "option",
+          "flags": [
+            "--theme"
+          ],
+          "help": "two to four words for its name, e.g. 'Plain Speaking' (default: the bear names it)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--no-equip",
+          "dest": "no_equip",
+          "kind": "flag",
+          "flags": [
+            "--no-equip"
+          ],
+          "help": "create it into the backpack, not worn",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--replace",
+          "dest": "replace",
+          "kind": "option",
+          "flags": [
+            "--replace"
+          ],
+          "help": "when all rings are worn, the ring this one replaces",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": 2,
+          "metavar": [
+            "TOPIC_ID",
+            "VERSION"
+          ],
+          "destructive": false
+        },
+        {
+          "name": "--no-announce",
+          "dest": "no_announce",
+          "kind": "flag",
+          "flags": [
+            "--no-announce"
+          ],
+          "help": "do not post a loot drop to the Musings",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment create [-h] [--text TEXT] [--scope {global,topic}]\n                                     [--topic-id TOPIC_ID]\n                                     [--slot {helmet,chest,gloves,boots,sword,shield}]\n                                     [--rarity {common,uncommon,rare,epic,legendary}]\n                                     [--theme THEME] [--no-equip] [--replace TOPIC_ID VERSION]\n                                     [--no-announce]\n\noptions:\n  -h, --help            show this help message and exit\n  --text TEXT           what the gear tells BloggerBear to do (omit to be asked)\n  --scope {global,topic}\n                        global: armor for every topic; topic: a ring\n  --topic-id TOPIC_ID   the topic, for a ring (implies --scope topic)\n  --slot {helmet,chest,gloves,boots,sword,shield}\n                        the armor slot (default: the bear suggests one)\n  --rarity {common,uncommon,rare,epic,legendary}\n                        the rarity (default: rolled at random, like a drop)\n  --theme THEME         two to four words for its name, e.g. 'Plain Speaking' (default: the bear\n                        names it)\n  --no-equip            create it into the backpack, not worn\n  --replace TOPIC_ID VERSION\n                        when all rings are worn, the ring this one replaces\n  --no-announce         do not post a loot drop to the Musings\n"
+    },
+    "equipment announce": {
+      "help": "Post a loot drop to the Musings for a piece of gear (again, if it was already announced)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment announce [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "equipment delete": {
+      "help": "Delete a piece of gear for good (it asks first). Articles written with it keep their record",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--yes",
+          "dest": "yes",
+          "kind": "flag",
+          "flags": [
+            "--yes"
+          ],
+          "help": "do not ask",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": true,
+      "help_text": "usage: admin_cli.py equipment delete [-h] [--yes] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n  --yes       do not ask\n"
+    },
+    "equipment bump": {
+      "help": "Raise a piece of gear's rarity (only up): a higher maximum durability, one step by default",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--to",
+          "dest": "to",
+          "kind": "option",
+          "flags": [
+            "--to"
+          ],
+          "help": "the rarity to raise it to (default: one step up)",
+          "type": "str",
+          "choices": [
+            "uncommon",
+            "rare",
+            "epic",
+            "legendary"
+          ],
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment bump [-h] [--to {uncommon,rare,epic,legendary}] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help            show this help message and exit\n  --to {uncommon,rare,epic,legendary}\n                        the rarity to raise it to (default: one step up)\n"
+    },
+    "equipment repair": {
+      "help": "Restore a piece of gear's durability (all of it by default), never above its maximum",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--amount",
+          "dest": "amount",
+          "kind": "option",
+          "flags": [
+            "--amount"
+          ],
+          "help": "how many points to restore (default: to full)",
+          "type": "int",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment repair [-h] [--amount AMOUNT] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  how many points to restore (default: to full)\n"
+    },
+    "equipment unequip": {
+      "help": "Take a worn refinement off; it goes to the backpack and is no longer used",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "version",
+          "dest": "version",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py equipment unequip [-h] topic_id version\n\npositional arguments:\n  topic_id\n  version\n\noptions:\n  -h, --help  show this help message and exit\n"
+    }
+  }
+}
