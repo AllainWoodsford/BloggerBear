@@ -28,8 +28,40 @@ STAR_JUMP_ABSOLUTE_THRESHOLD = 100
 STAR_JUMP_RATIO_THRESHOLD = 1.2
 
 
+# What GitHub's terms say about this adapter (read 2026-10-04), stated plainly because the page
+# is scraped -- there is no API for Trending:
+#
+#   GitHub Acceptable Use Policies, section 7 "Information Usage Restrictions"
+#   https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies
+#   "You may use information from our Service for the following reasons, regardless of whether
+#   the information was scraped, collected through our API, or obtained otherwise: Researchers
+#   may use public, non-personal information from the Service for research purposes, only if any
+#   publications resulting from that research are open access. Archivists may use public
+#   information from the Service for archival purposes."
+#   "You may not use information from the Service (whether scraped, collected through our API, or
+#   obtained otherwise) for spamming purposes, including for the purposes of sending unsolicited
+#   emails to users or selling personal information"
+#   Section 4 forbids "any form of excessive automated bulk activity" and placing "undue burden on
+#   our servers through automated means".
+#
+# So: scraping is not banned outright, and what this adapter does is small (one page per research
+# tick, a User-Agent that names the project, nothing sold, no one contacted). But the only uses
+# that section expressly permits are open-access research and archiving, and a blog summarising
+# the page is neither in so many words. The terms ask for no attribution and prescribe no wording,
+# so the line below is a plain source credit; it does not by itself make the use authorised.
+# Whether to keep, demote or drop this topic is the owner's decision (see the rules check in
+# docs/enhancements/alexa-plus-operator-assistant-enhancement.md).
+GITHUB_TRENDING_SOURCE = {
+    "text": "Data sourced from GitHub Trending",
+    "label": "GitHub Trending",
+    "url": TRENDING_URL,
+}
+
+
 class GitHubTrendingAdapter(Adapter):
     """Scrapes the public GitHub Trending page (optionally per-language)."""
+
+    sources = (GITHUB_TRENDING_SOURCE,)
 
     def fetch_state(self, topic_config: dict) -> dict:
         adapter_config = topic_config.get("adapter_config") or {}

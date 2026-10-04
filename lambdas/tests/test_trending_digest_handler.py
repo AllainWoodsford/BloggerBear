@@ -356,6 +356,58 @@ def _today():
     return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
+# --- source attribution (common/attribution.py) ---------------------------------
+
+
+def test_the_digest_credits_the_union_of_its_contributing_topics_sources(s3_bucket):
+    """The digest is written from several topics, so it carries every contributing topic's
+    adapter's sources, each once -- and not those of a topic that contributed nothing today."""
+    topics = [
+        {**GITHUB_TOPIC, "adapter": "github_trending"},
+        {**CRYPTO_TOPIC, "adapter": "crypto_feed", "is_financial": False},
+        # web_search and crypto_feed both credit GDELT: it must appear once.
+        {"topic_id": "web", "name": "Web", "is_financial": False, "adapter": "web_search"},
+        # Its latest finding is stale, so it is not in today's digest and is not credited.
+        {**HN_TOPIC, "adapter": "hacker_news"},
+    ]
+    findings = {
+        "github-trending": _finding("Repo X is trending."),
+        "crypto": _finding("Coin Y moved."),
+        "web": _finding("Story Z broke."),
+        "hacker-news": _finding("Old story.", captured_at=STALE),
+    }
+    with (
+        patch("trending_digest_handler.list_topics", return_value=topics),
+        patch("trending_digest_handler.get_latest_finding", side_effect=lambda topic_id: findings[topic_id]),
+        patch("trending_digest_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "trending_digest_handler.invoke_model_tracked",
+            return_value=_tracked_result("OVERVIEW: A synthesized digest."),
+        ),
+        patch(
+            "trending_digest_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("trending_digest_handler.put_article") as mock_put_article,
+        patch("trending_digest_handler.put_moderation_item"),
+        patch("trending_digest_handler.render_and_publish_article_page") as mock_render_page,
+        patch("trending_digest_handler.generate_and_store_article_musing"),
+        patch("trending_digest_handler.record_article_lineage"),
+    ):
+        result = trending_digest_handler.handler({}, None)
+
+    assert result["status"] == "published"
+    stored = mock_put_article.call_args.kwargs["attribution"]
+    assert [source["text"] for source in stored] == [
+        "Data sourced from GitHub Trending",
+        "Powered by CoinGecko API",
+        "News search by the GDELT Project",
+    ]
+    # The page shows exactly what was stored.
+    assert mock_render_page.call_args.kwargs["attribution"] == stored
+
+
 def test_the_digests_article_id_is_the_date(s3_bucket):
     result, _, mock_put_article, _ = _run_digest(compliant=True)
 

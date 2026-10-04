@@ -57,6 +57,7 @@ from datetime import UTC, datetime, timedelta
 import boto3
 
 from common import compliance
+from common.attribution import sources_for_topics
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
@@ -184,6 +185,9 @@ def _run_trending_digest() -> dict:
         review=review,
         model_id=model_id,
         lineage=lineage,
+        # The digest is written from several topics' findings, so it credits the union of their
+        # adapters' sources -- only the topics that contributed today, not every topic.
+        attribution=sources_for_topics(c["topic"] for c in contributions),
     )
 
 
@@ -296,6 +300,7 @@ def _publish_or_moderate_digest(
     review: dict,
     model_id: str,
     lineage: dict,
+    attribution: list[dict] | None = None,
 ) -> dict:
     now = datetime.now(UTC).isoformat()
     body_s3_key = f"articles/{article_id}.md"
@@ -321,6 +326,7 @@ def _publish_or_moderate_digest(
         source_refs=source_refs,
         lineage=lineage,
         published_by="ai_only" if compliant else None,
+        **({"attribution": attribution} if attribution is not None else {}),
     )
 
     if compliant:
@@ -344,6 +350,7 @@ def _publish_or_moderate_digest(
             view_count=0,
             lineage=lineage,
             published_by="ai_only",
+            attribution=attribution,
         )
         generate_and_store_article_musing(
             article_id=article_id,
