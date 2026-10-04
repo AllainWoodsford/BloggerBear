@@ -808,7 +808,8 @@ def test_the_frontend_calls_the_api_through_its_cdn_and_the_csp_allows_it(env):
     text = _read("environments", env, "main.tf")
 
     assert 'window.PUBLIC_API_URL = "${module.public_api_cdn.url}";' in text
-    assert "extra_connect_src = [module.public_api_cdn.domain_name]" in text
+    site = _module_blocks(text, "modules/static-site")[0]
+    assert re.search(r"extra_connect_src = \[\s*module\.public_api_cdn\.domain_name\b", site)
     assert "api_domain           = module.public_api.api_domain" in text
 
 
@@ -1344,6 +1345,98 @@ def test_the_assistant_can_read_its_access_switch_and_can_never_change_it():
         r'variable "allowed_cidrs" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
     ).group(1)
     assert re.search(r"sensitive\s*=\s*true", variable)  # a plan must not print a home address
+
+
+# The assistant's memory (infra/modules/ops-assistant/memory.tf, lambdas/ops_mcp/memory.py): the one
+# table the role may write to, and the only write anywhere in the module.
+_OPS_MEMORY_ACTIONS = {
+    "dynamodb:GetItem",
+    "dynamodb:Query",
+    "dynamodb:PutItem",
+    "dynamodb:UpdateItem",
+    "dynamodb:DeleteItem",
+}
+
+
+def _ops_memory() -> str:
+    return _read("modules", "ops-assistant", "memory.tf")
+
+
+def test_the_assistants_only_write_is_on_its_own_suggestions_table():
+    """Write actions on that table alone. The read-only policy in main.tf is unchanged (the test
+    above holds it); the write is one statement in a policy of its own, whose only resource is
+    the table made beside it."""
+    memory = _uncommented(_ops_memory())
+    policy = re.search(
+        r'^data "aws_iam_policy_document" "ops_mcp_memory" \{\n(.*?)^\}', memory, re.S | re.M
+    ).group(1)
+
+    assert set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', policy)) == _OPS_MEMORY_ACTIONS
+    assert policy.count("statement {") == 1 and len(re.findall(r'effect\s*=\s*"Allow"', policy)) == 1
+    assert re.findall(r"resources\s*=\s*(.*)", policy) == ["[aws_dynamodb_table.operator_suggestions.arn]"]
+    assert "*" not in policy and "not_actions" not in policy and "not_resources" not in policy
+    attached = _resource_block(memory, "aws_iam_role_policy", "ops_mcp_memory")
+    assert re.search(r"role\s*=\s*aws_iam_role\.ops_mcp\.id", attached)
+    assert re.search(r"policy\s*=\s*data\.aws_iam_policy_document\.ops_mcp_memory\.json", attached)
+    # No other file of the module grants the role anything: main.tf's read-only policy, this one,
+    # and nothing a later file could slip in unnoticed (the agent's own role is not this one).
+    for path in sorted((INFRA / "modules" / "ops-assistant").glob("*.tf")):
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        pattern = r'^resource "aws_iam_role_policy(?:_attachment)?" "([^"]+)" \{\n(.*?)^\}'
+        grants = re.findall(pattern, text, re.S | re.M)
+        for name, body in grants:
+            if "aws_iam_role.ops_mcp." in body:
+                assert (path.name, name) in {("main.tf", "ops_mcp"), ("memory.tf", "ops_mcp_memory")}
+        if path.name != "memory.tf":
+            for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
+                assert f"dynamodb:{write}" not in text or "aws_iam_role.ops_mcp." not in text, path.name
+
+
+def test_the_suggestions_table_is_the_assistants_alone_and_matches_what_the_code_expects():
+    """Made inside the module, not in app-data, so its ARN is never among those handed to the role
+    the pipeline Lambdas share. Its keys, TTL attribute and environment variable are the ones
+    ops_mcp/memory.py uses."""
+    import fnmatch
+
+    table = _resource_block(_ops_memory(), "aws_dynamodb_table", "operator_suggestions")
+    name = re.search(r'name\s*=\s*"([^"]+)"', table).group(1)
+
+    assert name == "bloggerbear-${var.environment_name}-operator-suggestions"
+    assert re.search(r'billing_mode\s*=\s*"PAY_PER_REQUEST"', table)
+    assert re.search(r'hash_key\s*=\s*"user_id"', table) and re.search(r'range_key\s*=\s*"item"', table)
+    assert re.findall(r'name = "(\w+)"\n\s*type = "S"', table) == ["user_id", "item"]
+    assert 'attribute_name = "expires_at"' in table and re.search(r"enabled\s*=\s*true", table)
+    # Point-in-time recovery and deletion protection as the app tables have them.
+    topics = _resource_block(_read("modules", "app-data", "main.tf"), "aws_dynamodb_table", "topics")
+    for setting in (
+        r"deletion_protection_enabled\s*=\s*var\.protect_data",
+        r"point_in_time_recovery \{\n\s*enabled\s*=\s*var\.protect_data\n",
+    ):
+        assert re.search(setting, topics) and re.search(setting, table)
+
+    # Not in app-data, not passed in by the caller, and not given to the shared role.
+    assert "operator-suggestions" not in _read("modules", "app-data", "main.tf")
+    dev = _read("environments", "dev", "main.tf")
+    assert "operator_suggestions" not in _uncommented(dev)
+    outputs = re.findall(r'^output "([^"]+)"', "".join(
+        path.read_text(encoding="utf-8") for path in (INFRA / "modules" / "ops-assistant").glob("*.tf")
+    ), re.M)
+    assert not any("suggestions" in output and output.endswith("_arn") for output in outputs)
+
+    # The function is told the table's name under the variable memory.py reads.
+    function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
+    code = (ROOT / "lambdas" / "ops_mcp" / "memory.py").read_text(encoding="utf-8")
+    assert re.search(
+        r"OPERATOR_SUGGESTIONS_TABLE\s*=\s*aws_dynamodb_table\.operator_suggestions\.name", function
+    )
+    assert 'TABLE_ENV = "OPERATOR_SUGGESTIONS_TABLE"' in code
+    assert "aws_iam_role_policy.ops_mcp_memory" in re.search(r"depends_on\s*=\s*\[(.*?)\]", function).group(1)
+    assert '"user_id": user_id, "item":' in code and '"expires_at"' in code
+
+    # The deploy role may create a table of this name.
+    bootstrap = _read("bootstrap", "main.tf")
+    patterns = re.findall(r'"arn:aws:dynamodb:ap-southeast-2:\*:table/([^"]+)"', bootstrap)
+    assert any(fnmatch.fnmatch("bloggerbear-dev-operator-suggestions", pattern) for pattern in patterns)
 
 
 def test_a_cold_start_cannot_be_held_up_by_the_access_check():

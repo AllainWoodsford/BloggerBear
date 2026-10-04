@@ -2003,6 +2003,9 @@ locals {
     "about.html"    = "text/html"
     "terms.html"    = "text/html"
     "privacy.html"  = "text/html"
+    "ask.html"      = "text/html" # the operator's assistant: unlinked, noindex; with no settings in config.js it only says it is not available here
+    "ask.css"       = "text/css"
+    "ask.js"        = "application/javascript"
     "styles.css"    = "text/css"
     "normalize.css" = "text/css"
     "app.js"        = "application/javascript"

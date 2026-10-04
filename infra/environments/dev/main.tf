@@ -80,8 +80,17 @@ module "static_site" {
   force_destroy        = var.force_destroy
   web_acl_id           = var.web_acl_arn
 
-  # The frontend calls the public API through its CDN (module.public_api_cdn).
-  extra_connect_src = [module.public_api_cdn.domain_name]
+  # The frontend calls the public API through its CDN (module.public_api_cdn). Dev only: the
+  # operator's assistant page (frontend/ask.html) also swaps its sign-in code for a token at
+  # Cognito's hosted domain, so that one host is added too. Its other call, to the assistant's
+  # own API, is an execute-api host in this region, which connect-src already allows.
+  extra_connect_src = [
+    module.public_api_cdn.domain_name,
+    module.ops_assistant.hosted_ui_domain,
+  ]
+
+  # Dev only, for the same page's push-to-talk button (the browser's speech recognition).
+  allow_microphone = true
 }
 
 # =========================================================================
@@ -1832,6 +1841,9 @@ locals {
     "about.html"    = "text/html"
     "terms.html"    = "text/html"
     "privacy.html"  = "text/html"
+    "ask.html"      = "text/html" # the operator's assistant: unlinked, noindex, needs window.OPS_ASSISTANT below
+    "ask.css"       = "text/css"
+    "ask.js"        = "application/javascript"
     "styles.css"    = "text/css"
     "normalize.css" = "text/css"
     "app.js"        = "application/javascript"
@@ -1895,9 +1907,19 @@ resource "aws_s3_object" "frontend_config" {
   content_type  = "application/javascript"
   cache_control = "no-cache"
 
+  # window.OPS_ASSISTANT is what frontend/ask.js needs to sign in and ask: dev only. None of it
+  # is secret (the app client has no secret; a token is what opens the API). redirectUri is the
+  # same string module.ops_assistant registers as its callback and logout URL.
   content = <<-EOT
     window.PUBLIC_API_URL = "${module.public_api_cdn.url}";
     window.SITE_URL = "${local.site_url}";
+    window.OPS_ASSISTANT = {
+      askUrl: "${trimsuffix(module.ops_assistant.mcp_url, "/mcp")}/ask",
+      hostedUiDomain: "${module.ops_assistant.hosted_ui_domain}",
+      clientId: "${module.ops_assistant.app_client_id}",
+      scope: "${module.ops_assistant.read_scope}",
+      redirectUri: "${local.site_url}/ask.html"
+    };
   EOT
 }
 

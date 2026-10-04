@@ -156,6 +156,35 @@ def _article_state(topic_id: str, failures: list[dict], now: datetime, detail: b
     return state
 
 
+def _topic_check(
+    item: dict, config: dict | None, failures: list[dict], now: datetime, *, detail: bool = False
+) -> tuple[dict, list[dict]]:
+    """One topic's row and the findings about it. pipeline_health runs it for every topic;
+    memory.py runs it again for one topic, to see whether what it suggested still holds."""
+    topic_id = item.get("topic_id") or ""
+    label = _topic_label(item, topic_id)
+    research = _research_state(item, config, now)
+    article = _article_state(topic_id, failures, now, detail=detail)
+    row = {"topic_id": topic_id, "name": label, "research": research, "article": article}
+
+    findings = []
+    if research["state"] == "late":
+        last = _parse(research["last_research_at"])
+        ago = f"last checked {_age(last, now)} ago" if last else "it has never been checked"
+        findings.append(
+            finding("research_overdue", f"{label} wasn't researched on time: {ago}", topic_id, topic=label)
+        )
+    if article["state"] == "failed":
+        findings.append(
+            finding("run_failed", f"{label}'s daily run failed and ran out of retries", topic_id, topic=label)
+        )
+    elif article["state"] == "none":
+        findings.append(
+            finding("no_article_today", f"{label} has no article in the last day", topic_id, topic=label)
+        )
+    return row, findings
+
+
 def pipeline_health(topic: str | None = None, *, now: datetime | None = None) -> dict:
     """Per topic: was it researched on time, and what became of its daily run in the last 26
     hours. With `topic`, that topic alone, and the error of a run that failed."""
@@ -174,30 +203,9 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None) ->
 
     rows, findings = [], []
     for item in topics:
-        topic_id = item.get("topic_id") or ""
-        label = _topic_label(item, topic_id)
-        research = _research_state(item, config, now)
-        article = _article_state(topic_id, failures, now, detail=topic is not None)
-        rows.append({"topic_id": topic_id, "name": label, "research": research, "article": article})
-
-        if research["state"] == "late":
-            last = _parse(research["last_research_at"])
-            ago = f"last checked {_age(last, now)} ago" if last else "it has never been checked"
-            findings.append(
-                finding(
-                    "research_overdue", f"{label} wasn't researched on time: {ago}", topic_id, topic=label
-                )
-            )
-        if article["state"] == "failed":
-            findings.append(
-                finding(
-                    "run_failed", f"{label}'s daily run failed and ran out of retries", topic_id, topic=label
-                )
-            )
-        elif article["state"] == "none":
-            findings.append(
-                finding("no_article_today", f"{label} has no article in the last day", topic_id, topic=label)
-            )
+        row, found = _topic_check(item, config, failures, now, detail=topic is not None)
+        rows.append(row)
+        findings.extend(found)
 
     return {"spoken": _health_spoken(rows), "findings": findings, "topics": rows, "as_of": now.isoformat()}
 
@@ -248,6 +256,17 @@ def _hold_kinds(item: dict) -> list[str]:
     return kinds
 
 
+def _truncated_finding(name: str, article_id) -> dict:
+    """The finding for a held article whose draft was cut short (memory.py rebuilds it too)."""
+    return finding(
+        "draft_truncated",
+        f"A held {name} article has a draft that was cut short",
+        article_id,
+        topic=name,
+        article_id=article_id,
+    )
+
+
 def admin_inbox(
     topic: str | None = None, limit: int = INBOX_DEFAULT_LIMIT, *, now: datetime | None = None
 ) -> dict:
@@ -292,15 +311,7 @@ def admin_inbox(
             }
         )
         if "draft_truncated" in kinds:
-            findings.append(
-                finding(
-                    "draft_truncated",
-                    f"A held {name} article has a draft that was cut short",
-                    article_id,
-                    topic=name,
-                    article_id=article_id,
-                )
-            )
+            findings.append(_truncated_finding(name, article_id))
     if waiting:
         count = len(waiting)
         noticed = f"{count} article{'s are' if count != 1 else ' is'} waiting for review"

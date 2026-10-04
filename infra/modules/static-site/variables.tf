@@ -43,3 +43,9 @@ variable "extra_connect_src" {
   default     = []
   description = "Extra hostnames (no scheme) the site's scripts may call, added to the Content-Security-Policy connect-src as https://<host> -- the public API's CloudFront distribution."
 }
+
+variable "allow_microphone" {
+  type        = bool
+  default     = false
+  description = "Whether the site's own pages may ask the browser for the microphone: Permissions-Policy microphone=(self) instead of microphone=(). Only for an environment that serves the operator's assistant (frontend/ask.html), whose push-to-talk button uses the browser's speech recognition. The browser still asks the person before any page hears anything, and no other origin (a frame, a third party) is ever allowed."
+}

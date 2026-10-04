@@ -76,6 +76,31 @@ def _published_at(article: dict) -> datetime | None:
     return _parse(article.get("published_at")) or _parse(article.get("created_at"))
 
 
+def _musing_has_no_text(musing: dict) -> bool:
+    """A musing about an article that went out with nothing to say."""
+    return musing.get("kind") == "article" and not str(musing.get("text") or "").strip()
+
+
+def _title_and_body_problem(article: dict) -> str | None:
+    """Which of the title and body kinds a published article has, or None. One kind, not two,
+    when both are wrong: one card. This is the one S3 read per article (see the module
+    docstring), and it raises if the body cannot be read."""
+    title = _title_has_markup(article.get("title"))
+    fenced = _body_is_one_code_fence(read_article_body(article["body_s3_key"]))
+    if title and fenced:
+        return "title_markup_and_body_code_fence"
+    if title:
+        return "title_markup"
+    return "body_code_fence" if fenced else None
+
+
+def _article_finding(kind: str, name: str, article_id) -> dict:
+    """The finding for a published article with one of _ARTICLE_SPOKEN's problems (memory.py
+    rebuilds it when it follows a suggestion up)."""
+    noticed = f"A published {name} article {_ARTICLE_SPOKEN[kind]}"
+    return finding(kind, noticed, article_id, topic=name, article_id=article_id)
+
+
 def content_checks(days: int = CONTENT_DEFAULT_DAYS, *, now: datetime | None = None) -> dict:
     """Published things that look wrong, among the articles published in the last `days` (1 to
     30) and the musings written in them."""
@@ -113,27 +138,21 @@ def content_checks(days: int = CONTENT_DEFAULT_DAYS, *, now: datetime | None = N
         article_id = musing["article_id"]
         if article_id not in published:
             dangling.append(musing)
-        elif musing.get("kind") == "article" and not str(musing.get("text") or "").strip():
+        elif _musing_has_no_text(musing):
             wrong.setdefault(article_id, [])
             if "musing_no_text" not in wrong[article_id]:
                 wrong[article_id].append("musing_no_text")
 
     for article in checked:
         article_id = article.get("article_id")
-        title = _title_has_markup(article.get("title"))
-        fenced = False
         try:
-            # The one S3 read per article (see the module docstring).
-            fenced = _body_is_one_code_fence(read_article_body(article["body_s3_key"]))
+            kind = _title_and_body_problem(article)
         except Exception as exc:  # noqa: BLE001 - one unreadable body must not hide the other checks
             unreadable += 1
             print(f"content_checks: could not read the body of {article_id!r}: {exc!r}")
-        if title and fenced:
-            wrong.setdefault(article_id, []).append("title_markup_and_body_code_fence")
-        elif title:
-            wrong.setdefault(article_id, []).append("title_markup")
-        elif fenced:
-            wrong.setdefault(article_id, []).append("body_code_fence")
+            kind = "title_markup" if _title_has_markup(article.get("title")) else None
+        if kind:
+            wrong.setdefault(article_id, []).append(kind)
 
     rows, findings = [], []
     for article_id, kinds in wrong.items():
@@ -152,8 +171,7 @@ def content_checks(days: int = CONTENT_DEFAULT_DAYS, *, now: datetime | None = N
             }
         )
         for kind in kinds:
-            noticed = f"A published {name} article {_ARTICLE_SPOKEN[kind]}"
-            findings.append(finding(kind, noticed, article_id, topic=name, article_id=article_id))
+            findings.append(_article_finding(kind, name, article_id))
 
     dangling_rows = []
     for musing in dangling:

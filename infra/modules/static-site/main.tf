@@ -147,10 +147,13 @@ resource "aws_cloudfront_response_headers_policy" "security" {
   # window.open() flow, no cross-origin postMessage handshake anywhere in
   # frontend/*.js) -- isolating the top-level browsing context from other
   # origins' windows has no feature to break here.
+  #
+  # microphone is () everywhere except an environment that sets var.allow_microphone (dev, for
+  # frontend/ask.html's push-to-talk): there it is (self), this site's own pages only.
   custom_headers_config {
     items {
       header   = "Permissions-Policy"
-      value    = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+      value    = "camera=(), microphone=(${var.allow_microphone ? "self" : ""}), geolocation=(), payment=(), usb=()"
       override = true
     }
     items {

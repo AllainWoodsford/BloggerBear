@@ -166,13 +166,15 @@ which is also what the judges get (section 6).
 
 - **Python, the official `mcp` SDK** (`MCPServer`), Streamable HTTP, **stateless**, JSON responses.
   In this repo (`lambdas/ops_mcp/`, Terraform alongside the rest): it reads this app's tables, so it
-  deploys with them. **Built so far:** the server, the suggestion catalogue, and six read-only
-  tools (`pipeline_health`, `admin_inbox`, `content_checks`, `security_events`, `alarms`, `spend`),
-  with tests. **Deployed on dev** by `infra/modules/ops-assistant/` (`main.tf`): the function behind
-  the Web Adapter, `POST /mcp` behind the Cognito authorizer, and a read-only role of its own that,
-  besides the tables, may read article bodies from the content bucket (`content_checks`) and call
-  CloudWatch `DescribeAlarms` (`alarms`). Its package includes `markdown`, which
-  `common/static_pages.py` imports.
+  deploys with them. **Built so far:** the server, the suggestion catalogue, six read-only
+  tools (`pipeline_health`, `admin_inbox`, `content_checks`, `security_events`, `alarms`, `spend`)
+  and the memory (section 4: the suggestions table and `follow_up`, `dismiss`, `watch`, `unwatch`,
+  `watch_list`), with tests. `log_review` and `firewall_review` are not built. **Deployed on dev**
+  by `infra/modules/ops-assistant/` (`main.tf`, `memory.tf`): the function behind the Web Adapter,
+  `POST /mcp` behind the Cognito authorizer, and a role of its own that is read-only except for
+  the suggestions table; besides the tables, it may read article bodies from the content bucket
+  (`content_checks`) and call CloudWatch `DescribeAlarms` (`alarms`). Its package includes
+  `markdown`, which `common/static_pages.py` imports.
 - **The agent is deployed next to it** (the same module's `agent.tf`): `POST /ask` on the same REST
   API, behind the same authorizer and scope, with `OPTIONS /ask` open for the browser's preflight.
   It is a plain Python Lambda (`ops_agent_handler.handler`, no Web Adapter), with its own package
@@ -244,9 +246,16 @@ which is also what the judges get (section 6).
 | `alarms()` | CloudWatch `DescribeAlarms` (`bloggerbear-*` only) | anything in ALARM, and since when |
 | `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend and the whole AWS bill, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week |
 | `log_review(hours=24, function?)` | fixed Logs Insights queries over the Lambda log groups, plus the 7-day baseline | what's unusual: error and throttle spikes per function, DLQ depth. **Not the firewall.** |
-| `follow_up()` | OperatorSuggestions, then the source tables to re-check each open suggestion | what it suggested before: which are fixed (and removed), which are still open and for how long (section 4) |
-| `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the suggestion isn't raised again |
-| `watch(kind, id)` / `unwatch(kind, id)` / `watch_list()` | OperatorSuggestions | the operator's watch items |
+| `follow_up()` | OperatorSuggestions (the caller's rows), then the source tables to re-check each open suggestion with the same code that found it | `fixed` (reported, and the row deleted), `open` (each with how long it has waited) and, as `findings`, the open ones again with their suggestions rebuilt from the catalogue (section 4) |
+| `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the row is marked dismissed, and the tool that finds it leaves it out of `findings` from then on |
+| `watch(kind, id)` / `unwatch(kind, id)` | writes OperatorSuggestions; `watch` checks the id (a topic must exist, an incident must be open, spend is `ai` or `aws`) | whether it is now watched |
+| `watch_list()` | OperatorSuggestions, then the readers above for each item | each watched item and how it is now: a topic's research and article state, an incident's severity, whether spend is unusual. A watched function is listed but not checked until `log_review` exists |
+
+  The six tools above the line of memory tools also write one thing: when one returns a finding
+  whose suggestion has a command, the server notes its kind and id in OperatorSuggestions on the way
+  out. They are still listed as read-only (they change nothing of the pipeline's); the five memory
+  tools are listed as writing (`readOnlyHint` false, `destructiveHint` false), and each description
+  says it changes only the assistant's own list.
 
 **Deep dives** — only when the operator asks, never part of a briefing:
 
@@ -408,6 +417,42 @@ and **the only thing in the account the assistant can write to.**
 - **What isn't a suggestion needs no memory:** alarms, incidents and spend are read fresh each time,
   and their own records already say since when.
 
+**As built** (`lambdas/ops_mcp/memory.py`, `infra/modules/ops-assistant/memory.tf`), where it is
+more exact than the above or differs from it:
+
+- **Who is asking** comes from the claims API Gateway's Cognito authorizer verified, not from the
+  token: they reach the app in the `x-amzn-request-context` header the Lambda Web Adapter adds
+  (`authorizer.claims.sub`), and a tool reads the request's headers through the SDK's `Context`.
+  The subject must look like a Cognito subject (a UUID) before it is used as a key. With no user
+  (a local run) the memory tools say they need a signed-in user and nothing is recorded; the other
+  tools work as before.
+- **What is recorded** is a finding whose suggestion has a command and which is about an id: a
+  truncated draft, late research, no article today, a failed run, and the four content kinds. Not
+  recorded: the kinds with no command (a dangling musing, incidents, alarms, spend) and "articles
+  waiting for review", which has a command but is about no one thing.
+- **A row** also carries `dismissed` (a boolean) and `expires_at`. So the rule is "kinds, ids,
+  booleans and timestamps". The code that writes checks every value against that list and refuses
+  anything else, and a test fills every source with hostile text and reads the table back.
+- **Fixed means the check no longer finds it.** A topic that published, a draft no longer held as
+  truncated, an article that came down for its rewrite, a musing that has text. A failed run that
+  has simply aged out of the last 26 hours also counts, so "you fixed" can be generous there.
+- **A check that cannot be made is not a fix.** If a body cannot be read, or a kind has no checker,
+  the suggestion is reported as still open and its row is kept.
+- **Being mentioned keeps a row.** Each time a finding is returned or followed up, its expiry moves
+  30 days out. A dismissed row is kept for as long as its finding is still being found, then
+  expires 30 days after the last time it was.
+- **A dismissed finding is taken out of `findings` only.** The tool's `spoken` text and its other
+  data are written before memory is consulted, so a dismissed article can still be counted there.
+  The result carries `findings_dismissed`, the number left out.
+- **Watch items expire too:** 30 days after `watch_list` was last read, so "until removed" holds
+  for as long as the assistant is being used. A watched `function` is accepted on its name's shape
+  alone (no list of functions is one read away) and is not checked until `log_review` exists.
+- **Recording never fails a tool.** If the table cannot be read or written, one line is logged
+  (with the error's type, not its text) and the tool's result goes back as it was.
+- **The role** may `GetItem`, `Query`, `PutItem`, `UpdateItem` and `DeleteItem` on this table and
+  nothing wider; every other table stays read-only. The table is made in the ops-assistant module,
+  not with the app tables, so its ARN is never among those given to the role the pipeline shares.
+
 #### AgentCore Memory: the trade-off
 
 The contest doesn't forbid AgentCore Memory; it names AgentCore among the AWS Builder challenge's
@@ -534,6 +579,50 @@ The same Terraform module, in both environments, like everything else here.
 browser's speech recognition where it exists (Chrome, Edge), with a text box everywhere else. It
 shows the question, the answer as text, the tool calls, and the suggestion cards, each with a copy
 button. The reply is spoken with the browser's speech synthesis.
+
+**What was built** (`frontend/ask.html`, `ask.js`, `ask.css`; tests in
+`lambdas/tests/test_frontend_ask.py`):
+
+- **The gate.** Without a token the page shows a line of explanation and "Sign in". Sign-in is
+  Cognito's hosted page, authorization code with PKCE (S256, Web Crypto), `state` checked on return,
+  the code exchanged at the hosted domain's `/oauth2/token`. The access token is a variable in the
+  script and nothing else: a reload or a closed tab signs you out. Only the PKCE verifier and state
+  touch `sessionStorage`, between leaving for the hosted page and coming back, and are removed as
+  they are read. `code` and `state` are taken out of the address bar before the exchange. "Sign
+  out" forgets the token and goes through the hosted `/logout`. A token past its hour, or a 401,
+  returns to the gate with a plain message.
+- **Asking.** A large push-to-talk button where the browser has speech recognition (hold it, or
+  Space/Enter, while speaking; or press once to start and again to stop), a text box everywhere, and
+  a "What needs my attention?" button that starts a fresh briefing. The API's limits (500
+  characters; 6 turns of history, 1,000 characters each) are applied before sending. The
+  conversation is an array in the page; "New briefing" clears it.
+- **Answering.** The question, the answer as text, the answer spoken (a mute button; speech stops
+  when a new question starts), the tool calls in order with their arguments, and one card per
+  finding: Noticed, Where, Suggested, the command with a Copy button, What it does. A suggestion
+  with no command is a "Look at" card; a finding with no suggestion shows what was noticed. A
+  command is never spoken, and nothing on the page can run one.
+- **Untrusted text.** Everything from the API is written with `textContent`; the files contain no
+  `innerHTML`, `eval` or inline handler (a test holds that). Anything under an `untrusted` key is
+  shown with an "Unverified" mark.
+- **Settings.** Terraform writes `window.OPS_ASSISTANT` (the ask URL, the hosted domain, the client
+  id, the scope, the redirect URI) into dev's `config.js` from the `ops-assistant` module's outputs.
+  Where it is absent (production today) the page says "The assistant is not available here" and
+  does nothing else.
+- **Headers, dev only.** Two additions to the site's response headers policy, both off in
+  production: Cognito's hosted domain in `connect-src` (the token exchange; the assistant's API is
+  an execute-api host, already allowed), and `Permissions-Policy: microphone=(self)` instead of
+  `microphone=()` (without it the browser refuses speech recognition outright).
+- **Not for visitors.** `noindex`, and no page links to it. `robots.txt` is unchanged on purpose: a
+  `Disallow` line would advertise the path and stop a crawler seeing the `noindex`.
+
+**To try it on dev:** make a user in the dev pool (`aws cognito-idp admin-create-user`, then
+`admin-set-user-password --permanent`; the pool id is the `ops_user_pool_id` output), open
+`<dev site>/ask.html` in Chrome or Edge, sign in, allow the microphone when asked, and press "What
+needs my attention?". Firefox and Safari get the text box and the spoken answer without
+push-to-talk. Two things the page depends on from the API's side: `POST /ask` must answer the
+site's origin with CORS headers (`OPS_AGENT_ALLOWED_ORIGIN`), and a refusal by API Gateway itself
+(an expired token) carries none unless the API's gateway responses add them, so the browser reports
+it as a network error; the page therefore also watches the token's own expiry time.
 
 ## Submission checklist
 
