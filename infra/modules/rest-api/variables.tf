@@ -80,3 +80,8 @@ variable "associate_web_acl" {
     web_acl_id MUST set this to true: lambdas/tests/test_terraform_wiring.py fails if it does not.
   EOT
 }
+
+variable "aws_region" {
+  type        = string
+  description = "The deployment's home region (the calling root's var.aws_region), which is part of the API's execute-api host name (the api_domain output). A variable and not a data source so that output stays a plain string built from the REST API alone. No default, so a root cannot forget to pass it."
+}

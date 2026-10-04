@@ -5,6 +5,9 @@ missing. The full reference is [README.md](README.md) in this folder.
 
 ## 1. Set it up (once per terminal)
 
+Use the region your copy is deployed in; `ap-southeast-2` is the original deployment's, and the
+default.
+
 Git Bash:
 
 ```bash

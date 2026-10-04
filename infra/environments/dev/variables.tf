@@ -37,7 +37,7 @@ variable "bedrock_model_id" {
     before changing this, since neither `terraform plan`/`validate` nor
     this project's test suite can catch a model being unavailable for the
     account. Every Claude model AWS offers directly (non-inference-profile)
-    in ap-southeast-2 requires routing through a cross-region inference
+    in Sydney (the default home region) requires routing through a cross-region inference
     profile rather than on-demand invocation (confirmed via
     `aws bedrock list-foundation-models`); other providers may differ.
   EOT
@@ -192,4 +192,49 @@ variable "unique_name_suffix" {
     condition     = var.unique_name_suffix == "" || can(regex("^[a-z0-9-]{0,19}[a-z0-9]$", var.unique_name_suffix))
     error_message = "unique_name_suffix must be empty, or up to 20 lowercase letters, digits and hyphens ending in a letter or digit (it becomes part of S3 bucket names), such as \"-yourname\"."
   }
+}
+
+variable "aws_region" {
+  type    = string
+  default = "ap-southeast-2"
+  # Deliberately not sensitive: a region is not a secret, it is in every ARN and host name this
+  # root outputs, and marking it sensitive would hide those in every plan.
+  description = <<-EOT
+    The deployment's home region: where everything this root creates lives, except the few
+    things AWS only hosts in us-east-1 (CloudFront's certificate and its web ACL, which keep
+    that region written out beside a comment saying why). The default is the original
+    deployment's region, so leaving it unset changes nothing. CI passes it as TF_VAR_aws_region
+    from the AWS_REGION GitHub Actions variable (docs/deploying-your-own.md).
+
+    Not a setting to change on a deployment that already exists: AWS cannot move a resource
+    between regions, so a different value here plans to create everything again somewhere else.
+    A deployment in another geography must also set var.bedrock_inference_profile_id, and the
+    bootstrap root must have been applied with the same aws_region (its deploy roles' permissions
+    are scoped to it).
+  EOT
+
+  validation {
+    condition     = can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.aws_region))
+    error_message = "aws_region must look like an AWS region, e.g. eu-west-1 or us-west-2."
+  }
+}
+
+variable "bedrock_inference_profile_id" {
+  type    = string
+  default = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+  # No validation of the geography prefix, on purpose: which geographies exist, and which models
+  # each one carries, is AWS's list and it grows. A wrong value is not caught by plan or
+  # validate; it shows up as an AccessDenied or ValidationException the first time a Lambda
+  # calls the model.
+  description = <<-EOT
+    The inference profile the Lambdas call when var.bedrock_model_id is left empty, as the
+    profile's id alone (local.bedrock_model_id in main.tf builds the full ARN around it from
+    var.aws_region and the account being applied to). The default is the AU Claude Haiku 4.5
+    profile, which only exists in Australian regions.
+
+    A deployment whose var.aws_region is in another geography MUST set this to that geography's
+    profile for the same model (the same id with us., eu., apac., ... or global. in place of
+    au.; `aws bedrock list-inference-profiles --region <region>` lists the ones on offer), and
+    the model must be enabled for the account there. Ignored when var.bedrock_model_id is set.
+  EOT
 }

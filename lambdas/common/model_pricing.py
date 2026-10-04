@@ -5,7 +5,7 @@ Two problems this solves, both of which left every new article's cost blank:
 
 * **Ids arrive as ARNs.** `BEDROCK_MODEL_ID` is set by Terraform, and for a
   cross-region inference profile it is the full ARN
-  (`arn:aws:bedrock:ap-southeast-2:<acct>:inference-profile/au.anthropic...`).
+  (`arn:aws:bedrock:<region>:<acct>:inference-profile/au.anthropic...`).
   That ARN was recorded as the model in every lineage and used as the price
   lookup key, so it could never match a registry row keyed the way the admin
   CLI documents (`au.anthropic.claude-haiku-4-5-...`). `canonical_model_id`

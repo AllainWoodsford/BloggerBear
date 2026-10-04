@@ -20,6 +20,9 @@ mock_provider "aws" {
 }
 
 variables {
+  # What a root passes when nothing is set: the original deployment's region.
+  aws_region = "ap-southeast-2"
+
   environment_name = "dev"
   tables = {
     TOPICS_TABLE = {

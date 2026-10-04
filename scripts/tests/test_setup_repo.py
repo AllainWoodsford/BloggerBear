@@ -29,6 +29,9 @@ PROD_ACCOUNT = "123456789012"
 BUCKET = "zz9marker-state"
 PII = "Zz9 Marker Street"
 SUFFIX = "-zz9fork"
+# Regions are public (plain variables), so these are not in SECRET_VALUES.
+REGION = "eu-west-1"
+STATE_REGION = "eu-central-1"
 SECRET_VALUES = (CIDR, "198.51.100.23", EMAIL, DEV_ACCOUNT, PROD_ACCOUNT, BUCKET, PII, PII.lower())
 
 # A whole first run, nothing set yet, in the order the questions come.
@@ -46,6 +49,8 @@ FULL_RUN = [
     BUCKET,  # TF_STATE_BUCKET_DEV
     "y",  # TF_STATE_BUCKET_PROD: same as dev
     SUFFIX,  # UNIQUE_NAME_SUFFIX
+    REGION,  # AWS_REGION
+    STATE_REGION,  # TF_STATE_REGION
     PII,  # PII_DENYLIST, entry 1
     "",  # ...no more entries
     "y",  # save the local .pii-denylist
@@ -324,6 +329,30 @@ def test_the_mismatch_message_does_not_repeat_either_account():
     assert "111111111111" not in str(refused.value) and "123456789012" not in str(refused.value)
 
 
+def test_a_region_must_be_shaped_like_one_and_is_a_plain_variable():
+    """The same shape infra's aws_region variables accept. Public, so a variable; and optional,
+    because unset means the original deployment's region."""
+    for good in ("eu-west-1", " us-west-2 ", "ap-southeast-2", "us-gov-west-1"):
+        assert sr.check_region(good) == good.strip()
+    for bad in ("", "Sydney", "EU-WEST-1", "eu-west", "eu-west-1a", "eu_west_1"):
+        with pytest.raises(sr.Invalid):
+            sr.check_region(bad)
+
+    by_name = {setting.name: setting for setting in sr.SETTINGS}
+    for name in ("AWS_REGION", "TF_STATE_REGION"):
+        setting = by_name[name]
+        assert (setting.kind, setting.where, setting.need, setting.check) == (
+            "variable", "repo", "optional", "region",
+        )
+    assert by_name["AWS_REGION"].tf_var == "aws_region"
+    # The state bucket's region goes to `terraform init`, not to a Terraform variable.
+    assert by_name["TF_STATE_REGION"].tf_var == ""
+    # The rule is the Terraform variables' own.
+    for root in ("bootstrap", "environments/dev", "environments/production"):
+        variables = (sr.ROOT / "infra" / root / "variables.tf").read_text(encoding="utf-8")
+        assert 'can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.aws_region))' in variables
+
+
 @pytest.mark.parametrize("raw", ["my-state", "yourname-bloggerbear-terraform-state", "a.b-c.d", "abc"])
 def test_good_bucket_names(raw):
     assert sr.check_bucket(raw) == raw
@@ -431,6 +460,10 @@ def test_a_first_run_sets_everything_with_values_on_stdin_and_never_in_argv(tmp_
     assert sets["PII_DENYLIST"][1] == PII.lower()
     assert sets["UNIQUE_NAME_SUFFIX"][0][:3] == ["gh", "variable", "set"]
     assert sets["UNIQUE_NAME_SUFFIX"][1] == SUFFIX
+    # The region is a plain variable at repository level, never a secret.
+    assert sets["AWS_REGION"][0][:3] == ["gh", "variable", "set"] and sets["AWS_REGION"][1] == REGION
+    assert sets["TF_STATE_REGION"][0][:3] == ["gh", "variable", "set"]
+    assert sets["TF_STATE_REGION"][1] == STATE_REGION
 
     for name, (argv, stdin) in sets.items():
         setting = next(s for s in sr.SETTINGS if s.name == name)
@@ -449,7 +482,7 @@ def test_a_first_run_sets_everything_with_values_on_stdin_and_never_in_argv(tmp_
     # And nothing it printed holds a secret value.
     for value in SECRET_VALUES:
         assert value not in out
-    assert "Done. 14 set." in out
+    assert "Done. 16 set." in out
 
 
 def test_nothing_is_written_before_the_confirmation(tmp_path):
@@ -472,7 +505,7 @@ def test_nothing_is_written_before_the_confirmation(tmp_path):
     out = io.StringIO()
     assert sr.main([], reader=reader, out=out, err=io.StringIO(), run=commands, root=clone(tmp_path)) == 0
     assert seen_at_confirm == [([], False)]  # at the last question: no command, no file
-    assert len(commands.writes) == 13  # and then all of them
+    assert len(commands.writes) == 15  # and then all of them
     # The summary came before the question, with values masked.
     summary = out.getvalue().split("== Summary ==")[1].split("Nothing has been written yet")[0]
     assert 'AWS_DEV_ACCOUNT_ID  [secret, repository]  12 characters, ending "11"' in summary
@@ -516,7 +549,8 @@ def test_a_failure_part_way_says_what_was_and_was_not_written_and_exits_non_zero
     assert [name.strip() for name in written.split(",")] == attempted[:4]
     assert [name.strip() for name in not_written.split(",")] == [
         "AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN", "AWS_PROD_DEPLOY_ROLE_ARN",
-        "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "UNIQUE_NAME_SUFFIX", "PII_DENYLIST",
+        "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "UNIQUE_NAME_SUFFIX", "AWS_REGION",
+        "TF_STATE_REGION", "PII_DENYLIST",
         ".pii-denylist (local file)", "core.hooksPath (this clone's git config)",
     ]
     assert "Nothing was undone." in out
@@ -541,6 +575,8 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
         "",  # ALERT_EMAIL_PROD: leave unset
         PROD_ACCOUNT,  # AWS_PROD_ACCOUNT_ID (dev's was not asked, so no "same as")
         BUCKET,  # TF_STATE_BUCKET_PROD
+        "",  # AWS_REGION: leave unset (the original region)
+        "",  # TF_STATE_REGION: leave unset
         "",  # PII_DENYLIST: no entries
         "y",  # confirm
     ]

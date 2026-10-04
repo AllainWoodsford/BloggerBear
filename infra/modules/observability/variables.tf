@@ -78,7 +78,7 @@ variable "waf_regional_acls" {
     log_group   = string
   }))
   default     = []
-  description = "The REGIONAL web ACLs (ap-southeast-2) on the edge dashboard."
+  description = "The REGIONAL web ACLs (in var.aws_region) on the edge dashboard."
 }
 
 variable "waf_cloudfront_acl" {
@@ -95,4 +95,9 @@ variable "feedback_rejections_alarm_threshold" {
   type        = number
   default     = 150
   description = "Rejected feedback submissions in one hour that raise the spam alarm. Half the default daily model-check budget (screening_limit, 300): a real reader rarely has more than a comment or two turned away."
+}
+
+variable "aws_region" {
+  type        = string
+  description = "The deployment's home region (the calling root's var.aws_region): the region every widget reads its metrics and logs from, except the CloudFront ones, which only exist in us-east-1 (local.cloudfront_region). No default, so a root cannot forget to pass it."
 }
