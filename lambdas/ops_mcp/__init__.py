@@ -10,5 +10,7 @@ the pipeline, and nothing here runs a command: the operator does, after reading 
 - content.py      content_checks: published articles and musings that look wrong
 - account.py      security_events, alarms and spend
 - suggestions.py  the fixed catalogue of commands a finding can suggest
+- memory.py       what it has suggested and what it is watching: the one table it writes to
+- access.py       the assistant_access switch, checked on every request
 - server.py       the MCP server and its web app (the only module that needs the `mcp` package)
 """
