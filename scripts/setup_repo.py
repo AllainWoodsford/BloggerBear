@@ -5,7 +5,9 @@
     python scripts/setup_repo.py --repo your-name/your-fork
     python scripts/setup_repo.py --only ADMIN_ALLOWED_CIDRS_DEV ADMIN_ALLOWED_CIDRS_PROD
 
-It needs Python 3.11+ and the GitHub CLI (`gh`), signed in. It never calls AWS. The settings are
+It needs Python 3.11+ and the GitHub CLI (`gh`), signed in. It never changes anything in AWS: its
+one AWS-side step, the optional CoinGecko API key, only reads (and only if the AWS CLI is there)
+and prints the command for you to run (see coingecko_step for why). The settings are
 the ones the deploy workflows read (.github/workflows/terraform.yml, destroy-dev.yml,
 terraform-production-release.yml, pr-checks.yml); SETTINGS below is the one list of them, and
 scripts/tests/test_setup_repo.py fails if a workflow starts reading a name that is not in it.
@@ -386,6 +388,15 @@ def is_read_only(argv: list[str]) -> bool:
     if argv[:1] == ["git"]:
         rest = argv[3:] if argv[1:2] == ["-C"] else argv[1:]
         return rest[:2] == ["config", "--get"] or rest[:1] == ["check-ignore"]
+    if argv[:1] == ["aws"]:
+        # The CoinGecko step's three looks (coingecko_step). `describe-parameters` returns names
+        # and metadata, never a value. Nothing else under `aws` is allowed: not `get-parameter`
+        # (it can decrypt), and never `put-parameter`.
+        rest = argv[1:]
+        return rest == ["--version"] or rest[:2] in (
+            ["sts", "get-caller-identity"],
+            ["ssm", "describe-parameters"],
+        )
     return False
 
 
@@ -761,6 +772,143 @@ def hooks_step(prompter: Prompter, run: Run, root: Path) -> Action | None:
     return None
 
 
+# --- The CoinGecko API key: kept in AWS, and set by you --------------------------------------------
+#
+# The crypto adapter (lambdas/common/adapters/crypto_feed.py) reads an optional CoinGecko API key
+# from SSM Parameter Store: a SecureString at a fixed name per environment. This is the one thing
+# in first-time setup that lives in AWS rather than GitHub.
+#
+# This script explains it, checks what it can by reading, and prints the command. It does NOT
+# store the key, and never asks for it. Why: every secret this script handles goes to its command
+# on standard input, never as an argument (arguments show in the process list and in shell
+# history) and never through a file. The AWS CLI has no such way in. Its documentation gives a
+# parameter value exactly two forms: text on the command line, or `file://` and a path
+# (https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-parameters-file.html); and
+# `--cli-input-json` takes the same two, a JSON string or `file://`
+# (https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-skeleton.html). Neither page offers
+# standard input. `file:///dev/stdin` happens to work on Linux and macOS, but it is not
+# documented and there is no such path on Windows. So the choice was the key in argv, the key in a
+# temporary file, or not writing it from here; this is the third. The key then never enters this
+# script at all, which is also why there is nothing of it to mask, scrub or leak.
+#
+# A follow-up could write it with boto3 (already in scripts/requirements.txt; the value would
+# travel in the HTTPS request body only). That is a write outside the command runner `read_only`
+# guards, so it needs its own lock for --dry-run, and it is left as a decision for the owner.
+
+# The parameter names, exactly as each environment's Terraform builds them
+# (locals.coingecko_api_key_parameter in infra/environments/{dev,production}/main.tf).
+# scripts/tests/test_setup_repo.py reads those files and fails if either side is renamed.
+COINGECKO_PARAMETERS = {
+    "dev": "/bloggerbear/dev/coingecko-api-key",
+    "prod": "/bloggerbear/production/coingecko-api-key",
+}
+# Where the deployment lives: the region in both environments' Terraform (checked by the same
+# test). It is a literal there today. When the region becomes a setting (AWS_REGION), read it
+# from that setting here instead.
+AWS_REGION = "ap-southeast-2"
+COINGECKO_KEY_PLACEHOLDER = "YOUR_COINGECKO_API_KEY"
+_ENV_LABEL = {"dev": "dev", "prod": "production"}
+
+
+def coingecko_command(env: str) -> str:
+    """The command that stores the key for `env`, with a placeholder where the key goes."""
+    return (
+        f"aws ssm put-parameter --name {COINGECKO_PARAMETERS[env]} --type SecureString --overwrite "
+        f"--region {AWS_REGION} --value {COINGECKO_KEY_PLACEHOLDER}"
+    )
+
+
+def aws_account(run: Run) -> str | None:
+    """The 12-digit account the AWS CLI is signed in to, or None if the CLI is not installed or
+    not signed in. Reads only (`aws --version`, `aws sts get-caller-identity`)."""
+    if run(["aws", "--version"]).code != 0:
+        return None
+    found = run(["aws", "sts", "get-caller-identity", "--query", "Account", "--output", "text"])
+    account = found.out.strip()
+    return account if found.code == 0 and re.fullmatch(r"[0-9]{12}", account) else None
+
+
+def coingecko_parameter_exists(run: Run, env: str) -> bool | None:
+    """Whether `env`'s parameter exists in the signed-in account; None if that could not be read.
+    `describe-parameters` lists names and metadata. The value is never fetched."""
+    name = COINGECKO_PARAMETERS[env]
+    found = run([
+        "aws", "ssm", "describe-parameters", "--region", AWS_REGION,
+        "--parameter-filters", f"Key=Name,Option=Equals,Values={name}",
+        "--query", "Parameters[].Name", "--output", "text",
+    ])  # fmt: skip
+    return name in found.out.split() if found.code == 0 else None
+
+
+def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str]) -> list[str]:
+    """Explain the optional CoinGecko API key and say, per environment, whether it is already
+    stored and how to store it. Returns the commands still left for the person to run (each with
+    a placeholder for the key), for the summary. Changes nothing and asks nothing.
+
+    `answers` holds the account IDs given earlier in this run, if any: the parameter belongs in
+    the environment's own account, so when the AWS CLI is signed in to a different one this
+    refuses to call that environment checked, and says to sign in to the right account first.
+    """
+    prompter.say("\n== CoinGecko API key (optional; kept in AWS, not on GitHub) ==")
+    prompter.say(
+        "The crypto topic reads prices from CoinGecko. An API key (a free one will do:\n"
+        "https://www.coingecko.com/en/api) raises its rate limit, and without one the keyless public\n"
+        "API is used. Either way CoinGecko's terms require the site to credit them, which it does:\n"
+        "\"Powered by CoinGecko API\" on each crypto page.\n"
+        "The key is a SecureString in AWS Systems Manager Parameter Store, one per environment. This\n"
+        "script does not store it and does not ask for it: the AWS CLI can only take the value as a\n"
+        "command-line argument or from a file, and this script puts a secret in neither."
+    )
+    account = aws_account(run)
+    if account is None:
+        prompter.say(
+            "Could not check AWS: the AWS CLI is not installed or not signed in. Nothing was looked up."
+        )
+    else:
+        # The ID is treated as a secret everywhere in this script, so only its last four digits.
+        prompter.say(f'AWS CLI: signed in to the account ending "{account[-4:]}". Region: {AWS_REGION}.')
+
+    pending: list[str] = []
+    for env, name in COINGECKO_PARAMETERS.items():
+        label = _ENV_LABEL[env]
+        expected = answers.get(f"AWS_{env.upper()}_ACCOUNT_ID", "")
+        if account is None:
+            state = "not checked"
+        elif expected and expected != account:
+            state = (
+                f"not checked. You are signed in to a different account from {label}'s. "
+                "Sign in to it first"
+            )
+        else:
+            exists = coingecko_parameter_exists(run, env)
+            if exists:
+                prompter.say(f"  {label}: {name} is already set. Nothing to do.")
+                continue
+            state = "not set" if exists is False else "could not be read"
+            if not expected:
+                state += f" in this account (make sure it is {label}'s)"
+        prompter.say(f"  {label}: {name} is {state}. To store a key, run:")
+        prompter.say(f"      {coingecko_command(env)}")
+        pending.append(f"CoinGecko API key, {label}: {coingecko_command(env)}")
+    if pending:
+        prompter.say(
+            f"Put your key in place of {COINGECKO_KEY_PLACEHOLDER}. Typed like that it stays in your\n"
+            "shell's history; to avoid that, create the parameter in the AWS console instead (Systems\n"
+            "Manager > Parameter Store > Create parameter, type SecureString, the name above). In Git\n"
+            "Bash on Windows put MSYS_NO_PATHCONV=1 in front of the command, or the name is rewritten as\n"
+            'a file path. A paid (Pro) key also needs coingecko_api_plan = "pro" in that environment\'s\n'
+            "terraform.tfvars."
+        )
+    return pending
+
+
+def _say_left_for_you(prompter: Prompter, pending: list[str]) -> None:
+    if pending:
+        prompter.say("  Left for you to run (optional; this script does not write to AWS):")
+        for line in pending:
+            prompter.say(f"    {line}")
+
+
 def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> int:
     dry = args.dry_run
     if dry:
@@ -863,10 +1011,15 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
     if hooks:
         actions.append(hooks)
 
+    # The one AWS-side step. It only reads and explains (see coingecko_step); a run narrowed
+    # with --only is about the named settings, so it is left out of those.
+    left_for_you = [] if args.only else coingecko_step(prompter, run, answers)
+
     # 4. Summary. Secret values are masked; the personal-data list is only a count.
     prompter.say("\n== Summary ==")
     if not actions:
         prompter.say("Nothing to set.")
+        _say_left_for_you(prompter, left_for_you)
         return 0
     by_name = {setting.name: setting for setting in SETTINGS}
     for action in actions:
@@ -876,6 +1029,7 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
             prompter.say(f"  {action.name}  [{action.kind}, {place}]  {value}")
         else:
             prompter.say(f"  {action.label()}")
+    _say_left_for_you(prompter, left_for_you)
 
     if dry:
         prompter.say("\nA real run would now ask you to confirm, then run:")
@@ -896,10 +1050,12 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
     written, failed, remaining = apply_actions(actions, repo, root, run, out)
     if failed is None:
         prompter.say(f"\nDone. {len(written)} set.")
+        _say_left_for_you(prompter, left_for_you)
         return 0
     prompter.say(f"\nStopped at {failed.label()}. This is where things stand:")
     prompter.say("  Written:     " + (", ".join(action.label() for action in written) or "nothing"))
     prompter.say("  NOT written: " + ", ".join(action.label() for action in [failed, *remaining]))
+    _say_left_for_you(prompter, left_for_you)
     prompter.say("Nothing was undone. Fix the problem and run this again: it asks only for what is missing.")
     return 1
 

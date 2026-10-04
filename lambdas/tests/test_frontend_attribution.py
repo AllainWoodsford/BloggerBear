@@ -107,10 +107,10 @@ setTimeout(() => {
 """
 
 
-def _content(hash_: str, responses: dict) -> list[dict]:
+def _content(hash_: str, responses: dict, app_js: Path = APP_JS) -> list[dict]:
     """#content's children after app.js has routed to `hash_` against a fake API."""
     result = subprocess.run(
-        [NODE, "-e", _HARNESS, str(APP_JS), json.dumps({"hash": hash_, "responses": responses})],
+        [NODE, "-e", _HARNESS, str(app_js), json.dumps({"hash": hash_, "responses": responses})],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -252,6 +252,24 @@ def test_a_credit_that_is_not_a_plain_https_link_is_left_out(source):
     # ...and it does not take a good one down with it.
     line = _credit_line(_topic_page([source, GITHUB]))
     assert _flat(line) == "Data sourced from GitHub Trending"
+
+
+@needs_node
+def test_the_credit_survives_the_deploy_time_minifier(tmp_path):
+    """The site is deployed minified (scripts/minify_frontend.py runs rjsmin over app.js). The
+    minified file must draw the same line."""
+    rjsmin = pytest.importorskip("rjsmin")
+    minified = tmp_path / "app.js"
+    minified.write_text(rjsmin.jsmin(APP_JS.read_text(encoding="utf-8")), encoding="utf-8")
+
+    responses = {
+        "/topics": {"topics": []},
+        "/articles?topic_id=crypto": {"topic_id": "crypto", "articles": [], "attribution": [COINGECKO]},
+        "/topics/crypto/activity": {},
+    }
+    line = _credit_line(_content("#/topic/crypto", responses, minified))
+    assert _flat(line) == "Powered by CoinGecko API"
+    assert _links(line)[0]["attributes"]["rel"] == "noopener noreferrer"
 
 
 # --- the source itself ----------------------------------------------------------------------------
