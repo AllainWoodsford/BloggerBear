@@ -337,6 +337,7 @@ def put_moderation_item(
     status: str = "pending",
     review_notes: list[str] | None = None,
     rewrite: dict | None = None,
+    extra: dict | None = None,
 ) -> dict:
     """Write a ModerationQueue item and return it.
 
@@ -344,6 +345,10 @@ def put_moderation_item(
     reads `moderation list` sees why an article may be stale. Stored only if non-empty.
     `rewrite` is set on the item a Re-Write puts back in the inbox (common/rewrite.py):
     which rewrite it was, the model, and what it cost.
+    `extra` are further attributes, for an item that never passes through the inbox: one made
+    already `rewriting` for a published article (its claim, in the same write, so it is never
+    `pending` even for a moment), or one made REWRITE_FAILED_STATUS (its reason; it also gets
+    the TTL such an item always has).
     """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     item = {
@@ -358,6 +363,9 @@ def put_moderation_item(
         item["review_notes"] = review_notes
     if rewrite is not None:
         item["rewrite"] = _floats_to_decimal(rewrite)
+    item.update(extra or {})
+    if status == REWRITE_FAILED_STATUS:
+        item["expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     table.put_item(Item=item)
     return item
 
@@ -531,6 +539,13 @@ def update_moderation_status(queue_id: str, status: str) -> None:
 # background rewrite finished; a *new* pending item carries the rewritten article back to the
 # inbox), or back to pending if the rewrite failed or never finished. The Article itself stays
 # pending_moderation throughout: nothing here can make it public.
+#
+# A published article is rewritten while it stays up (`articles rewrite` without --force): it is
+# taken down only once its rewrite is ready. If that rewrite fails, its item must not go back to
+# `pending` -- the article is still public, and an inbox item for it could be approved or rejected
+# as if it were not. It ends as REWRITE_FAILED_STATUS instead: out of the inbox, with the reason,
+# cleared by TTL like a rejected item.
+REWRITE_FAILED_STATUS = "rewrite_failed"
 
 
 def list_moderation_by_status(status: str) -> list[dict]:
@@ -587,12 +602,15 @@ def claim_moderation_for_rewrite(
 def finish_moderation_rewrite(
     queue_id: str, *, rewrite_id: str, status: str, fields: dict | None = None
 ) -> bool:
-    """Move an item out of `rewriting` -- to "rewritten" (done) or back to "pending" (failed) --
-    setting `fields` alongside. Only if it is still `rewriting` under this `rewrite_id`: False
-    means the rewrite no longer owns it (it was released as stuck, or this is a duplicate
-    delivery of the same rewrite), and the caller must not act on the result."""
+    """Move an item out of `rewriting` -- to "rewritten" (done), back to "pending" (failed), or to
+    REWRITE_FAILED_STATUS (failed, and the article is still published) -- setting `fields`
+    alongside. Only if it is still `rewriting` under this `rewrite_id`: False means the rewrite no
+    longer owns it (it was released as stuck, or this is a duplicate delivery of the same
+    rewrite), and the caller must not act on the result."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     fields = _floats_to_decimal(dict(fields or {}))
+    if status == REWRITE_FAILED_STATUS:
+        fields["expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     names = {"#status": "status"}
     values = {":status": status, ":rewriting": "rewriting", ":rewrite_id": rewrite_id}
     sets = ["#status = :status"]

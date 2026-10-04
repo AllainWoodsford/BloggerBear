@@ -119,6 +119,7 @@ python scripts/admin_cli.py articles publish <article_id>
 python scripts/admin_cli.py articles unpublish <article_id>
 python scripts/admin_cli.py articles rewrite <article_id> --instructions "the second section confuses staking with lending"
 python scripts/admin_cli.py articles rewrite <article_id> -i "too long; cut the history section" --model <model_id>
+python scripts/admin_cli.py articles rewrite <article_id> -i "names the wrong company" --force   # take it down now
 
 python scripts/admin_cli.py failed-executions list
 
@@ -172,16 +173,20 @@ wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.
 
 `articles rewrite` sends an article back to be rewritten, with `--instructions` saying what is
-wrong with it. A **published** article is taken down first (page, musings and CDN cache, as with
-`unpublish`) and set back to waiting for review; a **rejected** one is brought back the same way;
-one already **waiting in the inbox** is rewritten in place. The rewrite runs in the background
+wrong with it. A **published** article stays up, untouched, while it is rewritten: it is taken
+down (page, musings and CDN cache, as with `unpublish`) and set back to waiting for review only
+once the rewrite is ready to take its place in the inbox. If that rewrite fails, the article is
+still published exactly as it was, and `inbox` and `moderation list` say so, with the reason
+(`failed_rewrites`). `--force` takes it down first and then rewrites, for an article that must not
+stay up meanwhile. A **rejected** article is brought back to waiting for review; one already
+**waiting in the inbox** is rewritten in place. The rewrite runs in the background
 (`lambdas/common/rewrite.py`) with your note as the main thing to fix, alongside anything the
 reviews flagged. It gets the same guards as any rewrite (no figure or link that is in none of the
 sources), goes through the fresh-data and compliance reviews again, and comes back to the inbox
 for you to approve, reject or rewrite again; approving it publishes it. `--model` picks a
 registered model (`models list`); by default it uses the model the topic writes with today. If the
-rewrite fails, the article waits in the inbox with the reason, and `[w]` there retries with the same
-note. Approving it writes a fresh musing about the new version, in place of the ones the
+rewrite of an article that was not published (or was taken down with `--force`) fails, the article
+waits in the inbox with the reason, and `[w]` there retries with the same note. Approving it writes a fresh musing about the new version, in place of the ones the
 take-down removed.
 
 `lineage audit` lists articles with no lineage, articles whose cost is blank, and
