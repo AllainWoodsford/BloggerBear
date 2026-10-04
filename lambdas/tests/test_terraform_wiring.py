@@ -808,7 +808,8 @@ def test_the_frontend_calls_the_api_through_its_cdn_and_the_csp_allows_it(env):
     text = _read("environments", env, "main.tf")
 
     assert 'window.PUBLIC_API_URL = "${module.public_api_cdn.url}";' in text
-    assert "extra_connect_src = [module.public_api_cdn.domain_name]" in text
+    site = _module_blocks(text, "modules/static-site")[0]
+    assert re.search(r"extra_connect_src = \[\s*module\.public_api_cdn\.domain_name\b", site)
     assert "api_domain           = module.public_api.api_domain" in text
 
 
