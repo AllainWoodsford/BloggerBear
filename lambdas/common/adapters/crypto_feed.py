@@ -83,7 +83,7 @@ from common.editorial_goals import EditorialGoal, goal_for_adapter_config, parse
 from common.editorial_resolver import resolve_editorial_goals
 from common.http_retry import get_json_with_backoff
 from common.relevance import matches_keywords, research_relevance_rule, topic_label
-from common.web_search import search_web
+from common.web_search import WEB_SEARCH_SOURCES, search_web
 
 from .base import Adapter, render_review_evidence
 
@@ -524,10 +524,40 @@ class CoinGeckoClient:
         )
 
 
+# CoinGecko requires attribution on every plan, keyed or keyless, and prescribes the wording.
+#
+#   CoinGecko API Terms of Service, https://www.coingecko.com/en/api_terms (read 2026-10-04):
+#   "you shall duly attribute ownership of the CoinGecko API to CoinGecko by displaying
+#   prominently the message 'Powered by CoinGecko' in a legible font (an example of a legible font
+#   type being 'Arial') no smaller than font size 10."
+#
+#   Attribution guide, https://brand.coingecko.com/resources/attribution-guide: the accepted text
+#   forms are "Data provided by CoinGecko", "Price data by CoinGecko", "Source: CoinGecko" and
+#   "Powered by CoinGecko API", linked to https://www.coingecko.com or
+#   https://www.coingecko.com/en/api, and "Ensure that the attribution is placed in a visible
+#   location, close to where the data is displayed, i.e. above or below the data set."
+#
+# "Powered by CoinGecko API" is the one form on the guide's list that also contains the terms'
+# own message, so it is used word for word: do not reword it. The size rule is why the credit
+# line's CSS (.source-attribution in frontend/styles.css) must stay at 10pt or larger. The same
+# terms forbid any wording that suggests CoinGecko endorses or partners with the site.
+COINGECKO_SOURCE = {
+    "text": "Powered by CoinGecko API",
+    "label": "CoinGecko API",
+    "url": "https://www.coingecko.com/en/api",
+}
+
+
 class CryptoFeedAdapter(Adapter):
     """CoinGecko market data + crypto news, shaped by the day's editorial goal."""
 
     uses_previous_state = True
+
+    # Both, on every article: which of the two a given article drew on is not recorded (a
+    # MARKET_NEWS day makes no CoinGecko call; an analysis day may find no headlines), so the
+    # credit names everything this adapter can use. Crediting a source that was not used that day
+    # costs nothing; leaving out one that was would break its terms.
+    sources = (COINGECKO_SOURCE, *WEB_SEARCH_SOURCES)
 
     # --- fetching ---------------------------------------------------------
 

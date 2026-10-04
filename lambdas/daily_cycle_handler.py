@@ -40,6 +40,7 @@ from datetime import UTC, date, datetime, timedelta
 import boto3
 
 from common import compliance, equipment, fresh_review
+from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
 from common.dynamo import (
@@ -377,6 +378,9 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         hold_reasons=hold_reasons,
         original_body=original_body,
         equipment_used=equipment_used,
+        # The topic's adapter's source credit, as declared right now: stored on the article so
+        # it keeps the credit it was written with (common/attribution.py).
+        attribution=sources_for_topic(topic),
     )
     _record_article_written(topic_id, run_started)
     return result
@@ -881,8 +885,12 @@ def _publish_or_moderate(
     hold_reasons: list[str] | None = None,
     original_body: str | None = None,
     equipment_used: list[dict] | None = None,
+    attribution: list[dict] | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
+
+    `attribution` is the source credit to store on the article and show on its page
+    (common/attribution.py); None stores nothing, and readers fall back to the topic's adapter.
 
     `hold_reasons` are reasons to keep it from publishing regardless of the compliance
     verdict (today: a truncated draft). Any of them sends it to moderation, listed ahead
@@ -935,6 +943,7 @@ def _publish_or_moderate(
         **({"review": fresh_review_record} if fresh_review_record else {}),
         **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
         **({"equipment_used": equipment_used} if equipment_used is not None else {}),
+        **({"attribution": attribution} if attribution is not None else {}),
     )
 
     if compliant:
@@ -954,6 +963,7 @@ def _publish_or_moderate(
             published_by="ai_only",
             fact_check=fact_check_label(fresh_review_record, "ai_only"),
             equipment_used=equipment_used,
+            attribution=attribution,
         )
         generate_and_store_article_musing(
             article_id=article_id,

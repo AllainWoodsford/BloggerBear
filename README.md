@@ -135,7 +135,10 @@ rollover**; and a daily **Cost Explorer poll**.
 5. New data sources are adapters (`fetch_state` / `material_diff` /
    `source_refs`), never core-pipeline branches — proven by the fact that
    adding the 2nd and 3rd adapters (Phase 7) touched zero lines of
-   `research_tick_handler.py`'s actual flow.
+   `research_tick_handler.py`'s actual flow. A new adapter must also declare
+   its data sources (`sources`), which is what credits them under every
+   article and topic title; see "Adding an adapter" in
+   `docs/project-plan.md` §6.
 6. Terraform never applies ad hoc — see the branch/release model below.
 7. Security scans (Trivy, Bandit) and lint/tests fail on HIGH/CRITICAL
    findings and must pass before any apply, dev or production, in the same
@@ -498,3 +501,32 @@ Actions). Neither check ever prints what it found, so the logs stay safe to publ
 
 The code is licensed under the [Apache License 2.0](LICENSE). Security reports: see
 [SECURITY.md](SECURITY.md). Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Data sources and attribution
+
+BloggerBear writes from other people's data. The licence above covers this repository's code, not
+that data: each source has its own terms, and if you run a copy that uses a source, its terms
+apply to you. The credits each source asks for are below; keep them wherever the data is shown.
+
+| Source | Used by | Credit and terms |
+|---|---|---|
+| **CoinGecko** | The crypto adapter (`lambdas/common/adapters/crypto_feed.py`): prices and market data | Data provided by [CoinGecko](https://www.coingecko.com). Their [attribution guide](https://brand.coingecko.com/resources/attribution-guide) asks for one of a few set phrases, linked to their site, "in a visible location, close to where the data is displayed". An API key is optional (`docs/deploying-your-own.md`); the credit is required either way. |
+| **The GDELT Project** | Web search (`lambdas/common/web_search.py`), for topics that search the news | News data from [the GDELT Project](https://www.gdeltproject.org/). Its terms allow any use without fee and say "any use or redistribution of the data must include a citation to the GDELT Project and a link to this website". |
+| **GitHub Trending** | The GitHub adapter (`lambdas/common/adapters/github_trending.py`) | Source: [GitHub Trending](https://github.com/trending). There is no API for that page: the adapter reads the public page on each research run, and articles link to the repositories they mention. That is governed by GitHub's [Acceptable Use Policies](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies) and [Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service), not by a data licence. Read them before you run this adapter yourself. |
+| **Hacker News** | The Hacker News adapter (`lambdas/common/adapters/hacker_news.py`) | Stories from [Hacker News](https://news.ycombinator.com/), through its [official API](https://github.com/HackerNews/API). The API's documentation sets no attribution requirement; articles credit and link to the stories they draw on. |
+| **Amazon Bedrock AgentCore web search** | Web search, as the fallback and for topics that ask for it | An AWS service, used under the AWS Customer Agreement. Articles link to the pages they cite. |
+
+Articles are written by a language model through Amazon Bedrock, and every article lists the
+sources it drew on and says how it was written and reviewed.
+
+Built with, among others: [Requests](https://requests.readthedocs.io/),
+[Beautiful Soup](https://www.crummy.com/software/BeautifulSoup/),
+[Python-Markdown](https://python-markdown.github.io/), the
+[Model Context Protocol Python SDK](https://github.com/modelcontextprotocol/python-sdk),
+[Strands Agents](https://strandsagents.com/) and the
+[AWS Lambda Web Adapter](https://github.com/awslabs/aws-lambda-web-adapter). Each is under its own
+licence; the pinned versions are in `lambdas/requirements*.txt` and `scripts/requirements.txt`.
+
+BloggerBear is an independent project. It is not affiliated with, sponsored by or endorsed by
+CoinGecko, the GDELT Project, GitHub, Y Combinator or Amazon. Their names and marks belong to
+their owners and are used here only to say where data comes from and what the project runs on.

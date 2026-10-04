@@ -1,4 +1,4 @@
-# The site's domain, bought at GoDaddy. Production's static-site module call has
+# The site's domain, bought at a registrar (any will do). Production's static-site module call has
 # enable_custom_domain = true, so BOTH of these must be set before the first production apply, and the
 # apply stops early with a plain-English message if hosted_zone_id is missing.
 #

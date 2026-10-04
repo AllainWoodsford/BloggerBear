@@ -9,10 +9,14 @@ else.
 ## First-time setup of your repository: `setup_repo.py`
 
 Deploying your own copy? This one comes before the admin CLI. It asks for the GitHub secrets and
-variables a deployment needs (your allowed address ranges, alert emails, the AWS account IDs and
+variables a deployment needs (the AWS region first, then your allowed address ranges, alert emails, the AWS account IDs and
 deploy role ARNs, the state bucket names, the name suffix and `PII_DENYLIST`), checks each answer,
 shows what is already set, and sets what is missing. It also tells you how to turn on the git hook
 that stops personal data being committed.
+
+The region question is optional: Enter keeps the default, `ap-southeast-2`. Answer with another
+region and the script puts it in the bootstrap command it prints, and lists the few things you
+must then change by hand (the Bedrock model profile for your part of the world, above all).
 
 ```bash
 python scripts/setup_repo.py --dry-run     # step through it all; changes nothing
@@ -189,6 +193,24 @@ something that was never routed to moderation in the first place, or to
 override a stuck/undesired status. If a moderation queue item exists for
 the article and is still `pending`, it's marked `approved` too so the two
 records don't disagree.
+
+**Refreshing already-published pages** (for example to add the source credit line, which pages
+rendered before it existed do not have). A static article page is written once, when the article
+is published, and nothing re-renders it afterwards. The single-page view (`/#/article/<id>`), the
+topic pages and the RSS feed need no refresh: they read the credit from the API on every load.
+For the static page (`/articles/<id>.html`) the only path today is `articles publish <article_id>`,
+which renders the page again from the stored article, credit included. It is a re-publish, not a
+plain re-render, so on an article that is already published it also:
+
+- sets `published_at` to now, so the article's date changes and it moves to the top of its topic
+  list and the RSS feed;
+- sets "approved by" to Humans, whatever it was;
+- writes another musing about the article (one more model call).
+
+That is acceptable for a handful of pages you care about (the crypto articles, for CoinGecko's
+attribution) and wrong for a mass refresh. There is no command that only re-renders. The smallest
+follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
+article's stored `published_at` and `published_by` and does nothing else.
 
 `articles unpublish` is the inverse: it deletes the article's static page,
 marks the article and its moderation-queue item `rejected` (so it leaves every

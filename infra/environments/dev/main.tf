@@ -1973,7 +1973,8 @@ resource "aws_s3_object" "frontend_config" {
       hostedUiDomain: "${module.ops_assistant.hosted_ui_domain}",
       clientId: "${module.ops_assistant.app_client_id}",
       scope: "${module.ops_assistant.read_scope}",
-      redirectUri: "${local.site_url}/ask.html"
+      redirectUri: "${local.site_url}/ask.html",
+      environment: "dev"
     };
   EOT
 }
