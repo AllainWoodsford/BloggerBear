@@ -35,6 +35,11 @@ def _of_kind(kind: str) -> dict[str, architecture.Component]:
     return {c.key: c for c in CATALOGUE if c.kind == kind}
 
 
+# The functions the ops-assistant module makes. Every other function is made by an environment root
+# and handed to observability, which gives it an errors and a throttles alarm.
+MODULE_FUNCTIONS = {"ops-agent", "ops-mcp"}
+
+
 def _template(terraform_name: str) -> str:
     return terraform_name.replace("${var.environment_name}", ENV)
 
@@ -96,21 +101,22 @@ def test_every_lambda_in_each_environment_is_in_the_catalogue():
         text = _read("environments", environment, "main.tf")
         names = set(re.findall(rf'function_name = "bloggerbear-{environment}-([a-z-]+)"', text))
         assert names, environment
-        expected = {key for key, c in functions.items() if not c.only_in}
+        expected = {key for key in functions if key not in MODULE_FUNCTIONS}
         assert names == expected, environment
     agent = _read("modules", "ops-assistant", "agent.tf")
     assert 'agent_name      = "bloggerbear-${var.environment_name}-ops-agent"' in agent
     assert 'name = "bloggerbear-${var.environment_name}-ops-mcp"' in _read(
         "modules", "ops-assistant", "main.tf"
     )
-    assert {"ops-agent", "ops-mcp"} <= set(functions)
+    assert MODULE_FUNCTIONS <= set(functions)
 
 
 def test_the_assistant_is_catalogued_where_it_is_deployed():
     for environment in architecture.ENVIRONMENTS:
         deployed = 'source = "../../modules/ops-assistant"' in _read("environments", environment, "main.tf")
         for key in ("ops-agent", "ops-mcp"):
-            assert (environment in _of_kind("function")[key].only_in) is deployed, (environment, key)
+            component = _of_kind("function")[key]
+            assert architecture.exists_in(component, environment) is deployed, (environment, key)
 
 
 def test_every_dashboard_is_in_the_catalogue_and_the_edge_one_only_in_production():
@@ -137,7 +143,7 @@ def test_every_alarm_the_catalogue_names_exists_and_every_alarm_is_named_somewhe
     lambda_alarms = {a for a in named if a.startswith(f"{PREFIX}{ENV}-{PREFIX}")}
     assert named - lambda_alarms == fixed
     for key, component in _of_kind("function").items():
-        if not component.only_in:  # the pipeline's functions, which observability is given
+        if key not in MODULE_FUNCTIONS:  # the pipeline's functions, which observability is given
             assert f"{PREFIX}{ENV}-{PREFIX}{ENV}-{key}-errors" in component.alarms
 
 

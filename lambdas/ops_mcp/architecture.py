@@ -374,7 +374,6 @@ CATALOGUE: tuple[Component, ...] = (
         ),
         aliases=("suggestions", "assistant-memory", "memory"),
         assistant_reads=True,
-        only_in=("dev",),
     ),
     _table(
         "ops-briefings",
@@ -393,7 +392,6 @@ CATALOGUE: tuple[Component, ...] = (
             ("Never shown to the agent", "it holds what the agent wrote after reading hostile text"),
         ),
         aliases=("briefings", "briefing"),
-        only_in=("dev",),
     ),
     # --- Lambda --------------------------------------------------------------------------------
     _lambda(
@@ -479,7 +477,6 @@ CATALOGUE: tuple[Component, ...] = (
         "The assistant's MCP server: the read-only tools the assistant answers with.",
         "on each POST /mcp to the assistant's API (Cognito sign-in)",
         alarmed=False,
-        only_in=("dev",),
         aliases=("mcp", "mcp-server"),
     ),
     _lambda(
@@ -488,7 +485,6 @@ CATALOGUE: tuple[Component, ...] = (
         "through Bedrock, and answers.",
         "on each POST /ask to the assistant's API (Cognito sign-in)",
         alarmed=False,
-        only_in=("dev",),
         aliases=("agent", "assistant"),
     ),
     # --- API Gateway ---------------------------------------------------------------------------
@@ -554,7 +550,6 @@ CATALOGUE: tuple[Component, ...] = (
             f"/aws/lambda/{PREFIX}{ENV}-ops-agent",
             f"/aws/lambda/{PREFIX}{ENV}-ops-mcp",
         ),
-        only_in=("dev",),
         aliases=("assistant-api", "ops-api", "ask"),
     ),
     # --- Orchestration -------------------------------------------------------------------------
@@ -675,7 +670,6 @@ CATALOGUE: tuple[Component, ...] = (
         key="ops-mcp-access",
         name=f"/aws/apigateway/{PREFIX}{ENV}-ops-mcp-access",
         purpose="One JSON line per request to the assistant's API (/ask and /mcp).",
-        only_in=("dev",),
         aliases=("assistant-access-log",),
     ),
     # --- Schedules, buckets, firewalls ---------------------------------------------------------
