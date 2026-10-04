@@ -2,7 +2,7 @@
 
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
 plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
-of 2026-10-04 (through #174).
+of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it.
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 15 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 20 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -505,6 +505,49 @@ for DynamoDB and logs, and does nothing for S3, Bedrock or a list of alarms. **L
 shared account, "named resources only" covers what has a name to scope by; list every call that is
 account-wide (list calls, billing, anything shared) and decide each one in code. Separate accounts
 are the only hard wall.
+
+**10.16 A proposal that read like documentation, and wasn't.** An externally written `AlexaMCP.md`
+proposed moving to a native Alexa+ add-on. Checked line by line against the toolkit pages, the
+MCP authorization spec and RFC 9728, it said the opposite of the spec in one place (401 "without a
+`WWW-Authenticate` header"; the header is how a client finds the metadata), named a protocol
+version the toolkit doesn't use (it supports `2025-11-25`), put `ui://` URIs inside
+`structuredContent` (they belong in the tool's `_meta`), pointed at a manifest "in the original
+configuration" that wasn't there, and pasted its first half twice. It also dropped the Strands
+agent, which is the part the judging criteria reward. **Decided:**
+[docs/enhancements/alexa-plus.md](enhancements/alexa-plus.md) replaces it. **Lesson:** 6.5 again: a
+confident spec is a draft until each claim is checked against its source.
+
+**10.17 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
+Resource Metadata at `https://host/.well-known/oauth-protected-resource`. On a REST API's default
+URL the first path segment is the stage, so that path asks for a stage named `.well-known` and gets
+a 403. The way out is in the MCP spec: a client must use the `resource_metadata` URL from the 401's
+`WWW-Authenticate` header first, and that URL can sit under the stage. **Feedback:** the toolkit
+pages would save a day by saying whether Alexa+ follows the header or only the root path.
+
+**10.18 Cognito doesn't advertise the PKCE it enforces.** Its OIDC discovery document has no
+`code_challenge_methods_supported`, and the MCP spec tells a client to refuse an authorization
+server that doesn't list S256. **Fix:** our own RFC 8414 document, static JSON from an API Gateway
+mock integration, naming Cognito's endpoints. **Feedback (AWS):** one line in Cognito's discovery
+document would make every user pool usable by MCP clients as it stands.
+
+**10.19 The voice button "doesn't work", and the page's logic was fine.** With a fake speech
+engine in headless Chromium the button, the request and the spoken answer all worked. What fails
+is the browser's side: a long press on a phone cancels the pointer and stopped listening at once;
+`lang="en"` where Safari wants a full tag; `cancel()` then `speak()` in the same tick, which
+Chrome drops; one long utterance, which Chrome's network voices cut off at about 15 seconds; and
+every recognition error, including `network` from Chromium builds with no Google speech service,
+reported as one vague "failed". Headless Chromium also ships the unprefixed `SpeechRecognition`
+now, so a stub that only replaced `webkitSpeechRecognition` tested the real one by mistake.
+**Fix:** tap to talk, per-error messages, interim words on screen, speech sentence by sentence, and
+a "Test voice" button that says which part is broken. **Lesson:** browser speech APIs fail
+differently per browser and per device; a self-test is worth more than another guess.
+
+**10.20 Alexa+'s latency limit rules out the agent in the loop.** The toolkit asks for a round
+trip under 500 ms; a Strands briefing is 10 to 25 seconds and a cold MCP Lambda alone 1 to 3. It
+also showed the web path was close to API Gateway's 29-second ceiling, where a 504 reads on the
+page as "could not answer". **Decided:** Alexa starts a briefing (an async Lambda invoke, as the
+user) and reads the last one back; both are one DynamoDB call. A "nightly cron" was rejected: it
+has no user to call the tools as, and the memory is per user.
 
 ---
 
