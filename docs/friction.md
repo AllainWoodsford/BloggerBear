@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 14 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 15 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -489,6 +489,22 @@ the two functions hold (Terraform makes it) and the address of the operator it h
 request with the right key is judged by that address. The key admits nobody by itself, and a wire
 test now runs agent and server together under `allowlist`. **Lesson:** a rule enforced in two
 places needs one test that goes through both, with every value of the setting.
+
+**10.15 The dev assistant could see production's alarms and the account's bill.** Its tables, bucket
+and log group were dev's by ARN, so it looked separated. But dev and production are one AWS
+account, and two of its tools read things that belong to the account: `alarms` asked CloudWatch for
+every alarm named `bloggerbear-*`, production's included (a `DescribeAlarms` that lists by prefix is
+authorized against every alarm, so the role could not be narrowed), and `spend` reported the whole
+AWS bill, which the Cost Explorer poll writes into each environment's own Stats table. Nothing
+failed and no test was wrong: each tool did what its test said, and no test asked whose data it
+was. **Fix:** `alarms` asks only
+for `bloggerbear-<env>-` and refuses with no environment configured; the bill is reported only
+where the module's `account_wide_data` is on (production); and both roles carry a Deny on anything
+tagged for another environment, which by the Service Authorization Reference can only take effect
+for DynamoDB and logs, and does nothing for S3, Bedrock or a list of alarms. **Lesson:** in a
+shared account, "named resources only" covers what has a name to scope by; list every call that is
+account-wide (list calls, billing, anything shared) and decide each one in code. Separate accounts
+are the only hard wall.
 
 ---
 

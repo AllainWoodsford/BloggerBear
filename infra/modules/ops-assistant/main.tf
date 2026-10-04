@@ -211,6 +211,11 @@ data "aws_iam_policy_document" "ops_mcp" {
   # not bloggerbear-* only, although the tool will ask for that prefix: a DescribeAlarms call that
   # lists by prefix is checked against "alarm:*", so a narrower resource here would refuse the
   # very call the tool makes. It reads names and states, and this account holds no other alarms.
+  #
+  # That includes the OTHER environment's alarms: dev and production are one account. IAM cannot
+  # separate them here (the tag Deny in isolation.tf has no single alarm to look at on a list
+  # call), so the tool does: it asks only for "bloggerbear-<this environment>-", which is how
+  # infra/modules/observability names every alarm, and drops anything else that comes back.
   statement {
     sid       = "DescribeAlarms"
     effect    = "Allow"
@@ -311,8 +316,17 @@ resource "aws_lambda_function" "ops_mcp" {
         # taken as the agent's, and "allowlist" refuses every question asked through it.
         OPS_AGENT_FORWARD_KEY = var.agent_forward_key
 
-        CONTENT_BUCKET   = var.content_bucket_name
+        CONTENT_BUCKET = var.content_bucket_name
+
+        # Which environment this assistant is for. The alarms tool builds the only prefix it asks
+        # CloudWatch for from it, "bloggerbear-<environment>-", because the role cannot be held
+        # to one environment's alarms (see DescribeAlarms above); with this unset the tool
+        # refuses, it does not fall back to every bloggerbear- alarm (ops_mcp/account.py).
         ENVIRONMENT_NAME = var.environment_name
+
+        # Whether the tools may report what is the whole account's (the AWS bill; later the
+        # shared firewall). The code switches it on for the exact word "true" and nothing else.
+        OPS_ACCOUNT_WIDE_DATA = var.account_wide_data ? "true" : "false"
 
         # The assistant's own table (memory.tf), the one thing it may write to: what it has
         # suggested and what it is watching (ops_mcp/memory.py).

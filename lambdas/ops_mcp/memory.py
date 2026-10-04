@@ -563,6 +563,11 @@ def _watchable(kind: str, target_id) -> str | None:
         return "I can't find a topic with that id."
     if kind == "spend" and target_id not in SPEND_IDS:
         return "For spend I can watch ai or aws."
+    # The AWS bill is the whole account's, and only an assistant told it may report account-wide
+    # figures has it (account.account_wide_data). Refused here, so nobody is told "I'll keep an
+    # eye on it" about a figure this environment's assistant will never read.
+    if kind == "spend" and target_id == "aws" and not account.account_wide_data():
+        return f"{account.BILL_NOT_AVAILABLE} For spend I can watch ai."
     if kind == "incident" and _incident(target_id) is None:
         return "I can't find an open incident with that id."
     return None  # a function: no list of them is one read away, so its id only has to look like one
@@ -631,6 +636,10 @@ def _watched_state(kind: str, target_id: str, now: datetime) -> tuple[dict, str]
         state = {"state": "read", "research": row["research"], "article": row["article"]}
         return state, f"{row['name']} {article}, and {research}"
     if kind == "spend":
+        # A watch on the bill kept from before this environment stopped reporting it: said to be
+        # unavailable, never "not unusual", which nothing here could know.
+        if target_id == "aws" and not account.account_wide_data():
+            return {"state": "not_available"}, "the AWS bill, which is not available from this environment"
         figures = account.spend("week", now=now).get(target_id) or {}
         label = "AI spend" if target_id == "ai" else "the AWS bill"
         unusual = bool(figures.get("unusual"))

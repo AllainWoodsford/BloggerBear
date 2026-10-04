@@ -15,7 +15,7 @@ from starlette.testclient import TestClient
 from table_schemas import create_table
 from test_ops_mcp_server import HOST, call
 
-from ops_mcp import content, memory, server, suggestions, tools
+from ops_mcp import account, content, memory, server, suggestions, tools
 
 REGION = "ap-southeast-2"
 BUCKET = "content"
@@ -547,6 +547,34 @@ def test_watch_list_reports_each_watched_items_state_and_unwatch_removes_it(tabl
     assert len(rows(tables)) == 2
     memory.unwatch(ALICE, "topic", "crypto")
     assert [row["item"] for row in rows(tables)] == ["watch#function#bloggerbear-dev-daily-cycle"]
+
+
+def test_the_account_bill_can_only_be_watched_where_it_is_reported(tables, monkeypatch):
+    """The AWS bill is the whole account's, production and dev together, and an assistant reports
+    it only where its deployment says so (account.account_wide_data). Elsewhere a watch on it is
+    refused, and one kept from before is said to be unavailable, never "not unusual"."""
+    monkeypatch.delenv(account.ACCOUNT_WIDE_ENV, raising=False)
+
+    refused = memory.watch(ALICE, "spend", "aws", now=NOW)
+
+    assert refused["watching"] is False and rows(tables) == []
+    assert refused["spoken"] == (
+        "The whole AWS bill is not available from this environment. For spend I can watch ai."
+    )
+    assert memory.watch(ALICE, "spend", "ai", now=NOW)["watching"] is True
+
+    monkeypatch.setenv(account.ACCOUNT_WIDE_ENV, "true")
+    assert memory.watch(ALICE, "spend", "aws", now=NOW)["watching"] is True
+    monkeypatch.setenv(account.ACCOUNT_WIDE_ENV, "false")
+    monkeypatch.setattr(account, "spend", lambda *args, **kwargs: {"ai": {"unusual": False}})
+
+    listed = memory.watch_list(ALICE, now=NOW)
+
+    by_id = {item["id"]: item for item in listed["watching"]}
+    assert by_id["aws"]["now"] == {"state": "not_available"}
+    assert by_id["ai"]["now"]["state"] == "read"
+    assert "the AWS bill, which is not available from this environment" in listed["spoken"]
+    assert "the AWS bill is not unusual" not in listed["spoken"]
 
 
 # --- one user's rows are theirs ------------------------------------------------------------------

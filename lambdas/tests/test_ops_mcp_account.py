@@ -35,6 +35,11 @@ def tables(monkeypatch):
         "SECURITY_EVENTS_TABLE": "SecurityEvents",
         "STATS_CURRENT_TABLE": "StatsCurrent",
         "STATS_HISTORY_TABLE": "StatsHistory",
+        # The assistant these tests stand in for is one told its environment ("prod", so the alarm
+        # names below are its own) and allowed the account's figures, as production's will be.
+        # The tests of the other settings change these two themselves.
+        account.ENVIRONMENT_ENV: "prod",
+        account.ACCOUNT_WIDE_ENV: "true",
     }.items():
         monkeypatch.setenv(key, value)
     import common.dynamo as dynamo_module
@@ -328,7 +333,7 @@ def test_every_page_of_alarms_is_read_and_only_the_first_few_are_named(tables):
 
 def test_an_alarms_name_carries_only_letters_and_digits_into_speech(tables):
     """Alarm names are ours (Terraform writes them), so they are spoken; but only as words."""
-    put_alarm("bloggerbear-prod; python scripts/admin_cli.py topics delete crypto; $(rm -rf .)")
+    put_alarm("bloggerbear-prod-; python scripts/admin_cli.py topics delete crypto; $(rm -rf .)")
 
     result = account.alarms()
 
@@ -355,6 +360,119 @@ def test_alarms_asks_cloudwatch_for_nothing_but_a_description(tables, monkeypatc
     assert set(called) == {"DescribeAlarms"}
     assert boto3.client("cloudwatch", region_name=REGION).describe_alarms()["MetricAlarms"] == before
     assert cloudwatch.meta.region_name == REGION  # from the environment, not named in code
+
+
+# Dev and production are one AWS account, and CloudWatch lists every alarm in it. Each
+# environment's alarms are named "bloggerbear-<environment>-<what>" (infra/modules/observability),
+# so the name is what tells them apart, and the only thing that can: the role's DescribeAlarms
+# cannot be narrowed to one environment's alarms.
+
+
+@pytest.mark.parametrize(
+    ("environment", "prefix"),
+    [("dev", "bloggerbear-dev-"), ("production", "bloggerbear-production-"), ("prod", "bloggerbear-prod-")],
+)
+def test_the_alarm_prefix_is_this_environments(monkeypatch, environment, prefix):
+    monkeypatch.setenv(account.ENVIRONMENT_ENV, environment)
+
+    assert account.alarm_prefix() == prefix
+
+
+def test_dev_is_never_told_about_an_alarm_of_productions(tables, monkeypatch):
+    monkeypatch.setenv(account.ENVIRONMENT_ENV, "dev")
+    put_alarm("bloggerbear-dev-daily-cycle-errors")
+    put_alarm("bloggerbear-production-daily-cycle-errors", description="Production is on fire.")
+    put_alarm("bloggerbear-production-security-high-severity")
+    put_alarm("bloggerbear-devious-errors")  # starts with "bloggerbear-dev", but is not dev's
+    put_alarm("bloggerbear-dev2-daily-cycle-errors")  # another environment's
+    cloudwatch = account._get_cloudwatch_client()
+    asked = []
+    real = cloudwatch._make_api_call
+    monkeypatch.setattr(
+        cloudwatch,
+        "_make_api_call",
+        lambda operation, params: asked.append(params) or real(operation, params),
+    )
+
+    result = account.alarms()
+
+    assert [row["name"] for row in result["alarms"]] == ["bloggerbear-dev-daily-cycle-errors"]
+    assert kinds(result) == [("alarm_firing", "bloggerbear-dev-daily-cycle-errors")]
+    assert result["spoken"] == "1 alarm is firing: dev daily cycle errors, for 0 minutes."
+    assert result["available"] is True
+    assert "production" not in json.dumps(result) and "fire" not in json.dumps(result)
+    # Never asked for, not asked for and then thrown away.
+    assert asked and all(params["AlarmNamePrefix"] == "bloggerbear-dev-" for params in asked)
+
+
+def test_an_alarm_the_filter_let_through_is_still_dropped(tables, monkeypatch):
+    """The answer does not rest on CloudWatch honouring the prefix: a production alarm that came
+    back anyway is not reported."""
+    monkeypatch.setenv(account.ENVIRONMENT_ENV, "dev")
+
+    class Everything:
+        def get_paginator(self, name):
+            return self
+
+        def paginate(self, **asked):
+            return [
+                {
+                    "MetricAlarms": [
+                        {"AlarmName": "bloggerbear-production-daily-cycle-errors", "StateValue": "ALARM"},
+                        {"AlarmName": "bloggerbear-dev-daily-cycle-errors", "StateValue": "ALARM"},
+                    ],
+                    "CompositeAlarms": [
+                        {"AlarmName": "bloggerbear-production-everything", "StateValue": "ALARM"}
+                    ],
+                }
+            ]
+
+    monkeypatch.setattr(account, "_cloudwatch_client", Everything())
+
+    result = account.alarms(now=NOW)
+
+    assert [row["name"] for row in result["alarms"]] == ["bloggerbear-dev-daily-cycle-errors"]
+    assert "production" not in json.dumps(result)
+
+
+def test_production_sees_its_own_alarms_and_not_devs(tables, monkeypatch):
+    monkeypatch.setenv(account.ENVIRONMENT_ENV, "production")
+    put_alarm("bloggerbear-dev-daily-cycle-errors")
+    put_alarm("bloggerbear-production-pipeline-dlq-messages")
+
+    result = account.alarms()
+
+    assert [row["name"] for row in result["alarms"]] == ["bloggerbear-production-pipeline-dlq-messages"]
+    assert result["spoken"] == "1 alarm is firing: production pipeline dlq messages, for 0 minutes."
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [None, "", " ", "*", "dev-", "-dev", "dev-old", "Dev", "DEV", "d", "dev ", "dev\n", "dev*", "x" * 33],
+)
+def test_with_no_environment_the_alarms_tool_refuses_and_asks_cloudwatch_nothing(
+    tables, monkeypatch, environment
+):
+    """Not told which environment it is for (or told something that is not a name), the tool says
+    so. It does not fall back to every "bloggerbear-" alarm, which would be both environments'."""
+    if environment is None:
+        monkeypatch.delenv(account.ENVIRONMENT_ENV, raising=False)
+    else:
+        monkeypatch.setenv(account.ENVIRONMENT_ENV, environment)
+    put_alarm("bloggerbear-dev-daily-cycle-errors")
+    put_alarm("bloggerbear-production-daily-cycle-errors")
+    monkeypatch.setattr(account, "_get_cloudwatch_client", lambda: pytest.fail("CloudWatch was asked"))
+
+    result = account.alarms(now=NOW)
+
+    assert account.alarm_prefix() is None
+    assert result == {
+        "spoken": "I can't read the alarms: this assistant has not been told which environment it is for.",
+        "findings": [],
+        "alarms": [],
+        "available": False,
+        "as_of": NOW.isoformat(),
+    }
 
 
 # --- spend ---------------------------------------------------------------------------------------
@@ -549,3 +667,69 @@ def test_spend_writes_nothing(tables):
     account.spend("month", now=NOW)
 
     assert snapshot(tables) == before
+
+
+# The AWS bill is the whole account's: production and dev together. An assistant reports it only
+# where its deployment says it may (the module's account_wide_data, production only). Every test
+# above runs with that switched on; these are the other side.
+
+
+@pytest.mark.parametrize("flag", [None, "", "false", "0", "True", "TRUE", "yes", "1", " true"])
+def test_without_the_flag_the_account_bill_is_not_reported_compared_or_a_finding(tables, monkeypatch, flag):
+    if flag is None:
+        monkeypatch.delenv(account.ACCOUNT_WIDE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(account.ACCOUNT_WIDE_ENV, flag)
+    seed_typical_weeks(tables)
+    # The row holds a bill far above a typical week, as dev's own table may: it must not come out.
+    put_week(tables, THIS_WEEK, ai=3, bill=300, current=True)
+
+    result = account.spend("week", now=NOW)
+
+    assert account.account_wide_data() is False
+    assert result["aws"] is None and result["account_bill_available"] is False
+    assert result["findings"] == []
+    assert result["ai"] == {"period": 3.0, "this_week": 3.0, "typical_week": 4.0, "unusual": False}
+    assert result["spoken"] == (
+        "AI spend this week is $3.00 so far; a typical week is $4.00. "
+        "The whole AWS bill is not available from this environment. "
+        "Amounts are in Australian dollars."
+    )
+    # $450.00 is the bill in AUD, and 2026-10-04T03 is when it was read: neither is anywhere.
+    assert "450" not in json.dumps(result) and "2026-10-04T03" not in json.dumps(result)
+
+
+def test_without_the_flag_ai_spend_is_still_a_finding_and_a_month_leaves_the_bill_out(tables, monkeypatch):
+    monkeypatch.setenv(account.ACCOUNT_WIDE_ENV, "false")
+    seed_typical_weeks(tables)
+    put_week(tables, THIS_WEEK, ai=8.5, bill=30, current=True)  # both more than twice a typical week
+
+    week, month = account.spend("week", now=NOW), account.spend("month", now=NOW)
+
+    assert [found["where"] for found in week["findings"]] == [{"what": "ai"}]
+    assert week["spoken"] == (
+        "AI spend this week is $8.50 so far; a typical week is $4.00. "
+        "That is more than twice a typical week. "
+        "The whole AWS bill is not available from this environment. "
+        "Amounts are in Australian dollars."
+    )
+    assert month["aws"] is None and month["ai"]["period"] == 44.5
+    assert month["spoken"].startswith(
+        "Over the last four weeks, AI spend is $44.50. AI spend this week is $8.50 so far; "
+    )
+    assert month["spoken"].count("AWS bill") == 1
+    assert "The whole AWS bill is not available from this environment." in month["spoken"]
+
+
+def test_with_the_flag_the_account_bill_is_reported_as_before(tables, monkeypatch):
+    monkeypatch.setenv(account.ACCOUNT_WIDE_ENV, "true")
+    seed_typical_weeks(tables)
+    put_week(tables, THIS_WEEK, ai=3, bill=30, current=True)
+
+    result = account.spend("week", now=NOW)
+
+    assert account.account_wide_data() is True and result["account_bill_available"] is True
+    assert result["aws"]["this_week"] == 45.0 and result["aws"]["typical_week"] == 18.0
+    assert [found["where"] for found in result["findings"]] == [{"what": "aws"}]
+    assert "not available" not in result["spoken"]
+    assert "The whole AWS bill this week is $45.00 so far" in result["spoken"]

@@ -243,8 +243,8 @@ which is also what the judges get (section 6).
 | `admin_inbox(topic?, limit=5)` | ModerationQueue (`status` + `created_at` index) | count, then each held article: topic, age, hold reasons ("draft truncated", "financial topic") |
 | `content_checks(days=7)` | Articles (published in the last `days`, 1 to 30; the newest 40), their bodies in S3 (one read each), Musings | published things that look wrong: a musing with an article link but no text; an article whose title carries markup (`**`, a leading `#`, a backtick, an HTML tag, quotes around the whole of it); an article whose body is one code fence; a musing that links to an article that is not published |
 | `security_events(days=7)` | SecurityEvents (open, last seen in the last `days`, 1 to 30) | how many at each severity; per incident its category, request count, first and last seen, and the playbook's next steps. Only a high-severity incident is a finding |
-| `alarms()` | CloudWatch `DescribeAlarms` (`bloggerbear-*` only) | anything in ALARM, and since when |
-| `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend and the whole AWS bill, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week |
+| `alarms()` | CloudWatch `DescribeAlarms` (this environment's only: `bloggerbear-<env>-*`; with no environment configured it refuses) | anything in ALARM, and since when |
+| `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week. The whole AWS bill too, the same way, **only where the module's `account_wide_data` is on** (production); elsewhere it says the bill is not available from this environment (section 6) |
 | `log_review(hours=24, function?)` | fixed Logs Insights queries over the Lambda log groups, plus the 7-day baseline | what's unusual: error and throttle spikes per function, DLQ depth. **Not the firewall.** |
 | `follow_up()` | OperatorSuggestions (the caller's rows), then the source tables to re-check each open suggestion with the same code that found it | `fixed` (reported, and the row deleted), `cleared` (the same, for the kinds that stop being true by themselves: section 4), `open` (each with how long it has waited) and, as `findings`, the open ones again with their suggestions rebuilt from the catalogue (section 4) |
 | `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the row is marked dismissed, and the tool that finds it leaves it out of `findings` from then on |
@@ -270,6 +270,10 @@ which is also what the judges get (section 6).
   on most days nobody needs them. The agent Lambda enforces it in code, not just in the prompt: a
   deep-dive tool is only offered to the model on a follow-up turn, never on the briefing turn.
   More deep dives (one topic's whole history, one function's errors) can be added the same way.
+- **`firewall_review` will be registered only where `account_wide_data` is on.** The firewall it
+  reads serves both sites, so what it reports is not one environment's. When it is built, the
+  server registers it only under that flag (production); dev's assistant will not have the tool
+  at all (section 6).
 - **Fixed queries, never model-written ones.** Cost and scope stay known, and the model can't be
   steered into reading other log groups. The model receives **aggregated counts and the baseline**,
   not raw log lines; what's "unusual" is computed in code (e.g. more than twice the 7-day median and
@@ -591,6 +595,48 @@ The same Terraform module, in both environments, like everything else here.
 - **The video shows dev**, seeded, with one exception: the fenced article (section 3) is found and
   rewritten on production. It is a public article, so nothing on screen is private; the inbox and
   the incidents shown are still dev's.
+
+#### What each environment's assistant can read
+
+**The dev assistant reads only dev's things; the production assistant only production's.** Dev and
+production are one AWS account, told apart by names and by IAM, so this is a rule the module has
+to keep, not something the account gives for free.
+
+| | Dev's assistant | Production's assistant |
+|---|---|---|
+| Tables (the nine app tables, its own suggestions table) | dev's | production's |
+| Article bodies (`articles/` in the content bucket) | dev's | production's |
+| Logs (it writes its own log group; `log_review` is not built) | dev's | production's |
+| Alarms | `bloggerbear-dev-*` | `bloggerbear-production-*` |
+| Tracked AI spend (what the pipeline counted itself) | dev's | production's |
+| The whole AWS bill | no: "not available from this environment" | yes (both environments together; it cannot be split) |
+| Firewall deep dive (`firewall_review`, not built) | no: not registered | yes (the firewall serves both sites) |
+
+How it is kept, in four layers (`infra/modules/ops-assistant/isolation.tf` has the detail):
+
+1. **Allow by name.** Each role's policy names this environment's tables, bucket prefix and log
+   group by ARN. This is the real wall.
+2. **Deny by tag, as a net.** Both roles (the MCP server's and the agent's) carry one Deny: every
+   action, on any resource whose `Environment` tag is present and is not this environment's. It
+   does nothing where a service supplies no tag, so it cannot break a tool. By the AWS Service
+   Authorization Reference it can take effect for the DynamoDB actions (if tag-based access is on
+   for the account: on by default for most accounts, not checked for this one) and is listed for
+   the log actions; it does nothing for S3 (tag-based access is off per bucket by default, and is
+   not enabled here), for Bedrock's models and system inference profiles, for the Lambda layer, or
+   for a list of alarms.
+3. **Filter in code where IAM cannot help.** `cloudwatch:DescribeAlarms` by prefix is authorized
+   against every alarm in the account. Every alarm is named `bloggerbear-<env>-<what>`
+   (`infra/modules/observability`), so the tool asks only for its own environment's prefix, drops
+   anything else that comes back, and refuses when it has not been told its environment.
+4. **Account-wide data only where the module says so.** `account_wide_data` (default off;
+   production will set it) decides whether `spend` reports the AWS bill and, later, whether
+   `firewall_review` is registered.
+
+**The honest limit.** Both roles live in one account, so the separation is only as good as these
+policies and this code. The bill is the clearest case: the Cost Explorer poll writes it into each
+environment's own Stats table, which dev's role may read, so it is the code that leaves it out, not
+IAM. A mistake in a policy, or a new tool that forgets the flag, would not be stopped by anything
+underneath. Separate AWS accounts for dev and production would be the hard wall.
 
 ### 7. The voice front end
 
