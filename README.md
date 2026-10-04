@@ -188,6 +188,10 @@ is what it was built for.
   Cognito pool and, if linked, its own Alexa+ add-on.
 - **The access switch:** `python scripts/admin_cli.py pipeline-config set --assistant-access
   open|allowlist|off` (no deploy). Alexa+ calls from Amazon's addresses, so it needs `open`.
+- **What it costs:** every agent run's tokens and cost go onto the Stats page as "Operator
+  assistant" (and into the `spend` tool), per environment, the week they are spent; each user may
+  ask 100 questions a UTC day (`agent_daily_question_cap`). Its Lambda, API Gateway, DynamoDB and
+  Cognito use is in the bill's Infrastructure group, from the daily Cost Explorer poll.
 
 To try it: create a user in the environment's pool (`ops_user_pool_id` output; `aws cognito-idp
 admin-create-user`, then `admin-set-user-password --permanent`), open `<site>/ask.html` in Chrome or

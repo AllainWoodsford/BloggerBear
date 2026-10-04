@@ -53,6 +53,7 @@ a single get_item, never a scan-and-sum over every week that has ever existed.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -66,8 +67,15 @@ from common.dynamo import (
     set_stats_history_week_fields,
     set_stats_totals_fields,
 )
+from common.model_pricing import default_model_entry
 
-BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening")
+BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening", "assistant")
+
+# The operator's assistant (lambdas/ops_agent): every question it answers, on the page or started
+# by Alexa+, is one agent run of several model calls. Its tokens and cost are tallied here per run
+# (record_assistant_run below), so they are on the Stats page, in the `spend` tool's AI spend, and
+# in each environment's own figure, the same week they are spent.
+ASSISTANT_CATEGORY = "assistant"
 
 # Not one of BEDROCK_CATEGORIES above -- articles never call tracked_claude (they build their own
 # lineage via common/costing.py, long before this module existed), so record_article_lineage below
@@ -193,6 +201,47 @@ def tracked_claude(category: str, prompt: str, model_id: str, *, max_tokens: int
     except Exception as exc:  # noqa: BLE001 - bookkeeping must never lose the caller's answer
         print(f"stats_tracking: could not record a {category!r} call: {exc!r}")
     return result["text"]
+
+
+def _assistant_pricing(model_id: str) -> dict | None:
+    """The price for the agent's model. The registry first, as for every other call; but the
+    agent's role reads no table it does not need, and the Models table is one of those, so a
+    registry that cannot be read falls back to the built-in prices (common/model_pricing.py),
+    which cover the model the agent is deployed with."""
+    try:
+        return pricing_for(model_id)
+    except Exception:  # noqa: BLE001 - no registry here: the built-in table is the answer
+        return default_model_entry(model_id)
+
+
+def record_assistant_run(model_id: str, input_tokens: int, output_tokens: int, model_calls: int) -> None:
+    """Tally one assistant run (a question answered, or a briefing Alexa+ started) onto this
+    week's row under ASSISTANT_CATEGORY: `model_calls` calls, their tokens, and their cost. A run
+    with no price is counted as unpriced calls, never as free. Never raises, and does nothing
+    where the function has no Stats table (a local run, a test)."""
+    if not os.environ.get("STATS_CURRENT_TABLE"):
+        return
+    try:
+        calls = max(0, int(model_calls))
+        tokens_in = max(0, int(input_tokens))
+        tokens_out = max(0, int(output_tokens))
+        if not calls and not tokens_in and not tokens_out:
+            return
+        updates: dict[str, int | Decimal] = {
+            f"{ASSISTANT_CATEGORY}_calls": calls,
+            f"{ASSISTANT_CATEGORY}_input_tokens": tokens_in,
+            f"{ASSISTANT_CATEGORY}_output_tokens": tokens_out,
+        }
+        cost_usd = call_cost_usd(
+            {"input_tokens": tokens_in, "output_tokens": tokens_out}, _assistant_pricing(model_id)
+        )
+        if cost_usd is not None:
+            updates[f"{ASSISTANT_CATEGORY}_cost_aud"] = Decimal(str(cost_usd * USD_TO_AUD_RATE))
+        else:
+            updates[f"{ASSISTANT_CATEGORY}_unpriced_calls"] = calls
+        increment_current_stats(updates, _current_week_start())
+    except Exception as exc:  # noqa: BLE001 - bookkeeping never fails the answer
+        print(f"stats_tracking: could not record an assistant run: {type(exc).__name__}")
 
 
 def _record(updates: dict[str, int | Decimal]) -> None:

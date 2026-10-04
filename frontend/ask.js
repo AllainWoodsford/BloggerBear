@@ -967,6 +967,13 @@
           status.textContent = MESSAGES.forbidden;
           return null;
         }
+        if (response.status === 429) {
+          // The daily cap (the API's own words), or API Gateway's throttle (no words of its own).
+          return errorFrom(response).then(function (reason) {
+            status.textContent = reason || "Too many questions just now. Try again in a moment.";
+            return null;
+          });
+        }
         if (response.status === 400) {
           return errorFrom(response).then(function (reason) {
             status.textContent = "The assistant did not take that question" + (reason ? ": " + reason : ".");

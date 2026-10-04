@@ -864,3 +864,14 @@ def test_the_voice_is_the_exact_tag_then_the_default_english_then_any_english(no
 def test_the_environment_label_is_a_short_word_or_nothing(node_result):
     assert node_result["environments"] == ["dev", "", "", ""]
 
+
+def test_a_429_shows_the_apis_own_words_the_daily_cap_or_a_plain_throttle_message():
+    """POST /ask answers 429 with the daily cap's words (ops_agent/quota.py); API Gateway's own
+    throttle answers 429 with none of its own. Both are shown, never as "could not answer"."""
+    code = _code(_read("ask.js"))
+    ask = code[code.index("function ask(text)") :]
+
+    status_429 = ask.index("response.status === 429")
+    assert status_429 < ask.index("if (!response.ok)")
+    block = ask[status_429 : ask.index("response.status === 400")]
+    assert "errorFrom(response)" in block and "Too many questions just now" in block

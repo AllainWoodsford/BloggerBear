@@ -216,3 +216,14 @@ variable "waf_log_groups" {
     error_message = "Each WAF log group needs its region: the home region, or us-east-1 for the CloudFront firewall's."
   }
 }
+
+variable "agent_daily_question_cap" {
+  type        = number
+  default     = 100
+  description = "How many questions each signed-in user may ask the assistant per UTC day, counting briefings Alexa+ starts (lambdas/ops_agent/quota.py). What bounds one sign-in's model spend: a briefing is several model calls, about A$0.01-0.03 on Haiku 4.5. Past it, POST /ask answers 429 until midnight UTC."
+
+  validation {
+    condition     = var.agent_daily_question_cap >= 1 && var.agent_daily_question_cap == floor(var.agent_daily_question_cap)
+    error_message = "agent_daily_question_cap must be a whole number, 1 or more."
+  }
+}

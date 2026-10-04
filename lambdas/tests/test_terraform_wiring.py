@@ -2244,6 +2244,29 @@ def test_the_agents_role_may_invoke_the_model_read_the_switch_and_log():
     assert "aws_iam_role_policy_attachment" not in module and "managed_policy_arns" not in module
 
 
+def test_everything_the_agents_role_is_granted_is_named_here():
+    """Across the module, the agent's role has its own policy (agent.tf), the briefings write
+    (briefings.tf), the run-cost tally (costs.tf) and the cross-environment Deny (isolation.tf),
+    and nothing else. The tally is UpdateItem on the Stats table alone."""
+    granted = set()
+    for path in sorted((INFRA / "modules" / "ops-assistant").glob("*.tf")):
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        pattern = r'^resource "aws_iam_role_policy(?:_attachment)?" "([^"]+)" \{\n(.*?)^\}'
+        for name, body in re.findall(pattern, text, re.S | re.M):
+            if "aws_iam_role.ops_agent." in body:
+                granted.add((path.name, name))
+    assert granted == {
+        ("agent.tf", "ops_agent"),
+        ("briefings.tf", "ops_agent_briefings"),
+        ("costs.tf", "ops_agent_stats"),
+        ("isolation.tf", "ops_agent_other_environments_denied"),
+    }, granted
+    costs = _uncommented(_read("modules", "ops-assistant", "costs.tf"))
+    assert set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', costs)) == {"dynamodb:UpdateItem"}
+    assert "resources = [local.agent_stats_table.arn]" in costs
+    assert 'lookup(var.tables, "STATS_CURRENT_TABLE", null)' in costs
+
+
 def test_the_agents_bedrock_statement_names_what_the_shared_roles_does():
     """Invoking through an inference profile needs the profile and the foundation models behind
     it. The shared role's statement is the one proven against the account; the agent's is the same
@@ -2304,12 +2327,14 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
         "ops_agent/policy.py",
         "ops_mcp/access.py",
         "ops_mcp/briefings.py",
+        "ops_agent/quota.py",
     ):
         text = (ROOT / "lambdas" / path).read_text(encoding="utf-8")
         read_by_code |= set(re.findall(r'os\.environ(?:\.get\(|\[)"([A-Z_]+)"', text))
         read_by_code |= set(re.findall(r'^[A-Z_]+_ENV = "([A-Z_]+)"', text, re.M))
     read_by_code -= {"AWS_REGION", "AWS_DEFAULT_REGION"}  # set by Lambda itself
     read_by_code.add("MODEL_CONFIG_TABLE")  # common/dynamo.py's get_pipeline_config
+    read_by_code.add("STATS_CURRENT_TABLE")  # common/stats_tracking.py's record_assistant_run
     # briefings.py's agent to start: read only by the MCP server, which starts one, never by the
     # agent, which is the one started.
     read_by_code.discard("OPS_AGENT_FUNCTION")
@@ -2323,6 +2348,8 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
         "OPS_ASSISTANT_ALLOWED_CIDRS": 'join(",", var.allowed_cidrs)',
         "OPS_AGENT_FORWARD_KEY": "var.agent_forward_key",
         "OPS_BRIEFINGS_TABLE": "aws_dynamodb_table.briefings.name",
+        "OPS_AGENT_DAILY_QUESTION_CAP": "tostring(var.agent_daily_question_cap)",
+        "STATS_CURRENT_TABLE": 'local.agent_stats_table == null ? "" : local.agent_stats_table.name',
     }
     # A trace of an agent run carries the question and the answer: nothing switches one on.
     assert "OTEL_" not in _uncommented(_agent_module())
@@ -2554,6 +2581,7 @@ def test_the_agents_package_holds_what_the_handler_imports_built_for_the_runtime
         "ops_agent",
         "ops_agent.agent",
         "ops_agent.policy",
+        "ops_agent.quota",
         "ops_mcp",
         "ops_mcp.access",
         "ops_mcp.briefings",

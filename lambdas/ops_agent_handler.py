@@ -58,7 +58,7 @@ import json
 import os
 
 from common import dynamo
-from ops_agent import agent, policy
+from ops_agent import agent, policy, quota
 from ops_mcp import access, briefings
 
 QUESTION_MAX_CHARS = 500
@@ -205,6 +205,16 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
     except _Invalid as exc:
         return _error(400, str(exc))
 
+    # The daily cap (ops_agent/quota.py): counted after the request is known to be a real
+    # question, before the model is called. A 429 the page shows as it is.
+    counted, reason = quota.take(_caller_id(event))
+    if not counted:
+        print(f"ops_agent: question refused ({reason})")
+        limit = quota.cap()
+        if reason == quota.OVER_CAP and limit is not None:
+            return _error(429, quota.message(limit))
+        return _error(503, _UNAVAILABLE)
+
     try:
         result = agent.answer(question, history, authorization, _vouching_headers(event, admitted))
     except agent.AgentError as exc:
@@ -293,6 +303,12 @@ def _briefing_run(event: dict) -> dict:
         allowed, reason = False, access.CONFIG_UNREADABLE
     if not allowed:
         print(f"ops_access: briefing run refused ({reason})")
+        briefings.record_failure(user_id, request_id)
+        return {"ok": False}
+    # A briefing Alexa+ started is a question like any other, and counts against the same cap.
+    counted, reason = quota.take(user_id)
+    if not counted:
+        print(f"ops_agent: briefing run refused ({reason})")
         briefings.record_failure(user_id, request_id)
         return {"ok": False}
     try:
