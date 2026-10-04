@@ -84,7 +84,13 @@ secrets there, and tells you if it does not.
   [Deploying to another region](#deploying-to-another-region).
 - Terraform 1.10 or newer, and the AWS CLI.
 - Your fork on GitHub, with Actions enabled, a `dev` branch and a `prod` branch.
-- For production only: a domain you control. Production always uses a custom domain.
+- For production only: a domain you control, bought from any registrar. Production always uses a
+  custom domain. You do not move the domain to AWS: you point its name servers at a Route 53 zone
+  (the original deployment's registrar is GoDaddy, which the runsheet uses as its worked example).
+- Room in your Lambda quota. A new AWS account often allows only 10 concurrent Lambda executions
+  for the whole account. Everything here runs within that, but it is shared by every function in
+  both environments: ask for more under Service Quotas > AWS Lambda > "Concurrent executions"
+  before you rely on the site.
 
 ## 1. Bootstrap, once, by hand
 
@@ -219,6 +225,50 @@ terraform -chdir=infra/environments/dev init \
 TF_VAR_aws_region=eu-west-1 terraform -chdir=infra/environments/dev plan
 ```
 
+## 5. After the first deploy
+
+Dev is up once the `terraform` workflow goes green. What is left is by hand, and none of it is in
+GitHub's settings.
+
+1. **Find your addresses.** `terraform -chdir=infra/environments/dev output` (after the `init`
+   shown above) prints the site's address, the public and admin API URLs, and the assistant's
+   `ops_ask_url`, `ops_mcp_url`, `ops_user_pool_id`, `ops_app_client_id` and
+   `ops_hosted_ui_domain`.
+2. **Confirm the alert email.** AWS sends a confirmation to `ALERT_EMAIL_DEV`; nothing is
+   delivered until you click it.
+3. **Point the admin CLI at dev and seed a topic** (`scripts/QUICKSTART.md`, README step 6):
+   ```bash
+   export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/dev output -raw admin_api_url)
+   python scripts/admin_cli.py topics list
+   ```
+   The admin API only answers from the addresses in `ADMIN_ALLOWED_CIDRS_DEV`, with your own AWS
+   credentials. A topic creates its own schedules; trigger it once by hand to see it work.
+4. **Optional: a CoinGecko API key**, if you run a crypto topic. It is not a GitHub secret: the
+   Lambda reads it at run time from SSM Parameter Store, a SecureString named
+   `/bloggerbear/dev/coingecko-api-key` (production: `/bloggerbear/production/coingecko-api-key`).
+   Without one the adapter uses CoinGecko's keyless public API.
+   ```bash
+   aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key \
+     --type SecureString --value <key> --overwrite
+   ```
+   In Git Bash on Windows put `MSYS_NO_PATHCONV=1` in front, or the leading `/` is rewritten.
+5. **The operator assistant** (dev only for now): a sign-in page at `<dev site>/ask.html` in front
+   of an agent that reports what needs your attention and shows the `admin_cli` command for each
+   thing. It never runs anything. It has its own user pool, with self sign-up off, so create your
+   user by hand:
+   ```bash
+   aws cognito-idp admin-create-user --user-pool-id <ops_user_pool_id> \
+     --username <a name> --temporary-password <one>
+   ```
+   Sign in on the page to set a password. To restrict it to your own addresses, or switch it off,
+   without a deploy: `python scripts/admin_cli.py pipeline-config set --assistant-access allowlist`
+   (or `off`; `open` is the default).
+6. **Production and your domain:** follow [production-runsheet.md](production-runsheet.md). It
+   covers the DNS zone, pointing your registrar at it, the first release, and what to check after.
+
+If you keep the data sources this project ships with, keep their credits too: see
+[Data sources and attribution](../README.md#data-sources-and-attribution) in the README.
+
 ## Deploying to another region
 
 The original deployment is in `ap-southeast-2` (Sydney), and that is what you get with nothing
@@ -281,7 +331,8 @@ These need a hand edit in your fork, or cannot be changed yet.
 - **Production's domain.** `infra/environments/production/terraform.tfvars` sets `domain_name` and
   `hosted_zone_id` to the original site's. Change both to yours (`hosted_zone_id` is a bootstrap
   output). A value in that file wins over anything CI passes, so it has to be edited there.
-  Production cannot be deployed without a domain.
+  Production cannot be deployed without a domain. Any registrar will do: see
+  [production-runsheet.md](production-runsheet.md) for pointing it at the zone.
 - **The site itself.** The pages, the privacy policy and some tests name `bloggerbear.com`.
 - **The backend blocks** in both environments name `bloggerbear-terraform-state` in
   `ap-southeast-2`. Terraform does not allow a variable there. CI overrides the name with

@@ -506,7 +506,28 @@ shared account, "named resources only" covers what has a name to scope by; list 
 account-wide (list calls, billing, anything shared) and decide each one in code. Separate accounts
 are the only hard wall.
 
-**10.16 A proposal that read like documentation, and wasn't.** An externally written `AlexaMCP.md`
+
+**10.15 An apostrophe stopped the first deploy of the assistant.** The Cognito resource server was
+named "BloggerBear operator's assistant". Cognito only allows that name to match `[\w\s+=,.@-]+`,
+and says so at apply: `validate`, `plan` and every CI check passed. The apply stopped part-way, with
+the user pool and the API created and the resource server, app client and authorizer not. **Fix:**
+no apostrophes, and a `terraform test` that holds the patterns Cognito enforces for the pool, the
+client, the resource server and the sign-in prefix. **Lesson:** the same as 2.9: what only AWS
+checks, and only at apply, needs a test of its own. (#183)
+
+**10.16 Reserved concurrency on an account with none to spare.** The agent's Lambda asked for a
+reserved concurrency of 2, as a ceiling on how many questions could be at Bedrock at once. The apply
+failed: "decreases account's UnreservedConcurrentExecution below its minimum value of [10]". This
+account's whole Lambda quota is 10, which is also the minimum Lambda keeps unreserved, so nothing can
+be reserved in it at all. The failure left `/ask` on the API but not on the deployed stage, so the
+page reported "could not reach the assistant" while sign-in worked: the browser's preflight met API
+Gateway's 403 "Missing Authentication Token", which is its answer for a route the stage does not
+have. **Fix:** no reservation by default; the stage's throttle is the only bound until the quota is
+raised. **Lesson:** a new account's quotas are part of the design, and the default Lambda quota is
+far below the 1,000 the documentation leads with. **Feedback:** "Missing Authentication Token" for a
+route that does not exist sent the first look in the wrong direction. (#187)
+
+**10.17 A proposal that read like documentation, and wasn't.** An externally written `AlexaMCP.md`
 proposed moving to a native Alexa+ add-on. Checked line by line against the toolkit pages, the
 MCP authorization spec and RFC 9728, it said the opposite of the spec in one place (401 "without a
 `WWW-Authenticate` header"; the header is how a client finds the metadata), named a protocol
@@ -517,20 +538,20 @@ agent, which is the part the judging criteria reward. **Decided:**
 [docs/enhancements/alexa-plus.md](enhancements/alexa-plus.md) replaces it. **Lesson:** 6.5 again: a
 confident spec is a draft until each claim is checked against its source.
 
-**10.17 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
+**10.18 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
 Resource Metadata at `https://host/.well-known/oauth-protected-resource`. On a REST API's default
 URL the first path segment is the stage, so that path asks for a stage named `.well-known` and gets
 a 403. The way out is in the MCP spec: a client must use the `resource_metadata` URL from the 401's
 `WWW-Authenticate` header first, and that URL can sit under the stage. **Feedback:** the toolkit
 pages would save a day by saying whether Alexa+ follows the header or only the root path.
 
-**10.18 Cognito doesn't advertise the PKCE it enforces.** Its OIDC discovery document has no
+**10.19 Cognito doesn't advertise the PKCE it enforces.** Its OIDC discovery document has no
 `code_challenge_methods_supported`, and the MCP spec tells a client to refuse an authorization
 server that doesn't list S256. **Fix:** our own RFC 8414 document, static JSON from an API Gateway
 mock integration, naming Cognito's endpoints. **Feedback (AWS):** one line in Cognito's discovery
 document would make every user pool usable by MCP clients as it stands.
 
-**10.19 The voice button "doesn't work", and the page's logic was fine.** With a fake speech
+**10.20 The voice button "doesn't work", and the page's logic was fine.** With a fake speech
 engine in headless Chromium the button, the request and the spoken answer all worked. What fails
 is the browser's side: a long press on a phone cancels the pointer and stopped listening at once;
 `lang="en"` where Safari wants a full tag; `cancel()` then `speak()` in the same tick, which
@@ -542,12 +563,13 @@ now, so a stub that only replaced `webkitSpeechRecognition` tested the real one 
 a "Test voice" button that says which part is broken. **Lesson:** browser speech APIs fail
 differently per browser and per device; a self-test is worth more than another guess.
 
-**10.20 Alexa+'s latency limit rules out the agent in the loop.** The toolkit asks for a round
+**10.21 Alexa+'s latency limit rules out the agent in the loop.** The toolkit asks for a round
 trip under 500 ms; a Strands briefing is 10 to 25 seconds and a cold MCP Lambda alone 1 to 3. It
 also showed the web path was close to API Gateway's 29-second ceiling, where a 504 reads on the
 page as "could not answer". **Decided:** Alexa starts a briefing (an async Lambda invoke, as the
 user) and reads the last one back; both are one DynamoDB call. A "nightly cron" was rejected: it
 has no user to call the tools as, and the memory is per user.
+
 
 ---
 
