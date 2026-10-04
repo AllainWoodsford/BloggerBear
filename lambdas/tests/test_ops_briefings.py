@@ -359,3 +359,9 @@ def test_a_keep_warm_ping_is_answered_and_nothing_else(table, monkeypatch):
     with TestClient(server.create_app(), base_url="http://ops.example.test") as client:
         response = client.post(server.EVENTS_PATH, json={"source": "bloggerbear.keep-warm"})
     assert response.status_code == 204 and response.content == b""
+
+
+def test_an_async_invoke_is_never_retried_into_a_second_run():
+    """A timed-out async Invoke may still have been queued: retrying it would queue the same run
+    again, a second model run for one start_briefing."""
+    assert briefings._LAMBDA_CONFIG.retries["total_max_attempts"] == 1

@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 24 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 25 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -608,6 +608,20 @@ review. **Fix:** a sentence ends at a stop followed by a space or the end, and t
 the joined text exactly, with a number in it. **Lesson:** a test that normalises before comparing
 must not normalise away the thing that can break; compare what the user gets (here, the spoken
 text). (#198)
+
+**10.25 Three voice faults a review found, none of them visible to the tests that passed.** A
+review of the series found the speech unlock listening for `pointerdown`, which is a user activation
+for a mouse but not for a touch, so on iOS the utterance meant to unlock speech was itself refused,
+and the unlock marked itself done anyway; the voice test starting the microphone 2.5 s after its
+sample sentence began, and starting the microphone cancels speech; and a Lambda client that
+retried a timed-out async invoke, which may already have been queued, so one `start_briefing`
+could run the agent twice. The fix for the first then failed its own browser check: "tap anywhere
+to hear the answer" listened on the app's section only, so a tap on the heading did nothing.
+**Fix:** unlock on `click` anywhere in the document, done only when the silent utterance starts,
+and a refused answer kept and spoken from the next tap; the test listens when its sample ends;
+no retry on the invoke. **Lesson:** the browser's rules (what counts as a gesture, what cancels
+what) are the specification here, and a fake that skips them passes everything; the headless
+check with events like the real ones is what found the last one.
 
 ---
 

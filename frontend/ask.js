@@ -37,7 +37,8 @@
   var HOLD_MS = 400; // a press shorter than this is a tap: start now, stop on the next press
   var CLICK_AFTER_PRESS_MS = 700; // a click this soon after a press belongs to that press
   var SPEECH_CHUNK_CHARS = 180; // Chrome's online voices stop partway through a long utterance
-  var SPEECH_DELAY_MS = 80; // Chrome drops an utterance spoken in the same tick as cancel()
+  var SPEECH_DELAY_MS = 80;
+  var SPEECH_DONE_FALLBACK_MS = 15000; // the longest say() waits for a browser to report the end // Chrome drops an utterance spoken in the same tick as cancel()
   var TABLE_MAX_ROWS = 50; // what POST /ask sends at most (lambdas/ops_agent/policy.py)
   var TABLE_MAX_COLUMNS = 16;
 
@@ -612,6 +613,7 @@
   var speechQueue = [];
   var speechTimer = 0;
   var speechUnlocked = false;
+  var blockedSpeech = ""; // an answer the browser refused to speak until the next tap
   var voice = null;
 
   function chooseVoice() {
@@ -630,7 +632,9 @@
   }
 
   // Speaks whatever it is given, muted or not (the voice test uses it directly).
-  function say(text) {
+  // `onDone` (optional) is called once, when the last piece has been spoken (or failed), so the
+  // voice test can start listening after its sample and not over it: listening cancels speech.
+  function say(text, onDone) {
     if (!synth) {
       return false;
     }
@@ -639,27 +643,48 @@
     if (!chunks.length) {
       return false;
     }
+    var done = false;
+    function finish() {
+      if (!done) {
+        done = true;
+        if (onDone) {
+          onDone();
+        }
+      }
+    }
     if (!voice) {
       chooseVoice();
     }
     // On the next tick, never in the same one as cancel(): Chrome drops that utterance.
     speechTimer = root.setTimeout(function () {
-      chunks.forEach(function (chunk) {
+      chunks.forEach(function (chunk, position) {
         var utterance = new root.SpeechSynthesisUtterance(chunk);
         utterance.lang = LANG;
         if (voice) {
           utterance.voice = voice;
         }
-        utterance.onend = utterance.onerror = function () {
+        utterance.onend = utterance.onerror = function (event) {
           var index = speechQueue.indexOf(utterance);
           if (index >= 0) {
             speechQueue.splice(index, 1);
+          }
+          if (event && event.type === "error" && event.error === "not-allowed") {
+            // The browser wants a tap before it will speak (iOS): keep the answer, and say it
+            // when the operator next taps or clicks anything (unlockSpeech).
+            blockedSpeech = text;
+            speechUnlocked = false;
+            status.textContent = "Tap anywhere on the page to hear the answer.";
+          }
+          if (position === chunks.length - 1) {
+            finish();
           }
         };
         speechQueue.push(utterance);
         synth.speak(utterance);
       });
     }, SPEECH_DELAY_MS);
+    // A browser that never reports the end must not leave the caller waiting for ever.
+    root.setTimeout(finish, SPEECH_DONE_FALLBACK_MS);
     return true;
   }
 
@@ -673,13 +698,30 @@
   // iOS speaks only if speech was first started from a tap; an answer arrives seconds after one.
   // The first tap on a control (not the talk button, whose tap starts the microphone) speaks one
   // silent space, and later answers are then allowed.
+  //
+  // On click (and Enter or Space), not pointerdown: a touch's pointerdown is not a user activation,
+  // so iOS would refuse the very utterance meant to unlock it. Not on the talk button, whose tap
+  // starts the microphone. Marked done only when the silent utterance actually starts; an answer
+  // that was refused in the meantime (blockedSpeech) is spoken now, from this tap.
   function unlockSpeech(event) {
-    if (speechUnlocked || !synth || (event && event.target && event.target.closest && event.target.closest("#ask-talk"))) {
+    if (!synth || (event && event.target && event.target.closest && event.target.closest("#ask-talk"))) {
       return;
     }
-    speechUnlocked = true;
+    if (blockedSpeech) {
+      var text = blockedSpeech;
+      blockedSpeech = "";
+      speechUnlocked = true;
+      speak(text);
+      return;
+    }
+    if (speechUnlocked) {
+      return;
+    }
     var silent = new root.SpeechSynthesisUtterance(" ");
     silent.volume = 0;
+    silent.onstart = function () {
+      speechUnlocked = true;
+    };
     synth.speak(silent);
   }
 
@@ -1179,8 +1221,27 @@
         ? "Speaking: the browser can speak answers" + (muted ? " (the voice is muted for answers)." : ".") + " You should hear a short sentence now."
         : "Speaking: this browser cannot speak answers. They are shown as text."
     );
-    speechUnlocked = true;
-    say("This is how the assistant's answers will sound.");
+    // The test button's own click: the browser lets the page speak from it.
+    var sampleDone = false;
+    var afterSample = null;
+    function whenSampleDone(next) {
+      if (sampleDone) {
+        next();
+      } else {
+        afterSample = next;
+      }
+    }
+    var speaking = say("This is how the assistant's answers will sound.", function () {
+      sampleDone = true;
+      if (afterSample) {
+        var next = afterSample;
+        afterSample = null;
+        next();
+      }
+    });
+    if (!speaking) {
+      sampleDone = true;
+    }
     if (!Recognition) {
       lines.push("Listening: this browser has no speech recognition. Type your questions; Chrome or Edge can listen.");
       report(lines);
@@ -1200,13 +1261,14 @@
           " Say something short after the sentence ends; the words heard will appear here."
       );
       report(lines);
-      root.setTimeout(function () {
+      // After the sample has been spoken: listening cancels speech, so a fixed wait could cut it off.
+      whenSampleDone(function () {
         startListening(function (heard) {
           lines.push("Listening works. Heard: " + heard);
           report(lines);
           status.textContent = "Voice test finished.";
         });
-      }, 2500);
+      });
     };
     if (checked && checked.then) {
       checked.then(
@@ -1229,8 +1291,13 @@
   el("ask-new").addEventListener("click", newBriefing);
   muteButton.addEventListener("click", toggleMute);
   el("ask-voice-test").addEventListener("click", testVoice);
-  app.addEventListener("pointerdown", unlockSpeech, true);
-  app.addEventListener("keydown", unlockSpeech, true);
+  // The whole document, not just the app: "tap anywhere" must mean anywhere.
+  doc.addEventListener("click", unlockSpeech, true);
+  doc.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" || event.key === " ") {
+      unlockSpeech(event);
+    }
+  }, true);
   if (synth) {
     chooseVoice();
     if (synth.addEventListener) {
