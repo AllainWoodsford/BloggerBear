@@ -220,3 +220,33 @@ run "an_unknown_mfa_value_is_refused" {
   }
   expect_failures = [var.mfa_configuration]
 }
+
+# Cognito checks these at apply only, so the patterns it documents are held here. The resource
+# server name's is [\w\s+=,.@-]+ (an apostrophe failed the first dev apply); a user pool's and an
+# app client's is [\w\s+=,.@-]+ too; a domain prefix is lower-case letters, digits and hyphens.
+run "cognito_names_fit_the_patterns_cognito_enforces_at_apply" {
+  command = plan
+
+  assert {
+    condition     = can(regex("^[\\w\\s+=,.@-]+$", aws_cognito_resource_server.ops.name))
+    error_message = "the resource server's name has a character Cognito refuses"
+  }
+  assert {
+    condition     = can(regex("^[\\w\\s+=,.@-]+$", aws_cognito_user_pool.this.name))
+    error_message = "the user pool's name has a character Cognito refuses"
+  }
+  assert {
+    condition     = can(regex("^[\\w\\s+=,.@-]+$", aws_cognito_user_pool_client.page.name))
+    error_message = "the app client's name has a character Cognito refuses"
+  }
+  assert {
+    condition     = can(regex("^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", aws_cognito_user_pool_domain.this.domain))
+    error_message = "the hosted domain prefix must be lower-case letters, digits and hyphens"
+  }
+  assert {
+    condition = alltrue([
+      for scope in aws_cognito_resource_server.ops.scope : !strcontains(scope.scope_description, "'")
+    ])
+    error_message = "keep apostrophes out of scope descriptions too"
+  }
+}

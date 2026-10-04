@@ -380,14 +380,18 @@ resource "aws_cognito_user_pool_domain" "this" {
 
 # What the API is, to Cognito, and the one thing a token can be allowed to do with it. An access
 # token issued for this scope is what the authorizer below looks for.
+#
+# No apostrophes in these strings: Cognito only allows a resource server's name to match
+# [\w\s+=,.@-]+, and says so at apply, not at validate or plan. "operator's" stopped the first
+# dev apply part-way, with the user pool created and this refused.
 resource "aws_cognito_resource_server" "ops" {
   identifier   = local.resource_server_identifier
-  name         = "BloggerBear operator's assistant"
+  name         = "BloggerBear operator assistant"
   user_pool_id = aws_cognito_user_pool.this.id
 
   scope {
     scope_name        = "read"
-    scope_description = "Read the pipeline's state through the operator's assistant."
+    scope_description = "Read the state of the pipeline through the operator assistant."
   }
 }
 
