@@ -709,9 +709,12 @@ The same Terraform module, in both environments, like everything else here.
   (`module.ops_assistant` in `infra/environments/dev/main.tf`), on one REST API: `POST /mcp` and
   `POST /ask`, whose URLs are the outputs `ops_mcp_url` and `ops_ask_url`. The agent may read its
   answers from the dev site's origin only (`OPS_AGENT_ALLOWED_ORIGIN`). Of the controls below, the
-  ones in place are the stage's throttle (5 requests a second), the agent's reserved concurrency
-  (2), its 29-second timeout and `max_tokens`; the daily cap per user is not built yet. Production
-  has neither function yet. The page (`ask.html`) and the memory table are separate changes.
+  ones in place are the stage's throttle (5 requests a second), the agent's 29-second timeout and
+  `max_tokens`; no reserved concurrency (the account's quota leaves none to reserve, #187), and the
+  daily cap per user is not built yet. The page (`ask.html`) and the memory table are built.
+- **Production has the same module since #206**, with MFA on, `account_wide_data` on (the bill
+  and `firewall_review`) and production's own pool, tables and alarms. How Alexa+ fits on top of
+  both is [alexa-plus.md](alexa-plus.md).
 - **A judges' login** (in the submission's testing instructions) in the dev user pool. No MFA on it,
   since the judges must be able to sign in; it reaches dev only.
 - **Cost and abuse controls**, because a signed-in page calls Bedrock: a daily cap on questions per
@@ -808,10 +811,11 @@ button. The reply is spoken with the browser's speech synthesis.
   shown with an "Unverified" mark.
 - **Settings.** Terraform writes `window.OPS_ASSISTANT` (the ask URL, the hosted domain, the client
   id, the scope, the redirect URI) into dev's `config.js` from the `ops-assistant` module's outputs.
-  Where it is absent (production today) the page says "The assistant is not available here" and
-  does nothing else.
-- **Headers, dev only.** Two additions to the site's response headers policy, both off in
-  production: Cognito's hosted domain in `connect-src` (the token exchange; the assistant's API is
+  Production's `config.js` has them too since #206, with `environment` naming which environment a
+  copied command is for. Where they are absent the page says "The assistant is not available
+  here" and does nothing else.
+- **Headers** (both environments since #206). Two additions to the site's response headers
+  policy: Cognito's hosted domain in `connect-src` (the token exchange; the assistant's API is
   an execute-api host, already allowed), and `Permissions-Policy: microphone=(self)` instead of
   `microphone=()` (without it the browser refuses speech recognition outright).
 - **Not for visitors.** `noindex`, and no page links to it. `robots.txt` is unchanged on purpose: a

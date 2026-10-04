@@ -84,19 +84,37 @@ def test_dev_gives_the_page_its_settings_from_the_modules_outputs():
     assert 'logout_urls   = ["${local.site_url}/ask.html"]' in text
 
 
-def test_production_gives_the_page_no_settings():
-    text = (INFRA / "environments" / "production" / "main.tf").read_text(encoding="utf-8")
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_each_environment_gives_the_page_its_own_settings(env):
+    """Production has the assistant too (docs/enhancements/alexa-plus.md, section 4.4): the same
+    settings from its own module, and the environment named so a copied command says which admin
+    API it is for."""
+    text = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
+    config = re.search(r'resource "aws_s3_object" "frontend_config" \{(.*?)\n\}', text, re.S).group(1)
 
-    assert "OPS_ASSISTANT" not in text
-    assert "ops_assistant" not in text  # the day this fails, the assertions below need a decision
-    assert "allow_microphone" not in text
-    assert "hosted_ui_domain" not in text
+    assert 'askUrl: "${trimsuffix(module.ops_assistant.mcp_url, "/mcp")}/ask"' in config
+    assert 'hostedUiDomain: "${module.ops_assistant.hosted_ui_domain}"' in config
+    assert 'clientId: "${module.ops_assistant.app_client_id}"' in config
+    assert f'environment: "{env}"' in config
 
 
-def test_only_dev_loosens_the_sites_headers_and_only_for_what_the_page_needs():
+def test_productions_assistant_requires_mfa_and_is_the_only_one_with_account_wide_data():
+    production = (INFRA / "environments" / "production" / "main.tf").read_text(encoding="utf-8")
+    dev = (INFRA / "environments" / "dev" / "main.tf").read_text(encoding="utf-8")
+    module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', production, re.S | re.M).group(1)
+
+    assert re.search(r'^\s*mfa_configuration\s*=\s*"ON"$', module, re.M)
+    assert re.search(r"^\s*account_wide_data\s*=\s*true$", module, re.M)
+    assert re.search(r'^\s*environment_name\s*=\s*"production"$', module, re.M)
+    dev_module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', dev, re.S | re.M).group(1)
+    assert "account_wide_data" not in dev_module and "waf_log_groups" not in dev_module
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_sites_headers_are_loosened_only_for_what_the_page_needs(env):
     module = (INFRA / "modules" / "static-site" / "main.tf").read_text(encoding="utf-8")
     variables = (INFRA / "modules" / "static-site" / "variables.tf").read_text(encoding="utf-8")
-    dev = (INFRA / "environments" / "dev" / "main.tf").read_text(encoding="utf-8")
+    dev = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
 
     # Off unless asked for, and never wider than this site's own pages.
     assert re.search(r'variable "allow_microphone" \{\s*type\s*=\s*bool\s*default\s*=\s*false', variables)
