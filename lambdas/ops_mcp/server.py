@@ -27,15 +27,13 @@ from __future__ import annotations
 
 import os
 from typing import Any, Literal
-
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
-
-from ops_mcp import account, briefings, cli_guide, content, memory, runsheets, tools
+from ops_mcp import account, briefings, cli_guide, content, firewall, memory, runsheets, tools
 from ops_mcp import architecture as architecture_module
 from ops_mcp.access import AccessMiddleware
 
@@ -281,6 +279,18 @@ def build_server() -> MCPServer:
         the operator's words; `status` an HTTP status they asked about (400); `api` which API, if
         they said. Say that the runsheet is on screen; never read a query or a link aloud."""
         return runsheets.investigate(symptom, status, api)
+    # The firewall deep dive (firewall.py): production only. Registered only where this assistant
+    # may report account-wide data and has been given log groups of its own environment (or the
+    # shared one) to read, so dev's assistant does not have the tool at all. A deep dive: never
+    # offered on a briefing (ops_agent/policy.py).
+    if firewall.available():
+
+        @server.tool(annotations=_READ_ONLY, structured_output=True)
+        def firewall_review(hours: int = firewall.FIREWALL_DEFAULT_HOURS) -> dict[str, Any]:
+            """What the firewall allowed, blocked and counted in the last `hours` (1 to 72): per
+            firewall, blocks by rule and the most-blocked paths, against a typical day of the last
+            week. Only when the operator asks about the firewall; never part of a briefing."""
+            return firewall.firewall_review(hours)
 
     # For a client that cannot wait for the agent, Alexa+ above all (briefings.py): start one in
     # the background, and read the latest back. Registered only where the function has the table

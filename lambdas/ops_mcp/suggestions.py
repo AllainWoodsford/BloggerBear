@@ -121,6 +121,12 @@ CATALOGUE: dict[str, Suggestion] = {
             "shows what led up to it"
         ),
     ),
+    "firewall_spike": Suggestion(
+        action=(
+            "Look at the edge dashboard (bloggerbear-<env>-edge) for which rule is blocking, and at "
+            "the security incidents for what it caught"
+        ),
+    ),
     "spend_unusual": Suggestion(
         action="Look at the Stats page, then Cost Explorer by service, for what grew this week",
     ),

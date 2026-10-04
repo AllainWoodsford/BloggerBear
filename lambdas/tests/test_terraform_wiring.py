@@ -1733,6 +1733,8 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
                     ("isolation.tf", "ops_mcp_other_environments_denied"),
                     # The latest briefing per user (the test below holds what it may do).
                     ("briefings.tf", "ops_mcp_briefings"),
+                    # Production's firewall deep dive (the test below holds what it may do).
+                    ("firewall.tf", "ops_mcp_firewall"),
                 }
         if path.name not in ("memory.tf", "briefings.tf"):
             for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
@@ -1767,6 +1769,26 @@ def test_the_briefings_rights_are_one_table_and_one_function_for_each_role():
         assert "*" not in policy and "not_actions" not in policy and "Deny" not in policy
     # A failed async run is not retried into another model run.
     assert re.search(r"maximum_retry_attempts\s*=\s*0", text)
+
+
+def test_the_firewall_policy_is_production_only_and_queries_named_groups():
+    """firewall_review (firewall.tf; docs/enhancements/alexa-plus.md, section 4.4). The policy
+    exists only where account_wide_data is on and groups are given; StartQuery is on those groups
+    by ARN; the two query-id actions are the only ones on "*"; dev's root passes neither."""
+    text = _uncommented(_read("modules", "ops-assistant", "firewall.tf"))
+
+    enabled = r"firewall_enabled\s*=\s*var\.account_wide_data && length\(var\.waf_log_groups\) > 0"
+    assert re.search(enabled, text)
+    assert len(re.findall(r"count\s*=\s*local\.firewall_enabled \? 1 : 0", text)) == 2
+    actions = set(re.findall(r'"(logs:[A-Za-z]+)"', text))
+    assert actions == {"logs:StartQuery", "logs:GetQueryResults", "logs:StopQuery"}
+    on_star = r'actions\s*=\s*\["logs:GetQueryResults", "logs:StopQuery"\]\s*resources\s*=\s*\["\*"\]'
+    star = re.search(on_star, text)
+    assert star, "only the query-id actions are on *"
+    assert text.count('["*"]') == 1
+    dev = _uncommented(_read("environments", "dev", "main.tf"))
+    module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', dev, re.S | re.M).group(1)
+    assert not re.search(r"^\s*(waf_log_groups|account_wide_data)\s*=", module, re.M)
 
 
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and

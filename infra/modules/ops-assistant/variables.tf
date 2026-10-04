@@ -194,3 +194,25 @@ variable "keep_warm" {
   default     = false
   description = "Whether to keep one instance of the MCP function warm with an EventBridge Scheduler invoke every five minutes (briefings.tf). For an environment linked to Alexa+, whose latency limit a cold start breaks; about 8,600 invocations a month. Off by default: the page waits for the agent anyway."
 }
+
+variable "waf_log_groups" {
+  type = list(object({
+    region = string
+    name   = string
+  }))
+  default     = []
+  description = "The firewall's log groups firewall_review may query (firewall.tf), each with its region: this environment's own regional WAF logs (aws-waf-logs-bloggerbear-<environment_name>-*) and the shared CloudFront one (aws-waf-logs-bloggerbear-shared, in us-east-1). Used only where account_wide_data is on. Empty (the default, and always dev's): no tool, and no right to any WAF log group."
+
+  validation {
+    condition = alltrue([
+      for group in var.waf_log_groups :
+      group.name == "aws-waf-logs-bloggerbear-shared" || startswith(group.name, "aws-waf-logs-bloggerbear-${var.environment_name}-")
+    ])
+    error_message = "waf_log_groups may name this environment's own WAF log groups and the shared one, nothing else."
+  }
+
+  validation {
+    condition     = alltrue([for group in var.waf_log_groups : can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]$", group.region))])
+    error_message = "Each WAF log group needs its region: the home region, or us-east-1 for the CloudFront firewall's."
+  }
+}
