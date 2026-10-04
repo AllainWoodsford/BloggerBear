@@ -141,6 +141,17 @@ variable "ops_assistant_mfa" {
   EOT
 }
 
+variable "ops_alexa_redirect_uris" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Alexa's account-linking redirect URLs for dev's Alexa+ add-on, as `alexa-ai
+    configure-account-linking` prints them (alexa/README.md). Empty (the default): no Alexa app
+    client, and no Alexa account can be linked to dev. Never production's URLs: each environment's
+    add-on is its own, and links only to its own user pool.
+  EOT
+}
+
 variable "aws_account_id" {
   type        = string
   default     = ""

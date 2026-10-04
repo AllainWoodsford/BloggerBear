@@ -166,10 +166,10 @@ run "api_gateways_own_errors_can_be_read_by_the_one_origin" {
 
   assert {
     condition = alltrue([
-      for response in aws_api_gateway_gateway_response.cors :
-      response.response_parameters == tomap({ "gatewayresponse.header.Access-Control-Allow-Origin" = "'https://example.com'" })
+      for type, response in aws_api_gateway_gateway_response.cors :
+      tomap({ for name, value in response.response_parameters : name => value if name != "gatewayresponse.header.WWW-Authenticate" }) == tomap({ "gatewayresponse.header.Access-Control-Allow-Origin" = "'https://example.com'" })
     ])
-    error_message = "each gateway response names the one allowed origin, never *, and sets no other header"
+    error_message = "each gateway response names the one allowed origin, never *, and sets no other header but the 401's WWW-Authenticate (alexa.tf)"
   }
 
   # Nothing but the header: API Gateway keeps its own status and body.
@@ -190,7 +190,8 @@ run "with_no_origin_configured_no_page_can_read_the_errors" {
 
   assert {
     condition = alltrue([
-      for response in aws_api_gateway_gateway_response.cors : length(response.response_parameters) == 0
+      for type, response in aws_api_gateway_gateway_response.cors :
+      length({ for name, value in response.response_parameters : name => value if name != "gatewayresponse.header.WWW-Authenticate" }) == 0
     ])
     error_message = "an empty origin must leave the header off, not answer with an empty or wildcard origin"
   }
