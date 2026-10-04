@@ -1,7 +1,8 @@
 # Friction log
 
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
-plus the hackathon-planning and public-repo session of 2026-10-03.
+plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
+of 2026-10-04 (through #174).
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -16,13 +17,15 @@ AWS platform friction gets its own section.
 | Theme | Entries | The pattern |
 |---|---|---|
 | AWS platform | 11 | errors that don't say what's wrong; limits found only at runtime |
-| Terraform and CI | 8 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
-| Tests vs reality | 5 | the test environment isn't the deployed one |
+| Terraform and CI | 9 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
+| Tests vs reality | 6 | the test environment isn't the deployed one |
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
-| The model in the pipeline | 3 | model output trusted without checking it |
+| The model in the pipeline | 6 | model output trusted without checking it |
 | Agentic coding | 8 | confident output that wasn't checked against reality |
 | GitHub and the repo | 11 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
+| Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
+| Alexa+ and MCP | 9 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -137,6 +140,17 @@ hash-verified binaries, the three packages bumped, and an on-demand workflow tha
 over the whole history at every severity. **Lesson:** a green check says nothing about what it
 looked at; read what it scanned at least once.
 
+**2.9 A dashboard only production creates failed production's apply.** The v0.2.6 release stopped on
+`PutDashboard` with 84 validation errors ("metrics/0 Should be array"). One widget built its
+`metrics` with `flatten()`, which goes all the way down: six metric lists became 42 loose values.
+`validate` and `plan` both passed, because Terraform sees the dashboard body as a string and only
+CloudWatch checks its shape, at apply. And dev never creates that dashboard (it costs US$3 a month),
+so production was its first apply. **Fix:** `concat(...)` for one level, and a `terraform test`
+assertion on the shape CloudWatch insists on. **Lesson:** a resource one environment skips is
+untested until the release; give it a test that doesn't need the environment. A `Release` tag on
+every resource was considered and dropped: dashboards can't carry tags, and it would have put a
+change on every resource in every plan. (#174)
+
 ## 3. Tests vs reality
 
 **3.1 The tests passed, but the deployed Lambdas couldn't import `requests`.** The zip never included
@@ -158,6 +172,13 @@ plain ints. (#104)
 
 **3.5 Cost lineage under-reported.** The article summary showed the authoring cost only, not
 authoring plus research. (#125)
+
+**3.6 117 local failures that weren't ours.** On the Windows machine the Lambda suite fails 117
+tests with or without a change: Python on Windows has no time zone database, and `tzdata`, pinned in
+`lambdas/requirements.txt`, wasn't installed, so everything touching the feedback limits'
+`Australia/Sydney` day fails. Telling a regression from that noise took a second full run on a clean
+tree and a comparison of the two lists. **Lesson:** install the pinned requirements before trusting a
+local run, and compare failures against a baseline, not against zero. (2026-10-04)
 
 ## 4. Frontend
 
@@ -198,6 +219,29 @@ angles and titles, a retry, and a hold for moderation when it still fails. (#117
 **5.3 The same story two days running.** Ideation only saw today's findings, so a repo trending for
 days looked new every day. **Fix:** the ideation prompt gets the topic's last five titles under
 "Already covered recently". (#117)
+
+**5.4 A musing with a mood and no words.** A musing went out on 4 October as "BloggerBear was
+feeling proud", a link, and nothing else. The model had answered with an empty string, and the
+article and feedback musings stored whatever came back; the loot and rejection musings already fell
+back to plain text. **Fix:** the same fallback for all four. **Lesson:** an empty reply is not an
+exception, so nothing catches it; check for it wherever a reply is published. (2026-10-04)
+
+**5.5 An article published inside a code fence.** An article published on 2 October with no person
+involved has `**"..."**` around its title and its whole body inside a ` ```markdown ` fence, so the
+page shows it as a scrolling block of code. The model wrapped its reply; nothing stripped or
+rejected the wrapper. Found by a person reading the site, two days later. **Not fixed yet, on
+purpose:** it is the demo case for the operator assistant's content checks. The pipeline guard that
+would have held it is still to write. **Lesson:** 5.1, 5.2 and now this are the same failure: the
+reply's shape was assumed. (2026-10-04)
+
+**5.6 Fixing an article took it off the site first.** `articles rewrite` unpublished a published
+article before the rewrite had even started, so a rewrite that failed left a good article down and
+waiting in the inbox. For a one-sentence fault (5.4) that is a poor trade. **Fix:** the article
+stays up until the rewrite has been written, guarded and reviewed, and only then comes down;
+`--force` keeps the old order for an article that must come down now. A review of the change found
+three ways a still-published article could land in the inbox, where rejecting it would have left its
+page up; each got a fix and a test. **Lesson:** "take it down, then fix it" is only the safe order
+when being down is cheaper than being wrong. (2026-10-04)
 
 ## 6. Agentic coding
 
@@ -346,6 +390,71 @@ docs/enhancements/supply-chain-tracker-enhancement.md).
 
 **9.4 OpenCV 5 on Graviton is unconfirmed.** Whether an `opencv-python-headless` 5.x wheel exists for
 Linux aarch64 is still the first thing to settle.
+
+## 10. Alexa+ and MCP (2026-10-04)
+
+Planning the Alexa+ entry, before any of it is built. The design these led to is
+[docs/enhancements/alexa-plus-operator-assistant-enhancement.md](enhancements/alexa-plus-operator-assistant-enhancement.md).
+
+**10.1 Our first idea was the rules' own example of an obvious one.** The plan was a public MCP
+server wrapping the public API, answering one question at a time. The judging criteria name exactly
+that for Alexa+: "single-turn Q&A bot, basic MCP wrapper around an existing API", against "agentic
+workflow that orchestrates across services autonomously, context-aware add-on that maintains state
+across sessions". The first rules check had read the eligibility rules and not the criteria.
+**Changed:** the entry is now an operator's assistant that works out what needs attention across
+services and remembers what it suggested; the public wrapper is parked. **Lesson:** read the judging
+criteria before the design, not after.
+
+**10.2 The minimum spec version and the linked one work differently.** The rules require MCP
+`2025-11-25` or later; the hackathon's resources link to `2026-07-28`, which drops the `initialize`
+handshake, sessions and the GET stream. That suits a Lambda, but a client that only speaks
+`2025-11-25` can't talk to a `2026-07-28`-only server, and neither the spec pages nor the MCP Apps
+page says which Python SDK release speaks which version (the MCP Apps page names TypeScript packages
+only). **Decided:** `2026-07-28` first; the first day's work is finding out what the Python SDK and
+Strands' MCP client each speak. **Feedback:** a table of SDK release against protocol version, next
+to the spec, would have answered this in a minute.
+
+**10.3 "Streamable HTTP" was read as "must stream".** A draft transport decision treated Streamable
+HTTP as Server-Sent Events and planned API Gateway response streaming for it. The spec lets a server
+answer every request with one JSON object, which is all read-only tools need, and which an ordinary
+API Gateway and Lambda integration already does. **Lesson:** the transport's name describes what it
+can do, not what a server must do.
+
+**10.4 A layer ARN for the wrong region.** The same draft carried the Lambda Web Adapter's layer ARN
+for us-east-1; the stack is in ap-southeast-2 and layers are regional, so it would have failed at
+apply. Caught in review, before any apply. **Lesson:** an ARN copied from an example carries the
+example's region.
+
+**10.5 Every Lambda shares one role.** All the functions use one execution role with write and
+delete on every app table. That was fine while every function was ours and did pipeline work; a
+"read-only" assistant on that role would not be read-only. **Decided:** the MCP server gets its own
+role, scoped to what its tools read, with one table it may write.
+
+**10.6 The admin API's protection can't be reused.** Admin requests are IAM-signed and behind a WAF
+IP allowlist that fails closed; the console is a local CLI so no browser holds credentials. A voice
+page can't hold IAM keys, and a judge's network isn't on the allowlist, so the assistant is a second
+way in, with its own sign-in (Cognito, MFA in production). The MCP authorization spec's own flow is
+left out of the hackathon build: a page we control doesn't need it, and it was the largest unknown
+in the schedule. Whether Alexa+ developer access works from Australia is still unknown, so the entry
+simulates the experience in a web page, which the rules allow.
+
+**10.7 A switch in a table can't be a WAF rule.** The operator wanted to be able to lock the
+assistant to known addresses later, from a configuration table, without a deploy. WAF rules are
+Terraform's; a table row can't change one. **Decided:** the check is in the Lambdas, read from the
+existing config row on every request, and a failed read refuses the request.
+
+**10.8 Managed memory stores the wrong thing for this job.** AgentCore Memory keeps conversation
+turns and facts a model extracts from them. "Did I fix what you suggested?" needs an exact answer,
+and text extracted from tool output is a way for hostile text in a draft or a log line to be
+remembered. **Decided:** the assistant's memory is a DynamoDB table of what it suggested (kinds, ids
+and timestamps, no text), re-checked in code each session; AgentCore Memory is optional, and only
+for the operator's own words. Unconfirmed: whether it is available in ap-southeast-2.
+
+**10.9 A suggestion is a command someone will run.** The assistant shows the operator the
+`admin_cli` command that would fix what it found. If the model wrote that command, text in an
+article could put `topics delete` on the screen. **Decided:** commands come from a fixed catalogue in
+code, with ids read from the tables; the model only chooses which findings to talk about, and
+nothing in the catalogue deletes.
 
 ---
 
