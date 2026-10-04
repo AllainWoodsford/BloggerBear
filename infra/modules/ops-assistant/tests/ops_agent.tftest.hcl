@@ -216,8 +216,8 @@ run "the_agent_is_a_plain_python_function_with_a_ceiling" {
   }
 
   assert {
-    condition     = aws_lambda_function.ops_agent.memory_size == 1024 && aws_lambda_function.ops_agent.reserved_concurrent_executions == 2
-    error_message = "memory and reserved concurrency follow their variables, whose defaults are 1024 and 2"
+    condition     = aws_lambda_function.ops_agent.memory_size == 1024 && aws_lambda_function.ops_agent.reserved_concurrent_executions == -1
+    error_message = "memory and reserved concurrency follow their variables, whose defaults are 1024 and -1 (no reservation: this account has no concurrency to reserve)"
   }
 
   assert {
@@ -275,10 +275,21 @@ run "the_agent_is_told_what_it_needs_and_tracing_is_not_switched_on" {
   }
 }
 
-run "the_ceiling_cannot_be_removed_or_set_to_zero" {
+run "a_reservation_can_be_set_once_the_account_has_room" {
   command = plan
   variables {
-    agent_reserved_concurrency = -1
+    agent_reserved_concurrency = 2
+  }
+  assert {
+    condition     = aws_lambda_function.ops_agent.reserved_concurrent_executions == 2
+    error_message = "the reservation should follow the variable"
+  }
+}
+
+run "the_agent_cannot_be_switched_off_by_a_reservation_of_zero" {
+  command = plan
+  variables {
+    agent_reserved_concurrency = 0
   }
   expect_failures = [var.agent_reserved_concurrency]
 }
