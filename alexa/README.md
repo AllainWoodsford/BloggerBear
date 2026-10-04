@@ -68,10 +68,10 @@ Do all of this once for **dev**, then again, separately, for **production**. Bel
 separate `alexa-ai` project directory per environment (below, `~/bloggerbear-addon-<env>`), so
 dev's add-on and production's never share a manifest or linking settings.
 
-**Production first needs the assistant.** On this branch only dev's root
-(`infra/environments/dev`) has the `ops_assistant` module and its `ops_*` outputs. Until production
-has them, the helper stops with "Terraform has no ops_mcp_url output", and that is correct: there
-is nothing for a production add-on to point at yet.
+**Production needs a release first.** Production's root has had the `ops_assistant` module and its
+`ops_*` outputs since #206, but they exist only once a release has applied it. Until then the
+helper stops with "Terraform has no ops_mcp_url output", and that is correct: there is nothing for
+a production add-on to point at yet.
 
 ### 1. Read the environment's outputs
 

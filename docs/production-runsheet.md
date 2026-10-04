@@ -212,9 +212,22 @@ Then, in order:
    `terraform output wafv2_web_acl_arn` into `infra/environments/dev/terraform.tfvars` as
    `web_acl_arn` if you want dev to share it. It cannot be shared across accounts.
 
-**The operator assistant** (`/ask.html`, the MCP server and the agent) is deployed to dev only for
-now. On production the page says it is not available. When it is added to production it will need
-its own sign-in user, created by hand, as on dev.
+7. **The operator's assistant** (`/ask.html`; README, "The operator's assistant and Alexa+"). Its
+   user pool has self-sign-up off and MFA required, so make your own user by hand:
+   ```bash
+   POOL=$(terraform -chdir=infra/environments/production output -raw ops_user_pool_id)
+   aws cognito-idp admin-create-user --user-pool-id "$POOL" --username <you> \
+     --user-attributes Name=email,Value=<your email> --message-action SUPPRESS
+   aws cognito-idp admin-set-user-password --user-pool-id "$POOL" --username <you> \
+     --password '<a long password>' --permanent
+   ```
+   Open `https://<your domain>/ask.html`, sign in, and set up the authenticator app it asks for.
+   Press **Test voice**, then **What needs my attention?**. "What's happening with the firewall?"
+   as a follow-up is production's deep dive. Check `pipeline-config get` shows `assistant_access`
+   as `open` (or absent), unless you mean to lock it to your addresses.
+8. **Optional: Alexa+.** Production's own add-on, linked to production's pool only, is a one-time
+   bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
+   `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).
 
 ## Rolling back
 

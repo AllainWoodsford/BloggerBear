@@ -31,7 +31,8 @@ first-time setup run sheet.
   deployment package (`lambdas/`) and one shared execution role: research
   tick, daily cycle, admin API, public API, DLQ handler, weekly reflection,
   trending digest, musing feedback, Stats rollover, the Cost Explorer poll
-  and security events.
+  and security events. The operator's assistant (below) adds two more, each
+  with its own package and its own role: the ops MCP server and the agent.
 - **AI**: Amazon Bedrock through the Converse API, so any provider's model
   works. Every call goes through `lambdas/common/bedrock.py`; tracked calls
   (`invoke_model_tracked`) record tokens and cost into each article's
@@ -72,6 +73,17 @@ first-time setup run sheet.
   in production, a daily Cost Explorer poll
   (API Gateway, AgentCore and WAF spend) feeding the Stats page, and an
   AWS Budget alarm scoped to Bedrock spend.
+- **Operator's assistant (Alexa+)**: a read-only assistant that tells the
+  operator, by voice, what needs attention, and suggests the `admin_cli`
+  command for each thing it finds without ever running one. A self-hosted
+  **MCP server** (official Python SDK, Streamable HTTP, MCP `2026-07-28`
+  and `2025-11-25`) exposes the pipeline as tools; a **Strands Agents** agent
+  on Bedrock orchestrates them; the voice is the browser's speech on
+  `/ask.html` (the Alexa+ experience, simulated) and, for a real Alexa+
+  add-on, the same MCP server with OAuth account linking. Its own Cognito
+  sign-in (MFA in production), its own read-only roles, and dev's assistant
+  never sees production or the firewall. See
+  [The operator's assistant and Alexa+](#the-operators-assistant-and-alexa).
 - **IaC**: Terraform ≥1.10 (native S3 state locking — no DynamoDB lock
   table), applied via GitHub Actions using OIDC role federation (no
   long-lived AWS keys anywhere in this repo).
@@ -145,6 +157,43 @@ rollover**; and a daily **Cost Explorer poll**.
    workflow run. (They run on PRs too; GitHub branch protection isn't
    available on this repo's plan, so they don't technically block a merge.)
 
+## The operator's assistant and Alexa+
+
+The design is [docs/enhancements/alexa-plus-operator-assistant-enhancement.md](docs/enhancements/alexa-plus-operator-assistant-enhancement.md)
+(the assistant) and [docs/enhancements/alexa-plus.md](docs/enhancements/alexa-plus.md) (how Alexa+ fits on
+top). The [Amazon Build, Ship, Shape](https://amazonappdev2026.devpost.com) hackathon's Alexa+ track
+is what it was built for.
+
+```
+ /ask.html (voice: tap to talk,         Alexa+ add-on (US, account-linked
+ answer spoken, suggestion cards)        through the same Cognito pool)
+        │ POST /ask                              │ MCP 2025-11-25, OAuth 2.1 + PKCE
+        v                                        v
+ agent Lambda (Strands, Bedrock) ──MCP──> ops MCP server Lambda ──> the app's tables (read),
+   briefing: follows leads,                start_briefing ──async──> agent   alarms, S3 bodies,
+   8 tool calls at most                    latest_briefing (1 read)          WAF logs (prod only)
+```
+
+- **What it can do:** briefings (`pipeline_health`, `admin_inbox`, `content_checks`,
+  `security_events`, `alarms`, `spend`), memory across sessions (`follow_up`, `dismiss`, `watch`),
+  the Admin CLI guide (`cli_help`, `cli_command`, `topics_overview`), and in production only
+  `firewall_review`. Every suggested command comes from a fixed catalogue in code, never from the
+  model, and nothing it can call changes the pipeline.
+- **Alexa+ cannot wait for the agent** (its limit is 500 ms; a briefing takes 10–25 s), so Alexa
+  starts a briefing in the background (`start_briefing`, which invokes the agent as the caller)
+  and reads the last one back (`latest_briefing`). Every briefing asked on the page is kept too.
+- **Each environment is its own.** Dev's assistant reads dev's tables, bucket and alarms; it has
+  no firewall tool and no right to any WAF log, and never reports the AWS bill. Production's reads
+  production's, plus the bill and the firewall (both are the account's). Each has its own
+  Cognito pool and, if linked, its own Alexa+ add-on.
+- **The access switch:** `python scripts/admin_cli.py pipeline-config set --assistant-access
+  open|allowlist|off` (no deploy). Alexa+ calls from Amazon's addresses, so it needs `open`.
+
+To try it: create a user in the environment's pool (`ops_user_pool_id` output; `aws cognito-idp
+admin-create-user`, then `admin-set-user-password --permanent`), open `<site>/ask.html` in Chrome or
+Edge, sign in, press **Test voice**, then **What needs my attention?**. The Alexa+ add-on is a
+one-time bootstrap per environment: [alexa/README.md](alexa/README.md).
+
 ## What's in the repo
 
 ```
@@ -161,6 +210,10 @@ lambdas/                    Python 3.11, one shared deployment package
   stats_rollover_handler.py      weekly: roll Stats into history
   cost_explorer_poll_handler.py  daily: the AWS bill, every service
   security_events_handler.py     WAF blocks -> SecurityEvents incidents
+  ops_agent_handler.py        the assistant's POST /ask, and its async briefings
+  ops_agent/                  the Strands agent and its policy (budget, deep dives)
+  ops_mcp/                    the ops MCP server: tools, memory, briefings,
+                                the CLI guide, firewall_review, access switch
   common/                     shared modules; the main ones:
     adapters/                  base.py (contract), registry.py, and one
                                 module per domain: github_trending.py,
@@ -187,6 +240,9 @@ infra/
     rest-api/                  the admin and public REST APIs
     observability/             CloudWatch alarms and dashboards, reused
                                 by both envs
+    ops-assistant/             the operator's assistant: MCP server, agent,
+                                Cognito, OAuth metadata for Alexa+, briefings,
+                                firewall_review (production), isolation
   environments/
     dev/                       auto-deploys on push to `dev`
     production/                deploys only on a GitHub Release from `prod`
@@ -195,12 +251,17 @@ frontend/                   plain HTML/CSS/JS, no framework
   index.html, app.js, styles.css   hash-routed SPA: topics, articles,
                                     feedback, the digest, musings, Stats
   terms.html, privacy.html, about.html   static pages
+  ask.html, ask.js, ask.css      the operator's assistant: sign-in, voice,
+                                    suggestion cards (unlinked, noindex)
+
+alexa/                      the Alexa+ add-on: runbook and manifest template
 
 scripts/
   admin_cli.py               the operator's "admin UI" -- SigV4-signed
                               requests against the admin API
   review_inbox.py            `inbox` / `approve`: the one-keystroke review loop
   minify_frontend.py         builds frontend-dist/ for deploy
+  alexa_addon_values.py      the values the Alexa+ bootstrap needs
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
 

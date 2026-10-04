@@ -1,6 +1,10 @@
 # Enhancement: Alexa+ — a voice that drives the Strands assistant
 
-**Status:** proposed, being built · **Date:** 2026-10-04 · **Entry:**
+**Status:** built (PRs [#195](https://github.com/AllainWoodsford/BloggerBear/pull/195),
+[#198](https://github.com/AllainWoodsford/BloggerBear/pull/198),
+[#200](https://github.com/AllainWoodsford/BloggerBear/pull/200)–[#203](https://github.com/AllainWoodsford/BloggerBear/pull/203),
+[#206](https://github.com/AllainWoodsford/BloggerBear/pull/206)); the Alexa+ bootstrap waits on toolkit access ·
+**Date:** 2026-10-04 · **Entry:**
 [Amazon Build, Ship, Shape](https://amazonappdev2026.devpost.com), Alexa+ track. **Deadline:**
 Friday 23 October 2026, 12:00 pm PDT (Saturday 24 October, 6:00 am Sydney).
 
@@ -106,8 +110,8 @@ The button is the Alexa+ experience in the web simulation. What goes wrong today
 | The answer is sometimes not spoken | `speechSynthesis.cancel()` then `speak()` in the same tick drops the utterance in Chrome; the utterance can be garbage-collected mid-sentence; Chrome's network voices stop at about 15 s; iOS refuses `speak()` that wasn't first called in a tap | Cancel only when something is speaking, and speak on the next tick; keep a reference; speak sentence by sentence; "unlock" speech with an empty utterance on the first tap |
 | Hard to tell which part is broken | No diagnosis | A "Test voice" button: microphone permission, recognition, and speech, each reported |
 
-The page says "Voice (Alexa+ simulation)": the rules want Alexa used descriptively, never as our
-product's name. The voice prefers an `en-AU`, then `en-US` voice. Everything else about the page
+The page itself never says "Alexa" (a test holds that, for the trademark rule); the submission's
+text and video describe it as simulating the Alexa+ experience. The voice prefers an `en-AU`, then `en-US` voice. Everything else about the page
 (the token in memory only, `textContent` only, commands never spoken) is unchanged.
 
 ### 4.2 OAuth for Alexa+ account linking (PR 3)
@@ -253,14 +257,31 @@ Each PR is small enough to review alone, has its own tests, and leaves dev deplo
 
 | PR | What | Depends on |
 |---|---|---|
-| 1 | This document, and friction entries | — |
-| 2 | **Voice fix** on `ask.html` (4.1), the voice self-test, environment label on cards | — |
-| 3 | **OAuth metadata for Alexa+** (4.2): Alexa app client, PRM and AS metadata as mock integrations, `WWW-Authenticate` on 401, outputs; Terraform tests; the 2025-11-25 `initialize` contract test | — |
-| 4 | **Async briefing** (4.3, 4.5): the briefings table, `start_briefing` and `latest_briefing`, the agent's second entry point, the `/events` answer, `keep_warm`; IAM; tests | 3 (shares the module) |
-| 5 | **`firewall_review`** (4.4), production only by three gates; tests that dev can't register or read it | 4 |
-| 6 | **Production assistant** (4.4): the module in production, its page settings and headers | 5 |
-| 7 | **Add-on package and bootstrap** (4.6): `alexa/`, the runbook, a script that prints the values from `terraform output` | 3 |
-| 8 | **Docs**: README, PROGRESS, the operator-assistant doc's status, friction | all |
+| 1 | This document, and friction entries: #195 | — |
+| 2 | **Voice fix** on `ask.html` (4.1), the voice self-test, environment label on cards: #198 | — |
+| 3 | **OAuth metadata for Alexa+** (4.2): Alexa app client, PRM and AS metadata as mock integrations, `WWW-Authenticate` on 401, outputs; Terraform tests; the 2025-11-25 `initialize` contract test: #200 | — |
+| 4 | **Async briefing** (4.3, 4.5): the briefings table, `start_briefing` and `latest_briefing`, the agent's second entry point, the `/events` answer, `keep_warm`; IAM; tests: #202 | 3 (shares the module) |
+| 5 | **`firewall_review`** (4.4), production only by three gates; tests that dev can't register or read it: #203 | 4 |
+| 6 | **Production assistant** (4.4): the module in production, its page settings and headers: #206 | 5 |
+| 7 | **Add-on package and bootstrap** (4.6): `alexa/`, the runbook, a script that prints the values from `terraform output`: #201 | 3 |
+| 8 | **Docs**: README, PROGRESS, the runsheet, the operator-assistant doc's status, friction: this one | all |
+| 9+ | Fixes: #205 (`TRENDING_URL`, not this feature's but it broke `dev` mid-series) | — |
+
+### As built, where it differs from the above
+
+- **The two briefing tools are listed only where the function has the table and the agent to
+  start** (`briefings.configured`), and are never offered to the agent itself
+  (`policy.CLIENT_ONLY_TOOLS`): a briefing that started a briefing would never stop spending.
+- **A first question is recorded as a briefing only if it called a briefing tool** and returned
+  no table: a "how do I" about the Admin CLI is not the latest briefing.
+- **`keep_warm`'s role is named `…-ops-mcp-scheduler-invoke`**, not `…-keep-warm`: the deploy
+  role may manage only roles that fit its name patterns (friction 10.23).
+- **Production turns `keep_warm` on by itself** once `ops_alexa_redirect_uris` is set; dev never
+  does.
+- **The agent's timeout stays 29 seconds** on the async path too. A briefing that would need more
+  is reported as "didn't finish" two minutes after it started, as on the page.
+- **The firewall review waits up to 15 seconds** for Logs Insights and reports what finished,
+  saying so when something didn't; with no baseline it claims no spike.
 | 9+ | Fixes from reviewing 1–8 | — |
 
 ## 7. Risks and unknowns
