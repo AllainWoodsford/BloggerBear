@@ -86,10 +86,12 @@ resource "aws_lambda_function_event_invoke_config" "ops_agent" {
 
 # --- keep_warm -------------------------------------------------------------------------------------
 
+# Named to end in -scheduler-invoke: the deploy role may manage only roles that fit its patterns
+# (infra/bootstrap/main.tf, LambdaExecRole), and this is the one for a schedule's role.
 resource "aws_iam_role" "keep_warm" {
   count = var.keep_warm ? 1 : 0
 
-  name = "${local.name}-keep-warm"
+  name = "${local.name}-scheduler-invoke"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
