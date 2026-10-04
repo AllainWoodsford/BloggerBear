@@ -1013,6 +1013,26 @@ def test_every_aws_provider_refuses_any_account_but_the_expected_one(root):
     assert 'var.aws_account_id == "" || can(regex("^[0-9]{12}$", var.aws_account_id))' in variable
 
 
+@pytest.mark.parametrize("root", _ROOTS, ids=lambda parts: parts[-1])
+def test_the_account_id_is_sensitive_and_nothing_can_print_it(root):
+    """GitHub masks only the secret's exact text. `sensitive` covers what Terraform prints itself;
+    it also makes Terraform refuse an error message or an unmarked output built from the value, so
+    neither may exist."""
+    variables = _read(*root, "variables.tf")
+    variable = variables.split('variable "aws_account_id" {')[1].split("\n}\n")[0]
+    assert '\n  sensitive   = true\n' in variable
+    # No validation message, here or on a variable checked against it, repeats the value.
+    for message in re.findall(r"^\s*error_message\s*=\s*(.*)$", variables, re.M):
+        assert "var.aws_account_id" not in message and "${" not in message, message
+    # It reaches the provider blocks and nothing else: no output, no local, no module argument.
+    main = _uncommented(_read(*root, "main.tf"))
+    assert main.count("var.aws_account_id") == 2 * len(_provider_blocks(_read(*root, "main.tf")))
+    for name in ("outputs.tf", "locals.tf"):
+        path = INFRA.joinpath(*root, name)
+        if path.is_file():
+            assert "aws_account_id" not in _uncommented(path.read_text(encoding="utf-8")), name
+
+
 def test_production_really_has_a_us_east_1_provider_and_it_is_guarded_too():
     blocks = _provider_blocks(_read("environments", "production", "main.tf"))
     alias = [block for block in blocks if 'alias  = "us_east_1"' in block]
@@ -1039,10 +1059,12 @@ def test_each_deploy_workflow_passes_the_account_settings_and_falls_back_to_what
 ):
     text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
 
-    # A secret first: a variable prints in plain text in public logs (same rule as the role ARN).
-    assert f"      TF_VAR_aws_account_id: ${{{{ secrets.{account} || vars.{account} }}}}\n" in text
+    # Secrets, and only secrets: a variable prints in plain text in public logs, so neither the
+    # account ID nor the state bucket's name may be read from one, even as a fallback.
+    assert f"      TF_VAR_aws_account_id: ${{{{ secrets.{account} }}}}\n" in text
+    assert f"      TF_STATE_BUCKET: ${{{{ secrets.{bucket} }}}}\n" in text
+    assert f"vars.{account}" not in text and f"vars.{bucket}" not in text
     assert "      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}\n" in text
-    assert f"      TF_STATE_BUCKET: ${{{{ vars.{bucket} }}}}\n" in text
 
     # Unset, the init is the bare command it always was; set, only the bucket is overridden.
     assert (
@@ -1172,6 +1194,14 @@ def test_the_fork_guide_names_every_setting_the_workflows_read():
     assert new <= settings
     for setting in sorted(settings):
         assert f"`{setting}`" in guide, setting
+    # The account IDs and the state buckets are documented as secrets, the only way they are read.
+    sensitive = ("AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD")
+    for setting in sensitive:
+        assert re.search(rf"^\| `{setting}` \| secret \|", guide, re.M), setting
+    # And the setup script is the first thing the guide offers, dry run first.
+    quick = guide.split("## Quick start: the setup script")[1].split("\n## ")[0]
+    assert quick.index("setup_repo.py --dry-run") < quick.index("setup_repo.py   ")
+    assert guide.index("## Quick start: the setup script") < guide.index("## How a deploy picks its account")
 
 
 def test_security_scans_cover_the_whole_repo_with_pinned_tools():
