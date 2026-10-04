@@ -511,6 +511,50 @@ browser's speech recognition where it exists (Chrome, Edge), with a text box eve
 shows the question, the answer as text, the tool calls, and the suggestion cards, each with a copy
 button. The reply is spoken with the browser's speech synthesis.
 
+**What was built** (`frontend/ask.html`, `ask.js`, `ask.css`; tests in
+`lambdas/tests/test_frontend_ask.py`):
+
+- **The gate.** Without a token the page shows a line of explanation and "Sign in". Sign-in is
+  Cognito's hosted page, authorization code with PKCE (S256, Web Crypto), `state` checked on return,
+  the code exchanged at the hosted domain's `/oauth2/token`. The access token is a variable in the
+  script and nothing else: a reload or a closed tab signs you out. Only the PKCE verifier and state
+  touch `sessionStorage`, between leaving for the hosted page and coming back, and are removed as
+  they are read. `code` and `state` are taken out of the address bar before the exchange. "Sign
+  out" forgets the token and goes through the hosted `/logout`. A token past its hour, or a 401,
+  returns to the gate with a plain message.
+- **Asking.** A large push-to-talk button where the browser has speech recognition (hold it, or
+  Space/Enter, while speaking; or press once to start and again to stop), a text box everywhere, and
+  a "What needs my attention?" button that starts a fresh briefing. The API's limits (500
+  characters; 6 turns of history, 1,000 characters each) are applied before sending. The
+  conversation is an array in the page; "New briefing" clears it.
+- **Answering.** The question, the answer as text, the answer spoken (a mute button; speech stops
+  when a new question starts), the tool calls in order with their arguments, and one card per
+  finding: Noticed, Where, Suggested, the command with a Copy button, What it does. A suggestion
+  with no command is a "Look at" card; a finding with no suggestion shows what was noticed. A
+  command is never spoken, and nothing on the page can run one.
+- **Untrusted text.** Everything from the API is written with `textContent`; the files contain no
+  `innerHTML`, `eval` or inline handler (a test holds that). Anything under an `untrusted` key is
+  shown with an "Unverified" mark.
+- **Settings.** Terraform writes `window.OPS_ASSISTANT` (the ask URL, the hosted domain, the client
+  id, the scope, the redirect URI) into dev's `config.js` from the `ops-assistant` module's outputs.
+  Where it is absent (production today) the page says "The assistant is not available here" and
+  does nothing else.
+- **Headers, dev only.** Two additions to the site's response headers policy, both off in
+  production: Cognito's hosted domain in `connect-src` (the token exchange; the assistant's API is
+  an execute-api host, already allowed), and `Permissions-Policy: microphone=(self)` instead of
+  `microphone=()` (without it the browser refuses speech recognition outright).
+- **Not for visitors.** `noindex`, and no page links to it. `robots.txt` is unchanged on purpose: a
+  `Disallow` line would advertise the path and stop a crawler seeing the `noindex`.
+
+**To try it on dev:** make a user in the dev pool (`aws cognito-idp admin-create-user`, then
+`admin-set-user-password --permanent`; the pool id is the `ops_user_pool_id` output), open
+`<dev site>/ask.html` in Chrome or Edge, sign in, allow the microphone when asked, and press "What
+needs my attention?". Firefox and Safari get the text box and the spoken answer without
+push-to-talk. Two things the page depends on from the API's side: `POST /ask` must answer the
+site's origin with CORS headers (`OPS_AGENT_ALLOWED_ORIGIN`), and a refusal by API Gateway itself
+(an expired token) carries none unless the API's gateway responses add them, so the browser reports
+it as a network error; the page therefore also watches the token's own expiry time.
+
 ## Submission checklist
 
 - [ ] Track: **Alexa+**. Mini challenges: **AWS Builder** and **Open Source**.
