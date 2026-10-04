@@ -166,16 +166,20 @@ which is also what the judges get (section 6).
 
 - **Python, the official `mcp` SDK** (`MCPServer`), Streamable HTTP, **stateless**, JSON responses.
   In this repo (`lambdas/ops_mcp/`, Terraform alongside the rest): it reads this app's tables, so it
-  deploys with them. **Built so far:** the server, the suggestion catalogue, and the first two
-  tools (`pipeline_health`, `admin_inbox`), with tests; not deployed yet.
+  deploys with them. **Built so far:** the server, the suggestion catalogue, and six read-only
+  tools (`pipeline_health`, `admin_inbox`, `content_checks`, `security_events`, `alarms`, `spend`),
+  with tests; not deployed yet. Besides the tables, the function's role will need to read article
+  bodies from the content bucket (`content_checks`) and to call CloudWatch `DescribeAlarms`
+  (`alarms`), and its package needs `markdown`, which `common/static_pages.py` imports.
 - **How it runs on Lambda** (the transport decision, 2026-10-04): the SDK's own web app, unchanged,
   inside an ordinary Lambda through the **AWS Lambda Web Adapter** layer. Still serverless: nothing
   runs, or is paid for, between questions. Four things to hold to:
   - **No streaming.** Streamable HTTP lets a server answer every request with one JSON object, and
     that is all these tools need. So this is a plain API Gateway and Lambda integration, with the
     Cognito authorizer in front; no response streaming is configured anywhere.
-  - **The layer is regional.** Use the Web Adapter's **ap-southeast-2** arm64 layer ARN, taken from
-    its README at the version pinned; an ARN from another region fails at apply.
+  - **The layer is regional.** Use the Web Adapter's **ap-southeast-2** x86_64 layer ARN (every
+    Lambda here is x86_64, and the package's compiled wheels are built for it), taken from its
+    README at the version pinned; an ARN from another region fails at apply.
   - **Its own IAM role.** Every Lambda here shares one role today, with write and delete on all the
     app tables. This function gets a separate, read-only role (section 5), or "read-only" isn't true.
   - **No FastAPI.** The SDK already produces the web app; a second framework is one more dependency.
@@ -226,10 +230,10 @@ which is also what the judges get (section 6).
 |---|---|---|
 | `pipeline_health(topic?)` | Topics (`last_research_at`, `last_article_at`), Step Functions executions, FailedExecutions | per topic: researched, published, held or failed today; with a topic, the failed step and error class |
 | `admin_inbox(topic?, limit=5)` | ModerationQueue (`status` + `created_at` index) | count, then each held article: topic, age, hold reasons ("draft truncated", "financial topic") |
-| `content_checks(hours=24)` | Articles, Musings | published things that look wrong: a musing with an article link but no text; an article whose title carries markup (`**`, a leading `#`, quotes around the whole of it, an HTML tag); an article whose body is one code fence; a link to an article that was taken down |
-| `security_events(days=7)` | SecurityEvents | open incidents by severity: category, request count, first and last seen, suggested next step |
+| `content_checks(days=7)` | Articles (published in the last `days`, 1 to 30; the newest 40), their bodies in S3 (one read each), Musings | published things that look wrong: a musing with an article link but no text; an article whose title carries markup (`**`, a leading `#`, a backtick, an HTML tag, quotes around the whole of it); an article whose body is one code fence; a musing that links to an article that is not published |
+| `security_events(days=7)` | SecurityEvents (open, last seen in the last `days`, 1 to 30) | how many at each severity; per incident its category, request count, first and last seen, and the playbook's next steps. Only a high-severity incident is a finding |
 | `alarms()` | CloudWatch `DescribeAlarms` (`bloggerbear-*` only) | anything in ALARM, and since when |
-| `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI and AWS spend, this week against a typical one |
+| `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend and the whole AWS bill, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week |
 | `log_review(hours=24, function?)` | fixed Logs Insights queries over the Lambda log groups, plus the 7-day baseline | what's unusual: error and throttle spikes per function, DLQ depth. **Not the firewall.** |
 | `follow_up()` | OperatorSuggestions, then the source tables to re-check each open suggestion | what it suggested before: which are fixed (and removed), which are still open and for how long (section 4) |
 | `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the suggestion isn't raised again |
@@ -323,8 +327,16 @@ their allowlisted address. Nothing on the page can run it.
 | A topic researched but with no article | `topics trigger <topic_id> --pipeline daily_cycle` |
 | A daily cycle that ran out of retries | `failed-executions list`, then the trigger above |
 | A musing with an article link but no text (a real one: 4 October 2026, "BloggerBear was feeling proud", then nothing) | `articles rewrite <article_id> -i "its musing was published with a link but no text"` |
-| A published article whose title carries markup, or whose body is one code fence | `articles rewrite <article_id> -i "the title has markdown around it and the whole body is inside a code fence; remove both"` (the words say which of the two the check found) |
-| A security incident, an alarm, unusual spend | no command: what to look at, and where (`inbox`, the dashboard's name) |
+| A published article whose title carries markup | `articles rewrite <article_id> -i "the title has markdown around it"` |
+| A published article whose body is one code fence | `articles rewrite <article_id> -i "the whole body is inside a code fence"` |
+| A published article with both | `articles rewrite <article_id> -i "the title has markdown around it and the whole body is inside a code fence; remove both"` (one card, not two) |
+| A musing that links to an article that is not published | no command: look at the article the musing links to |
+| A high-severity security incident | no command: the incident's next steps (from the playbook), and the edge dashboard |
+| An alarm in ALARM | no command: the alarm in CloudWatch, and the pipeline dashboard |
+| AI spend or the AWS bill at more than twice a typical week | no command: the Stats page, then Cost Explorer by service |
+
+  A kind with no command still gets a card: its suggestion carries what to look at, and `command`
+  is empty. A kind whose command needs an id it can't trust gets no suggestion at all.
 
 - **Two real cases on production, found by hand, that the checks must find:**
   - *The empty musing* (4 October 2026). Rewriting its article does fix it: the musings about an

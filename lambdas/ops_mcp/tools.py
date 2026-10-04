@@ -1,5 +1,7 @@
 """What the assistant's tools read and return. Plain functions over common/dynamo.py: no MCP here,
-so they are tested like any other code, and server.py only has to register them.
+so they are tested like any other code, and server.py only has to register them. This module holds
+the pipeline's own state (pipeline_health, admin_inbox) and the helpers the others share;
+content.py and account.py hold the rest, under the same rules.
 
 Every tool returns the same shape:
 
@@ -99,6 +101,11 @@ def _join(parts: list[str]) -> str:
     if len(parts) <= 1:
         return "".join(parts)
     return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _clamp_days(days, most: int) -> int:
+    """A tool's `days` argument, kept between one day and `most`."""
+    return min(max(int(days), 1), most)
 
 
 def _topic_label(topic: dict | None, topic_id: str) -> str:
