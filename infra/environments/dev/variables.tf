@@ -14,8 +14,15 @@ variable "bedrock_model_id" {
   # (bedrock-runtime converse --model-id) before landing here. Full ARN
   # (not just the au.anthropic.claude-haiku-4-5-20251001-v1:0 short form)
   # since that's the exact value confirmed to work.
-  default     = "arn:aws:bedrock:ap-southeast-2:547610822592:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"
+  #
+  # Empty now means "that same profile, in the account being applied to": see
+  # local.bedrock_model_id in main.tf, which builds the ARN from the caller's account. The ARN
+  # used to be written out here with one account's ID in it, so a fork in its own account handed
+  # its Lambdas a profile it could never call.
+  default     = ""
   description = <<-EOT
+    Leave empty for the default: the AU Claude Haiku 4.5 inference profile in the account
+    being applied to (local.bedrock_model_id in main.tf). Otherwise, the
     Bedrock model ID or cross-region inference profile ID (or its full
     ARN) the Lambda handlers pass to bedrock:InvokeModel via the Converse
     API (lambdas/common/bedrock.py) -- NOT Anthropic/Claude-specific.
@@ -96,7 +103,20 @@ variable "web_acl_arn" {
     has been applied at least once; then set this in terraform.tfvars so
     dev's distribution shares the same ACL as production. This is a manual
     follow-up step, not automated.
+
+    Only when dev and production are in the SAME AWS account: a CloudFront distribution can only
+    use a web ACL owned by its own account (AWS WAF has no cross-account association), so a
+    two-account deployment leaves this empty and dev's two distributions go without the shared
+    ACL. The regional ACLs in front of dev's APIs are dev's own and are not affected. See
+    docs/deploying-your-own.md.
   EOT
+
+  # Catches the two-account mistake at plan time, when var.aws_account_id says which account this
+  # is. Without it the apply fails later, at CloudFront, with a much less obvious message.
+  validation {
+    condition     = var.web_acl_arn == "" || var.aws_account_id == "" || try(split(":", var.web_acl_arn)[4], "") == var.aws_account_id
+    error_message = "web_acl_arn names a web ACL in a different AWS account from aws_account_id. CloudFront can only use a web ACL in its own account: leave web_acl_arn empty when dev and production are in separate accounts."
+  }
 }
 
 variable "coingecko_api_plan" {
@@ -119,4 +139,54 @@ variable "ops_assistant_mfa" {
     which several people must be able to use from the testing instructions alone, can go without.
     Production's pool will require it ("ON").
   EOT
+}
+
+variable "aws_account_id" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The 12-digit ID of the AWS account dev is meant to be applied to. When set, every AWS
+    provider in this root refuses to run against any other account (allowed_account_ids), so
+    credentials for the wrong account fail at the first step instead of creating half a deployment
+    somewhere unexpected. Empty (the default) checks nothing, which is how this ran before the
+    variable existed.
+
+    CI supplies it as TF_VAR_aws_account_id from the repo-level `AWS_DEV_ACCOUNT_ID` secret
+    (.github/workflows/terraform.yml and destroy-dev.yml). An account ID is an identifier, not a
+    credential, but this repo keeps them out of its public logs all the same, and GitHub masks a
+    secret's text wherever it would be printed. Do not set it in terraform.tfvars: that commits it.
+
+    Not marked sensitive: it is only ever read by the provider blocks, and a plan never prints
+    provider settings. If the check fails, the provider's error names the account the credentials
+    really belong to.
+  EOT
+
+  validation {
+    condition     = var.aws_account_id == "" || can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "aws_account_id must be empty or exactly 12 digits, with no spaces or dashes."
+  }
+}
+
+variable "unique_name_suffix" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    Added to the end of the three names in this environment that must be unique across every AWS
+    account, not just this one: the content bucket (bloggerbear-dev-content), the site bucket
+    (bloggerbear-dev-site) and the operator's assistant's Cognito sign-in host
+    (bloggerbear-dev-ops). A second deployment of this project, in another account, cannot create
+    any of them under the plain name while the first deployment exists, so a fork sets this to
+    something of its own, such as "-yourname".
+
+    Empty (the default) keeps the plain names. NEVER change this on a deployment that already
+    exists: a bucket cannot be renamed, so Terraform would destroy it and create a new, empty one.
+
+    CI supplies it as TF_VAR_unique_name_suffix from the repo-level `UNIQUE_NAME_SUFFIX` variable (a
+    variable, not a secret: the suffix ends up in public bucket and sign-in host names anyway).
+  EOT
+
+  validation {
+    condition     = var.unique_name_suffix == "" || can(regex("^[a-z0-9-]{0,19}[a-z0-9]$", var.unique_name_suffix))
+    error_message = "unique_name_suffix must be empty, or up to 20 lowercase letters, digits and hyphens ending in a letter or digit (it becomes part of S3 bucket names), such as \"-yourname\"."
+  }
 }

@@ -43,6 +43,10 @@ locals {
 
 provider "aws" {
   region = "ap-southeast-2"
+  # Refuses to plan or apply against any account but var.aws_account_id, when that is set: a
+  # run that picked up the wrong credentials stops at once instead of half-working. Unset (the
+  # default) is null here, which is the same as not writing the argument at all.
+  allowed_account_ids = var.aws_account_id == "" ? null : [var.aws_account_id]
   default_tags {
     tags = local.default_tags
   }
@@ -62,6 +66,9 @@ provider "aws" {
 provider "aws" {
   alias  = "us_east_1"
   region = "ap-southeast-2"
+  # The same guard as the default provider above: an alias is a provider of its own, and checks
+  # nothing unless told to.
+  allowed_account_ids = var.aws_account_id == "" ? null : [var.aws_account_id]
   default_tags {
     tags = local.default_tags
   }
@@ -79,6 +86,7 @@ module "static_site" {
   enable_custom_domain = false
   force_destroy        = var.force_destroy
   web_acl_id           = var.web_acl_arn
+  bucket_name_suffix   = var.unique_name_suffix
 
   # The frontend calls the public API through its CDN (module.public_api_cdn). Dev only: the
   # operator's assistant page (frontend/ask.html) also swaps its sign-in code for a token at
@@ -125,7 +133,7 @@ module "app_data" {
 # infra/ (the site bucket, the SNS alerts topic, the SQS DLQ).
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "content" {
-  bucket        = "bloggerbear-dev-content"
+  bucket        = "bloggerbear-dev-content${var.unique_name_suffix}"
   force_destroy = true
 }
 
@@ -448,7 +456,7 @@ locals {
     ARTICLES_TABLE         = module.app_data.articles_table_name
     MODERATION_QUEUE_TABLE = module.app_data.moderation_queue_table_name
     CONTENT_BUCKET         = aws_s3_bucket.content.bucket
-    BEDROCK_MODEL_ID       = var.bedrock_model_id
+    BEDROCK_MODEL_ID       = local.bedrock_model_id
     # Phase 2: lets the admin-api handler invoke the other two pipeline
     # Lambdas on demand (e.g. POST /topics/{topic_id}/trigger). Harmless
     # on research_tick/daily_cycle themselves -- they just never read it.
@@ -591,6 +599,15 @@ resource "aws_iam_role_policy" "lambda_web_search" {
 # above without a direct resource reference (see the comment there for
 # why a direct reference would create a dependency cycle).
 data "aws_caller_identity" "current" {}
+
+# The model the Lambdas call when var.bedrock_model_id is left empty: the AU Claude Haiku
+# inference profile, as a full ARN, in whichever account this is being applied to. The variable's
+# default used to be this same ARN with one account's ID written into it, which a deployment in
+# any other account could not call. Built from the caller's account instead, it is the same
+# string as before for that account, and the right one for every other.
+locals {
+  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"
+}
 
 # 120s / 512MB (was 60s / 256MB): on the first tick of each UTC day the crypto feed
 # makes a markets call plus up to ~10 CoinGecko history calls (with backoff on
@@ -2350,8 +2367,9 @@ module "ops_assistant" {
   stage_name = "dev"
 
   # <prefix>.auth.ap-southeast-2.amazoncognito.com. Unique across every AWS account in the region:
-  # if the apply says the domain is taken, change it here.
-  hosted_ui_domain_prefix = "bloggerbear-dev-ops"
+  # if the apply says the domain is taken, set var.unique_name_suffix (empty by default, which
+  # leaves this name exactly as it was).
+  hosted_ui_domain_prefix = "bloggerbear-dev-ops${var.unique_name_suffix}"
 
   # The assistant's page on the dev site (frontend/ask.html, a later change). Cognito sends the
   # browser back to exactly this URL after sign-in, and after sign-out.
@@ -2377,7 +2395,7 @@ module "ops_assistant" {
   #
   # The model is the one the pipeline Lambdas are given as BEDROCK_MODEL_ID: the design names no
   # other, and that value is the one known to be enabled for this account (see the variable).
-  agent_model_id = var.bedrock_model_id
+  agent_model_id = local.bedrock_model_id
 
   # The dev site's origin, where ask.html is served from: the same value the callback URL above
   # is built on, so the page that signs in is the page that may read the answers.

@@ -3,11 +3,11 @@ output "state_bucket_name" {
   description = <<-EOT
     Name of the Terraform state bucket. If this differs from the literal
     "bloggerbear-terraform-state" (e.g. because the default collided and
-    var.state_bucket_name was changed before applying), copy this exact
-    value into the `backend "s3" { bucket = "..." }` block in BOTH
-    infra/environments/dev/main.tf and infra/environments/production/main.tf
-    -- backend blocks cannot reference variables or interpolation of any
-    kind, so the literal string must match exactly in all three places.
+    var.state_bucket_name was changed before applying), set this exact
+    value as the GitHub Actions variable TF_STATE_BUCKET_DEV and/or
+    TF_STATE_BUCKET_PROD -- backend blocks cannot reference variables, so
+    CI passes it to `terraform init -backend-config="bucket=..."` instead.
+    See docs/deploying-your-own.md.
   EOT
 }
 

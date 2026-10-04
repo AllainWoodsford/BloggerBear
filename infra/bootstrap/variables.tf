@@ -15,12 +15,15 @@ variable "state_bucket_name" {
     bloggerbear-terraform-state`, expecting a 404/NoSuchBucket error) BEFORE
     running the one-time bootstrap apply.
 
-    If it collides, change this default to something unique (e.g. append
-    your account ID or a random suffix) -- but you MUST then copy-paste
-    that exact literal string into the `backend "s3" { bucket = "..." }`
-    block in BOTH infra/environments/dev/main.tf and
-    infra/environments/production/main.tf, since Terraform backend blocks
-    cannot reference variables or interpolation of any kind.
+    If it collides (it always does for a fork: the original deployment
+    holds this name), pass something unique with
+    `-var="state_bucket_name=..."`. The environments' `backend "s3"` blocks
+    cannot reference variables, so they still say
+    "bloggerbear-terraform-state"; CI is told the real name through the
+    GitHub Actions variables TF_STATE_BUCKET_DEV and TF_STATE_BUCKET_PROD
+    (it runs `terraform init -backend-config="bucket=..."` when they are
+    set), and a local init needs the same `-backend-config` flag. See
+    docs/deploying-your-own.md.
   EOT
 }
 
@@ -77,4 +80,30 @@ variable "budget_alert_email" {
     generated. Set the real value before running the one-time bootstrap
     apply.
   EOT
+}
+
+variable "aws_account_id" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The 12-digit ID of the AWS account this bootstrap is meant to be applied to. When set, every AWS
+    provider in this root refuses to run against any other account (allowed_account_ids), so
+    credentials for the wrong account fail at the first step instead of creating half a deployment
+    somewhere unexpected. Empty (the default) checks nothing, which is how this ran before the
+    variable existed.
+
+    Bootstrap is applied by hand, so pass it on the command line
+    (`-var="aws_account_id=..."`) or as TF_VAR_aws_account_id. With two accounts (one for dev, one
+    for production) bootstrap is applied once in each, and this is what stops the second apply
+    landing in the first account because the wrong profile was still selected.
+
+    Not marked sensitive: it is only ever read by the provider blocks, and a plan never prints
+    provider settings. If the check fails, the provider's error names the account the credentials
+    really belong to.
+  EOT
+
+  validation {
+    condition     = var.aws_account_id == "" || can(regex("^[0-9]{12}$", var.aws_account_id))
+    error_message = "aws_account_id must be empty or exactly 12 digits, with no spaces or dashes."
+  }
 }

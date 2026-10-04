@@ -88,9 +88,20 @@ jobs:
     # (empty secret) is fine -- every alarm/subscription it gates is
     # count-gated on `var.alert_email != ""`, so nothing is created without
     # it, same fail-closed-to-"off" pattern as admin_allowed_cidrs' `[]`.
+    # TF_VAR_aws_account_id, TF_VAR_unique_name_suffix, TF_STATE_BUCKET: what lets a fork deploy
+    # to its own AWS account without editing code (docs/deploying-your-own.md). All three are
+    # optional, and unset they are empty strings, which Terraform and the init step below both
+    # read as "as before": no account check, the plain bucket names, the state bucket written in
+    # the backend block. The account ID is a secret (with a variable as fallback) for the same
+    # reason the role ARN is: a variable prints in plain text in these public logs, and GitHub
+    # masks a secret's text wherever it appears. The other two are plain variables: they are
+    # bucket names, public in the code already.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID || vars.AWS_DEV_ACCOUNT_ID }}
+      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET_DEV }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
@@ -154,7 +165,15 @@ jobs:
 
           echo "Applying terraform in $target_dir"
           plan_file="tfplan"
-          terraform -chdir="$target_dir" init
+          # A fork keeps its state in its own bucket (S3 bucket names are unique across every
+          # account, and a backend block cannot read a Terraform variable), so the bucket can be
+          # named by the TF_STATE_BUCKET_DEV variable. Unset, this is the plain `init` it always
+          # was, against the bucket written in the backend block.
+          if [ -n "${TF_STATE_BUCKET:-}" ]; then
+            terraform -chdir="$target_dir" init -backend-config="bucket=${TF_STATE_BUCKET}"
+          else
+            terraform -chdir="$target_dir" init
+          fi
           terraform -chdir="$target_dir" fmt -check
           terraform -chdir="$target_dir" validate
           terraform -chdir="$target_dir" plan -out="$plan_file" -input=false

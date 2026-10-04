@@ -29,8 +29,14 @@ jobs:
     # the real value (it tears down from state, not from a freshly
     # computed plan), so that Terraform's config evaluation sees the same
     # inputs either job would.
+    # The account check, name suffix and state bucket are the same three optional settings as
+    # apply-dev's (see the comment there): a destroy has to look at the same state, in the same
+    # account, under the same names, as the apply that made it.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID || vars.AWS_DEV_ACCOUNT_ID }}
+      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET_DEV }}
     steps:
       - name: Check confirmation input
         run: |
@@ -75,5 +81,13 @@ jobs:
           fi
 
           echo "Destroying terraform in $target_dir"
-          terraform -chdir="$target_dir" init
+          # A fork keeps its state in its own bucket (S3 bucket names are unique across every
+          # account, and a backend block cannot read a Terraform variable), so the bucket can be
+          # named by the TF_STATE_BUCKET_DEV variable. Unset, this is the plain `init` it always
+          # was, against the bucket written in the backend block.
+          if [ -n "${TF_STATE_BUCKET:-}" ]; then
+            terraform -chdir="$target_dir" init -backend-config="bucket=${TF_STATE_BUCKET}"
+          else
+            terraform -chdir="$target_dir" init
+          fi
           terraform -chdir="$target_dir" destroy -auto-approve

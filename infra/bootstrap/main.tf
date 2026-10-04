@@ -18,6 +18,10 @@ terraform {
 # Gateway account settings serve dev and production alike.
 provider "aws" {
   region = var.aws_region
+  # Refuses to plan or apply against any account but var.aws_account_id, when that is set: a
+  # run that picked up the wrong credentials stops at once instead of half-working. Unset (the
+  # default) is null here, which is the same as not writing the argument at all.
+  allowed_account_ids = var.aws_account_id == "" ? null : [var.aws_account_id]
   default_tags {
     tags = {
       ManagedBy     = "Terraform"
@@ -34,11 +38,11 @@ provider "aws" {
 # Bucket name is a real, working default ("bloggerbear-terraform-state"),
 # not a placeholder token -- it only needs to change if it collides with
 # an existing bucket somewhere in AWS (S3 bucket names are globally
-# unique). If you do change var.state_bucket_name, copy the exact same
-# literal string into the `backend "s3" { bucket = "..." }` blocks in BOTH
-# infra/environments/dev/main.tf and infra/environments/production/main.tf
-# -- those blocks cannot reference variables or interpolation. See
-# outputs.tf for the same note next to the bucket name output.
+# unique). If you do change var.state_bucket_name, the environments'
+# `backend "s3"` blocks still name the default (they cannot reference
+# variables), so tell CI the real name with the GitHub Actions variables
+# TF_STATE_BUCKET_DEV / TF_STATE_BUCKET_PROD. See outputs.tf for the same
+# note next to the bucket name output, and docs/deploying-your-own.md.
 #
 # prevent_destroy protects the bucket resource itself from accidental
 # deletion (e.g. a careless `terraform destroy` run against this

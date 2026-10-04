@@ -12,7 +12,7 @@ from common import costing, lineage_tools, model_pricing
 from common.bedrock import invoke_model_tracked
 
 PROFILE = "au.anthropic.claude-haiku-4-5-20251001-v1:0"
-ARN = f"arn:aws:bedrock:ap-southeast-2:547610822592:inference-profile/{PROFILE}"
+ARN = f"arn:aws:bedrock:ap-southeast-2:123456789012:inference-profile/{PROFILE}"
 
 
 @pytest.fixture(autouse=True)
