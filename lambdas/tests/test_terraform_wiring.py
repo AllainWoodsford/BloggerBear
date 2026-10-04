@@ -2602,8 +2602,14 @@ _REGION_LITERAL_ALLOWED = {
         r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
         r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
     ],
-    # Help text shown to a person: what leaving AWS_REGION blank means.
-    "scripts/setup_repo.py": [r"\"original deployment's region, ap-southeast-2 \(Sydney\)\. .*"],
+    # Help text shown to a person: what leaving AWS_REGION blank means. And the fallback its
+    # CoinGecko step uses when AWS_REGION is neither answered nor set on the repository
+    # (deployment_region): the same default as var.aws_region, which
+    # scripts/tests/test_setup_repo.py checks against each root's variables.tf.
+    "scripts/setup_repo.py": [
+        r"\"original deployment's region, ap-southeast-2 \(Sydney\)\. .*",
+        r'DEFAULT_AWS_REGION = "ap-southeast-2"',
+    ],
     # An example to `source` by hand: whatever region is already exported wins, else the default.
     "scripts/force_publish_example.sh": [
         r'export AWS_DEFAULT_REGION="\$\{AWS_DEFAULT_REGION:-ap-southeast-2\}"'
