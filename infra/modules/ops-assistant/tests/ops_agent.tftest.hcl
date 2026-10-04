@@ -22,6 +22,12 @@ variables {
   # What a root passes when nothing is set: the original deployment's region.
   aws_region = "ap-southeast-2"
 
+  # The roots' provider default_tags, without Environment and TerraformRoot.
+  default_tags = {
+    ManagedBy = "Terraform"
+    Project   = "BloggerBear"
+  }
+
   environment_name = "test"
   tables = {
     TOPICS_TABLE = {

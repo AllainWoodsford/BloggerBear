@@ -18,6 +18,16 @@ variable "account_wide_data" {
   description = "Whether this assistant may report things that belong to the whole AWS account and not to its environment, passed to the MCP function as OPS_ACCOUNT_WIDE_DATA. Dev and production share one account, so such a figure includes both. Today that is the AWS bill in the spend tool (Cost Explorer bills the account); the planned firewall_review deep dive, which reads a firewall both sites share, will be registered only when this is true. Off by default: production sets it true, dev leaves it off, and then spend reports only the AI spend this environment's pipeline tracked itself."
 }
 
+variable "default_tags" {
+  type        = map(string)
+  description = "The tags every Terraform-made resource of this project carries, ManagedBy and Project (the calling root's provider default_tags, without Environment and TerraformRoot). The assistant's table_sample tool may read a table's rows only when the table carries exactly these, and an Environment it may read (locals.readable_environments in main.tf). The function is given them too (OPS_DEFAULT_TAGS), and checks a table's own tags against them before reading it."
+
+  validation {
+    condition     = toset(keys(var.default_tags)) == toset(["ManagedBy", "Project"]) && alltrue([for value in values(var.default_tags) : length(value) > 0])
+    error_message = "default_tags must be exactly { ManagedBy = ..., Project = ... }, both non-empty: the tag conditions on the table_sample statement compare against both."
+  }
+}
+
 variable "tables" {
   type = map(object({
     name = string

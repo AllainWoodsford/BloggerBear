@@ -175,7 +175,7 @@ MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 # The guide to the Admin CLI (cli_guide.py): help, how-to commands, and the topics as a table.
 GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}
 # The architecture expert (architecture.py, runsheets.py): answered from the package's catalogue.
-EXPERT_TOOLS = {"architecture", "investigate"}
+EXPERT_TOOLS = {"architecture", "investigate", "table_sample"}
 
 
 def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):

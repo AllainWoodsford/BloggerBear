@@ -79,6 +79,13 @@ locals {
   # caller of the execute-api URL sends the API's own domain. See OPS_MCP_ALLOWED_HOSTS below.
   api_host = "${aws_api_gateway_rest_api.this.id}.execute-api.${local.aws_region}.amazonaws.com"
 
+  # The Environment tags this assistant may read data from: its own, and in production also
+  # "shared" (bootstrap's resources, which serve both environments). Dev never reads production's
+  # or the shared ones. Used by the table_sample statement below, by the Deny in isolation.tf, and
+  # by the code (ops_mcp/samples.py, which holds the same rule and is tested against this line).
+  readable_environments = concat([var.environment_name], var.environment_name == "production" ? ["shared"] : [])
+
+
   lambdas_dir = "${path.module}/../../../lambdas"
   build_dir   = "${path.module}/lambda-build/ops-mcp-package"
 }
@@ -225,6 +232,51 @@ data "aws_iam_policy_document" "ops_mcp" {
     resources = ["arn:aws:cloudwatch:${local.aws_region}:*:alarm:*"]
   }
 
+  # table_sample (lambdas/ops_mcp/samples.py): a few rows of any of the project's tables, for
+  # "what is in this table?" and "is it being written as expected?". The rule is the tags, not a
+  # list: a table named bloggerbear-* is readable only if it carries this project's default tags
+  # (ManagedBy and Project, exactly as the root's provider puts them) AND an Environment this
+  # assistant may read (locals.readable_environments: its own; production also "shared"). Three
+  # conditions, ANDed. Read actions only, and ListTagsOfResource so the code can check the same
+  # tags itself before it reads (it does, and refuses on any difference).
+  #
+  # This rests on DynamoDB's tag-based access control. Where it is not on for the account and
+  # region (the DynamoDB console's Settings page), a tag condition sees no tags and the statement
+  # grants nothing: it fails closed, and table_sample says AWS refused. The tables named in
+  # ReadAppTables above stay readable by name either way.
+  statement {
+    sid    = "SampleTaggedTables"
+    effect = "Allow"
+    actions = [
+      "dynamodb:Query",
+      "dynamodb:Scan",
+      "dynamodb:ListTagsOfResource",
+    ]
+    resources = [
+      "arn:aws:dynamodb:${local.aws_region}:*:table/bloggerbear-*",
+      "arn:aws:dynamodb:${local.aws_region}:*:table/bloggerbear-*/index/*",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/ManagedBy"
+      values   = [var.default_tags["ManagedBy"]]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Project"
+      values   = [var.default_tags["Project"]]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = local.readable_environments
+    }
+  }
+
+
   # Its own log group and no other. No CreateLogGroup: Terraform creates the group below, before
   # the function exists.
   statement {
@@ -319,6 +371,12 @@ resource "aws_lambda_function" "ops_mcp" {
         OPS_AGENT_FORWARD_KEY = var.agent_forward_key
 
         CONTENT_BUCKET = var.content_bucket_name
+
+        # table_sample: the tags a table must carry, and the Environment tags it may read. The code
+        # checks a table's own tags against both before reading a row; IAM checks the same
+        # (SampleTaggedTables above), from the same values.
+        OPS_DEFAULT_TAGS          = jsonencode(var.default_tags)
+        OPS_READABLE_ENVIRONMENTS = join(",", local.readable_environments)
 
         # Which environment this assistant is for. The alarms tool builds the only prefix it asks
         # CloudWatch for from it, "bloggerbear-<environment>-", because the role cannot be held

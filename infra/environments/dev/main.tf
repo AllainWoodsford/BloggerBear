@@ -2385,6 +2385,14 @@ module "ops_assistant" {
 
   environment_name = "dev"
 
+  # The tags every resource of this root carries, minus Environment and TerraformRoot: the
+  # assistant reads a table's rows (table_sample) only when it carries these and an Environment
+  # it may read. IAM and the code both check them.
+  default_tags = {
+    ManagedBy = local.default_tags.ManagedBy
+    Project   = local.default_tags.Project
+  }
+
   # Keyed by the environment variable common/dynamo.py reads each table's name from. This is the
   # whole of what the assistant can see in DynamoDB: the tables its tools read today
   # (pipeline_health and admin_inbox: Topics, Articles, ModerationQueue, FailedExecutions, and the

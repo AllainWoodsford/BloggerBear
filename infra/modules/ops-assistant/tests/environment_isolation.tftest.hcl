@@ -23,6 +23,12 @@ variables {
   # What a root passes when nothing is set: the original deployment's region.
   aws_region = "ap-southeast-2"
 
+  # The roots' provider default_tags, without Environment and TerraformRoot.
+  default_tags = {
+    ManagedBy = "Terraform"
+    Project   = "BloggerBear"
+  }
+
   environment_name = "dev"
   tables = {
     TOPICS_TABLE = {
@@ -108,6 +114,32 @@ run "dev_is_denied_anything_tagged_for_another_environment" {
 run "dev_is_told_its_environment_and_has_no_account_wide_data" {
   command = plan
 
+  # Dev reads only dev: never production's, never the shared resources.
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.OPS_READABLE_ENVIRONMENTS == "dev"
+    error_message = "dev's assistant reads dev's resources alone"
+  }
+
+  assert {
+    condition     = jsondecode(aws_lambda_function.ops_mcp.environment[0].variables.OPS_DEFAULT_TAGS) == { ManagedBy = "Terraform", Project = "BloggerBear" }
+    error_message = "the function is told the default tags a table must carry, as the root gives them"
+  }
+
+  # table_sample: a bloggerbear-* table, only with the project's tags and dev's Environment.
+  assert {
+    condition = toset(one([
+      for statement in data.aws_iam_policy_document.ops_mcp.statement : [
+        for condition in statement.condition : "${condition.test} ${condition.variable} ${join(",", condition.values)}"
+      ] if statement.sid == "SampleTaggedTables"
+      ])) == toset([
+      "StringEquals aws:ResourceTag/ManagedBy Terraform",
+      "StringEquals aws:ResourceTag/Project BloggerBear",
+      "StringEquals aws:ResourceTag/Environment dev",
+    ])
+    error_message = "table_sample reads a table only if it carries the default tags and dev's Environment"
+  }
+
+
   assert {
     condition     = var.account_wide_data == false
     error_message = "account_wide_data is off unless the caller switches it on"
@@ -150,9 +182,25 @@ run "production_is_denied_anything_not_tagged_production_and_may_report_the_acco
       "${condition.test} ${condition.variable} ${join(",", condition.values)}"
       ]) == toset([
       "Null aws:ResourceTag/Environment false",
-      "StringNotEquals aws:ResourceTag/Environment production",
+      "StringNotEquals aws:ResourceTag/Environment production,shared",
     ])
-    error_message = "the Deny applies only where the resource carries an Environment tag, and that tag is not production"
+    error_message = "the Deny applies only where the resource carries an Environment tag, and that tag is neither production nor shared"
+  }
+
+  # Production may read what is shared, and is told so; its table reads require the same.
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.OPS_READABLE_ENVIRONMENTS == "production,shared"
+    error_message = "production's assistant reads production's and the shared resources"
+  }
+
+  assert {
+    condition = toset(one([
+      for statement in data.aws_iam_policy_document.ops_mcp.statement : [
+        for condition in statement.condition : join(",", condition.values)
+        if condition.variable == "aws:ResourceTag/Environment"
+      ] if statement.sid == "SampleTaggedTables"
+    ])) == toset(["production,shared"])
+    error_message = "production's table_sample reads tables tagged production or shared"
   }
 
   assert {

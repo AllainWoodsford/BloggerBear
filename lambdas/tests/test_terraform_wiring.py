@@ -1512,6 +1512,8 @@ _OPS_MCP_ALLOWED_ACTIONS = {
     "dynamodb:Query",
     "dynamodb:Scan",
     "dynamodb:BatchGetItem",
+    # table_sample (ops_mcp/samples.py): the table's tags, which the code checks before reading.
+    "dynamodb:ListTagsOfResource",
     "s3:GetObject",
     "cloudwatch:DescribeAlarms",
     "logs:CreateLogStream",
@@ -1614,6 +1616,63 @@ def test_the_mcp_servers_role_has_no_write_action_and_no_wildcard():
     assert "[for table in values(var.tables) : table.arn]," in policy
 
 
+def test_table_sample_reads_only_tables_carrying_the_default_tags_and_a_readable_environment():
+    """The owner's rule for what the assistant may read rows of: a bloggerbear-* table with the
+    project's default tags (ManagedBy, Project) and an Environment it may read. Three conditions
+    on one statement, all StringEquals, so all must hold; reads and ListTagsOfResource only."""
+    policy = _uncommented(_ops_policy())
+    statement = re.search(r'sid\s*=\s*"SampleTaggedTables"(.*?)\n  \}\n', policy, re.S).group(1)
+
+    assert set(re.findall(r'"(dynamodb:[A-Za-z]+)"', statement)) == {
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:ListTagsOfResource",
+    }
+    assert '"arn:aws:dynamodb:${local.aws_region}:*:table/bloggerbear-*",' in statement
+    assert '"arn:aws:dynamodb:${local.aws_region}:*:table/bloggerbear-*/index/*",' in statement
+    conditions = re.findall(
+        r'condition \{\n\s*test\s*=\s*"([^"]+)"\n\s*variable\s*=\s*"([^"]+)"\n\s*values\s*=\s*([^\n]+)',
+        statement,
+    )
+    assert sorted(conditions) == [
+        ("StringEquals", "aws:ResourceTag/Environment", "local.readable_environments"),
+        ("StringEquals", "aws:ResourceTag/ManagedBy", '[var.default_tags["ManagedBy"]]'),
+        ("StringEquals", "aws:ResourceTag/Project", '[var.default_tags["Project"]]'),
+    ]
+    assert "ssm:" not in policy  # the tags come from Terraform, not a parameter
+    module = _ops_module()
+    function = _uncommented(_resource_block(module, "aws_lambda_function", "ops_mcp"))
+    assert re.search(r"OPS_DEFAULT_TAGS\s*=\s*jsonencode\(var\.default_tags\)", function)
+    assert re.search(r'OPS_READABLE_ENVIRONMENTS\s*=\s*join\(",", local\.readable_environments\)', function)
+
+
+def test_dev_reads_only_dev_and_production_also_reads_shared():
+    """One rule, written twice (the module's IAM and the code), held to the same words here: dev
+    never reads production's or the shared resources; production reads its own and the shared
+    ones."""
+    module = _ops_module()
+    assert (
+        'readable_environments = concat([var.environment_name], var.environment_name == "production" ? '
+        '["shared"] : [])' in module
+    )
+    samples = (ROOT / "lambdas" / "ops_mcp" / "samples.py").read_text(encoding="utf-8")
+    assert 'rule = [env, "shared"] if env == "production" else [env]' in samples
+
+
+def test_the_root_hands_the_assistant_its_own_default_tags():
+    """IAM's tag conditions and the code's check both compare against var.default_tags, so it must
+    be the root's provider default_tags, as every resource of the root really carries them."""
+    project_tags = {"ManagedBy": "Terraform", "Project": "BloggerBear"}
+    for environment in ("dev", "production"):
+        text = _read("environments", environment, "main.tf")
+        tags = re.search(r"default_tags = \{\n(.*?)\n  \}", text, re.S).group(1)
+        root_tags = dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', tags))
+        assert {key: root_tags[key] for key in project_tags} == project_tags, environment
+    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
+    assert "ManagedBy = local.default_tags.ManagedBy" in call
+    assert "Project   = local.default_tags.Project" in call
+
+
 def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
     """One map gives the function its table names and its role its table ARNs. Every key must be
     a variable common/dynamo.py reads, and the tables the tools use today must be among them."""
@@ -1665,14 +1724,16 @@ def test_the_assistant_can_read_its_access_switch_and_can_never_change_it():
         call,
     )
     assert '"dynamodb:GetItem"' in policy
-    # One DynamoDB statement, over the tables handed in, and every action in it is a read: there
-    # is no second statement that could grant a write on this table or any other.
+    # Two DynamoDB statements, the tables handed in and table_sample's tag-conditioned one, and
+    # every action in them is a read (ListTagsOfResource reads tags): neither could grant a write
+    # on this table or any other.
     dynamodb_actions = set(re.findall(r'"(dynamodb:[A-Za-z*]+)"', policy))
     assert dynamodb_actions == {
         "dynamodb:GetItem",
         "dynamodb:Query",
         "dynamodb:Scan",
         "dynamodb:BatchGetItem",
+        "dynamodb:ListTagsOfResource",
     }
     assert policy.count("dynamodb:GetItem") == 1 and policy.count("var.tables") == 2
     # The operator's addresses come from the list the admin API's WAF allowlist uses.
@@ -1813,14 +1874,15 @@ def test_both_assistant_roles_are_denied_anything_tagged_for_another_environment
     assert re.search(r'actions\s*=\s*\["\*"\]', document) and re.search(r'resources\s*=\s*\["\*"\]', document)
     assert "not_actions" not in document and "not_resources" not in document
     conditions = re.findall(
-        r'condition \{\n\s*test\s*=\s*"([^"]+)"\n\s*variable\s*=\s*"([^"]+)"\n\s*values\s*=\s*\[([^\]]+)\]',
+        r'condition \{\n\s*test\s*=\s*"([^"]+)"\n\s*variable\s*=\s*"([^"]+)"\n'
+        r"\s*values\s*=\s*\[?([^\]\n]+?)\]?\n",
         document,
     )
     # Null = false first in importance: without it StringNotEquals alone is true of every request
     # that carries no resource tag, and the statement would deny nearly everything.
     assert sorted(conditions) == [
         ("Null", "aws:ResourceTag/Environment", '"false"'),
-        ("StringNotEquals", "aws:ResourceTag/Environment", "var.environment_name"),
+        ("StringNotEquals", "aws:ResourceTag/Environment", "local.readable_environments"),
     ]
 
     # Attached to both roles, each in a policy of its own, and nowhere else.

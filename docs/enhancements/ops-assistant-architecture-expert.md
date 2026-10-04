@@ -63,11 +63,74 @@ Two delivery steps, each its own PR.
 
 ### PR 2: reading a sample row (`table_sample`)
 
-`table_sample(name)` uses the same resolver to read the newest row of a table and say whether the
-table looks healthy. For example: is a new candidate idea being written at about each topic's daily
-cadence? See that PR for the access model (default tags in SSM Parameter Store, tag-conditioned
-IAM, environment isolation) and the security-events rules (the attacker-written `untrusted` field
-is never read, and PII is redacted).
+`table_sample(name, topic?, rows=1)` (`lambdas/ops_mcp/samples.py`) uses the same resolver to read
+the newest row (up to 3) of any of the project's tables in this environment and put it on screen.
+For findings and candidate ideas it also checks each topic. Findings are on time if the newest is
+within two research intervals; candidate ideas, within a day and two hours. "Are candidate ideas
+working?" gets a real answer: "Hacker News has no recent candidate idea: that looks like something
+isn't running."
+
+How it reads each kind of table:
+
+| Table | Read as |
+|---|---|
+| findings, candidate-ideas, prompt-refinements | a Query per topic, newest first, Limit 1 |
+| articles, moderation-queue, security-events | a Query per status on the status index, newest first, Limit 1 |
+| anything else | a Scan capped at 300 items, newest by its time field |
+
+#### What it may read: the tags
+
+The rule is the project's default tags, not a list of tables. A table is readable only if it carries
+`ManagedBy = Terraform` and `Project = BloggerBear` (exactly as the providers' `default_tags` put
+them), and an `Environment` the assistant may read:
+
+| Assistant | May read Environment |
+|---|---|
+| dev | `dev` only. Never `production`, never `shared` |
+| production | `production` and `shared` |
+
+The rule is enforced twice, from the same values:
+
+1. **IAM.** In `infra/modules/ops-assistant/main.tf`, `SampleTaggedTables` allows Query, Scan and
+   ListTagsOfResource on `bloggerbear-*` tables, with three `StringEquals` tag conditions. The Deny in
+   `isolation.tf` refuses any other Environment: for dev, anything not `dev`; for production,
+   anything neither `production` nor `shared`.
+2. **Code.** Before any row is read, `samples.py` lists the table's tags and refuses on any
+   difference from `OPS_DEFAULT_TAGS` (the module's `var.default_tags`, passed as JSON). The readable
+   list is the intersection of what the module told the function (`OPS_READABLE_ENVIRONMENTS`) and
+   the rule (only production reads `shared`), so neither can widen the other.
+
+Both come from the root's own provider `default_tags`, which every resource the root creates
+really carries. A test holds the root, the module and the code to the same values and the same
+rule. There is no copy in SSM Parameter Store or DynamoDB. An earlier draft kept one, written by
+bootstrap, but a second source added nothing the build-time test doesn't already guarantee. It
+would have cost a bootstrap re-apply, an extra permission and an extra failure mode.
+
+DynamoDB's tag-based access control must be on for the account and region (DynamoDB console >
+Settings). Where it is off, tag conditions see no tags and the statement grants nothing. It fails
+closed, and `table_sample` says AWS refused.
+
+#### Never read, whatever the tags
+
+`bloggerbear-<env>-ops-briefings` holds what the agent wrote after reading untrusted text.
+`briefings.tf` keeps it out of the agent's reach so that text is never put back in front of it.
+`table_sample` refuses it by name (`NEVER_SAMPLED`), before any tag check.
+
+#### Security events: the payload is never read, PII is never shown
+
+- SecurityEvents' `untrusted` field holds what a blocked client sent (the path and the matched text,
+  in other words an attack payload). `client_hash` identifies a client. The read uses a
+  `ProjectionExpression` naming only `SECURITY_EVENT_FIELDS`, so DynamoDB never returns either
+  field. `FORBIDDEN_FIELDS` removes them again if they somehow arrive, and the page shows them as
+  "withheld: never read".
+- Every value from every table passes through `redact`:
+  - fields that identify a person (`user_id`, `client_ip`, `email`, ...) are replaced whole;
+  - e-mail and IP addresses inside text become `[email]` and `[ip]`;
+  - text is cut to 300 characters and cleaned of control characters.
+- Row values go under `untrusted`. The spoken answer only says how old the newest row is and whether
+  writes look on time. A row's contents are never read aloud.
+
+**Deploying it:** nothing extra. Dev deploys as usual.
 
 ## The environment rule
 

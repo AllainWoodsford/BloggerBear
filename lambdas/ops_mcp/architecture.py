@@ -956,7 +956,14 @@ def describe(component: Component, env: str | None) -> dict:
     if alarms:
         rows.append(["Alarms", ", ".join(alarms)])
     if component.kind == "table":
-        rows.append(["The assistant can read it", "yes" if component.assistant_reads else "no"])
+        rows.append(
+            [
+                "The assistant can read it",
+                "yes: its tools read it, and table_sample shows its newest row"
+                if component.assistant_reads
+                else "with table_sample, when it carries the default tags and this environment's tag",
+            ]
+        )
     present = exists_in(component, env)
     if not present:
         rows.append(["In this environment", f"no: only in {', '.join(component.only_in)}"])

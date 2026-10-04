@@ -11,6 +11,7 @@ the pipeline, and nothing here runs a command: the operator does, after reading 
 - account.py      security_events, alarms and spend
 - architecture.py the catalogue of the project's AWS resources, per environment: the architecture tool
 - runsheets.py    investigate: where to look (dashboards, log groups, queries) when no tool can
+- samples.py      table_sample: a table's newest row, redacted, and whether writes are on time
 - suggestions.py  the fixed catalogue of commands a finding can suggest
 - memory.py       what it has suggested and what it is watching: the one table it writes to
 - access.py       the assistant_access switch, checked on every request

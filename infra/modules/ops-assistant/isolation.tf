@@ -32,7 +32,8 @@
 #
 # Every resource Terraform makes carries Environment from the provider's default_tags
 # (infra/environments/*/main.tf, locals.default_tags): "dev", "production", or "shared" for
-# infra/bootstrap. The value compared against is var.environment_name, so the calling root's tag
+# infra/bootstrap. The values compared against are locals.readable_environments (main.tf), which
+# start with var.environment_name, so the calling root's tag
 # and the name it passes here must be the same word: test_terraform_wiring.py holds dev's.
 #
 # WHAT IT CAN ACTUALLY AFFECT. Looked up 2026-10-04 in the AWS Service Authorization Reference,
@@ -93,11 +94,11 @@
 #   roles at all. Not refused.
 # - Alarms: a list by prefix carries no resource tag. Not refused (and not narrowed either).
 # - Resources tagged Environment = "shared" (infra/bootstrap: the deploy roles, the state bucket,
-#   the API Gateway account role): neither role is allowed anything on any of them, and no tool
-#   reads one. So nothing legitimate carries a different Environment value today, and "shared" is
-#   deliberately refused along with the other environment. If a tool ever needs a shared
-#   resource (the planned firewall_review reads a firewall that serves both sites), that
-#   resource has to be named here as an exception, on purpose, and the tests changed with it.
+#   the API Gateway account role): the owner's rule is that production's assistant may read
+#   what is shared and dev's may not. So the Deny refuses everything outside
+#   locals.readable_environments (main.tf): for dev, anything not "dev"; for production,
+#   anything neither "production" nor "shared". Production's role is still allowed nothing on a
+#   shared resource except what its Allows name (table_sample's tag-conditioned reads).
 #
 # A Deny, in a policy of its own, so that each role's Allow policy stays what its tests say it
 # is: a list of what is allowed, with no wildcard in it. The "*" here grants nothing.
@@ -117,7 +118,7 @@ data "aws_iam_policy_document" "other_environments_denied" {
     condition {
       test     = "StringNotEquals"
       variable = "aws:ResourceTag/Environment"
-      values   = [var.environment_name]
+      values   = local.readable_environments
     }
   }
 }
