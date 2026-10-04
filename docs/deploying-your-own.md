@@ -33,7 +33,11 @@ What it does, in order:
    confirm it. **In a fork, `gh` can pick the original repository. Read the name.**
 2. Lists what is already set, by name. A secret's value cannot be read back, by anyone, and the
    script never tries. Settings that are already set are skipped unless you ask to replace them.
-3. Asks for each setting that is left, with a short explanation and a check: your allowed
+3. Asks for each setting that is left, with a short explanation and a check. The region comes
+   first (`AWS_REGION`, a plain variable; press Enter for the default, `ap-southeast-2`),
+   because the steps it prints later name it. If you choose another region it lists what else
+   you must change by hand (see [Deploying to another region](#deploying-to-another-region))
+   and adds the region to the bootstrap command it shows. Then: your allowed
    address ranges, the alert emails, the two account IDs, the two deploy role ARNs (with the
    steps to create them and the ARN it expects, which you can accept by pressing Enter), the
    state bucket names, the name suffix, and `PII_DENYLIST`. Press Enter to leave an optional
@@ -42,6 +46,13 @@ What it does, in order:
 5. Asks once more, then sets everything.
 6. Tells you how to turn on the git hook that stops personal data being committed, and offers to
    run that one command (`git config core.hooksPath .githooks`) for this clone.
+7. Explains the optional CoinGecko API key, the one setting kept in AWS rather than on GitHub
+   (see "The CoinGecko API key" under step 2). If the AWS CLI is installed and signed in, it
+   says which account you are signed in to (last four digits only) and whether each
+   environment's parameter is already set. It then prints the command for you to run, with a
+   placeholder where the key goes. **It does not store the key and never asks for it**: the AWS
+   CLI only takes a value as a command-line argument or from a file, and the script puts a
+   secret in neither. A run narrowed with `--only` skips this step.
 
 **What "all or nothing" means here.** Nothing is set until every answer has passed its check and
 you have confirmed the summary. Cancel at any point before that (Ctrl-C works at every question)
@@ -51,9 +62,12 @@ were not. It does not try to put old values back: they cannot be read. Run it ag
 up what is missing.
 
 A dry run cannot set anything: one function does all the writing, a dry run never reaches it,
-and a dry run's `gh` calls are limited to ones that only read.
+and a dry run's `gh` and `aws` calls are limited to ones that only read.
 
-The script sets up GitHub. It does not touch AWS: you still run the bootstrap in step 1 yourself.
+The script sets up GitHub. It changes nothing in AWS: you still run the bootstrap in step 1
+yourself, and you store the CoinGecko key yourself. The only AWS calls it makes are three reads
+for step 7 (`aws --version`, `aws sts get-caller-identity`, `aws ssm describe-parameters`, which
+lists names and never returns a value), and it works without the AWS CLI.
 It also needs the `production` environment to exist (step 2) before it can put production's
 secrets there, and tells you if it does not.
 
@@ -80,7 +94,13 @@ secrets there, and tells you if it does not.
   [Deploying to another region](#deploying-to-another-region).
 - Terraform 1.10 or newer, and the AWS CLI.
 - Your fork on GitHub, with Actions enabled, a `dev` branch and a `prod` branch.
-- For production only: a domain you control. Production always uses a custom domain.
+- For production only: a domain you control, bought from any registrar. Production always uses a
+  custom domain. You do not move the domain to AWS: you point its name servers at a Route 53 zone
+  (the original deployment's registrar is GoDaddy, which the runsheet uses as its worked example).
+- Room in your Lambda quota. A new AWS account often allows only 10 concurrent Lambda executions
+  for the whole account. Everything here runs within that, but it is shared by every function in
+  both environments: ask for more under Service Quotas > AWS Lambda > "Concurrent executions"
+  before you rely on the site.
 
 ## 1. Bootstrap, once, by hand
 
@@ -163,6 +183,36 @@ Why some are secrets and some are variables:
 Set `UNIQUE_NAME_SUFFIX` **before your first deploy and never change it**. A bucket cannot be
 renamed: changing the suffix later makes Terraform delete the buckets and create empty ones.
 
+### The CoinGecko API key (optional, in AWS)
+
+One setting is not on GitHub at all. The crypto topic reads prices from CoinGecko, and an API key
+(a free one will do: <https://www.coingecko.com/en/api>) raises its rate limit. Without a key
+the keyless public API is used, which is throttled often enough to lose some research ticks.
+**CoinGecko's terms require the site to credit them either way**; it does, with "Powered by
+CoinGecko API" under each crypto article and topic title and on the About page.
+
+| Name | Kind | Where | What it is |
+|---|---|---|---|
+| `/bloggerbear/dev/coingecko-api-key` | SSM parameter, `SecureString` | the dev account, in your `AWS_REGION` | The key dev's crypto Lambdas read. Optional. |
+| `/bloggerbear/production/coingecko-api-key` | SSM parameter, `SecureString` | the production account, in your `AWS_REGION` | The same, for production. Optional. |
+
+Terraform does not create the parameter (its value would end up in the state file); it only lets
+the Lambdas read that one name. You create it once per environment, signed in to that
+environment's account, in the region the deployment lives in (`AWS_REGION`; `ap-southeast-2` if
+you left that unset). The setup script prints this command with your region filled in:
+
+```bash
+aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --overwrite \
+  --region ap-southeast-2 --value YOUR_COINGECKO_API_KEY
+```
+
+Typed like that, the key stays in your shell's history. To avoid it, create the parameter in the
+AWS console instead: Systems Manager → Parameter Store → Create parameter, type `SecureString`,
+with the name above. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` in front of the command,
+or the name is rewritten as a file path. A paid (Pro) key also needs `coingecko_api_plan = "pro"` in that
+environment's `terraform.tfvars`. The Lambdas read the key once per cold start, so a new key is
+picked up the next time they start cold; a deploy forces that.
+
 ## 3. One account or two
 
 **One account** (what the original deployment does):
@@ -214,6 +264,50 @@ terraform -chdir=infra/environments/dev init \
   -backend-config="region=eu-west-1"
 TF_VAR_aws_region=eu-west-1 terraform -chdir=infra/environments/dev plan
 ```
+
+## 5. After the first deploy
+
+Dev is up once the `terraform` workflow goes green. What is left is by hand, and none of it is in
+GitHub's settings.
+
+1. **Find your addresses.** `terraform -chdir=infra/environments/dev output` (after the `init`
+   shown above) prints the site's address, the public and admin API URLs, and the assistant's
+   `ops_ask_url`, `ops_mcp_url`, `ops_user_pool_id`, `ops_app_client_id` and
+   `ops_hosted_ui_domain`.
+2. **Confirm the alert email.** AWS sends a confirmation to `ALERT_EMAIL_DEV`; nothing is
+   delivered until you click it.
+3. **Point the admin CLI at dev and seed a topic** (`scripts/QUICKSTART.md`, README step 6):
+   ```bash
+   export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/dev output -raw admin_api_url)
+   python scripts/admin_cli.py topics list
+   ```
+   The admin API only answers from the addresses in `ADMIN_ALLOWED_CIDRS_DEV`, with your own AWS
+   credentials. A topic creates its own schedules; trigger it once by hand to see it work.
+4. **Optional: a CoinGecko API key**, if you run a crypto topic. It is not a GitHub secret: the
+   Lambda reads it at run time from SSM Parameter Store, a SecureString named
+   `/bloggerbear/dev/coingecko-api-key` (production: `/bloggerbear/production/coingecko-api-key`).
+   Without one the adapter uses CoinGecko's keyless public API.
+   ```bash
+   aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key \
+     --type SecureString --value <key> --overwrite
+   ```
+   In Git Bash on Windows put `MSYS_NO_PATHCONV=1` in front, or the leading `/` is rewritten.
+5. **The operator assistant** (dev only for now): a sign-in page at `<dev site>/ask.html` in front
+   of an agent that reports what needs your attention and shows the `admin_cli` command for each
+   thing. It never runs anything. It has its own user pool, with self sign-up off, so create your
+   user by hand:
+   ```bash
+   aws cognito-idp admin-create-user --user-pool-id <ops_user_pool_id> \
+     --username <a name> --temporary-password <one>
+   ```
+   Sign in on the page to set a password. To restrict it to your own addresses, or switch it off,
+   without a deploy: `python scripts/admin_cli.py pipeline-config set --assistant-access allowlist`
+   (or `off`; `open` is the default).
+6. **Production and your domain:** follow [production-runsheet.md](production-runsheet.md). It
+   covers the DNS zone, pointing your registrar at it, the first release, and what to check after.
+
+If you keep the data sources this project ships with, keep their credits too: see
+[Data sources and attribution](../README.md#data-sources-and-attribution) in the README.
 
 ## Deploying to another region
 
@@ -277,7 +371,8 @@ These need a hand edit in your fork, or cannot be changed yet.
 - **Production's domain.** `infra/environments/production/terraform.tfvars` sets `domain_name` and
   `hosted_zone_id` to the original site's. Change both to yours (`hosted_zone_id` is a bootstrap
   output). A value in that file wins over anything CI passes, so it has to be edited there.
-  Production cannot be deployed without a domain.
+  Production cannot be deployed without a domain. Any registrar will do: see
+  [production-runsheet.md](production-runsheet.md) for pointing it at the zone.
 - **The site itself.** The pages, the privacy policy and some tests name `bloggerbear.com`.
 - **The backend blocks** in both environments name `bloggerbear-terraform-state` in
   `ap-southeast-2`. Terraform does not allow a variable there. CI overrides the name with

@@ -33,5 +33,5 @@ output "hosted_zone_id" {
 
 output "hosted_zone_name_servers" {
   value       = one(aws_route53_zone.site[*].name_servers)
-  description = "The four name servers to enter as CUSTOM nameservers at your registrar (GoDaddy: Domain Settings > Nameservers > Change > Enter my own). Null when no domain is set."
+  description = "The four name servers to enter as custom name servers at your registrar, whichever it is (at GoDaddy, for example: Domain Settings > Nameservers > Change > Enter my own). Null when no domain is set."
 }

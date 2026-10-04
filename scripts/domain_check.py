@@ -109,7 +109,7 @@ def check_nameservers(domain: str, expect: list[str] | None, lookup=doh) -> Chec
             "Name servers",
             "public DNS returned none for this domain",
             "It may be too new, or the registrar may not have published it yet. "
-            "Check the domain is active at GoDaddy.",
+            "Check the domain is active at your registrar.",
         )
     shown = ", ".join(servers)
     if expect:
@@ -121,8 +121,8 @@ def check_nameservers(domain: str, expect: list[str] | None, lookup=doh) -> Chec
                 WAIT,
                 "Name servers",
                 f"still GoDaddy's own: {shown}",
-                "In GoDaddy: Domain Settings > Nameservers > Change > Enter my own nameservers, "
-                "and paste the four from "
+                "At your registrar, switch the domain to custom name servers (in GoDaddy: Domain "
+                "Settings > Nameservers > Change > Enter my own nameservers) and paste the four from "
                 "`terraform -chdir=infra/bootstrap output hosted_zone_name_servers`. "
                 "It can take minutes to a few hours.",
             )

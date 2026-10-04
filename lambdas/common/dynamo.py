@@ -282,8 +282,15 @@ def put_article(
     review: dict | None = None,
     body_original_s3_key: str | None = None,
     equipment_used: list[dict] | None = None,
+    attribution: list[dict] | None = None,
 ) -> dict:
     """Write an Articles item and return it.
+
+    `attribution` is the source credit this article was drafted with (common/attribution.py:
+    [{"text", "label", "url"}], copied from its topic's adapter), kept so the article goes on
+    showing the credit it was published with even if the adapter's declaration changes. An empty
+    list means it was drafted with nothing to credit; absent means it predates this and readers
+    of it fall back to the topic's adapter.
 
     `equipment_used` is the gear whose guidance was in the prompts that wrote this article
     (common/equipment.py: [{"topic_id", "version", "slot"}]); an empty list means it was written
@@ -323,6 +330,8 @@ def put_article(
         item["body_original_s3_key"] = body_original_s3_key
     if equipment_used is not None:
         item["equipment_used"] = equipment_used
+    if attribution is not None:
+        item["attribution"] = attribution
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 

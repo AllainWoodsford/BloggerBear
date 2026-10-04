@@ -238,6 +238,91 @@ def test_render_and_publish_article_page_escapes_title_and_body(s3):
     assert "&lt;script&gt;" in html
 
 
+# --- source attribution (common/attribution.py) ---------------------------------
+
+
+def _page_with_credit(s3, attribution, article_id="credit"):
+    static_pages.render_and_publish_article_page(
+        article_id=article_id,
+        title="A Title",
+        body_markdown="Body text.",
+        topic_name="A Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+        attribution=attribution,
+    )
+    return s3.get_object(Bucket=ENV["SITE_BUCKET"], Key=f"articles/{article_id}.html")["Body"].read().decode()
+
+
+def test_a_crypto_articles_page_carries_coingeckos_own_wording_and_link_under_the_title(s3):
+    from common.attribution import sources_for_adapter
+
+    html = _page_with_credit(s3, sources_for_adapter("crypto_feed"))
+
+    assert (
+        '<em>Powered by <a href="https://www.coingecko.com/en/api" target="_blank" '
+        'rel="noopener noreferrer">CoinGecko API</a></em>'
+    ) in html
+    assert (
+        '<em>News search by the <a href="https://www.gdeltproject.org/" target="_blank" '
+        'rel="noopener noreferrer">GDELT Project</a></em>'
+    ) in html
+    # Just under the title block (title, date line, lineage line), before the body.
+    credit_at = html.index('<p class="source-attribution"')
+    assert html.index("<h1>") < html.index('class="lineage-summary"') < credit_at
+    assert credit_at < html.index('<div class="article-body">')
+
+
+def test_a_github_trending_articles_page_credits_and_links_the_trending_page(s3):
+    from common.attribution import sources_for_adapter
+
+    html = _page_with_credit(s3, sources_for_adapter("github_trending"))
+
+    assert (
+        '<p class="source-attribution" data-role="source-attribution">'
+        '<em>Data sourced from <a href="https://github.com/trending" target="_blank" '
+        'rel="noopener noreferrer">GitHub Trending</a></em></p>'
+    ) in html
+
+
+def test_a_page_with_nothing_to_credit_has_no_credit_line(s3):
+    assert "source-attribution" not in _page_with_credit(s3, None)
+    assert "source-attribution" not in _page_with_credit(s3, [])
+
+
+def test_hostile_characters_in_a_credit_cannot_break_out_of_the_markup(s3):
+    hostile = [
+        {
+            "text": 'Data by <script>alert(1)</script> "Evil" & <b>Co</b>',
+            "label": '"Evil" & <b>Co</b>',
+            "url": 'https://evil.example/?a=1&b="><script>alert(2)</script>',
+        }
+    ]
+    html = _page_with_credit(s3, hostile)
+    line = re.search(r'<p class="source-attribution".*?</p>', html, re.S).group(0)
+
+    assert "<script>" not in line and "<b>" not in line
+    assert "Data by &lt;script&gt;alert(1)&lt;/script&gt; " in line
+    assert ">&quot;Evil&quot; &amp; &lt;b&gt;Co&lt;/b&gt;</a>" in line
+    # The URL stays inside its attribute: every quote and angle bracket in it is escaped.
+    assert 'href="https://evil.example/?a=1&amp;b=&quot;&gt;&lt;script&gt;alert(2)&lt;/script&gt;"' in line
+    # Exactly the tags the renderer writes, nothing the declaration smuggled in.
+    assert re.findall(r"<(\w+)", line) == ["p", "em", "a"]
+
+
+def test_a_credit_that_is_not_an_https_link_is_left_off_the_page(s3):
+    html = _page_with_credit(
+        s3,
+        [
+            {"text": "Click here", "label": "here", "url": "javascript:alert(1)"},
+            {"text": "Plain http", "label": "http", "url": "http://x.example/"},
+            {"text": "Spaced out", "label": "out", "url": "https://x.example/ onclick=alert(1)"},
+            {"text": "No label in text", "label": "elsewhere", "url": "https://x.example/"},
+        ],
+    )
+    assert "source-attribution" not in html
+    assert "javascript:" not in html
+
+
 # --- taking a page down ---------------------------------------------------------
 
 

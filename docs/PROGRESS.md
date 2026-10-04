@@ -584,6 +584,9 @@ All shipped and deployed; the design and decisions for each are in
   AWS bill (#135)
 - [x] Staggered research and authoring schedules (production and dev)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
+- [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
+  official REST Search API (most-starred repos created in the last week),
+  with an optional token in SSM at `/bloggerbear/<env>/github-api-token`
 
 ## Backlog / not yet scheduled
 

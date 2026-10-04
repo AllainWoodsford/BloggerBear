@@ -1345,6 +1345,31 @@ def test_the_coingecko_key_is_read_from_ssm_not_passed_in(env):
     assert sorted(told) == ["daily_cycle", "research_tick"]
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_github_token_is_read_from_ssm_not_passed_in(env):
+    text = _read("environments", env, "main.tf")
+    parameter = f"/bloggerbear/{env}/github-api-token"
+
+    assert f'github_api_token_parameter = "{parameter}"' in text
+    assert "GITHUB_API_TOKEN_PARAMETER = local.github_api_token_parameter" in text
+    assert 'resource "aws_ssm_parameter"' not in text
+    assert "GITHUB_API_TOKEN " not in text
+
+    policy = re.search(
+        r'data "aws_iam_policy_document" "lambda_github_token" \{(.*?)\n\}', text, re.S
+    ).group(1)
+    assert re.findall(r'"(ssm:[A-Za-z]+)"', policy) == ["ssm:GetParameter"]
+    assert "parameter${local.github_api_token_parameter}" in policy
+
+    # The two Lambdas that run adapters (fetch, and the fresh-data review's re-fetch).
+    told = re.findall(
+        r'^resource "aws_lambda_function" "([a-z_]+)" \{(?:(?!^\}).)*local\.github_env_variables',
+        text,
+        re.S | re.M,
+    )
+    assert sorted(told) == ["daily_cycle", "research_tick"]
+
+
 def test_no_workflow_passes_a_coingecko_key_any_more():
     workflows = ROOT / ".github" / "workflows"
     for path in workflows.glob("*.yml"):
@@ -2678,8 +2703,8 @@ _REGION_LITERAL_ALLOWED = {
         r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
         r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
     ],
-    # Help text shown to a person: what leaving AWS_REGION blank means.
-    "scripts/setup_repo.py": [r"\"original deployment's region, ap-southeast-2 \(Sydney\)\. .*"],
+    # The setup script's one copy of the default, which its own tests hold to Terraform's.
+    "scripts/setup_repo.py": [r'DEFAULT_REGION = "ap-southeast-2"'],
     # An example to `source` by hand: whatever region is already exported wins, else the default.
     "scripts/force_publish_example.sh": [
         r'export AWS_DEFAULT_REGION="\$\{AWS_DEFAULT_REGION:-ap-southeast-2\}"'
