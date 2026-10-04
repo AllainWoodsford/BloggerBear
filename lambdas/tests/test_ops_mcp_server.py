@@ -122,7 +122,14 @@ def test_a_version_it_does_not_speak_is_refused_with_the_ones_it_does(client):
 def test_the_tools_are_listed_read_only_with_structured_output(client):
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
 
-    assert set(tools) == {"pipeline_health", "admin_inbox"}
+    assert set(tools) == {
+        "pipeline_health",
+        "admin_inbox",
+        "content_checks",
+        "security_events",
+        "alarms",
+        "spend",
+    }
     for tool in tools.values():
         assert tool["annotations"]["readOnlyHint"] is True
         assert tool["annotations"]["destructiveHint"] is False
@@ -184,9 +191,45 @@ def test_with_no_hosts_configured_everything_is_refused(monkeypatch):
 
 
 def test_the_server_registers_no_tool_that_can_change_anything():
-    """Every tool is one of the read-only functions in tools.py, by name."""
+    """Every tool is one of the read-only functions in tools.py, content.py and account.py, by
+    name."""
     import asyncio
 
     registered = asyncio.run(server.build_server().list_tools())
 
-    assert sorted(tool.name for tool in registered) == ["admin_inbox", "pipeline_health"]
+    assert sorted(tool.name for tool in registered) == [
+        "admin_inbox",
+        "alarms",
+        "content_checks",
+        "pipeline_health",
+        "security_events",
+        "spend",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "target", "called_with"),
+    [
+        ("content_checks", {"days": 3}, "ops_mcp.content.content_checks", (3,)),
+        ("security_events", {}, "ops_mcp.account.security_events", (7,)),
+        ("alarms", {}, "ops_mcp.account.alarms", ()),
+        ("spend", {"period": "month"}, "ops_mcp.account.spend", ("month",)),
+    ],
+)
+def test_each_new_tool_passes_its_arguments_to_its_function(client, name, arguments, target, called_with):
+    answer = {"spoken": "Nothing.", "findings": []}
+    with patch(target, return_value=answer) as mock_tool:
+        response = call(client, "tools/call", {"name": name, "arguments": arguments}, name=name)
+
+    mock_tool.assert_called_once_with(*called_with)
+    assert response.json()["result"]["structuredContent"] == answer
+
+
+def test_spend_takes_a_week_or_a_month_and_nothing_else(client):
+    with patch("ops_mcp.account.spend") as mock_spend:
+        response = call(
+            client, "tools/call", {"name": "spend", "arguments": {"period": "year"}}, name="spend"
+        )
+
+    mock_spend.assert_not_called()
+    assert response.json()["result"]["isError"] is True
