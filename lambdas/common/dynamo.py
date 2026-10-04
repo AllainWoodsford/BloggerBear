@@ -1199,6 +1199,17 @@ def list_recent_article_titles(topic_id: str, limit: int = 5) -> list[str]:
     return [item["title"] for item in items]
 
 
+def get_newest_article_for_topic(topic_id: str) -> dict | None:
+    """The topic's most recently created article, in any status, or None if it has none. One
+    newest-first Query on the topic index, for the operator's assistant (ops_mcp/tools.py), which
+    asks what became of a topic's latest run: published, held or rejected."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    items = _paginated_query(
+        table, ARTICLES_BY_TOPIC_INDEX, Key("topic_id").eq(topic_id), newest_first=True, limit=1
+    )
+    return items[0] if items else None
+
+
 # --- FailedExecutions (DLQ consumer) -------------------------------------
 #
 # Owned by the dlq_handler worker. A FailedExecutions item is written once
