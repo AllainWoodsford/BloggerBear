@@ -40,11 +40,68 @@ variables {
   throttling_burst_limit  = 10
 }
 
-run "the_role_can_only_read" {
+# The role has two policies: the read-only one (main.tf) and the one write the design allows, on
+# the assistant's own suggestions table (memory.tf). This run holds both: everything is a read,
+# except five named actions on that one table.
+run "the_role_can_only_read_and_write_its_own_table" {
   command = plan
 
-  # An allowlist, not a search for "Put" or "Delete": an action nobody thought to forbid fails
-  # this too. Adding a read action for a new tool means adding it here, on purpose.
+  # The table's ARN is only known after apply; given here, so the plan can be asked which
+  # resource the write statement names.
+  override_resource {
+    target          = aws_dynamodb_table.operator_suggestions
+    override_during = plan
+    values = {
+      arn = "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-operator-suggestions"
+    }
+  }
+
+  # Exactly these, on exactly that table: no Scan, no batch write, no wildcard, no index.
+  assert {
+    condition = toset(flatten(data.aws_iam_policy_document.ops_mcp_memory.statement[*].actions)) == toset([
+      "dynamodb:GetItem",
+      "dynamodb:Query",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
+    ])
+    error_message = "the memory policy allows something other than reading and writing single rows"
+  }
+
+  assert {
+    condition = length(data.aws_iam_policy_document.ops_mcp_memory.statement) == 1 && alltrue([
+      for statement in data.aws_iam_policy_document.ops_mcp_memory.statement :
+      statement.effect == "Allow" && toset(statement.resources) == toset([
+        "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-operator-suggestions",
+      ])
+    ])
+    error_message = "the write actions must be on the suggestions table alone"
+  }
+
+  assert {
+    condition     = aws_dynamodb_table.operator_suggestions.name == "bloggerbear-test-operator-suggestions" && aws_dynamodb_table.operator_suggestions.hash_key == "user_id" && aws_dynamodb_table.operator_suggestions.range_key == "item" && aws_dynamodb_table.operator_suggestions.billing_mode == "PAY_PER_REQUEST"
+    error_message = "the suggestions table is bloggerbear-<env>-operator-suggestions, keyed by user_id and item, on demand"
+  }
+
+  assert {
+    condition     = one(aws_dynamodb_table.operator_suggestions.ttl[*].attribute_name) == "expires_at" && one(aws_dynamodb_table.operator_suggestions.ttl[*].enabled) == true
+    error_message = "rows expire on expires_at"
+  }
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.OPERATOR_SUGGESTIONS_TABLE == "bloggerbear-test-operator-suggestions"
+    error_message = "the function is told its own table's name as OPERATOR_SUGGESTIONS_TABLE"
+  }
+
+  # The role has these two policies of this module's and no others.
+  assert {
+    condition     = aws_iam_role_policy.ops_mcp.name == "bloggerbear-test-ops-mcp-read-only" && aws_iam_role_policy.ops_mcp_memory.name == "bloggerbear-test-ops-mcp-own-suggestions"
+    error_message = "the role's two policies are named for what they allow"
+  }
+
+  # The read-only policy. An allowlist, not a search for "Put" or "Delete": an action nobody
+  # thought to forbid fails this too. Adding a read action for a new tool means adding it here,
+  # on purpose.
   assert {
     condition = length(setsubtract(
       toset(flatten(data.aws_iam_policy_document.ops_mcp.statement[*].actions)),

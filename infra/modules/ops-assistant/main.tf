@@ -173,9 +173,10 @@ resource "aws_iam_role" "ops_mcp" {
 
 # Everything this function may do. The rule for adding to it: only read actions, only on
 # resources named here, and only for a tool that exists or is next (section 1's table). The one
-# write the design allows, on the assistant's own suggestions table, arrives with that table;
-# nothing else ever should. tests/ops_assistant.tftest.hcl and test_terraform_wiring.py both fail
-# if a write action appears.
+# write the design allows, on the assistant's own suggestions table, is in a policy of its own
+# beside that table (memory.tf); nothing else ever should be. tests/ops_assistant.tftest.hcl and
+# test_terraform_wiring.py both fail if a write action appears here, or anywhere but on that
+# table.
 data "aws_iam_policy_document" "ops_mcp" {
   # The tables the tools read, and their indexes (an index has its own ARN, <table>/index/<name>,
   # which the table's ARN does not cover; common/dynamo.py Queries the Articles, ModerationQueue
@@ -267,7 +268,7 @@ resource "aws_lambda_function" "ops_mcp" {
   function_name = local.name
   # The log group first (see it), and the policy too: a function that exists before its role can
   # read anything would answer its first requests with AccessDenied.
-  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp]
+  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory]
   role          = aws_iam_role.ops_mcp.arn
   handler       = "run.sh"
   runtime       = "python3.11"
@@ -306,6 +307,10 @@ resource "aws_lambda_function" "ops_mcp" {
 
         CONTENT_BUCKET   = var.content_bucket_name
         ENVIRONMENT_NAME = var.environment_name
+
+        # The assistant's own table (memory.tf), the one thing it may write to: what it has
+        # suggested and what it is watching (ops_mcp/memory.py).
+        OPERATOR_SUGGESTIONS_TABLE = aws_dynamodb_table.operator_suggestions.name
 
         # The SDK refuses any request whose Host header is not on this list (421), and an empty
         # list refuses everything (ops_mcp/server.py). Behind API Gateway the Host a caller sends

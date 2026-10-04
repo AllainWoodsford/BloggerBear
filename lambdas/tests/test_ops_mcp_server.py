@@ -119,22 +119,25 @@ def test_a_version_it_does_not_speak_is_refused_with_the_ones_it_does(client):
     assert response.status_code == 400
 
 
-def test_the_tools_are_listed_read_only_with_structured_output(client):
+# The tools that look at the pipeline, and the ones that keep the assistant's own list (memory.py).
+PIPELINE_TOOLS = {"pipeline_health", "admin_inbox", "content_checks", "security_events", "alarms", "spend"}
+MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
+
+
+def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
 
-    assert set(tools) == {
-        "pipeline_health",
-        "admin_inbox",
-        "content_checks",
-        "security_events",
-        "alarms",
-        "spend",
-    }
-    for tool in tools.values():
-        assert tool["annotations"]["readOnlyHint"] is True
+    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS
+    for name, tool in tools.items():
+        # Only the memory tools say they write, and each says what: its own list and nothing else.
+        assert tool["annotations"]["readOnlyHint"] is (name in PIPELINE_TOOLS)
         assert tool["annotations"]["destructiveHint"] is False
         assert tool["outputSchema"]["type"] == "object"
         assert tool["description"]
+        if name in MEMORY_TOOLS:
+            assert "changes only the assistant's own" in " ".join(tool["description"].split())
+        # The SDK's Context is injected: it is not an argument a client can send.
+        assert "ctx" not in tool["inputSchema"].get("properties", {})
 
 
 def test_a_tool_call_returns_one_json_object_with_the_structured_result(client):
@@ -190,21 +193,30 @@ def test_with_no_hosts_configured_everything_is_refused(monkeypatch):
         assert call(closed, "tools/list").status_code == 421
 
 
-def test_the_server_registers_no_tool_that_can_change_anything():
-    """Every tool is one of the read-only functions in tools.py, content.py and account.py, by
-    name."""
+def test_the_only_thing_any_tool_can_write_is_the_assistants_own_table():
+    """Every tool is one of the read-only functions in tools.py, content.py and account.py, or one
+    of memory.py's, by name. The whole package writes through one function, memory._write, and
+    deletes through one, memory._delete, both on OPERATOR_SUGGESTIONS_TABLE; no other module has
+    a write call in it. (test_ops_mcp_memory.py holds that no other table changes when they run,
+    and the Terraform tests that the role could not write one if they tried.)"""
     import asyncio
+    import pathlib
+    import re
 
     registered = asyncio.run(server.build_server().list_tools())
 
-    assert sorted(tool.name for tool in registered) == [
-        "admin_inbox",
-        "alarms",
-        "content_checks",
-        "pipeline_health",
-        "security_events",
-        "spend",
-    ]
+    assert {tool.name for tool in registered} == PIPELINE_TOOLS | MEMORY_TOOLS
+
+    package = pathlib.Path(server.__file__).parent
+    writes = re.compile(r"\.(put_item|update_item|delete_item|batch_writer|put_object|delete_object)\(")
+    found = {
+        path.name: writes.findall(path.read_text(encoding="utf-8")) for path in sorted(package.glob("*.py"))
+    }
+    assert {name: calls for name, calls in found.items() if calls} == {
+        "memory.py": ["update_item", "delete_item"]
+    }
+    memory_source = (package / "memory.py").read_text(encoding="utf-8")
+    assert memory_source.count("os.environ[") == 1 and "os.environ[TABLE_ENV]" in memory_source
 
 
 @pytest.mark.parametrize(
