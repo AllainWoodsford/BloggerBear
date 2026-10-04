@@ -7,7 +7,8 @@ dependency upgrade that changes either fails the build.
 The server is the real one (`ops_mcp.server.create_app()`), run by uvicorn on a localhost port in
 a background thread, as it runs under the Lambda Web Adapter. A wrapper around it, in this test
 only, records every request before passing it on unchanged. The client is the agent's own
-(`ops_agent.agent.mcp_client`). Only the tables behind the tools are replaced. No AWS, no Bedrock.
+(`ops_agent.agent.mcp_client`). Only the tables behind the tools are replaced, and the config
+table the server's access switch reads is moto's. No AWS, no Bedrock.
 """
 
 from __future__ import annotations
@@ -18,10 +19,15 @@ import socket
 import threading
 from unittest.mock import patch
 
+import boto3
 import pytest
 import uvicorn
+from moto import mock_aws
 from ops_agent_fakes import ScriptedModel
+from table_schemas import create_table
 
+import common.dynamo as dynamo_module
+from common.dynamo import put_pipeline_config
 from ops_agent import agent
 from ops_mcp import server
 
@@ -86,7 +92,32 @@ class Recorder:
 
 
 @pytest.fixture
-def ops_server(monkeypatch):
+def config_table(monkeypatch):
+    """The config table, empty, as tests/test_ops_mcp_server.py sets it up: the server reads the
+    operator's `assistant_access` setting from it on every request (ops_mcp/access.py) and
+    refuses if it can't. Nothing stored means open."""
+    for key, value in {
+        "AWS_DEFAULT_REGION": "ap-southeast-2",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",
+        "MODEL_CONFIG_TABLE": "ModelConfig",
+    }.items():
+        monkeypatch.setenv(key, value)
+    dynamo_module._dynamodb_resource = None
+    with mock_aws():
+        create_table(
+            boto3.client("dynamodb", region_name="ap-southeast-2"),
+            TableName="ModelConfig",
+            KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield
+    dynamo_module._dynamodb_resource = None
+
+
+@pytest.fixture
+def ops_server(monkeypatch, config_table):
     """The real server on 127.0.0.1, with its Host check set to match. Yields (url, recorder)."""
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
@@ -202,3 +233,20 @@ def test_a_server_that_refuses_the_caller_is_an_agent_error(ops_server, monkeypa
     assert recorder.requests  # it did ask
     assert model.calls == 0  # and with no tools, the model was never called
     assert TOKEN not in str(raised.value)
+
+
+def test_with_the_assistant_switched_off_the_question_fails_and_the_model_is_never_called(
+    ops_server, monkeypatch
+):
+    """The operator's `assistant_access` switch is enforced by the server (ops_mcp/access.py).
+    Off there means no tools here, and with no tools the agent does not go on to Bedrock."""
+    url, recorder = ops_server
+    put_pipeline_config(assistant_access="off")
+    monkeypatch.setenv("OPS_MCP_URL", url)
+    model = ScriptedModel(["never asked"])
+    monkeypatch.setattr(agent, "bedrock_model", lambda: model)
+
+    with pytest.raises(agent.AgentError):
+        agent.answer("Anything need my attention?", [], TOKEN)
+
+    assert recorder.requests and model.calls == 0
