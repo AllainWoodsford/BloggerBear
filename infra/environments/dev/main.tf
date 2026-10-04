@@ -42,7 +42,7 @@ locals {
 }
 
 provider "aws" {
-  region = "ap-southeast-2"
+  region = var.aws_region
   # Refuses to plan or apply against any account but var.aws_account_id, when that is set: a
   # run that picked up the wrong credentials stops at once instead of half-working. Unset (the
   # default) is null here, which is the same as not writing the argument at all.
@@ -60,12 +60,12 @@ provider "aws" {
 # never exercises that code path: enable_custom_domain = false below means
 # the ACM/Route53 resources in the module all have count = 0, so this
 # alias is never actually invoked here. We satisfy the requirement by
-# pointing the alias at the same default ap-southeast-2 provider rather
+# pointing the alias at the same default home-region provider rather
 # than declaring a real us-east-1 provider -- production is the only place
 # in this codebase with an actual us-east-1 provider block.
 provider "aws" {
   alias  = "us_east_1"
-  region = "ap-southeast-2"
+  region = var.aws_region
   # The same guard as the default provider above: an alias is a provider of its own, and checks
   # nothing unless told to.
   allowed_account_ids = var.aws_account_id == "" ? null : [var.aws_account_id]
@@ -76,6 +76,8 @@ provider "aws" {
 
 module "static_site" {
   source = "../../modules/static-site"
+
+  aws_region = var.aws_region
 
   providers = {
     aws           = aws
@@ -388,7 +390,7 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/${module.static_site.distribution_id}"]
   }
 
-  # Every Claude model AWS offers in ap-southeast-2 requires routing through
+  # Every Claude model AWS offers in Sydney (the default home region) requires routing through
   # a cross-region inference profile rather than direct on-demand invocation
   # (confirmed via `aws bedrock list-foundation-models` -- none there are
   # ON_DEMAND) -- and that's true of other providers' models too, not just
@@ -396,7 +398,7 @@ data "aws_iam_policy_document" "lambda_exec" {
   # inference profile. Invoking via an inference profile needs permission on
   # BOTH the profile resource itself (account-scoped, region = where the
   # profile is defined) AND the underlying foundation-model ARNs it can fan
-  # out to (which may span regions beyond ap-southeast-2 for an AU/APAC/
+  # out to (which may span regions beyond the home region for an AU/APAC/
   # global profile, hence the region wildcard below) -- foundation-model
   # ARNs never carry an account ID, so that one can't be scoped further.
   statement {
@@ -405,7 +407,7 @@ data "aws_iam_policy_document" "lambda_exec" {
     actions = ["bedrock:InvokeModel"]
     resources = [
       "arn:aws:bedrock:*::foundation-model/*",
-      "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+      "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/*",
     ]
   }
 
@@ -427,7 +429,7 @@ data "aws_iam_policy_document" "lambda_exec" {
       "logs:CreateLogStream",
       "logs:PutLogEvents",
     ]
-    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-dev-*"]
+    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/bloggerbear-dev-*"]
   }
 }
 
@@ -496,8 +498,8 @@ locals {
     # do. SCHEDULER_INVOKE_ROLE_ARN has no such issue (scheduler_invoke's
     # own attributes don't depend on any Lambda/state-machine resource) so
     # it's referenced directly.
-    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:ap-southeast-2:${data.aws_caller_identity.current.account_id}:function:bloggerbear-dev-research-tick"
-    STATE_MACHINE_ARN          = "arn:aws:states:ap-southeast-2:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-dev-daily-cycle"
+    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:bloggerbear-dev-research-tick"
+    STATE_MACHINE_ARN          = "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-dev-daily-cycle"
     SCHEDULER_INVOKE_ROLE_ARN  = aws_iam_role.scheduler_invoke.arn
     ENVIRONMENT_NAME           = "dev"
 
@@ -606,7 +608,7 @@ data "aws_caller_identity" "current" {}
 # any other account could not call. Built from the caller's account instead, it is the same
 # string as before for that account, and the right one for every other.
 locals {
-  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"
+  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_inference_profile_id}"
 }
 
 # 120s / 512MB (was 60s / 256MB): on the first tick of each UTC day the crypto feed
@@ -662,7 +664,7 @@ data "aws_iam_policy_document" "lambda_coingecko_key" {
     sid       = "ReadCoinGeckoKey"
     effect    = "Allow"
     actions   = ["ssm:GetParameter"]
-    resources = ["arn:aws:ssm:ap-southeast-2:${data.aws_caller_identity.current.account_id}:parameter${local.coingecko_api_key_parameter}"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.coingecko_api_key_parameter}"]
   }
 }
 
@@ -755,6 +757,8 @@ resource "aws_iam_role_policy" "lambda_invoke_pipeline" {
 # -----------------------------------------------------------------------
 module "admin_api" {
   source = "../../modules/rest-api"
+
+  aws_region = var.aws_region
 
   name                 = "bloggerbear-dev-admin-api"
   stage_name           = "dev"
@@ -864,7 +868,7 @@ module "admin_api" {
 # Regional WAF IP allowlist -- a different Web ACL from the Phase 0
 # CLOUDFRONT-scope one in production/main.tf (that one is shared by both
 # CloudFront distributions, us-east-1 only). This one is REGIONAL scope,
-# created in this environment's default ap-southeast-2 provider (regional
+# created in this environment's default home-region provider (regional
 # WAF for API Gateway lives in the API's own region, no us-east-1 alias
 # needed), and protects only the admin API.
 #
@@ -1217,7 +1221,7 @@ data "aws_iam_policy_document" "scheduler_manage" {
       "scheduler:DeleteSchedule",
       "scheduler:GetSchedule",
     ]
-    resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-dev-*"]
+    resources = ["arn:aws:scheduler:${var.aws_region}:*:schedule/default/bloggerbear-dev-*"]
   }
 
   statement {
@@ -1282,6 +1286,8 @@ resource "aws_lambda_function" "public_api" {
 # -----------------------------------------------------------------------
 module "public_api" {
   source = "../../modules/rest-api"
+
+  aws_region = var.aws_region
 
   name                 = "bloggerbear-dev-public-api"
   stage_name           = "dev"
@@ -1767,7 +1773,7 @@ data "aws_iam_policy_document" "waf_logs" {
       identifiers = ["delivery.logs.amazonaws.com"]
     }
     actions   = ["logs:PutLogEvents", "logs:CreateLogStream"]
-    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-dev-*:*"]
+    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-bloggerbear-dev-*:*"]
   }
 }
 
@@ -2094,6 +2100,8 @@ locals {
 module "observability" {
   source = "../../modules/observability"
 
+  aws_region = var.aws_region
+
   environment_name      = "dev"
   lambda_function_names = local.pipeline_lambda_function_names
   state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
@@ -2340,6 +2348,8 @@ resource "aws_cloudwatch_log_subscription_filter" "security_events" {
 module "ops_assistant" {
   source = "../../modules/ops-assistant"
 
+  aws_region = var.aws_region
+
   environment_name = "dev"
 
   # Keyed by the environment variable common/dynamo.py reads each table's name from. This is the
@@ -2366,7 +2376,7 @@ module "ops_assistant" {
 
   stage_name = "dev"
 
-  # <prefix>.auth.ap-southeast-2.amazoncognito.com. Unique across every AWS account in the region:
+  # <prefix>.auth.<region>.amazoncognito.com. Unique across every AWS account in the region:
   # if the apply says the domain is taken, set var.unique_name_suffix (empty by default, which
   # leaves this name exactly as it was).
   hosted_ui_domain_prefix = "bloggerbear-dev-ops${var.unique_name_suffix}"

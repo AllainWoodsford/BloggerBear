@@ -55,3 +55,8 @@ variable "allow_microphone" {
   default     = false
   description = "Whether the site's own pages may ask the browser for the microphone: Permissions-Policy microphone=(self) instead of microphone=(). Only for an environment that serves the operator's assistant (frontend/ask.html), whose push-to-talk button uses the browser's speech recognition. The browser still asks the person before any page hears anything, and no other origin (a frame, a third party) is ever allowed."
 }
+
+variable "aws_region" {
+  type        = string
+  description = "The deployment's home region (the calling root's var.aws_region): the region of the API hosts the site's Content-Security-Policy lets pages call (connect-src https://*.execute-api.<region>.amazonaws.com). No default, so a root cannot forget to pass it."
+}

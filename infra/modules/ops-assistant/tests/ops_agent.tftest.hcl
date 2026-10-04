@@ -19,6 +19,9 @@ mock_provider "aws" {
 }
 
 variables {
+  # What a root passes when nothing is set: the original deployment's region.
+  aws_region = "ap-southeast-2"
+
   environment_name = "test"
   tables = {
     TOPICS_TABLE = {
@@ -339,5 +342,24 @@ run "with_no_forward_key_both_functions_hold_none" {
   assert {
     condition     = nonsensitive(aws_lambda_function.ops_agent.environment[0].variables.OPS_AGENT_FORWARD_KEY) == "" && nonsensitive(aws_lambda_function.ops_mcp.environment[0].variables.OPS_AGENT_FORWARD_KEY) == ""
     error_message = "an empty key is passed on as empty, which switches vouching off on both sides"
+  }
+}
+
+# An inference profile is a resource of the region it is called in, so the profile half of the
+# Bedrock statement follows var.aws_region. The foundation-model half stays a wildcard on the
+# region in every deployment: a cross-region profile routes to models in several.
+run "another_region_moves_the_inference_profiles_the_agent_may_call" {
+  command = plan
+
+  variables {
+    aws_region = "eu-west-1"
+  }
+
+  assert {
+    condition = toset(data.aws_iam_policy_document.ops_agent.statement[0].resources) == toset([
+      "arn:aws:bedrock:*::foundation-model/*",
+      "arn:aws:bedrock:eu-west-1:111111111111:inference-profile/*",
+    ])
+    error_message = "the profiles the agent may call are this account's in the home region; foundation models stay any-region"
   }
 }

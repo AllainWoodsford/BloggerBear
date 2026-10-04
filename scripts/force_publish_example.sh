@@ -14,7 +14,10 @@
 # See scripts/README.md for background on both exports below.
 
 # --- 1. AWS region -----------------------------------------------------
-export AWS_DEFAULT_REGION="ap-southeast-2"
+# The region the environment is deployed in. Whatever is already exported wins; otherwise the
+# original deployment's region, which is also Terraform's default for var.aws_region. A fork in
+# another region exports its own before sourcing this.
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-ap-southeast-2}"
 
 # --- 2. Admin API URL ----------------------------------------------------
 # Not hardcoded -- API Gateway only assigns this once infra/ has been

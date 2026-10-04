@@ -14,7 +14,7 @@
 # US$3 a month for every dashboard past the account's first three, and dev's edge traffic is mostly
 # the operator's own.
 #
-# Regions: API Gateway and the regional ACLs are ap-southeast-2. CloudFront's metrics, and the
+# Regions: API Gateway and the regional ACLs are in the home region (var.aws_region). CloudFront's metrics, and the
 # CLOUDFRONT-scope ACL's metrics and log group, only exist in us-east-1 -- a widget pointed anywhere
 # else draws nothing. CloudFront metrics carry Region = "Global"; a CloudFront ACL's WAF metrics carry
 # no Region at all (AWS: "Region ... required for all protected resource types except CloudFront"),
@@ -27,7 +27,12 @@
 # -----------------------------------------------------------------------
 
 locals {
-  api_region = "ap-southeast-2"
+  api_region = var.aws_region
+
+  # Written out, and not the home region: CloudFront is a global service that publishes its
+  # metrics only in us-east-1, and a CLOUDFRONT-scope web ACL (with its metrics and its log
+  # group) can only be created there. This holds whichever region the deployment calls home.
+  cloudfront_region = "us-east-1"
 
   api_sections = flatten([
     for api in var.api_dashboard_apis : [
@@ -132,12 +137,12 @@ locals {
         height = 6
         properties = {
           title  = "Public API: at the CDN vs at API Gateway"
-          region = "us-east-1"
+          region = local.cloudfront_region
           view   = "timeSeries"
           period = 3600
           yAxis  = { left = { min = 0, label = "per hour" } }
           metrics = [
-            ["AWS/CloudFront", "Requests", "DistributionId", cdn.distribution_id, "Region", "Global", { stat = "Sum", label = "requests at the CDN", region = "us-east-1" }],
+            ["AWS/CloudFront", "Requests", "DistributionId", cdn.distribution_id, "Region", "Global", { stat = "Sum", label = "requests at the CDN", region = local.cloudfront_region }],
             ["AWS/ApiGateway", "Count", "ApiName", cdn.api_name, "Stage", cdn.stage, { stat = "Sum", label = "requests that reached API Gateway", region = local.api_region }],
           ]
         }
@@ -148,7 +153,7 @@ locals {
         height = 6
         properties = {
           title  = "Public API CDN: error rates (%)"
-          region = "us-east-1"
+          region = local.cloudfront_region
           view   = "timeSeries"
           period = 3600
           yAxis  = { left = { min = 0, label = "%" } }
@@ -168,7 +173,7 @@ locals {
         height = 6
         properties = {
           title  = "Public API CDN: cache hit rate (%)"
-          region = "us-east-1"
+          region = local.cloudfront_region
           view   = "timeSeries"
           period = 3600
           yAxis  = { left = { min = 0, max = 100, label = "%" } }
@@ -233,7 +238,7 @@ locals {
         width  = 24
         height = 1
         properties = {
-          markdown = "### ${acl.label} -- web ACL `${acl.metric_name}` (ap-southeast-2)"
+          markdown = "### ${acl.label} -- web ACL `${acl.metric_name}` (${local.api_region})"
         }
       },
       {
@@ -328,7 +333,7 @@ locals {
       height = 6
       properties = {
         title  = "${cf.label}: allowed / blocked / counted"
-        region = "us-east-1"
+        region = local.cloudfront_region
         view   = "timeSeries"
         period = 3600
         yAxis  = { left = { min = 0, label = "per hour" } }
@@ -344,7 +349,7 @@ locals {
       height = 6
       properties = {
         title  = "${cf.label}: blocked per rule (incl. rate limit)"
-        region = "us-east-1"
+        region = local.cloudfront_region
         view   = "timeSeries"
         period = 3600
         yAxis  = { left = { min = 0, label = "per hour" } }
@@ -360,7 +365,7 @@ locals {
       height = 6
       properties = {
         title  = "${cf.label}: top blocked -- rule, address, path"
-        region = "us-east-1"
+        region = local.cloudfront_region
         view   = "table"
         query  = local.waf_top_blocked_query[cf.log_group]
       }

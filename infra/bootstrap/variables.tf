@@ -1,7 +1,12 @@
 variable "aws_region" {
   type        = string
   default     = "ap-southeast-2"
-  description = "Region for the bootstrap resources (state bucket, OIDC provider, IAM roles). Bootstrap is applied once, locally, by a human -- never through CI."
+  description = "Region for the bootstrap resources (state bucket, OIDC provider, IAM roles), and the region the deploy roles' permissions are scoped to: it must be the same as the environments' aws_region (the AWS_REGION GitHub variable), or their applies are refused. Not sensitive. Bootstrap is applied once, locally, by a human -- never through CI."
+
+  validation {
+    condition     = can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.aws_region))
+    error_message = "aws_region must look like an AWS region, e.g. eu-west-1 or us-west-2."
+  }
 }
 
 variable "state_bucket_name" {

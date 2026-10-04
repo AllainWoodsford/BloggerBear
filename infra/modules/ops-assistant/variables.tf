@@ -155,3 +155,8 @@ variable "agent_reserved_concurrency" {
     error_message = "agent_reserved_concurrency must be -1 (no reservation) or a whole number of at least 1: 0 would switch the agent off."
   }
 }
+
+variable "aws_region" {
+  type        = string
+  description = "The deployment's home region (the calling root's var.aws_region). It goes into the Web Adapter layer's ARN (the layer is published per region), the API's and the sign-in page's host names, and the ARNs in both roles' policies. No default, so a root cannot forget to pass it."
+}

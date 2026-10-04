@@ -42,7 +42,7 @@ locals {
 }
 
 provider "aws" {
-  region = "ap-southeast-2"
+  region = var.aws_region
   # Refuses to plan or apply against any account but var.aws_account_id, when that is set: a
   # run that picked up the wrong credentials stops at once instead of half-working. Unset (the
   # default) is null here, which is the same as not writing the argument at all.
@@ -144,6 +144,8 @@ resource "aws_wafv2_web_acl" "this" {
 
 module "static_site" {
   source = "../../modules/static-site"
+
+  aws_region = var.aws_region
 
   providers = {
     aws           = aws
@@ -485,7 +487,7 @@ data "aws_iam_policy_document" "lambda_exec" {
   # region before Phase 1 can run end-to-end.
   # See the identical statement + comment in infra/environments/dev/main.tf
   # for why both resource ARNs below are needed (cross-region inference
-  # profile required for every Claude model in ap-southeast-2, and likely
+  # profile required for every Claude model in Sydney, the default home region, and likely
   # other providers too -- var.bedrock_model_id isn't Anthropic-specific).
   statement {
     sid     = "BedrockInvoke"
@@ -493,7 +495,7 @@ data "aws_iam_policy_document" "lambda_exec" {
     actions = ["bedrock:InvokeModel"]
     resources = [
       "arn:aws:bedrock:*::foundation-model/*",
-      "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+      "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/*",
     ]
   }
 
@@ -515,7 +517,7 @@ data "aws_iam_policy_document" "lambda_exec" {
       "logs:CreateLogStream",
       "logs:PutLogEvents",
     ]
-    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-production-*"]
+    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/bloggerbear-production-*"]
   }
 }
 
@@ -585,8 +587,8 @@ locals {
     # do. SCHEDULER_INVOKE_ROLE_ARN has no such issue (scheduler_invoke's
     # own attributes don't depend on any Lambda/state-machine resource) so
     # it's referenced directly.
-    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:ap-southeast-2:${data.aws_caller_identity.current.account_id}:function:bloggerbear-production-research-tick"
-    STATE_MACHINE_ARN          = "arn:aws:states:ap-southeast-2:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-production-daily-cycle"
+    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:bloggerbear-production-research-tick"
+    STATE_MACHINE_ARN          = "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-production-daily-cycle"
     SCHEDULER_INVOKE_ROLE_ARN  = aws_iam_role.scheduler_invoke.arn
     ENVIRONMENT_NAME           = "production"
 
@@ -695,7 +697,7 @@ data "aws_caller_identity" "current" {}
 # any other account could not call. Built from the caller's account instead, it is the same
 # string as before for that account, and the right one for every other.
 locals {
-  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : "arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}:inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"
+  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/${var.bedrock_inference_profile_id}"
 }
 
 # 120s / 512MB (was 60s / 256MB): on the first tick of each UTC day the crypto feed
@@ -751,7 +753,7 @@ data "aws_iam_policy_document" "lambda_coingecko_key" {
     sid       = "ReadCoinGeckoKey"
     effect    = "Allow"
     actions   = ["ssm:GetParameter"]
-    resources = ["arn:aws:ssm:ap-southeast-2:${data.aws_caller_identity.current.account_id}:parameter${local.coingecko_api_key_parameter}"]
+    resources = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${local.coingecko_api_key_parameter}"]
   }
 }
 
@@ -844,6 +846,8 @@ resource "aws_iam_role_policy" "lambda_invoke_pipeline" {
 # -----------------------------------------------------------------------
 module "admin_api" {
   source = "../../modules/rest-api"
+
+  aws_region = var.aws_region
 
   name                 = "bloggerbear-production-admin-api"
   stage_name           = "production"
@@ -953,7 +957,7 @@ module "admin_api" {
 # Regional WAF IP allowlist -- a different Web ACL from aws_wafv2_web_acl.
 # this above (CLOUDFRONT scope, us-east-1, shared by both distributions).
 # This one is REGIONAL scope, created in this environment's default
-# ap-southeast-2 provider (regional WAF for API Gateway lives in the
+# home-region provider (regional WAF for API Gateway lives in the
 # API's own region, no us-east-1 alias needed), and protects only the
 # admin API.
 #
@@ -1304,7 +1308,7 @@ data "aws_iam_policy_document" "scheduler_manage" {
       "scheduler:DeleteSchedule",
       "scheduler:GetSchedule",
     ]
-    resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-production-*"]
+    resources = ["arn:aws:scheduler:${var.aws_region}:*:schedule/default/bloggerbear-production-*"]
   }
 
   statement {
@@ -1369,6 +1373,8 @@ resource "aws_lambda_function" "public_api" {
 # -----------------------------------------------------------------------
 module "public_api" {
   source = "../../modules/rest-api"
+
+  aws_region = var.aws_region
 
   name                 = "bloggerbear-production-public-api"
   stage_name           = "production"
@@ -1813,7 +1819,7 @@ data "aws_iam_policy_document" "waf_logs" {
       identifiers = ["delivery.logs.amazonaws.com"]
     }
     actions   = ["logs:PutLogEvents", "logs:CreateLogStream"]
-    resources = ["arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-production-*:*"]
+    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-bloggerbear-production-*:*"]
   }
 }
 
@@ -1932,6 +1938,8 @@ data "aws_iam_policy_document" "waf_logs_shared" {
       identifiers = ["delivery.logs.amazonaws.com"]
     }
     actions   = ["logs:PutLogEvents", "logs:CreateLogStream"]
+    # us-east-1 written out, not var.aws_region: this is the CloudFront-scope web ACL's log group,
+    # and AWS only hosts a CLOUDFRONT-scope ACL, and so its logs, in that one region.
     resources = ["arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-shared:*"]
   }
 }
@@ -2245,6 +2253,8 @@ locals {
 
 module "observability" {
   source = "../../modules/observability"
+
+  aws_region = var.aws_region
 
   environment_name      = "production"
   lambda_function_names = local.pipeline_lambda_function_names

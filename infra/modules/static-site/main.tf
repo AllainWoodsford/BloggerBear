@@ -124,7 +124,7 @@ resource "aws_cloudfront_response_headers_policy" "security" {
         "font-src 'self'",
         # Plus the public API's own CDN hostname (Scaling PR C), which the frontend now calls.
         join(" ", concat(
-          ["connect-src 'self' https://*.execute-api.ap-southeast-2.amazonaws.com"],
+          ["connect-src 'self' https://*.execute-api.${var.aws_region}.amazonaws.com"],
           [for host in var.extra_connect_src : "https://${host}"],
         )),
         "frame-ancestors 'none'",

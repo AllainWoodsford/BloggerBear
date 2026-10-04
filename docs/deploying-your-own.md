@@ -29,8 +29,9 @@ Use your own.
 - An AWS account (or two) with root MFA on, and an admin identity you can use from your own
   machine for the one-time bootstrap.
 - A budget alarm on each account, before anything else.
-- Bedrock model access in `ap-southeast-2` for the model you will use. The default is the AU
-  Claude Haiku 4.5 inference profile.
+- Bedrock model access, in the region you deploy to, for the model you will use. The default is
+  the AU Claude Haiku 4.5 inference profile, which exists only in Australian regions: see
+  [Deploying to another region](#deploying-to-another-region).
 - Terraform 1.10 or newer, and the AWS CLI.
 - Your fork on GitHub, with Actions enabled, a `dev` branch and a `prod` branch.
 - For production only: a domain you control. Production always uses a custom domain.
@@ -58,7 +59,7 @@ terraform apply \
 | `state_bucket_name` | The state bucket. Bucket names are unique across all of AWS, so **a fork must choose its own**. | `bloggerbear-terraform-state` |
 | `domain_name` | Your site's domain. Creates the hosted zone. Pass `""` for no zone. **A fork must set this**, or it creates a zone for the original domain. | `bloggerbear.com` |
 | `budget_alert_email` | Where the Bedrock budget alert goes. Empty creates no budget. | empty |
-| `aws_region` | Region for the bootstrap resources. Leave it: see the last section. | `ap-southeast-2` |
+| `aws_region` | Region for the state bucket, and the region the deploy roles are allowed to work in. Must be the same as the `AWS_REGION` GitHub variable below. | `ap-southeast-2` |
 
 Keep the outputs: `state_bucket_name`, `dev_deploy_role_arn`, `prod_deploy_role_arn`,
 `hosted_zone_id`, `hosted_zone_name_servers`.
@@ -82,6 +83,8 @@ runs in no environment. Production's can be on the `production` environment or o
 | `AWS_PROD_ACCOUNT_ID` | secret | `production` | The account production must land in. Optional, recommended. | `123456789012` |
 | `TF_STATE_BUCKET_DEV` | variable | repo | The state bucket dev uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
 | `TF_STATE_BUCKET_PROD` | variable | `production` | The state bucket production uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
+| `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. See [Deploying to another region](#deploying-to-another-region) before setting it. | `eu-west-1` |
+| `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `UNIQUE_NAME_SUFFIX` | variable | repo | Added to the bucket names and the sign-in host name, which must be unique across all of AWS. **Required for a fork.** Lowercase letters, digits and hyphens, at most 20. | `-yourname` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
@@ -99,6 +102,9 @@ Why some are secrets and some are variables:
   if you would rather not use a secret.
 - The state bucket name and the name suffix are **variables**. They are bucket names, not
   identities, and they appear in the logs anyway.
+- The region is a **variable** too. It is not a secret: it is part of every address and resource
+  name the logs print. `AWS_REGION` and `TF_STATE_REGION` are read at repository level; the
+  `production` environment may set its own, which wins for production.
 
 Set `UNIQUE_NAME_SUFFIX` **before your first deploy and never change it**. A bucket cannot be
 renamed: changing the suffix later makes Terraform delete the buckets and create empty ones.
@@ -145,11 +151,69 @@ renamed: changing the suffix later makes Terraform delete the buckets and create
 5. For production: set the domain in `infra/environments/production/terraform.tfvars` (below),
    merge `dev` into `prod`, publish a release tagged `v*` from `prod`, and approve the deployment.
 
-To run Terraform for an environment from your own machine, give `init` the same bucket CI uses:
+To run Terraform for an environment from your own machine, give `init` the same bucket CI uses
+(and the bucket's region, if you deploy outside `ap-southeast-2`), and give `plan` the region:
 
 ```bash
-terraform -chdir=infra/environments/dev init -backend-config="bucket=yourname-bloggerbear-terraform-state"
+terraform -chdir=infra/environments/dev init \
+  -backend-config="bucket=yourname-bloggerbear-terraform-state" \
+  -backend-config="region=eu-west-1"
+TF_VAR_aws_region=eu-west-1 terraform -chdir=infra/environments/dev plan
 ```
+
+## Deploying to another region
+
+The original deployment is in `ap-southeast-2` (Sydney), and that is what you get with nothing
+set. To deploy somewhere else, choose the region **before your first deploy**. AWS cannot move a
+resource between regions: changing the region of a deployment that already exists makes Terraform
+plan to build everything again in the new one, and the data does not follow.
+
+What to set:
+
+1. **Bootstrap:** apply it with `-var="aws_region=eu-west-1"` (your region). The state bucket is
+   created there, and the deploy roles are only allowed to work there. If the roles were made for
+   another region, every apply is refused with `AccessDenied`.
+2. **GitHub:** set the `AWS_REGION` variable to the same region. The workflows pass it to
+   Terraform (as `aws_region`), to the AWS credentials step, and to `terraform init` as the state
+   bucket's region. Set `TF_STATE_REGION` as well only if your state bucket is somewhere other
+   than `AWS_REGION`.
+3. **The model. This one is easy to miss.** The default model is an inference profile whose id
+   starts with `au.`, and that profile exists only in Australian regions. Outside Australia, add
+   a line to each environment's `terraform.tfvars` naming the profile for your geography, for
+   example `bedrock_inference_profile_id = "eu.anthropic.claude-haiku-4-5-20251001-v1:0"`.
+   The prefix is `us.`, `eu.`, `apac.`, `global.` and so on;
+   `aws bedrock list-inference-profiles --region eu-west-1` lists what your region offers. The
+   model must also be enabled for your account in that region (Bedrock model access). Nothing
+   checks either of these at deploy time: a wrong id, or a model that is not enabled, shows up as
+   an error the first time the pipeline calls the model. Test it first with
+   `aws bedrock-runtime converse --region eu-west-1 --model-id <the id> ...`. If you set
+   `bedrock_model_id` yourself, this setting is ignored.
+
+What follows the region by itself: every resource, the deploy roles' permissions, the API and
+sign-in host names, the site's content security policy, the dashboards, and the Lambda Web
+Adapter layer the assistant uses (AWS publishes it under the same name in each region).
+
+What stays where it is, whatever you choose:
+
+- **`us-east-1`, for CloudFront.** The site's certificate, the shared web ACL in front of
+  CloudFront, that ACL's logs and metrics, and CloudFront's own metrics exist only in
+  `us-east-1`. AWS requires it. The cost report also calls Cost Explorer there, because that is
+  its only endpoint. These keep `us-east-1` written in the code, each beside a comment saying why.
+- **The web search gateway** is in `ap-northeast-1` (Tokyo). AWS offers that tool in only three
+  regions (`us-east-1`, `eu-west-1`, `ap-northeast-1`). It is its own setting, the `region`
+  variable of `infra/modules/web-search`, and changing it is a code edit.
+- **The schedules** run on `Australia/Sydney` time. That is a time zone, not a region.
+
+Check by hand, because nothing in this repository can:
+
+- The Lambda Web Adapter layer version pinned in `infra/modules/ops-assistant/main.tf` must have
+  been published in your region. Its README lists the regions.
+- Every service used (Bedrock, Cognito, EventBridge Scheduler, Step Functions, WAF) must be
+  offered in your region.
+- `frontend/privacy.html` tells readers the logs are kept in AWS's Sydney region. Change the
+  wording to match where yours are.
+- The helper commands in `README.md` and `scripts/QUICKSTART.md` name `ap-southeast-2`. Use your
+  region in its place (`--region`, or `AWS_REGION` / `AWS_DEFAULT_REGION`).
 
 ## What is still tied to the original deployment
 
@@ -160,20 +224,22 @@ These need a hand edit in your fork, or cannot be changed yet.
   output). A value in that file wins over anything CI passes, so it has to be edited there.
   Production cannot be deployed without a domain.
 - **The site itself.** The pages, the privacy policy and some tests name `bloggerbear.com`.
-- **The region.** `ap-southeast-2` is written into the workflows, the backends, the deploy roles'
-  permissions and the default model. `us-east-1` is used only where CloudFront requires it (the
-  certificate and the shared web ACL, in production). Moving region is a code change.
-- **The backend blocks** in both environments name `bloggerbear-terraform-state`. Terraform does
-  not allow a variable there. CI overrides the name with `TF_STATE_BUCKET_DEV` /
-  `TF_STATE_BUCKET_PROD`; if you forget to set them, the init is refused, because that bucket is
-  not yours.
+- **The backend blocks** in both environments name `bloggerbear-terraform-state` in
+  `ap-southeast-2`. Terraform does not allow a variable there. CI overrides the name with
+  `TF_STATE_BUCKET_DEV` / `TF_STATE_BUCKET_PROD`, and the region with `AWS_REGION` (or
+  `TF_STATE_REGION`); if you forget the bucket, the init is refused, because that bucket is not
+  yours.
 - **The OIDC trust.** It is a bootstrap variable (`github_repo`), not a GitHub setting, because
   it is part of the roles. If you rename or transfer your fork, re-apply bootstrap.
 - **Resource names** other than the three covered by `UNIQUE_NAME_SUFFIX` all start with
   `bloggerbear-`. They only need to be unique within an account, so they work as they are, but
   you cannot run two copies of the same environment in one account.
 - **The model.** Leaving `bedrock_model_id` unset uses the AU Claude Haiku 4.5 inference profile
-  in your account. To use another, set `bedrock_model_id` in the environment's
-  `terraform.tfvars`.
+  in your account and region. Outside Australia that profile does not exist: set
+  `bedrock_inference_profile_id` in the environment's `terraform.tfvars` (see
+  [Deploying to another region](#deploying-to-another-region)). To use a different model
+  altogether, set `bedrock_model_id` there.
+- **The web search gateway's region** (`ap-northeast-1`) and the privacy page's wording about
+  where logs are kept: see the same section.
 - **Repository protection** (rulesets, required reviewers, secret scanning) is set in GitHub, not
   in code. `docs/todo/public-repo-runsheet.md` lists what the original repository uses.
