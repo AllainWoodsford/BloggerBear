@@ -25,14 +25,14 @@ This is the only module that imports `mcp`; nothing else in lambdas/ needs the p
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 
-from ops_mcp import tools
+from ops_mcp import account, content, tools
 
 SERVER_NAME = "bloggerbear-ops"
 SERVER_VERSION = "0.1.0"
@@ -71,6 +71,34 @@ def build_server() -> MCPServer:
         Pass `topic` (a topic id) to see only that topic's, for example after pipeline_health
         says a topic's article is held."""
         return tools.admin_inbox(topic, limit)
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def content_checks(days: int = content.CONTENT_DEFAULT_DAYS) -> dict[str, Any]:
+        """Published things that look wrong, among the articles published in the last `days` (1
+        to 30) and the musings about them: a musing with a link but no text, a title with markup
+        in it, a body that is one block of code, a musing whose article is not published. Part of
+        a briefing."""
+        return content.content_checks(days)
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def security_events(days: int = account.SECURITY_DEFAULT_DAYS) -> dict[str, Any]:
+        """The open security incidents of the last `days` (1 to 30): how many at each severity,
+        and for each its category, request count, first and last seen, and next steps. Part of a
+        briefing; only high-severity incidents are findings."""
+        return account.security_events(days)
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def alarms() -> dict[str, Any]:
+        """The CloudWatch alarms that are firing right now, and for how long each has been. Part
+        of a briefing."""
+        return account.alarms()
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def spend(period: Literal["week", "month"] = "week") -> dict[str, Any]:
+        """AI spend and the whole AWS bill, in Australian dollars: this `week` so far, or the
+        `month` (the last four weeks), and this week against a typical week. A finding only when
+        this week is more than twice a typical one."""
+        return account.spend(period)
 
     return server
 

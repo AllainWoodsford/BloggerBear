@@ -13,6 +13,9 @@ from ops_mcp import suggestions
 
 ADMIN_CLI_PATH = Path(__file__).resolve().parents[2] / "scripts" / "admin_cli.py"
 ARTICLE_ID = "f5e88f3a-3c7e-48be-ae8b-52a31030ae5e"
+# A kind either has a command or says what to look at; the two lists together are the catalogue.
+WITH_A_COMMAND = sorted(kind for kind, entry in suggestions.CATALOGUE.items() if entry.arguments is not None)
+WITHOUT_A_COMMAND = sorted(set(suggestions.CATALOGUE) - set(WITH_A_COMMAND))
 
 
 @pytest.fixture(scope="module")
@@ -23,7 +26,7 @@ def admin_cli_parser():
     return module.build_parser()
 
 
-@pytest.mark.parametrize("kind", sorted(suggestions.CATALOGUE))
+@pytest.mark.parametrize("kind", WITH_A_COMMAND)
 def test_every_suggested_command_is_one_admin_cli_accepts(kind, admin_cli_parser):
     suggestion = suggestions.suggest(kind, ARTICLE_ID)
 
@@ -33,12 +36,45 @@ def test_every_suggested_command_is_one_admin_cli_accepts(kind, admin_cli_parser
     assert suggestion["action"] and suggestion["what_it_does"]
 
 
-@pytest.mark.parametrize("kind", sorted(suggestions.CATALOGUE))
+@pytest.mark.parametrize("kind", WITH_A_COMMAND)
 def test_nothing_in_the_catalogue_deletes_or_forces(kind):
     arguments = suggestions.CATALOGUE[kind].arguments.lower()
 
     for word in ("delete", "unpublish", "reject", "--force"):
         assert word not in arguments
+
+
+@pytest.mark.parametrize("kind", WITHOUT_A_COMMAND)
+def test_a_kind_with_no_command_says_what_to_look_at_and_nothing_to_run(kind):
+    entry = suggestions.CATALOGUE[kind]
+
+    assert entry.what_it_does is None  # there is no "it"
+    assert "admin_cli" not in entry.action and "python" not in entry.action
+    # Whatever the id is, even one that would be refused in a command: it goes nowhere.
+    for target_id in (ARTICLE_ID, None, "a1; topics delete crypto"):
+        assert suggestions.suggest(kind, target_id) == {
+            "action": entry.action,
+            "command": None,
+            "what_it_does": None,
+        }
+
+
+def test_the_kinds_with_no_command_are_the_ones_the_cli_cannot_fix():
+    assert WITHOUT_A_COMMAND == ["alarm_firing", "musing_dangling", "security_incident", "spend_unusual"]
+    for kind in WITH_A_COMMAND:
+        assert suggestions.CATALOGUE[kind].what_it_does
+
+
+@pytest.mark.parametrize(
+    "kind", ["musing_no_text", "title_markup", "body_code_fence", "title_markup_and_body_code_fence"]
+)
+def test_a_published_article_that_looks_wrong_is_rewritten_with_fixed_words(kind, admin_cli_parser):
+    command = suggestions.suggest(kind, ARTICLE_ID)["command"]
+
+    parsed = admin_cli_parser.parse_args(shlex.split(command[len(suggestions.ADMIN_CLI) :]))
+    words = shlex.split(suggestions.CATALOGUE[kind].arguments)[-1]
+    assert vars(parsed)["instructions"] == words and "{" not in words
+    assert suggestions.suggest(kind, "a1; topics delete crypto") is None
 
 
 def test_the_id_is_put_into_the_command_as_it_is():
