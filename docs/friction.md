@@ -21,11 +21,11 @@ AWS platform friction gets its own section.
 | Tests vs reality | 6 | the test environment isn't the deployed one |
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
 | The model in the pipeline | 6 | model output trusted without checking it |
-| Agentic coding | 8 | confident output that wasn't checked against reality |
-| GitHub and the repo | 11 | free private repos can't protect anything |
+| Agentic coding | 9 | confident output that wasn't checked against reality |
+| GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 20 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 23 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -287,6 +287,16 @@ blocked by the agent's auto-mode safety check (2026-10-03), so the settings went
 then the runsheet for a person to run. That was the right outcome for outward-facing changes, but it
 means some steps can't be fully hands-off.
 
+**6.9 A green pipe that hid a red test, and a "passed" that was ruff's.** During the Alexa+ build
+(2026-10-04) Claude ran `pytest ... | tail -1 && git commit`: the pipe's exit status is `tail`'s,
+so a run with one failure still committed. Later a wait loop watched for the word "passed" to know
+the suite had finished, and stopped on ruff's "All checks passed!" six minutes early. And the
+first PRs were linted with whatever `ruff` was on the PATH (0.15) instead of the pinned 0.6.9,
+which reports different rules, so three PRs went up with lines CI then refused. **Fix:** check the
+exit code (`set -o pipefail`, or no pipe), wait for pytest's own summary line, and run
+`python -m ruff` from the pinned requirements. **Lesson:** a check whose output is read by eye, or
+by a loose pattern, is only as good as the reading.
+
 ## 7. GitHub and the repo (2026-10-03)
 
 **7.1 Free private repos can't protect anything.** Branch protection, rulesets and required
@@ -350,6 +360,14 @@ checks (#167):
 **Lesson:** a value you're protecting needs a check that runs before content leaves the machine,
 not a reviewer remembering. Writing a sensitive value into the doc about protecting it is easy
 when the doc's job is to describe exactly that value.
+
+**7.12 Two green PRs made a red `dev`.** #197 (source credits) added `"url": TRENDING_URL` to the
+GitHub adapter; #199 (the Search API instead of scraping) removed `TRENDING_URL` from the same
+file. Each PR's checks ran against the `dev` it started from, so each passed; after both merged,
+importing the adapter raised `NameError`, every Lambda that loads the adapter registry would have
+failed on the next deploy, and ruff's F821 turned every open PR's lint red. **Fix:** #205
+defines it again. **Lesson:** without a merge queue (or "require branches to be up to date"),
+the merge of two PRs is untested; the first PR to see `dev` afterwards is the test.
 
 ## 8. Multi-account and OIDC
 
@@ -507,7 +525,7 @@ account-wide (list calls, billing, anything shared) and decide each one in code.
 are the only hard wall.
 
 
-**10.15 An apostrophe stopped the first deploy of the assistant.** The Cognito resource server was
+**10.16 An apostrophe stopped the first deploy of the assistant.** The Cognito resource server was
 named "BloggerBear operator's assistant". Cognito only allows that name to match `[\w\s+=,.@-]+`,
 and says so at apply: `validate`, `plan` and every CI check passed. The apply stopped part-way, with
 the user pool and the API created and the resource server, app client and authorizer not. **Fix:**
@@ -515,7 +533,7 @@ no apostrophes, and a `terraform test` that holds the patterns Cognito enforces 
 client, the resource server and the sign-in prefix. **Lesson:** the same as 2.9: what only AWS
 checks, and only at apply, needs a test of its own. (#183)
 
-**10.16 Reserved concurrency on an account with none to spare.** The agent's Lambda asked for a
+**10.17 Reserved concurrency on an account with none to spare.** The agent's Lambda asked for a
 reserved concurrency of 2, as a ceiling on how many questions could be at Bedrock at once. The apply
 failed: "decreases account's UnreservedConcurrentExecution below its minimum value of [10]". This
 account's whole Lambda quota is 10, which is also the minimum Lambda keeps unreserved, so nothing can
@@ -527,7 +545,7 @@ raised. **Lesson:** a new account's quotas are part of the design, and the defau
 far below the 1,000 the documentation leads with. **Feedback:** "Missing Authentication Token" for a
 route that does not exist sent the first look in the wrong direction. (#187)
 
-**10.17 A proposal that read like documentation, and wasn't.** An externally written `AlexaMCP.md`
+**10.18 A proposal that read like documentation, and wasn't.** An externally written `AlexaMCP.md`
 proposed moving to a native Alexa+ add-on. Checked line by line against the toolkit pages, the
 MCP authorization spec and RFC 9728, it said the opposite of the spec in one place (401 "without a
 `WWW-Authenticate` header"; the header is how a client finds the metadata), named a protocol
@@ -538,20 +556,20 @@ agent, which is the part the judging criteria reward. **Decided:**
 [docs/enhancements/alexa-plus.md](enhancements/alexa-plus.md) replaces it. **Lesson:** 6.5 again: a
 confident spec is a draft until each claim is checked against its source.
 
-**10.18 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
+**10.19 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
 Resource Metadata at `https://host/.well-known/oauth-protected-resource`. On a REST API's default
 URL the first path segment is the stage, so that path asks for a stage named `.well-known` and gets
 a 403. The way out is in the MCP spec: a client must use the `resource_metadata` URL from the 401's
 `WWW-Authenticate` header first, and that URL can sit under the stage. **Feedback:** the toolkit
 pages would save a day by saying whether Alexa+ follows the header or only the root path.
 
-**10.19 Cognito doesn't advertise the PKCE it enforces.** Its OIDC discovery document has no
+**10.20 Cognito doesn't advertise the PKCE it enforces.** Its OIDC discovery document has no
 `code_challenge_methods_supported`, and the MCP spec tells a client to refuse an authorization
 server that doesn't list S256. **Fix:** our own RFC 8414 document, static JSON from an API Gateway
 mock integration, naming Cognito's endpoints. **Feedback (AWS):** one line in Cognito's discovery
 document would make every user pool usable by MCP clients as it stands.
 
-**10.20 The voice button "doesn't work", and the page's logic was fine.** With a fake speech
+**10.21 The voice button "doesn't work", and the page's logic was fine.** With a fake speech
 engine in headless Chromium the button, the request and the spoken answer all worked. What fails
 is the browser's side: a long press on a phone cancels the pointer and stopped listening at once;
 `lang="en"` where Safari wants a full tag; `cancel()` then `speak()` in the same tick, which
@@ -563,13 +581,22 @@ now, so a stub that only replaced `webkitSpeechRecognition` tested the real one 
 a "Test voice" button that says which part is broken. **Lesson:** browser speech APIs fail
 differently per browser and per device; a self-test is worth more than another guess.
 
-**10.21 Alexa+'s latency limit rules out the agent in the loop.** The toolkit asks for a round
+**10.22 Alexa+'s latency limit rules out the agent in the loop.** The toolkit asks for a round
 trip under 500 ms; a Strands briefing is 10 to 25 seconds and a cold MCP Lambda alone 1 to 3. It
 also showed the web path was close to API Gateway's 29-second ceiling, where a 504 reads on the
 page as "could not answer". **Decided:** Alexa starts a briefing (an async Lambda invoke, as the
 user) and reads the last one back; both are one DynamoDB call. A "nightly cron" was rejected: it
 has no user to call the tools as, and the memory is per user.
 
+
+**10.23 A role name the deploy role can't manage.** The async briefing's opt-in `keep_warm`
+schedule needs an IAM role, first named `bloggerbear-<env>-ops-mcp-keep-warm`. The deploy role may
+manage only roles that fit its patterns (`bloggerbear-*-lambda-exec`, `-states-exec`,
+`-scheduler-invoke`, `-agentcore-gateway`), so the first apply with `keep_warm` on would have
+failed with AccessDenied, after `validate`, `terraform test` and review had all passed. Caught
+while wiring production, before any apply. **Fix:** `...-ops-mcp-scheduler-invoke`, and a test
+that holds the name to the pattern. **Lesson:** 1.2 again, from the other side: every new IAM
+name is checked against what the deploy role may touch, not only against what the function needs.
 
 ---
 

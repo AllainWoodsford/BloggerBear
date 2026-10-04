@@ -55,3 +55,55 @@ output "public_api_cdn_url" {
   value       = module.public_api_cdn.url
   description = "The public API through its CloudFront distribution (Scaling PR C) -- what config.js gives the frontend as window.PUBLIC_API_URL. Cacheable GETs are answered from the edge; public_api_url above still works directly."
 }
+
+# The operator's assistant (module.ops_assistant), as dev outputs it.
+output "ops_mcp_url" {
+  value       = module.ops_assistant.mcp_url
+  description = "Production's ops MCP server, behind the Cognito authorizer (MFA required)."
+}
+
+output "ops_ask_url" {
+  value       = module.ops_assistant.ops_ask_url
+  description = "POST /ask, the Strands agent the page calls."
+}
+
+output "ops_user_pool_id" {
+  value       = module.ops_assistant.user_pool_id
+  description = "Production's assistant user pool: make the operator's user with `aws cognito-idp admin-create-user`."
+}
+
+output "ops_app_client_id" {
+  value       = module.ops_assistant.app_client_id
+  description = "The page's public app client id."
+}
+
+output "ops_hosted_ui_domain" {
+  value       = module.ops_assistant.hosted_ui_domain
+  description = "Cognito's hosted sign-in domain for the assistant."
+}
+
+output "ops_oauth_protected_resource_url" {
+  value       = module.ops_assistant.oauth_protected_resource_url
+  description = "The MCP server's Protected Resource Metadata (RFC 9728), for the Alexa+ bootstrap (alexa/README.md)."
+}
+
+output "ops_oauth_authorize_url" {
+  value       = module.ops_assistant.oauth_authorize_url
+  description = "Cognito's authorization endpoint, for `alexa-ai configure-account-linking`."
+}
+
+output "ops_oauth_token_url" {
+  value       = module.ops_assistant.oauth_token_url
+  description = "Cognito's token endpoint, for `alexa-ai configure-account-linking`."
+}
+
+output "ops_alexa_client_id" {
+  value       = module.ops_assistant.alexa_client_id
+  description = "Production's Alexa app client id, once ops_alexa_redirect_uris is set; null before."
+}
+
+output "ops_alexa_client_secret" {
+  value       = module.ops_assistant.alexa_client_secret
+  description = "Production's Alexa app client secret: `terraform output -raw ops_alexa_client_secret`, on the operator's own machine only."
+  sensitive   = true
+}
