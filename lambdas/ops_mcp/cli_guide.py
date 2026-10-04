@@ -606,7 +606,8 @@ def _cannot_build(path: str, problems: list[dict], questions: list[dict]) -> dic
 ADAPTERS = {
     # common/adapters/web_search.py: the default; searches on the topic's name with no config.
     "web_search": "searches the web for the topic's name, or for the queries in its config (the default)",
-    # common/adapters/github_trending.py: github.com/trending, optional `language` in the config.
+    # common/adapters/github_trending.py: the GitHub Search API's most-starred new repos, optional
+    # `language` in the config.
     "github_trending": "reads GitHub's trending repositories",
     # common/adapters/hacker_news.py: the public Hacker News API's top stories.
     "hacker_news": "reads Hacker News's top stories",

@@ -275,7 +275,7 @@ resource "aws_lambda_function" "ops_mcp" {
   function_name = local.name
   # The log group first (see it), and the policy too: a function that exists before its role can
   # read anything would answer its first requests with AccessDenied.
-  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory]
+  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings]
   role          = aws_iam_role.ops_mcp.arn
   handler       = "run.sh"
   runtime       = "python3.11"
@@ -333,6 +333,9 @@ resource "aws_lambda_function" "ops_mcp" {
         # The assistant's own table (memory.tf), the one thing it may write to: what it has
         # suggested and what it is watching (ops_mcp/memory.py).
         OPERATOR_SUGGESTIONS_TABLE = aws_dynamodb_table.operator_suggestions.name
+        # The latest briefing per user, and the agent to start one with (briefings.tf).
+        OPS_BRIEFINGS_TABLE = aws_dynamodb_table.briefings.name
+        OPS_AGENT_FUNCTION  = aws_lambda_function.ops_agent.arn
 
         # The SDK refuses any request whose Host header is not on this list (421), and an empty
         # list refuses everything (ops_mcp/server.py). Behind API Gateway the Host a caller sends
@@ -543,6 +546,8 @@ resource "aws_api_gateway_deployment" "this" {
       uri           = aws_api_gateway_integration.mcp.uri
       # The agent's two routes on /ask (agent.tf), by the same rule.
       agent = local.agent_redeployment
+      # The OAuth metadata documents (alexa.tf), by the same rule.
+      alexa = local.alexa_redeployment
     }))
   }
 

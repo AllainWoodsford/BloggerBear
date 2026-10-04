@@ -59,7 +59,7 @@ import os
 
 from common import dynamo
 from ops_agent import agent, policy
-from ops_mcp import access
+from ops_mcp import access, briefings
 
 QUESTION_MAX_CHARS = 500
 HISTORY_MAX_TURNS = 6
@@ -211,6 +211,11 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
         print(f"ops_agent: failed error={exc}")  # the error's class name, nothing it said
         return _error(502, _UNAVAILABLE)
 
+    if _is_briefing(result):
+        # So that a client which cannot wait for the agent (Alexa+, through the MCP server's
+        # latest_briefing) can read this one back at once. Never fails the answer.
+        briefings.record(_caller_id(event), result)
+
     names = ",".join(call["name"] for call in result["tool_calls"])
     print(
         f"ops_agent: turn={result['turn']} tool_calls={len(result['tool_calls'])} "
@@ -220,6 +225,90 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
     return _response(200, result)
 
 
+# The tools a briefing looks at. A first question that called none of them (a "how do I" about the
+# Admin CLI, say) is not a briefing to keep, whatever policy.turn_kind called its turn.
+_BRIEFING_TOOLS = frozenset(
+    {
+        "follow_up",
+        "pipeline_health",
+        "admin_inbox",
+        "content_checks",
+        "security_events",
+        "alarms",
+        "spend",
+        "watch_list",
+    }
+)
+
+
+def _is_briefing(result: dict) -> bool:
+    if result.get("turn") != policy.BRIEFING or result.get("tables"):
+        return False
+    return any(call.get("name") in _BRIEFING_TOOLS for call in result.get("tool_calls") or [])
+
+
+def _caller_id(event: dict) -> str | None:
+    """The Cognito subject API Gateway's authorizer verified (REST API: authorizer.claims.sub),
+    the same key the MCP server's memory and briefings use. None if it is not a subject."""
+    try:
+        claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("claims") or {}
+        subject = claims.get("sub")
+    except AttributeError:
+        return None
+    return subject if briefings.valid_user(subject) else None
+
+
+def _is_briefing_run(event: dict) -> bool:
+    """An asynchronous briefing the MCP server started (ops_mcp/briefings.py). Only a direct
+    invoke can look like this: every API Gateway event has an httpMethod and a request context,
+    and only the MCP server's role may invoke this function directly."""
+    return (
+        isinstance(event, dict)
+        and event.get("source") == briefings.EVENT_SOURCE
+        and "httpMethod" not in event
+        and "requestContext" not in event
+    )
+
+
+def _briefing_run(event: dict) -> dict:
+    """Run a briefing in the background, as the user whose token the MCP server passed on, and
+    record it for latest_briefing. The access switch applies as it does to POST /ask, but there
+    is no caller address to judge: `open` admits, `off` and `allowlist` refuse. The token is
+    never logged; what is logged is whether it ran."""
+    user_id = event.get("user_id")
+    request_id = event.get("request_id")
+    authorization = event.get("authorization")
+    if not (
+        briefings.valid_user(user_id)
+        and isinstance(request_id, str)
+        and briefings.REQUEST_ID_PATTERN.match(request_id)
+        and briefings.valid_bearer(authorization)
+    ):
+        print("ops_agent: briefing run refused (malformed)")
+        return {"ok": False}
+    try:
+        setting = (dynamo.get_pipeline_config() or {}).get("assistant_access")
+        allowed, reason = access.decide(setting, None, access.allowed_cidrs_from_env())
+    except Exception:  # noqa: BLE001 - a check that fails is a refusal
+        allowed, reason = False, access.CONFIG_UNREADABLE
+    if not allowed:
+        print(f"ops_access: briefing run refused ({reason})")
+        briefings.record_failure(user_id, request_id)
+        return {"ok": False}
+    try:
+        result = agent.answer(briefings.BRIEFING_QUESTION, [], authorization)
+    except agent.AgentError as exc:
+        print(f"ops_agent: briefing run failed error={exc}")
+        briefings.record_failure(user_id, request_id)
+        return {"ok": False}
+    recorded = briefings.record(user_id, result, request_id=request_id)
+    print(
+        f"ops_agent: briefing run tool_calls={len(result['tool_calls'])} "
+        f"findings={len(result['findings'])} recorded={recorded}"
+    )
+    return {"ok": recorded}
+
+
 def _route_key(event: dict) -> str:
     """ "METHOD /path": routeKey if present, else httpMethod + resource (REST API's proxy event),
     as the other API handlers build it."""
@@ -227,6 +316,13 @@ def _route_key(event: dict) -> str:
 
 
 def handler(event, context) -> dict:
+    if _is_briefing_run(event):
+        try:
+            return _briefing_run(event)
+        except Exception as exc:  # noqa: BLE001 - never raise: an async invoke would be retried
+            print(f"ops_agent: briefing run failed error={type(exc).__name__}")
+            briefings.record_failure(event.get("user_id"), event.get("request_id"))
+            return {"ok": False}
     if event.get("httpMethod") == "OPTIONS":
         return {"statusCode": 204, "headers": _cors_headers(), "body": ""}
     allowed, reason = _admitted(event)

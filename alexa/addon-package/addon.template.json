@@ -1,0 +1,12 @@
+{
+  "manifestVersion": "1.0",
+  "storeListing": {
+    "en-US": {
+      "name": "{{ADDON_NAME}}",
+      "description": "{{ADDON_DESCRIPTION}}"
+    }
+  },
+  "mcpServer": {
+    "url": "{{MCP_URL}}"
+  }
+}

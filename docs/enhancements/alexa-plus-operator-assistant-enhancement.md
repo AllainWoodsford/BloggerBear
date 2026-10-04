@@ -840,7 +840,7 @@ it as a network error; the page therefore also watches the token's own expiry ti
       endpoint (with how to get a token for the MCP Inspector).
 - [ ] Product feedback (Alexa+/MCP, Bedrock, Strands, Cognito): what worked, what didn't.
 - [ ] Friction log: `docs/friction.md`, plus the new "Alexa+ / MCP" section.
-- [ ] Before submitting: CoinGecko attribution and the GitHub Trending decision (above).
+- [ ] Before submitting: CoinGecko attribution (above). (The GitHub Trending scrape is gone.)
 
 ## Plan (4 → 23 October)
 
