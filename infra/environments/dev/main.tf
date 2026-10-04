@@ -2277,3 +2277,69 @@ resource "aws_cloudwatch_log_subscription_filter" "security_events" {
 
   depends_on = [aws_lambda_permission.security_events_from_waf_logs]
 }
+
+# =========================================================================
+# The operator's assistant: the ops MCP server (lambdas/ops_mcp) behind a Cognito sign-in. See
+# infra/modules/ops-assistant, and the design in
+# docs/enhancements/alexa-plus-operator-assistant-enhancement.md.
+#
+# The module makes its own Lambda package, its own read-only role, its own REST API and its own
+# user pool; nothing above is changed by it. In particular the function does NOT run as
+# aws_iam_role.lambda_exec, which may write and delete on every table: what it may read is exactly
+# the `tables` map below, plus the content bucket's articles/ prefix and the state of CloudWatch
+# alarms.
+#
+# Dev only for now. Dev is also what the hackathon's judges are given, so what it shows is dev's
+# own data and never production's. Production gets the same module, with MFA required, in a later
+# change.
+#
+# Before the first apply that includes this, apply infra/bootstrap by hand: the CI deploy role
+# needs the Cognito and layer permissions added there (CognitoUserPools,
+# CognitoNotResourceScopable, LambdaWebAdapterLayer), or this apply stops at the first of them
+# with AccessDenied.
+# =========================================================================
+module "ops_assistant" {
+  source = "../../modules/ops-assistant"
+
+  environment_name = "dev"
+
+  # Keyed by the environment variable common/dynamo.py reads each table's name from. This is the
+  # whole of what the assistant can see in DynamoDB: the tables its tools read today
+  # (pipeline_health and admin_inbox: Topics, Articles, ModerationQueue, FailedExecutions, and the
+  # pipeline row in ModelConfig) and the ones the next tools in the design's table read
+  # (content_checks: Musings; security_events: SecurityEvents; spend: the two Stats tables). Not
+  # here, so neither readable by it nor known to it: Findings, CandidateIdeas, Feedback,
+  # PromptRefinements, Models, ViewCounts.
+  tables = {
+    TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }
+    ARTICLES_TABLE          = { name = module.app_data.articles_table_name, arn = module.app_data.articles_table_arn }
+    MODERATION_QUEUE_TABLE  = { name = module.app_data.moderation_queue_table_name, arn = module.app_data.moderation_queue_table_arn }
+    FAILED_EXECUTIONS_TABLE = { name = module.app_data.failed_executions_table_name, arn = module.app_data.failed_executions_table_arn }
+    MODEL_CONFIG_TABLE      = { name = module.app_data.model_config_table_name, arn = module.app_data.model_config_table_arn }
+    MUSINGS_TABLE           = { name = module.app_data.musings_table_name, arn = module.app_data.musings_table_arn }
+    SECURITY_EVENTS_TABLE   = { name = module.app_data.security_events_table_name, arn = module.app_data.security_events_table_arn }
+    STATS_CURRENT_TABLE     = { name = module.app_data.stats_current_table_name, arn = module.app_data.stats_current_table_arn }
+    STATS_HISTORY_TABLE     = { name = module.app_data.stats_history_table_name, arn = module.app_data.stats_history_table_arn }
+  }
+
+  content_bucket_name = aws_s3_bucket.content.bucket
+  content_bucket_arn  = aws_s3_bucket.content.arn
+
+  stage_name = "dev"
+
+  # <prefix>.auth.ap-southeast-2.amazoncognito.com. Unique across every AWS account in the region:
+  # if the apply says the domain is taken, change it here.
+  hosted_ui_domain_prefix = "bloggerbear-dev-ops"
+
+  # The assistant's page on the dev site (frontend/ask.html, a later change). Cognito sends the
+  # browser back to exactly this URL after sign-in, and after sign-out.
+  callback_urls = ["${local.site_url}/ask.html"]
+  logout_urls   = ["${local.site_url}/ask.html"]
+
+  mfa_configuration = var.ops_assistant_mfa
+
+  # A handful of requests per question, from one operator and a few judges. Low on purpose: this
+  # is what bounds the cost of a stolen token or a client stuck in a loop.
+  throttling_rate_limit  = 5
+  throttling_burst_limit = 10
+}

@@ -1187,3 +1187,290 @@ def test_security_events_expire_and_have_an_open_incidents_index():
     names = [name for name, *_ in _table_indexes("security_events")]
     assert names == [dynamo.SECURITY_EVENTS_BY_STATUS_INDEX]
     assert security_events.RETENTION_DAYS == 120
+
+
+# --- The operator's assistant (infra/modules/ops-assistant) -------------------------------------
+# "Read-only, behind a sign-in" is a claim about the deployment, not the code: these hold the parts
+# of it that a plan would happily change. The module's own terraform test
+# (tests/ops_assistant.tftest.hcl) checks the same role and authorizer with planned values.
+
+# Everything the MCP server's role may do. A new tool that needs another read action adds it here,
+# and in the module's test, on purpose.
+_OPS_MCP_ALLOWED_ACTIONS = {
+    "dynamodb:GetItem",
+    "dynamodb:Query",
+    "dynamodb:Scan",
+    "dynamodb:BatchGetItem",
+    "s3:GetObject",
+    "cloudwatch:DescribeAlarms",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents",
+}
+
+
+def _ops_module() -> str:
+    return _read("modules", "ops-assistant", "main.tf")
+
+
+def _ops_policy() -> str:
+    return re.search(
+        r'^data "aws_iam_policy_document" "ops_mcp" \{\n(.*?)^\}', _ops_module(), re.S | re.M
+    ).group(1)
+
+
+def _uncommented(text: str) -> str:
+    """The Terraform without its comment lines, which say in words what the code must not do."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_dev_deploys_the_ops_assistant_once():
+    blocks = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")
+
+    assert len(blocks) == 1
+    assert re.search(r"mfa_configuration\s*=\s*var\.ops_assistant_mfa", blocks[0])
+    variable = re.search(
+        r'variable "ops_assistant_mfa" \{(.*?)\n\}', _read("environments", "dev", "variables.tf"), re.S
+    ).group(1)
+    assert re.search(r'default\s*=\s*"OPTIONAL"', variable)
+
+
+def test_the_mcp_server_does_not_run_as_the_shared_lambda_role():
+    """The shared role may write and delete on every table. The assistant's function has a role
+    of its own, made inside the module, and the module has no way to be handed another."""
+    import fnmatch
+
+    module = _ops_module()
+    function = _resource_block(module, "aws_lambda_function", "ops_mcp")
+    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
+
+    assert re.search(r"^\s*role\s*=\s*aws_iam_role\.ops_mcp\.arn$", function, re.M)
+    assert "lambda_exec" not in _uncommented(call)
+    variables = re.findall(r'^variable "([^"]+)"', _read("modules", "ops-assistant", "variables.tf"), re.M)
+    assert variables and not any("role" in variable for variable in variables)
+    name = re.search(r'name\s*=\s*"([^"]+)"', _resource_block(module, "aws_iam_role", "ops_mcp")).group(1)
+    prefix = re.search(r'^  name = "([^"]+)"$', module, re.M).group(1)
+    dev_name = name.replace("${local.name}", prefix).replace("${var.environment_name}", "dev")
+    # Its own name, not the shared role's, and one the deploy role may create and pass.
+    shared = _resource_block(_read("environments", "dev", "main.tf"), "aws_iam_role", "lambda_exec")
+    assert dev_name == "bloggerbear-dev-ops-mcp-lambda-exec"
+    assert f'"{dev_name}"' not in shared and '"bloggerbear-dev-lambda-exec"' in shared
+    patterns = re.findall(r'"arn:aws:iam::\*:role/([^"]+)"', _read("bootstrap", "main.tf"))
+    assert any(fnmatch.fnmatch(dev_name, pattern) for pattern in patterns)
+
+
+def test_the_mcp_servers_role_has_no_write_action_and_no_wildcard():
+    policy = _uncommented(_ops_policy())
+    actions = set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', policy))
+
+    assert actions == _OPS_MCP_ALLOWED_ACTIONS, actions ^ _OPS_MCP_ALLOWED_ACTIONS
+    assert not re.search(r"dynamodb:(Put|Update|Delete|BatchWrite|TransactWrite)", policy)
+    assert "logs:*" not in policy and "logs:CreateLogGroup" not in policy
+    assert '"*"' not in policy  # no statement is on every resource
+    assert "not_actions" not in policy and "not_resources" not in policy
+    assert len(re.findall(r'effect\s*=\s*"Allow"', policy)) == policy.count("statement {")
+    # Its own log group, the articles/ prefix, and the tables it is handed: nothing wider.
+    assert 'resources = ["${aws_cloudwatch_log_group.lambda.arn}:*"]' in policy
+    assert 'resources = ["${var.content_bucket_arn}/articles/*"]' in policy
+    assert "[for table in values(var.tables) : table.arn]," in policy
+
+
+def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
+    """One map gives the function its table names and its role its table ARNs. Every key must be
+    a variable common/dynamo.py reads, and the tables the tools use today must be among them."""
+    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
+    tables = re.search(r"^  tables = \{\n(.*?)^  \}", call, re.S | re.M).group(1)
+    passed = dict(
+        re.findall(r"^\s*([A-Z_]+)\s*=\s*\{ name = module\.app_data\.([a-z_]+)_table_name,", tables, re.M)
+    )
+    dynamo = (ROOT / "lambdas" / "common" / "dynamo.py").read_text(encoding="utf-8")
+    read_by_code = set(re.findall(r'os\.environ\["([A-Z_]+_TABLE)"\]', dynamo))
+
+    assert set(passed) == {
+        "TOPICS_TABLE",
+        "ARTICLES_TABLE",
+        "MODERATION_QUEUE_TABLE",
+        "FAILED_EXECUTIONS_TABLE",
+        "MODEL_CONFIG_TABLE",
+        "MUSINGS_TABLE",
+        "SECURITY_EVENTS_TABLE",
+        "STATS_CURRENT_TABLE",
+        "STATS_HISTORY_TABLE",
+    }
+    assert set(passed) <= read_by_code
+    for env_name, table in passed.items():  # the name and the ARN on a line are the same table's
+        assert env_name == f"{table.upper()}_TABLE"
+        assert f"arn = module.app_data.{table}_table_arn }}" in tables
+    module = _ops_module()
+    assert "{ for env_name, table in var.tables : env_name => table.name }," in module
+
+
+def test_the_web_adapter_layer_is_the_sydney_x86_one_at_a_pinned_version():
+    """Layers are regional: an ARN from another region fails at apply. The account id and version
+    come from the adapter's README, whose URL is recorded beside them."""
+    module = _ops_module()
+    arns = re.findall(r'"(arn:aws:lambda:[^"]*:layer:[^"]*)"', module)
+
+    assert len(arns) == 1
+    assert re.fullmatch(r"arn:aws:lambda:ap-southeast-2:\d{12}:layer:LambdaAdapterLayerX86:\d+", arns[0])
+    assert "https://github.com/awslabs/aws-lambda-web-adapter" in module
+    function = _resource_block(module, "aws_lambda_function", "ops_mcp")
+    assert re.search(r"layers\s*=\s*\[local\.web_adapter_layer_arn\]", function)
+    assert re.search(r'architectures\s*=\s*\["x86_64"\]', function)
+    # The deploy role may read that layer, and no other.
+    statement = re.search(
+        r'sid\s*=\s*"LambdaWebAdapterLayer"(.*?)\n  \}', _read("bootstrap", "main.tf"), re.S
+    ).group(1)
+    assert re.search(r'actions\s*=\s*\["lambda:GetLayerVersion"\]', statement)
+    assert f'"{arns[0].rsplit(":", 1)[0]}:*"' in statement
+
+
+def test_the_function_starts_the_web_app_the_way_the_adapter_expects():
+    module = _ops_module()
+    function = _resource_block(module, "aws_lambda_function", "ops_mcp")
+    run_sh = (INFRA / "modules" / "ops-assistant" / "run.sh").read_bytes()
+    server = (ROOT / "lambdas" / "ops_mcp" / "server.py").read_text(encoding="utf-8")
+
+    assert re.search(r'handler\s*=\s*"run\.sh"', function)
+    assert re.search(r'runtime\s*=\s*"python3\.11"', function)
+    assert re.search(r'AWS_LAMBDA_EXEC_WRAPPER\s*=\s*"/opt/bootstrap"', function)
+    assert re.search(r"AWS_LWA_PORT\s*=\s*local\.web_adapter_port", function)
+    assert run_sh.startswith(b"#!/bin/bash\n")
+    assert b"\r" not in run_sh  # a CRLF shebang is "bad interpreter" on Linux
+    text = run_sh.decode("utf-8")
+    assert "exec python -m uvicorn --factory ops_mcp.server:create_app" in text
+    assert '--port "${AWS_LWA_PORT:-8080}"' in text
+    assert re.search(r'web_adapter_port\s*=\s*"8080"', module)
+    assert 'PYTHONPATH="$LAMBDA_TASK_ROOT:' in text
+    assert "def create_app()" in server
+    # The package is run.sh, the two source packages and both requirements files, for the runtime.
+    build = re.search(r'^resource "terraform_data" "package" \{\n(.*?)^\}', module, re.S | re.M).group(1)
+    for needed in (
+        "/common",
+        "/ops_mcp",
+        'chmod 755 "$build_dir/run.sh"',
+        "--platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all:",
+        "/requirements.txt",
+        "/requirements-ops-mcp.txt",
+    ):
+        assert needed in build, needed
+
+
+def test_uvicorn_comes_with_the_mcp_package_or_is_pinned():
+    """run.sh starts uvicorn, and nothing lists it but the `mcp` package's own requirements. If a
+    later release drops it, requirements-ops-mcp.txt must name it."""
+    from importlib import metadata
+
+    pinned = (ROOT / "lambdas" / "requirements-ops-mcp.txt").read_text(encoding="utf-8")
+    from_mcp = any(re.match(r"uvicorn\b", requirement) for requirement in metadata.requires("mcp") or [])
+
+    assert from_mcp or re.search(r"^uvicorn==", pinned, re.M)
+
+
+def test_the_server_is_told_its_own_host_or_it_refuses_every_request():
+    """ops_mcp/server.py answers 421 to any Host not on OPS_MCP_ALLOWED_HOSTS, and an empty list
+    refuses everything. Behind API Gateway the Host is the API's execute-api domain."""
+    module = _ops_module()
+    function = _resource_block(module, "aws_lambda_function", "ops_mcp")
+    server = (ROOT / "lambdas" / "ops_mcp" / "server.py").read_text(encoding="utf-8")
+
+    assert re.search(r"OPS_MCP_ALLOWED_HOSTS\s*=\s*local\.api_host", function)
+    assert (
+        'api_host = "${aws_api_gateway_rest_api.this.id}.execute-api.${local.aws_region}.amazonaws.com"'
+        in module
+    )
+    assert re.search(r'aws_region\s*=\s*"ap-southeast-2"', module)
+    assert '_from_env("OPS_MCP_ALLOWED_HOSTS")' in server
+
+
+def test_the_one_route_is_post_mcp_behind_the_cognito_authorizer_with_the_scope():
+    module = _ops_module()
+    method = _resource_block(module, "aws_api_gateway_method", "mcp")
+    server = (ROOT / "lambdas" / "ops_mcp" / "server.py").read_text(encoding="utf-8")
+
+    assert module.count('resource "aws_api_gateway_method"') == 1
+    assert re.search(r'http_method\s*=\s*"POST"', method)
+    assert re.search(r'authorization\s*=\s*"COGNITO_USER_POOLS"', method)
+    assert re.search(r"authorizer_id\s*=\s*aws_api_gateway_authorizer\.cognito\.id", method)
+    assert re.search(r"authorization_scopes\s*=\s*\[local\.read_scope\]", method)
+    assert 'resource_server_identifier = "bloggerbear-ops"' in module
+    assert 'read_scope                 = "${local.resource_server_identifier}/read"' in module
+    assert re.search(r'path_part\s*=\s*"mcp"', _resource_block(module, "aws_api_gateway_resource", "mcp"))
+    assert 'MCP_PATH = "/mcp"' in server
+    authorizer = _resource_block(module, "aws_api_gateway_authorizer", "cognito")
+    assert re.search(r"provider_arns\s*=\s*\[aws_cognito_user_pool\.this\.arn\]", authorizer)
+    # A changed authorization or scope updates the method in place; the stage must be redeployed.
+    deployment = _resource_block(module, "aws_api_gateway_deployment", "this")
+    assert "aws_api_gateway_method.mcp.authorization_scopes" in deployment
+    assert "aws_api_gateway_authorizer.cognito.id" in deployment
+
+
+def test_nothing_about_the_assistants_api_streams():
+    """One JSON object per request: a plain proxy integration, buffered end to end."""
+    code = _uncommented(_ops_module())
+
+    assert re.search(r'type\s*=\s*"AWS_PROXY"', code)
+    assert "response_transfer_mode" not in code
+    assert "AWS_LWA_INVOKE_MODE" not in code and "response_stream" not in code.lower()
+    assert "invoke_mode" not in code and "aws_lambda_function_url" not in code
+
+
+def test_the_assistants_api_is_throttled_and_logs_what_happened_never_who_asked():
+    module = _ops_module()
+    stage = _resource_block(module, "aws_api_gateway_stage", "this")
+
+    assert re.search(r"throttling_rate_limit\s*=\s*var\.throttling_rate_limit", module)
+    assert re.search(r"throttling_burst_limit\s*=\s*var\.throttling_burst_limit", module)
+    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
+    assert re.search(r"throttling_rate_limit\s*=\s*\d+", call)
+    assert '"\\"status\\":$context.status,"' in stage
+    assert "$context.error.responseType" in stage
+    assert "$context.identity" not in stage and "$context.authorizer" not in stage
+    assert 'name              = "/aws/apigateway/${local.name}-access"' in module
+    assert 'name              = "/aws/lambda/${local.name}"' in module
+    function = _resource_block(module, "aws_lambda_function", "ops_mcp")
+    assert "aws_cloudwatch_log_group.lambda" in re.search(r"depends_on\s*=\s*\[(.*?)\]", function).group(1)
+
+
+def test_the_user_pool_has_no_self_sign_up_no_client_secret_and_no_terraform_made_user():
+    module = _ops_module()
+    pool = _resource_block(module, "aws_cognito_user_pool", "this")
+    client = _resource_block(module, "aws_cognito_user_pool_client", "page")
+
+    assert re.search(r"allow_admin_create_user_only\s*=\s*true", pool)
+    assert re.search(r"mfa_configuration\s*=\s*var\.mfa_configuration", pool)
+    assert re.search(r"generate_secret\s*=\s*false", client)
+    assert re.search(r'allowed_oauth_flows\s*=\s*\["code"\]', client)  # never "implicit"
+    assert re.search(r"callback_urls\s*=\s*var\.callback_urls", client)
+    assert re.search(r"logout_urls\s*=\s*var\.logout_urls", client)
+    assert "ALLOW_USER_PASSWORD_AUTH" not in client and "ALLOW_ADMIN_USER_PASSWORD_AUTH" not in client
+    assert 'resource "aws_cognito_user_pool_domain" "this"' in module
+    for path in INFRA.rglob("*.tf"):
+        if ".terraform" in path.parts:
+            continue
+        assert 'resource "aws_cognito_user" ' not in path.read_text(encoding="utf-8"), path
+
+
+def test_the_deploy_role_may_create_the_assistants_user_pool():
+    bootstrap = _read("bootstrap", "main.tf")
+    pools = re.search(r'sid\s*=\s*"CognitoUserPools"(.*?)\n  \}', bootstrap, re.S).group(1)
+    unscoped = re.search(r'sid\s*=\s*"CognitoNotResourceScopable"(.*?)\n  \}', bootstrap, re.S).group(1)
+
+    assert '"arn:aws:cognito-idp:ap-southeast-2:*:userpool/*"' in pools
+    assert '"*"' not in re.search(r"resources\s*=\s*\[(.*?)\]", pools, re.S).group(1).split(",")
+    assert set(re.findall(r'"(cognito-idp:[A-Za-z]+)"', unscoped)) == {
+        "cognito-idp:CreateUserPool",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:ListUserPools",
+    }
+
+
+def test_dev_outputs_what_the_page_and_the_agent_need():
+    outputs = _read("environments", "dev", "outputs.tf")
+
+    for name, source in (
+        ("ops_mcp_url", "mcp_url"),
+        ("ops_user_pool_id", "user_pool_id"),
+        ("ops_app_client_id", "app_client_id"),
+        ("ops_hosted_ui_domain", "hosted_ui_domain"),
+    ):
+        assert re.search(rf'output "{name}" \{{\n\s*value\s*=\s*module\.ops_assistant\.{source}\n', outputs)

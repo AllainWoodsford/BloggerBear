@@ -46,3 +46,23 @@ output "public_api_cdn_url" {
   value       = module.public_api_cdn.url
   description = "The public API through its CloudFront distribution (Scaling PR C) -- what config.js gives the frontend as window.PUBLIC_API_URL. Cacheable GETs are answered from the edge; public_api_url above still works directly."
 }
+
+output "ops_mcp_url" {
+  value       = module.ops_assistant.mcp_url
+  description = "The operator's assistant's MCP endpoint (POST, Streamable HTTP, JSON responses). Every request needs an access token from the user pool below, carrying the bloggerbear-ops/read scope, in the Authorization header."
+}
+
+output "ops_user_pool_id" {
+  value       = module.ops_assistant.user_pool_id
+  description = "The assistant's Cognito user pool. It starts empty: create the operator's user by hand (aws cognito-idp admin-create-user --user-pool-id <this> --username <name>). Terraform never creates one."
+}
+
+output "ops_app_client_id" {
+  value       = module.ops_assistant.app_client_id
+  description = "The app client the assistant's sign-in page uses: authorization code with PKCE, no secret."
+}
+
+output "ops_hosted_ui_domain" {
+  value       = module.ops_assistant.hosted_ui_domain
+  description = "Host name of Cognito's hosted sign-in page for the assistant (https://<this>/oauth2/authorize)."
+}

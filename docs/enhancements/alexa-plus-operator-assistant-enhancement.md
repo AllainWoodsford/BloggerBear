@@ -174,8 +174,9 @@ which is also what the judges get (section 6).
   - **No streaming.** Streamable HTTP lets a server answer every request with one JSON object, and
     that is all these tools need. So this is a plain API Gateway and Lambda integration, with the
     Cognito authorizer in front; no response streaming is configured anywhere.
-  - **The layer is regional.** Use the Web Adapter's **ap-southeast-2** arm64 layer ARN, taken from
-    its README at the version pinned; an ARN from another region fails at apply.
+  - **The layer is regional.** Use the Web Adapter's **ap-southeast-2** x86_64 layer ARN (every
+    Lambda here is x86_64, and the package's compiled wheels are built for it), taken from its
+    README at the version pinned; an ARN from another region fails at apply.
   - **Its own IAM role.** Every Lambda here shares one role today, with write and delete on all the
     app tables. This function gets a separate, read-only role (section 5), or "read-only" isn't true.
   - **No FastAPI.** The SDK already produces the web app; a second framework is one more dependency.
