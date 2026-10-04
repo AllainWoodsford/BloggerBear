@@ -77,7 +77,9 @@ def test_dev_gives_the_page_its_settings_from_the_modules_outputs():
     assert 'clientId: "${module.ops_assistant.app_client_id}"' in config
     assert 'scope: "${module.ops_assistant.read_scope}"' in config
     # The same string the module registers as the callback and logout URL.
-    assert 'redirectUri: "${local.site_url}/ask.html"' in config
+    assert 'redirectUri: "${local.site_url}/ask.html",' in config
+    # Shown on the page, so a command copied from a dev card is not run against production.
+    assert 'environment: "dev"' in config
     assert 'callback_urls = ["${local.site_url}/ask.html"]' in text
     assert 'logout_urls   = ["${local.site_url}/ask.html"]' in text
 
@@ -257,6 +259,12 @@ def test_push_to_talk_works_from_the_keyboard_and_without_holding():
     assert 'event.key === " "' in code and 'event.key === "Enter"' in code
     assert "held >= HOLD_MS" in code  # a short press toggles; only a real hold stops on release
     assert "root.SpeechRecognition || root.webkitSpeechRecognition" in code
+    # The browser taking the pointer (a scroll, a long press on a phone) is not the operator
+    # letting go: it must not stop the microphone.
+    assert 'talkButton.addEventListener("pointercancel", pressCancelled)' in code
+    assert re.search(r"function pressCancelled\(\) \{\s*pressedAt = 0;\s*lastPressAt = Date.now\(\);\s*\}", code)
+    assert 'talkButton.addEventListener("contextmenu"' in code
+    assert "touch-action: none;" in css and "-webkit-touch-callout: none;" in css
     assert ".ask-talk:focus-visible" in css and ".ask-button:focus-visible" in css
     # The only animation is switched on for people who have not asked for less motion.
     assert css.count("animation:") == 1
@@ -271,6 +279,44 @@ def test_speech_stops_for_a_new_question_and_can_be_muted():
     assert ask.index("stopSpeaking();") < ask.index(".fetch(")
     assert "speak(spokenText(result.answer, result.findings))" in code
     assert re.search(r"function speak\(text\) \{\s*if \(muted \|\|", code)
+
+
+
+def test_speech_is_spoken_in_pieces_on_the_next_tick_and_held_until_it_ends():
+    code = _code(_read("ask.js"))
+    say = code[code.index("function say(text)") : code.index("function speak(text)")]
+
+    assert "speechChunks(text, SPEECH_CHUNK_CHARS)" in say
+    # Never in the same tick as cancel(), and every utterance held until it ends.
+    assert "root.setTimeout(function" in say and "SPEECH_DELAY_MS" in say
+    assert "speechQueue.push(utterance)" in say
+    # cancel() only when something is speaking or queued.
+    assert re.search(r"if \(synth && \(synth\.speaking \|\| synth\.pending\)\) \{\s*synth\.cancel\(\);", code)
+    # The language is the browser's English tag, never <html lang>'s bare "en".
+    assert "documentElement.lang" not in code
+
+
+def test_recognition_shows_words_as_heard_and_asks_once_it_ends():
+    code = _code(_read("ask.js"))
+    start = code[code.index("function startListening(onHeard)") : code.index("function stopListening()")]
+
+    assert "current.interimResults = true;" in start
+    assert "current.lang = LANG;" in start
+    # The question goes once, from onend, and only with words heard.
+    onend = start[start.index("current.onend") :]
+    assert "(onHeard || ask)(heard)" in onend
+    assert "ask(" not in start[: start.index("current.onend")]
+
+
+def test_the_voice_test_is_on_the_page_and_reports_as_text():
+    html = _read("ask.html")
+    code = _code(_read("ask.js"))
+
+    assert re.search(r'<button type="button" id="ask-voice-test"[^>]*>Test voice</button>', html)
+    assert re.search(r'<ul id="ask-voice-report"[^>]*aria-live="polite"[^>]*hidden>', html)
+    assert 'el("ask-voice-test").addEventListener("click", testVoice)' in code
+    report = code[code.index("function report(lines)") : code.index("function testVoice()")]
+    assert 'make("li", "", line)' in report
 
 
 # --- the pure functions, under Node -------------------------------------------------------------
@@ -296,6 +342,18 @@ const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
     rows: ask.flattenRows(input.where, "", false),
     kinds: input.findings.map((finding) => ask.cardKind(finding)),
     spoken: ask.spokenText(input.answer, input.findings),
+    langs: input.langs.map((tag) => ask.speechLang(tag)),
+    chunks: ask.speechChunks(input.longAnswer, 180),
+    shortChunks: ask.speechChunks("One. Two!  Three?", 180),
+    noChunks: ask.speechChunks("   ", 180),
+    messages: ["not-allowed", "network", "audio-capture", "no-speech", "aborted", "made-up", "constructor"].map(
+      (code) => ask.recognitionMessage(code)
+    ),
+    voices: input.voiceSets.map((set) => {
+      const picked = ask.pickVoice(set.voices, set.lang);
+      return picked ? picked.name : null;
+    }),
+    environments: input.envConfigs.map((raw) => ask.readConfig(raw).environment),
   };
   process.stdout.write(JSON.stringify(out));
 })().catch((err) => { console.error(err); process.exit(1); });
@@ -344,6 +402,25 @@ def node_result():
         },
         "findings": _FINDINGS,
         "answer": f"One draft was cut short. Run {_COMMAND} to fix it.",
+        "langs": ["en-AU", "en-us", "en", "fr-FR", None, "en-AU; DROP", "  en-GB  "],
+        "longAnswer": "Since yesterday crypto did not publish. "
+        + "Its draft was cut short, so it is held in the inbox and the authoring function was "
+        + "throttled around two in the morning while the retry ran out of attempts and gave up. "
+        + "Spend is normal. "
+        + ("word " * 60),
+        "voiceSets": [
+            {"lang": "en-AU", "voices": [{"name": "us", "lang": "en-US"}, {"name": "au", "lang": "en_AU"}]},
+            {"lang": "en-NZ", "voices": [{"name": "fr", "lang": "fr-FR"}, {"name": "def", "lang": "en-GB", "default": True}]},
+            {"lang": "en-NZ", "voices": [{"name": "fr", "lang": "fr-FR"}, {"name": "gb", "lang": "en-GB"}]},
+            {"lang": "en-AU", "voices": [{"name": "fr", "lang": "fr-FR"}]},
+            {"lang": "en-AU", "voices": None},
+        ],
+        "envConfigs": [
+            {**_CONFIG, "environment": "dev"},
+            {**_CONFIG, "environment": "Production; rm"},
+            _CONFIG,
+            {**_CONFIG, "environment": 7},
+        ],
     }
     done = subprocess.run(
         [NODE, "-e", _RUNNER, str(FRONTEND / "ask.js")],
@@ -404,7 +481,7 @@ def test_history_is_the_last_six_turns_each_within_the_limit(node_result):
 
 @needs_node
 def test_settings_are_all_or_nothing(node_result):
-    assert node_result["config"] == _CONFIG
+    assert node_result["config"] == {**_CONFIG, "environment": ""}
     assert node_result["configs"] == [None] * 6
 
 
@@ -675,3 +752,46 @@ def test_the_minified_copy_is_built_from_these_files_and_still_has_the_new_rende
         assert kept in built, kept
     assert "innerHTML" not in built
     assert ".ask-table-wrap" in (tmp_path / "ask.css").read_text(encoding="utf-8")
+
+
+@needs_node
+def test_speech_uses_the_browsers_english_tag_or_en_us(node_result):
+    assert node_result["langs"] == ["en-AU", "en-us", "en-US", "en-US", "en-US", "en-US", "en-GB"]
+
+
+@needs_node
+def test_an_answer_is_spoken_in_whole_sentences_each_short_enough(node_result):
+    chunks = node_result["chunks"]
+    assert len(chunks) > 2
+    assert all(0 < len(chunk) <= 180 for chunk in chunks)
+    # Nothing lost or reordered, only the spacing.
+    assert " ".join(chunks).split() == (
+        "Since yesterday crypto did not publish. Its draft was cut short, so it is held in the inbox and the "
+        "authoring function was throttled around two in the morning while the retry ran out of attempts and "
+        "gave up. Spend is normal. " + "word " * 60
+    ).split()
+    assert chunks[0].startswith("Since yesterday crypto did not publish.")
+    assert node_result["shortChunks"] == ["One. Two! Three?"]
+    assert node_result["noChunks"] == []
+
+
+@needs_node
+def test_each_recognition_error_says_what_to_do(node_result):
+    not_allowed, network, capture, no_speech, aborted, unknown, inherited = node_result["messages"]
+    assert "site settings" in not_allowed
+    assert "Chrome or Edge" in network
+    assert "microphone" in capture.lower()
+    assert no_speech.startswith("Heard nothing")
+    assert aborted == ""
+    # An error the page does not know, even one named like an object's own property, is generic.
+    assert unknown == inherited == "Speech recognition failed. Type your question instead."
+
+
+@needs_node
+def test_the_voice_is_the_exact_tag_then_the_default_english_then_any_english(node_result):
+    assert node_result["voices"] == ["au", "def", "gb", None, None]
+
+
+@needs_node
+def test_the_environment_label_is_a_short_word_or_nothing(node_result):
+    assert node_result["environments"] == ["dev", "", "", ""]
