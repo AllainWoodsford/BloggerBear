@@ -133,6 +133,13 @@ run "keep_warm_pings_the_mcp_function_every_five_minutes" {
     error_message = "one ping every five minutes"
   }
 
+  # The deploy role may only manage roles named to its patterns (infra/bootstrap/main.tf):
+  # anything else fails at apply with AccessDenied, after plan and validate have passed.
+  assert {
+    condition     = endswith(aws_iam_role.keep_warm[0].name, "-scheduler-invoke") && startswith(aws_iam_role.keep_warm[0].name, "bloggerbear-")
+    error_message = "the schedule's role must fit the deploy role's bloggerbear-*-scheduler-invoke pattern"
+  }
+
   assert {
     condition     = jsondecode(aws_iam_role_policy.keep_warm[0].policy).Statement[0].Action == "lambda:InvokeFunction" && jsondecode(aws_iam_role_policy.keep_warm[0].policy).Statement[0].Resource == "arn:aws:lambda:ap-southeast-2:111111111111:function:bloggerbear-test-ops-mcp"
     error_message = "the schedule's role may invoke the MCP function, nothing more"
