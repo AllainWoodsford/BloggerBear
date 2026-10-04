@@ -1386,10 +1386,160 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
         grants = re.findall(pattern, text, re.S | re.M)
         for name, body in grants:
             if "aws_iam_role.ops_mcp." in body:
-                assert (path.name, name) in {("main.tf", "ops_mcp"), ("memory.tf", "ops_mcp_memory")}
+                # The third is a Deny (isolation.tf): it grants nothing, and the test below holds
+                # that a Deny is all it is.
+                assert (path.name, name) in {
+                    ("main.tf", "ops_mcp"),
+                    ("memory.tf", "ops_mcp_memory"),
+                    ("isolation.tf", "ops_mcp_other_environments_denied"),
+                }
         if path.name != "memory.tf":
             for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
                 assert f"dynamodb:{write}" not in text or "aws_iam_role.ops_mcp." not in text, path.name
+
+
+# One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and
+# production are one AWS account, so "the dev assistant reads only dev's things" is held by the
+# roles' named resources, by a Deny on anything tagged for another environment, and, where IAM
+# cannot tell the two apart (alarms, the account's bill), by the code. The module's
+# tests/environment_isolation.tftest.hcl checks the same with planned values.
+
+
+def _ops_isolation() -> str:
+    return _read("modules", "ops-assistant", "isolation.tf")
+
+
+def test_both_assistant_roles_are_denied_anything_tagged_for_another_environment():
+    isolation = _uncommented(_ops_isolation())
+    document = re.search(
+        r'^data "aws_iam_policy_document" "other_environments_denied" \{\n(.*?)^\}', isolation, re.S | re.M
+    ).group(1)
+
+    # One statement: every action, every resource, and two conditions that are both required.
+    assert document.count("statement {") == 1 and re.search(r'effect\s*=\s*"Deny"', document)
+    assert re.search(r'actions\s*=\s*\["\*"\]', document) and re.search(r'resources\s*=\s*\["\*"\]', document)
+    assert "not_actions" not in document and "not_resources" not in document
+    conditions = re.findall(
+        r'condition \{\n\s*test\s*=\s*"([^"]+)"\n\s*variable\s*=\s*"([^"]+)"\n\s*values\s*=\s*\[([^\]]+)\]',
+        document,
+    )
+    # Null = false first in importance: without it StringNotEquals alone is true of every request
+    # that carries no resource tag, and the statement would deny nearly everything.
+    assert sorted(conditions) == [
+        ("Null", "aws:ResourceTag/Environment", '"false"'),
+        ("StringNotEquals", "aws:ResourceTag/Environment", "var.environment_name"),
+    ]
+
+    # Attached to both roles, each in a policy of its own, and nowhere else.
+    role_policy = r'^resource "aws_iam_role_policy" "([^"]+)" \{\n(.*?)^\}'
+    attached = dict(re.findall(role_policy, isolation, re.S | re.M))
+    assert set(attached) == {"ops_mcp_other_environments_denied", "ops_agent_other_environments_denied"}
+    for name, role in (
+        ("ops_mcp_other_environments_denied", "ops_mcp"),
+        ("ops_agent_other_environments_denied", "ops_agent"),
+    ):
+        assert re.search(rf"role\s*=\s*aws_iam_role\.{role}\.id", attached[name])
+        assert re.search(
+            r"policy\s*=\s*data\.aws_iam_policy_document\.other_environments_denied\.json", attached[name]
+        )
+    # It is the module's only Deny, and the file holds no Allow: nothing is granted from here.
+    assert '"Allow"' not in isolation
+    for path in sorted((INFRA / "modules" / "ops-assistant").glob("*.tf")):
+        if path.name != "isolation.tf":
+            assert '"Deny"' not in _uncommented(path.read_text(encoding="utf-8")), path.name
+
+    # The deploy role may put a policy on roles of these names (it already makes them).
+    import fnmatch
+
+    patterns = re.findall(r'"arn:aws:iam::\*:role/([^"]+)"', _read("bootstrap", "main.tf"))
+    for role_name in ("bloggerbear-dev-ops-mcp-lambda-exec", "bloggerbear-dev-ops-agent-lambda-exec"):
+        assert any(fnmatch.fnmatch(role_name, pattern) for pattern in patterns)
+
+
+def test_the_deny_compares_against_the_tag_the_environment_really_puts_on_its_resources():
+    """The Deny refuses a resource whose Environment tag is not var.environment_name. Every
+    resource of dev's carries the provider's default tag, so if the root's tag and the name it
+    hands the module were different words, the assistant would be refused its own tables."""
+    dev = _read("environments", "dev", "main.tf")
+    tags = re.search(r"default_tags = \{\n(.*?)\n  \}", dev, re.S).group(1)
+    tag = re.search(r'Environment\s*=\s*"([^"]+)"', tags).group(1)
+    call = _module_blocks(dev, "modules/ops-assistant")[0]
+    name = re.search(r'^\s*environment_name\s*=\s*"([^"]+)"', call, re.M).group(1)
+
+    assert tag == name == "dev"
+    # Every provider block of the root applies those tags, so nothing the module makes (its own
+    # suggestions table, the two log groups) can be left without one or given another.
+    providers = re.findall(r'^provider "aws" \{\n(.*?)^\}', dev, re.S | re.M)
+    assert providers and all("tags = local.default_tags" in provider for provider in providers)
+    # Nothing in this project switches on S3's tag-based access for a bucket: the module's comment
+    # says the Deny does nothing for S3 today, and this is what that rests on.
+    for path in INFRA.rglob("*.tf"):
+        if ".terraform" not in path.parts:
+            assert "aws_s3_bucket_abac" not in path.read_text(encoding="utf-8"), path
+
+
+def test_the_alarms_tool_is_told_its_environment_and_every_alarm_is_named_for_one():
+    """The role's DescribeAlarms covers every alarm in the account, both environments', so the
+    tool asks by name. That only separates them if every alarm really is named
+    bloggerbear-<environment>-..., and the function is told the same environment name the alarms
+    were made with."""
+    function = _uncommented(_resource_block(_ops_module(), "aws_lambda_function", "ops_mcp"))
+    code = (ROOT / "lambdas" / "ops_mcp" / "account.py").read_text(encoding="utf-8")
+
+    assert re.search(r"^\s*ENVIRONMENT_NAME\s*=\s*var\.environment_name$", function, re.M)
+    assert 'ENVIRONMENT_ENV = "ENVIRONMENT_NAME"' in code and 'ALARM_PREFIX = "bloggerbear-"' in code
+    assert 'return f"{ALARM_PREFIX}{name}-" if _ENVIRONMENT_NAME.fullmatch(name) else None' in code
+    assert "AlarmNamePrefix=prefix" in code and "AlarmNamePrefix=ALARM_PREFIX" not in code
+
+    # Every alarm Terraform makes for an environment, wherever it is made.
+    names = []
+    for path in INFRA.rglob("*.tf"):
+        if ".terraform" in path.parts or "bootstrap" in path.parts:
+            continue
+        text = _uncommented(path.read_text(encoding="utf-8"))
+        names += re.findall(r'^\s*alarm_name\s*=\s*"([^"]+)"', text, re.M)
+    assert len(names) >= 6
+    assert all(name.startswith("bloggerbear-${var.environment_name}-") for name in names), names
+    # ...and none is made outside an environment (a shared alarm would answer to neither prefix).
+    assert "aws_cloudwatch_metric_alarm" not in _uncommented(_read("bootstrap", "main.tf"))
+
+    # Dev's alarms and dev's assistant are given the same name.
+    dev = _read("environments", "dev", "main.tf")
+    for source in ("modules/observability", "modules/ops-assistant"):
+        (block,) = _module_blocks(dev, source)
+        assert re.search(r'^\s*environment_name\s*=\s*"dev"$', block, re.M), source
+
+    # The name is held to one pattern in both places: what the module accepts is what the code
+    # accepts, so a name the plan lets through never leaves the tool refusing to answer.
+    variable = re.search(
+        r'variable "environment_name" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
+    ).group(1)
+    in_terraform = re.search(r'can\(regex\("\^([^"]+)\$", var\.environment_name\)\)', variable).group(1)
+    in_code = re.search(r'_ENVIRONMENT_NAME = re\.compile\(r"([^"]+)"\)', code).group(1)
+    assert in_terraform == in_code == "[a-z][a-z0-9]{1,31}"
+
+
+def test_account_wide_data_is_off_unless_the_caller_switches_it_on():
+    """The AWS bill is the whole account's, production and dev together. The spend tool reports it
+    only where the module's account_wide_data says so, and dev does not say so."""
+    variable = re.search(
+        r'variable "account_wide_data" \{(.*?)\n\}', _read("modules", "ops-assistant", "variables.tf"), re.S
+    ).group(1)
+    function = _uncommented(_resource_block(_ops_module(), "aws_lambda_function", "ops_mcp"))
+    code = (ROOT / "lambdas" / "ops_mcp" / "account.py").read_text(encoding="utf-8")
+
+    assert re.search(r"type\s*=\s*bool", variable) and re.search(r"default\s*=\s*false", variable)
+    assert re.search(
+        r'^\s*OPS_ACCOUNT_WIDE_DATA\s*=\s*var\.account_wide_data \? "true" : "false"$', function, re.M
+    )
+    # The code takes the one word the module writes for "on", and nothing else.
+    assert 'ACCOUNT_WIDE_ENV = "OPS_ACCOUNT_WIDE_DATA"' in code
+    assert 'return os.environ.get(ACCOUNT_WIDE_ENV, "") == "true"' in code
+    # Dev leaves it at the default. The agent is told neither variable: it has no tool of its own.
+    call = _uncommented(_module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0])
+    assert "account_wide_data" not in call
+    agent = _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
+    assert "OPS_ACCOUNT_WIDE_DATA" not in agent and "ENVIRONMENT_NAME" not in agent
 
 
 def test_the_suggestions_table_is_the_assistants_alone_and_matches_what_the_code_expects():

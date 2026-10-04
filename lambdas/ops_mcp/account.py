@@ -10,10 +10,17 @@ at all. Next steps come from the playbook in code, not from the row.
 
 **None of these has a command.** Nothing in admin_cli closes an incident, quiets an alarm or cuts
 a bill, so their findings say what to look at (suggestions.py).
+
+**One environment each.** Dev and production share one AWS account, and two things here are the
+account's, not an environment's: CloudWatch lists every alarm in it, and the Stats row holds the
+whole account's bill. So `alarms` asks only for this environment's alarms, by name, and refuses
+when it has not been told which environment it is for; and `spend` leaves the account's bill out
+unless the deployment says this assistant may report it (production's will; dev's does not).
 """
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -178,6 +185,19 @@ def _security_spoken(rows: list[dict], counts: dict[str, int], days: int, more: 
 # --- alarms --------------------------------------------------------------------------------------
 
 ALARM_PREFIX = "bloggerbear-"
+# Which environment this assistant is for: "dev" or "production". The module sets it on the
+# function (infra/modules/ops-assistant/main.tf), and common/scheduler.py reads the same variable.
+ENVIRONMENT_ENV = "ENVIRONMENT_NAME"
+# What an environment's name may look like. It becomes part of the prefix CloudWatch is asked for,
+# so it is held to what the alarms' own names are built from: infra/modules/observability names
+# every alarm "bloggerbear-${var.environment_name}-<what>", and the ops-assistant module refuses
+# an environment name that is not a lowercase letter followed by lowercase letters and digits.
+# No hyphen on purpose: with one, an environment called "dev-old" would have its alarms answer to
+# dev's prefix, "bloggerbear-dev-".
+_ENVIRONMENT_NAME = re.compile(r"[a-z][a-z0-9]{1,31}")
+ALARMS_NOT_CONFIGURED = (
+    "I can't read the alarms: this assistant has not been told which environment it is for."
+)
 ALARM_SPOKEN_LINES = 5
 ALARM_LABEL_MAX_CHARS = 80
 
@@ -200,15 +220,36 @@ def _alarm_label(name: str) -> str:
     return _NOT_A_WORD.sub(" ", name[len(ALARM_PREFIX) :]).strip()[:ALARM_LABEL_MAX_CHARS] or "unnamed"
 
 
+def alarm_prefix() -> str | None:
+    """What every one of this environment's alarms starts with, "bloggerbear-dev-" in dev, or None
+    when the function has not been told its environment (or was told something that is not a
+    name). None is never widened to "bloggerbear-": that prefix is both environments'."""
+    name = os.environ.get(ENVIRONMENT_ENV, "")
+    return f"{ALARM_PREFIX}{name}-" if _ENVIRONMENT_NAME.fullmatch(name) else None
+
+
 def alarms(*, now: datetime | None = None) -> dict:
-    """The CloudWatch alarms in ALARM right now whose names start with "bloggerbear-", and since
-    when each has been."""
+    """This environment's CloudWatch alarms that are in ALARM right now (the ones whose names
+    start with "bloggerbear-<environment>-"), and since when each has been.
+
+    The role cannot be held to one environment's alarms: a DescribeAlarms that lists by prefix is
+    authorized against every alarm in the account. So the separation is here: the other
+    environment's alarms are never asked for, and one that came back anyway would be dropped."""
     now = _now(now)
+    prefix = alarm_prefix()
+    if prefix is None:
+        return {
+            "spoken": ALARMS_NOT_CONFIGURED,
+            "findings": [],
+            "alarms": [],
+            "available": False,
+            "as_of": now.isoformat(),
+        }
     pages = (
         _get_cloudwatch_client()
         .get_paginator("describe_alarms")
         .paginate(
-            AlarmNamePrefix=ALARM_PREFIX, StateValue="ALARM", AlarmTypes=["MetricAlarm", "CompositeAlarm"]
+            AlarmNamePrefix=prefix, StateValue="ALARM", AlarmTypes=["MetricAlarm", "CompositeAlarm"]
         )
     )
     firing = []
@@ -216,7 +257,7 @@ def alarms(*, now: datetime | None = None) -> dict:
         for alarm in [*page.get("MetricAlarms", []), *page.get("CompositeAlarms", [])]:
             name = str(alarm.get("AlarmName") or "")
             # Asked for above; checked again here, so the answer never depends on the filter alone.
-            if name.startswith(ALARM_PREFIX) and alarm.get("StateValue") == "ALARM":
+            if name.startswith(prefix) and alarm.get("StateValue") == "ALARM":
                 firing.append(alarm)
 
     rows, findings = [], []
@@ -241,7 +282,13 @@ def alarms(*, now: datetime | None = None) -> dict:
             finding("alarm_firing", f"The {label} alarm has been firing for {lasted}", name, alarm=name)
         )
 
-    return {"spoken": _alarms_spoken(rows), "findings": findings, "alarms": rows, "as_of": now.isoformat()}
+    return {
+        "spoken": _alarms_spoken(rows),
+        "findings": findings,
+        "alarms": rows,
+        "available": True,
+        "as_of": now.isoformat(),
+    }
 
 
 def _alarms_spoken(rows: list[dict]) -> str:
@@ -266,6 +313,19 @@ SPEND_UNUSUAL_TIMES = 2
 
 _AI_CATEGORIES = (*BEDROCK_CATEGORIES, ARTICLES_CATEGORY)
 _SPEND_SPOKEN = {"ai": "AI spend", "aws": "The whole AWS bill"}
+
+# Whether this assistant may report things that are the whole account's and not its environment's.
+# The module sets it from its account_wide_data variable (off by default; production will switch
+# it on). Only the exact word "true" switches it on: unset, empty or anything else is off.
+ACCOUNT_WIDE_ENV = "OPS_ACCOUNT_WIDE_DATA"
+BILL_NOT_AVAILABLE = "The whole AWS bill is not available from this environment."
+
+
+def account_wide_data() -> bool:
+    """True where the deployment says this assistant may report the whole account's figures. The
+    AWS bill is the one such figure today: Cost Explorer bills the account, so it covers
+    production and dev together and cannot be split between them."""
+    return os.environ.get(ACCOUNT_WIDE_ENV, "") == "true"
 
 
 def _decimal(value) -> Decimal:
@@ -302,9 +362,14 @@ def _money(amount: float) -> str:
 
 
 def spend(period: str = "week", *, now: datetime | None = None) -> dict:
-    """AI spend (the pipeline's model calls) and the whole AWS bill, in AUD, for this `week` so
-    far or the `month` (the last four weeks), and this week against a typical week: the median
-    of the last complete weeks."""
+    """AI spend (the model calls this environment's pipeline made and counted itself) and, where
+    the deployment allows it, the whole AWS bill, in AUD, for this `week` so far or the `month`
+    (the last four weeks), and this week against a typical week: the median of the last complete
+    weeks.
+
+    The bill is the whole account's, both environments together. Without account_wide_data() it
+    is not reported, not compared and not a finding: `aws` is None, and the spoken text says the
+    bill is not available from this environment."""
     now = _now(now)
     if period not in SPEND_PERIODS:
         return {"spoken": "I can report spend for a week or a month.", "findings": [], "period": None}
@@ -338,9 +403,17 @@ def spend(period: str = "week", *, now: datetime | None = None) -> dict:
         "typical_week": _typical(whole),
         "read_at": untrusted_text(current.get(AWS_BILL_AS_OF), 40) or None,
     }
+    # The Stats row may hold the account's bill whatever this flag says (it is the same row the
+    # Stats page reads). Dropped here, before anything is compared or said, so nothing below can
+    # let it out.
+    bill_available = account_wide_data()
+    if not bill_available:
+        aws = None
 
     findings = []
     for what, figures in (("ai", ai), ("aws", aws)):
+        if figures is None:
+            continue
         figures["unusual"] = _unusual(figures)
         if figures["unusual"]:
             noticed = (
@@ -359,6 +432,7 @@ def spend(period: str = "week", *, now: datetime | None = None) -> dict:
         "weeks_compared": len(compared),
         "ai": ai,
         "aws": aws,
+        "account_bill_available": bill_available,
         "as_of": now.isoformat(),
     }
 
@@ -369,13 +443,19 @@ def _unusual(figures: dict) -> bool:
     return bool(this_week is not None and typical and this_week > SPEND_UNUSUAL_TIMES * typical)
 
 
-def _spend_spoken(period: str, ai: dict, aws: dict) -> str:
+def _spend_spoken(period: str, ai: dict, aws: dict | None) -> str:
+    """`aws` is None where the account's bill is not this assistant's to report: that is said, in
+    place of the bill's sentences."""
     sentences = []
     if period == "month":
-        bill = f" and the whole AWS bill is {_money(aws['period'])}" if aws["period"] is not None else ""
+        known = aws is not None and aws["period"] is not None
+        bill = f" and the whole AWS bill is {_money(aws['period'])}" if known else ""
         sentences.append(f"Over the last four weeks, AI spend is {_money(ai['period'])}{bill}.")
     for what, figures in (("ai", ai), ("aws", aws)):
         name = _SPEND_SPOKEN[what]
+        if figures is None:
+            sentences.append(BILL_NOT_AVAILABLE)
+            continue
         if figures["this_week"] is None:
             sentences.append(f"{name} has not been read yet this week.")
             continue

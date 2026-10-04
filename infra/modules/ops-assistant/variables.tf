@@ -1,6 +1,21 @@
 variable "environment_name" {
   type        = string
-  description = "\"dev\" or \"production\": part of every resource's name, and passed to the function as ENVIRONMENT_NAME."
+  description = "\"dev\" or \"production\": part of every resource's name, and passed to the function as ENVIRONMENT_NAME. It is also what keeps this assistant to its own environment: the alarms tool asks CloudWatch only for alarms named bloggerbear-<environment_name>-, and both roles are denied anything tagged with another Environment (isolation.tf), so it must be the same word as the calling root's Environment default tag."
+
+  # The same pattern lambdas/ops_mcp/account.py holds the name to before it builds the alarm
+  # prefix from it; a name refused there would leave the alarms tool refusing to answer, so it is
+  # refused here first, at plan. No hyphen on purpose: an environment called "dev-old" would have
+  # its alarms, bloggerbear-dev-old-..., answer to dev's prefix, bloggerbear-dev-.
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9]{1,31}$", var.environment_name))
+    error_message = "environment_name must be a lowercase letter followed by 1 to 31 lowercase letters or digits (e.g. \"dev\", \"production\"): no hyphen, since the alarms tool tells environments apart by the prefix bloggerbear-<environment_name>-."
+  }
+}
+
+variable "account_wide_data" {
+  type        = bool
+  default     = false
+  description = "Whether this assistant may report things that belong to the whole AWS account and not to its environment, passed to the MCP function as OPS_ACCOUNT_WIDE_DATA. Dev and production share one account, so such a figure includes both. Today that is the AWS bill in the spend tool (Cost Explorer bills the account); the planned firewall_review deep dive, which reads a firewall both sites share, will be registered only when this is true. Off by default: production sets it true, dev leaves it off, and then spend reports only the AI spend this environment's pipeline tracked itself."
 }
 
 variable "tables" {
