@@ -213,6 +213,79 @@
   padding: 6px 12px;
 }
 
+/* A command's own --help, as the CLI prints it: fixed-width lines that keep their layout, so the
+   block scrolls (sideways on a narrow screen, down when it is long) and the card does not grow. */
+.ask-help {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+  overflow: auto;
+  max-height: 24rem;
+}
+
+/* A template for a command that deletes or takes something down: said in words, not by colour
+   alone, with a heavier edge so it does not read as an ordinary card. */
+.ask-card-destructive {
+  border-width: 2px;
+  border-color: var(--fg);
+}
+
+.ask-warning {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--fg);
+}
+
+/* The topics and their settings. A real table inside a region that scrolls sideways, so twelve
+   columns fit a phone without squeezing the text. */
+.ask-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ask-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+
+.ask-table caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: 600;
+  padding: 8px 12px;
+}
+
+.ask-table th,
+.ask-table td {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.ask-table thead th {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.ask-table tbody th {
+  font-weight: 600;
+}
+
+.ask-help:focus-visible,
+.ask-table-wrap:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
 /* Text that came from outside (a request path, an alarm's name): shown, and marked. */
 .ask-untrusted {
   border-left: 3px solid var(--muted);

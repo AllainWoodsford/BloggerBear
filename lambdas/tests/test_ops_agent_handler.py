@@ -446,8 +446,10 @@ def test_the_logs_hold_tool_names_and_counts_and_no_words(monkeypatch, capsys, c
         assert secret not in everything
     assert result["findings"] == held["findings"]  # all three shapes, unchanged
     assert printed.out.strip() == (
-        "ops_agent: turn=follow_up tool_calls=2 tools=pipeline_health,admin_inbox findings=3 fixes=1"
+        "ops_agent: turn=follow_up tool_calls=2 tools=pipeline_health,admin_inbox findings=3 fixes=1 "
+        "tables=0"
     )
+    assert result["tables"] == []
 
 
 # --- vouching for the operator's address to the MCP server ---------------------------------------

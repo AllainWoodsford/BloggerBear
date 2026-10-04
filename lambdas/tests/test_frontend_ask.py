@@ -438,3 +438,240 @@ def test_everything_under_untrusted_is_marked_however_deep(node_result):
 def test_each_finding_gets_the_right_card_and_a_command_is_never_spoken(node_result):
     assert node_result["kinds"] == ["fix", "look", "noticed"]
     assert node_result["spoken"] == "One draft was cut short. Run the command on screen to fix it."
+
+
+# --- how-to cards, help blocks and tables --------------------------------------------------------
+# The page's own renderers (renderCard, renderTable), run under Node against a stand-in document
+# that records what was built. The stand-in has createElement, createTextNode and textContent and
+# nothing else: assigning innerHTML to one of its nodes throws.
+
+_RENDER_RUNNER = """
+const ask = require(process.argv[1]);
+const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
+
+function node(tag) {
+  const made = {
+    tag, className: "", textContent: "", children: [], attrs: {}, listeners: {},
+    appendChild(child) { this.children.push(child); return child; },
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+  };
+  for (const sink of ["innerHTML", "outerHTML"]) {
+    Object.defineProperty(made, sink, { set() { throw new Error(sink + " was assigned"); } });
+  }
+  return made;
+}
+const doc = {
+  createElement: node,
+  createTextNode: (text) => ({ tag: "#text", textContent: String(text), children: [], attrs: {} }),
+};
+function plain(made) {
+  if (!made) { return null; }
+  return {
+    tag: made.tag, cls: made.className || "", text: made.textContent || "", attrs: made.attrs || {},
+    type: made.type || "", children: (made.children || []).map(plain),
+  };
+}
+function find(made, test, found) {
+  found = found || [];
+  if (test(made)) { found.push(made); }
+  (made.children || []).forEach((child) => find(child, test, found));
+  return found;
+}
+
+const cards = input.findings.map((finding) => {
+  const copied = [];
+  const onCopy = (code, button) => copied.push([code.textContent, button.textContent]);
+  const card = ask.renderCard(doc, finding, onCopy);
+  find(card, (made) => made.tag === "button").forEach((button) => button.listeners.click());
+  return { card: plain(card), copied };
+});
+process.stdout.write(JSON.stringify({
+  cards,
+  headings: input.findings.map((finding) => ask.cardHeading(finding)),
+  kinds: input.findings.map((finding) => ask.cardKind(finding)),
+  tables: input.tables.map((table) => plain(ask.renderTable(doc, table))),
+  models: input.tables.map((table) => ask.tableModel(table)),
+  spoken: ask.spokenText(input.answer, input.findings),
+}));
+"""
+
+_HELP_TEXT = (
+    "usage: admin_cli.py topics update [-h] [--name NAME] topic_id\n\noptions:\n  --name NAME  <b>bold</b>\n"
+)
+_HELP_COMMAND = "python scripts/admin_cli.py topics update --help"
+_TEMPLATE = "python scripts/admin_cli.py topics delete <topic_id>"
+_HOW_TO = [
+    {
+        "kind": "how_to",
+        "id": "help-topics-update",
+        "noticed": "topics update: Update a topic",
+        "where": {"command": "topics update"},
+        "suggestion": {"action": "Read the options", "command": _HELP_COMMAND, "what_it_does": "Prints it."},
+        "help": _HELP_TEXT,
+    },
+    {
+        "kind": "how_to",
+        "id": "topics-delete-template",
+        "noticed": "topics delete: Delete a topic",
+        "where": {"command": "topics delete"},
+        "suggestion": {"action": "Fill in the template", "command": _TEMPLATE, "what_it_does": "Deletes."},
+        "destructive": True,
+        "warning": "The assistant never fills one in.",
+    },
+    _FINDINGS[0],
+]
+_TABLES = [
+    {
+        "title": "Topics (2 of 7)",
+        "columns": ["Name", "Topic id", "Runs"],
+        "rows": [["Crypto", "crypto", 3], ["<img src=x onerror=alert(1)>", "hn"], "not a row"],
+    },
+    {"title": "", "columns": [], "rows": []},
+    None,
+    {"columns": ["a"], "rows": [[{"an": "object"}]]},
+]
+
+
+def _find(tree: dict, **wanted) -> list[dict]:
+    found = [tree] if all(tree.get(key) == value for key, value in wanted.items()) else []
+    for child in tree["children"]:
+        found.extend(_find(child, **wanted))
+    return found
+
+
+def _texts(tree: dict) -> str:
+    return tree["text"] + "".join(_texts(child) for child in tree["children"])
+
+
+@pytest.fixture(scope="module")
+def rendered():
+    payload = {
+        "findings": _HOW_TO,
+        "tables": _TABLES,
+        "answer": f"Run {_HELP_COMMAND} to see them, or {_TEMPLATE} to delete.",
+    }
+    done = subprocess.run(
+        [NODE, "-e", _RENDER_RUNNER, str(FRONTEND / "ask.js")],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@needs_node
+def test_a_how_to_card_reads_as_guidance_and_shows_the_help_as_text_in_a_block(rendered):
+    help_card, _, ordinary = (entry["card"] for entry in rendered["cards"])
+
+    assert rendered["headings"] == ["How to", "How to", "Noticed"]
+    labels = [dt["text"] for dt in _find(help_card, tag="dt")]
+    assert labels[0] == "How to" and "Noticed" not in labels and "Next" in labels
+    assert "ask-card-how-to" in help_card["cls"]
+    # The help reaches the page whole, in its own block, as text: markup in it stays characters.
+    (block,) = _find(help_card, tag="pre", cls="ask-help")
+    assert block["text"] == _HELP_TEXT and "<b>bold</b>" in block["text"]
+    assert block["attrs"]["tabindex"] == "0" and block["attrs"]["role"] == "region"
+    assert block["attrs"]["aria-label"] == "Help text for topics update: Update a topic"
+    # The Copy button copies the one line that prints the help, never the help.
+    assert rendered["cards"][0]["copied"] == [[_HELP_COMMAND, "Copy"]]
+    (button,) = _find(help_card, tag="button")
+    assert button["type"] == "button" and button["attrs"]["aria-label"] == "Copy the command"
+    # An ordinary finding is as it was.
+    assert [dt["text"] for dt in _find(ordinary, tag="dt")][:2] == ["Noticed", "Suggested"]
+    assert _find(ordinary, tag="pre", cls="ask-help") == [] and "how-to" not in ordinary["cls"]
+
+
+@needs_node
+def test_a_destructive_card_warns_in_words_and_copies_the_template_with_its_placeholders(rendered):
+    card, copied = rendered["cards"][1]["card"], rendered["cards"][1]["copied"]
+
+    assert "ask-card-destructive" in card["cls"]
+    (warning,) = _find(card, tag="p", cls="ask-warning")
+    assert warning["attrs"]["role"] == "note"
+    assert _texts(warning) == "Template, not filled in. The assistant never fills one in."
+    # Shown as it is, and copied as it is: the placeholder is still a placeholder.
+    (code,) = _find(card, tag="code")
+    assert code["text"] == _TEMPLATE
+    assert copied == [[_TEMPLATE, "Copy template"]] and "<topic_id>" in copied[0][0]
+    (button,) = _find(card, tag="button")
+    assert button["attrs"]["aria-label"] == "Copy the template, with its placeholders"
+    # Neither a how-to command nor a template is ever read aloud.
+    assert rendered["kinds"] == ["fix", "fix", "fix"]
+    assert rendered["spoken"] == "Run the command on screen to see them, or the command on screen to delete."
+
+
+@needs_node
+def test_a_table_is_a_real_table_with_a_caption_and_text_cells(rendered):
+    table, empty, missing, odd = rendered["tables"]
+
+    assert empty is None and missing is None
+    assert table["tag"] == "div" and table["cls"] == "ask-table-wrap"
+    assert table["attrs"] == {"tabindex": "0", "role": "region", "aria-label": "Topics (2 of 7)"}
+    (real,) = _find(table, tag="table")
+    assert [child["tag"] for child in real["children"]] == ["caption", "thead", "tbody"]
+    assert real["children"][0]["text"] == "Topics (2 of 7)"
+    heads = _find(real["children"][1], tag="th")
+    assert [th["text"] for th in heads] == ["Name", "Topic id", "Runs"]
+    assert all(th["attrs"] == {"scope": "col"} for th in heads)
+    rows = _find(real["children"][2], tag="tr")
+    assert len(rows) == 2  # the thing that was not a row is left out
+    assert [cell["text"] for cell in rows[0]["children"]] == ["Crypto", "crypto", "3"]
+    assert rows[0]["children"][0]["tag"] == "th" and rows[0]["children"][0]["attrs"] == {"scope": "row"}
+    # Markup in a cell is characters, and a short row is padded to the columns.
+    assert [cell["text"] for cell in rows[1]["children"]] == ["<img src=x onerror=alert(1)>", "hn", ""]
+    assert rendered["models"][3] == {"title": "Table", "columns": ["a"], "rows": [[""]]}
+    assert _find(odd, tag="caption")[0]["text"] == "Table"
+
+
+def test_the_page_takes_tables_and_how_to_cards_from_the_answer_and_builds_them_as_text():
+    code = _code(_read("ask.js"))
+    css = _read("ask.css")
+
+    assert "tables: Array.isArray(body.tables) ? body.tables : []" in code
+    assert "renderTable(doc, table)" in code and "renderCard(doc, finding, copyCommand)" in code
+    assert 'finding.kind === "how_to"' in code and "finding.destructive === true" in code
+    # What is copied is the text of the node that shows the command.
+    assert "clipboard.writeText(code.textContent)" in code
+    # Still one way to make a node, and it sets text, never markup.
+    assert code.count("createElement(") == 1 and "node.textContent = String(text)" in code
+    # The help and the table scroll inside their own box on a narrow screen.
+    for selector in (".ask-help", ".ask-table-wrap", ".ask-table caption", ".ask-warning"):
+        assert selector in css, selector
+    help_block = css[css.index(".ask-help {") : css.index("}", css.index(".ask-help {"))]
+    assert "overflow: auto" in help_block and "white-space: pre" in help_block and "monospace" in help_block
+    wrap = css[css.index(".ask-table-wrap {") : css.index("}", css.index(".ask-table-wrap {"))]
+    assert "overflow-x: auto" in wrap
+    assert ".ask-help:focus-visible" in css and ".ask-table-wrap:focus-visible" in css
+
+
+def test_the_pages_table_limits_are_the_agents():
+    code = _code(_read("ask.js"))
+    from ops_agent import policy
+
+    assert f"var TABLE_MAX_ROWS = {policy.TABLE_MAX_ROWS};" in code
+    assert f"var TABLE_MAX_COLUMNS = {policy.TABLE_MAX_COLUMNS};" in code
+
+
+def test_the_minified_copy_is_built_from_these_files_and_still_has_the_new_renderers(tmp_path):
+    """frontend-dist is generated at deploy time (scripts/minify_frontend.py, which mirrors every
+    file in frontend/): the new code needs no list to be on, and survives minifying."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("minify_for_ask", ROOT / "scripts" / "minify_frontend.py")
+    minify = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(minify)
+    except ImportError:
+        pytest.skip("the minifiers are not installed")
+
+    minify.minify_frontend(FRONTEND, tmp_path)
+
+    built = (tmp_path / "ask.js").read_text(encoding="utf-8")
+    for kept in ("how_to", "ask-help", "ask-table-wrap", "Copy template", "renderTable"):
+        assert kept in built, kept
+    assert "innerHTML" not in built
+    assert ".ask-table-wrap" in (tmp_path / "ask.css").read_text(encoding="utf-8")

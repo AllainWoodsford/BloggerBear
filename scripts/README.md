@@ -387,6 +387,38 @@ Each article records which gear was in the prompts that wrote it (`equipment_use
 per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
 gear helps, and share out wear. It is never shown publicly.
 
+## After changing the CLI: `generate_cli_reference.py`
+
+The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you
+give it the values, the exact command (`lambdas/ops_mcp/cli_guide.py`). It runs in a Lambda that
+does not contain this folder, so it reads a generated copy of the CLI's reference:
+`lambdas/ops_mcp/cli_reference.json`, every command, flag and help text, written from
+`admin_cli.build_parser()`.
+
+**Run this whenever you add, rename or remove a command or flag, or change any help text, and commit
+the result with the change:**
+
+```bash
+python scripts/generate_cli_reference.py          # rewrite lambdas/ops_mcp/cli_reference.json
+python scripts/generate_cli_reference.py --check  # change nothing; exit 1 if it is out of date
+```
+
+`scripts/tests/test_generate_cli_reference.py` makes the same check, so CI fails with this command
+in the message if you forget. Two things the generator decides, both read from the parser:
+
+- **Which commands the assistant never fills in.** A command whose last word deletes or takes
+  something down (`delete`, `unpublish`, `reject`, and a few more in `DESTRUCTIVE_VERBS`) and any
+  `--force` flag are marked destructive; the assistant shows those as a template with
+  `<placeholders>`. A new command of that kind under another name needs its word added to
+  `DESTRUCTIVE_VERBS`; the test lists the marked commands so the change is seen in review.
+- **The help text**, from argparse's `format_help()` at a fixed width. argparse's layout differs a
+  little between Python releases, so the file records which release wrote it: the check compares
+  the help exactly on that release, and by content (every flag and help string) on another.
+
+The assistant's hand-written guides (costs, gear, editorial goals, a first topic, reviewing) are in
+`cli_guide.py`; a test builds every command they mention with the real parser, so a guide that
+names a flag you removed fails too.
+
 ### Testing the DLQ consumer manually
 
 `dlq_handler.py` is only exercised for real when a `daily_cycle` execution

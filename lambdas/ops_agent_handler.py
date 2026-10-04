@@ -12,10 +12,13 @@ each question; with none, this is a briefing (ops_agent/policy.py). The answer:
     {"answer": "...",                       spoken by the page
      "tool_calls": [{"name", "arguments"}], what the agent called, in order, for the page to show
      "findings": [...],                     the tools' findings, as the tools returned them
+     "tables": [{"title", "columns", "rows"}],  the tools' tables (the topics and their settings)
      "turn": "briefing" | "follow_up"}
 
 A finding's `suggestion` is passed through whatever its shape: an action with a `command` (a fix
-to run), an action with `command: null` (something to look at), or null.
+to run), an action with `command: null` (something to look at), or null. A finding of kind
+`how_to` is the CLI guide's: a command's `--help` (in `help`) or a command the server built, and
+`destructive: true` marks a template the operator must fill in (ops_mcp/cli_guide.py).
 
 **The caller's token is passed on, not used.** The `Authorization` header goes to the MCP server
 as it arrived, so the server's own authorizer sees the same caller. This code never decodes it.
@@ -212,7 +215,7 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
     print(
         f"ops_agent: turn={result['turn']} tool_calls={len(result['tool_calls'])} "
         f"tools={names or '-'} findings={len(result['findings'])} "
-        f"fixes={policy.suggested_fixes(result['findings'])}"
+        f"fixes={policy.suggested_fixes(result['findings'])} tables={len(result.get('tables') or [])}"
     )
     return _response(200, result)
 
