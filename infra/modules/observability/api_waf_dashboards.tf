@@ -205,13 +205,16 @@ locals {
           region               = local.api_region
           view                 = "singleValue"
           setPeriodToTimeRange = true
-          metrics = flatten([
+          # concat(...), not flatten: flatten goes all the way down, through each metric's own
+          # list, and CloudWatch rejects the result ("metrics/0 Should be array") -- at apply, since
+          # plan only sees a string.
+          metrics = concat([
             for api in var.api_dashboard_apis : [
               ["AWS/ApiGateway", "Count", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} requests" }],
               ["AWS/ApiGateway", "4XXError", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} 4XX" }],
               ["AWS/ApiGateway", "5XXError", "ApiName", api.api_name, "Stage", api.stage, { stat = "Sum", label = "${api.label} 5XX" }],
             ]
-          ])
+          ]...)
         }
       },
     ],

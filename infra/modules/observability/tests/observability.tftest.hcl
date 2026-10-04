@@ -30,6 +30,15 @@ run "production_creates_the_edge_dashboard" {
     condition     = length(aws_cloudwatch_dashboard.edge) == 1
     error_message = "production should get one edge dashboard"
   }
+  # CloudWatch only checks the body at apply, and dev never applies this dashboard, so the shape
+  # it insists on is checked here: every entry of a widget's metrics is itself a list.
+  assert {
+    condition = alltrue(flatten([
+      for widget in jsondecode(aws_cloudwatch_dashboard.edge[0].dashboard_body).widgets :
+      [for metric in try(widget.properties.metrics, []) : can(metric[0])]
+    ]))
+    error_message = "every widget's metrics must be a list of lists"
+  }
 }
 
 run "dev_does_not" {
