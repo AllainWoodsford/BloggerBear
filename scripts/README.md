@@ -6,6 +6,26 @@ else.
 
 **New here, or just need the export commands?** See [QUICKSTART.md](QUICKSTART.md).
 
+## First-time setup of your repository: `setup_repo.py`
+
+Deploying your own copy? This one comes before the admin CLI. It asks for the GitHub secrets and
+variables a deployment needs (your allowed address ranges, alert emails, the AWS account IDs and
+deploy role ARNs, the state bucket names, the name suffix and `PII_DENYLIST`), checks each answer,
+shows what is already set, and sets what is missing. It also tells you how to turn on the git hook
+that stops personal data being committed.
+
+```bash
+python scripts/setup_repo.py --dry-run     # step through it all; changes nothing
+python scripts/setup_repo.py               # the real thing; asks before it sets anything
+python scripts/setup_repo.py --help
+```
+
+It needs only Python 3.11+ and the GitHub CLI (`gh auth login`): no AWS credentials, no
+`pip install`. Secret values are never printed and never passed on a command line. Nothing is set
+until you have seen a summary and confirmed; if a write then fails part-way, it stops and lists
+what was and was not set. See
+[docs/deploying-your-own.md](../docs/deploying-your-own.md#quick-start-the-setup-script).
+
 ## Why a CLI, not a web page
 
 The Admin API requires AWS SigV4 (IAM) auth and is additionally restricted
