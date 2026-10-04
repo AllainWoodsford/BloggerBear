@@ -25,7 +25,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 23 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 24 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -597,6 +597,17 @@ failed with AccessDenied, after `validate`, `terraform test` and review had all 
 while wiring production, before any apply. **Fix:** `...-ops-mcp-scheduler-invoke`, and a test
 that holds the name to the pattern. **Lesson:** 1.2 again, from the other side: every new IAM
 name is checked against what the deploy role may touch, not only against what the function needs.
+
+**10.24 The page read "US$12.40" as "twelve dollars. forty".** The voice fix (10.21) speaks an
+answer a sentence or two at a time, and found sentences with `[^.!?]+`, which ends one at every
+full stop, including the point in a number, a version or a domain. The pieces were then joined with
+a space, so "US$12.40" was spoken as two sentences, and a briefing reports spend in dollars and
+cents. The test said "nothing lost or reordered, only the spacing" and compared both sides by
+`.split()`, which cannot see a space added inside a word: "12." and "40" are words too. Found in
+review. **Fix:** a sentence ends at a stop followed by a space or the end, and the test compares
+the joined text exactly, with a number in it. **Lesson:** a test that normalises before comparing
+must not normalise away the thing that can break; compare what the user gets (here, the spoken
+text). (#198)
 
 ---
 

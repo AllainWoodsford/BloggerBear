@@ -441,7 +441,9 @@
     if (!words) {
       return [];
     }
-    var sentences = words.match(/[^.!?]+(?:[.!?]+|$)/g) || [words];
+    // A sentence ends at a stop followed by a space or the end, never at one inside a word or a
+    // number: "US$12.40" split at its point is spoken "twelve dollars. forty".
+    var sentences = words.match(/\S.*?(?:[.!?]+(?=\s|$)|$)/g) || [words];
     var chunks = [];
     var current = "";
     sentences.forEach(function (sentence) {

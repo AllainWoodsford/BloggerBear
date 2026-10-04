@@ -365,6 +365,7 @@ const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
     langs: input.langs.map((tag) => ask.speechLang(tag)),
     chunks: ask.speechChunks(input.longAnswer, 180),
     shortChunks: ask.speechChunks("One. Two!  Three?", 180),
+    numberChunks: ask.speechChunks(input.numberAnswer, 180),
     noChunks: ask.speechChunks("   ", 180),
     messages: input.errorCodes.map((code) => ask.recognitionMessage(code)),
     voices: input.voiceSets.map((set) => {
@@ -426,6 +427,7 @@ def node_result():
         + "throttled around two in the morning while the retry ran out of attempts and gave up. "
         + "Spend is normal. "
         + ("word " * 60),
+        "numberAnswer": "AI spend was US$12.40 this week, up from 9.80. Python 3.11 is fine.",
         "errorCodes": [
             "not-allowed",
             "network",
@@ -797,14 +799,21 @@ def test_an_answer_is_spoken_in_whole_sentences_each_short_enough(node_result):
     chunks = node_result["chunks"]
     assert len(chunks) > 2
     assert all(0 < len(chunk) <= 180 for chunk in chunks)
-    # Nothing lost or reordered, only the spacing.
-    assert " ".join(chunks).split() == (
-        "Since yesterday crypto did not publish. Its draft was cut short, so it is held in the inbox and the "
-        "authoring function was throttled around two in the morning while the retry ran out of attempts and "
-        "gave up. Spend is normal. " + "word " * 60
-    ).split()
+    # Nothing lost, reordered or split inside a word, only runs of spaces made one. (Comparing
+    # `.split()` of both sides missed a space put into "12.40": "12." and "40" are words too.)
+    assert " ".join(chunks) == " ".join(
+        (
+            "Since yesterday crypto did not publish. Its draft was cut short, so it is held in the inbox and "
+            "the authoring function was throttled around two in the morning while the retry ran out of "
+            "attempts and gave up. Spend is normal. " + "word " * 60
+        ).split()
+    )
     assert chunks[0].startswith("Since yesterday crypto did not publish.")
     assert node_result["shortChunks"] == ["One. Two! Three?"]
+    # A point inside a number ends no sentence: "US$12. 40" would be spoken "twelve dollars. forty".
+    assert node_result["numberChunks"] == [
+        "AI spend was US$12.40 this week, up from 9.80. Python 3.11 is fine."
+    ]
     assert node_result["noChunks"] == []
 
 
