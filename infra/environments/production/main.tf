@@ -1937,7 +1937,7 @@ data "aws_iam_policy_document" "waf_logs_shared" {
       type        = "Service"
       identifiers = ["delivery.logs.amazonaws.com"]
     }
-    actions   = ["logs:PutLogEvents", "logs:CreateLogStream"]
+    actions = ["logs:PutLogEvents", "logs:CreateLogStream"]
     # us-east-1 written out, not var.aws_region: this is the CloudFront-scope web ACL's log group,
     # and AWS only hosts a CLOUDFRONT-scope ACL, and so its logs, in that one region.
     resources = ["arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-shared:*"]

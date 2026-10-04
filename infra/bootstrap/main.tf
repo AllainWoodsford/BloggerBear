@@ -40,7 +40,7 @@ provider "aws" {
 # an existing bucket somewhere in AWS (S3 bucket names are globally
 # unique). If you do change var.state_bucket_name, the environments'
 # `backend "s3"` blocks still name the default (they cannot reference
-# variables), so tell CI the real name with the GitHub Actions variables
+# variables), so tell CI the real name with the GitHub Actions secrets
 # TF_STATE_BUCKET_DEV / TF_STATE_BUCKET_PROD. See outputs.tf for the same
 # note next to the bucket name output, and docs/deploying-your-own.md.
 #

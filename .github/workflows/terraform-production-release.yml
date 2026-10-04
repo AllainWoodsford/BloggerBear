@@ -46,8 +46,8 @@ jobs:
     # admin_allowed_cidrs' `[]`.
     # TF_VAR_aws_account_id, TF_VAR_unique_name_suffix, TF_STATE_BUCKET: the same three optional
     # settings as terraform.yml's apply-dev job (see the comment there), with production's own
-    # account ID and state bucket, so production can live in a different AWS account from dev.
-    # Unset, all three are empty and nothing changes.
+    # account ID and state bucket (both secrets, with no variable fallback), so production can
+    # live in a different AWS account from dev. Unset, all three are empty and nothing changes.
     # TF_VAR_aws_region, TF_STATE_REGION: the home region and the state bucket's region, as in
     # terraform.yml (see the comment there). This job runs in the `production` environment, so
     # an AWS_REGION or TF_STATE_REGION variable set on that environment wins over the
@@ -55,9 +55,9 @@ jobs:
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_PROD }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD || vars.ALERT_EMAIL_PROD }}
-      TF_VAR_aws_account_id: ${{ secrets.AWS_PROD_ACCOUNT_ID || vars.AWS_PROD_ACCOUNT_ID }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_PROD_ACCOUNT_ID }}
       TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET_PROD }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_PROD }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
     steps:
@@ -141,7 +141,7 @@ jobs:
           plan_file="tfplan"
           # A fork keeps its state in its own bucket (S3 bucket names are unique across every
           # account, and a backend block cannot read a Terraform variable), so the bucket can be
-          # named by the TF_STATE_BUCKET_PROD variable. Unset, this is the plain `init` it always
+          # named by the TF_STATE_BUCKET_PROD secret. Unset, this is the plain `init` it always
           # was, against the bucket written in the backend block.
           # The state bucket's region is the same story: the backend block names the original
           # deployment's, and TF_STATE_REGION (the TF_STATE_REGION variable, or else AWS_REGION,

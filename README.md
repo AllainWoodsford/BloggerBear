@@ -304,12 +304,16 @@ Note the outputs — you'll need them in the next two steps:
 `prod_deploy_role_arn`. If `state_bucket_name` differs from the default
 `bloggerbear-terraform-state` (only happens if that name is already
 taken globally, which it always is for a fork), set the GitHub Actions
-variables `TF_STATE_BUCKET_DEV` and `TF_STATE_BUCKET_PROD` to it. The
+secrets `TF_STATE_BUCKET_DEV` and `TF_STATE_BUCKET_PROD` to it. The
 `backend "s3"` blocks can't reference variables, so CI passes the name
 to `terraform init` instead
 ([docs/deploying-your-own.md](docs/deploying-your-own.md)).
 
 ### 2. Wire GitHub Actions up to AWS (you, GitHub UI)
+
+`python scripts/setup_repo.py --dry-run` walks through every setting below, checks each answer
+and shows what it would set; without `--dry-run` it sets them
+([docs/deploying-your-own.md](docs/deploying-your-own.md)). By hand:
 
 - **Settings → Secrets and variables → Actions → Secrets** (repository
   level), all **secrets**, never variables — a variable prints in plain

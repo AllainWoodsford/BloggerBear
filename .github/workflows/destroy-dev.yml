@@ -30,15 +30,16 @@ jobs:
     # computed plan), so that Terraform's config evaluation sees the same
     # inputs either job would.
     # The account check, name suffix and state bucket are the same three optional settings as
-    # apply-dev's (see the comment there): a destroy has to look at the same state, in the same
-    # account, under the same names, as the apply that made it. The region is the same again
-    # (AWS_REGION, and TF_STATE_REGION for the state bucket): a destroy pointed at another region
-    # would find none of the resources its state lists.
+    # apply-dev's (see the comment there; the account ID and the bucket are secrets, with no
+    # variable fallback): a destroy has to look at the same state, in the same account, under the
+    # same names, as the apply that made it.
+    # The region is the same again (AWS_REGION, and TF_STATE_REGION for the state bucket): a
+    # destroy pointed at another region would find none of the resources its state lists.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
-      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID || vars.AWS_DEV_ACCOUNT_ID }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
       TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET_DEV }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
     steps:
@@ -87,7 +88,7 @@ jobs:
           echo "Destroying terraform in $target_dir"
           # A fork keeps its state in its own bucket (S3 bucket names are unique across every
           # account, and a backend block cannot read a Terraform variable), so the bucket can be
-          # named by the TF_STATE_BUCKET_DEV variable. Unset, this is the plain `init` it always
+          # named by the TF_STATE_BUCKET_DEV secret. Unset, this is the plain `init` it always
           # was, against the bucket written in the backend block.
           # The state bucket's region is the same story: the backend block names the original
           # deployment's, and TF_STATE_REGION (the TF_STATE_REGION variable, or else AWS_REGION,

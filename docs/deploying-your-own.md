@@ -11,6 +11,52 @@ unset, does exactly what the code did before it existed.
 Account IDs on this page are AWS's documentation placeholders (`111111111111`, `123456789012`).
 Use your own.
 
+## Quick start: the setup script
+
+`scripts/setup_repo.py` asks for every setting on this page, checks each answer, shows what is
+already set on your repository, and then sets what is missing. It needs Python 3.11 or newer and
+the GitHub CLI (`gh`), signed in (`gh auth login`). Nothing else: no AWS credentials, no packages.
+
+Start with a dry run. It asks the same questions and runs the same checks, then prints the
+commands it would run, with every value replaced by `<redacted>`. It sets nothing.
+
+```bash
+python scripts/setup_repo.py --dry-run
+python scripts/setup_repo.py                      # the real thing
+python scripts/setup_repo.py --repo your-name/your-fork
+python scripts/setup_repo.py --only ADMIN_ALLOWED_CIDRS_DEV ADMIN_ALLOWED_CIDRS_PROD
+```
+
+What it does, in order:
+
+1. Checks `gh` is installed and signed in, shows which repository it will change and asks you to
+   confirm it. **In a fork, `gh` can pick the original repository. Read the name.**
+2. Lists what is already set, by name. A secret's value cannot be read back, by anyone, and the
+   script never tries. Settings that are already set are skipped unless you ask to replace them.
+3. Asks for each setting that is left, with a short explanation and a check: your allowed
+   address ranges, the alert emails, the two account IDs, the two deploy role ARNs (with the
+   steps to create them and the ARN it expects, which you can accept by pressing Enter), the
+   state bucket names, the name suffix, and `PII_DENYLIST`. Press Enter to leave an optional
+   setting unset.
+4. Shows a summary. Secret values are masked: you see a length and the last two characters.
+5. Asks once more, then sets everything.
+6. Tells you how to turn on the git hook that stops personal data being committed, and offers to
+   run that one command (`git config core.hooksPath .githooks`) for this clone.
+
+**What "all or nothing" means here.** Nothing is set until every answer has passed its check and
+you have confirmed the summary. Cancel at any point before that (Ctrl-C works at every question)
+and nothing has changed. GitHub has no way to set several secrets as one step, though. If a write
+fails part-way, the script stops at once and lists exactly which settings were set and which
+were not. It does not try to put old values back: they cannot be read. Run it again and it picks
+up what is missing.
+
+A dry run cannot set anything: one function does all the writing, a dry run never reaches it,
+and a dry run's `gh` calls are limited to ones that only read.
+
+The script sets up GitHub. It does not touch AWS: you still run the bootstrap in step 1 yourself.
+It also needs the `production` environment to exist (step 2) before it can put production's
+secrets there, and tells you if it does not.
+
 ## How a deploy picks its account
 
 - **The role decides the account.** Each workflow assumes one IAM role through GitHub OIDC:
@@ -81,8 +127,8 @@ runs in no environment. Production's can be on the `production` environment or o
 | `AWS_PROD_DEPLOY_ROLE_ARN` | secret | `production` | Bootstrap's `prod_deploy_role_arn` output. Required. | `arn:aws:iam::123456789012:role/gha-bloggerbear-prod-deploy` |
 | `AWS_DEV_ACCOUNT_ID` | secret | repo | The account dev must land in. Optional, recommended. | `111111111111` |
 | `AWS_PROD_ACCOUNT_ID` | secret | `production` | The account production must land in. Optional, recommended. | `123456789012` |
-| `TF_STATE_BUCKET_DEV` | variable | repo | The state bucket dev uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
-| `TF_STATE_BUCKET_PROD` | variable | `production` | The state bucket production uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
+| `TF_STATE_BUCKET_DEV` | secret | repo | The state bucket dev uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
+| `TF_STATE_BUCKET_PROD` | secret | `production` | The state bucket production uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
 | `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. See [Deploying to another region](#deploying-to-another-region) before setting it. | `eu-west-1` |
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `UNIQUE_NAME_SUFFIX` | variable | repo | Added to the bucket names and the sign-in host name, which must be unique across all of AWS. **Required for a fork.** Lowercase letters, digits and hyphens, at most 20. | `-yourname` |
@@ -90,6 +136,7 @@ runs in no environment. Production's can be on the `production` environment or o
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
 | `ALERT_EMAIL_DEV` | secret | repo | Where dev's alarm emails go. Optional. | `you@example.com` |
 | `ALERT_EMAIL_PROD` | secret | `production` | Where production's alarm emails go. Optional. | `you@example.com` |
+| `PII_DENYLIST` | secret | repo | Your own personal strings (a name, a home address), one per line. The `pii-denylist` check refuses a pull request that adds one. Optional. | not shown, on purpose |
 
 Why some are secrets and some are variables:
 
@@ -98,10 +145,17 @@ Why some are secrets and some are variables:
 - An AWS account ID is an identifier, not a credential. Knowing it does not let anyone in. This
   repository still keeps account IDs out of its logs and its code (the secret scanner refuses
   them), so the account IDs and the role ARNs, which contain one, are **secrets**. GitHub then
-  masks them wherever a log would print them. Each also falls back to a variable of the same name,
-  if you would rather not use a secret.
-- The state bucket name and the name suffix are **variables**. They are bucket names, not
-  identities, and they appear in the logs anyway.
+  masks them wherever a log would print them. Terraform's `aws_account_id` variable is marked
+  `sensitive` as well, so a plan prints `(sensitive value)` where it would print the ID.
+- The state bucket names are **secrets** too. A bucket name is not a credential either, but it
+  says where your state is kept, and nothing needs it in a public log.
+- `AWS_DEV_ACCOUNT_ID`, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_DEV` and `TF_STATE_BUCKET_PROD`
+  are read **only** from secrets. A variable with one of those names is ignored, so the value
+  cannot end up unmasked by mistake.
+- The role ARNs and the alert emails still fall back to a variable of the same name. That is
+  left over from when they were variables; use the secret.
+- The name suffix is a **variable**. It is part of your bucket names and your sign-in address,
+  which are public anyway.
 - The region is a **variable** too. It is not a secret: it is part of every address and resource
   name the logs print. `AWS_REGION` and `TF_STATE_REGION` are read at repository level; the
   `production` environment may set its own, which wins for production.
@@ -115,7 +169,7 @@ renamed: changing the suffix later makes Terraform delete the buckets and create
 
 - Apply bootstrap once.
 - Both role ARNs are in the same account. Both account IDs are the same. Both state bucket
-  variables name the same bucket; dev and production use different keys inside it.
+  secrets name the same bucket; dev and production use different keys inside it.
 - Dev may share production's CloudFront web ACL: after production's first apply, put its
   `wafv2_web_acl_arn` output in `infra/environments/dev/terraform.tfvars` as `web_acl_arn`.
 
@@ -141,8 +195,8 @@ renamed: changing the suffix later makes Terraform delete the buckets and create
 
 1. Merge anything under `infra/`, `lambdas/` or `frontend/` to `dev`. The `terraform` workflow
    applies dev.
-2. In the `apply-dev` job's log, the init step should say it is using your state bucket, and the
-   plan should list resources named with your suffix.
+2. In the `apply-dev` job's log, the init step should succeed (your state bucket's name shows as
+   `***`, because it is a secret), and the plan should list resources named with your suffix.
 3. To prove the account check works, set `AWS_DEV_ACCOUNT_ID` to a wrong 12-digit number and
    re-run. It must fail during the plan with "AWS account ID not allowed". Put the right value
    back. (The error names the account the role is really in.)
@@ -173,7 +227,8 @@ What to set:
 1. **Bootstrap:** apply it with `-var="aws_region=eu-west-1"` (your region). The state bucket is
    created there, and the deploy roles are only allowed to work there. If the roles were made for
    another region, every apply is refused with `AccessDenied`.
-2. **GitHub:** set the `AWS_REGION` variable to the same region. The workflows pass it to
+2. **GitHub:** set the `AWS_REGION` variable to the same region (`scripts/setup_repo.py` asks for
+   it). The workflows pass it to
    Terraform (as `aws_region`), to the AWS credentials step, and to `terraform init` as the state
    bucket's region. Set `TF_STATE_REGION` as well only if your state bucket is somewhere other
    than `AWS_REGION`.
@@ -191,7 +246,7 @@ What to set:
 
 What follows the region by itself: every resource, the deploy roles' permissions, the API and
 sign-in host names, the site's content security policy, the dashboards, and the Lambda Web
-Adapter layer the assistant uses (AWS publishes it under the same name in each region).
+Adapter layer the assistant uses (its project publishes it under the same name in each region).
 
 What stays where it is, whatever you choose:
 

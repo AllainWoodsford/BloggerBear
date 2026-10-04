@@ -127,6 +127,7 @@ variable "coingecko_api_plan" {
 variable "aws_account_id" {
   type        = string
   default     = ""
+  sensitive   = true
   description = <<-EOT
     The 12-digit ID of the AWS account production is meant to be applied to. When set, every AWS
     provider in this root refuses to run against any other account (allowed_account_ids), so
@@ -140,9 +141,11 @@ variable "aws_account_id" {
     all the same, and GitHub masks a secret's text wherever it would be printed. Do not set it in
     terraform.tfvars: that commits it.
 
-    Not marked sensitive: it is only ever read by the provider blocks, and a plan never prints
-    provider settings. If the check fails, the provider's error names the account the credentials
-    really belong to.
+    Sensitive, so a plan or an error prints (sensitive value) instead of the ID. GitHub masks only
+    the secret's exact text; this covers the places Terraform would print it itself. Nothing but
+    the provider blocks (and, in dev, web_acl_arn's check) reads it, and no output may expose it.
+    If the account check fails, the provider's error names the account the credentials really
+    belong to, which is the one you did not expect.
   EOT
 
   validation {

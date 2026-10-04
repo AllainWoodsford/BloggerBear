@@ -92,10 +92,13 @@ jobs:
     # to its own AWS account without editing code (docs/deploying-your-own.md). All three are
     # optional, and unset they are empty strings, which Terraform and the init step below both
     # read as "as before": no account check, the plain bucket names, the state bucket written in
-    # the backend block. The account ID is a secret (with a variable as fallback) for the same
-    # reason the role ARN is: a variable prints in plain text in these public logs, and GitHub
-    # masks a secret's text wherever it appears. The other two are plain variables: they are
-    # bucket names, public in the code already.
+    # the backend block. The account ID and the state bucket's name are secrets, and only secrets:
+    # a variable prints in plain text in these public logs, and GitHub masks a secret's text
+    # wherever it appears. There is deliberately no `|| vars.` fallback for them (the role ARN and
+    # the alert email have one only because they were variables once): a fallback would let the
+    # value be set unmasked by mistake, and nothing ever shipped that read them from a variable.
+    # The suffix is a plain variable: it is part of public bucket and sign-in host names anyway.
+    # scripts/setup_repo.py sets all of them.
     # TF_VAR_aws_region, TF_STATE_REGION: the deployment's home region, from the AWS_REGION
     # variable (a plain variable: a region is not a secret, and it is in every ARN and host name
     # the logs print anyway). Unset, it is the region this project has always used, written out
@@ -106,9 +109,9 @@ jobs:
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
-      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID || vars.AWS_DEV_ACCOUNT_ID }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
       TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET_DEV }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
     steps:
@@ -176,7 +179,7 @@ jobs:
           plan_file="tfplan"
           # A fork keeps its state in its own bucket (S3 bucket names are unique across every
           # account, and a backend block cannot read a Terraform variable), so the bucket can be
-          # named by the TF_STATE_BUCKET_DEV variable. Unset, this is the plain `init` it always
+          # named by the TF_STATE_BUCKET_DEV secret. Unset, this is the plain `init` it always
           # was, against the bucket written in the backend block.
           # The state bucket's region is the same story: the backend block names the original
           # deployment's, and TF_STATE_REGION (the TF_STATE_REGION variable, or else AWS_REGION,
