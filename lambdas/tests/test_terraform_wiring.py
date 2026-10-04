@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[2]
 INFRA = ROOT / "infra"
 NODE = shutil.which("node")
 DOMAIN = "bloggerbear.com"
+# How the home region is written wherever a root needs it (see the region tests at the end).
+_HOME = "${var.aws_region}"
 
 
 def _read(*parts: str) -> str:
@@ -320,7 +322,10 @@ def _deploy_policy_log_group_patterns() -> set[tuple[str, str]]:
     """(region, name pattern) for every log group ARN the CI deploy role may manage."""
     bootstrap = _read("bootstrap", "main.tf")
     patterns = set()
-    for match in re.finditer(r'"arn:aws:logs:([a-z0-9-]+):\*:log-group:([^"]*?)(?::\*)?"', bootstrap):
+    # The region is either written out (us-east-1, for CloudFront) or the home region's variable.
+    for match in re.finditer(
+        r'"arn:aws:logs:(\$\{var\.aws_region\}|[a-z0-9-]+):\*:log-group:([^"]*?)(?::\*)?"', bootstrap
+    ):
         patterns.add((match.group(1), match.group(2)))
     return patterns
 
@@ -328,7 +333,7 @@ def _deploy_policy_log_group_patterns() -> set[tuple[str, str]]:
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env):
     """A log group in another region needs its own ARN in the deploy role's policy. Production's shared
-    CloudFront WAF logs to us-east-1; only ap-southeast-2 was allowed, so its first apply was refused
+    CloudFront WAF logs to us-east-1; only the home region was allowed, so its first apply was refused
     with AccessDenied on logs:CreateLogGroup. Dev could not have shown it (no CloudFront ACL)."""
     import fnmatch
 
@@ -343,7 +348,7 @@ def test_the_deploy_role_may_create_every_log_group_an_environment_declares(env)
             # properly instead by test_every_pipeline_lambdas_function_name_is_covered_too below.
             continue
         region = (
-            "us-east-1" if re.search(r"^\s*provider\s*=\s*aws\.us_east_1", body, re.M) else "ap-southeast-2"
+            "us-east-1" if re.search(r"^\s*provider\s*=\s*aws\.us_east_1", body, re.M) else _HOME
         )
         name = re.sub(r"\$\{[^}]*\}", "x", re.search(r'^\s*name\s*=\s*"([^"]+)"', body, re.M).group(1))
         found += 1
@@ -710,7 +715,8 @@ def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimensio
             assert '"Region", "Global"' in line, line
     cdn = re.search(r"cdn_section = (.*?)\n  \)\]\)\n", text, re.S).group(1)
     assert 'region = local.api_region' not in cdn.replace('region = local.api_region }', '')
-    assert cdn.count('region = "us-east-1"') >= 3
+    assert cdn.count('region = local.cloudfront_region') >= 3
+    assert re.search(r'^  cloudfront_region = "us-east-1"$', text, re.M)
     cloudfront_acl = re.search(r"waf_cloudfront_section = (.*?)\n  \]\]\)\n", text, re.S).group(1)
     assert "local.api_region" not in cloudfront_acl
     # Both possible dimension shapes for a CloudFront ACL's metrics, so neither guess leaves it blank.
@@ -784,7 +790,7 @@ def test_the_deploy_role_may_create_the_access_log_groups_and_api_gateway_may_wr
     module = _read("modules", "rest-api", "main.tf")
 
     assert 'name              = "/aws/apigateway/${var.name}-access"' in module
-    assert '"arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*"' in bootstrap
+    assert f'"arn:aws:logs:{_HOME}:*:log-group:/aws/apigateway/bloggerbear-*"' in bootstrap
     assert 'resource "aws_api_gateway_account" "this"' in bootstrap
     assert "AmazonAPIGatewayPushToCloudWatchLogs" in bootstrap
 
@@ -1066,22 +1072,31 @@ def test_each_deploy_workflow_passes_the_account_settings_and_falls_back_to_what
     assert f"vars.{account}" not in text and f"vars.{bucket}" not in text
     assert "      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}\n" in text
 
-    # Unset, the init is the bare command it always was; set, only the bucket is overridden.
+    # Unset, the init is the bare command it always was; set, only the bucket and the bucket's
+    # region are overridden, each only when its own setting is there.
     assert (
+        "          init_args=()\n"
         '          if [ -n "${TF_STATE_BUCKET:-}" ]; then\n'
-        '            terraform -chdir="$target_dir" init -backend-config="bucket=${TF_STATE_BUCKET}"\n'
+        '            init_args+=("-backend-config=bucket=${TF_STATE_BUCKET}")\n'
+        "          fi\n"
+        '          if [ -n "${TF_STATE_REGION:-}" ]; then\n'
+        '            init_args+=("-backend-config=region=${TF_STATE_REGION}")\n'
+        "          fi\n"
+        '          if [ "${#init_args[@]}" -gt 0 ]; then\n'
+        '            terraform -chdir="$target_dir" init "${init_args[@]}"\n'
         "          else\n"
         '            terraform -chdir="$target_dir" init\n'
         "          fi\n"
     ) in text
     assert text.count('terraform -chdir="$target_dir" init') == 2
-    assert text.count("-backend-config") == 1
+    assert text.count("-backend-config") == 2
 
-    # What they used before, untouched: the role, the region, and no account ID or role ARN
-    # written into the workflow itself.
+    # What they used before, untouched: the role, the region (now the fallback of the AWS_REGION
+    # variable: see the region tests below), and no account ID or role ARN written into the
+    # workflow itself.
     role = "AWS_PROD_DEPLOY_ROLE_ARN" if "production" in workflow else "AWS_DEV_DEPLOY_ROLE_ARN"
     assert f"          role-to-assume: ${{{{ secrets.{role} || vars.{role} }}}}\n" in text
-    assert "          aws-region: ap-southeast-2\n" in text
+    assert "          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}\n" in text
     assert "arn:aws:iam::" not in text
 
 
@@ -1132,7 +1147,8 @@ def test_the_globally_unique_names_are_the_old_ones_unless_a_suffix_is_set(env):
 @pytest.mark.parametrize("env", ["dev", "production"])
 def test_the_default_model_is_the_same_profile_in_whichever_account_is_applied_to(env):
     """The default was this ARN with one account's ID in it. Built from the caller's account it is
-    the same string for that account, so its Lambdas' environment does not change."""
+    the same string for that account, so its Lambdas' environment does not change. The region and
+    the profile id are variables too, whose defaults are the two strings that were written here."""
     main = _read("environments", env, "main.tf")
     variables = _read("environments", env, "variables.tf")
     variable = variables.split('variable "bedrock_model_id" {')[1].split("\n}\n")[0]
@@ -1140,9 +1156,13 @@ def test_the_default_model_is_the_same_profile_in_whichever_account_is_applied_t
 
     assert (
         '  bedrock_model_id = var.bedrock_model_id != "" ? var.bedrock_model_id : '
-        '"arn:aws:bedrock:ap-southeast-2:${data.aws_caller_identity.current.account_id}'
-        ':inference-profile/au.anthropic.claude-haiku-4-5-20251001-v1:0"\n'
+        '"arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}'
+        ':inference-profile/${var.bedrock_inference_profile_id}"\n'
     ) in main
+    profile = variables.split('variable "bedrock_inference_profile_id" {')[1].split("\n}\n")[0]
+    assert '\n  default = "au.anthropic.claude-haiku-4-5-20251001-v1:0"\n' in profile
+    # Which geographies exist is AWS's list, so the id is not checked against one.
+    assert "validation {" not in profile
     # Nothing reads the variable directly any more, or an empty one would reach a Lambda.
     assert _uncommented(main).count("var.bedrock_model_id") == 2
     assert re.search(r"BEDROCK_MODEL_ID\s*=\s*local\.bedrock_model_id", main)
@@ -1487,6 +1507,35 @@ def _ops_policy() -> str:
 def _uncommented(text: str) -> str:
     """The Terraform without its comment lines, which say in words what the code must not do."""
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_the_mcp_package_ships_the_cli_reference_next_to_the_code_that_reads_it():
+    """ops_mcp/cli_guide.py reads cli_reference.json from its own directory. The package build
+    copies the whole ops_mcp directory (not only its .py files) and zips the whole build
+    directory, so the file is in the Lambda; a build changed to copy by pattern, or to leave
+    files out of the zip, would break the guide at the first question and fails here."""
+    module = _uncommented(_ops_module())
+    package = ROOT / "lambdas" / "ops_mcp"
+
+    assert (package / "cli_reference.json").is_file()
+    code = (package / "cli_guide.py").read_text(encoding="utf-8")
+    assert 'REFERENCE_FILE = Path(__file__).with_name("cli_reference.json")' in code
+
+    build = _resource_block(module, "terraform_data", "package")
+    assert 'cp -r "${local.lambdas_dir}/ops_mcp" "$build_dir/ops_mcp"' in build
+    # Nothing in the build removes or filters what was copied, apart from the bytecode caches.
+    assert re.findall(r"\brm\b[^\n]*", build) == ['rm -rf "$build_dir"', "rm -rf {} +"]
+    assert "__pycache__" in build and "*.json" not in build and "--include" not in build
+
+    archive = re.search(r'^data "archive_file" "package" \{\n(.*?)^\}', module, re.S | re.M).group(1)
+    assert re.search(r"source_dir\s*=\s*local\.build_dir", archive)
+    assert "excludes" not in archive
+    # The agent's package holds only access.py of ops_mcp, and needs no more: it asks the server,
+    # and never imports the guide or reads the reference itself.
+    agent_files = [*(ROOT / "lambdas" / "ops_agent").glob("*.py"), ROOT / "lambdas" / "ops_agent_handler.py"]
+    for path in agent_files:
+        imports = re.findall(r"^(?:from|import) .*$", path.read_text(encoding="utf-8"), re.M)
+        assert not any("cli_guide" in line or "cli_reference" in line for line in imports), path.name
 
 
 def test_dev_deploys_the_ops_assistant_once():
@@ -1850,7 +1899,7 @@ def test_the_suggestions_table_is_the_assistants_alone_and_matches_what_the_code
 
     # The deploy role may create a table of this name.
     bootstrap = _read("bootstrap", "main.tf")
-    patterns = re.findall(r'"arn:aws:dynamodb:ap-southeast-2:\*:table/([^"]+)"', bootstrap)
+    patterns = re.findall(r'"arn:aws:dynamodb:\$\{var\.aws_region\}:\*:table/([^"]+)"', bootstrap)
     assert any(fnmatch.fnmatch("bloggerbear-dev-operator-suggestions", pattern) for pattern in patterns)
 
 
@@ -1862,14 +1911,17 @@ def test_a_cold_start_cannot_be_held_up_by_the_access_check():
     assert re.search(r'AWS_LWA_READINESS_CHECK_PROTOCOL\s*=\s*"tcp"', function)
 
 
-def test_the_web_adapter_layer_is_the_sydney_x86_one_at_a_pinned_version():
-    """Layers are regional: an ARN from another region fails at apply. The account id and version
-    come from the adapter's README, whose URL is recorded beside them."""
+def test_the_web_adapter_layer_is_the_home_regions_x86_one_at_a_pinned_version():
+    """Layers are regional: an ARN from another region fails at apply, so the region is the one
+    the module is given. The account id and version come from the adapter's README, whose URL is
+    recorded beside them."""
     module = _ops_module()
     arns = re.findall(r'"(arn:aws:lambda:[^"]*:layer:[^"]*)"', module)
 
     assert len(arns) == 1
-    assert re.fullmatch(r"arn:aws:lambda:ap-southeast-2:\d{12}:layer:LambdaAdapterLayerX86:\d+", arns[0])
+    assert re.fullmatch(
+        r"arn:aws:lambda:\$\{local\.aws_region\}:\d{12}:layer:LambdaAdapterLayerX86:\d+", arns[0]
+    )
     assert "https://github.com/awslabs/aws-lambda-web-adapter" in module
     function = _resource_block(module, "aws_lambda_function", "ops_mcp")
     assert re.search(r"layers\s*=\s*\[local\.web_adapter_layer_arn\]", function)
@@ -1879,7 +1931,8 @@ def test_the_web_adapter_layer_is_the_sydney_x86_one_at_a_pinned_version():
         r'sid\s*=\s*"LambdaWebAdapterLayer"(.*?)\n  \}', _read("bootstrap", "main.tf"), re.S
     ).group(1)
     assert re.search(r'actions\s*=\s*\["lambda:GetLayerVersion"\]', statement)
-    assert f'"{arns[0].rsplit(":", 1)[0]}:*"' in statement
+    in_bootstrap = arns[0].rsplit(":", 1)[0].replace("${local.aws_region}", _HOME)
+    assert f'"{in_bootstrap}:*"' in statement
 
 
 def test_the_function_starts_the_web_app_the_way_the_adapter_expects():
@@ -1936,7 +1989,7 @@ def test_the_server_is_told_its_own_host_or_it_refuses_every_request():
         'api_host = "${aws_api_gateway_rest_api.this.id}.execute-api.${local.aws_region}.amazonaws.com"'
         in module
     )
-    assert re.search(r'aws_region\s*=\s*"ap-southeast-2"', module)
+    assert re.search(r"aws_region\s*=\s*var\.aws_region", module)
     assert '_from_env("OPS_MCP_ALLOWED_HOSTS")' in server
 
 
@@ -2013,7 +2066,7 @@ def test_the_deploy_role_may_create_the_assistants_user_pool():
     pools = re.search(r'sid\s*=\s*"CognitoUserPools"(.*?)\n  \}', bootstrap, re.S).group(1)
     unscoped = re.search(r'sid\s*=\s*"CognitoNotResourceScopable"(.*?)\n  \}', bootstrap, re.S).group(1)
 
-    assert '"arn:aws:cognito-idp:ap-southeast-2:*:userpool/*"' in pools
+    assert f'"arn:aws:cognito-idp:{_HOME}:*:userpool/*"' in pools
     assert '"*"' not in re.search(r"resources\s*=\s*\[(.*?)\]", pools, re.S).group(1).split(",")
     assert set(re.findall(r'"(cognito-idp:[A-Za-z]+)"', unscoped)) == {
         "cognito-idp:CreateUserPool",
@@ -2120,12 +2173,12 @@ def test_the_agents_bedrock_statement_names_what_the_shared_roles_does():
 
     shared = bedrock_resources(_read("environments", "dev", "main.tf"))
     agent = {
-        resource.replace("${local.aws_region}", "ap-southeast-2")
+        resource.replace("${local.aws_region}", _HOME)
         for resource in bedrock_resources(_agent_module())
     }
 
     assert agent == shared and len(shared) == 2
-    assert re.search(r'aws_region\s*=\s*"ap-southeast-2"', _ops_module())
+    assert re.search(r"aws_region\s*=\s*var\.aws_region", _ops_module())
     # Converse without streaming is InvokeModel; streaming would need a second action.
     agent_code = (ROOT / "lambdas" / "ops_agent" / "agent.py").read_text(encoding="utf-8")
     assert "streaming=False" in agent_code
@@ -2437,18 +2490,18 @@ def test_the_deploy_role_can_already_make_everything_the_agent_adds():
     # (lambda:PutFunctionConcurrency) are all lambda:* on the function's ARN.
     functions = statement("LambdaFunctions")
     assert re.search(r'actions\s*=\s*\["lambda:\*"\]', functions)
-    pattern = re.search(r'"arn:aws:lambda:ap-southeast-2:\*:function:([^"]+)"', functions).group(1)
+    pattern = re.search(r'"arn:aws:lambda:\$\{var\.aws_region\}:\*:function:([^"]+)"', functions).group(1)
     assert fnmatch.fnmatch("bloggerbear-dev-ops-agent", pattern)
     # Its log group.
     log_groups = statement("LambdaLogGroups")
-    log_patterns = re.findall(r'"arn:aws:logs:ap-southeast-2:\*:log-group:([^"]+)"', log_groups)
+    log_patterns = re.findall(r'"arn:aws:logs:\$\{var\.aws_region\}:\*:log-group:([^"]+)"', log_groups)
     assert any(fnmatch.fnmatch("/aws/lambda/bloggerbear-dev-ops-agent", name) for name in log_patterns)
     # Its role: created, given an inline policy and passed to Lambda.
     roles = statement("LambdaExecRole")
     assert re.search(r'actions\s*=\s*\["iam:\*"\]', roles)
     assert '"arn:aws:iam::*:role/bloggerbear-*-lambda-exec"' in roles
     # The routes: resources, methods and integrations on a REST API, and its deployments.
-    assert '"arn:aws:apigateway:ap-southeast-2::/restapis/*"' in statement("ApiGateway")
+    assert f'"arn:aws:apigateway:{_HOME}::/restapis/*"' in statement("ApiGateway")
     # No layer is used, so nothing like the Web Adapter's layer statement is needed.
     assert "layers" not in _uncommented(_resource_block(_agent_module(), "aws_lambda_function", "ops_agent"))
 
@@ -2510,4 +2563,219 @@ def test_api_gateways_own_errors_carry_the_cors_header_for_the_one_origin():
     bootstrap = _read("bootstrap", "main.tf")
     api_gateway = re.search(r'sid\s*=\s*"ApiGateway"(.*?)\n  \}', bootstrap, re.S).group(1)
     assert re.search(r'actions\s*=\s*\["apigateway:\*"\]', api_gateway)
-    assert '"arn:aws:apigateway:ap-southeast-2::/restapis/*"' in api_gateway
+    assert f'"arn:aws:apigateway:{_HOME}::/restapis/*"' in api_gateway
+
+
+# --- Configurable region (docs/deploying-your-own.md, "Deploying to another region") --------------
+#
+# One plain setting, the AWS_REGION GitHub variable (var.aws_region in Terraform), chooses the
+# deployment's home region. Unset it is the region this project has always used, so the original
+# deployment renders every ARN and host name exactly as before. us-east-1 stays written out only
+# where AWS serves the thing nowhere else.
+
+_ORIGINAL_REGION = "ap-southeast-2"
+_REGION_FALLBACK = "${{ vars.AWS_REGION || 'ap-southeast-2' }}"
+
+# The only lines that may still write the original region out, by file. Each is a default or a
+# fallback: the value used when nothing is set. Anything else that names it is a place the setting
+# does not reach, which is the bug these tests exist to catch.
+_REGION_LITERAL_ALLOWED = {
+    # var.aws_region's default, in each root.
+    "infra/bootstrap/variables.tf": [r'default\s*=\s*"ap-southeast-2"'],
+    "infra/environments/dev/variables.tf": [r'default\s*=\s*"ap-southeast-2"'],
+    "infra/environments/production/variables.tf": [r'default\s*=\s*"ap-southeast-2"'],
+    # The backend blocks: Terraform allows no variable there, and the original deployment's init
+    # must stay the bare command, so its state bucket's region stays written (CI overrides it with
+    # -backend-config when AWS_REGION or TF_STATE_REGION is set).
+    "infra/environments/dev/main.tf": [r'region\s*=\s*"ap-southeast-2"'],
+    "infra/environments/production/main.tf": [r'region\s*=\s*"ap-southeast-2"'],
+    # The workflows' fallback when the AWS_REGION variable is unset.
+    ".github/workflows/terraform.yml": [
+        r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+        r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+    ],
+    ".github/workflows/destroy-dev.yml": [
+        r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+        r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+    ],
+    ".github/workflows/terraform-production-release.yml": [
+        r"aws-region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+        r"TF_VAR_aws_region: \$\{\{ vars\.AWS_REGION \|\| 'ap-southeast-2' \}\}",
+    ],
+    # Help text shown to a person: what leaving AWS_REGION blank means.
+    "scripts/setup_repo.py": [r"\"original deployment's region, ap-southeast-2 \(Sydney\)\. .*"],
+    # An example to `source` by hand: whatever region is already exported wins, else the default.
+    "scripts/force_publish_example.sh": [
+        r'export AWS_DEFAULT_REGION="\$\{AWS_DEFAULT_REGION:-ap-southeast-2\}"'
+    ],
+}
+_REGION_SCANNED_SUFFIXES = {
+    ".tf", ".tfvars", ".hcl", ".tftpl", ".yml", ".yaml", ".py", ".sh", ".js", ".html", ".css", ".json",
+}
+
+# Why a us-east-1 written in code is allowed to be there: a comment beside it has to give one of
+# these reasons. CloudFront (its certificate, its web ACL with that ACL's logs and metrics, its own
+# metrics) and Cost Explorer's only endpoint are the things AWS serves from that region alone.
+_US_EAST_1_REASON = re.compile(r"cloudfront|cost explorer", re.I)
+_US_EAST_1_COMMENT_REACH = 6  # lines above the literal in which the comment must sit
+
+
+def _region_scanned_files():
+    """Deployed code and configuration: not tests (a test may name a region), not documentation."""
+    for top in ("infra", ".github/workflows", "lambdas", "frontend", "scripts"):
+        for path in sorted((ROOT / top).rglob("*")):
+            parts = set(path.relative_to(ROOT).parts)
+            if not path.is_file() or path.suffix not in _REGION_SCANNED_SUFFIXES:
+                continue
+            if parts & (_SKIPPED_DIRS | {"tests"}):
+                continue
+            yield path.relative_to(ROOT).as_posix(), path.read_text(encoding="utf-8", errors="replace")
+
+
+def test_the_original_region_is_written_only_as_a_default_or_a_fallback():
+    stray = []
+    seen = {name: 0 for name in _REGION_LITERAL_ALLOWED}
+    for name, text in _region_scanned_files():
+        for number, line in enumerate(text.splitlines(), 1):
+            if _ORIGINAL_REGION not in line:
+                continue
+            if any(re.fullmatch(pattern, line.strip()) for pattern in _REGION_LITERAL_ALLOWED.get(name, [])):
+                seen[name] += 1
+            else:
+                stray.append(f"{name}:{number}: {line.strip()[:120]}")
+    assert not stray, "the home region is var.aws_region / AWS_REGION, not a literal:\n" + "\n".join(stray)
+    # And the list above describes the tree: one line per pattern, none of it stale.
+    assert seen == {name: len(patterns) for name, patterns in _REGION_LITERAL_ALLOWED.items()}
+
+
+def test_every_us_east_1_left_in_code_sits_beside_a_comment_saying_why():
+    """us-east-1 is acceptable only where AWS requires it. In prose (a comment, a description) it is
+    the explanation; written as a value (a quoted region, or the region of an ARN) it needs one."""
+    unexplained = []
+    values = 0
+    for name, text in _region_scanned_files():
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(("#", "//", "*")):
+                continue
+            if not re.search(r"""["']us-east-1["']|:us-east-1:""", line):
+                continue
+            values += 1
+            before = lines[max(0, index - _US_EAST_1_COMMENT_REACH) : index]
+            comments = [other for other in before if other.strip().startswith(("#", "//"))]
+            if not any(_US_EAST_1_REASON.search(comment) for comment in comments):
+                unexplained.append(f"{name}:{index + 1}: {stripped[:120]}")
+    assert not unexplained, "say why this must be us-east-1, in a comment just above:\n" + "\n".join(
+        unexplained
+    )
+    # Production's provider alias, the dashboards' CloudFront region, two log group ARN pairs and
+    # the Cost Explorer client: if this drops to nothing the scan has stopped finding them.
+    assert values >= 5
+
+
+@pytest.mark.parametrize("root", _ROOTS, ids=lambda parts: parts[-1])
+def test_each_root_has_one_region_variable_with_the_old_default_and_it_is_not_sensitive(root):
+    variables = _read(*root, "variables.tf")
+    assert variables.count('variable "aws_region" {') == 1
+    block = variables.split('variable "aws_region" {')[1].split("\n}\n")[0]
+
+    assert re.search(r'^  default\s*=\s*"ap-southeast-2"$', block, re.M)
+    # Region shaped, and no more than that: which regions exist is AWS's list, not this file's.
+    assert 'condition     = can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.aws_region))' in block
+    # A region is not a secret, and a sensitive one would hide every ARN in the plan.
+    assert not re.search(r"^\s*sensitive\s*=", block, re.M)
+
+    for block in _provider_blocks(_read(*root, "main.tf")):
+        if 'region = "us-east-1"' in block:
+            continue  # production's real us-east-1 alias, checked above
+        assert "\n  region = var.aws_region\n" in block, block
+
+
+def test_the_region_shape_check_accepts_real_regions_and_refuses_the_rest():
+    shape = re.compile(r"^[a-z]{2}(-[a-z]+)+-[0-9]+$")
+    for region in ("ap-southeast-2", "us-east-1", "eu-west-1", "us-gov-west-1", "me-central-1"):
+        assert shape.match(region), region
+    for wrong in ("", "Sydney", "ap-southeast", "EU-WEST-1", "eu-west-1 ", "eu_west_1", "eu-west-1a"):
+        assert not shape.match(wrong), wrong
+
+
+@pytest.mark.parametrize("module", ["observability", "ops-assistant", "rest-api", "static-site"])
+def test_each_module_that_names_a_region_is_given_it_by_the_root(module):
+    """No default in the module, so a root that forgets to pass it fails validate instead of quietly
+    building something for the wrong region."""
+    variables = _read("modules", module, "variables.tf")
+    block = variables.split('variable "aws_region" {')[1].split("\n}\n")[0]
+    assert "default" not in block.replace("No default", "")
+
+    for env in ("dev", "production"):
+        calls = _module_blocks(_read("environments", env, "main.tf"), f"modules/{module}")
+        assert calls or (module, env) == ("ops-assistant", "production")
+        for call in calls:
+            assert re.search(r"^  aws_region\s*=\s*var\.aws_region$", call, re.M), (env, module)
+
+
+def test_everything_the_page_and_the_browser_are_told_follows_the_region():
+    """The API host names, the sign-in host name and the site's CSP each contain the region."""
+    assert (
+        'value       = "${aws_api_gateway_rest_api.this.id}.execute-api.${var.aws_region}.amazonaws.com"'
+        in _read("modules", "rest-api", "outputs.tf")
+    )
+    assert (
+        "[\"connect-src 'self' https://*.execute-api.${var.aws_region}.amazonaws.com\"]"
+        in _read("modules", "static-site", "main.tf")
+    )
+    assert (
+        '"${aws_cognito_user_pool_domain.this.domain}.auth.${local.aws_region}.amazoncognito.com"'
+        in _read("modules", "ops-assistant", "outputs.tf")
+    )
+    assert re.search(
+        r'layer_arn = "arn:aws:lambda:\$\{local\.aws_region\}:\d{12}:layer:LambdaAdapterLayerX86:\d+"',
+        _ops_module(),
+    )
+    dashboards = _dashboards()
+    assert "\n  api_region = var.aws_region\n" in dashboards
+    assert 'region = "' not in _uncommented(_read("modules", "observability", "main.tf"))
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_pipeline_may_call_profiles_in_the_home_region_and_models_in_any(env):
+    """A cross-region inference profile lives in the region it is called in and routes to models
+    in several, so the profile half follows the setting and the model half stays a wildcard."""
+    main = _read("environments", env, "main.tf")
+    statement = re.search(r'sid\s*=\s*"BedrockInvoke"(.*?)\n  \}', main, re.S).group(1)
+    assert set(re.findall(r'"(arn:aws:bedrock:[^"]+)"', statement)) == {
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/*",
+    }
+
+
+@pytest.mark.parametrize(
+    "workflow", ["terraform.yml", "destroy-dev.yml", "terraform-production-release.yml"]
+)
+def test_each_deploy_workflow_reads_the_region_from_a_plain_variable(workflow):
+    text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+    # A variable, never a secret, with the original region as the fallback: Terraform and the
+    # credentials step are both handed what they were always handed when nothing is set.
+    assert f"      TF_VAR_aws_region: {_REGION_FALLBACK}\n" in text
+    assert f"          aws-region: {_REGION_FALLBACK}\n" in text
+    assert "secrets.AWS_REGION" not in text and "secrets.TF_STATE_REGION" not in text
+    # The state bucket's region: its own setting, else the home region, else nothing at all, which
+    # leaves the init the bare command (checked with the bucket, above).
+    assert "      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}\n" in text
+    assert text.count("aws-region:") == 1
+
+
+def test_the_fork_guide_says_what_another_region_needs():
+    guide = (ROOT / "docs" / "deploying-your-own.md").read_text(encoding="utf-8")
+    section = guide.split("## Deploying to another region")[1].split("\n## ")[0]
+
+    for needed in ("`AWS_REGION`", "`TF_STATE_REGION`", "bedrock_inference_profile_id", "`us-east-1`"):
+        assert needed in section, needed
+    # In the settings table as a variable, not a secret.
+    assert re.search(r"^\| `AWS_REGION` \| variable \| repo \|", guide, re.M)
+    assert re.search(r"^\| `TF_STATE_REGION` \| variable \| repo \|", guide, re.M)
+    # And no longer listed as something a fork cannot change.
+    tied = guide.split("## What is still tied to the original deployment")[1]
+    assert "**The region.**" not in tied

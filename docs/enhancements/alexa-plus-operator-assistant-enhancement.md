@@ -297,6 +297,56 @@ which is also what the judges get (section 6).
   tools are listed as writing (`readOnlyHint` false, `destructiveHint` false), and each description
   says it changes only the assistant's own list.
 
+#### The guide to the Admin CLI
+
+The assistant is also asked *how to do* things: "I want to cut down on costs, how do I change how
+often topics run?", "how do I create gear?". It answers by showing, never by doing
+(`lambdas/ops_mcp/cli_guide.py`). **Most of the time the answer is the command's own `--help`**,
+put on screen as the CLI prints it; the exact command is a second step, for when the operator has
+given the values.
+
+| Tool | Reads | Returns |
+|---|---|---|
+| `cli_reference(command?)` | the generated reference | with nothing, every command and one line on each; with a command path, its arguments and flags with their help. Data for choosing a command: nothing goes on screen |
+| `cli_help(commands)` | the generated reference | for up to three command paths, most relevant first: a `how_to` card each, carrying the command's `--help` text (`help`) and the one line that prints it (`python scripts/admin_cli.py topics update --help`) behind the Copy button |
+| `cli_guides(topic?)` | the guides in code; the Topics table (a count, for the first-topic guide) | a short hand-written guide (how the feature works, which commands, the steps as `cli_command` entries, questions to ask) and, on screen, the help of its main commands and a worked example if it has one. Guides: `costs`, `gear`, `editorial-goals`, `first-topic`, `review` |
+| `cli_command(command, options)` | the generated reference | one exact command built in code, as a `how_to` card; or `questions` (what is required and missing) and `problems` (an option that does not exist, a value that does not fit) |
+| `topics_overview(limit=5, topic?)` | Topics, the pipeline config row | a `table` (title, columns, rows) of the first `limit` topics (1 to 50) and how many more there are: name, id, adapter, research heartbeat and interval, daily cadence and timezone, model, financial, review mode, last researched, last article. With `topic`, every setting of that one |
+
+- **The reference cannot drift.** The Lambda's package has no `scripts/`, so the server cannot
+  import the CLI. `scripts/generate_cli_reference.py` writes `lambdas/ops_mcp/cli_reference.json`
+  from `admin_cli.build_parser()`: every command path, every argument and flag (help, type,
+  choices, default, required), and the help text from argparse's own `format_help()` at a fixed
+  width. It is checked in, and `scripts/tests/test_generate_cli_reference.py` regenerates it and
+  fails, naming the command to run, when the two differ. The package build copies the whole
+  `ops_mcp/` directory, so the file ships (a wiring test holds that).
+- **Help and Python versions.** argparse lays help out slightly differently between releases. The
+  file records which release wrote its help; the structure is compared exactly everywhere, the
+  help text exactly on that release, and by content (every flag and help string present) on any
+  other. So the help on screen is byte for byte what the operator sees on the release that
+  generated it, and differs at most in layout on another.
+- **A command is built in code.** `cli_command` checks the path against the reference, every option
+  against that command's real arguments, every value against its type and choices (and a
+  `--editorial-goals-json` value against the Admin API's own validator). Each value becomes one
+  shell word (`shlex.quote`); one that starts with a dash is attached to its flag with `=`; one
+  with a line break or a control character is refused; a positional must look like an id. A test
+  splits every built command with `shlex` and parses it with the real parser. The quoting is a
+  POSIX shell's (Git Bash, macOS, Linux), as the README's examples are, and the card says so.
+- **Commands that delete or take something down are never filled in** (section 3).
+- **The guides are short and point at the help.** Each fact in one is cited to the file it came
+  from; a test builds every step of every guide and parses it with the real parser. The
+  first-topic guide reads the Topics table and opens differently on a fresh install ("you have no
+  topics yet") and an established one ("you already have N; this is how you would add another").
+- **Editorial goals** are a topic's `editorial_goals` block (`common/editorial_resolver.py`): two
+  keys, `primary_focus` and `exclusion_criteria`, up to 1,000 characters each. There is no key for
+  writing style; a rule about how to write (the worked example: star counts need not be exact,
+  write "2,630+ stars" for a repository at 2,637, as a titbit near the start) goes in
+  `exclusion_criteria`, which is added under the adapter's focus as "Strict Constraints" and does
+  not replace it. `topics update --editorial-goals-json` replaces the whole block, so the guide
+  says to read it first with `topics get`.
+- **Not remembered.** These tools are not passed through the memory, and `how_to` is not a kind
+  the suggestions table holds: help is not something to follow up.
+
 **Deep dives** — only when the operator asks, never part of a briefing:
 
 | Tool | Reads | Returns |
@@ -422,6 +472,28 @@ their allowlisted address. Nothing on the page can run it.
   after `-i` are fixed text per kind of finding, for the operator to edit before running.
 - **A card says what the command does** before the operator runs it (the last line above), in words
   taken from the CLI's own help text.
+- **How-to cards** (kind `how_to`, from the guide tools in section 1) use the same card and the
+  same Copy button, with the heading "How to" in place of "Noticed". There are three:
+  - *help*: the command's `--help` in a scrolling block, and the line that prints it to copy;
+  - *a built command*: what the operator asked how to do, with their values, built by the server.
+    "What it does" is the command's help line and the help of each flag used;
+  - *a template*: see the next point.
+
+  A how-to card is not a fix: it is not counted in "suggested fixes", and never remembered.
+- **The destructive-template rule.** A command that deletes or takes something down (`topics
+  delete`, `articles unpublish`, `moderation reject`, `refinements reject`, `equipment delete`: any
+  command whose last word is on the generator's list) and any command given `--force` is **never
+  filled in**, whatever values the model sends. The card shows
+  `python scripts/admin_cli.py topics delete <topic_id>`, marked `destructive`, with a warning in
+  words, and Copy copies the template with its placeholders. Which commands these are is read
+  from the parser by the generator and recorded in the reference, not kept by hand. So the
+  injection path stays closed with the new tools: hostile text in an article can make the model
+  *ask* for `topics delete crypto`, and what reaches the screen has no id in it and does not run
+  as it stands. The catalogue's rule (nothing in it deletes) is unchanged.
+- **The model still writes no command.** The values in a built command are the model's arguments
+  (the operator's words, passed on), each held to one quoted word by code; the command itself, its
+  flags and its order are the server's. A command the model writes in its answer is only words:
+  cards come from tool results alone.
 - **Suggestions are remembered, and followed up** (section 4): next time, the assistant checks each
   one it made. Fixed → "you fixed that musing", and it forgets it. Not fixed → "the truncated crypto
   draft is still waiting, three days now; the command is on screen again".
@@ -706,6 +778,17 @@ button. The reply is spoken with the browser's speech synthesis.
   finding: Noticed, Where, Suggested, the command with a Copy button, What it does. A suggestion
   with no command is a "Look at" card; a finding with no suggestion shows what was noticed. A
   command is never spoken, and nothing on the page can run one.
+- **How-to answers and tables.** A `how_to` finding gets the same card, headed "How to": a
+  command's help is shown in a fixed-width block that scrolls inside the card (and can be focused
+  and scrolled from the keyboard), with Copy on the `--help` line; a destructive template has a
+  heavier border, a warning in words, and a "Copy template" button that copies it with its
+  placeholders. The response's `tables` (collected by the agent from tool results, like findings:
+  at most 4, 50 rows and 16 columns each, cells text or numbers) are drawn as real `<table>`
+  elements with a caption and column headers, inside a region that scrolls sideways on a narrow
+  screen. All of it is built with `createElement` and `textContent`; the renderers are run under
+  Node against a stand-in document in the tests. A question asked first in a tab is still a
+  "briefing" turn in code (it sets the budget); the prompt keeps a how-to question from becoming a
+  tour of the pipeline.
 - **Untrusted text.** Everything from the API is written with `textContent`; the files contain no
   `innerHTML`, `eval` or inline handler (a test holds that). Anything under an `untrusted` key is
   shown with an "Unverified" mark.

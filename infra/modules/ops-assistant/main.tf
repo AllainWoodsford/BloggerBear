@@ -45,9 +45,9 @@ terraform {
 locals {
   name = "bloggerbear-${var.environment_name}-ops-mcp"
 
-  # Written out, like everywhere else in this project, and not read from the provider: the Web
-  # Adapter layer below exists per region, so this module is only correct in the one named here.
-  aws_region = "ap-southeast-2"
+  # The deployment's home region, handed in by the calling root and not read from the provider,
+  # so every ARN and host name below is a plain string at plan time (and in this module's tests).
+  aws_region = var.aws_region
 
   # The AWS Lambda Web Adapter, as a layer: it turns each API Gateway event into an ordinary
   # HTTP request to the web app listening on AWS_LWA_PORT, and the app's response back into the
@@ -56,12 +56,14 @@ locals {
   #   https://github.com/awslabs/aws-lambda-web-adapter#zip-packages
   #   arn:aws:lambda:${AWS::Region}:753240598075:layer:LambdaAdapterLayerX86:30
   #
-  # with the region filled in. A layer ARN from another region fails at apply, and so does a
-  # version that region never received. The account id is the adapter project's publishing
+  # with the region filled in from var.aws_region: the adapter project publishes the layer under
+  # the same account and name in each region, and a function can only use the copy in its own.
+  # A layer ARN from another region fails at apply, and so does a version that region never
+  # received (check the README's list before deploying somewhere new). The account id is the adapter project's publishing
   # account; it and the version are copied, never guessed. To move to a newer adapter, change the
   # version here to the one the README then shows. x86_64 because the pipeline Lambdas are, and
   # the package below is built for it (the design's "arm64" was written before that was checked).
-  web_adapter_layer_arn = "arn:aws:lambda:ap-southeast-2:753240598075:layer:LambdaAdapterLayerX86:30"
+  web_adapter_layer_arn = "arn:aws:lambda:${local.aws_region}:753240598075:layer:LambdaAdapterLayerX86:30"
 
   # Where the adapter sends requests, and where run.sh tells uvicorn to listen. 8080 is the
   # adapter's default; it is set anyway so the two halves read the same value from one place.

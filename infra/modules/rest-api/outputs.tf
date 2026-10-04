@@ -15,7 +15,7 @@ output "stage_arn" {
 # that points here must not depend on the Lambda (the deployment does, through its integrations),
 # or dev's site URL -> Lambda environment -> API -> CDN -> site CSP chain becomes a cycle.
 output "api_domain" {
-  value       = "${aws_api_gateway_rest_api.this.id}.execute-api.ap-southeast-2.amazonaws.com"
+  value       = "${aws_api_gateway_rest_api.this.id}.execute-api.${var.aws_region}.amazonaws.com"
   description = "The API's own execute-api hostname, without scheme or stage -- what a CloudFront origin points at."
 }
 

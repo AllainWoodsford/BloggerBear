@@ -245,7 +245,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "DynamoDBAppTables"
     effect    = "Allow"
     actions   = ["dynamodb:*"]
-    resources = ["arn:aws:dynamodb:ap-southeast-2:*:table/bloggerbear-*"]
+    resources = ["arn:aws:dynamodb:${var.aws_region}:*:table/bloggerbear-*"]
   }
 
   # Phase 1: the two pipeline Lambda functions. Scoped to the
@@ -263,7 +263,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "LambdaFunctions"
     effect    = "Allow"
     actions   = ["lambda:*"]
-    resources = ["arn:aws:lambda:ap-southeast-2:*:function:bloggerbear-*"]
+    resources = ["arn:aws:lambda:${var.aws_region}:*:function:bloggerbear-*"]
   }
 
   # DLQ consumer (PR #43, feature/topic-logging-dlq-consumer-force-publish):
@@ -280,7 +280,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "LambdaEventSourceMappings"
     effect    = "Allow"
     actions   = ["lambda:*"]
-    resources = ["arn:aws:lambda:ap-southeast-2:*:event-source-mapping:*"]
+    resources = ["arn:aws:lambda:${var.aws_region}:*:event-source-mapping:*"]
   }
 
   # Reading a mapping that no longer exists is authorized against resource "*", not its ARN, so
@@ -313,8 +313,8 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect  = "Allow"
     actions = ["logs:*"]
     resources = [
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*",
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*:*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/bloggerbear-*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/bloggerbear-*:*",
     ]
   }
 
@@ -407,9 +407,9 @@ data "aws_iam_policy_document" "gha_deploy" {
     # (ManagedBy, Project, Environment, TerraformRoot) need it to tag the REST APIs and stages.
     # Only resources in this account and region; nothing else in it is API Gateway.
     resources = [
-      "arn:aws:apigateway:ap-southeast-2::/restapis",
-      "arn:aws:apigateway:ap-southeast-2::/restapis/*",
-      "arn:aws:apigateway:ap-southeast-2::/tags/*",
+      "arn:aws:apigateway:${var.aws_region}::/restapis",
+      "arn:aws:apigateway:${var.aws_region}::/restapis/*",
+      "arn:aws:apigateway:${var.aws_region}::/tags/*",
     ]
   }
 
@@ -421,8 +421,8 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect  = "Allow"
     actions = ["logs:*"]
     resources = [
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*",
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*:*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/apigateway/bloggerbear-*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/apigateway/bloggerbear-*:*",
     ]
   }
 
@@ -438,7 +438,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "StepFunctions"
     effect    = "Allow"
     actions   = ["states:*"]
-    resources = ["arn:aws:states:ap-southeast-2:*:stateMachine:bloggerbear-*"]
+    resources = ["arn:aws:states:${var.aws_region}:*:stateMachine:bloggerbear-*"]
   }
 
   # Phase 3: the dead-letter queue the state machine sends failed
@@ -449,7 +449,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "SQS"
     effect    = "Allow"
     actions   = ["sqs:*"]
-    resources = ["arn:aws:sqs:ap-southeast-2:*:bloggerbear-*"]
+    resources = ["arn:aws:sqs:${var.aws_region}:*:bloggerbear-*"]
   }
 
   # Phase 5: unlike the per-topic schedules research_tick/daily_cycle use
@@ -471,7 +471,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "SchedulerStaticSchedules"
     effect    = "Allow"
     actions   = ["scheduler:*"]
-    resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-*"]
+    resources = ["arn:aws:scheduler:${var.aws_region}:*:schedule/default/bloggerbear-*"]
   }
 
   # Phase 6: the per-environment SNS alerts topic (module.observability's
@@ -486,7 +486,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "SNSAlerts"
     effect    = "Allow"
     actions   = ["sns:*"]
-    resources = ["arn:aws:sns:ap-southeast-2:*:bloggerbear-*"]
+    resources = ["arn:aws:sns:${var.aws_region}:*:bloggerbear-*"]
   }
 
   # Phase 6: the Lambda error/throttle, DLQ-depth, and Step Functions
@@ -499,7 +499,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "CloudWatchAlarms"
     effect    = "Allow"
     actions   = ["cloudwatch:*"]
-    resources = ["arn:aws:cloudwatch:ap-southeast-2:*:alarm:bloggerbear-*"]
+    resources = ["arn:aws:cloudwatch:${var.aws_region}:*:alarm:bloggerbear-*"]
   }
 
   # Phase 6: the pipeline-health dashboard (module.observability's
@@ -531,7 +531,7 @@ data "aws_iam_policy_document" "gha_deploy" {
   # since it's unclear which of the widened action set expects which
   # shape, and listing both costs nothing.
   #
-  # us-east-1 as well as ap-southeast-2: a WAF ACL attached to CloudFront has to live in us-east-1
+  # us-east-1 as well as the home region (var.aws_region): a WAF ACL attached to CloudFront has to live in us-east-1
   # (scope CLOUDFRONT), and its log group must be in the same region. Production's shared ACL logs to
   # aws-waf-logs-bloggerbear-shared there. Dev has no CloudFront ACL, so it never needed this, and the
   # first production apply stopped on `logs:CreateLogGroup` in us-east-1.
@@ -540,8 +540,10 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect  = "Allow"
     actions = ["logs:*"]
     resources = [
-      "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*",
-      "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*:*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-bloggerbear-*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-bloggerbear-*:*",
+      # us-east-1 written out, whatever the home region: the CloudFront web ACL's log group can
+      # only live there (see above).
       "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*",
       "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*:*",
     ]
@@ -627,20 +629,20 @@ data "aws_iam_policy_document" "gha_deploy" {
 
   # The operator's assistant (infra/modules/ops-assistant): its Cognito user pool, with the pool's
   # hosted domain, resource server and app client, all of which are addressed by the pool's ARN.
-  # A pool's id is generated (ap-southeast-2_XXXXXXXXX), so there is no bloggerbear-* name to scope
+  # A pool's id is generated (<region>_XXXXXXXXX), so there is no bloggerbear-* name to scope
   # to the way tables and functions are: this is scoped to user pools in this project's one region
   # instead, the same trade as LambdaEventSourceMappings above. cognito-idp:* rather than a list --
   # see DynamoDBAppTables for why (creating a pool with MFA set also calls SetUserPoolMfaConfig and
   # GetUserPoolMfaConfig, which nothing in the resource's own arguments suggests).
   #
   # What this lets the deploy role do that it could not before: manage any user pool in the
-  # account's Sydney region, including creating and deleting users in it. The account has no pool
+  # account's home region (var.aws_region), including creating and deleting users in it. The account has no pool
   # but the assistant's. Nothing in Terraform creates a user; that stays with the operator.
   statement {
     sid       = "CognitoUserPools"
     effect    = "Allow"
     actions   = ["cognito-idp:*"]
-    resources = ["arn:aws:cognito-idp:ap-southeast-2:*:userpool/*"]
+    resources = ["arn:aws:cognito-idp:${var.aws_region}:*:userpool/*"]
   }
 
   # The three Cognito calls the above cannot cover, because they name no pool and so only ever
@@ -671,7 +673,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "LambdaWebAdapterLayer"
     effect    = "Allow"
     actions   = ["lambda:GetLayerVersion"]
-    resources = ["arn:aws:lambda:ap-southeast-2:753240598075:layer:LambdaAdapterLayerX86:*"]
+    resources = ["arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:*"]
   }
 
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever

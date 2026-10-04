@@ -227,12 +227,10 @@ resource "aws_cloudwatch_metric_alarm" "feedback_screening_budget_used_up" {
 
 # Single dashboard: one widget per Lambda (Invocations/Errors/Duration/
 # Throttles) plus one widget for the daily-cycle state machine + DLQ.
-# Region is hardcoded to ap-southeast-2 rather than pulled from a
-# data "aws_region" source -- every other resource in this codebase that
-# needs the region as a literal (e.g. the BedrockInvoke IAM statement in
-# dev/production main.tf) does the same, since this project's region is a
-# fixed, non-negotiable choice per docs/project-plan.md §3, not a
-# per-environment variable.
+# The region each widget reads is var.aws_region, handed in by the calling root (its own
+# var.aws_region, the deployment's home region) rather than read from a data "aws_region"
+# source: a variable is a plain string at plan time, so the dashboard body is fully known in
+# the plan and in this module's tests.
 resource "aws_cloudwatch_dashboard" "pipeline" {
   dashboard_name = "bloggerbear-${var.environment_name}-pipeline"
 
@@ -261,7 +259,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           height = 6
           properties = {
             title  = fn
-            region = "ap-southeast-2"
+            region = var.aws_region
             view   = "timeSeries"
             period = 3600
             yAxis  = { left = { min = 0, label = "count" }, right = { min = 0, label = "ms" } }
@@ -281,7 +279,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           height = 6
           properties = {
             title  = "Daily cycle: Step Functions + dead-letter queue"
-            region = "ap-southeast-2"
+            region = var.aws_region
             view   = "timeSeries"
             period = 3600
             yAxis  = { left = { min = 0 } }
@@ -298,7 +296,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           height = 8
           properties = {
             title  = "Recent errors (every Lambda)"
-            region = "ap-southeast-2"
+            region = var.aws_region
             view   = "table"
             query = join(" | ", concat(
               [for fn in var.lambda_function_names : "SOURCE '/aws/lambda/${fn}'"],
@@ -340,7 +338,7 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
         height = 5
         properties = {
           title                = "Runs in the selected range"
-          region               = "ap-southeast-2"
+          region               = var.aws_region
           view                 = "singleValue"
           setPeriodToTimeRange = true
           metrics = [
@@ -355,7 +353,7 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
         height = 4
         properties = {
           title                = "Feedback in the selected range"
-          region               = "ap-southeast-2"
+          region               = var.aws_region
           view                 = "singleValue"
           setPeriodToTimeRange = true
           metrics = [
@@ -373,7 +371,7 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
         height = 7
         properties = {
           title   = "Runs per day"
-          region  = "ap-southeast-2"
+          region  = var.aws_region
           view    = "bar"
           stacked = true
           period  = 86400

@@ -86,8 +86,13 @@
 
         <form id="ask-form" class="ask-form">
           <label for="ask-question">Or type a question</label>
+          <p id="ask-question-hint" class="ask-hint">
+            You can also ask how to do something with the Admin CLI ("how do I change how often
+            topics run?") or to list your topics. The command is shown for you to copy; nothing
+            is run from here.
+          </p>
           <div class="ask-form-row">
-            <input type="text" id="ask-question" name="question" maxlength="500" autocomplete="off" />
+            <input type="text" id="ask-question" name="question" maxlength="500" autocomplete="off" aria-describedby="ask-question-hint" />
             <button type="submit" id="ask-send" class="ask-button">Ask</button>
           </div>
         </form>

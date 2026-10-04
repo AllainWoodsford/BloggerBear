@@ -6,6 +6,9 @@
 mock_provider "aws" {}
 
 variables {
+  # What a root passes when nothing is set: the original deployment's region.
+  aws_region = "ap-southeast-2"
+
   environment_name        = "test"
   lambda_function_names   = ["bloggerbear-test-research-tick"]
   state_machine_arn       = "arn:aws:states:ap-southeast-2:111111111111:stateMachine:test"
@@ -103,5 +106,54 @@ run "no_alert_email_no_subscription" {
   assert {
     condition     = length(aws_sns_topic_subscription.alerts_email) == 0
     error_message = "no alert email should mean no subscription"
+  }
+}
+
+# The widgets read var.aws_region, which a root passes as its own var.aws_region. With the
+# original deployment's region both dashboards name exactly the regions they always did.
+run "by_default_the_dashboards_read_the_original_region" {
+  command = plan
+  assert {
+    condition = toset([
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline.dashboard_body).widgets :
+      widget.properties.region if can(widget.properties.region)
+    ]) == toset(["ap-southeast-2"])
+    error_message = "every pipeline widget should read the home region, and nothing else"
+  }
+  assert {
+    condition = toset([
+      for widget in jsondecode(aws_cloudwatch_dashboard.edge[0].dashboard_body).widgets :
+      widget.properties.region if can(widget.properties.region)
+    ]) == toset(["ap-southeast-2", "us-east-1"])
+    error_message = "the edge dashboard reads the home region, and us-east-1 for CloudFront"
+  }
+}
+
+# Given another region, the API, Lambda and regional web ACL widgets follow it. The CloudFront ones
+# do not: CloudFront's metrics, and a CLOUDFRONT-scope web ACL's metrics and logs, exist only in
+# us-east-1, whichever region the deployment calls home.
+run "another_region_moves_every_widget_but_the_cloudfront_ones" {
+  command = plan
+  variables {
+    aws_region        = "eu-west-1"
+    state_machine_arn = "arn:aws:states:eu-west-1:111111111111:stateMachine:test"
+  }
+  assert {
+    condition = toset([
+      for widget in jsondecode(aws_cloudwatch_dashboard.pipeline.dashboard_body).widgets :
+      widget.properties.region if can(widget.properties.region)
+    ]) == toset(["eu-west-1"])
+    error_message = "every pipeline widget should follow the home region"
+  }
+  assert {
+    condition = toset([
+      for widget in jsondecode(aws_cloudwatch_dashboard.edge[0].dashboard_body).widgets :
+      widget.properties.region if can(widget.properties.region)
+    ]) == toset(["eu-west-1", "us-east-1"])
+    error_message = "the edge dashboard should read the home region, and still us-east-1 for CloudFront"
+  }
+  assert {
+    condition     = !strcontains(aws_cloudwatch_dashboard.edge[0].dashboard_body, "ap-southeast-2") && !strcontains(aws_cloudwatch_dashboard.pipeline.dashboard_body, "ap-southeast-2")
+    error_message = "nothing on either dashboard should still name the original deployment's region"
   }
 }

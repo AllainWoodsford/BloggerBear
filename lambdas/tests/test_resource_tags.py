@@ -61,4 +61,5 @@ def test_the_deploy_role_may_tag_api_gateway():
     text = _read("bootstrap", "main.tf")
     statement = re.search(r'sid     = "ApiGateway"(.*?)\n  \}', text, re.S).group(1)
 
-    assert '"arn:aws:apigateway:ap-southeast-2::/tags/*"' in statement
+    # The region is the home region's variable (docs/deploying-your-own.md), not a literal.
+    assert '"arn:aws:apigateway:${var.aws_region}::/tags/*"' in statement

@@ -122,15 +122,17 @@ def test_a_version_it_does_not_speak_is_refused_with_the_ones_it_does(client):
 # The tools that look at the pipeline, and the ones that keep the assistant's own list (memory.py).
 PIPELINE_TOOLS = {"pipeline_health", "admin_inbox", "content_checks", "security_events", "alarms", "spend"}
 MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
+# The guide to the Admin CLI (cli_guide.py): help, how-to commands, and the topics as a table.
+GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}
 
 
 def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
 
-    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS
+    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS
     for name, tool in tools.items():
         # Only the memory tools say they write, and each says what: its own list and nothing else.
-        assert tool["annotations"]["readOnlyHint"] is (name in PIPELINE_TOOLS)
+        assert tool["annotations"]["readOnlyHint"] is (name not in MEMORY_TOOLS)
         assert tool["annotations"]["destructiveHint"] is False
         assert tool["outputSchema"]["type"] == "object"
         assert tool["description"]
@@ -205,7 +207,7 @@ def test_the_only_thing_any_tool_can_write_is_the_assistants_own_table():
 
     registered = asyncio.run(server.build_server().list_tools())
 
-    assert {tool.name for tool in registered} == PIPELINE_TOOLS | MEMORY_TOOLS
+    assert {tool.name for tool in registered} == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS
 
     package = pathlib.Path(server.__file__).parent
     writes = re.compile(r"\.(put_item|update_item|delete_item|batch_writer|put_object|delete_object)\(")
@@ -245,3 +247,77 @@ def test_spend_takes_a_week_or_a_month_and_nothing_else(client):
 
     mock_spend.assert_not_called()
     assert response.json()["result"]["isError"] is True
+
+
+# --- the guide to the Admin CLI, over the wire ---------------------------------------------------
+
+
+def tool_call(client, name, arguments):
+    response = call(client, "tools/call", {"name": name, "arguments": arguments}, name=name)
+    result = response.json()["result"]
+    assert result["isError"] is False, result
+    return result["structuredContent"]
+
+
+def test_the_guide_tools_say_when_to_use_each_and_never_to_write_a_command(client):
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    described = {name: " ".join(tools[name]["description"].split()) for name in GUIDE_TOOLS}
+
+    # Help first; the exact command second, and only from the operator's own values.
+    assert "first step" in described["cli_help"] and "never read the help aloud" in described["cli_help"]
+    assert "second step" in described["cli_command"]
+    assert "only when the operator has given the values" in described["cli_command"]
+    assert "never invent a value" in described["cli_command"]
+    assert "never write one in your answer" in described["cli_command"]
+    assert "Use it first" in described["cli_guides"] and "editorial-goals" in described["cli_guides"]
+    assert "list topics" in described["topics_overview"]
+    # The model picks command paths from the description: every one is in it.
+    from ops_mcp import cli_guide
+
+    for path in cli_guide.command_paths():
+        assert path in described["cli_help"], path
+    assert tools["cli_command"]["inputSchema"]["required"] == ["command"]
+    assert tools["cli_help"]["inputSchema"]["properties"]["commands"]["type"] == "array"
+    assert tools["topics_overview"]["inputSchema"]["properties"]["limit"]["default"] == 5
+
+
+def test_a_how_to_goes_over_the_wire_as_help_and_then_a_built_command(client):
+    helped = tool_call(client, "cli_help", {"commands": ["topics update"]})
+    assert helped["findings"][0]["help"].startswith("usage: admin_cli.py topics update")
+    assert helped["findings"][0]["suggestion"]["command"].endswith("topics update --help")
+
+    made = tool_call(
+        client,
+        "cli_command",
+        {"command": "topics update", "options": {"topic_id": "crypto", "research_interval_hours": 3}},
+    )
+    assert made["findings"][0]["suggestion"]["command"] == (
+        "python scripts/admin_cli.py topics update crypto --research-interval-hours 3"
+    )
+
+    delete = {"command": "topics delete", "options": {"topic_id": "crypto"}}
+    template = tool_call(client, "cli_command", delete)
+    assert template["findings"][0]["destructive"] is True
+    assert template["findings"][0]["suggestion"]["command"].endswith("topics delete <topic_id>")
+
+    assert tool_call(client, "cli_reference", {})["commands"]
+    assert tool_call(client, "cli_guides", {"topic": "gear"})["guide"]["id"] == "gear"
+
+
+def test_the_guide_tools_are_not_passed_through_the_memory(client):
+    """A how-to is not a suggestion to follow up: nothing is read from or written to the list."""
+    with patch("ops_mcp.memory.remember") as mock_remember:
+        tool_call(client, "cli_help", {"commands": ["topics update"]})
+        tool_call(client, "cli_command", {"command": "inbox"})
+
+    mock_remember.assert_not_called()
+
+
+def test_the_overview_passes_its_arguments_to_its_function(client):
+    answer = {"spoken": "There are no topics yet.", "findings": []}
+    with patch("ops_mcp.cli_guide.topics_overview", return_value=answer) as mock_overview:
+        assert tool_call(client, "topics_overview", {"limit": 3}) == answer
+        tool_call(client, "topics_overview", {})
+
+    assert mock_overview.call_args_list[0].args == (3, None)
+    assert mock_overview.call_args_list[1].args == (5, None)

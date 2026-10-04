@@ -156,6 +156,21 @@ SETTINGS: tuple[Setting, ...] = (
             "deploy and never change it: a bucket cannot be renamed, so changing it later deletes the\n"
             "buckets and makes empty ones. It is a variable, not a secret: it ends up in public names.",
             tf_var="unique_name_suffix"),
+    Setting("AWS_REGION", "variable", "repo", "optional", "region",
+            "The AWS region everything is deployed to, such as eu-west-1. Leave it blank for the\n"
+            "original deployment's region, ap-southeast-2 (Sydney). Choose it BEFORE your first\n"
+            "deploy: AWS cannot move a resource between regions, so changing it later rebuilds\n"
+            "everything, empty, in the new one. It must be the region the bootstrap was applied with\n"
+            "(its aws_region), because the deploy roles may only work there. Outside Australia you\n"
+            "must also set bedrock_inference_profile_id in each environment's terraform.tfvars: the\n"
+            "default model profile exists only in Australian regions (docs/deploying-your-own.md,\n"
+            "\"Deploying to another region\"). It is a variable, not a secret: a region is public.",
+            tf_var="aws_region"),
+    Setting("TF_STATE_REGION", "variable", "repo", "optional", "region",
+            "The region of the S3 bucket that holds Terraform's state, only if it is NOT the region\n"
+            "above. Almost nobody needs it: the bootstrap makes the bucket in its own region, and\n"
+            "blank means \"the same as AWS_REGION\" (or, with that blank too, the region written in\n"
+            "the backend block)."),
     Setting("PII_DENYLIST", "secret", "repo", "optional", "denylist",
             "A list of strings, such as your real name or home address, that must never be committed\n"
             "or pushed. The pre-commit hook and the pii-denylist check on pull requests refuse any\n"
@@ -299,6 +314,18 @@ def check_suffix(raw: str) -> str:
     return text
 
 
+def check_region(raw: str) -> str:
+    """The same rule as the Terraform variable's validation (aws_region): region shaped, and no
+    more than that, since which regions exist is AWS's list."""
+    text = raw.strip()
+    if not re.fullmatch(r"[a-z]{2}(-[a-z]+)+-[0-9]+", text):
+        raise Invalid(
+            "That does not look like an AWS region. Use its code, in lowercase, such as eu-west-1 "
+            "or us-west-2 (not its name, and not an availability zone such as eu-west-1a)."
+        )
+    return text
+
+
 def check_denylist(raw: str) -> str:
     """Entries, one per line -> the text the checker parses. Used on the whole collected list."""
     entries = parse_entries(raw)
@@ -314,6 +341,7 @@ CHECKS: dict[str, Callable[..., str]] = {
     "role_arn": check_role_arn,
     "bucket": check_bucket,
     "suffix": check_suffix,
+    "region": check_region,
     "denylist": check_denylist,
 }
 

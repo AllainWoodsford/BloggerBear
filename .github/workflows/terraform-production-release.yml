@@ -48,12 +48,18 @@ jobs:
     # settings as terraform.yml's apply-dev job (see the comment there), with production's own
     # account ID and state bucket (both secrets, with no variable fallback), so production can
     # live in a different AWS account from dev. Unset, all three are empty and nothing changes.
+    # TF_VAR_aws_region, TF_STATE_REGION: the home region and the state bucket's region, as in
+    # terraform.yml (see the comment there). This job runs in the `production` environment, so
+    # an AWS_REGION or TF_STATE_REGION variable set on that environment wins over the
+    # repository's; unset in both, the region is the one this project has always used.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_PROD }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD || vars.ALERT_EMAIL_PROD }}
       TF_VAR_aws_account_id: ${{ secrets.AWS_PROD_ACCOUNT_ID }}
       TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_PROD }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
@@ -88,7 +94,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
-          aws-region: ap-southeast-2
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
           role-to-assume: ${{ secrets.AWS_PROD_DEPLOY_ROLE_ARN || vars.AWS_PROD_DEPLOY_ROLE_ARN }}
 
       - name: Install Terraform
@@ -137,8 +143,19 @@ jobs:
           # account, and a backend block cannot read a Terraform variable), so the bucket can be
           # named by the TF_STATE_BUCKET_PROD secret. Unset, this is the plain `init` it always
           # was, against the bucket written in the backend block.
+          # The state bucket's region is the same story: the backend block names the original
+          # deployment's, and TF_STATE_REGION (the TF_STATE_REGION variable, or else AWS_REGION,
+          # since bootstrap puts the bucket in the home region) overrides it. With neither set
+          # there is nothing to pass, and this is still the plain `init`.
+          init_args=()
           if [ -n "${TF_STATE_BUCKET:-}" ]; then
-            terraform -chdir="$target_dir" init -backend-config="bucket=${TF_STATE_BUCKET}"
+            init_args+=("-backend-config=bucket=${TF_STATE_BUCKET}")
+          fi
+          if [ -n "${TF_STATE_REGION:-}" ]; then
+            init_args+=("-backend-config=region=${TF_STATE_REGION}")
+          fi
+          if [ "${#init_args[@]}" -gt 0 ]; then
+            terraform -chdir="$target_dir" init "${init_args[@]}"
           else
             terraform -chdir="$target_dir" init
           fi

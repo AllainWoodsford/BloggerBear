@@ -18,6 +18,9 @@ mock_provider "aws" {
 }
 
 variables {
+  # What a root passes when nothing is set: the original deployment's region.
+  aws_region = "ap-southeast-2"
+
   environment_name = "test"
   tables = {
     TOPICS_TABLE = {
@@ -321,5 +324,35 @@ run "cognito_names_fit_the_patterns_cognito_enforces_at_apply" {
       for scope in aws_cognito_resource_server.ops.scope : !strcontains(scope.scope_description, "'")
     ])
     error_message = "keep apostrophes out of scope descriptions too"
+  }
+}
+
+# The region is the caller's (var.aws_region): the adapter layer is published per region under one
+# account and name, and a function can only attach the copy in its own region. The default-region
+# run above (the_function_runs_the_web_app_through_the_adapter) pins the ARN the original
+# deployment has always had; this one shows that everything that names a region moves together.
+run "another_region_moves_the_layer_the_host_names_and_the_policy" {
+  command = plan
+
+  variables {
+    aws_region = "eu-west-1"
+  }
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.layers == tolist(["arn:aws:lambda:eu-west-1:753240598075:layer:LambdaAdapterLayerX86:30"])
+    error_message = "the Web Adapter layer must be the copy in the region the function is created in"
+  }
+
+  assert {
+    condition     = endswith(output.hosted_ui_domain, ".auth.eu-west-1.amazoncognito.com")
+    error_message = "the sign-in page's host name is in the pool's own region"
+  }
+
+  assert {
+    condition = contains(
+      flatten([for statement in data.aws_iam_policy_document.ops_mcp.statement : statement.resources]),
+      "arn:aws:cloudwatch:eu-west-1:*:alarm:*",
+    )
+    error_message = "the alarms the role may list are the ones in the region it runs in"
   }
 }

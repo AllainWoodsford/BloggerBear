@@ -243,4 +243,93 @@ def test_a_result_that_is_not_shaped_like_a_tools_is_ignored(structured):
 
     ledger.record(structured)
 
-    assert ledger.findings == [] and ledger.spoken == []
+    assert ledger.findings == [] and ledger.spoken == [] and ledger.tables == []
+
+
+# --- how-to cards and tables ---------------------------------------------------------------------
+
+
+def test_a_how_to_card_has_a_command_but_is_not_counted_as_a_fix():
+    help_card = {**RUN_THIS, "kind": "how_to", "id": "help-topics-update", "help": "usage: ..."}
+
+    assert policy.suggested_fixes([help_card]) == 0
+    assert policy.suggested_fixes([help_card, RUN_THIS]) == 1
+
+
+def test_a_how_to_card_is_passed_to_the_page_with_its_help_and_its_warning():
+    ledger = policy.Ledger(policy.FOLLOW_UP, SERVER_TOOLS)
+    template = {
+        "kind": "how_to",
+        "id": "topics-delete-template",
+        "noticed": "topics delete: Delete a topic",
+        "where": {"command": "topics delete"},
+        "suggestion": {"action": "Fill it in", "command": "x topics delete <topic_id>", "what_it_does": "y"},
+        "destructive": True,
+        "warning": "A template.",
+        "help": "usage: admin_cli.py topics delete [-h] topic_id\n",
+    }
+
+    ledger.record({"spoken": "On screen.", "findings": [template, dict(template)]})
+
+    assert ledger.findings == [template]  # unchanged, and once
+
+
+def test_a_table_is_collected_from_a_result_as_plain_cells():
+    ledger = policy.Ledger(policy.BRIEFING, SERVER_TOOLS)
+    table = {"title": "Topics (2)", "columns": ["Name", "Runs"], "rows": [["Crypto", 3], ["HN", 2.5]]}
+
+    ledger.record({"spoken": "Two topics.", "findings": [], "table": table})
+    ledger.record({"spoken": "Two topics.", "findings": [], "table": table})  # the same one again
+
+    assert ledger.tables == [{**table, "rows_left_out": 0}]
+
+
+def test_a_table_is_cut_to_size_and_its_cells_to_text_and_numbers():
+    ledger = policy.Ledger(policy.BRIEFING, SERVER_TOOLS)
+    columns = [f"c{n}" for n in range(policy.TABLE_MAX_COLUMNS + 4)]
+    rows = [[f"r{n}", True, None, ["a", "list"], {"an": "object"}, "x" * 1000] for n in range(60)]
+
+    ledger.record({"table": {"title": "T" * 500, "columns": columns, "rows": [*rows, "not a row"]}})
+
+    (table,) = ledger.tables
+    assert len(table["title"]) == policy.TABLE_TITLE_MAX_CHARS
+    assert len(table["columns"]) == policy.TABLE_MAX_COLUMNS
+    assert len(table["rows"]) == policy.TABLE_MAX_ROWS and table["rows_left_out"] == 11
+    first = table["rows"][0]
+    assert len(first) == policy.TABLE_MAX_COLUMNS  # padded out to the columns
+    assert first[:5] == ["r0", "yes", "", "", ""]
+    assert len(first[5]) == policy.TABLE_CELL_MAX_CHARS
+    for row in table["rows"]:
+        assert all(isinstance(cell, str | int | float) and not isinstance(cell, bool) for cell in row)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [None, "a table", [], {}, {"columns": [], "rows": []}, {"columns": "N", "rows": []}, {"columns": ["a"]}],
+)
+def test_something_that_is_not_a_table_is_not_collected(block):
+    ledger = policy.Ledger(policy.BRIEFING, SERVER_TOOLS)
+
+    ledger.record({"spoken": "x", "findings": [], "table": block})
+
+    assert ledger.tables == []
+
+
+def test_at_most_a_few_tables_are_collected():
+    ledger = policy.Ledger(policy.BRIEFING, SERVER_TOOLS)
+
+    for number in range(policy.TABLES_MAX + 3):
+        ledger.record({"table": {"title": f"T{number}", "columns": ["a"], "rows": [[number]]}})
+
+    assert [table["title"] for table in ledger.tables] == [f"T{n}" for n in range(policy.TABLES_MAX)]
+
+
+def test_a_how_to_question_changes_neither_the_turn_rule_nor_the_budgets():
+    assert policy.turn_kind(None) == policy.BRIEFING and policy.turn_kind([]) == policy.BRIEFING
+    assert policy.BUDGETS == {policy.BRIEFING: 8, policy.FOLLOW_UP: 3}
+    guide = ["cli_help", "cli_guides", "cli_command", "cli_reference", "topics_overview"]
+    names = [*SERVER_TOOLS, *guide]
+    # The guide tools are ordinary tools: offered on a first question and on a later one.
+    assert set(guide) <= set(policy.offered(names, policy.BRIEFING))
+    assert set(guide) <= set(policy.offered(names, policy.FOLLOW_UP))
+    assert not set(policy.DEEP_DIVE_TOOLS) & set(policy.offered(names, policy.BRIEFING))
