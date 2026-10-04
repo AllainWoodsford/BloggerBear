@@ -98,3 +98,33 @@ variable "log_retention_days" {
   default     = 90
   description = "How long the function's own log is kept. 90 days is what every other Lambda's log group has."
 }
+
+# --- The agent (agent.tf) ---
+
+variable "agent_model_id" {
+  type        = string
+  description = "The Bedrock model id, inference profile id or inference profile ARN the agent calls through Converse, passed to the agent Lambda as OPS_AGENT_MODEL_ID. Pass what the environment gives its pipeline Lambdas as BEDROCK_MODEL_ID: that value is known to be enabled for the account, which no plan can check."
+}
+
+variable "agent_allowed_origin" {
+  type        = string
+  default     = ""
+  description = "The one origin (e.g. \"https://bloggerbear.com\": scheme and host, no path, no trailing slash) whose pages may read the agent's responses, passed to the agent Lambda as OPS_AGENT_ALLOWED_ORIGIN and answered in its CORS headers. Empty means no browser can read a response."
+}
+
+variable "agent_memory_size" {
+  type        = number
+  default     = 1024
+  description = "The agent Lambda's memory, in MB. Lambda gives CPU in proportion to it, and a cold start imports the agent framework, the MCP client and botocore before the first question is answered."
+}
+
+variable "agent_reserved_concurrency" {
+  type        = number
+  default     = 2
+  description = "How many questions the agent Lambda may be answering at once (its reserved concurrency). Low on purpose: a signed-in page calls Bedrock, and the daily authoring cycle shares the account's Bedrock quota. These executions are set aside from the account's pool, which must keep 100 unreserved."
+
+  validation {
+    condition     = var.agent_reserved_concurrency >= 1 && floor(var.agent_reserved_concurrency) == var.agent_reserved_concurrency
+    error_message = "agent_reserved_concurrency must be a whole number of at least 1: 0 would switch the agent off, and -1 would remove the limit this variable exists to set."
+  }
+}

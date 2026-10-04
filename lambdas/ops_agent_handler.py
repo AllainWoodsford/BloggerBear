@@ -25,6 +25,20 @@ tools were called, how many findings came back and how many of them are fixes to
 question, the answer or the token.
 A failure is logged by the class of the error alone, since its message could quote any of them.
 
+**The access switch comes first.** The operator's `assistant_access` setting (ops_mcp/access.py:
+`open`, `allowlist` or `off`, on the config table's `pipeline` row) is read on every request,
+before the route, the token or the body is looked at, and so before anything that costs money. The
+MCP server enforces the same setting on itself, but that is one hop too late for this endpoint:
+with the switch `off`, a question would still reach the model before the first tool call failed.
+A refusal is the same 403 the server answers, and one log line with the reason and nothing about
+the caller. The caller's address is the `sourceIp` API Gateway records in the event's request
+context, which a caller cannot set; `X-Forwarded-For` is never read. The preflight is answered
+without the check: it carries no token, reaches no model, and a browser that cannot read its
+headers reports a network error where the page should be shown the 403.
+
+    MODEL_CONFIG_TABLE           the config table (common/dynamo.py), where the setting is stored
+    OPS_ASSISTANT_ALLOWED_CIDRS  the operator's addresses, for `allowlist`
+
 **What is refused, and how.** A body that is not what is described above is a 400 with a plain
 reason. A model or MCP failure is a 502 that says nothing about why. Like the other handlers,
 `handler` never raises.
@@ -40,7 +54,9 @@ import base64
 import json
 import os
 
+from common import dynamo
 from ops_agent import agent, policy
+from ops_mcp import access
 
 QUESTION_MAX_CHARS = 500
 HISTORY_MAX_TURNS = 6
@@ -78,6 +94,22 @@ def _response(status_code: int, payload: dict) -> dict:
 
 def _error(status_code: int, message: str) -> dict:
     return _response(status_code, {"error": message})
+
+
+def _admitted(event: dict) -> tuple[bool, str]:
+    """Whether the `assistant_access` setting lets this request go on, and why (ops_mcp/access.py
+    holds the rule). Everything that goes wrong refuses: a setting that cannot be read, an event
+    with no request context, a check that raises. Not cached, for the reason the server's
+    middleware gives: `off` must apply to the very next request."""
+    try:
+        setting = (dynamo.get_pipeline_config() or {}).get("assistant_access")
+    except Exception:  # noqa: BLE001 - whatever went wrong, the answer is the same
+        return False, access.CONFIG_UNREADABLE
+    try:
+        identity = (event.get("requestContext") or {}).get("identity") or {}
+        return access.decide(setting, identity.get("sourceIp"), access.allowed_cidrs_from_env())
+    except Exception:  # noqa: BLE001 - a check that fails is a refusal, never a way in
+        return False, access.CONFIG_UNREADABLE
 
 
 def _authorization(event: dict) -> str | None:
@@ -175,6 +207,12 @@ def _route_key(event: dict) -> str:
 def handler(event, context) -> dict:
     if event.get("httpMethod") == "OPTIONS":
         return {"statusCode": 204, "headers": _cors_headers(), "body": ""}
+    allowed, reason = _admitted(event)
+    if not allowed:
+        # The line the MCP server's middleware prints, with this endpoint's label: the reason,
+        # and no address, path or token. The body is the server's too, whatever the reason.
+        print(f"ops_access: agent request refused ({reason})")
+        return _error(403, "forbidden")
     if _route_key(event) != "POST /ask":
         return _error(404, "no such route")
     try:

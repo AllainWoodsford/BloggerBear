@@ -514,6 +514,8 @@ resource "aws_api_gateway_deployment" "this" {
       scopes        = aws_api_gateway_method.mcp.authorization_scopes
       integration   = aws_api_gateway_integration.mcp.id
       uri           = aws_api_gateway_integration.mcp.uri
+      # The agent's two routes on /ask (agent.tf), by the same rule.
+      agent = local.agent_redeployment
     }))
   }
 

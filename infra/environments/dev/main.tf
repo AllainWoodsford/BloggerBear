@@ -2348,4 +2348,16 @@ module "ops_assistant" {
   # is what bounds the cost of a stolen token or a client stuck in a loop.
   throttling_rate_limit  = 5
   throttling_burst_limit = 10
+
+  # The agent (the module's agent.tf): POST /ask on the same API, behind the same authorizer. It
+  # runs as a third role of its own (bloggerbear-dev-ops-agent-lambda-exec), which may invoke the
+  # model, read the config table's row for the access switch, and nothing else.
+  #
+  # The model is the one the pipeline Lambdas are given as BEDROCK_MODEL_ID: the design names no
+  # other, and that value is the one known to be enabled for this account (see the variable).
+  agent_model_id = var.bedrock_model_id
+
+  # The dev site's origin, where ask.html is served from: the same value the callback URL above
+  # is built on, so the page that signs in is the page that may read the answers.
+  agent_allowed_origin = local.site_url
 }
