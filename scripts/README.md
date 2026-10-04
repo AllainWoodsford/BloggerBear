@@ -102,6 +102,14 @@ python scripts/admin_cli.py review report
 python scripts/admin_cli.py review report --sample 25
 python scripts/admin_cli.py pipeline-config set --review-mode shadow
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --review-mode shadow
+# Who may reach the operator's assistant (the ops MCP server). `open` (the default) is any
+# signed-in caller from anywhere; `allowlist` is only from the operator's addresses (the
+# assistant's OPS_ASSISTANT_ALLOWED_CIDRS, set by Terraform); `off` refuses every request;
+# '' clears the setting (back to open). The assistant reads it on every request, so a
+# change applies from the next one, with no deploy. `pipeline-config get` shows it.
+python scripts/admin_cli.py pipeline-config set --assistant-access allowlist
+python scripts/admin_cli.py pipeline-config set --assistant-access off
+python scripts/admin_cli.py pipeline-config set --assistant-access ""
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait

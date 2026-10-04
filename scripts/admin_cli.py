@@ -577,10 +577,12 @@ def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
         body["review_mode"] = args.review_mode or None  # '' clears it (back to the default)
     if args.review_on_unavailable is not None:
         body["review_on_unavailable"] = args.review_on_unavailable or None
+    if args.assistant_access is not None:
+        body["assistant_access"] = args.assistant_access or None  # '' clears it (back to open)
     if not body:
         raise CliError(
-            "pipeline-config set needs --research-interval-hours, --review-mode "
-            "and/or --review-on-unavailable"
+            "pipeline-config set needs --research-interval-hours, --review-mode, "
+            "--review-on-unavailable and/or --assistant-access"
         )
     _do_request(args, "PUT", "/pipeline-config", body=body)
 
@@ -1247,14 +1249,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     pipeline_config_parser = subparsers.add_parser(
         "pipeline-config",
-        help="Pipeline-wide settings (the default research interval, the draft review mode)",
+        help=(
+            "Pipeline-wide settings (the default research interval, the draft review mode, "
+            "who may reach the assistant)"
+        ),
     )
     pipeline_config_sub = pipeline_config_parser.add_subparsers(dest="action", required=True)
     pipeline_config_sub.add_parser("get", help="Show the pipeline-wide settings").set_defaults(
         func=_cmd_pipeline_config_get
     )
     pipeline_config_set = pipeline_config_sub.add_parser(
-        "set", help="Set pipeline-wide settings (send either or both; a setting not sent is unchanged)"
+        "set", help="Set pipeline-wide settings (send any of them; a setting not sent is unchanged)"
     )
     pipeline_config_set.add_argument(
         "--research-interval-hours",
@@ -1282,6 +1287,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "In enforce mode, when the review could not run: 'hold' the article for a person "
             "(the default) or 'note' the gap and publish; '' clears it"
+        ),
+    )
+    pipeline_config_set.add_argument(
+        "--assistant-access",
+        dest="assistant_access",
+        default=None,
+        choices=["open", "allowlist", "off", ""],
+        help=(
+            "Who may reach the operator's assistant: 'open' any signed-in caller from anywhere "
+            "(the default), 'allowlist' only from the operator's addresses, 'off' nobody; '' "
+            "clears it (back to open). Applies from the next request, no deploy"
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)

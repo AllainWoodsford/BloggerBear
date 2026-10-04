@@ -28,6 +28,7 @@ import boto3
 
 from common import equipment, feedback_limits, gear
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
+from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
@@ -1719,12 +1720,14 @@ def _get_pipeline_config_route(event: dict) -> dict:
             "effective_review_mode": resolve_review_mode(config),
             "review_on_unavailable": config.get("review_on_unavailable"),
             "effective_review_on_unavailable": resolve_on_unavailable(config),
+            "assistant_access": config.get("assistant_access"),
+            "effective_assistant_access": effective_assistant_access(config),
         },
     )
 
 
 def _put_pipeline_config_route(event: dict) -> dict:
-    """Set (or, with null, clear) pipeline-wide settings. Send either or both:
+    """Set (or, with null, clear) pipeline-wide settings. Send any of:
 
     - `research_interval_hours`: how often a topic without its own interval does real
       work on a heartbeat.
@@ -1732,6 +1735,9 @@ def _put_pipeline_config_route(event: dict) -> dict:
       `enforce` (it acts). A topic's own `review_mode` overrides it.
     - `review_on_unavailable`: what enforce mode does when the review could not run:
       `hold` the article for a person (the default) or `note` it and publish.
+    - `assistant_access`: who may reach the operator's assistant: `open` (any signed-in
+      caller, the default), `allowlist` (only from the operator's addresses) or `off`
+      (nobody). The assistant reads it on every request, so it applies without a deploy.
 
     A setting that isn't in the body is left as it is.
     """
@@ -1756,11 +1762,16 @@ def _put_pipeline_config_route(event: dict) -> dict:
         if problem:
             return _error(400, f"'review_on_unavailable' {problem}")
         updates["review_on_unavailable"] = body["review_on_unavailable"]
+    if "assistant_access" in body:
+        access_problem = assistant_access_error(body["assistant_access"])
+        if access_problem:
+            return _error(400, f"'assistant_access' {access_problem}")
+        updates["assistant_access"] = body["assistant_access"]
     if not updates:
         return _error(
             400,
-            "send 'research_interval_hours', 'review_mode' and/or 'review_on_unavailable' "
-            "(null clears a setting)",
+            "send 'research_interval_hours', 'review_mode', 'review_on_unavailable' and/or "
+            "'assistant_access' (null clears a setting)",
         )
 
     put_pipeline_config(**updates)
