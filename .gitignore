@@ -67,3 +67,7 @@ terraform.rc
 # planout
 # The local list of personal strings scripts/pii_denylist_check.py blocks. Never commit it.
 .pii-denylist
+
+# scripts/alexa_addon_values.py's rendered add-on manifest: generated per environment from
+# alexa/addon-package/addon.template.json, never committed (alexa/README.md)
+alexa/addon-package/addon.json

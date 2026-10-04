@@ -63,7 +63,7 @@ data "aws_caller_identity" "current" {}
 #   rule. The MCP server itself (server.py, the tools) is not in this package.
 # - There is no run.sh: the function's handler is a Python function.
 # - requirements.txt is not installed: nothing here imports what it lists (the pipeline's
-#   requests, beautifulsoup4, markdown). requirements-ops-agent.txt names strands-agents and
+#   requests, markdown). requirements-ops-agent.txt names strands-agents and
 #   includes requirements-ops-mcp.txt, so the MCP client is the release the server is.
 #
 # Checked 2026-10-04 by resolving the whole tree for the Lambda runtime (Linux x86_64, CPython
@@ -88,6 +88,7 @@ resource "terraform_data" "agent_package" {
       cp -r "${local.lambdas_dir}/common" "$build_dir/common"
       cp "${local.lambdas_dir}/ops_mcp/__init__.py" "$build_dir/ops_mcp/__init__.py"
       cp "${local.lambdas_dir}/ops_mcp/access.py" "$build_dir/ops_mcp/access.py"
+      cp "${local.lambdas_dir}/ops_mcp/briefings.py" "$build_dir/ops_mcp/briefings.py"
       find "$build_dir" -type d -name __pycache__ -prune -exec rm -rf {} +
       if python3 -c "" >/dev/null 2>&1; then
         py_cmd="python3"
@@ -207,7 +208,7 @@ resource "aws_lambda_function" "ops_agent" {
   function_name = local.agent_name
   # The log group first, and the policy too: a function that exists before its role can read the
   # access switch would refuse its first requests (which is the safe way to be wrong, but wrong).
-  depends_on    = [aws_cloudwatch_log_group.agent, aws_iam_role_policy.ops_agent]
+  depends_on    = [aws_cloudwatch_log_group.agent, aws_iam_role_policy.ops_agent, aws_iam_role_policy.ops_agent_briefings]
   role          = aws_iam_role.ops_agent.arn
   handler       = "ops_agent_handler.handler"
   runtime       = "python3.11"
@@ -246,6 +247,8 @@ resource "aws_lambda_function" "ops_agent" {
       # admitted, so that under "allowlist" the server judges the request by that address and
       # not by this function's own (ops_mcp/access.py). The same value the server is given.
       OPS_AGENT_FORWARD_KEY = var.agent_forward_key
+      # Where each briefing is written for latest_briefing (briefings.tf).
+      OPS_BRIEFINGS_TABLE = aws_dynamodb_table.briefings.name
     }
   }
 }
@@ -329,15 +332,22 @@ resource "aws_api_gateway_integration" "ask_options" {
 # That gives a browser nothing: reading a 401 from another origin was never the protection, and
 # the MCP server still refuses a request whose Origin it does not expect (OPS_MCP_ALLOWED_ORIGINS).
 # With no origin configured the header is left off, and no page can read these, as before.
+#
+# The 401 carries one more header, WWW-Authenticate, for MCP clients (alexa.tf).
 resource "aws_api_gateway_gateway_response" "cors" {
   for_each = toset(["UNAUTHORIZED", "ACCESS_DENIED", "THROTTLED", "DEFAULT_5XX"])
 
   rest_api_id   = aws_api_gateway_rest_api.this.id
   response_type = each.key
 
-  response_parameters = var.agent_allowed_origin == "" ? {} : {
-    "gatewayresponse.header.Access-Control-Allow-Origin" = "'${var.agent_allowed_origin}'"
-  }
+  response_parameters = merge(
+    var.agent_allowed_origin == "" ? {} : {
+      "gatewayresponse.header.Access-Control-Allow-Origin" = "'${var.agent_allowed_origin}'"
+    },
+    # A 401 also says where to find out how to sign in (alexa.tf): the MCP authorization spec's
+    # discovery starts from this header.
+    each.key == "UNAUTHORIZED" ? local.www_authenticate : {},
+  )
 }
 
 locals {

@@ -51,6 +51,11 @@ BUDGETS = {BRIEFING: 8, FOLLOW_UP: 3}
 # Only when the operator asks, never as part of a briefing.
 DEEP_DIVE_TOOLS = frozenset({"firewall_review"})
 
+# Tools for a client that cannot wait for this agent (Alexa+, ops_mcp/briefings.py): one starts
+# this agent in the background, the other reads what it last said. Never given to the agent
+# itself, on any turn: a briefing that started a briefing would run, and spend, without end.
+CLIENT_ONLY_TOOLS = frozenset({"start_briefing", "latest_briefing"})
+
 # Model calls allowed beyond one per tool call: one to read "the budget is spent", one to answer.
 _MODEL_CALLS_OVER_BUDGET = 2
 
@@ -87,10 +92,12 @@ def turn_kind(history: list | None) -> str:
 
 def offered(tool_names: Iterable[str], turn: str) -> list[str]:
     """The tools the model is given on a turn of this kind, in the order the server listed them:
-    all of them on a follow-up, all but the deep dives on a briefing."""
+    all of them on a follow-up, all but the deep dives on a briefing, and never the ones that are
+    for other clients (CLIENT_ONLY_TOOLS)."""
+    names = [name for name in tool_names if name not in CLIENT_ONLY_TOOLS]
     if turn == FOLLOW_UP:
-        return list(tool_names)
-    return [name for name in tool_names if name not in DEEP_DIVE_TOOLS]
+        return names
+    return [name for name in names if name not in DEEP_DIVE_TOOLS]
 
 
 def max_model_calls(turn: str) -> int:
