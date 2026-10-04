@@ -1672,9 +1672,10 @@ def test_the_root_hands_the_assistant_its_own_default_tags():
         tags = re.search(r"default_tags = \{\n(.*?)\n  \}", text, re.S).group(1)
         root_tags = dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', tags))
         assert {key: root_tags[key] for key in project_tags} == project_tags, environment
-    call = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")[0]
-    assert "ManagedBy = local.default_tags.ManagedBy" in call
-    assert "Project   = local.default_tags.Project" in call
+    for environment in ("dev", "production"):
+        call = _module_blocks(_read("environments", environment, "main.tf"), "modules/ops-assistant")[0]
+        assert "ManagedBy = local.default_tags.ManagedBy" in call, environment
+        assert "Project   = local.default_tags.Project" in call, environment
 
 
 def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
