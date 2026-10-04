@@ -19,7 +19,7 @@ Two delivery steps, each its own PR.
 ### PR 1: knowing the architecture (`architecture`, `investigate`)
 
 - **`lambdas/ops_mcp/architecture.py`** is a catalogue of every AWS resource the project deploys:
-  16 DynamoDB tables, 13 Lambdas, 3 REST APIs, the daily-cycle state machine, the dead-letter
+  17 DynamoDB tables, 13 Lambdas, 3 REST APIs, the daily-cycle state machine, the dead-letter
   queue, the alerts topic, 3 dashboards, the WAF and access log groups, the schedules, the buckets
   and the web ACLs. Each entry has its purpose, its keys, indexes and TTL, who writes and reads it,
   and its log groups, dashboards and alarms. Names are templates (`bloggerbear-{env}-...`) filled in

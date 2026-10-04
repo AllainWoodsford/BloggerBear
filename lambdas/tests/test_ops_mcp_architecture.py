@@ -42,11 +42,20 @@ def _template(terraform_name: str) -> str:
 # --- the catalogue against infra/ -----------------------------------------------------------------
 
 
+def _terraform_files() -> list[Path]:
+    """Every .tf file in infra/, so a table added anywhere is seen (a new module file once was
+    not, when this read two files by name)."""
+    return sorted(p for p in INFRA.rglob("*.tf") if ".terraform" not in p.parts)
+
+
 def _terraform_tables() -> dict[str, dict]:
     found = {}
-    for path in (("modules", "app-data", "main.tf"), ("modules", "ops-assistant", "memory.tf")):
-        for body in _blocks(_read(*path), "aws_dynamodb_table").values():
+    for path in _terraform_files():
+        for body in _blocks(path.read_text(encoding="utf-8"), "aws_dynamodb_table").values():
             name = _template(re.search(r'^\s*name\s*=\s*"([^"]+)"', body, re.M).group(1))
+            name = name.replace("bloggerbear-dev-", f"{PREFIX}{ENV}-").replace(
+                "bloggerbear-production-", f"{PREFIX}{ENV}-"
+            )
             hash_key = re.search(r'^\s*hash_key\s*=\s*"([^"]+)"', body, re.M).group(1)
             range_key = re.search(r'^  range_key\s*=\s*"([^"]+)"', body, re.M)
             indexes = re.findall(r'global_secondary_index \{\s*name\s*=\s*"([^"]+)"', body)
@@ -391,3 +400,25 @@ def test_every_runsheet_table_fits_the_page():
         assert table["rows_left_out"] == 0
         for row in answer["table"]["rows"]:
             assert all(len(str(cell)) <= policy.TABLE_CELL_MAX_CHARS for cell in row), row
+
+
+def test_every_lambda_and_rest_api_in_any_module_is_in_the_catalogue():
+    """Functions and APIs made inside modules (the assistant's), not only in the roots."""
+    functions = {c.name for c in _of_kind("function").values()}
+    apis = {c.name for c in _of_kind("api").values()}
+    for path in _terraform_files():
+        text = path.read_text(encoding="utf-8")
+        if "/modules/" not in path.as_posix():
+            continue
+        for body in _blocks(text, "aws_lambda_function").values():
+            name = re.search(r"^\s*function_name\s*=\s*local\.(\w+)", body, re.M).group(1)
+            value = re.search(rf'^\s*{name}\s*=\s*"([^"]+)"', text, re.M) or re.search(
+                rf'^\s*{name}\s*=\s*"([^"]+)"', (path.parent / "main.tf").read_text(encoding="utf-8"), re.M
+            )
+            assert _template(value.group(1)) in functions, (path.name, value.group(1))
+        for body in _blocks(text, "aws_api_gateway_rest_api").values():
+            if "var.name" in body:
+                continue  # the rest-api module: named by its callers, checked above
+            local = re.search(r"^\s*name\s*=\s*local\.(\w+)", body, re.M).group(1)
+            value = re.search(rf'^\s*{local}\s*=\s*"([^"]+)"', text, re.M)
+            assert _template(value.group(1)) in apis, (path.name, value.group(1))

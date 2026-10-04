@@ -376,6 +376,25 @@ CATALOGUE: tuple[Component, ...] = (
         assistant_reads=True,
         only_in=("dev",),
     ),
+    _table(
+        "ops-briefings",
+        "The latest briefing per signed-in user: what the assistant last said needs attention, "
+        "written by the agent and read back by latest_briefing, for clients like Alexa+ that "
+        "cannot wait for the agent.",
+        ("user_id",),
+        ttl="expires_at",
+        details=(
+            (
+                "Written by",
+                "the agent (every briefing); the MCP server's start_briefing marks one as started",
+            ),
+            ("Read by", "the MCP server's latest_briefing"),
+            ("Expires", "two days after it was written (TTL)"),
+            ("Never shown to the agent", "it holds what the agent wrote after reading hostile text"),
+        ),
+        aliases=("briefings", "briefing"),
+        only_in=("dev",),
+    ),
     # --- Lambda --------------------------------------------------------------------------------
     _lambda(
         "research-tick",
