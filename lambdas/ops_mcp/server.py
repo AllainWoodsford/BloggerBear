@@ -32,13 +32,16 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import Response
 
-from ops_mcp import account, cli_guide, content, memory, tools
+from ops_mcp import account, briefings, cli_guide, content, memory, tools
 from ops_mcp.access import AccessMiddleware
 
 SERVER_NAME = "bloggerbear-ops"
 SERVER_VERSION = "0.1.0"
 MCP_PATH = "/mcp"
+EVENTS_PATH = "/events"  # where the Lambda Web Adapter sends an invoke that is not HTTP
 
 _INSTRUCTIONS = (
     "Tools over the BloggerBear pipeline, for its operator. None of them changes the pipeline; "
@@ -228,6 +231,33 @@ def build_server() -> MCPServer:
         when the operator asks to list topics or about a topic's configuration."""
         return cli_guide.topics_overview(limit, topic)
 
+    # For a client that cannot wait for the agent, Alexa+ above all (briefings.py): start one in
+    # the background, and read the latest back. Registered only where the function has the table
+    # and the agent to start, and never offered to the agent itself (ops_agent/policy.py).
+    if briefings.configured(starting=True):
+
+        def bearer(ctx: Context) -> str | None:
+            try:
+                return briefings.bearer_from_headers(ctx.headers)
+            except Exception:  # noqa: BLE001 - no token is an answer, not an error
+                return None
+
+        @server.tool(annotations=own_list, structured_output=True)
+        def start_briefing(ctx: Context) -> dict[str, Any]:
+            """Ask the operator's assistant to look at everything that might need attention
+            (the pipeline, the inbox, published content, security, alarms, spend) and put a
+            briefing together. It takes about a minute and runs in the background: this returns
+            at once. Then call latest_briefing. One at a time; nothing in the pipeline changes."""
+            return briefings.start(caller(ctx), bearer(ctx))
+
+        @server.tool(annotations=_READ_ONLY, structured_output=True)
+        def latest_briefing(ctx: Context) -> dict[str, Any]:
+            """The assistant's latest briefing for this user: what needs attention, to say as it
+            is (`spoken`), the findings behind it, and how long ago it was put together. Says so
+            if one is still being put together, did not finish, or was never asked for. Use this
+            first when asked what needs attention; start_briefing if there is none or it is old."""
+            return briefings.latest(caller(ctx))
+
     return server
 
 
@@ -260,7 +290,16 @@ def create_app() -> Starlette:
             allowed_origins=_from_env("OPS_MCP_ALLOWED_ORIGINS"),
         ),
     )
+    # A keep-warm ping (an EventBridge Scheduler invoke, main.tf's keep_warm) is not an HTTP
+    # request, and the Lambda Web Adapter hands it to POST /events. It is answered and nothing
+    # else happens: the point is only that the function stays warm. API Gateway has no route
+    # here, so no caller can reach it.
+    app.add_route(EVENTS_PATH, _events, methods=["POST"])
     # Outside everything the SDK does, so a refused request reaches no route, no Host or Origin
     # check and no tool.
     app.add_middleware(AccessMiddleware, label="ops_mcp")
     return app
+
+
+async def _events(request: Request) -> Response:
+    return Response(status_code=204)

@@ -88,6 +88,7 @@ resource "terraform_data" "agent_package" {
       cp -r "${local.lambdas_dir}/common" "$build_dir/common"
       cp "${local.lambdas_dir}/ops_mcp/__init__.py" "$build_dir/ops_mcp/__init__.py"
       cp "${local.lambdas_dir}/ops_mcp/access.py" "$build_dir/ops_mcp/access.py"
+      cp "${local.lambdas_dir}/ops_mcp/briefings.py" "$build_dir/ops_mcp/briefings.py"
       find "$build_dir" -type d -name __pycache__ -prune -exec rm -rf {} +
       if python3 -c "" >/dev/null 2>&1; then
         py_cmd="python3"
@@ -207,7 +208,7 @@ resource "aws_lambda_function" "ops_agent" {
   function_name = local.agent_name
   # The log group first, and the policy too: a function that exists before its role can read the
   # access switch would refuse its first requests (which is the safe way to be wrong, but wrong).
-  depends_on    = [aws_cloudwatch_log_group.agent, aws_iam_role_policy.ops_agent]
+  depends_on    = [aws_cloudwatch_log_group.agent, aws_iam_role_policy.ops_agent, aws_iam_role_policy.ops_agent_briefings]
   role          = aws_iam_role.ops_agent.arn
   handler       = "ops_agent_handler.handler"
   runtime       = "python3.11"
@@ -246,6 +247,8 @@ resource "aws_lambda_function" "ops_agent" {
       # admitted, so that under "allowlist" the server judges the request by that address and
       # not by this function's own (ops_mcp/access.py). The same value the server is given.
       OPS_AGENT_FORWARD_KEY = var.agent_forward_key
+      # Where each briefing is written for latest_briefing (briefings.tf).
+      OPS_BRIEFINGS_TABLE = aws_dynamodb_table.briefings.name
     }
   }
 }
