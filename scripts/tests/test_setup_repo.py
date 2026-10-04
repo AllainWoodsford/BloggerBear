@@ -37,6 +37,8 @@ SECRET_VALUES = (CIDR, "198.51.100.23", EMAIL, DEV_ACCOUNT, PROD_ACCOUNT, BUCKET
 # A whole first run, nothing set yet, in the order the questions come.
 FULL_RUN = [
     "y",  # this is the repository
+    REGION,  # AWS_REGION: asked first, because later steps print commands that name it
+    STATE_REGION,  # TF_STATE_REGION
     CIDR,  # ADMIN_ALLOWED_CIDRS_DEV
     "y",  # ADMIN_ALLOWED_CIDRS_PROD: same as dev
     EMAIL,  # ALERT_EMAIL_DEV
@@ -49,8 +51,6 @@ FULL_RUN = [
     BUCKET,  # TF_STATE_BUCKET_DEV
     "y",  # TF_STATE_BUCKET_PROD: same as dev
     SUFFIX,  # UNIQUE_NAME_SUFFIX
-    REGION,  # AWS_REGION
-    STATE_REGION,  # TF_STATE_REGION
     PII,  # PII_DENYLIST, entry 1
     "",  # ...no more entries
     "y",  # save the local .pii-denylist
@@ -73,20 +73,20 @@ class FakeCommands:
         fail_on=(),
         hooks_path=None,
         ignored=True,
+        region="",
         aws_account=None,
         aws_signed_in=True,
         parameters=(),
         parameters_readable=True,
-        region_variable=None,
     ):
         # `aws`: not installed unless an account is given (most tests are about GitHub).
         self.aws_account, self.aws_signed_in = aws_account, aws_signed_in
-        self.region_variable = region_variable  # the AWS_REGION variable's value, if it is set
         self.parameters, self.parameters_readable = set(parameters), parameters_readable
         self.installed, self.signed_in = installed, signed_in
         self.secrets, self.variables, self.env_secrets = set(secrets), set(variables), set(env_secrets)
         self.environment, self.fail_on = environment, set(fail_on)
         self.hooks_path, self.ignored = hooks_path, ignored
+        self.region = region  # the AWS_REGION repository variable's value, if it is set
         self.calls: list[tuple[list[str], str | None]] = []
 
     def __call__(self, argv, stdin=None):
@@ -131,8 +131,7 @@ class FakeCommands:
             if path.endswith("/actions/secrets"):
                 return sr.Result(0, "\n".join(sorted(self.secrets)))
             if path.endswith("/actions/variables/AWS_REGION"):
-                missing = sr.Result(1, "", "gh: Not Found (HTTP 404)")
-                return sr.Result(0, f"{self.region_variable}\n") if self.region_variable else missing
+                return sr.Result(0, f"{self.region}\n") if self.region else sr.Result(1, "", "HTTP 404")
             repo_level = path.endswith("/actions/variables")
             return sr.Result(0, "\n".join(sorted(self.variables)) if repo_level else "")
         if rest[1] == "set":
@@ -577,17 +576,17 @@ def test_a_failure_part_way_says_what_was_and_was_not_written_and_exits_non_zero
 
     attempted = [argv[3] for argv, _ in commands.writes]
     assert attempted == [
+        "AWS_REGION", "TF_STATE_REGION",  # the region is asked, and so written, first
         "ADMIN_ALLOWED_CIDRS_DEV", "ADMIN_ALLOWED_CIDRS_PROD", "ALERT_EMAIL_DEV", "ALERT_EMAIL_PROD",
         "AWS_DEV_ACCOUNT_ID",
     ]  # it stopped at the failure: nothing after it was tried
     report = out.split("Stopped at AWS_DEV_ACCOUNT_ID.")[1]
     written = report.split("Written:")[1].split("\n")[0]
     not_written = report.split("NOT written:")[1].split("\n")[0]
-    assert [name.strip() for name in written.split(",")] == attempted[:4]
+    assert [name.strip() for name in written.split(",")] == attempted[:6]
     assert [name.strip() for name in not_written.split(",")] == [
         "AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN", "AWS_PROD_DEPLOY_ROLE_ARN",
-        "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "UNIQUE_NAME_SUFFIX", "AWS_REGION",
-        "TF_STATE_REGION", "PII_DENYLIST",
+        "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "UNIQUE_NAME_SUFFIX", "PII_DENYLIST",
         ".pii-denylist (local file)", "core.hooksPath (this clone's git config)",
     ]
     assert "Nothing was undone." in out
@@ -609,11 +608,11 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
     answers = [
         "y",  # the repository
         "",  # replace any? default: no
+        "",  # AWS_REGION: leave unset (the default region)
+        "",  # TF_STATE_REGION: leave unset
         "",  # ALERT_EMAIL_PROD: leave unset
         PROD_ACCOUNT,  # AWS_PROD_ACCOUNT_ID (dev's was not asked, so no "same as")
         BUCKET,  # TF_STATE_BUCKET_PROD
-        "",  # AWS_REGION: leave unset (the original region)
-        "",  # TF_STATE_REGION: leave unset
         "",  # PII_DENYLIST: no entries
         "y",  # confirm
     ]
@@ -894,11 +893,9 @@ def test_the_parameter_names_and_region_are_the_ones_terraform_uses(env):
         "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}"
         ":parameter${local.coingecko_api_key_parameter}"
     ) in main_tf
-    variables_tf = (ENVIRONMENTS / TF_FOLDER[env] / "variables.tf").read_text(encoding="utf-8")
-    declared_default = r'variable "aws_region" \{\s*type\s*=\s*string\s*default\s*=\s*"([^"]+)"'
-    default = re.search(declared_default, variables_tf)
-    assert default and default.group(1) == sr.DEFAULT_AWS_REGION
     assert next(s for s in sr.SETTINGS if s.name == "AWS_REGION").tf_var == "aws_region"
+    # With nothing set, the printed command names the script's one default region.
+    assert f"--region {sr.DEFAULT_REGION} " in sr.coingecko_command(env)
     # And the hand-run command in Terraform's own comment stores to the same name and type.
     assert f"aws ssm put-parameter --name {sr.COINGECKO_PARAMETERS[env]} --type SecureString" in main_tf
     assert sr.coingecko_command(env).startswith(
@@ -906,30 +903,12 @@ def test_the_parameter_names_and_region_are_the_ones_terraform_uses(env):
     )
 
 
-def test_the_region_is_the_aws_region_setting_given_now_or_already_set_or_terraforms_default():
-    def gh(value):
-        calls = []
-
-        def fake(argv, stdin=None):
-            calls.append(argv)
-            return sr.Result(0, f"{value}\n") if value else sr.Result(1, "", "gh: Not Found (HTTP 404)")
-
-        return fake, calls
-
-    # Given in this run: used as it is, and nothing is looked up.
-    fake, calls = gh("us-west-2")
-    assert sr.deployment_region(fake, REPO, {"AWS_REGION": REGION}, True) == REGION and calls == []
-    # Not asked this run, but already a variable on the repository: read back (a GET).
-    fake, calls = gh("us-west-2")
-    assert sr.deployment_region(fake, REPO, {}, True) == "us-west-2"
-    assert calls == [["gh", "api", f"repos/{REPO}/actions/variables/AWS_REGION", "--jq", ".value"]]
-    assert sr.is_read_only(calls[0])
-    # Unset, unreadable or nonsense: Terraform's default.
-    for value in ("", "not a region"):
-        fake, _ = gh(value)
-        assert sr.deployment_region(fake, REPO, {}, True) == sr.DEFAULT_AWS_REGION
-    fake, calls = gh("us-west-2")
-    assert sr.deployment_region(fake, REPO, {}, False) == sr.DEFAULT_AWS_REGION and calls == []
+def test_the_step_writes_no_region_of_its_own():
+    """The region comes from deploy_region, like everything else in the script that names one."""
+    source = (REPO_ROOT / "scripts" / "setup_repo.py").read_text(encoding="utf-8")
+    step = source.split("# --- The CoinGecko API key")[1].split("def _setup(")[0]
+    assert "ap-southeast-2" not in step
+    assert "coingecko_step(prompter, run, answers, deploy_region(answers, state))" in source
 
 
 def _command(env: str) -> str:
@@ -1031,7 +1010,7 @@ def test_with_no_account_id_given_in_this_run_the_step_says_to_check_the_account
     present = {setting.name for setting in sr.SETTINGS}
     commands = FakeCommands(
         secrets=present, env_secrets=present, variables=present, hooks_path=".githooks",
-        aws_account=DEV_ACCOUNT, region_variable="us-west-2",
+        aws_account=DEV_ACCOUNT, region="us-west-2",
     )
     code, out, _ = run([], ["y", ""], commands, clone(tmp_path))  # the repository; replace any? no
     assert code == 0 and commands.writes == []
@@ -1041,7 +1020,7 @@ def test_with_no_account_id_given_in_this_run_the_step_says_to_check_the_account
     # repository's AWS_REGION variable already names, since it was not asked for in this run.
     summary = out.split("== Summary ==")[1]
     assert "Nothing to set." in summary and sr.coingecko_command("prod", "us-west-2") in summary
-    assert sr.DEFAULT_AWS_REGION not in section
+    assert sr.DEFAULT_REGION not in section
 
 
 def test_a_dry_run_shows_the_step_does_not_need_aws_and_cannot_run_the_ssm_write(tmp_path):
@@ -1116,3 +1095,116 @@ def test_an_actions_value_never_shows_in_its_repr(tmp_path):
     action = sr.Action("secret", "X", "repo", "hunter2-value")
     assert "hunter2-value" not in repr(action)
     assert "hunter2-value" not in action.described(REPO, tmp_path)
+
+
+# --- The region (docs/deploying-your-own.md, "Deploying to another region") ------------------------
+
+
+def _role(name="AWS_DEV_DEPLOY_ROLE_ARN"):
+    return next(setting for setting in sr.SETTINGS if setting.name == name)
+
+
+def test_the_region_is_asked_first_and_the_default_matches_terraform_and_the_workflows():
+    assert [setting.name for setting in sr.SETTINGS[:2]] == ["AWS_REGION", "TF_STATE_REGION"]
+    assert sr.DEFAULT_REGION in _role("AWS_REGION").help  # the help names the default
+
+    for root in ("bootstrap", "environments/dev", "environments/production"):
+        variables = (sr.ROOT / "infra" / root / "variables.tf").read_text(encoding="utf-8")
+        block = variables.split('variable "aws_region" {')[1].split("\n}\n")[0]
+        assert re.search(rf'^  default\s*=\s*"{sr.DEFAULT_REGION}"$', block, re.M), root
+        # The script's check is the variable's own regex, so an answer it accepts, Terraform does.
+        assert f'can(regex("^{sr.REGION_SHAPE}$", var.aws_region))' in block, root
+    for name in ("terraform.yml", "destroy-dev.yml", "terraform-production-release.yml"):
+        text = (sr.ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert f"TF_VAR_aws_region: ${{{{ vars.AWS_REGION || '{sr.DEFAULT_REGION}' }}}}" in text, name
+
+
+def test_deploy_region_is_the_answer_then_what_is_already_set_then_the_default():
+    """The one place anything in the script reads the region from."""
+    assert sr.deploy_region({}) == sr.DEFAULT_REGION
+    assert sr.deploy_region({}, sr.State()) == sr.DEFAULT_REGION
+    assert sr.deploy_region({}, sr.State(region="eu-west-1")) == "eu-west-1"
+    assert sr.deploy_region({"AWS_REGION": "us-west-2"}, sr.State(region="eu-west-1")) == "us-west-2"
+
+
+def test_the_bootstrap_steps_name_the_answered_region_and_no_other():
+    steps = sr.role_steps(_role(), REPO, True, REGION)
+    assert f'-var="aws_region={REGION}"' in steps
+    assert {found.group(0) for found in re.finditer(sr.REGION_SHAPE, steps)} == {REGION}
+
+    # The default needs no argument: these are the steps exactly as they were before the setting.
+    default = sr.role_steps(_role(), REPO, True, sr.DEFAULT_REGION)
+    assert default == sr.role_steps(_role(), REPO, True)
+    assert "aws_region" not in default and not re.search(sr.REGION_SHAPE, default)
+    assert '-var="budget_alert_email=<you@example.com>"\n  2. Read the ARN' in default
+
+
+def test_another_region_says_what_else_to_change_by_hand_and_the_default_says_nothing():
+    assert sr.region_notes(sr.DEFAULT_REGION) == ""
+    notes = sr.region_notes(REGION)
+    for needed in (
+        "bedrock_inference_profile_id", "terraform.tfvars", "Bedrock model access", "Lambda Web Adapter",
+        f'-var="aws_region={REGION}"', "frontend/privacy.html", "us-east-1", "docs/deploying-your-own.md",
+    ):
+        assert needed in notes, needed
+    assert sr.DEFAULT_REGION not in notes
+    # What it points at is real.
+    for env in ("dev", "production"):
+        variables = (sr.ROOT / "infra" / "environments" / env / "variables.tf").read_text(encoding="utf-8")
+        assert 'variable "bedrock_inference_profile_id" {' in variables
+    assert "Sydney" in (sr.ROOT / "frontend" / "privacy.html").read_text(encoding="utf-8")
+
+
+def test_a_run_with_another_region_uses_it_everywhere_it_prints(tmp_path):
+    commands = FakeCommands()
+    code, out, _ = run(["--dry-run"], FULL_RUN, commands, clone(tmp_path))
+    assert code == 0 and commands.writes == []
+
+    assert f"The region is {REGION}." in out
+    assert "four things are yours to do by hand" in out
+    # Both role questions print the bootstrap command with the answered region.
+    assert out.count(f'-var="aws_region={REGION}"') >= 3  # the notes, and the two role questions
+    # Shown in full in the summary: a region is public.
+    summary = out.split("== Summary ==")[1]
+    assert f"AWS_REGION  [variable, repository]  {REGION}" in summary
+    assert f"TF_STATE_REGION  [variable, repository]  {STATE_REGION}" in summary
+    assert f"Remember: {REGION} is not the default region." in summary
+    # The only place the default region is named is the question's own help text.
+    asked, rest = out.split("== TF_STATE_REGION")
+    assert asked.count(sr.DEFAULT_REGION) == 1 and sr.DEFAULT_REGION not in rest
+
+
+def test_a_run_with_the_default_region_prints_no_extra_steps(tmp_path):
+    answers = list(FULL_RUN)
+    answers[1:3] = ["", ""]  # AWS_REGION and TF_STATE_REGION left blank
+    commands = FakeCommands()
+    code, out, _ = run([], [*answers, "y"], commands, clone(tmp_path))
+    assert code == 0
+
+    assert f"The region is {sr.DEFAULT_REGION}. (Nothing to set.)" in out
+    assert "yours to do by hand" not in out and "Remember:" not in out
+    assert "aws_region=" not in out
+    # Nothing is written for a setting left blank: the workflows fall back to the default.
+    written = {argv[3] for argv, _ in commands.writes if argv[0] == "gh"}
+    assert {"AWS_REGION", "TF_STATE_REGION"}.isdisjoint(written)
+
+
+def test_a_region_already_set_is_skipped_and_still_used(tmp_path):
+    """A variable's value can be read back, so a region set on an earlier run still reaches the
+    bootstrap steps and the reminders without being asked again."""
+    commands = FakeCommands(variables={"AWS_REGION"}, region=REGION, hooks_path=".githooks")
+    answers = ["y", "", DEV_ACCOUNT, "", "y"]  # repository; replace any: no; account id; stub; confirm
+    code, out, _ = run(["--only", "AWS_REGION", "AWS_DEV_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN"], answers,
+                       commands, clone(tmp_path))
+    assert code == 0
+    assert [argv[3] for argv, _ in commands.writes] == ["AWS_DEV_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN"]
+    assert f"AWS_REGION is already set to {REGION}." in out
+    assert "four things are yours to do by hand" in out
+    assert f'-var="aws_region={REGION}"' in out.split("== AWS_DEV_DEPLOY_ROLE_ARN")[1]
+    # Reading it back is a read: a dry run may do it too.
+    assert sr.is_read_only(["gh", "api", f"repos/{REPO}/actions/variables/AWS_REGION", "--jq", ".value"])
+
+
+def test_a_stored_region_that_is_not_region_shaped_is_ignored():
+    commands = FakeCommands(variables={"AWS_REGION"}, region="$(nonsense)")
+    assert sr.read_state(commands, REPO).region == ""

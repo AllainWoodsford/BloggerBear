@@ -6,6 +6,8 @@
 **Deadline: Friday 23 October 2026, 12:00 pm PDT = Saturday 24 October, 6:00 am Sydney.**
 **Parked:** [alexa-plus-mcp-enhancement.md](alexa-plus-mcp-enhancement.md), the public "Ask
 BloggerBear" tools for readers. Not part of this work.
+**How Alexa+ fits on top:** [alexa-plus.md](alexa-plus.md) (the voice, the real add-on, the async
+briefing, and the PR plan).
 
 ## The idea
 

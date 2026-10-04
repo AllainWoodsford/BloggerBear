@@ -33,7 +33,11 @@ What it does, in order:
    confirm it. **In a fork, `gh` can pick the original repository. Read the name.**
 2. Lists what is already set, by name. A secret's value cannot be read back, by anyone, and the
    script never tries. Settings that are already set are skipped unless you ask to replace them.
-3. Asks for each setting that is left, with a short explanation and a check: your allowed
+3. Asks for each setting that is left, with a short explanation and a check. The region comes
+   first (`AWS_REGION`, a plain variable; press Enter for the default, `ap-southeast-2`),
+   because the steps it prints later name it. If you choose another region it lists what else
+   you must change by hand (see [Deploying to another region](#deploying-to-another-region))
+   and adds the region to the bootstrap command it shows. Then: your allowed
    address ranges, the alert emails, the two account IDs, the two deploy role ARNs (with the
    steps to create them and the ARN it expects, which you can accept by pressing Enter), the
    state bucket names, the name suffix, and `PII_DENYLIST`. Press Enter to leave an optional
