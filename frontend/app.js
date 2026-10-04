@@ -897,6 +897,7 @@
     weekly_reflection: "Weekly reflection",
     gear_identity: "Gear naming",
     comment_screening: "Comment screening",
+    assistant: "Operator assistant",
   };
 
   function formatHours(value) {

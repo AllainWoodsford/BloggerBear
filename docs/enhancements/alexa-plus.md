@@ -234,6 +234,23 @@ serverless stack; the bootstrap is once per environment, by a person, on their o
    for the briefing".
 6. Dev and production are **two add-ons** (two add-on ids), each pointing at its own environment.
 
+### 4.7 What it costs, recorded and bounded
+
+- **Every agent run is tallied** onto the week's Stats row under the `assistant` category
+  (`common/stats_tracking.py`, `record_assistant_run`): its model calls, tokens and cost, from
+  Strands' own count, whether the run answered, was cut off or failed. So it is on the public
+  Stats page ("Operator assistant"), in the `spend` tool's AI spend, and per environment, the same
+  week it is spent. The agent's role may `UpdateItem` the Stats table and nothing else of it
+  (`costs.tf`); it prices from the built-in table, since it reads no Models table.
+- **Each user gets 100 questions a UTC day** (`agent_daily_question_cap`; `ops_agent/quota.py`),
+  briefings Alexa+ starts included, counted before the model is called. Past it the page gets a
+  429 with plain words; a count that cannot be kept refuses (503), it never becomes a free question.
+- **Everything else the assistant uses** (Lambda, API Gateway, DynamoDB, Cognito, Logs Insights,
+  the keep-warm schedule) is on the account's bill, which the daily Cost Explorer poll already
+  reads in full and groups as Infrastructure on the Stats page. That is account-wide (dev and
+  production together) and a day behind; splitting it by environment needs cost-allocation tags,
+  activated by hand in the Billing console.
+
 ## 5. Security notes
 
 - **No new way to change the pipeline.** `start_briefing` changes only the briefings table and
