@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import boto3
 import pytest
+from moto import mock_aws
 from starlette.testclient import TestClient
+from table_schemas import create_table
 
 from ops_mcp import server
 
@@ -22,6 +25,34 @@ META = {
     "io.modelcontextprotocol/clientInfo": {"name": "contract-test", "version": "0"},
     "io.modelcontextprotocol/clientCapabilities": {},
 }
+
+
+@pytest.fixture(autouse=True)
+def config_table(monkeypatch):
+    """The config table, with nothing in it. Every request first reads the operator's
+    `assistant_access` setting from it (ops_mcp/access.py) and is refused if it can't; no
+    setting stored means open, which is what these tests are about. The switch itself is held
+    in test_ops_mcp_access.py."""
+    for key, value in {
+        "AWS_DEFAULT_REGION": "ap-southeast-2",
+        "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing",
+        "MODEL_CONFIG_TABLE": "ModelConfig",
+    }.items():
+        monkeypatch.setenv(key, value)
+    import common.dynamo as dynamo_module
+
+    dynamo_module._dynamodb_resource = None
+    with mock_aws():
+        create_table(
+            boto3.client("dynamodb", region_name="ap-southeast-2"),
+            TableName="ModelConfig",
+            KeySchema=[{"AttributeName": "config_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "config_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield
+    dynamo_module._dynamodb_resource = None
 
 
 @pytest.fixture

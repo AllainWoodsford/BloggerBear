@@ -17,7 +17,8 @@ refuses everything, so a deployment that forgot to set it is closed, not open:
     OPS_MCP_ALLOWED_ORIGINS  comma-separated origins allowed to call from a browser (optional)
 
 Who may call at all is not decided here: an authorizer in front of the API checks the caller's
-token before this code runs.
+token before this code runs. What is decided here, first of all and on every request, is the
+operator's `assistant_access` switch (access.py): open, their own addresses only, or off.
 
 This is the only module that imports `mcp`; nothing else in lambdas/ needs the package.
 """
@@ -33,6 +34,7 @@ from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 
 from ops_mcp import tools
+from ops_mcp.access import AccessMiddleware
 
 SERVER_NAME = "bloggerbear-ops"
 SERVER_VERSION = "0.1.0"
@@ -81,7 +83,7 @@ def _from_env(name: str) -> list[str]:
 
 def create_app() -> Starlette:
     """The web app a server process runs (uvicorn, under the Lambda Web Adapter): POST /mcp."""
-    return build_server().streamable_http_app(
+    app = build_server().streamable_http_app(
         streamable_http_path=MCP_PATH,
         json_response=True,
         stateless_http=True,
@@ -91,3 +93,7 @@ def create_app() -> Starlette:
             allowed_origins=_from_env("OPS_MCP_ALLOWED_ORIGINS"),
         ),
     )
+    # Outside everything the SDK does, so a refused request reaches no route, no Host or Origin
+    # check and no tool.
+    app.add_middleware(AccessMiddleware, label="ops_mcp")
+    return app
