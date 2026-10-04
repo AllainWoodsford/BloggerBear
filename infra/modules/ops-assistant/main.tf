@@ -275,7 +275,7 @@ resource "aws_lambda_function" "ops_mcp" {
   function_name = local.name
   # The log group first (see it), and the policy too: a function that exists before its role can
   # read anything would answer its first requests with AccessDenied.
-  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings]
+  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings, aws_iam_role_policy.ops_mcp_firewall]
   role          = aws_iam_role.ops_mcp.arn
   handler       = "run.sh"
   runtime       = "python3.11"
@@ -336,6 +336,9 @@ resource "aws_lambda_function" "ops_mcp" {
         # The latest briefing per user, and the agent to start one with (briefings.tf).
         OPS_BRIEFINGS_TABLE = aws_dynamodb_table.briefings.name
         OPS_AGENT_FUNCTION  = aws_lambda_function.ops_agent.arn
+        # The firewall's log groups, as "<region>:<name>", only where firewall_review may exist
+        # (firewall.tf); empty everywhere else, and then the tool is not registered.
+        OPS_WAF_LOG_GROUPS = local.firewall_enabled ? join(",", [for group in var.waf_log_groups : "${group.region}:${group.name}"]) : ""
 
         # The SDK refuses any request whose Host header is not on this list (421), and an empty
         # list refuses everything (ops_mcp/server.py). Behind API Gateway the Host a caller sends

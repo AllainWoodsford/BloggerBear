@@ -60,7 +60,13 @@ def test_a_kind_with_no_command_says_what_to_look_at_and_nothing_to_run(kind):
 
 
 def test_the_kinds_with_no_command_are_the_ones_the_cli_cannot_fix():
-    assert WITHOUT_A_COMMAND == ["alarm_firing", "musing_dangling", "security_incident", "spend_unusual"]
+    assert WITHOUT_A_COMMAND == [
+        "alarm_firing",
+        "firewall_spike",
+        "musing_dangling",
+        "security_incident",
+        "spend_unusual",
+    ]
     for kind in WITH_A_COMMAND:
         assert suggestions.CATALOGUE[kind].what_it_does
 

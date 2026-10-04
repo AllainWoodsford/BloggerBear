@@ -35,7 +35,7 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 
-from ops_mcp import account, briefings, cli_guide, content, memory, tools
+from ops_mcp import account, briefings, cli_guide, content, firewall, memory, tools
 from ops_mcp.access import AccessMiddleware
 
 SERVER_NAME = "bloggerbear-ops"
@@ -230,6 +230,19 @@ def build_server() -> MCPServer:
         more there are. Pass `topic` (a topic id) for every setting of that one topic. Use it
         when the operator asks to list topics or about a topic's configuration."""
         return cli_guide.topics_overview(limit, topic)
+
+    # The firewall deep dive (firewall.py): production only. Registered only where this assistant
+    # may report account-wide data and has been given log groups of its own environment (or the
+    # shared one) to read, so dev's assistant does not have the tool at all. A deep dive: never
+    # offered on a briefing (ops_agent/policy.py).
+    if firewall.available():
+
+        @server.tool(annotations=_READ_ONLY, structured_output=True)
+        def firewall_review(hours: int = firewall.FIREWALL_DEFAULT_HOURS) -> dict[str, Any]:
+            """What the firewall allowed, blocked and counted in the last `hours` (1 to 72): per
+            firewall, blocks by rule and the most-blocked paths, against a typical day of the last
+            week. Only when the operator asks about the firewall; never part of a briefing."""
+            return firewall.firewall_review(hours)
 
     # For a client that cannot wait for the agent, Alexa+ above all (briefings.py): start one in
     # the background, and read the latest back. Registered only where the function has the table
