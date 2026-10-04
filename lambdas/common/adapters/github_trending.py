@@ -60,29 +60,16 @@ STAR_JUMP_ABSOLUTE_THRESHOLD = 100
 STAR_JUMP_RATIO_THRESHOLD = 1.2
 
 
-# What GitHub's terms say about this adapter (read 2026-10-04), stated plainly because the page
-# is scraped -- there is no API for Trending:
+# The credit links the Trending page: its signal (new repositories taking off) is what this adapter
+# reproduces, from the Search API (the module's docstring), and it is the page a reader knows. The
+# data itself comes through GitHub's documented REST API, under GitHub's Terms of Service and
+# Acceptable Use Policies; no attribution is prescribed, so this is a plain source credit.
 #
-#   GitHub Acceptable Use Policies, section 7 "Information Usage Restrictions"
-#   https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies
-#   "You may use information from our Service for the following reasons, regardless of whether
-#   the information was scraped, collected through our API, or obtained otherwise: Researchers
-#   may use public, non-personal information from the Service for research purposes, only if any
-#   publications resulting from that research are open access. Archivists may use public
-#   information from the Service for archival purposes."
-#   "You may not use information from the Service (whether scraped, collected through our API, or
-#   obtained otherwise) for spamming purposes, including for the purposes of sending unsolicited
-#   emails to users or selling personal information"
-#   Section 4 forbids "any form of excessive automated bulk activity" and placing "undue burden on
-#   our servers through automated means".
-#
-# So: scraping is not banned outright, and what this adapter does is small (one page per research
-# tick, a User-Agent that names the project, nothing sold, no one contacted). But the only uses
-# that section expressly permits are open-access research and archiving, and a blog summarising
-# the page is neither in so many words. The terms ask for no attribution and prescribe no wording,
-# so the line below is a plain source credit; it does not by itself make the use authorised.
-# Whether to keep, demote or drop this topic is the owner's decision (see the rules check in
-# docs/enhancements/alexa-plus-operator-assistant-enhancement.md).
+# Bugfix: #197 (source credits) named TRENDING_URL here while #199 (Search API instead of scraping)
+# removed it, and both merged, so importing this module raised NameError and every Lambda that
+# loads the adapters with it.
+TRENDING_URL = "https://github.com/trending"
+
 GITHUB_TRENDING_SOURCE = {
     "text": "Data sourced from GitHub Trending",
     "label": "GitHub Trending",
