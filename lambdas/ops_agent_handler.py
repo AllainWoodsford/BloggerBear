@@ -11,14 +11,18 @@ each question; with none, this is a briefing (ops_agent/policy.py). The answer:
 
     {"answer": "...",                       spoken by the page
      "tool_calls": [{"name", "arguments"}], what the agent called, in order, for the page to show
-     "findings": [...],                     the tools' findings, each with its suggestion card
+     "findings": [...],                     the tools' findings, as the tools returned them
      "turn": "briefing" | "follow_up"}
+
+A finding's `suggestion` is passed through whatever its shape: an action with a `command` (a fix
+to run), an action with `command: null` (something to look at), or null.
 
 **The caller's token is passed on, not used.** The `Authorization` header goes to the MCP server
 as it arrived, so the server's own authorizer sees the same caller. This code never decodes it.
 
 **Nothing is stored, and the logs hold no words.** A log line records which turn it was, which
-tools were called and how many findings came back: never the question, the answer or the token.
+tools were called, how many findings came back and how many of them are fixes to run: never the
+question, the answer or the token.
 A failure is logged by the class of the error alone, since its message could quote any of them.
 
 **What is refused, and how.** A body that is not what is described above is a 400 with a plain
@@ -36,7 +40,7 @@ import base64
 import json
 import os
 
-from ops_agent import agent
+from ops_agent import agent, policy
 
 QUESTION_MAX_CHARS = 500
 HISTORY_MAX_TURNS = 6
@@ -156,7 +160,8 @@ def _ask(event: dict) -> dict:
     names = ",".join(call["name"] for call in result["tool_calls"])
     print(
         f"ops_agent: turn={result['turn']} tool_calls={len(result['tool_calls'])} "
-        f"tools={names or '-'} findings={len(result['findings'])}"
+        f"tools={names or '-'} findings={len(result['findings'])} "
+        f"fixes={policy.suggested_fixes(result['findings'])}"
     )
     return _response(200, result)
 

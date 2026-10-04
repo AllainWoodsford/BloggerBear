@@ -155,3 +155,22 @@ class Ledger:
                 continue
             self._seen.add(key)
             self.findings.append(dict(finding))
+
+
+def suggested_fixes(findings: Iterable[Any]) -> int:
+    """How many findings carry a command for the operator to run: the "suggested fixes on
+    screen". A finding's `suggestion` has three shapes, and only the first counts:
+
+    - an action with a `command`: something to run;
+    - an action with `command: None` (an alarm, an incident, unusual spend): something to look
+      at, with nothing to run;
+    - None: a kind that has a command, about an id that failed the server's check.
+
+    All three are passed to the page unchanged; this only counts."""
+    count = 0
+    for finding in findings:
+        suggestion = finding.get("suggestion") if isinstance(finding, Mapping) else None
+        command = suggestion.get("command") if isinstance(suggestion, Mapping) else None
+        if isinstance(command, str) and command.strip():
+            count += 1
+    return count

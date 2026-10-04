@@ -198,7 +198,15 @@ def test_the_logs_hold_tool_names_and_counts_and_no_words(monkeypatch, capsys, c
     nor an earlier turn appears in anything printed or logged."""
     spoken_answer = "Crypto is held, plugh-answer-marker. One fix is on screen."
     earlier = "an earlier turn, plover-history-marker"
-    held = {"spoken": "One article is waiting.", "findings": [finding("draft_truncated", "a1", "rewrite a1")]}
+    look_only = {"action": "Look at the alarm on the dashboard", "command": None, "what_it_does": None}
+    held = {
+        "spoken": "One article is waiting.",
+        "findings": [
+            finding("draft_truncated", "a1", "rewrite a1"),  # a fix to run
+            {**finding("alarm", "bloggerbear-dev-dlq"), "suggestion": look_only},  # nothing to run
+            finding("no_article_today", "bad id"),  # suggestion: None
+        ],
+    }
     fakes = [FakeTool("pipeline_health", held), FakeTool("admin_inbox", held)]
     model = ScriptedModel([[("pipeline_health", {}), ("admin_inbox", {"topic": "crypto"})], spoken_answer])
     connected = {}
@@ -226,6 +234,7 @@ def test_the_logs_hold_tool_names_and_counts_and_no_words(monkeypatch, capsys, c
     everything = printed.out + printed.err + caplog.text
     for secret in (QUESTION, "xyzzy", spoken_answer, "plugh", earlier, "plover", TOKEN, TOKEN.split(".")[1]):
         assert secret not in everything
+    assert result["findings"] == held["findings"]  # all three shapes, unchanged
     assert printed.out.strip() == (
-        "ops_agent: turn=follow_up tool_calls=2 tools=pipeline_health,admin_inbox findings=1"
+        "ops_agent: turn=follow_up tool_calls=2 tools=pipeline_health,admin_inbox findings=3 fixes=1"
     )

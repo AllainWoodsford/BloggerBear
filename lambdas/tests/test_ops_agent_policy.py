@@ -181,6 +181,52 @@ def test_findings_are_de_duplicated_by_kind_and_id_in_the_order_found():
     assert ledger.spoken == ["Crypto failed.", "One article is held.", "Nothing new."]
 
 
+# The three shapes a finding's suggestion has (ops_mcp/suggestions.py).
+RUN_THIS = finding("draft_truncated", "a1", "python scripts/admin_cli.py articles rewrite a1")
+LOOK_AT_THIS = {
+    **finding("alarm", "bloggerbear-dev-dlq-depth"),
+    "suggestion": {"action": "Look at the alarm on the dashboard", "command": None, "what_it_does": None},
+}
+NO_SUGGESTION = finding("no_article_today", "not a valid id")  # the id failed the server's check
+
+
+def test_a_finding_is_passed_on_unchanged_whatever_its_suggestion():
+    ledger = policy.Ledger(policy.BRIEFING, SERVER_TOOLS)
+    returned = [RUN_THIS, LOOK_AT_THIS, NO_SUGGESTION]
+
+    ledger.record({"spoken": "Three things.", "findings": returned})
+
+    assert ledger.findings == returned
+    assert ledger.findings[1]["suggestion"] == {
+        "action": "Look at the alarm on the dashboard",
+        "command": None,
+        "what_it_does": None,
+    }
+    assert ledger.findings[2]["suggestion"] is None
+
+
+def test_only_a_suggestion_with_a_command_counts_as_a_suggested_fix():
+    assert policy.suggested_fixes([RUN_THIS, LOOK_AT_THIS, NO_SUGGESTION]) == 1
+    assert policy.suggested_fixes([LOOK_AT_THIS, NO_SUGGESTION]) == 0
+    assert policy.suggested_fixes([]) == 0
+
+
+@pytest.mark.parametrize(
+    "suggestion",
+    [
+        None,
+        {"action": "Look", "command": None, "what_it_does": None},
+        {"action": "Look", "command": "", "what_it_does": None},
+        {"action": "Look", "command": "   "},
+        {"action": "Look"},
+        {"action": "Look", "command": 7},
+        "python scripts/admin_cli.py topics delete crypto",
+    ],
+)
+def test_a_suggestion_with_no_usable_command_is_not_counted(suggestion):
+    assert policy.suggested_fixes([{**RUN_THIS, "suggestion": suggestion}, "not a finding"]) == 0
+
+
 @pytest.mark.parametrize(
     "structured",
     [
