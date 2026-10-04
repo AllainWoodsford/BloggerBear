@@ -2551,7 +2551,9 @@ def test_api_gateways_own_errors_carry_the_cors_header_for_the_one_origin():
         '"gatewayresponse.header.Access-Control-Allow-Origin" = "\'${var.agent_allowed_origin}\'"' in code
     )
     assert code.count("gatewayresponse.") == 1 and "*" not in code
-    assert re.search(r'response_parameters\s*=\s*merge\(\s*var\.agent_allowed_origin == "" \? \{\} : \{', code)
+    assert re.search(
+        r'response_parameters\s*=\s*merge\(\s*var\.agent_allowed_origin == "" \? \{\} : \{', code
+    )
     # The one other header: a 401's WWW-Authenticate, for MCP clients (alexa.tf).
     assert re.search(r'each\.key == "UNAUTHORIZED" \? local\.www_authenticate : \{\}', code)
     assert re.search(r"OPS_AGENT_ALLOWED_ORIGIN\s*=\s*var\.agent_allowed_origin", module)

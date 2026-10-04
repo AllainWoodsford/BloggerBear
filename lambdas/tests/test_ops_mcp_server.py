@@ -134,7 +134,11 @@ def test_the_alexa_plus_sequence_works_as_standalone_posts_with_no_session(clien
 
     opened = post(
         "initialize",
-        {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "alexa-like", "version": "0"}},
+        {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "alexa-like", "version": "0"},
+        },
         version_header=False,  # the handshake is what agrees the version
     )
     assert opened.status_code == 200
@@ -150,7 +154,8 @@ def test_the_alexa_plus_sequence_works_as_standalone_posts_with_no_session(clien
     names = {tool["name"] for tool in listed.json()["result"]["tools"]}
     assert {"pipeline_health", "admin_inbox"} <= names
 
-    with patch.object(server.tools, "admin_inbox", return_value={"spoken": "Nothing waiting.", "findings": []}):
+    quiet = {"spoken": "Nothing waiting.", "findings": []}
+    with patch.object(server.tools, "admin_inbox", return_value=quiet):
         called = post("tools/call", {"name": "admin_inbox", "arguments": {}}, request_id=3)
     assert called.status_code == 200
     result = called.json()["result"]
