@@ -71,3 +71,29 @@ output "ops_hosted_ui_domain" {
   value       = module.ops_assistant.hosted_ui_domain
   description = "Host name of Cognito's hosted sign-in page for the assistant (https://<this>/oauth2/authorize)."
 }
+
+output "ops_oauth_protected_resource_url" {
+  value       = module.ops_assistant.oauth_protected_resource_url
+  description = "The MCP server's Protected Resource Metadata (RFC 9728), for the Alexa+ bootstrap (alexa/README.md)."
+}
+
+output "ops_oauth_authorize_url" {
+  value       = module.ops_assistant.oauth_authorize_url
+  description = "Cognito's authorization endpoint, for `alexa-ai configure-account-linking`."
+}
+
+output "ops_oauth_token_url" {
+  value       = module.ops_assistant.oauth_token_url
+  description = "Cognito's token endpoint, for `alexa-ai configure-account-linking`."
+}
+
+output "ops_alexa_client_id" {
+  value       = module.ops_assistant.alexa_client_id
+  description = "Dev's Alexa app client id, once ops_alexa_redirect_uris is set; null before."
+}
+
+output "ops_alexa_client_secret" {
+  value       = module.ops_assistant.alexa_client_secret
+  description = "Dev's Alexa app client secret: `terraform output -raw ops_alexa_client_secret`, on the operator's own machine only."
+  sensitive   = true
+}

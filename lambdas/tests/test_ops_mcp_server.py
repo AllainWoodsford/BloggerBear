@@ -113,6 +113,51 @@ def test_it_still_answers_a_client_that_opens_with_initialize(client):
     assert "mcp-session-id" not in response.headers  # stateless: nothing to remember between requests
 
 
+def test_the_alexa_plus_sequence_works_as_standalone_posts_with_no_session(client):
+    """The Alexa+ toolkit speaks 2025-11-25 (docs/enhancements/alexa-plus.md, section 2): the
+    handshake, the `initialized` notification, then `tools/list` and `tools/call`. Behind a
+    Lambda every one of those is its own request with nothing kept between them, so each must
+    be answered as it stands, with no session id given or asked for."""
+    legacy = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+
+    def post(method, params=None, *, request_id=1, version_header=True):
+        body = {"jsonrpc": "2.0", "method": method, "params": params or {}}
+        if request_id is not None:
+            body["id"] = request_id
+        headers = dict(legacy)
+        if version_header:
+            headers["MCP-Protocol-Version"] = "2025-11-25"
+        return client.post(server.MCP_PATH, content=json.dumps(body), headers=headers)
+
+    opened = post(
+        "initialize",
+        {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "alexa-like", "version": "0"}},
+        version_header=False,  # the handshake is what agrees the version
+    )
+    assert opened.status_code == 200
+    assert opened.json()["result"]["protocolVersion"] == "2025-11-25"
+    assert "tools" in opened.json()["result"]["capabilities"]
+    assert "mcp-session-id" not in opened.headers
+
+    noted = post("notifications/initialized", request_id=None)
+    assert noted.status_code == 202
+
+    listed = post("tools/list", request_id=2)
+    assert listed.status_code == 200
+    names = {tool["name"] for tool in listed.json()["result"]["tools"]}
+    assert {"pipeline_health", "admin_inbox"} <= names
+
+    with patch.object(server.tools, "admin_inbox", return_value={"spoken": "Nothing waiting.", "findings": []}):
+        called = post("tools/call", {"name": "admin_inbox", "arguments": {}}, request_id=3)
+    assert called.status_code == 200
+    result = called.json()["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"]["spoken"] == "Nothing waiting."
+
+
 def test_a_version_it_does_not_speak_is_refused_with_the_ones_it_does(client):
     response = call(client, "tools/list", headers={"MCP-Protocol-Version": "1999-01-01"})
 

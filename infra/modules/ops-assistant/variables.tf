@@ -160,3 +160,31 @@ variable "aws_region" {
   type        = string
   description = "The deployment's home region (the calling root's var.aws_region). It goes into the Web Adapter layer's ARN (the layer is published per region), the API's and the sign-in page's host names, and the ARNs in both roles' policies. No default, so a root cannot forget to pass it."
 }
+
+variable "alexa_redirect_uris" {
+  type        = list(string)
+  default     = []
+  description = "Alexa's account-linking redirect URLs, as `alexa-ai configure-account-linking` prints them (alexa/README.md). Empty (the default): no Alexa app client is made, and nothing can link an Alexa account to this environment. Set per environment, so dev's Alexa add-on can only sign in to dev's user pool and production's to production's."
+
+  validation {
+    condition     = alltrue([for uri in var.alexa_redirect_uris : startswith(uri, "https://")])
+    error_message = "Every Alexa redirect URL must be https://: Cognito refuses anything else but localhost."
+  }
+}
+
+variable "alexa_client_secret" {
+  type        = bool
+  default     = true
+  description = "Whether the Alexa app client has a client secret (Alexa's account linking sends one, as well as PKCE). Turn off only if the toolkit registers a public client."
+}
+
+variable "alexa_refresh_token_days" {
+  type        = number
+  default     = 30
+  description = "How long a linked Alexa account stays signed in without the operator signing in again, in days (Cognito allows 1 to 3650). Unlinking in the Alexa app, or signing the user out everywhere, ends it sooner."
+
+  validation {
+    condition     = var.alexa_refresh_token_days >= 1 && var.alexa_refresh_token_days <= 90
+    error_message = "alexa_refresh_token_days must be between 1 and 90."
+  }
+}

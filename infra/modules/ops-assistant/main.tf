@@ -543,6 +543,8 @@ resource "aws_api_gateway_deployment" "this" {
       uri           = aws_api_gateway_integration.mcp.uri
       # The agent's two routes on /ask (agent.tf), by the same rule.
       agent = local.agent_redeployment
+      # The OAuth metadata documents (alexa.tf), by the same rule.
+      alexa = local.alexa_redeployment
     }))
   }
 

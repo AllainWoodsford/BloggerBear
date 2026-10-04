@@ -329,15 +329,22 @@ resource "aws_api_gateway_integration" "ask_options" {
 # That gives a browser nothing: reading a 401 from another origin was never the protection, and
 # the MCP server still refuses a request whose Origin it does not expect (OPS_MCP_ALLOWED_ORIGINS).
 # With no origin configured the header is left off, and no page can read these, as before.
+#
+# The 401 carries one more header, WWW-Authenticate, for MCP clients (alexa.tf).
 resource "aws_api_gateway_gateway_response" "cors" {
   for_each = toset(["UNAUTHORIZED", "ACCESS_DENIED", "THROTTLED", "DEFAULT_5XX"])
 
   rest_api_id   = aws_api_gateway_rest_api.this.id
   response_type = each.key
 
-  response_parameters = var.agent_allowed_origin == "" ? {} : {
-    "gatewayresponse.header.Access-Control-Allow-Origin" = "'${var.agent_allowed_origin}'"
-  }
+  response_parameters = merge(
+    var.agent_allowed_origin == "" ? {} : {
+      "gatewayresponse.header.Access-Control-Allow-Origin" = "'${var.agent_allowed_origin}'"
+    },
+    # A 401 also says where to find out how to sign in (alexa.tf): the MCP authorization spec's
+    # discovery starts from this header.
+    each.key == "UNAUTHORIZED" ? local.www_authenticate : {},
+  )
 }
 
 locals {

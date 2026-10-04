@@ -2388,6 +2388,10 @@ module "ops_assistant" {
 
   mfa_configuration = var.ops_assistant_mfa
 
+  # Alexa+ account linking (docs/enhancements/alexa-plus.md, alexa/README.md): dev's own Alexa
+  # add-on, signing in to dev's pool only. Empty until the one-time bootstrap prints them.
+  alexa_redirect_uris = var.ops_alexa_redirect_uris
+
   # The operator's addresses, for when the assistant_access setting is "allowlist": the same
   # list aws_wafv2_ip_set.admin_allowlist is built from, so the two cannot disagree. Empty
   # (a local apply without TF_VAR_admin_allowed_cidrs) is fine while the setting is "open", the
