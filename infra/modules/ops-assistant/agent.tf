@@ -63,7 +63,7 @@ data "aws_caller_identity" "current" {}
 #   rule. The MCP server itself (server.py, the tools) is not in this package.
 # - There is no run.sh: the function's handler is a Python function.
 # - requirements.txt is not installed: nothing here imports what it lists (the pipeline's
-#   requests, beautifulsoup4, markdown). requirements-ops-agent.txt names strands-agents and
+#   requests, markdown). requirements-ops-agent.txt names strands-agents and
 #   includes requirements-ops-mcp.txt, so the MCP client is the release the server is.
 #
 # Checked 2026-10-04 by resolving the whole tree for the Lambda runtime (Linux x86_64, CPython

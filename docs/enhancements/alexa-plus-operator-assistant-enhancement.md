@@ -94,11 +94,10 @@ the project violates.**
    it. CoinGecko's free (Demo) plan requires visible attribution (a "Data provided by CoinGecko"
    link) — check their current API terms for the exact wording, then add it to the crypto topic's
    pages, the article template and the About page. That is what makes us "authorized".
-2. **GitHub Trending is scraped, not an API.** `common/adapters/github_trending.py` fetches
-   `github.com/trending` HTML. GitHub's Acceptable Use Policies allow scraping for some purposes
-   and forbid others. Read the current wording; a low-volume, attributed summary with a clear
-   User-Agent is probably fine, but decide deliberately. The fallback is to drop or demote that
-   topic for the demo.
+2. ~~**GitHub Trending is scraped, not an API.**~~ Done 2026-10-04:
+   `common/adapters/github_trending.py` no longer fetches `github.com/trending` HTML; it calls
+   GitHub's documented REST Search API (most-starred repos created in the last week), one request
+   per tick, with an optional `GITHUB_API_TOKEN` for a higher rate limit.
 3. **Make the repo public.** Run the on-demand full scan (secrets and PII over the whole history)
    first, and read the result: once the repo is public, its history is too.
 
@@ -786,7 +785,7 @@ it as a network error; the page therefore also watches the token's own expiry ti
       endpoint (with how to get a token for the MCP Inspector).
 - [ ] Product feedback (Alexa+/MCP, Bedrock, Strands, Cognito): what worked, what didn't.
 - [ ] Friction log: `docs/friction.md`, plus the new "Alexa+ / MCP" section.
-- [ ] Before submitting: CoinGecko attribution and the GitHub Trending decision (above).
+- [ ] Before submitting: CoinGecko attribution (above). (The GitHub Trending scrape is gone.)
 
 ## Plan (4 → 23 October)
 
