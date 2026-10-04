@@ -161,8 +161,18 @@ module "static_site" {
   web_acl_id           = aws_wafv2_web_acl.this.arn
   bucket_name_suffix   = var.unique_name_suffix
 
-  # The frontend calls the public API through its CDN (module.public_api_cdn).
-  extra_connect_src = [module.public_api_cdn.domain_name]
+  # The frontend calls the public API through its CDN (module.public_api_cdn). The operator's
+  # assistant page (frontend/ask.html) also swaps its sign-in code for a token at Cognito's
+  # hosted domain, so that one host is added too; its own API is an execute-api host in this
+  # region, which connect-src already allows.
+  extra_connect_src = [
+    module.public_api_cdn.domain_name,
+    module.ops_assistant.hosted_ui_domain,
+  ]
+
+  # For the same page's push-to-talk button (the browser's speech recognition): microphone=(self),
+  # this site's own pages only. The browser still asks before any page hears anything.
+  allow_microphone = true
 }
 
 # =========================================================================
@@ -2126,9 +2136,20 @@ resource "aws_s3_object" "frontend_config" {
   content_type  = "application/javascript"
   cache_control = "no-cache"
 
+  # window.OPS_ASSISTANT is what frontend/ask.js needs to sign in and ask: the operator's
+  # assistant, as in dev, against production's own pool and API. None of it is secret (a public
+  # client id, a scope name, URLs): what is protected is every call, behind the sign-in and MFA.
   content = <<-EOT
     window.PUBLIC_API_URL = "${module.public_api_cdn.url}";
     window.SITE_URL = "${local.site_url}";
+    window.OPS_ASSISTANT = {
+      askUrl: "${trimsuffix(module.ops_assistant.mcp_url, "/mcp")}/ask",
+      hostedUiDomain: "${module.ops_assistant.hosted_ui_domain}",
+      clientId: "${module.ops_assistant.app_client_id}",
+      scope: "${module.ops_assistant.read_scope}",
+      redirectUri: "${local.site_url}/ask.html",
+      environment: "production"
+    };
   EOT
 }
 
@@ -2506,4 +2527,88 @@ resource "aws_cloudwatch_log_subscription_filter" "security_events" {
   destination_arn = aws_lambda_function.security_events.arn
 
   depends_on = [aws_lambda_permission.security_events_from_waf_logs]
+}
+
+# =========================================================================
+# The operator's assistant (infra/modules/ops-assistant): the ops MCP server, the Strands agent
+# behind POST /ask, the briefings Alexa+ reads, and production's firewall deep dive. The pilot of
+# docs/enhancements/alexa-plus-operator-assistant-enhancement.md, and the production half of
+# docs/enhancements/alexa-plus.md. Read-only on the pipeline; its own sign-in, with MFA required.
+#
+# Production's assistant reads production only, plus two things that belong to the account and
+# that only production's may report (account_wide_data): the AWS bill, and the firewall's logs,
+# including the CloudFront firewall both sites share. Dev's assistant has neither (the module's
+# isolation.tf and firewall.tf, and dev's root, which passes neither setting).
+# =========================================================================
+
+module "ops_assistant" {
+  source = "../../modules/ops-assistant"
+
+  aws_region = var.aws_region
+
+  environment_name = "production"
+
+  # The nine app tables its tools read (read-only), as in dev.
+  tables = {
+    TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }
+    ARTICLES_TABLE          = { name = module.app_data.articles_table_name, arn = module.app_data.articles_table_arn }
+    MODERATION_QUEUE_TABLE  = { name = module.app_data.moderation_queue_table_name, arn = module.app_data.moderation_queue_table_arn }
+    FAILED_EXECUTIONS_TABLE = { name = module.app_data.failed_executions_table_name, arn = module.app_data.failed_executions_table_arn }
+    MODEL_CONFIG_TABLE      = { name = module.app_data.model_config_table_name, arn = module.app_data.model_config_table_arn }
+    MUSINGS_TABLE           = { name = module.app_data.musings_table_name, arn = module.app_data.musings_table_arn }
+    SECURITY_EVENTS_TABLE   = { name = module.app_data.security_events_table_name, arn = module.app_data.security_events_table_arn }
+    STATS_CURRENT_TABLE     = { name = module.app_data.stats_current_table_name, arn = module.app_data.stats_current_table_arn }
+    STATS_HISTORY_TABLE     = { name = module.app_data.stats_history_table_name, arn = module.app_data.stats_history_table_arn }
+  }
+
+  content_bucket_name = aws_s3_bucket.content.bucket
+  content_bucket_arn  = aws_s3_bucket.content.arn
+
+  stage_name = "production"
+
+  hosted_ui_domain_prefix = "bloggerbear-production-ops${var.unique_name_suffix}"
+
+  callback_urls = ["${local.site_url}/ask.html"]
+  logout_urls   = ["${local.site_url}/ask.html"]
+
+  # The operator only, and MFA always: an authenticator app is set up at the first sign-in.
+  mfa_configuration = "ON"
+
+  # The suggestions table is protected like production's app tables.
+  protect_data = true
+
+  # The AWS bill (spend) and the firewall (firewall_review): the account's, so production's only.
+  account_wide_data = true
+  waf_log_groups = [
+    { region = var.aws_region, name = aws_cloudwatch_log_group.waf_admin.name },
+    { region = var.aws_region, name = aws_cloudwatch_log_group.waf_public_api.name },
+    # The CloudFront firewall's, which logs to us-east-1 whatever the home region is.
+    { region = "us-east-1", name = aws_cloudwatch_log_group.waf_shared.name },
+  ]
+
+  # Alexa+ account linking (alexa/README.md): production's own add-on, signing in to production's
+  # pool only. Empty until the one-time bootstrap prints Alexa's redirect URLs. Once linked, one
+  # instance is kept warm for Alexa's latency limit.
+  alexa_redirect_uris = var.ops_alexa_redirect_uris
+  keep_warm           = length(var.ops_alexa_redirect_uris) > 0
+
+  # The operator's addresses, for when assistant_access is "allowlist" (the admin API's list).
+  # Note that Alexa+ calls from Amazon's addresses: under "allowlist" every Alexa call is refused.
+  allowed_cidrs = var.admin_allowed_cidrs
+
+  throttling_rate_limit  = 5
+  throttling_burst_limit = 10
+
+  agent_model_id = local.bedrock_model_id
+
+  agent_allowed_origin = local.site_url
+
+  agent_forward_key = random_password.ops_agent_forward_key.result
+}
+
+# Made once and kept in state, as in dev: the key the agent sends the MCP server so that
+# `allowlist` judges a question by the operator's address (ops_mcp/access.py).
+resource "random_password" "ops_agent_forward_key" {
+  length  = 48
+  special = false
 }

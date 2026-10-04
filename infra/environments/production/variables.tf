@@ -221,3 +221,15 @@ variable "bedrock_inference_profile_id" {
     the model must be enabled for the account there. Ignored when var.bedrock_model_id is set.
   EOT
 }
+
+variable "ops_alexa_redirect_uris" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Alexa's account-linking redirect URLs for production's Alexa+ add-on, as `alexa-ai
+    configure-account-linking` prints them (alexa/README.md). Empty (the default): no Alexa app
+    client, and no Alexa account can be linked to production. Never dev's URLs: each environment's
+    add-on is its own, and links only to its own user pool. Setting it also keeps the MCP
+    function warm (module.ops_assistant's keep_warm).
+  EOT
+}
