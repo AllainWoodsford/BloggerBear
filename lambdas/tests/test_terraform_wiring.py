@@ -1489,6 +1489,35 @@ def _uncommented(text: str) -> str:
     return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
 
 
+def test_the_mcp_package_ships_the_cli_reference_next_to_the_code_that_reads_it():
+    """ops_mcp/cli_guide.py reads cli_reference.json from its own directory. The package build
+    copies the whole ops_mcp directory (not only its .py files) and zips the whole build
+    directory, so the file is in the Lambda; a build changed to copy by pattern, or to leave
+    files out of the zip, would break the guide at the first question and fails here."""
+    module = _uncommented(_ops_module())
+    package = ROOT / "lambdas" / "ops_mcp"
+
+    assert (package / "cli_reference.json").is_file()
+    code = (package / "cli_guide.py").read_text(encoding="utf-8")
+    assert 'REFERENCE_FILE = Path(__file__).with_name("cli_reference.json")' in code
+
+    build = _resource_block(module, "terraform_data", "package")
+    assert 'cp -r "${local.lambdas_dir}/ops_mcp" "$build_dir/ops_mcp"' in build
+    # Nothing in the build removes or filters what was copied, apart from the bytecode caches.
+    assert re.findall(r"\brm\b[^\n]*", build) == ['rm -rf "$build_dir"', "rm -rf {} +"]
+    assert "__pycache__" in build and "*.json" not in build and "--include" not in build
+
+    archive = re.search(r'^data "archive_file" "package" \{\n(.*?)^\}', module, re.S | re.M).group(1)
+    assert re.search(r"source_dir\s*=\s*local\.build_dir", archive)
+    assert "excludes" not in archive
+    # The agent's package holds only access.py of ops_mcp, and needs no more: it asks the server,
+    # and never imports the guide or reads the reference itself.
+    agent_files = [*(ROOT / "lambdas" / "ops_agent").glob("*.py"), ROOT / "lambdas" / "ops_agent_handler.py"]
+    for path in agent_files:
+        imports = re.findall(r"^(?:from|import) .*$", path.read_text(encoding="utf-8"), re.M)
+        assert not any("cli_guide" in line or "cli_reference" in line for line in imports), path.name
+
+
 def test_dev_deploys_the_ops_assistant_once():
     blocks = _module_blocks(_read("environments", "dev", "main.tf"), "modules/ops-assistant")
 
