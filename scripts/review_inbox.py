@@ -945,6 +945,11 @@ def inbox_report(api: Api, now: datetime | None = None) -> str:
             lines.append(f"  oldest: {_age(oldest, now)}")
         if queue.get("rewriting"):
             lines.append(f"Being rewritten in the background: {queue['rewriting']} (back here when done)")
+        for failed in queue.get("failed_rewrites") or []:
+            lines.append(
+                f"A rewrite did not work, and the article is still published as it was: "
+                f"{failed.get('article_id')} ({failed.get('error') or 'no reason kept'})"
+            )
     except ApiError as exc:
         lines.append(f"Articles waiting for you: could not check ({exc.message})")
 

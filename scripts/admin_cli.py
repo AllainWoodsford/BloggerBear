@@ -408,6 +408,8 @@ def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
     body = {"instructions": args.instructions}
     if args.model_id:
         body["model_id"] = args.model_id
+    if args.force:
+        body["force"] = True
     _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
 
 
@@ -1024,8 +1026,9 @@ def build_parser() -> argparse.ArgumentParser:
     rewrite_parser = articles_sub.add_parser(
         "rewrite",
         help=(
-            "Rewrite an article to fix what you say is wrong with it. A published article is "
-            "taken down first; the rewrite goes through the reviews again and waits in the inbox"
+            "Rewrite an article to fix what you say is wrong with it. A published article stays "
+            "up until its rewrite is ready, then comes down; the rewrite goes through the reviews "
+            "again and waits in the inbox"
         ),
     )
     rewrite_parser.add_argument("article_id")
@@ -1039,6 +1042,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         dest="model_id",
         help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+    )
+    rewrite_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Published articles only: take it down now, before rewriting, instead of leaving it "
+            "up until the rewrite is ready. If the rewrite then fails, it waits in the inbox, down"
+        ),
     )
     rewrite_parser.set_defaults(func=_cmd_articles_rewrite)
 

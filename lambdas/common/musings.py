@@ -246,6 +246,26 @@ def _truncate(text: str) -> str:
     return cleaned[: _MAX_MUSING_CHARS - 1].rstrip() + "…"
 
 
+def _article_fallback_text(title: str, compliant: bool) -> str:
+    """The musing when the model answers with nothing: plain, always accurate, in the same mood."""
+    if compliant:
+        return _truncate(f'Fresh from the den: I just published "{title}". Come and have a read!')
+    return _truncate(f'After a second look, "{title}" is out. Have a read and tell me what you think.')
+
+
+def _feedback_fallback_text(total: int, up_votes: int, down_votes: int, lookback_days: int) -> str:
+    """The musing when the model answers with nothing: plain, always accurate."""
+    if total == 0:
+        return _truncate(
+            f"It's been quiet in the den these last {lookback_days} days: no feedback yet. "
+            "I'm curious what you think!"
+        )
+    return _truncate(
+        f"Over the last {lookback_days} days you left me {total} piece(s) of feedback "
+        f"({up_votes} up, {down_votes} down). Thank you, I read every one."
+    )
+
+
 def generate_and_store_article_musing(
     *,
     article_id: str,
@@ -267,6 +287,9 @@ def generate_and_store_article_musing(
     failure propagates up to that handler's own top-level "never raise
     unhandled" guard, consistent with how a static-page-render failure is
     already treated.
+
+    A model that answers with nothing is not a failure, and used to publish a
+    musing with a mood and a link but no text: a plain accurate one is used instead.
     """
     mood = _ARTICLE_MUSING_MOOD_COMPLIANT if compliant else _ARTICLE_MUSING_MOOD_REVIEWED
     mood_guidance = _ARTICLE_MOOD_GUIDANCE_COMPLIANT if compliant else _ARTICLE_MOOD_GUIDANCE_REVIEWED
@@ -278,6 +301,9 @@ def generate_and_store_article_musing(
         mood_guidance=mood_guidance,
     )
     text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    if not text:
+        print(f"musings: the model wrote nothing for article {article_id}, using the plain musing")
+        text = _article_fallback_text(title, compliant)
 
     return put_musing(
         musing_id=str(uuid.uuid4()),
@@ -331,6 +357,9 @@ def generate_and_store_feedback_musing(
         mood_guidance=_FEEDBACK_MOOD_GUIDANCE[mood],
     )
     text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    if not text:
+        print("musings: the model wrote nothing for the feedback musing, using the plain one")
+        text = _feedback_fallback_text(total, up_votes, down_votes, lookback_days)
 
     return put_musing(
         musing_id=str(uuid.uuid4()),

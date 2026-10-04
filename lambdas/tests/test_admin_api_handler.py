@@ -3006,11 +3006,74 @@ def _queue_rows():
     return {row["queue_id"]: row for row in table.scan()["Items"]}
 
 
-def test_rewriting_a_published_article_takes_it_down_and_sends_it_to_the_inbox(aws_resources):
+def test_rewriting_a_published_article_leaves_it_up_until_the_rewrite_is_ready(aws_resources):
     _put_article(status="published")
     _put_moderation_item(status="approved")
 
-    result, body, client, mocks = _rewrite_article()
+    # Its queue item is made already claimed: it is never `pending`, so there is no separate claim.
+    with patch("admin_api_handler.claim_moderation_for_rewrite") as claim:
+        result, body, client, mocks = _rewrite_article()
+
+    claim.assert_not_called()
+    assert result["statusCode"] == 202
+    assert body["unpublished"] is False and body["stays_published_until_rewritten"] is True
+    mocks["remove"].assert_not_called()
+    mocks["musings"].assert_not_called()
+    mocks["invalidate"].assert_not_called()
+    assert _article_row()["status"] == "published"
+    rows = _queue_rows()
+    assert rows["queue-1"]["status"] == "approved"
+    new = rows[body["rewriting"]]
+    assert new["status"] == "rewriting" and new["reasons"] == ["sent back by a person for a rewrite"]
+    payload = json.loads(client.invoke.call_args.kwargs["Payload"])
+    assert payload == {"action": "rewrite", "queue_id": new["queue_id"], "rewrite_id": new["rewrite_id"]}
+
+
+def test_a_published_article_already_being_rewritten_is_refused(aws_resources):
+    _put_article(status="published")
+
+    first, _, _, _ = _rewrite_article()
+    second, _, client, _ = _rewrite_article()
+
+    assert first["statusCode"] == 202 and second["statusCode"] == 409
+    client.invoke.assert_not_called()
+    assert len(_queue_rows()) == 1
+
+
+def test_a_published_article_whose_rewrite_cannot_start_stays_published_and_out_of_the_inbox(aws_resources):
+    _put_article(status="published")
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+
+    result, body, _, mocks = _rewrite_article(client=client)
+
+    assert result["statusCode"] == 502 and "still published" in body["error"]
+    assert _article_row()["status"] == "published"
+    mocks["remove"].assert_not_called()
+    (row,) = _queue_rows().values()
+    assert row["status"] == "rewrite_failed" and row["last_rewrite_error"] and row["expires_at"]
+
+
+def test_the_queue_listing_says_which_rewrites_of_published_articles_failed(aws_resources):
+    _put_article(status="published")
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+    _rewrite_article(client=client)
+
+    listing = json.loads(admin_api_handler.handler(_event("GET /moderation-queue"), None)["body"])
+
+    assert listing["items"] == [] and listing["rewriting"] == 0
+    (failed,) = listing["failed_rewrites"]
+    assert failed["article_id"] == "article-1" and failed["error"] == "the rewrite could not be started"
+
+
+def test_force_takes_a_published_article_down_before_rewriting_it(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+
+    result, body, client, mocks = _rewrite_article(
+        body={"instructions": "The second section is out of date.", "force": True}
+    )
 
     assert result["statusCode"] == 202
     assert body["unpublished"] is True and body["musings_removed"] == 2 and body["cache_invalidated"] is True
@@ -3072,16 +3135,17 @@ def test_an_article_rewrite_needs_instructions_and_a_real_model(aws_resources):
     assert _rewrite_article(body={"instructions": "x" * 2001})[0]["statusCode"] == 400
     assert _rewrite_article(body={"instructions": "x", "model_id": "unknown"})[0]["statusCode"] == 400
     assert _rewrite_article(body={"instructions": "x", "model_id": "disabled-model"})[0]["statusCode"] == 400
+    assert _rewrite_article(body={"instructions": "x", "force": "yes"})[0]["statusCode"] == 400
     assert _rewrite_article(article_id="nope")[0]["statusCode"] == 404
     assert _article_row()["status"] == "published"  # nothing was taken down by a bad request
 
 
-def test_a_published_article_whose_rewrite_cannot_start_stays_down_and_waits_in_the_inbox(aws_resources):
+def test_a_forced_rewrite_that_cannot_start_stays_down_and_waits_in_the_inbox(aws_resources):
     _put_article(status="published")
     client = MagicMock()
     client.invoke.side_effect = RuntimeError("lambda down")
 
-    result, _, _, _ = _rewrite_article(client=client)
+    result, _, _, _ = _rewrite_article(client=client, body={"instructions": "Out of date.", "force": True})
 
     assert result["statusCode"] == 502
     assert _article_row()["status"] == "pending_moderation"
