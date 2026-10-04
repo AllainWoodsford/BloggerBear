@@ -347,6 +347,9 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect  = "Allow"
     actions = ["iam:*"]
     resources = [
+      # Also matches the operator's assistant's separate, read-only role
+      # (bloggerbear-<env>-ops-mcp-lambda-exec, infra/modules/ops-assistant), which was named to
+      # fit this pattern so that no new role pattern had to be added here.
       "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
       "arn:aws:iam::*:role/bloggerbear-*-states-exec",
       "arn:aws:iam::*:role/bloggerbear-*-scheduler-invoke",
@@ -616,6 +619,55 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect    = "Allow"
     actions   = ["cloudtrail:LookupEvents"]
     resources = ["*"]
+  }
+
+  # The operator's assistant (infra/modules/ops-assistant): its Cognito user pool, with the pool's
+  # hosted domain, resource server and app client, all of which are addressed by the pool's ARN.
+  # A pool's id is generated (ap-southeast-2_XXXXXXXXX), so there is no bloggerbear-* name to scope
+  # to the way tables and functions are: this is scoped to user pools in this project's one region
+  # instead, the same trade as LambdaEventSourceMappings above. cognito-idp:* rather than a list --
+  # see DynamoDBAppTables for why (creating a pool with MFA set also calls SetUserPoolMfaConfig and
+  # GetUserPoolMfaConfig, which nothing in the resource's own arguments suggests).
+  #
+  # What this lets the deploy role do that it could not before: manage any user pool in the
+  # account's Sydney region, including creating and deleting users in it. The account has no pool
+  # but the assistant's. Nothing in Terraform creates a user; that stays with the operator.
+  statement {
+    sid       = "CognitoUserPools"
+    effect    = "Allow"
+    actions   = ["cognito-idp:*"]
+    resources = ["arn:aws:cognito-idp:ap-southeast-2:*:userpool/*"]
+  }
+
+  # The three Cognito calls the above cannot cover, because they name no pool and so only ever
+  # match "*" (the same story as NotResourceScopable above):
+  #   - CreateUserPool: the pool has no ARN until it exists.
+  #   - DescribeUserPoolDomain: looks a domain prefix up across the region, to see whether it is
+  #     taken and to read it back (aws_cognito_user_pool_domain's read after create).
+  #   - ListUserPools: listing only.
+  statement {
+    sid    = "CognitoNotResourceScopable"
+    effect = "Allow"
+    actions = [
+      "cognito-idp:CreateUserPool",
+      "cognito-idp:DescribeUserPoolDomain",
+      "cognito-idp:ListUserPools",
+    ]
+    resources = ["*"]
+  }
+
+  # The assistant's Lambda runs behind the AWS Lambda Web Adapter, attached as a layer that the
+  # adapter project publishes from its own AWS account (the one in the ARN below; see the URL
+  # beside the same ARN in infra/modules/ops-assistant/main.tf). Creating or updating a function
+  # with a layer needs lambda:GetLayerVersion on that layer version, and LambdaFunctions above
+  # covers only this account's bloggerbear-* functions. Read-only, on that one layer; any version
+  # of it, so pinning a newer one is a change to the module alone. x86_64 only: nothing here runs
+  # on arm64.
+  statement {
+    sid       = "LambdaWebAdapterLayer"
+    effect    = "Allow"
+    actions   = ["lambda:GetLayerVersion"]
+    resources = ["arn:aws:lambda:ap-southeast-2:753240598075:layer:LambdaAdapterLayerX86:*"]
   }
 
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever

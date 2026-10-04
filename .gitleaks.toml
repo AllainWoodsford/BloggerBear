@@ -47,6 +47,14 @@ tags = ["pii"]
   description = "AWS's documentation placeholders"
   regexes = ['''^(?:123456789012|111111111111|000000000000)$''']
 
+  # Not ours, and not private: the account the AWS Lambda Web Adapter project publishes its layer
+  # from, printed in its README (https://github.com/awslabs/aws-lambda-web-adapter#zip-packages).
+  # The layer's ARN has to be written out in infra/modules/ops-assistant and in the deploy role's
+  # policy. This one id only; any other account in an ARN still fails.
+  [[rules.allowlists]]
+  description = "The AWS Lambda Web Adapter's public layer-publishing account"
+  regexes = ['''^753240598075$''']
+
 [[rules]]
 id = "aws-account-id-labelled"
 description = "A 12-digit number labelled as an account. Tests and docs use 123456789012."
