@@ -1444,7 +1444,11 @@ def test_both_regional_waf_log_groups_feed_the_security_events_lambda_blocks_onl
     assert 'source_arn    = "${each.value.arn}:*"' in text
     assert "SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name" in text
     # The CloudFront ACL's log group is in us-east-1: a subscription can't reach this region's Lambda.
-    assert "waf_shared" not in text.split('resource "aws_lambda_function" "security_events"')[1]
+    # (Only the security-events section is looked at: the operator's assistant, further down, does
+    # read the shared group, through Logs Insights, which can.)
+    section = text.split('resource "aws_lambda_function" "security_events"')[1]
+    section = section.split('module "ops_assistant"')[0]
+    assert "waf_shared" not in section
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
