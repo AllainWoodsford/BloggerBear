@@ -183,12 +183,13 @@ CoinGecko API" under each crypto article and topic title and on the About page.
 
 | Name | Kind | Where | What it is |
 |---|---|---|---|
-| `/bloggerbear/dev/coingecko-api-key` | SSM parameter, `SecureString` | the dev account, `ap-southeast-2` | The key dev's crypto Lambdas read. Optional. |
-| `/bloggerbear/production/coingecko-api-key` | SSM parameter, `SecureString` | the production account, `ap-southeast-2` | The same, for production. Optional. |
+| `/bloggerbear/dev/coingecko-api-key` | SSM parameter, `SecureString` | the dev account, in your `AWS_REGION` | The key dev's crypto Lambdas read. Optional. |
+| `/bloggerbear/production/coingecko-api-key` | SSM parameter, `SecureString` | the production account, in your `AWS_REGION` | The same, for production. Optional. |
 
 Terraform does not create the parameter (its value would end up in the state file); it only lets
 the Lambdas read that one name. You create it once per environment, signed in to that
-environment's account:
+environment's account, in the region the deployment lives in (`AWS_REGION`; `ap-southeast-2` if
+you left that unset). The setup script prints this command with your region filled in:
 
 ```bash
 aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --overwrite \

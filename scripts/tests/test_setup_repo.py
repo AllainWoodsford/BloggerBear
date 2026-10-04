@@ -77,9 +77,11 @@ class FakeCommands:
         aws_signed_in=True,
         parameters=(),
         parameters_readable=True,
+        region_variable=None,
     ):
         # `aws`: not installed unless an account is given (most tests are about GitHub).
         self.aws_account, self.aws_signed_in = aws_account, aws_signed_in
+        self.region_variable = region_variable  # the AWS_REGION variable's value, if it is set
         self.parameters, self.parameters_readable = set(parameters), parameters_readable
         self.installed, self.signed_in = installed, signed_in
         self.secrets, self.variables, self.env_secrets = set(secrets), set(variables), set(env_secrets)
@@ -128,6 +130,9 @@ class FakeCommands:
                 return sr.Result(0, "\n".join(sorted(self.env_secrets)))
             if path.endswith("/actions/secrets"):
                 return sr.Result(0, "\n".join(sorted(self.secrets)))
+            if path.endswith("/actions/variables/AWS_REGION"):
+                missing = sr.Result(1, "", "gh: Not Found (HTTP 404)")
+                return sr.Result(0, f"{self.region_variable}\n") if self.region_variable else missing
             repo_level = path.endswith("/actions/variables")
             return sr.Result(0, "\n".join(sorted(self.variables)) if repo_level else "")
         if rest[1] == "set":
@@ -883,16 +888,53 @@ def test_the_parameter_names_and_region_are_the_ones_terraform_uses(env):
     main_tf = (ENVIRONMENTS / TF_FOLDER[env] / "main.tf").read_text(encoding="utf-8")
     declared = re.findall(r'^\s*coingecko_api_key_parameter\s*=\s*"([^"]+)"', main_tf, re.M)
     assert declared == [sr.COINGECKO_PARAMETERS[env]]
-    # The Lambda is granted read access to that very name, in the region the script names.
-    assert f"arn:aws:ssm:{sr.AWS_REGION}:" in main_tf
-    assert "parameter${local.coingecko_api_key_parameter}" in main_tf
-    regions = set(re.findall(r'^\s*region\s*=\s*"([^"]+)"', main_tf, re.M))
-    assert sr.AWS_REGION in regions
+    # The Lambda is granted read access to that very name, in the deployment's region: the
+    # aws_region variable, which CI fills from the AWS_REGION setting the script reads too.
+    assert (
+        "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}"
+        ":parameter${local.coingecko_api_key_parameter}"
+    ) in main_tf
+    variables_tf = (ENVIRONMENTS / TF_FOLDER[env] / "variables.tf").read_text(encoding="utf-8")
+    declared_default = r'variable "aws_region" \{\s*type\s*=\s*string\s*default\s*=\s*"([^"]+)"'
+    default = re.search(declared_default, variables_tf)
+    assert default and default.group(1) == sr.DEFAULT_AWS_REGION
+    assert next(s for s in sr.SETTINGS if s.name == "AWS_REGION").tf_var == "aws_region"
     # And the hand-run command in Terraform's own comment stores to the same name and type.
     assert f"aws ssm put-parameter --name {sr.COINGECKO_PARAMETERS[env]} --type SecureString" in main_tf
     assert sr.coingecko_command(env).startswith(
         f"aws ssm put-parameter --name {sr.COINGECKO_PARAMETERS[env]} --type SecureString "
     )
+
+
+def test_the_region_is_the_aws_region_setting_given_now_or_already_set_or_terraforms_default():
+    def gh(value):
+        calls = []
+
+        def fake(argv, stdin=None):
+            calls.append(argv)
+            return sr.Result(0, f"{value}\n") if value else sr.Result(1, "", "gh: Not Found (HTTP 404)")
+
+        return fake, calls
+
+    # Given in this run: used as it is, and nothing is looked up.
+    fake, calls = gh("us-west-2")
+    assert sr.deployment_region(fake, REPO, {"AWS_REGION": REGION}, True) == REGION and calls == []
+    # Not asked this run, but already a variable on the repository: read back (a GET).
+    fake, calls = gh("us-west-2")
+    assert sr.deployment_region(fake, REPO, {}, True) == "us-west-2"
+    assert calls == [["gh", "api", f"repos/{REPO}/actions/variables/AWS_REGION", "--jq", ".value"]]
+    assert sr.is_read_only(calls[0])
+    # Unset, unreadable or nonsense: Terraform's default.
+    for value in ("", "not a region"):
+        fake, _ = gh(value)
+        assert sr.deployment_region(fake, REPO, {}, True) == sr.DEFAULT_AWS_REGION
+    fake, calls = gh("us-west-2")
+    assert sr.deployment_region(fake, REPO, {}, False) == sr.DEFAULT_AWS_REGION and calls == []
+
+
+def _command(env: str) -> str:
+    """The command a FULL_RUN prints: its AWS_REGION answer is REGION."""
+    return sr.coingecko_command(env, REGION)
 
 
 def test_the_adapter_reads_the_parameter_the_way_the_script_tells_you_to_store_it():
@@ -911,16 +953,16 @@ def test_the_step_explains_the_key_and_prints_a_command_with_a_placeholder(tmp_p
     assert "does not store it and does not ask for it" in section
     assert "the AWS CLI is not installed or not signed in" in section
     for env in ("dev", "prod"):
-        assert f"      {sr.coingecko_command(env)}\n" in section
-    assert sr.coingecko_command("dev") == (
+        assert f"      {_command(env)}\n" in section
+    assert _command("dev") == (
         f"aws ssm put-parameter --name {DEV_PARAMETER} --type SecureString --overwrite "
-        f"--region {sr.AWS_REGION} --value YOUR_COINGECKO_API_KEY"
+        f"--region {REGION} --value YOUR_COINGECKO_API_KEY"
     )
     # Only looked for the CLI; with none there, nothing else was run.
     assert _aws_calls(commands) == [["aws", "--version"]]
     # The summary and the final report both say what is still the person's to do.
     assert out.count("Left for you to run (optional; this script does not write to AWS):") == 2
-    assert out.rstrip().endswith(f"CoinGecko API key, production: {sr.coingecko_command('prod')}")
+    assert out.rstrip().endswith(f"CoinGecko API key, production: {_command('prod')}")
 
 
 def test_the_step_never_asks_for_the_key_and_never_runs_anything_but_reads(tmp_path):
@@ -937,7 +979,7 @@ def test_the_step_never_asks_for_the_key_and_never_runs_anything_but_reads(tmp_p
         assert not any(KEY_MARKER in arg or "--value" == arg for arg in argv), argv
     assert KEY_MARKER not in out and KEY_MARKER not in err
     # The account is treated as a secret: only its last four digits are shown.
-    assert 'signed in to the account ending "1111". Region: ap-southeast-2.' in out
+    assert f'signed in to the account ending "1111". Region: {REGION}.' in out
     for value in SECRET_VALUES:
         assert value not in out
 
@@ -953,7 +995,8 @@ def test_an_environment_whose_account_is_not_the_signed_in_one_is_not_checked(tm
     assert "signed in to a different account from production's. Sign in to it first" in section
     described = [argv for argv in _aws_calls(commands) if argv[1:3] == ["ssm", "describe-parameters"]]
     assert len(described) == 1 and f"Key=Name,Option=Equals,Values={DEV_PARAMETER}" in described[0]
-    assert described[0][described[0].index("--region") + 1] == sr.AWS_REGION
+    # In the region given for AWS_REGION in this run, not the default.
+    assert described[0][described[0].index("--region") + 1] == REGION
 
 
 def test_a_parameter_that_is_already_set_is_skipped_and_its_value_never_fetched(tmp_path):
@@ -981,30 +1024,32 @@ def test_when_aws_cannot_be_read_the_step_says_so_and_still_prints_the_command(t
     code, out, _ = run([], [*FULL_RUN, "y"], commands, clone(tmp_path))
     assert code == 0
     section = _coingecko_section(out)
-    assert expected in section and sr.coingecko_command("dev") in section
+    assert expected in section and _command("dev") in section
 
 
 def test_with_no_account_id_given_in_this_run_the_step_says_to_check_the_account(tmp_path):
     present = {setting.name for setting in sr.SETTINGS}
     commands = FakeCommands(
-        secrets=present, env_secrets=present, variables={"UNIQUE_NAME_SUFFIX"}, hooks_path=".githooks",
-        aws_account=DEV_ACCOUNT,
+        secrets=present, env_secrets=present, variables=present, hooks_path=".githooks",
+        aws_account=DEV_ACCOUNT, region_variable="us-west-2",
     )
     code, out, _ = run([], ["y", ""], commands, clone(tmp_path))  # the repository; replace any? no
     assert code == 0 and commands.writes == []
     section = _coingecko_section(out)
     assert f"  dev: {DEV_PARAMETER} is not set in this account (make sure it is dev's)." in section
-    # Nothing to set on GitHub, and the summary still says what is left.
+    # Nothing to set on GitHub, and the summary still says what is left: in the region the
+    # repository's AWS_REGION variable already names, since it was not asked for in this run.
     summary = out.split("== Summary ==")[1]
-    assert "Nothing to set." in summary and sr.coingecko_command("prod") in summary
+    assert "Nothing to set." in summary and sr.coingecko_command("prod", "us-west-2") in summary
+    assert sr.DEFAULT_AWS_REGION not in section
 
 
 def test_a_dry_run_shows_the_step_does_not_need_aws_and_cannot_run_the_ssm_write(tmp_path):
     for commands in (FakeCommands(), FakeCommands(aws_account=DEV_ACCOUNT, aws_signed_in=False)):
         code, out, _ = run(["--dry-run"], FULL_RUN, commands, clone(tmp_path))
         assert code == 0 and commands.writes == []
-        assert sr.coingecko_command("dev") in _coingecko_section(out)
-        assert f"CoinGecko API key, dev: {sr.coingecko_command('dev')}" in out.split("== Summary ==")[1]
+        assert _command("dev") in _coingecko_section(out)
+        assert f"CoinGecko API key, dev: {_command('dev')}" in out.split("== Summary ==")[1]
         assert out.rstrip().endswith("Dry run: nothing was changed.")
     # The lock itself: the guarded runner a dry run uses refuses the write, however it is spelled,
     # and never hands it to the real runner.
@@ -1029,7 +1074,7 @@ def test_a_part_way_failure_still_says_what_is_left_for_you(tmp_path):
     assert code == 1
     report = out.split("Stopped at AWS_DEV_ACCOUNT_ID.")[1]
     assert "NOT written:" in report and "Left for you to run" in report
-    assert sr.coingecko_command("dev") in report and "Nothing was undone." in report
+    assert _command("dev") in report and "Nothing was undone." in report
 
 
 def test_a_run_narrowed_with_only_leaves_the_step_out(tmp_path):

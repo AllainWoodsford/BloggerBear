@@ -830,19 +830,35 @@ COINGECKO_PARAMETERS = {
     "dev": "/bloggerbear/dev/coingecko-api-key",
     "prod": "/bloggerbear/production/coingecko-api-key",
 }
-# Where the deployment lives: the region in both environments' Terraform (checked by the same
-# test). It is a literal there today. When the region becomes a setting (AWS_REGION), read it
-# from that setting here instead.
-AWS_REGION = "ap-southeast-2"
+# The region used when the AWS_REGION setting is unset: the default of Terraform's aws_region
+# variable in both environments (checked by the same test). The region itself comes from the
+# setting; see deployment_region.
+DEFAULT_AWS_REGION = "ap-southeast-2"
 COINGECKO_KEY_PLACEHOLDER = "YOUR_COINGECKO_API_KEY"
 _ENV_LABEL = {"dev": "dev", "prod": "production"}
 
 
-def coingecko_command(env: str) -> str:
+def deployment_region(run: Run, repo: str, answers: dict[str, str], gh_ready: bool) -> str:
+    """The region the deployment lives in, from the same setting the workflows read (the
+    AWS_REGION variable, passed to Terraform as aws_region): the answer just given in this run,
+    else the variable already on the repository (a variable, unlike a secret, can be read back,
+    and this is a GET), else Terraform's default."""
+    region = answers.get("AWS_REGION", "")
+    if not region and gh_ready:
+        found = run(["gh", "api", f"repos/{repo}/actions/variables/AWS_REGION", "--jq", ".value"])
+        if found.code == 0:
+            try:
+                region = check_region(found.out)
+            except Invalid:
+                region = ""
+    return region or DEFAULT_AWS_REGION
+
+
+def coingecko_command(env: str, region: str = DEFAULT_AWS_REGION) -> str:
     """The command that stores the key for `env`, with a placeholder where the key goes."""
     return (
         f"aws ssm put-parameter --name {COINGECKO_PARAMETERS[env]} --type SecureString --overwrite "
-        f"--region {AWS_REGION} --value {COINGECKO_KEY_PLACEHOLDER}"
+        f"--region {region} --value {COINGECKO_KEY_PLACEHOLDER}"
     )
 
 
@@ -856,19 +872,19 @@ def aws_account(run: Run) -> str | None:
     return account if found.code == 0 and re.fullmatch(r"[0-9]{12}", account) else None
 
 
-def coingecko_parameter_exists(run: Run, env: str) -> bool | None:
+def coingecko_parameter_exists(run: Run, env: str, region: str) -> bool | None:
     """Whether `env`'s parameter exists in the signed-in account; None if that could not be read.
     `describe-parameters` lists names and metadata. The value is never fetched."""
     name = COINGECKO_PARAMETERS[env]
     found = run([
-        "aws", "ssm", "describe-parameters", "--region", AWS_REGION,
+        "aws", "ssm", "describe-parameters", "--region", region,
         "--parameter-filters", f"Key=Name,Option=Equals,Values={name}",
         "--query", "Parameters[].Name", "--output", "text",
     ])  # fmt: skip
     return name in found.out.split() if found.code == 0 else None
 
 
-def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str]) -> list[str]:
+def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str], region: str) -> list[str]:
     """Explain the optional CoinGecko API key and say, per environment, whether it is already
     stored and how to store it. Returns the commands still left for the person to run (each with
     a placeholder for the key), for the summary. Changes nothing and asks nothing.
@@ -876,6 +892,8 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str]) -> lis
     `answers` holds the account IDs given earlier in this run, if any: the parameter belongs in
     the environment's own account, so when the AWS CLI is signed in to a different one this
     refuses to call that environment checked, and says to sign in to the right account first.
+    `region` is the deployment's (deployment_region): a parameter stored in any other region is
+    one the Lambdas cannot read.
     """
     prompter.say("\n== CoinGecko API key (optional; kept in AWS, not on GitHub) ==")
     prompter.say(
@@ -894,7 +912,7 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str]) -> lis
         )
     else:
         # The ID is treated as a secret everywhere in this script, so only its last four digits.
-        prompter.say(f'AWS CLI: signed in to the account ending "{account[-4:]}". Region: {AWS_REGION}.')
+        prompter.say(f'AWS CLI: signed in to the account ending "{account[-4:]}". Region: {region}.')
 
     pending: list[str] = []
     for env, name in COINGECKO_PARAMETERS.items():
@@ -908,7 +926,7 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str]) -> lis
                 "Sign in to it first"
             )
         else:
-            exists = coingecko_parameter_exists(run, env)
+            exists = coingecko_parameter_exists(run, env, region)
             if exists:
                 prompter.say(f"  {label}: {name} is already set. Nothing to do.")
                 continue
@@ -916,8 +934,8 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str]) -> lis
             if not expected:
                 state += f" in this account (make sure it is {label}'s)"
         prompter.say(f"  {label}: {name} is {state}. To store a key, run:")
-        prompter.say(f"      {coingecko_command(env)}")
-        pending.append(f"CoinGecko API key, {label}: {coingecko_command(env)}")
+        prompter.say(f"      {coingecko_command(env, region)}")
+        pending.append(f"CoinGecko API key, {label}: {coingecko_command(env, region)}")
     if pending:
         prompter.say(
             f"Put your key in place of {COINGECKO_KEY_PLACEHOLDER}. Typed like that it stays in your\n"
@@ -1041,7 +1059,10 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
 
     # The one AWS-side step. It only reads and explains (see coingecko_step); a run narrowed
     # with --only is about the named settings, so it is left out of those.
-    left_for_you = [] if args.only else coingecko_step(prompter, run, answers)
+    left_for_you: list[str] = []
+    if not args.only:
+        region = deployment_region(run, repo, answers, gh_ready)
+        left_for_you = coingecko_step(prompter, run, answers, region)
 
     # 4. Summary. Secret values are masked; the personal-data list is only a count.
     prompter.say("\n== Summary ==")
