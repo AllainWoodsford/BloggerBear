@@ -177,8 +177,9 @@ which is also what the judges get (section 6).
   - **No streaming.** Streamable HTTP lets a server answer every request with one JSON object, and
     that is all these tools need. So this is a plain API Gateway and Lambda integration, with the
     Cognito authorizer in front; no response streaming is configured anywhere.
-  - **The layer is regional.** Use the Web Adapter's **ap-southeast-2** arm64 layer ARN, taken from
-    its README at the version pinned; an ARN from another region fails at apply.
+  - **The layer is regional.** Use the Web Adapter's **ap-southeast-2** x86_64 layer ARN (every
+    Lambda here is x86_64, and the package's compiled wheels are built for it), taken from its
+    README at the version pinned; an ARN from another region fails at apply.
   - **Its own IAM role.** Every Lambda here shares one role today, with write and delete on all the
     app tables. This function gets a separate, read-only role (section 5), or "read-only" isn't true.
   - **No FastAPI.** The SDK already produces the web app; a second framework is one more dependency.
@@ -443,10 +444,24 @@ a public version, where the speaker is a visitor, would have no memory of any ki
     row: `python scripts/admin_cli.py pipeline-config set --assistant-access allowlist`.
   - **Values:** `open` (the default, and what a missing setting means): any signed-in user, from
     anywhere. `allowlist`: only from the operator's addresses, the same list the admin API's
-    allowlist uses. `off`: every request is refused; the assistant is switched off.
-  - **How it's enforced:** in code, not in WAF, which is what lets a table row change it. Both
-    Lambdas read the setting on every request and compare the caller's address (from API Gateway's
-    request context) with the list. If the setting can't be read, the request is refused.
+    allowlist uses, handed to each Lambda by Terraform as `OPS_ASSISTANT_ALLOWED_CIDRS`
+    (comma-separated addresses and CIDR blocks, IPv4 or IPv6). `off`: every request is refused;
+    the assistant is switched off. `''` on the command clears the setting, back to `open`.
+  - **How it's enforced:** in code, not in WAF, which is what lets a table row change it. One
+    middleware (`lambdas/ops_mcp/access.py`, with nothing about MCP in it) wraps each Lambda's web
+    app, reads the setting on every request and compares the caller's address with the list. A
+    refusal is a 403 with the same short body whatever the reason, and one log line with the
+    reason and no address.
+  - **The caller's address** is the `sourceIp` in API Gateway's request context, which the Lambda
+    Web Adapter forwards to the web app as JSON in the `x-amzn-request-context` header (its
+    `docs/guide/src/features/request-context.md`). The adapter sets that header itself, replacing
+    one a caller sent. `X-Forwarded-For` is never read.
+  - **Everything that goes wrong refuses:** a setting that can't be read, a stored value that
+    isn't one of the three (it does not fall back to `open`), an allowlist that is empty or has
+    an entry that isn't an address, a caller whose address isn't known.
+  - **Not cached:** the setting is one small read per request, so a lock-down applies from the
+    next request (as soon as DynamoDB's ordinary read shows the write, normally under a second).
+    Remembering it per warm Lambda would save a few milliseconds and leave `off` not yet off.
   - **Who can change it:** only the operator. The command goes through the admin API (IAM-signed,
     behind its own allowlist). The assistant's role can read the row and nothing more, so it can't
     unlock itself.
@@ -555,7 +570,9 @@ button. The reply is spoken with the browser's speech synthesis.
 - Auth (wiring test): both routes sit behind the authorizer with the scope; no token, an expired
   token and a wrong-pool token are rejected; production's pool requires MFA.
 - Access: no setting, or `open`, admits any address; `allowlist` admits a listed address and refuses
-  another; `off` refuses everything; a config read that fails refuses the request; the assistant's
+  another, and refuses when the list is empty or the address unknown; `off` refuses everything; a
+  config read that fails, or a stored value that isn't one of the three, refuses the request; a
+  spoofed `X-Forwarded-For` doesn't help; a refused request never reaches a tool; the assistant's
   role can't write the config row; `pipeline-config set --assistant-access` rejects an unknown
   value.
 - The role (wiring test): read-only actions only, on named resources; writes on OperatorSuggestions
@@ -597,7 +614,12 @@ that is already read on every pipeline run.
 - `log_review` doesn't read the firewall; that's a separate deep dive, only on request.
 - The assistant suggests remediations on screen and never runs them.
 - No IP allowlist by default; `assistant_access` in the existing config table can lock it to the
-  operator's addresses, or switch the assistant off, without a deploy.
+  operator's addresses, or switch the assistant off, without a deploy. **Built:** `open` /
+  `allowlist` / `off` on the `pipeline` row, set with `pipeline-config set --assistant-access`;
+  enforced by one middleware on the MCP server's web app (the agent endpoint takes the same
+  one), read on every request with no cache, the caller's address from the request context the
+  Lambda Web Adapter forwards, the list from `OPS_ASSISTANT_ALLOWED_CIDRS`; anything it can't
+  read or understand refuses (section 5).
 - Rows in the suggestions table expire after 30 days.
 - `content_checks` is in, starting with the empty musing and the fenced article.
 - The MCP server is the official Python SDK on Lambda through the Lambda Web Adapter: JSON

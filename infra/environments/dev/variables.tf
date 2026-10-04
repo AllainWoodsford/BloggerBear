@@ -109,3 +109,14 @@ variable "coingecko_api_plan" {
     error_message = "coingecko_api_plan must be \"demo\" or \"pro\"."
   }
 }
+
+variable "ops_assistant_mfa" {
+  type        = string
+  default     = "OPTIONAL"
+  description = <<-EOT
+    MFA on the operator's assistant's user pool (module.ops_assistant): "OFF", "OPTIONAL" or "ON".
+    OPTIONAL in dev: the operator's own user can have an authenticator app, and the judges' login,
+    which several people must be able to use from the testing instructions alone, can go without.
+    Production's pool will require it ("ON").
+  EOT
+}

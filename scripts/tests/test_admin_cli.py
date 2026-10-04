@@ -799,9 +799,10 @@ def test_pipeline_config_set_with_nothing_to_set_is_refused(capsys):
             _run(["pipeline-config", "set"])
     assert exc_info.value.code != 0
     m.assert_not_called()
-    assert "needs --research-interval-hours, --review-mode and/or --review-on-unavailable" in (
-        capsys.readouterr().err
-    )
+    assert (
+        "needs --research-interval-hours, --review-mode, --review-on-unavailable and/or "
+        "--assistant-access"
+    ) in capsys.readouterr().err
 
 
 def test_pipeline_config_review_mode_rejects_a_value_that_does_not_exist():
@@ -843,6 +844,35 @@ def test_pipeline_config_can_send_all_three_settings_at_once():
         "review_mode": "enforce",
         "review_on_unavailable": "hold",
     }
+
+
+@pytest.mark.parametrize("value", ["open", "allowlist", "off"])
+def test_pipeline_config_sets_who_may_reach_the_assistant(value):
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--assistant-access", value])
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/pipeline-config")
+    assert m.call_args.kwargs["body"] == {"assistant_access": value}
+
+
+def test_pipeline_config_clears_assistant_access_with_an_empty_string():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--assistant-access", ""])
+    assert m.call_args.kwargs["body"] == {"assistant_access": None}
+
+
+@pytest.mark.parametrize("value", ["closed", "Open", "allow-list", "on"])
+def test_pipeline_config_assistant_access_rejects_a_value_that_does_not_exist(value):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["pipeline-config", "set", "--assistant-access", value])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+
+
+def test_pipeline_config_assistant_access_goes_with_the_other_settings_untouched():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["pipeline-config", "set", "--review-mode", "enforce", "--assistant-access", "off"])
+    assert m.call_args.kwargs["body"] == {"review_mode": "enforce", "assistant_access": "off"}
 
 
 def test_topics_update_sets_and_clears_a_topics_own_review_mode():
