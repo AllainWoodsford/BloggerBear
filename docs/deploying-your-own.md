@@ -46,6 +46,13 @@ What it does, in order:
 5. Asks once more, then sets everything.
 6. Tells you how to turn on the git hook that stops personal data being committed, and offers to
    run that one command (`git config core.hooksPath .githooks`) for this clone.
+7. Explains the optional CoinGecko API key, the one setting kept in AWS rather than on GitHub
+   (see "The CoinGecko API key" under step 2). If the AWS CLI is installed and signed in, it
+   says which account you are signed in to (last four digits only) and whether each
+   environment's parameter is already set. It then prints the command for you to run, with a
+   placeholder where the key goes. **It does not store the key and never asks for it**: the AWS
+   CLI only takes a value as a command-line argument or from a file, and the script puts a
+   secret in neither. A run narrowed with `--only` skips this step.
 
 **What "all or nothing" means here.** Nothing is set until every answer has passed its check and
 you have confirmed the summary. Cancel at any point before that (Ctrl-C works at every question)
@@ -55,9 +62,12 @@ were not. It does not try to put old values back: they cannot be read. Run it ag
 up what is missing.
 
 A dry run cannot set anything: one function does all the writing, a dry run never reaches it,
-and a dry run's `gh` calls are limited to ones that only read.
+and a dry run's `gh` and `aws` calls are limited to ones that only read.
 
-The script sets up GitHub. It does not touch AWS: you still run the bootstrap in step 1 yourself.
+The script sets up GitHub. It changes nothing in AWS: you still run the bootstrap in step 1
+yourself, and you store the CoinGecko key yourself. The only AWS calls it makes are three reads
+for step 7 (`aws --version`, `aws sts get-caller-identity`, `aws ssm describe-parameters`, which
+lists names and never returns a value), and it works without the AWS CLI.
 It also needs the `production` environment to exist (step 2) before it can put production's
 secrets there, and tells you if it does not.
 
@@ -172,6 +182,36 @@ Why some are secrets and some are variables:
 
 Set `UNIQUE_NAME_SUFFIX` **before your first deploy and never change it**. A bucket cannot be
 renamed: changing the suffix later makes Terraform delete the buckets and create empty ones.
+
+### The CoinGecko API key (optional, in AWS)
+
+One setting is not on GitHub at all. The crypto topic reads prices from CoinGecko, and an API key
+(a free one will do: <https://www.coingecko.com/en/api>) raises its rate limit. Without a key
+the keyless public API is used, which is throttled often enough to lose some research ticks.
+**CoinGecko's terms require the site to credit them either way**; it does, with "Powered by
+CoinGecko API" under each crypto article and topic title and on the About page.
+
+| Name | Kind | Where | What it is |
+|---|---|---|---|
+| `/bloggerbear/dev/coingecko-api-key` | SSM parameter, `SecureString` | the dev account, in your `AWS_REGION` | The key dev's crypto Lambdas read. Optional. |
+| `/bloggerbear/production/coingecko-api-key` | SSM parameter, `SecureString` | the production account, in your `AWS_REGION` | The same, for production. Optional. |
+
+Terraform does not create the parameter (its value would end up in the state file); it only lets
+the Lambdas read that one name. You create it once per environment, signed in to that
+environment's account, in the region the deployment lives in (`AWS_REGION`; `ap-southeast-2` if
+you left that unset). The setup script prints this command with your region filled in:
+
+```bash
+aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --overwrite \
+  --region ap-southeast-2 --value YOUR_COINGECKO_API_KEY
+```
+
+Typed like that, the key stays in your shell's history. To avoid it, create the parameter in the
+AWS console instead: Systems Manager → Parameter Store → Create parameter, type `SecureString`,
+with the name above. In Git Bash on Windows, put `MSYS_NO_PATHCONV=1` in front of the command,
+or the name is rewritten as a file path. A paid (Pro) key also needs `coingecko_api_plan = "pro"` in that
+environment's `terraform.tfvars`. The Lambdas read the key once per cold start, so a new key is
+picked up the next time they start cold; a deploy forces that.
 
 ## 3. One account or two
 

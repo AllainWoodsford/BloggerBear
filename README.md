@@ -135,7 +135,10 @@ rollover**; and a daily **Cost Explorer poll**.
 5. New data sources are adapters (`fetch_state` / `material_diff` /
    `source_refs`), never core-pipeline branches — proven by the fact that
    adding the 2nd and 3rd adapters (Phase 7) touched zero lines of
-   `research_tick_handler.py`'s actual flow.
+   `research_tick_handler.py`'s actual flow. A new adapter must also declare
+   its data sources (`sources`), which is what credits them under every
+   article and topic title; see "Adding an adapter" in
+   `docs/project-plan.md` §6.
 6. Terraform never applies ad hoc — see the branch/release model below.
 7. Security scans (Trivy, Bandit) and lint/tests fail on HIGH/CRITICAL
    findings and must pass before any apply, dev or production, in the same

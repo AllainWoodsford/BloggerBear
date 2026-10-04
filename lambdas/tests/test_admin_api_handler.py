@@ -977,6 +977,15 @@ def test_approve_moderation_item(aws_resources):
     # path always needed a moderation-approve.
     assert render_kwargs["lineage"] is None
     assert render_kwargs["published_by"] == "humans"
+    # Source attribution (common/attribution.py): this fixture article has no stored credit (it
+    # predates that), so the page gets its topic's adapter's sources as declared today.
+    assert render_kwargs["attribution"] == [
+        {
+            "text": "Data sourced from GitHub Trending",
+            "label": "GitHub Trending",
+            "url": "https://github.com/trending",
+        }
+    ]
 
     # Reaching this path always needed a moderation-approve, so the musing
     # is generated with compliant=False (the more measured/thoughtful

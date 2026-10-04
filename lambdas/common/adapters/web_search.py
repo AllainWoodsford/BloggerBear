@@ -40,7 +40,7 @@ import re
 from datetime import UTC, datetime
 
 from common.relevance import keywords_from_query, normalize_keywords
-from common.web_search import search_web
+from common.web_search import WEB_SEARCH_SOURCES, search_web
 
 from .base import Adapter
 
@@ -89,6 +89,9 @@ def default_query_for_topic(topic_config: dict) -> str | None:
 
 class WebSearchAdapter(Adapter):
     """Runs the configured search queries and snapshots the merged results."""
+
+    # Declared beside the providers (common/web_search.py), with the terms it rests on.
+    sources = WEB_SEARCH_SOURCES
 
     def fetch_state(self, topic_config: dict) -> dict:
         adapter_config = topic_config.get("adapter_config") or {}

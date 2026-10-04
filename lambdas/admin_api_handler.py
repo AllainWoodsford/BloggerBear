@@ -29,6 +29,7 @@ import boto3
 from common import equipment, feedback_limits, gear
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
+from common.attribution import sources_for_article
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
@@ -576,6 +577,10 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # a person approving a held article is what "reviewed by a person" means.
         fact_check=fact_check_label(article.get("review"), "humans"),
         equipment_used=article.get("equipment_used"),
+        # The source credit stored when the article was drafted; for an article from before
+        # that was stored, its topic's adapter's sources as declared today (the digest: every
+        # topic's). See common/attribution.py.
+        attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],

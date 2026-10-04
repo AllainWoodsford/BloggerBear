@@ -92,20 +92,60 @@ the project violates.**
 
 ### Three things to do before submitting
 
-1. **CoinGecko attribution.** The crypto adapter uses CoinGecko's API, and nothing on the site credits
-   it. CoinGecko's free (Demo) plan requires visible attribution (a "Data provided by CoinGecko"
-   link) — check their current API terms for the exact wording, then add it to the crypto topic's
-   pages, the article template and the About page. That is what makes us "authorized".
-2. **GitHub Trending is scraped, not an API.** `common/adapters/github_trending.py` fetches
-   `github.com/trending` HTML. GitHub's Acceptable Use Policies allow scraping for some purposes
-   and forbid others. Read the current wording; a low-volume, attributed summary with a clear
-   User-Agent is probably fine, but decide deliberately. The fallback is to drop or demote that
-   topic for the demo.
+1. **CoinGecko attribution. ✅ Done in code; existing pages still need a refresh.** CoinGecko's
+   API terms (<https://www.coingecko.com/en/api_terms>, read 2026-10-04) say: "you shall duly
+   attribute ownership of the CoinGecko API to CoinGecko by displaying prominently the message
+   'Powered by CoinGecko' in a legible font ... no smaller than font size 10." That applies to
+   every plan, keyed or not. Their attribution guide
+   (<https://brand.coingecko.com/resources/attribution-guide>) lists the accepted forms and
+   asks for the credit "in a visible location, close to where the data is displayed". The site
+   now shows "Powered by CoinGecko API", linked to <https://www.coingecko.com/en/api>, under the
+   title of every crypto article (static page and single-page view), under the crypto topic's
+   title, in the RSS item and on the About page, at 10.8pt. The credit is declared on the adapter
+   (`common/adapters/crypto_feed.py`), so every topic using it carries it. **Still to do by
+   hand:** articles published before this were rendered without the line; see "Refreshing
+   already-published pages" in `scripts/README.md`.
+2. **GitHub Trending is scraped, not an API. Read; the decision is the owner's.**
+   `common/adapters/github_trending.py` fetches `github.com/trending` HTML, one page per research
+   tick, with a User-Agent that names this project. What GitHub's Acceptable Use Policies say
+   (section 7, "Information Usage Restrictions",
+   <https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies>,
+   read 2026-10-04):
+   - "You may use information from our Service for the following reasons, regardless of whether
+     the information was scraped, collected through our API, or obtained otherwise: Researchers
+     may use public, non-personal information from the Service for research purposes, only if
+     any publications resulting from that research are open access. Archivists may use public
+     information from the Service for archival purposes."
+   - "You may not use information from the Service (whether scraped, collected through our API,
+     or obtained otherwise) for spamming purposes, including for the purposes of sending
+     unsolicited emails to users or selling personal information".
+   - Section 4 forbids "any form of excessive automated bulk activity" and placing "undue burden
+     on our servers through automated means".
+
+   Plainly: scraping is not forbidden outright, and nothing we do is on the forbidden list (no
+   spam, nothing sold, no bulk load). But the only uses the section **expressly permits** are
+   open-access research and archiving, and a blog that summarises the trending page is neither
+   in so many words. The strongest reading in our favour is "research whose publications are
+   open access" (the articles are free to read and the code is Apache-2.0); it is a reading, not
+   a statement from GitHub. Repository names include their owners' account names, which is the
+   one place "non-personal" could be argued. The terms ask for no attribution; the site now
+   credits "Data sourced from GitHub Trending" with a link to <https://github.com/trending>
+   anyway, which is courtesy and does not by itself make the use authorised. **Options: keep**
+   the topic on that reading; **demote** it (leave the adapter in the repository, remove the
+   topic from the deployed site for the submission); or **drop** it, or rebuild it on GitHub's
+   REST search API, which the API terms cover. Not decided here.
 3. **Make the repo public.** Run the on-demand full scan (secrets and PII over the whole history)
    first, and read the result: once the repo is public, its history is too.
 
-Also confirm, as of the submission week: GDELT's and Hacker News' terms (both permissive today),
-and that every Bedrock model used is one the account is allowed to use.
+Also confirm, as of the submission week: GDELT's and Hacker News' terms, and that every Bedrock
+model used is one the account is allowed to use. As read on 2026-10-04: GDELT
+(<https://www.gdeltproject.org/about.html>) allows "unlimited and unrestricted use for any
+academic, commercial, or governmental use of any kind without fee" and requires that "any use or
+redistribution of the data must include a citation to the GDELT Project and a link to this
+website"; the site now carries that citation and link wherever web search is used. The Hacker
+News API's documentation (<https://github.com/HackerNews/API>) sets no terms and asks for no
+attribution ("There is currently no rate limit."); it is credited anyway. Not checked: whether
+the AgentCore web search fallback's service terms ask for any attribution.
 
 ## Prizes in play
 
