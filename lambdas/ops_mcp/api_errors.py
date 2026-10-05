@@ -56,15 +56,15 @@ FIX_WORDS = {
 @dataclass(frozen=True)
 class Api:
     key: str  # what the operator calls it: public, admin, assistant
-    name: str  # the REST API's name template
+    name: str  # the REST API's name template: this deployment's prefix (common/naming.py), then {env}
     function: str  # the catalogue key of the Lambda behind it, for log_review
     words: str
 
 
 APIS = {
-    "public": Api("public", "bloggerbear-{env}-public-api", "public-api", "the public API"),
-    "admin": Api("admin", "bloggerbear-{env}-admin-api", "admin-api", "the admin API"),
-    "assistant": Api("assistant", "bloggerbear-{env}-ops-mcp", "ops-mcp", "the assistant's API"),
+    "public": Api("public", f"{architecture.PREFIX}{{env}}-public-api", "public-api", "the public API"),
+    "admin": Api("admin", f"{architecture.PREFIX}{{env}}-admin-api", "admin-api", "the admin API"),
+    "assistant": Api("assistant", f"{architecture.PREFIX}{{env}}-ops-mcp", "ops-mcp", "the assistant's API"),
 }
 
 
