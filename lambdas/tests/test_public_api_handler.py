@@ -12,6 +12,7 @@ from moto import mock_aws
 from table_schemas import create_table
 
 import public_api_handler
+from common.costing import USD_TO_AUD_RATE
 
 REGION = "ap-southeast-2"
 
@@ -1307,6 +1308,65 @@ def test_stats_reports_weekly_and_historic_observability_data(aws_resources):
     historic_musings = next(c for c in body["historic"]["categories"] if c["category"] == "musings")
     assert historic_musings["calls"] == 30
     assert body["historic"]["feedback_given"] == 12
+
+
+def test_stats_overall_is_the_assistant_to_date_and_the_bill_counted_once(aws_resources):
+    """Total Stats' cost summary: the assistant's spend from both rows, and an overall total that
+    is the all-time bill alone, whatever the token estimates beside it add up to."""
+    dynamodb = boto3.resource("dynamodb", region_name=REGION)
+    dynamodb.Table("StatsCurrent").put_item(
+        Item={
+            "stats_id": "current",
+            "week_start": "2026-10-05",
+            "assistant_calls": 2,
+            "assistant_cost_aud": Decimal("0.06"),
+            "aws_bill_week_usd": {"AWS WAF": Decimal("50")},
+        }
+    )
+    dynamodb.Table("StatsHistory").put_item(
+        Item={
+            "week_start": "all-time",
+            "assistant_calls": 10,
+            "assistant_cost_aud": Decimal("0.30"),
+            "articles_cost_aud": Decimal("40"),
+            "aws_bill_total_usd": {
+                "Amazon Bedrock": Decimal("2"),
+                "AWS WAF": Decimal("10"),
+                "AWS Lambda": Decimal("4"),
+            },
+            "aws_bill_total_since": "2026-08-31",
+            "aws_bill_total_weeks": 5,
+            "aws_bill_as_of": "2026-10-05T03:00:00+00:00",
+        }
+    )
+
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    overall = json.loads(result["body"])["overall"]
+    assert overall["assistant"]["calls"] == 12
+    assert overall["assistant"]["cost_aud"] == pytest.approx(0.36)
+    bill = overall["aws_bill"]
+    assert bill["ai_aud"] == pytest.approx(2 * USD_TO_AUD_RATE)
+    assert bill["infrastructure_aud"] == pytest.approx(14 * USD_TO_AUD_RATE)
+    assert bill["total_aud"] == pytest.approx(16 * USD_TO_AUD_RATE)
+    assert (bill["since"], bill["weeks"], bill["scope"]) == ("2026-08-31", 5, "account")
+    assert "dev and production together" in overall["note"]
+    # Aggregates only: no service name and no poll time leaves the API.
+    assert "Lambda" not in json.dumps(overall) and "T03:00" not in json.dumps(overall)
+
+
+def test_stats_overall_before_anything_is_recorded_is_zeros_and_no_bill(aws_resources):
+    result = public_api_handler.handler(_event("GET /stats"), None)
+
+    overall = json.loads(result["body"])["overall"]
+    assert overall["assistant"] == {
+        "calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_aud": 0.0,
+        "unpriced": 0,
+    }
+    assert overall["aws_bill"] is None
 
 
 def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):
