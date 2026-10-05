@@ -15,6 +15,13 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from terraform_text import (
+    DEFAULT_PREFIX,
+    PREFIX_REFERENCE,
+    read_terraform,
+    terraform_files,
+    with_default_prefix,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 INFRA = ROOT / "infra"
@@ -25,7 +32,9 @@ _HOME = "${var.aws_region}"
 
 
 def _read(*parts: str) -> str:
-    return (INFRA.joinpath(*parts)).read_text(encoding="utf-8")
+    """An infra/ file with the default name prefix written in (terraform_text.py): the names these
+    tests hold the Terraform to are the original deployment's, bloggerbear-<env>-<resource>."""
+    return read_terraform(INFRA.joinpath(*parts))
 
 
 def _module_blocks(text: str, source_fragment: str) -> list[str]:
@@ -1070,7 +1079,10 @@ def test_each_deploy_workflow_passes_the_account_settings_and_falls_back_to_what
     assert f"      TF_VAR_aws_account_id: ${{{{ secrets.{account} }}}}\n" in text
     assert f"      TF_STATE_BUCKET: ${{{{ secrets.{bucket} }}}}\n" in text
     assert f"vars.{account}" not in text and f"vars.{bucket}" not in text
-    assert "      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}\n" in text
+    # The name prefix is a plain variable (it is in public names anyway), and unset it is the
+    # prefix this project has always used: an empty string would fail the variable's validation.
+    assert "      TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}\n" in text
+    assert "UNIQUE_NAME_SUFFIX" not in text and "unique_name_suffix" not in text
 
     # Unset, the init is the bare command it always was; set, only the bucket and the bucket's
     # region are overridden, each only when its own setting is there.
@@ -1123,25 +1135,32 @@ def test_the_backends_and_state_keys_have_not_moved(env):
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
-def test_the_globally_unique_names_are_the_old_ones_unless_a_suffix_is_set(env):
-    """A changed bucket name replaces the bucket, so the suffix must be empty by default."""
-    main = _read("environments", env, "main.tf")
-    variables = _read("environments", env, "variables.tf")
-    suffix = variables.split('variable "unique_name_suffix" {')[1].split("\n}\n")[0]
-    assert '\n  default     = ""\n' in suffix
+def test_the_globally_unique_names_are_the_old_ones_unless_a_prefix_is_set(env):
+    """A changed bucket name replaces the bucket, so with the prefix left at its default the three
+    names that are unique across all of AWS must be exactly what they were. The files are read as
+    written here (not through _read), so this holds the expressions and the default separately."""
+    main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
+    variables = (INFRA / "environments" / env / "variables.tf").read_text(encoding="utf-8")
+    prefix = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
+    assert '\n  default     = "bloggerbear"\n' in prefix
 
     content = _resource_block(main, "aws_s3_bucket", "content")
-    assert re.search(rf'bucket\s*=\s*"bloggerbear-{env}-content\$\{{var\.unique_name_suffix\}}"', content)
+    assert re.search(rf'bucket\s*=\s*"\$\{{var\.unique_name_prefix\}}-{env}-content"', content)
     site_call = _module_blocks(main, "modules/static-site")[0]
-    assert re.search(r"^\s*bucket_name_suffix\s*=\s*var\.unique_name_suffix$", site_call, re.M)
+    assert re.search(r"^\s*unique_name_prefix\s*=\s*var\.unique_name_prefix$", site_call, re.M)
+    module = (INFRA / "modules" / "static-site" / "main.tf").read_text(encoding="utf-8")
+    assert 'bucket        = "${var.unique_name_prefix}-${var.environment_name}-site"' in module
+    assert f'hosted_ui_domain_prefix = "${{var.unique_name_prefix}}-{env}-ops"' in main
 
-    module = _read("modules", "static-site", "main.tf")
-    assert 'bucket        = "bloggerbear-${var.environment_name}-site${var.bucket_name_suffix}"' in module
-    module_variables = _read("modules", "static-site", "variables.tf")
-    module_suffix = module_variables.split('variable "bucket_name_suffix" {')[1].split("\n}\n")[0]
-    assert '\n  default     = ""\n' in module_suffix
-    if env == "dev":
-        assert 'hosted_ui_domain_prefix = "bloggerbear-dev-ops${var.unique_name_suffix}"' in main
+    # Written out with the default: the names the original deployment's buckets and sign-in host have.
+    assert f'"bloggerbear-{env}-content"' in with_default_prefix(content)
+    assert '"bloggerbear-${var.environment_name}-site"' in with_default_prefix(module)
+    assert f'hosted_ui_domain_prefix = "bloggerbear-{env}-ops"' in with_default_prefix(main)
+
+    # The setting it replaces is gone everywhere: a name is never built from both.
+    for path in terraform_files():
+        text = path.read_text(encoding="utf-8")
+        assert "unique_name_suffix" not in text and "bucket_name_suffix" not in text, path
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
@@ -1214,8 +1233,17 @@ def test_the_fork_guide_names_every_setting_the_workflows_read():
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         settings |= set(re.findall(r"\$\{\{[^}]*?\b(?:secrets|vars)\.([A-Z0-9_]+)", text))
         settings |= set(re.findall(r"\|\| vars\.([A-Z0-9_]+)", text))
-    new = {"AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "UNIQUE_NAME_SUFFIX"}
+    new = {"AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "UNIQUE_NAME_PREFIX"}
     assert new <= settings
+    # The setting the prefix replaced is read by nothing, so it is documented nowhere.
+    assert "UNIQUE_NAME_SUFFIX" not in settings
+    for page in (guide, table, readme):
+        assert "UNIQUE_NAME_SUFFIX" not in page and "unique_name_suffix" not in page
+    # The prefix is a plain variable, a fork must set it, and the guide says the two things that
+    # go wrong otherwise: it cannot change later, and bootstrap has to be given the same word.
+    row = re.search(r"^\| `UNIQUE_NAME_PREFIX` \| variable \| repo \|(.*)$", table, re.M)
+    assert row and "**Required for a fork.**" in row.group(1)
+    assert '-var="unique_name_prefix=' in guide and "never change it" in guide
     for setting in sorted(settings):
         assert f"`{setting}`" in table, setting
     # The account IDs and the state buckets are documented as secrets, the only way they are read.
@@ -1670,12 +1698,18 @@ def test_dev_reads_only_dev_and_production_also_reads_shared():
 def test_the_root_hands_the_assistant_its_own_default_tags():
     """IAM's tag conditions and the code's check both compare against var.default_tags, so it must
     be the root's provider default_tags, as every resource of the root really carries them."""
-    project_tags = {"ManagedBy": "Terraform", "Project": "BloggerBear"}
     for environment in ("dev", "production"):
         text = _read("environments", environment, "main.tf")
         tags = re.search(r"default_tags = \{\n(.*?)\n  \}", text, re.S).group(1)
-        root_tags = dict(re.findall(r'(\w+)\s*=\s*"([^"]+)"', tags))
-        assert {key: root_tags[key] for key in project_tags} == project_tags, environment
+        root_tags = dict(re.findall(r"(\w+)\s*=\s*(.+)", tags))
+        assert root_tags["ManagedBy"] == '"Terraform"', environment
+        # Project is the deployment's: "BloggerBear" with the default name prefix, which is what
+        # the original deployment's tables carry, and the prefix itself in any other deployment.
+        assert root_tags["Project"] == "local.project_tag", environment
+        assert (
+            '  project_tag = "bloggerbear" == "bloggerbear" ? "BloggerBear" : "bloggerbear"\n'
+            in text.replace("var.unique_name_prefix", '"bloggerbear"')
+        ), environment
     for environment in ("dev", "production"):
         call = _module_blocks(_read("environments", environment, "main.tf"), "modules/ops-assistant")[0]
         assert "ManagedBy = local.default_tags.ManagedBy" in call, environment
@@ -1975,13 +2009,16 @@ def test_the_deny_compares_against_the_tag_the_environment_really_puts_on_its_re
 def test_the_alarms_tool_is_told_its_environment_and_every_alarm_is_named_for_one():
     """The role's DescribeAlarms covers every alarm in the account, both environments', so the
     tool asks by name. That only separates them if every alarm really is named
-    bloggerbear-<environment>-..., and the function is told the same environment name the alarms
-    were made with."""
+    <prefix>-<environment>-... (bloggerbear-dev-... in the original deployment), and the function
+    is told the same prefix and the same environment name the alarms were made with."""
     function = _uncommented(_resource_block(_ops_module(), "aws_lambda_function", "ops_mcp"))
     code = (ROOT / "lambdas" / "ops_mcp" / "account.py").read_text(encoding="utf-8")
 
     assert re.search(r"^\s*ENVIRONMENT_NAME\s*=\s*var\.environment_name$", function, re.M)
-    assert 'ENVIRONMENT_ENV = "ENVIRONMENT_NAME"' in code and 'ALARM_PREFIX = "bloggerbear-"' in code
+    assert re.search(r"^\s*NAME_PREFIX\s*=\s*var\.unique_name_prefix$", function, re.M)
+    # The prefix is the deployment's, from the variable above (common/naming.py), never written out.
+    assert 'ENVIRONMENT_ENV = "ENVIRONMENT_NAME"' in code and 'ALARM_PREFIX = f"{NAME_PREFIX}-"' in code
+    assert "from common.naming import NAME_PREFIX" in code and 'ALARM_PREFIX = "bloggerbear-"' not in code
     assert 'return f"{ALARM_PREFIX}{name}-" if _ENVIRONMENT_NAME.fullmatch(name) else None' in code
     assert "AlarmNamePrefix=prefix" in code and "AlarmNamePrefix=ALARM_PREFIX" not in code
 
@@ -1993,7 +2030,7 @@ def test_the_alarms_tool_is_told_its_environment_and_every_alarm_is_named_for_on
         text = _uncommented(path.read_text(encoding="utf-8"))
         names += re.findall(r'^\s*alarm_name\s*=\s*"([^"]+)"', text, re.M)
     assert len(names) >= 6
-    assert all(name.startswith("bloggerbear-${var.environment_name}-") for name in names), names
+    assert all(name.startswith(PREFIX_REFERENCE + "-${var.environment_name}-") for name in names), names
     # ...and none is made outside an environment (a shared alarm would answer to neither prefix).
     assert "aws_cloudwatch_metric_alarm" not in _uncommented(_read("bootstrap", "main.tf"))
 
@@ -2435,10 +2472,16 @@ def test_the_agent_is_told_everything_its_code_reads_and_no_tracing_is_switched_
     # briefings.py's agent to start: read only by the MCP server, which starts one, never by the
     # agent, which is the one started.
     read_by_code.discard("OPS_AGENT_FUNCTION")
+    # The deployment's name prefix: set on every function, read in common/naming.py (which is in
+    # this package with the rest of common/), so that no code has to assume what things are called.
+    naming = (ROOT / "lambdas" / "common" / "naming.py").read_text(encoding="utf-8")
+    assert 'NAME_PREFIX_ENV = "NAME_PREFIX"' in naming
+    read_by_code.add("NAME_PREFIX")
 
     assert set(environment) == read_by_code, set(environment) ^ read_by_code
     assert environment == {
         "OPS_AGENT_MODEL_ID": "var.agent_model_id",
+        "NAME_PREFIX": "var.unique_name_prefix",
         "OPS_MCP_URL": "local.agent_mcp_url",
         "OPS_AGENT_ALLOWED_ORIGIN": "var.agent_allowed_origin",
         "MODEL_CONFIG_TABLE": 'var.tables["MODEL_CONFIG_TABLE"].name',
@@ -3010,3 +3053,300 @@ def test_the_fork_guide_says_what_another_region_needs():
     # And no longer listed as something a fork cannot change.
     tied = guide.split("## What is still tied to the original deployment")[1]
     assert "**The region.**" not in tied
+
+
+# --- The name prefix --------------------------------------------------------------------------------
+#
+# Every resource is "<prefix>-<env>-<resource>". The prefix is var.unique_name_prefix (the
+# UNIQUE_NAME_PREFIX GitHub Actions variable), "bloggerbear" by default, so the original deployment's
+# names are what they always were and a second deployment can have its own. The tests above read the
+# Terraform with the default written in (_read); these hold the things that makes honest.
+
+_NAME_ROOTS = ("bootstrap", "environments/dev", "environments/production")
+# Not resource-name prefixes, so not built from the variable: the state bucket named in the backend
+# blocks (a backend cannot read a variable; a fork overrides it with TF_STATE_BUCKET_*) and its
+# default in bootstrap, which has a variable of its own; the Cognito scope; the site's domain; the
+# marker in the keep-warm event; and the rule for the Project tag, which is where the default
+# prefix is compared against (test_resource_tags.py holds that rule).
+_NOT_A_NAME_PREFIX = (
+    'var.unique_name_prefix == "bloggerbear" ? "BloggerBear" : var.unique_name_prefix',
+    "bloggerbear-terraform-state",
+    '"bloggerbear-ops"',
+    "bloggerbear.com",
+    "bloggerbear.keep-warm",
+)
+# The longest prefix the variable accepts: its first validation is [a-z]([a-z0-9-]{0,12}[a-z0-9])?.
+_LONGEST_PREFIX = "x" * 14
+
+
+def _prefix_variable(root: str) -> str:
+    variables = (INFRA / root / "variables.tf").read_text(encoding="utf-8")
+    return variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
+
+
+@pytest.mark.parametrize("root", _NAME_ROOTS)
+def test_the_name_prefix_defaults_to_the_original_deployments_and_is_validated(root):
+    block = _prefix_variable(root)
+    # The default is what keeps every existing name: change it and Terraform replaces everything.
+    assert re.search(r'^  default\s*=\s*"bloggerbear"$', block, re.M)
+    assert DEFAULT_PREFIX == "bloggerbear"
+    # Lowercase letters, digits and hyphens; starts with a letter; no trailing hyphen; 14 at most.
+    assert 'can(regex("^[a-z]([a-z0-9-]{0,12}[a-z0-9])?$", var.unique_name_prefix))' in block
+    assert '!strcontains(var.unique_name_prefix, "--")' in block
+    assert '!can(regex("aws|amazon|cognito", var.unique_name_prefix))' in block
+    # The same three rules in all three roots: bootstrap scopes the deploy roles to the very
+    # prefix the environments name things with, so a value one accepts, the others must.
+    rules = re.findall(r"^\s*condition\s*=\s*(.+)$", block, re.M)
+    assert rules == re.findall(r"^\s*condition\s*=\s*(.+)$", _prefix_variable(_NAME_ROOTS[0]), re.M)
+    assert len(rules) == 3
+    # The description says which name sets the limit, and that it cannot change later.
+    assert "<prefix>-production-<topic_id>-research-tick" in block and "At most 14 characters." in block
+    if root != "bootstrap":
+        assert "NEVER change this" in block and "UNIQUE_NAME_PREFIX" in block
+
+
+def test_no_resource_name_is_written_with_the_prefix_spelled_out():
+    """The point of the setting: outside comments and descriptions, nothing in infra/ names a
+    resource "bloggerbear-..." or a parameter "/bloggerbear/...". A name written out would be the
+    one resource a deployment with another prefix cannot create (the deploy role is scoped to its
+    own prefix) or, worse, one it shares with the original deployment."""
+    checked = 0
+    for path in terraform_files():
+        prose = path.name in ("variables.tf", "outputs.tf")
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if prose and not re.match(r"\s*(condition|default)\s*=", line):
+                continue  # a description or an error message: words, where the default is an example
+            rest = line
+            for allowed in _NOT_A_NAME_PREFIX:
+                rest = rest.replace(allowed, "")
+            if re.match(r'\s*default\s*=\s*"bloggerbear"$', rest):
+                continue  # the default itself
+            assert "bloggerbear" not in rest, f"{path.relative_to(ROOT)}:{number}: {line.strip()}"
+            checked += PREFIX_REFERENCE in line
+    # And the names really are built from the variable: there are hundreds of them.
+    assert checked > 200
+
+
+def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environments():
+    """A module has no default for it, on purpose: a caller that forgot would get the original
+    deployment's names inside another deployment. `terraform validate` then refuses a call
+    without it; this says which modules those are and that the value is the root's variable."""
+    modules = sorted(path.parent.name for path in (INFRA / "modules").glob("*/variables.tf"))
+    naming = []
+    for module in modules:
+        uses = any(
+            "var.unique_name_prefix" in path.read_text(encoding="utf-8")
+            for path in (INFRA / "modules" / module).glob("*.tf")
+            if path.name != "variables.tf"
+        )
+        variables = (INFRA / "modules" / module / "variables.tf").read_text(encoding="utf-8")
+        declared = 'variable "unique_name_prefix" {' in variables
+        assert declared == uses, module
+        if declared:
+            block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
+            assert "default" not in re.sub(r"description\s*=.*", "", block), module
+            naming.append(module)
+    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site"]
+    for env in ("dev", "production"):
+        main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
+        for module in naming:
+            blocks = _module_blocks(main, f"modules/{module}")
+            assert blocks, (env, module)
+            for block in blocks:
+                assert re.search(r"^\s*unique_name_prefix\s*=\s*var\.unique_name_prefix$", block, re.M), (
+                    env,
+                    module,
+                )
+        # The two modules that are handed whole names are handed ones built from it.
+        assert re.search(r'^\s*name\s*=\s*"\$\{var\.unique_name_prefix\}-' + env + '"$', main, re.M)
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_lambda_is_told_the_prefix(env):
+    """NAME_PREFIX on every function: the code that builds a name (the per-topic schedules) or
+    recognises one (the assistant) reads it from there, common/naming.py, and never assumes it.
+    An environment variable costs nothing to read; an SSM parameter would cost a call on every
+    cold start and a permission on every role."""
+    main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
+    shared = main.split("  lambda_env_variables = {")[1].split("\n}\n")[0]
+    assert re.search(r"^\s*NAME_PREFIX\s*=\s*var\.unique_name_prefix$", shared, re.M)
+    functions = re.findall(r'^resource "aws_lambda_function" "(\w+)" \{\n(.*?)^\}', main, re.S | re.M)
+    assert len(functions) >= 11
+    for name, body in functions:
+        assert "local.lambda_env_variables" in body, name
+
+    naming = (ROOT / "lambdas" / "common" / "naming.py").read_text(encoding="utf-8")
+    assert 'NAME_PREFIX_ENV = "NAME_PREFIX"' in naming and 'DEFAULT_NAME_PREFIX = "bloggerbear"' in naming
+    assert "NAME_PREFIX = os.environ.get(NAME_PREFIX_ENV) or DEFAULT_NAME_PREFIX" in naming
+    # The assistant's two functions, which the module makes.
+    for text, resource in ((_ops_module(), "ops_mcp"), (_agent_module(), "ops_agent")):
+        function = _uncommented(_resource_block(text, "aws_lambda_function", resource))
+        assert re.search(r"^\s*NAME_PREFIX\s*=\s*var\.unique_name_prefix$", function, re.M), resource
+    # Nothing reads the prefix from SSM: no parameter is declared for it, in any root.
+    for path in terraform_files():
+        assert not re.search(r"name-prefix|name_prefix_parameter", path.read_text(encoding="utf-8")), path
+
+
+def test_the_deploy_roles_are_named_and_scoped_by_the_prefix():
+    """Bootstrap's half. With another prefix the roles must be allowed that prefix's resources and
+    no longer the original deployment's: every name scope in the policy follows the variable."""
+    raw = (INFRA / "bootstrap" / "main.tf").read_text(encoding="utf-8")
+    code = _uncommented(raw)
+    assert 'name               = "gha-${var.unique_name_prefix}-dev-deploy"' in code
+    assert 'name               = "gha-${var.unique_name_prefix}-prod-deploy"' in code
+    scopes = re.findall(r'"(arn:aws:[^"]*\$\{var\.unique_name_prefix\}[^"]*)"', code)
+    assert len(scopes) >= 20
+    for kind in (
+        "table/", "function:", "log-group:/aws/lambda/", "log-group:/aws/apigateway/", "stateMachine:",
+        "schedule/default/", "alarm:", "dashboard/", "log-group:aws-waf-logs-", ":role/",
+    ):  # fmt: skip
+        assert any(f"{kind}${{var.unique_name_prefix}}-" in scope for scope in scopes), kind
+    # With the default they are, to the character, the scopes the live roles have.
+    for expected in (
+        "arn:aws:dynamodb:${var.aws_region}:*:table/bloggerbear-*",
+        "arn:aws:lambda:${var.aws_region}:*:function:bloggerbear-*",
+        "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
+        "arn:aws:scheduler:${var.aws_region}:*:schedule/default/bloggerbear-*",
+        "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*:*",
+    ):
+        assert f'"{expected}"' in with_default_prefix(code), expected
+
+
+def _name_literals(text: str, attribute: str) -> list[str]:
+    return re.findall(rf'^\s*{attribute}\s*=\s*"([^"]+)"', _uncommented(text), re.M)
+
+
+def test_the_longest_names_still_fit_with_the_longest_prefix():
+    """The variable's description says which name sets the 14-character limit and how much room
+    the others have. This works the same sums from the files, with a prefix of that length in
+    production (the longer environment name), so a longer resource name added later fails here
+    instead of at somebody's first apply."""
+    assert re.fullmatch(r"[a-z]([a-z0-9-]{0,12}[a-z0-9])?", _LONGEST_PREFIX)
+    assert not re.fullmatch(r"[a-z]([a-z0-9-]{0,12}[a-z0-9])?", _LONGEST_PREFIX + "x")
+
+    def longest(names: list[str]) -> str:
+        filled = [
+            name.replace(PREFIX_REFERENCE, _LONGEST_PREFIX).replace("${var.environment_name}", "production")
+            for name in names
+        ]
+        assert filled and all("${" not in name for name in filled), filled
+        return max(filled, key=len)
+
+    main = (INFRA / "environments" / "production" / "main.tf").read_text(encoding="utf-8")
+    # Lambda function names: 64.
+    functions = _name_literals(main, "function_name")
+    assert len(functions) >= 11 and len(longest(functions)) <= 64, longest(functions)
+    assert longest(functions) == f"{_LONGEST_PREFIX}-production-cost-explorer-poll"  # 44, as described
+    # S3 bucket names: 63.
+    site = _read_raw("modules", "static-site", "main.tf")
+    buckets = [*_name_literals(main, "bucket"), *_name_literals(site, "bucket")]
+    buckets = [name for name in buckets if PREFIX_REFERENCE in name]
+    assert len(buckets) == 2 and len(longest(buckets)) <= 63
+    # The Cognito sign-in host's first label: 63.
+    assert len(longest(_name_literals(main, "hosted_ui_domain_prefix"))) <= 63
+
+    # IAM role names: 64. The roots' own, and the assistant module's, whose names hang off two
+    # locals (the MCP server's and the agent's).
+    roles = [
+        re.search(r'^\s*name\s*=\s*"([^"]+)"', body, re.M).group(1)
+        for body in re.findall(r'^resource "aws_iam_role" "\w+" \{\n(.*?)^\}', main, re.S | re.M)
+    ]
+    assistant = sorted((INFRA / "modules" / "ops-assistant").glob("*.tf"))
+    module = "\n".join(path.read_text(encoding="utf-8") for path in assistant)
+    mcp_name = re.search(r'^  name = "(\$\{var\.unique_name_prefix\}[^"]+)"$', module, re.M)
+    local = {
+        "${local.name}": mcp_name.group(1),
+        "${local.agent_name}": re.search(r'^  agent_name\s*=\s*"([^"]+)"$', module, re.M).group(1),
+    }
+    for body in re.findall(r'^resource "aws_iam_role" "\w+" \{\n(.*?)^\}', module, re.S | re.M):
+        name = re.search(r'^\s*name\s*=\s*"([^"]+)"', body, re.M).group(1)
+        for reference, value in local.items():
+            name = name.replace(reference, value)
+        roles.append(name)
+    # ...and the web search gateway's, which is handed "<prefix>-<env>" as var.name.
+    gateway = _read_raw("modules", "web-search", "main.tf")
+    roles += [
+        name.replace("${var.name}", f"{PREFIX_REFERENCE}-production")
+        for name in re.findall(r'^resource "aws_iam_role" "\w+" \{\n\s*name\s*=\s*"([^"]+)"', gateway, re.M)
+    ]
+    assert len(roles) >= 7 and len(longest(roles)) <= 64, longest(roles)
+    assert longest(roles) == f"{_LONGEST_PREFIX}-production-ops-mcp-scheduler-invoke"  # 50, as described
+    # The deploy roles themselves.
+    bootstrap = (INFRA / "bootstrap" / "main.tf").read_text(encoding="utf-8")
+    assert "gha-${var.unique_name_prefix}-prod-deploy" in bootstrap
+    assert len(f"gha-{_LONGEST_PREFIX}-prod-deploy") <= 64
+
+    # EventBridge Scheduler: 64. The fixed schedules Terraform makes...
+    schedules = [
+        re.search(r'^\s*name\s*=\s*"([^"]+)"', body, re.M).group(1)
+        for body in re.findall(r'^resource "aws_scheduler_schedule" "\w+" \{\n(.*?)^\}', main, re.S | re.M)
+    ]
+    assert len(schedules) >= 4 and len(longest(schedules)) <= 64
+    # ...and the one that sets the limit: a topic's own, made at run time by common/scheduler.py
+    # as <prefix>-<env>-<topic_id>-research-tick. 26 characters are fixed, so the longest prefix
+    # leaves a topic id 24, which is the longest id the project's own examples use.
+    scheduler = (ROOT / "lambdas" / "common" / "scheduler.py").read_text(encoding="utf-8")
+    built = '''f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}{topic_id}-{suffix}"'''
+    assert f"return {built}" in scheduler
+    assert '"research-tick"' in scheduler and '"daily-cycle"' in scheduler
+    fixed = len("-production-") + len("-research-tick")
+    assert fixed == 26
+    longest_example_topic = "finance-crypto-investing"
+    assert longest_example_topic in (ROOT / "scripts" / "README.md").read_text(encoding="utf-8") or any(
+        longest_example_topic in path.read_text(encoding="utf-8") for path in (ROOT / "docs").rglob("*.md")
+    )
+    assert len(_LONGEST_PREFIX) + fixed + len(longest_example_topic) == 64
+    assert 64 - fixed - len(DEFAULT_PREFIX) == 27  # what the default leaves, as the description says
+
+
+def _read_raw(*parts: str) -> str:
+    """An infra/ file as written, with the variable still in it."""
+    return INFRA.joinpath(*parts).read_text(encoding="utf-8")
+
+
+def _string_constants(path: Path) -> list[tuple[int, str]]:
+    """Every string in a Python file that is not a docstring, f-string pieces included."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+    }
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
+    ]
+
+
+def test_no_lambda_code_writes_the_prefix_out():
+    """The Python half of the same rule. Any string that looks like a resource name or a parameter
+    path starting with the original deployment's prefix is a name that would be wrong in every
+    other deployment. What is left is not a resource name: the user-agent strings, the MCP server's
+    own name and the Cognito scope."""
+    allowed = {
+        "bloggerbear-ops-agent",  # ops_agent/agent.py: a user-agent suffix and an application name
+        "bloggerbear-ops",  # ops_mcp/server.py: the MCP server's name (and the Cognito scope's)
+    }
+    lambdas = ROOT / "lambdas"
+    files = [
+        path
+        for path in sorted(lambdas.rglob("*.py"))
+        if "tests" not in path.parts and "lambda-build" not in path.parts
+    ]
+    assert len(files) > 40
+    for path in files:
+        for line, value in _string_constants(path):
+            if value in allowed:
+                continue
+            where = f"{path.relative_to(ROOT)}:{line}: {value!r}"
+            assert not re.search(r"bloggerbear-|/bloggerbear/", value), where
+    naming = (lambdas / "common" / "naming.py").read_text(encoding="utf-8")
+    assert 'DEFAULT_NAME_PREFIX = "bloggerbear"' in naming  # the one place the default is written

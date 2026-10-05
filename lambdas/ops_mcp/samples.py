@@ -7,7 +7,7 @@ neither environment (`data_allowed` false) is refused: its table is described, a
 
 **The rule for what may be read is the tags, checked twice.**
 
-1. IAM (infra/modules/ops-assistant/main.tf, SampleTaggedTables): reads on a bloggerbear-* table
+1. IAM (infra/modules/ops-assistant/main.tf, SampleTaggedTables): reads on a <prefix>-* table
    are allowed only when it carries the project's default tags (ManagedBy, Project) and an
    Environment this assistant may read; the Deny in isolation.tf refuses every other Environment.
 2. Here, before any row is read: the table's own tags are listed and compared with the default

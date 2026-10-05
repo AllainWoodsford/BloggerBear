@@ -139,7 +139,9 @@ def check_environment(values: AddonValues) -> None:
     if urlsplit(values.token_url).netloc != authorize_host:
         raise CliError("ops_oauth_authorize_url and ops_oauth_token_url are on different hosts.")
     for other in ENVIRONMENTS:
-        if other != env and authorize_host.startswith(f"bloggerbear-{other}-"):
+        # The sign-in host is <prefix>-<env>-ops.auth.<region>.amazoncognito.com, whatever the
+        # deployment's name prefix is (infra/environments/*/main.tf, hosted_ui_domain_prefix).
+        if other != env and authorize_host.split(".")[0].endswith(f"-{other}-ops"):
             raise CliError(f"The Cognito URLs are {other}'s sign-in domain, not {env}'s.")
 
 

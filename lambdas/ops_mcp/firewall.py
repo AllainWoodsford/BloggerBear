@@ -34,13 +34,16 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from statistics import median
 
+from common.naming import NAME_PREFIX
 from common.security_events import untrusted_text
 from ops_mcp import logs
 from ops_mcp.account import ENVIRONMENT_ENV, account_wide_data
 from ops_mcp.suggestions import finding
 
 LOG_GROUPS_ENV = "OPS_WAF_LOG_GROUPS"
-SHARED_LOG_GROUP = "aws-waf-logs-bloggerbear-shared"
+# The firewall's log groups are named from this deployment's prefix (common/naming.py), like
+# everything else: "aws-waf-logs-bloggerbear-shared" in the original deployment.
+SHARED_LOG_GROUP = f"aws-waf-logs-{NAME_PREFIX}-shared"
 _REGION = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d$")
 
 FIREWALL_DEFAULT_HOURS = 24
@@ -82,7 +85,9 @@ def log_groups() -> list[tuple[str, str]] | None:
     environment = os.environ.get(ENVIRONMENT_ENV, "")
     if not re.fullmatch(r"[a-z][a-z0-9]{1,31}", environment):
         return None
-    own = re.compile(rf"^aws-waf-logs-bloggerbear-{re.escape(environment)}-[a-z0-9-]{{1,64}}$")
+    own = re.compile(
+        rf"^aws-waf-logs-{re.escape(NAME_PREFIX)}-{re.escape(environment)}-[a-z0-9-]{{1,64}}$"
+    )
     entries = [entry.strip() for entry in os.environ.get(LOG_GROUPS_ENV, "").split(",") if entry.strip()]
     if not entries:
         return None
@@ -235,7 +240,7 @@ def _group_label(group: str) -> str:
     in its name ("admin API", "public API")."""
     if group == SHARED_LOG_GROUP:
         return "CloudFront"
-    rest = group.removeprefix(f"aws-waf-logs-bloggerbear-{os.environ.get(ENVIRONMENT_ENV, '')}-")
+    rest = group.removeprefix(f"aws-waf-logs-{NAME_PREFIX}-{os.environ.get(ENVIRONMENT_ENV, '')}-")
     return _GROUP_LABELS.get(rest, rest.replace("-", " "))
 
 

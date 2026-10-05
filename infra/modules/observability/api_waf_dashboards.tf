@@ -1,5 +1,5 @@
 # -----------------------------------------------------------------------
-# Scaling PR C: one more dashboard, bloggerbear-<env>-edge, in the style of the pipeline and Lambda
+# Scaling PR C: one more dashboard, <prefix>-<env>-edge, in the style of the pipeline and Lambda
 # runs ones in main.tf -- open on a span long enough to show something (7 days, hourly points),
 # counts on the left axis, a text header saying what each part is and why a widget can be
 # legitimately empty. Two halves:
@@ -393,7 +393,7 @@ locals {
 
 resource "aws_cloudwatch_dashboard" "edge" {
   count          = var.edge_dashboard_enabled && length(concat(local.api_gateway_widgets, local.waf_widgets)) > 0 ? 1 : 0
-  dashboard_name = "bloggerbear-${var.environment_name}-edge"
+  dashboard_name = "${var.unique_name_prefix}-${var.environment_name}-edge"
 
   dashboard_body = jsonencode({
     start          = "-P7D"

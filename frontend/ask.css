@@ -18,7 +18,35 @@
   margin: 8px 0 16px;
 }
 
+/* Ways to start, said or typed: plain text under the title, not controls. */
+.ask-starters {
+  margin: 0 0 20px;
+}
+
+.ask-starters-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.ask-starters-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+
+.ask-starters-list li {
+  margin: 2px 0;
+}
+
 .ask-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 20px;
+}
+
+/* The quick questions, shown with the typed one once "Show text-based controls" is pressed. */
+.ask-quick {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -180,6 +208,8 @@
 .ask-tool-calls code,
 .ask-command code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* break-word first: Safari before 15.4 does not know `anywhere` and would not wrap at all. */
+  overflow-wrap: break-word;
   overflow-wrap: anywhere;
 }
 
@@ -204,6 +234,7 @@
 
 .ask-card dd {
   margin: 0;
+  overflow-wrap: break-word;
   overflow-wrap: anywhere;
 }
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from common.naming import NAME_PREFIX
+
 ADMIN_CLI = "python scripts/admin_cli.py"
 
 # Topic ids are slugs and article ids are UUIDs: letters, digits, "-" and "_". Anything else is
@@ -111,19 +113,19 @@ CATALOGUE: dict[str, Suggestion] = {
     ),
     "security_incident": Suggestion(
         action=(
-            "Read the incident's next steps on screen; the edge dashboard (bloggerbear-<env>-edge) "
+            f"Read the incident's next steps on screen; the edge dashboard ({NAME_PREFIX}-<env>-edge) "
             "shows what the firewall blocked"
         ),
     ),
     "alarm_firing": Suggestion(
         action=(
-            "Open the alarm in CloudWatch; the pipeline dashboard (bloggerbear-<env>-pipeline) "
+            f"Open the alarm in CloudWatch; the pipeline dashboard ({NAME_PREFIX}-<env>-pipeline) "
             "shows what led up to it"
         ),
     ),
     "firewall_spike": Suggestion(
         action=(
-            "Look at the edge dashboard (bloggerbear-<env>-edge) for which rule is blocking, and at "
+            f"Look at the edge dashboard ({NAME_PREFIX}-<env>-edge) for which rule is blocking, and at "
             "the security incidents for what it caught"
         ),
     ),

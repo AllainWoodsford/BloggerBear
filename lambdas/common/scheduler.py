@@ -22,6 +22,8 @@ import re
 
 import boto3
 
+from .naming import environment_prefix
+
 _scheduler_client = None
 
 _VALID_EXPRESSION_PREFIXES = ("rate(", "cron(", "at(")
@@ -63,7 +65,10 @@ def validate_timezone(tz: str) -> None:
 
 
 def _schedule_name(topic_id: str, suffix: str) -> str:
-    return f"bloggerbear-{os.environ['ENVIRONMENT_NAME']}-{topic_id}-{suffix}"
+    """<prefix>-<env>-<topic_id>-<suffix>, e.g. "bloggerbear-dev-hacker-news-research-tick". The
+    prefix is this deployment's (common/naming.py). EventBridge Scheduler allows 64 characters,
+    which is what bounds how long a prefix Terraform accepts (var.unique_name_prefix)."""
+    return f"{environment_prefix(os.environ['ENVIRONMENT_NAME'])}{topic_id}-{suffix}"
 
 
 def _upsert_schedule(
