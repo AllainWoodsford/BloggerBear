@@ -464,6 +464,22 @@ account, and it is an account setting, per region.
 - **Terraform does not manage it.** It is an account setting changed in the console; we know of
   no Terraform resource for it, and nothing in this repository checks it at deploy time.
 
+
+### CloudWatch Logs tags (the assistant's log tools)
+
+The operator's assistant reads logs itself (`log_review`, `api_errors`; [design](enhancements/ops-assistant-log-reader.md)).
+Its permission is written like `table_sample`'s: `logs:StartQuery` on `/aws/lambda/<prefix>-<env>-*`
+and `/aws/apigateway/<prefix>-<env>-*` only when the log group is tagged `ManagedBy = Terraform`,
+this deployment's `Project`, and an `Environment` that assistant may read (dev: `dev`;
+production: `production` and `shared`). Unlike DynamoDB there is no account setting to switch on.
+
+- **Check it** after the first apply: ask the assistant "any errors in the logs?". It answers with
+  counts, or "I found no errors", for every function.
+- **If it says AWS refused**, or names a log group it was not allowed to read: that group is
+  missing a tag. Usually a Lambda wrote its first log before Terraform made the group, so the group
+  is not Terraform's: delete the empty group and apply again, or import it. CloudWatch console →
+  Log groups → the group → **Tags** shows what it has.
+- **Nothing to tag by hand**: every log group Terraform makes carries the provider's default tags.
 ### The personal-data and secret checks
 
 `pr-checks.yml` runs Gitleaks (secrets, email addresses and AWS account IDs, per

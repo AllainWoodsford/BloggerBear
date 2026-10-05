@@ -211,7 +211,8 @@ which is also what the judges get (section 6).
   deploys with them. **Built so far:** the server, the suggestion catalogue, six read-only
   tools (`pipeline_health`, `admin_inbox`, `content_checks`, `security_events`, `alarms`, `spend`)
   and the memory (section 4: the suggestions table and `follow_up`, `dismiss`, `watch`, `unwatch`,
-  `watch_list`), with tests. `log_review` and `firewall_review` are not built. **Deployed on dev**
+  `watch_list`), with tests. `firewall_review` (#203) and `log_review` and `api_errors` (#220, #221;
+  [the log reader](ops-assistant-log-reader.md)) came later. **Deployed on dev**
   by `infra/modules/ops-assistant/` (`main.tf`, `memory.tf`): the function behind the Web Adapter,
   `POST /mcp` behind the Cognito authorizer, and a role of its own that is read-only except for
   the suggestions table; besides the tables, it may read article bodies from the content bucket
@@ -287,11 +288,12 @@ which is also what the judges get (section 6).
 | `security_events(days=7)` | SecurityEvents (open, last seen in the last `days`, 1 to 30) | how many at each severity; per incident its category, request count, first and last seen, and the playbook's next steps. Only a high-severity incident is a finding |
 | `alarms()` | CloudWatch `DescribeAlarms` (this environment's only: `bloggerbear-<env>-*`; with no environment configured it refuses) | anything in ALARM, and since when |
 | `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week. The whole AWS bill too, the same way, **only where the module's `account_wide_data` is on** (production); elsewhere it says the bill is not available from this environment (section 6) |
-| `log_review(hours=24, function?)` | fixed Logs Insights queries over the Lambda log groups, plus the 7-day baseline | what's unusual: error and throttle spikes per function, DLQ depth. **Not the firewall.** |
+| `log_review(function?, topic?, hours=24, start?, end?)` | fixed Logs Insights queries over this environment's Lambda log groups (by name and tag), plus the 7-day baseline | per function: error lines, each one's root cause and fix type, whether it is unusual, runs, duration and memory; check-it-yourself cards. **Not the firewall.** Built: [the log reader](ops-assistant-log-reader.md) |
+| `api_errors(api?, status?, hours=24, start?, end?)` | fixed queries over the APIs' access logs | errors by status and who answered, root cause and fix type, error rate, first and peak hour |
 | `follow_up()` | OperatorSuggestions (the caller's rows), then the source tables to re-check each open suggestion with the same code that found it | `fixed` (reported, and the row deleted), `cleared` (the same, for the kinds that stop being true by themselves: section 4), `open` (each with how long it has waited) and, as `findings`, the open ones again with their suggestions rebuilt from the catalogue (section 4) |
 | `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the row is marked dismissed, and the tool that finds it leaves it out of `findings` from then on |
 | `watch(kind, id)` / `unwatch(kind, id)` | writes OperatorSuggestions; `watch` checks the id (a topic must exist, an incident must be open, spend is `ai` or `aws`) | whether it is now watched |
-| `watch_list()` | OperatorSuggestions, then the readers above for each item | each watched item and how it is now: a topic's research and article state, an incident's severity, whether spend is unusual. A watched function is listed but not checked until `log_review` exists |
+| `watch_list()` | OperatorSuggestions, then the readers above for each item | each watched item and how it is now: a topic's research and article state, an incident's severity, whether spend is unusual. A watched function: its errors in the last day and whether what was flagged in its logs is still happening; a watched table: its on-time writes |
 
   The six tools above the line of memory tools also write one thing: when one returns a finding
   whose suggestion has a command, the server notes its kind and id in OperatorSuggestions on the way
@@ -369,8 +371,8 @@ given the values.
 - **Fixed queries, never model-written ones.** Cost and scope stay known, and the model can't be
   steered into reading other log groups. The model receives **aggregated counts and the baseline**,
   not raw log lines; what's "unusual" is computed in code (e.g. more than twice the 7-day median and
-  at least N events), and the model only puts it into words. `log_review` and `firewall_review` are
-  **the first tools to drop if time runs short**: the briefing works without them.
+  at least N events), and the model only puts it into words. Both were built in
+  the end; the briefing still works without them.
 - **Spoken output is minimised:** no IP addresses, client hashes, emails or raw attacker strings,
   ever. "One high-severity incident on the public API, all rate-limit blocks, starting 2:10 am" is
   enough; details stay in the CLI.
@@ -581,8 +583,9 @@ more exact than the above or differs from it:
   data are written before memory is consulted, so a dismissed article can still be counted there.
   The result carries `findings_dismissed`, the number left out.
 - **Watch items expire too:** 30 days after `watch_list` was last read, so "until removed" holds
-  for as long as the assistant is being used. A watched `function` is accepted on its name's shape
-  alone (no list of functions is one read away) and is not checked until `log_review` exists.
+  for as long as the assistant is being used. A watched `function` or `table` is any name the
+  architecture catalogue knows, kept under its catalogue key, and read with `log_review` or
+  `table_sample` (at most two log reads per call).
 - **Recording never fails a tool.** If the table cannot be read or written, one line is logged
   (with the error's type, not its text) and the tool's result goes back as it was.
 - **The role** may `GetItem`, `Query`, `PutItem`, `UpdateItem` and `DeleteItem` on this table and
@@ -736,11 +739,11 @@ to keep, not something the account gives for free.
 |---|---|---|
 | Tables (the nine app tables, its own suggestions table) | dev's | production's |
 | Article bodies (`articles/` in the content bucket) | dev's | production's |
-| Logs (it writes its own log group; `log_review` is not built) | dev's | production's |
+| Logs (`log_review`, `api_errors`: Lambda and access logs, by name and tag) | dev's | production's, and shared |
 | Alarms | `bloggerbear-dev-*` | `bloggerbear-production-*` |
 | Tracked AI spend (what the pipeline counted itself) | dev's | production's |
 | The whole AWS bill | no: "not available from this environment" | yes (both environments together; it cannot be split) |
-| Firewall deep dive (`firewall_review`, not built) | no: not registered | yes (the firewall serves both sites) |
+| Firewall deep dive (`firewall_review`) | no: not registered | yes (the firewall serves both sites) |
 
 How it is kept, in four layers (`infra/modules/ops-assistant/isolation.tf` has the detail):
 

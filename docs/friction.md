@@ -639,6 +639,53 @@ when access is granted; the runbook is written and no code change is expected. *
 again: when a platform's access is gated, build the part that can be tested without it first, and
 write down what is left.
 
+**The assistant reads the logs (2026-10-05).** Entries from the stack that let the assistant read
+logs ([design](enhancements/ops-assistant-log-reader.md)), prefixed with their PR so parallel PRs
+adding to this log do not collide.
+
+**#218 · A secret scanner caught the test fixtures, and a fix-up commit could not clear it.** The
+redaction tests held a made-up AWS key id and a made-up e-mail address; gitleaks flagged both. It scans every commit
+in the PR, so a second commit removing them still failed. **Fix:** the branch was ours, so the
+commit was amended; the key is now built from parts (`"AKIA" + ...`) and addresses use
+`@example.com`. **Lesson:** fixtures for a secret scrubber are secrets to a secret scanner: write
+them so the source never holds one, from the first commit.
+
+**#218 · The module tests could only run in CI, and failed there twice.** The cloud session's
+proxy refuses `registry.terraform.io`, so `terraform test` could not fetch providers. CI found an
+assertion on a value unknown at plan (a role id) and a list compared with a set. **Fix:** assert on
+plan-time strings, and compare conditions as `"test variable values"` strings the way the other
+tests do. **Lesson:** where a check cannot run locally, copy the idiom of the tests that already
+pass rather than writing a new shape.
+
+**#218, #220, #221 · dev changed a rule under a stack of open PRs.** The name-prefix setting (#219)
+merged while the stack was open, with a test that forbids `bloggerbear-` written out in code or
+Terraform. Three PRs went red at once. Then the first three merged while their fixes were being
+pushed, leaving commits on merged branches. **Fix:** names from `common.naming.NAME_PREFIX`,
+`architecture.PREFIX` and `var.unique_name_prefix`; the late fix rode in the next open PR (#225),
+retargeted to `dev`. **Lesson:** in a stack, merge `dev` into the bottom PR early and often, and
+check what is merged before pushing to a branch.
+
+**#225 · DynamoDB hands numbers back as `Decimal`.** The "getting worse / easing off" trend never
+appeared: the stored count was a `Decimal`, and `isinstance(value, int)` said no. The moto-backed
+test caught it, not the unit tests with plain dicts. **Fix:** counts are converted on read.
+**Lesson:** test what is read back from the table, not only what was written.
+
+**#226 · An address at the end of a sentence slipped through the PII sweep.** The IPv4 rule refused
+a match followed by a dot (to leave version numbers alone), so "...from 198.51.100.7." was not
+masked. Found when the agent's answer sweep was tested with a real sentence. **Fix:** refuse only a
+following digit or dot-digit. **Lesson:** test a scrubber on prose, not just on bare values.
+
+**#228 · One tool call could run past the request's time limit.** `follow_up` and `watch_list`
+could start a Logs Insights read per watched function, each allowed 15 seconds, in a function that
+stops at 30 behind an API that gives up at 29. **Fix:** at most two log reads per call, eight
+seconds each; the rest stay open for next time, never taken for calm. **Lesson:** a tool that fans
+out needs a budget for the whole request, not only for each call.
+
+**#228 · The suggested command could point at another topic.** The drafted `topics create` command
+made `--topic-id` from `--name`, which is what the operator asked for; on `topics update` the same
+rule turned a rename into a command for a different topic. **Fix:** only a `create` command derives
+an id. **Lesson:** a convenience that fills a value in must be scoped to where that value is new.
+
 ---
 
 ## Patterns worth keeping
