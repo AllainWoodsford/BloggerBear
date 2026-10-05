@@ -48,7 +48,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from common.dynamo import get_pipeline_config, get_table, list_topics
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
-from ops_mcp import architecture
+from ops_mcp import architecture, topic_match
 from ops_mcp.suggestions import ID_PATTERN
 from ops_mcp.tools import DAY_WINDOW, _age, _join, _parse, _topic_label
 
@@ -366,8 +366,13 @@ def table_sample(
     env = architecture.environment()
     if env is None:
         return _refusal("I haven't been told which environment I'm for, so I won't read tables.")
-    if topic is not None and not ID_PATTERN.match(str(topic)):
-        return _refusal("That isn't a topic id I can look up.")
+    matched = None
+    if topic is not None:
+        # The topic as the operator said it (topic_match.py): its id, its name, or something close.
+        one, matched, refusal = topic_match.pick(topic)
+        if one is None or not ID_PATTERN.match(str(one.get("topic_id") or "")):
+            return _refusal(refusal or "That topic's id isn't one I can look up.", matched_topic=matched)
+        topic = one["topic_id"]
     count = min(max(int(rows), 1), ROWS_MAX)
 
     resolved = architecture.resolve(name, kind="table") if isinstance(name, str) else None
@@ -411,7 +416,10 @@ def table_sample(
     sample = [shown(row, component.key) for row in found[:count]]
     freshness = _freshness(component.key, looked, now)
     spoken = _spoken(table_name, component, sample, freshness, rewritten, env)
+    if matched is not None:
+        spoken = topic_match.took(matched) + spoken
     return {
+        "matched_topic": matched,
         "spoken": spoken,
         "findings": [],
         "read": True,

@@ -45,8 +45,7 @@ from datetime import datetime, timedelta
 from statistics import median
 
 from common.adapters.registry import ADAPTER_REGISTRY
-from common.dynamo import get_topic
-from ops_mcp import architecture, logs, redact
+from ops_mcp import architecture, logs, redact, topic_match
 from ops_mcp.suggestions import ID_PATTERN, finding
 from ops_mcp.tools import _join, _topic_label
 
@@ -317,11 +316,13 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
     """Which functions to read, from the names the model passed on. Everything read is a catalogue
     function of this environment; nothing the caller typed becomes a log group's name."""
     if topic is not None:
-        if not isinstance(topic, str) or not ID_PATTERN.match(topic):
-            raise Refused("That isn't a topic id I can look up.")
-        item = get_topic(topic)
+        # The topic as the operator said it (topic_match.py); a guess is said, a doubt is asked.
+        item, matched, refusal = topic_match.pick(topic)
         if item is None:
-            raise Refused("I can't find a topic with that id.")
+            raise Refused(refusal)
+        topic = item.get("topic_id")
+        if not isinstance(topic, str) or not ID_PATTERN.match(topic):
+            raise Refused("That topic's id isn't one I can look up.")
         adapter = item.get("adapter") if item.get("adapter") in ADAPTER_REGISTRY else None
         functions = [architecture.by_key("function", key) for key in TOPIC_FUNCTIONS]
         return Scope(
@@ -330,15 +331,17 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
             topic_name=_topic_label(item, topic),
             adapter=adapter,
             prefix=ADAPTER_PREFIXES.get(adapter or ""),
+            note=topic_match.took(matched).strip() or None,
         )
     if function is not None:
-        resolved = architecture.resolve(function, kind="function")
+        # A near miss ("reserch tick") is taken and said; several close ones are asked about.
+        resolved, took_note, did_you_mean = architecture.forgiving(function, "function")
         found = [c for c in resolved.matches if c.kind == "function" and architecture.exists_in(c, env)]
         if not found:
-            raise Refused("I don't know a function by that name in this environment.")
+            raise Refused(did_you_mean or "I don't know a function by that name in this environment.")
         if resolved.asked_env is not None and resolved.asked_env not in architecture.ENVIRONMENTS:
             raise Refused("That name is for an environment that isn't this one, so I won't read its logs.")
-        note = None
+        note = took_note
         if resolved.asked_env is not None and resolved.asked_env != env:
             note = f"You named {resolved.asked_env}'s function; I can only read {env}'s, so this is {env}'s."
         return Scope(found[:1], note=note)

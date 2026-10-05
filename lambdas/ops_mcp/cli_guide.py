@@ -54,11 +54,11 @@ from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
 
-from common.dynamo import get_pipeline_config, get_topic, list_topics
+from common.dynamo import get_pipeline_config, list_topics
 from common.editorial_resolver import GOAL_FIELDS, validate_editorial_goals
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
-from ops_mcp.suggestions import ID_PATTERN
+from ops_mcp import topic_match
 from ops_mcp.tools import _join, _parse
 
 REFERENCE_FILE = Path(__file__).with_name("cli_reference.json")
@@ -1187,11 +1187,10 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
     many more there are. With `topic` (a topic id), that topic alone, every setting."""
     config = get_pipeline_config()
     if topic is not None:
-        if not isinstance(topic, str) or not ID_PATTERN.match(topic):
-            return {"spoken": "That isn't a topic id I can look up.", "findings": []}
-        one = get_topic(topic)
+        # The topic as the operator said it (topic_match.py): its id, its name, or something close.
+        one, matched, refusal = topic_match.pick(topic)
         if one is None:
-            return {"spoken": "I can't find a topic with that id.", "findings": []}
+            return {"spoken": refusal, "findings": [], "matched_topic": matched}
         rows = [[column, value] for column, value in zip(OVERVIEW_COLUMNS, _overview_row(one, config))]
         rows.extend(
             [
@@ -1202,7 +1201,8 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
         )
         name = rows[0][1]
         return {
-            "spoken": f"{name}'s settings are on screen.",
+            "spoken": f"{topic_match.took(matched)}{name}'s settings are on screen.",
+            "matched_topic": matched,
             "findings": [],
             "table": {"title": f"{name}: settings", "columns": ["Setting", "Value"], "rows": rows},
             "total": 1,

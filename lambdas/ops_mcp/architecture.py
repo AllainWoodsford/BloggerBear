@@ -1112,3 +1112,22 @@ def by_key(kind: str, key: str) -> Component:
 def as_mapping() -> Mapping[str, Component]:
     """Every component by "kind:key", for the tests."""
     return {f"{c.kind}:{c.key}": c for c in CATALOGUE}
+
+
+def forgiving(raw, kind: str) -> tuple[Resolved, str | None, str | None]:
+    """resolve(), forgiving a near miss the way topics are (topic_match.py): when nothing matches
+    and exactly one name of `kind` is close, it is taken, and the sentence to say so comes back;
+    when several are close, the "did you mean" question comes back instead. Names are the
+    catalogue's own keys, never what was asked."""
+    resolved = resolve(raw, kind=kind)
+    if resolved.matches or not resolved.suggestions:
+        return resolved, None, None
+    keys = list(dict.fromkeys(resolved.suggestions))
+    if len(keys) == 1:
+        again = resolve(keys[0], kind=kind)
+        if again.matches:
+            taken = Resolved(again.matches, resolved.asked_env, resolved.env_word, ())
+            return taken, f"I took that to mean {keys[0]}; tell me if you meant another.", None
+    names = ", ".join(keys[:-1]) + " or " + keys[-1] if len(keys) > 1 else keys[0]
+    label = KIND_LABELS.get(kind, kind).lower()
+    return resolved, None, f"I don't know a {label} by that name. Did you mean {names}?"
