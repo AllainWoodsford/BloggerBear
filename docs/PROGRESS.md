@@ -603,6 +603,9 @@ All shipped and deployed; the design and decisions for each are in
 - [x] The operator's assistant reads the logs: root causes, check-it-yourself, written down and
   followed up, watch a function or table, masked addresses, a suggested command under the CLI help
   (#218, #220, #221, #225, #226, #227, #228; docs/enhancements/ops-assistant-log-reader.md)
+- [x] The operator's assistant, second round: forgiving topic names with "did you mean" (#232),
+  success rates and the Lambdas listed with what they do (#234), a suggested command for any CLI
+  question and a topic-setup mock-up (#235), push to talk that does not let go while held (#238)
 
 ## Backlog / not yet scheduled
 
