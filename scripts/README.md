@@ -1,10 +1,34 @@
 # BloggerBear admin CLI
 
-A local operator CLI for the Phase 2 Admin API. This is a plain script you
+A local operator CLI for the Admin API. This is a plain script you
 run on your own machine -- it is **not** deployed to Lambda or anywhere
 else.
 
 **New here, or just need the export commands?** See [QUICKSTART.md](QUICKSTART.md).
+
+## First-time setup of your repository: `setup_repo.py`
+
+Deploying your own copy? This one comes before the admin CLI. It asks for the GitHub secrets and
+variables a deployment needs (the AWS region and the name prefix first, then your allowed address ranges, alert emails, the AWS account IDs and
+deploy role ARNs, the state bucket names and `PII_DENYLIST`), checks each answer,
+shows what is already set, and sets what is missing. It also tells you how to turn on the git hook
+that stops personal data being committed.
+
+The region question is optional: Enter keeps the default, `ap-southeast-2`. Answer with another
+region and the script puts it in the bootstrap command it prints, and lists the few things you
+must then change by hand (the Bedrock model profile for your part of the world, above all).
+
+```bash
+python scripts/setup_repo.py --dry-run     # step through it all; changes nothing
+python scripts/setup_repo.py               # the real thing; asks before it sets anything
+python scripts/setup_repo.py --help
+```
+
+It needs only Python 3.11+ and the GitHub CLI (`gh auth login`): no AWS credentials, no
+`pip install`. Secret values are never printed and never passed on a command line. Nothing is set
+until you have seen a summary and confirmed; if a write then fails part-way, it stops and lists
+what was and was not set. See
+[docs/deployment-runsheet.md](../docs/deployment-runsheet.md#quick-start-the-setup-script).
 
 ## Why a CLI, not a web page
 
@@ -102,6 +126,14 @@ python scripts/admin_cli.py review report
 python scripts/admin_cli.py review report --sample 25
 python scripts/admin_cli.py pipeline-config set --review-mode shadow
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2 --review-mode shadow
+# Who may reach the operator's assistant (the ops MCP server). `open` (the default) is any
+# signed-in caller from anywhere; `allowlist` is only from the operator's addresses (the
+# assistant's OPS_ASSISTANT_ALLOWED_CIDRS, set by Terraform); `off` refuses every request;
+# '' clears the setting (back to open). The assistant reads it on every request, so a
+# change applies from the next one, with no deploy. `pipeline-config get` shows it.
+python scripts/admin_cli.py pipeline-config set --assistant-access allowlist
+python scripts/admin_cli.py pipeline-config set --assistant-access off
+python scripts/admin_cli.py pipeline-config set --assistant-access ""
 python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
@@ -119,8 +151,27 @@ python scripts/admin_cli.py articles publish <article_id>
 python scripts/admin_cli.py articles unpublish <article_id>
 python scripts/admin_cli.py articles rewrite <article_id> --instructions "the second section confuses staking with lending"
 python scripts/admin_cli.py articles rewrite <article_id> -i "too long; cut the history section" --model <model_id>
+python scripts/admin_cli.py articles rewrite <article_id> -i "names the wrong company" --force   # take it down now
 
 python scripts/admin_cli.py failed-executions list
+
+# Sign-ins to the operator's assistant. Every attempt and success is logged; five failed
+# attempts in fifteen minutes lock the user, raise a high-severity security incident and send
+# the alert email. `unlock` lets them in again at once and does not change the password.
+python scripts/admin_cli.py sign-ins list
+python scripts/admin_cli.py sign-ins list --days 30
+python scripts/admin_cli.py sign-ins unlock <username>
+
+# Security incidents: what the firewalls blocked, attack-shaped comments, sign-in lockouts, and
+# the two trends (dropped feedback comments per day: 10 low, 50 medium, 100 high; the admin API's
+# 4xx answers per hour: 20, 50, 100). High severity sends the alert email. `open` records
+# something you noticed that nothing else did; high severity there emails too.
+python scripts/admin_cli.py security list
+python scripts/admin_cli.py security list --status acknowledged
+python scripts/admin_cli.py security open --severity medium --summary "odd requests to the admin API overnight"
+python scripts/admin_cli.py security acknowledge <event_id>   # you are looking into it
+python scripts/admin_cli.py security resolve <event_id>       # dealt with
+python scripts/admin_cli.py security reopen <event_id>
 
 # Lineage/cost data: where it is missing, and repair. `backfill` is a dry run
 # unless --apply; it only rewrites `lineage` (tokens are kept), and is safe to repeat.
@@ -143,6 +194,9 @@ python scripts/admin_cli.py topics update github-trending     --model-candidates
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
+Setting the registry up on a new deployment, with a sample `model-config` item, is in
+[docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
+
 `models`/`model-config` back the AI lineage/cost-tracking enhancement's
 DynamoDB-backed model registry (docs/project-plan.md §11) -- adding a
 model or changing the global default/fallback never needs a Terraform
@@ -161,6 +215,24 @@ override a stuck/undesired status. If a moderation queue item exists for
 the article and is still `pending`, it's marked `approved` too so the two
 records don't disagree.
 
+**Refreshing already-published pages** (for example to add the source credit line, which pages
+rendered before it existed do not have). A static article page is written once, when the article
+is published, and nothing re-renders it afterwards. The single-page view (`/#/article/<id>`), the
+topic pages and the RSS feed need no refresh: they read the credit from the API on every load.
+For the static page (`/articles/<id>.html`) the only path today is `articles publish <article_id>`,
+which renders the page again from the stored article, credit included. It is a re-publish, not a
+plain re-render, so on an article that is already published it also:
+
+- sets `published_at` to now, so the article's date changes and it moves to the top of its topic
+  list and the RSS feed;
+- sets "approved by" to Humans, whatever it was;
+- writes another musing about the article (one more model call).
+
+That is acceptable for a handful of pages you care about (the crypto articles, for CoinGecko's
+attribution) and wrong for a mass refresh. There is no command that only re-renders. The smallest
+follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
+article's stored `published_at` and `published_by` and does nothing else.
+
 `articles unpublish` is the inverse: it deletes the article's static page,
 marks the article and its moderation-queue item `rejected` (so it leaves every
 public listing), removes the musings written about it, and asks CloudFront to
@@ -172,16 +244,20 @@ wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.
 
 `articles rewrite` sends an article back to be rewritten, with `--instructions` saying what is
-wrong with it. A **published** article is taken down first (page, musings and CDN cache, as with
-`unpublish`) and set back to waiting for review; a **rejected** one is brought back the same way;
-one already **waiting in the inbox** is rewritten in place. The rewrite runs in the background
+wrong with it. A **published** article stays up, untouched, while it is rewritten: it is taken
+down (page, musings and CDN cache, as with `unpublish`) and set back to waiting for review only
+once the rewrite is ready to take its place in the inbox. If that rewrite fails, the article is
+still published exactly as it was, and `inbox` and `moderation list` say so, with the reason
+(`failed_rewrites`). `--force` takes it down first and then rewrites, for an article that must not
+stay up meanwhile. A **rejected** article is brought back to waiting for review; one already
+**waiting in the inbox** is rewritten in place. The rewrite runs in the background
 (`lambdas/common/rewrite.py`) with your note as the main thing to fix, alongside anything the
 reviews flagged. It gets the same guards as any rewrite (no figure or link that is in none of the
 sources), goes through the fresh-data and compliance reviews again, and comes back to the inbox
 for you to approve, reject or rewrite again; approving it publishes it. `--model` picks a
 registered model (`models list`); by default it uses the model the topic writes with today. If the
-rewrite fails, the article waits in the inbox with the reason, and `[w]` there retries with the same
-note. Approving it writes a fresh musing about the new version, in place of the ones the
+rewrite of an article that was not published (or was taken down with `--force`) fails, the article
+waits in the inbox with the reason, and `[w]` there retries with the same note. Approving it writes a fresh musing about the new version, in place of the ones the
 take-down removed.
 
 `lineage audit` lists articles with no lineage, articles whose cost is blank, and
@@ -350,6 +426,52 @@ Each article records which gear was in the prompts that wrote it (`equipment_use
 per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
 gear helps, and share out wear. It is never shown publicly.
 
+## The Alexa+ add-on: `alexa_addon_values.py`
+
+Putting the operator's assistant on Alexa+ is a one-time bootstrap per environment, written up in
+[alexa/README.md](../alexa/README.md). This script prints the values it asks for, from one
+environment's Terraform outputs, and checks they are https and all that environment's own:
+
+```bash
+python scripts/alexa_addon_values.py dev
+python scripts/alexa_addon_values.py dev --write-manifest ~/bloggerbear-addon-dev/addon-package/addon.json
+```
+
+It never prints the Alexa client secret unless you pass `--show-secret`, and it will not replace an
+existing manifest without `--force`. It needs Terraform and read access to that environment's state.
+
+## After changing the CLI: `generate_cli_reference.py`
+
+The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you
+give it the values, the exact command (`lambdas/ops_mcp/cli_guide.py`). It runs in a Lambda that
+does not contain this folder, so it reads a generated copy of the CLI's reference:
+`lambdas/ops_mcp/cli_reference.json`, every command, flag and help text, written from
+`admin_cli.build_parser()`.
+
+**Run this whenever you add, rename or remove a command or flag, or change any help text, and commit
+the result with the change:**
+
+```bash
+python scripts/generate_cli_reference.py          # rewrite lambdas/ops_mcp/cli_reference.json
+python scripts/generate_cli_reference.py --check  # change nothing; exit 1 if it is out of date
+```
+
+`scripts/tests/test_generate_cli_reference.py` makes the same check, so CI fails with this command
+in the message if you forget. Two things the generator decides, both read from the parser:
+
+- **Which commands the assistant never fills in.** A command whose last word deletes or takes
+  something down (`delete`, `unpublish`, `reject`, and a few more in `DESTRUCTIVE_VERBS`) and any
+  `--force` flag are marked destructive; the assistant shows those as a template with
+  `<placeholders>`. A new command of that kind under another name needs its word added to
+  `DESTRUCTIVE_VERBS`; the test lists the marked commands so the change is seen in review.
+- **The help text**, from argparse's `format_help()` at a fixed width. argparse's layout differs a
+  little between Python releases, so the file records which release wrote it: the check compares
+  the help exactly on that release, and by content (every flag and help string) on another.
+
+The assistant's hand-written guides (costs, gear, editorial goals, a first topic, reviewing) are in
+`cli_guide.py`; a test builds every command they mention with the real parser, so a guide that
+names a flag you removed fails too.
+
 ### Testing the DLQ consumer manually
 
 `dlq_handler.py` is only exercised for real when a `daily_cycle` execution
@@ -374,7 +496,8 @@ and check `aws logs tail /aws/lambda/bloggerbear-dev-dlq-handler --since 5m`
 for the `dlq_handler: daily_cycle failed for topic_id=test-topic: ...` log
 line. If `pipeline_dlq_url` isn't an existing Terraform output yet, get the
 queue URL instead with
-`aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`.
+`aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`. (Both names start with
+your `UNIQUE_NAME_PREFIX`; `bloggerbear` is the default.)
 
 Responses are pretty-printed JSON on stdout. A non-2xx response prints the
 error body to stderr and exits non-zero.

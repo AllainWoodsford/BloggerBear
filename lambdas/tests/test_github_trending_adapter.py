@@ -1,74 +1,194 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
-from common.adapters.github_trending import GitHubTrendingAdapter
+import pytest
+from botocore.exceptions import ClientError
+
+from common.adapters import github_trending
+from common.adapters.github_trending import SEARCH_URL, GitHubTrendingAdapter, build_query
 
 
-def _fixture_html(repos: list[tuple[str, str, int, str]]) -> str:
-    """Build a minimal github.com/trending-shaped HTML fixture.
+@pytest.fixture(autouse=True)
+def _no_token(monkeypatch):
+    """Every test starts keyless, on a fresh "cold start"."""
+    monkeypatch.delenv("GITHUB_API_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_API_TOKEN_PARAMETER", raising=False)
+    monkeypatch.setattr(github_trending, "_ssm_api_token", github_trending._UNREAD)
 
-    Each repo tuple is (owner_slash_name, description, stars, language).
-    Doesn't need to be a real full page -- just enough structure for the
-    adapter's parser (article rows, an h2 anchor, a stargazers link, and an
-    itemprop=programmingLanguage span).
+
+def _search_payload(repos: list[tuple[str, str | None, int, str | None]]) -> dict:
+    """A minimal GitHub Search API (search/repositories) response body.
+
+    Each repo tuple is (owner_slash_name, description, stars, language) -- only
+    the fields the adapter reads.
     """
-    rows = []
-    for name, description, stars, language in repos:
-        owner, repo = name.split("/")
-        rows.append(f"""
-        <article class="Box-row">
-          <h2 class="h3 lh-condensed">
-            <a href="/{owner}/{repo}">{owner} /\n {repo}</a>
-          </h2>
-          <p class="col-9 color-fg-muted my-1 pr-4">{description}</p>
-          <span itemprop="programmingLanguage">{language}</span>
-          <a href="/{owner}/{repo}/stargazers">{stars:,}</a>
-        </article>
-        """)
-    return f"<html><body>{''.join(rows)}</body></html>"
+    return {
+        "total_count": len(repos),
+        "incomplete_results": False,
+        "items": [
+            {
+                "full_name": name,
+                "html_url": f"https://github.com/{name}",
+                "description": description,
+                "stargazers_count": stars,
+                "language": language,
+            }
+            for name, description, stars, language in repos
+        ],
+    }
 
 
-def _mock_response(html: str) -> Mock:
+def _mock_response(payload: dict, status_code: int = 200) -> Mock:
     response = Mock()
-    response.text = html
+    response.status_code = status_code
+    response.json = Mock(return_value=payload)
     response.raise_for_status = Mock()
     return response
 
 
-def test_fetch_state_parses_repos_from_html():
-    html = _fixture_html(
+def test_fetch_state_reads_repos_from_the_search_api():
+    payload = _search_payload(
         [
             ("octocat/hello-world", "A friendly greeting repo", 1234, "Python"),
-            ("acme/widgets", "Widgets for everyone", 42, "Go"),
+            ("acme/widgets", None, 42, None),
         ]
     )
     adapter = GitHubTrendingAdapter()
 
-    with patch("common.adapters.github_trending.requests.get", return_value=_mock_response(html)) as mock_get:
+    with patch(
+        "common.adapters.github_trending.requests.get", return_value=_mock_response(payload)
+    ) as mock_get:
         state = adapter.fetch_state({"adapter_config": {}})
 
     mock_get.assert_called_once()
-    assert mock_get.call_args.args[0] == "https://github.com/trending"
+    assert mock_get.call_args.args[0] == SEARCH_URL == "https://api.github.com/search/repositories"
+    params = mock_get.call_args.kwargs["params"]
+    assert params["sort"] == "stars" and params["order"] == "desc" and params["per_page"] == 25
+    assert params["q"].startswith("created:>=")
+    headers = mock_get.call_args.kwargs["headers"]
+    assert headers["Accept"] == "application/vnd.github+json"
+    assert "BloggerBear" in headers["User-Agent"]
     assert "fetched_at" in state
     assert len(state["repos"]) == 2
 
-    first = state["repos"][0]
-    assert first["name"] == "octocat/hello-world"
-    assert first["url"] == "https://github.com/octocat/hello-world"
-    assert first["description"] == "A friendly greeting repo"
-    assert first["stars"] == 1234
-    assert first["language"] == "Python"
+    first, second = state["repos"]
+    assert first == {
+        "name": "octocat/hello-world",
+        "url": "https://github.com/octocat/hello-world",
+        "description": "A friendly greeting repo",
+        "stars": 1234,
+        "language": "Python",
+    }
+    # A null description is normalised so keyword matching never sees None.
+    assert second["description"] == "" and second["language"] is None
 
 
-def test_fetch_state_uses_language_scoped_url_when_configured():
-    html = _fixture_html([("acme/widgets", "desc", 1, "Go")])
-    adapter = GitHubTrendingAdapter()
+def test_fetch_state_never_touches_the_trending_html_page():
+    with patch(
+        "common.adapters.github_trending.requests.get",
+        return_value=_mock_response(_search_payload([])),
+    ) as mock_get:
+        GitHubTrendingAdapter().fetch_state({"adapter_config": {"language": "go"}})
 
-    with patch("common.adapters.github_trending.requests.get", return_value=_mock_response(html)) as mock_get:
-        adapter.fetch_state({"adapter_config": {"language": "go"}})
+    assert "github.com/trending" not in mock_get.call_args.args[0]
 
-    assert mock_get.call_args.args[0] == "https://github.com/trending/go"
+
+def test_fetch_state_scopes_the_query_by_language_when_configured():
+    with patch(
+        "common.adapters.github_trending.requests.get",
+        return_value=_mock_response(_search_payload([])),
+    ) as mock_get:
+        GitHubTrendingAdapter().fetch_state({"adapter_config": {"language": "go"}})
+
+    assert 'language:"go"' in mock_get.call_args.kwargs["params"]["q"]
+
+
+def _headers_sent() -> list[dict]:
+    with patch(
+        "common.adapters.github_trending.requests.get",
+        return_value=_mock_response(_search_payload([])),
+    ) as mock_get:
+        GitHubTrendingAdapter().fetch_state({"adapter_config": {}})
+    return [call.kwargs["headers"] for call in mock_get.call_args_list]
+
+
+def test_fetch_state_sends_a_token_only_when_one_is_configured(monkeypatch):
+    assert "Authorization" not in _headers_sent()[0]
+
+    monkeypatch.setenv("GITHUB_API_TOKEN", "ghp_example")
+    assert _headers_sent()[0]["Authorization"] == "Bearer ghp_example"
+
+
+def test_the_token_is_read_from_ssm_once_per_cold_start(monkeypatch):
+    monkeypatch.setenv("GITHUB_API_TOKEN_PARAMETER", "/bloggerbear/dev/github-api-token")
+    ssm = Mock()
+    ssm.get_parameter.return_value = {"Parameter": {"Value": "ghp_from_ssm\n"}}
+
+    with patch("common.adapters.github_trending.boto3.client", return_value=ssm):
+        first, second = _headers_sent(), _headers_sent()
+
+    assert first[0]["Authorization"] == second[0]["Authorization"] == "Bearer ghp_from_ssm"
+    ssm.get_parameter.assert_called_once_with(Name="/bloggerbear/dev/github-api-token", WithDecryption=True)
+
+
+def test_no_parameter_in_ssm_means_unauthenticated(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_API_TOKEN_PARAMETER", "/bloggerbear/dev/github-api-token")
+    ssm = Mock()
+    ssm.get_parameter.side_effect = ClientError(
+        {"Error": {"Code": "ParameterNotFound", "Message": "nope"}}, "GetParameter"
+    )
+
+    with patch("common.adapters.github_trending.boto3.client", return_value=ssm):
+        assert "Authorization" not in _headers_sent()[0]
+
+    assert "no GitHub token at /bloggerbear/dev/github-api-token" in capsys.readouterr().out
+
+
+def test_a_rejected_token_retries_the_search_without_it(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_API_TOKEN", "ghp_revoked")
+    rejected = _mock_response({}, status_code=401)
+    ok = _mock_response(_search_payload([("a/b", "desc", 5, "Go")]))
+
+    with patch("common.adapters.github_trending.requests.get", side_effect=[rejected, ok]) as mock_get:
+        state = GitHubTrendingAdapter().fetch_state({"adapter_config": {}})
+
+    assert [r["name"] for r in state["repos"]] == ["a/b"]
+    first, second = (call.kwargs["headers"] for call in mock_get.call_args_list)
+    assert "Authorization" in first and "Authorization" not in second
+    assert "ghp_revoked" not in capsys.readouterr().out
+
+
+def test_fetch_state_raises_when_the_api_refuses():
+    response = _mock_response({})
+    response.raise_for_status.side_effect = RuntimeError("403 rate limit exceeded")
+
+    with patch("common.adapters.github_trending.requests.get", return_value=response):
+        # Raising means the tick records nothing and retries on the next heartbeat.
+        with pytest.raises(RuntimeError, match="rate limit"):
+            GitHubTrendingAdapter().fetch_state({"adapter_config": {}})
+
+
+NOW = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+
+
+def test_build_query_defaults_to_repos_created_in_the_last_week():
+    assert build_query({}, NOW) == "created:>=2026-09-27"
+
+
+def test_build_query_combines_window_language_and_star_floor():
+    query = build_query(
+        {"created_within_days": 3, "language": "Jupyter Notebook", "min_stars": 50}, NOW
+    )
+
+    assert query == 'created:>=2026-10-01 language:"Jupyter Notebook" stars:>=50'
+
+
+def test_build_query_bounds_bad_numbers_instead_of_failing():
+    assert build_query({"created_within_days": "lots", "min_stars": -5}, NOW) == "created:>=2026-09-27"
+    assert build_query({"created_within_days": 999}, NOW) == "created:>=2026-09-04"
+    assert build_query({"created_within_days": 0}, NOW) == "created:>=2026-10-03"
 
 
 def test_material_diff_true_on_first_observation():
@@ -178,9 +298,11 @@ MIXED_TRENDING = [
 def _fetch_trending(adapter_config):
     with patch(
         "common.adapters.github_trending.requests.get",
-        return_value=_mock_response(_fixture_html(MIXED_TRENDING)),
-    ):
-        return GitHubTrendingAdapter().fetch_state({"adapter_config": adapter_config})
+        return_value=_mock_response(_search_payload(MIXED_TRENDING)),
+    ) as mock_get:
+        state = GitHubTrendingAdapter().fetch_state({"adapter_config": adapter_config})
+    state["_per_page"] = mock_get.call_args.kwargs["params"]["per_page"]
+    return state
 
 
 def test_keywords_filter_repos_by_name_and_description():
@@ -188,6 +310,8 @@ def test_keywords_filter_repos_by_name_and_description():
 
     assert [r["name"] for r in state["repos"]] == ["acme/vuln-scanner", "dave/cookbook-sec"]
     assert state["off_topic_dropped"] == 2
+    # Filtering by topic widens the candidate pool, still in one request.
+    assert state["_per_page"] == 100
 
 
 def test_without_keywords_all_repos_are_kept():
@@ -195,6 +319,7 @@ def test_without_keywords_all_repos_are_kept():
 
     assert len(state["repos"]) == 4
     assert "off_topic_dropped" not in state
+    assert state["_per_page"] == 25
 
 
 def test_no_relevant_repos_is_never_material():

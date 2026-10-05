@@ -282,8 +282,15 @@ def put_article(
     review: dict | None = None,
     body_original_s3_key: str | None = None,
     equipment_used: list[dict] | None = None,
+    attribution: list[dict] | None = None,
 ) -> dict:
     """Write an Articles item and return it.
+
+    `attribution` is the source credit this article was drafted with (common/attribution.py:
+    [{"text", "label", "url"}], copied from its topic's adapter), kept so the article goes on
+    showing the credit it was published with even if the adapter's declaration changes. An empty
+    list means it was drafted with nothing to credit; absent means it predates this and readers
+    of it fall back to the topic's adapter.
 
     `equipment_used` is the gear whose guidance was in the prompts that wrote this article
     (common/equipment.py: [{"topic_id", "version", "slot"}]); an empty list means it was written
@@ -323,6 +330,8 @@ def put_article(
         item["body_original_s3_key"] = body_original_s3_key
     if equipment_used is not None:
         item["equipment_used"] = equipment_used
+    if attribution is not None:
+        item["attribution"] = attribution
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -337,6 +346,7 @@ def put_moderation_item(
     status: str = "pending",
     review_notes: list[str] | None = None,
     rewrite: dict | None = None,
+    extra: dict | None = None,
 ) -> dict:
     """Write a ModerationQueue item and return it.
 
@@ -344,6 +354,10 @@ def put_moderation_item(
     reads `moderation list` sees why an article may be stale. Stored only if non-empty.
     `rewrite` is set on the item a Re-Write puts back in the inbox (common/rewrite.py):
     which rewrite it was, the model, and what it cost.
+    `extra` are further attributes, for an item that never passes through the inbox: one made
+    already `rewriting` for a published article (its claim, in the same write, so it is never
+    `pending` even for a moment), or one made REWRITE_FAILED_STATUS (its reason; it also gets
+    the TTL such an item always has).
     """
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     item = {
@@ -358,6 +372,9 @@ def put_moderation_item(
         item["review_notes"] = review_notes
     if rewrite is not None:
         item["rewrite"] = _floats_to_decimal(rewrite)
+    item.update(extra or {})
+    if status == REWRITE_FAILED_STATUS:
+        item["expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     table.put_item(Item=item)
     return item
 
@@ -531,6 +548,13 @@ def update_moderation_status(queue_id: str, status: str) -> None:
 # background rewrite finished; a *new* pending item carries the rewritten article back to the
 # inbox), or back to pending if the rewrite failed or never finished. The Article itself stays
 # pending_moderation throughout: nothing here can make it public.
+#
+# A published article is rewritten while it stays up (`articles rewrite` without --force): it is
+# taken down only once its rewrite is ready. If that rewrite fails, its item must not go back to
+# `pending` -- the article is still public, and an inbox item for it could be approved or rejected
+# as if it were not. It ends as REWRITE_FAILED_STATUS instead: out of the inbox, with the reason,
+# cleared by TTL like a rejected item.
+REWRITE_FAILED_STATUS = "rewrite_failed"
 
 
 def list_moderation_by_status(status: str) -> list[dict]:
@@ -587,12 +611,15 @@ def claim_moderation_for_rewrite(
 def finish_moderation_rewrite(
     queue_id: str, *, rewrite_id: str, status: str, fields: dict | None = None
 ) -> bool:
-    """Move an item out of `rewriting` -- to "rewritten" (done) or back to "pending" (failed) --
-    setting `fields` alongside. Only if it is still `rewriting` under this `rewrite_id`: False
-    means the rewrite no longer owns it (it was released as stuck, or this is a duplicate
-    delivery of the same rewrite), and the caller must not act on the result."""
+    """Move an item out of `rewriting` -- to "rewritten" (done), back to "pending" (failed), or to
+    REWRITE_FAILED_STATUS (failed, and the article is still published) -- setting `fields`
+    alongside. Only if it is still `rewriting` under this `rewrite_id`: False means the rewrite no
+    longer owns it (it was released as stuck, or this is a duplicate delivery of the same
+    rewrite), and the caller must not act on the result."""
     table = get_table(os.environ["MODERATION_QUEUE_TABLE"])
     fields = _floats_to_decimal(dict(fields or {}))
+    if status == REWRITE_FAILED_STATUS:
+        fields["expires_at"] = _expires_in(CLEANUP_TTL_DAYS)
     names = {"#status": "status"}
     values = {":status": status, ":rewriting": "rewriting", ":rewrite_id": rewrite_id}
     sets = ["#status = :status"]
@@ -1181,6 +1208,17 @@ def list_recent_article_titles(topic_id: str, limit: int = 5) -> list[str]:
     return [item["title"] for item in items]
 
 
+def get_newest_article_for_topic(topic_id: str) -> dict | None:
+    """The topic's most recently created article, in any status, or None if it has none. One
+    newest-first Query on the topic index, for the operator's assistant (ops_mcp/tools.py), which
+    asks what became of a topic's latest run: published, held or rejected."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    items = _paginated_query(
+        table, ARTICLES_BY_TOPIC_INDEX, Key("topic_id").eq(topic_id), newest_first=True, limit=1
+    )
+    return items[0] if items else None
+
+
 # --- FailedExecutions (DLQ consumer) -------------------------------------
 #
 # Owned by the dlq_handler worker. A FailedExecutions item is written once
@@ -1379,7 +1417,8 @@ def put_model_config(*, model_id: str | None, fallback_model_id: str | None) -> 
 
 # A second row in the same table, separate from the "default" model row above so
 # neither overwrites the other. Holds pipeline-wide settings edited from the admin
-# API/CLI or straight in DynamoDB -- today just the research interval default.
+# API/CLI or straight in DynamoDB: the research interval default, the draft review settings,
+# and who may reach the operator's assistant (common/assistant_access.py).
 _PIPELINE_CONFIG_ID = "pipeline"
 
 
@@ -1401,6 +1440,7 @@ def put_pipeline_config(
     research_interval_hours=_UNSET,
     review_mode=_UNSET,
     review_on_unavailable=_UNSET,
+    assistant_access=_UNSET,
 ) -> dict:
     """Update pipeline-wide settings and return the row.
 
@@ -1411,6 +1451,7 @@ def put_pipeline_config(
         "research_interval_hours": research_interval_hours,
         "review_mode": review_mode,
         "review_on_unavailable": review_on_unavailable,
+        "assistant_access": assistant_access,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):
@@ -1992,6 +2033,43 @@ def claim_security_alert(event_id: str, alerted_at: str) -> bool:
     return True
 
 
+def get_security_incident(event_id: str) -> dict | None:
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    return table.get_item(Key={"event_id": event_id}).get("Item")
+
+
+def set_security_incident_status(
+    event_id: str, status: str, *, only_from: str | None = None, fields: dict | None = None
+) -> bool:
+    """Set incident `event_id`'s status, with any `fields` beside it (who changed it, and when).
+    Only an incident that exists; with `only_from`, only one whose status is that now, so a count
+    that reaches its first threshold opens the incident once and never reopens one a person has
+    since closed. False when the condition did not hold."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    names = {"#status": "status"}
+    values = {":status": status}
+    sets = ["#status = :status"]
+    for n, (key, value) in enumerate((fields or {}).items()):
+        names[f"#f{n}"] = key
+        values[f":f{n}"] = value
+        sets.append(f"#f{n} = :f{n}")
+    condition = "attribute_exists(event_id)"
+    if only_from is not None:
+        condition += " AND #status = :from"
+        values[":from"] = only_from
+    try:
+        table.update_item(
+            Key={"event_id": event_id},
+            UpdateExpression=f"SET {', '.join(sets)}",
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def list_security_incidents(status: str = "open", limit: int = 50) -> list[dict]:
     """The newest incidents with `status` (open, acknowledged, resolved), newest first."""
     table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
@@ -2002,3 +2080,41 @@ def list_security_incidents(status: str = "open", limit: int = 50) -> list[dict]
         Limit=limit,
     )
     return response.get("Items", [])
+
+
+# --- Sign-ins (common/sign_ins.py) ----------------------------------------------------------------
+#
+# One row per sign-in event at the operator's assistant: written by sign_in_events_handler.py (the
+# user pool's triggers) and by the Admin API's unlock. Keyed by the user, then by when, so "this
+# user's last few minutes" is one query. Rows expire by TTL (expires_at).
+
+
+def put_sign_in_event(username: str, at: str, fields: dict, *, expires_at: int) -> None:
+    """Write one event for `username` at `at` (an ISO timestamp). A few random characters are
+    added to the sort key, so two events in the same microsecond are both kept."""
+    table = get_table(os.environ["SIGN_INS_TABLE"])
+    table.put_item(
+        Item={**fields, "username": username, "at": f"{at}#{secrets.token_hex(3)}", "expires_at": expires_at}
+    )
+
+
+def query_sign_in_events(username: str, since: str) -> list[dict]:
+    """`username`'s events from `since` (an ISO timestamp) on, oldest first. A consistent read:
+    the lockout counts an attempt written a moment ago."""
+    table = get_table(os.environ["SIGN_INS_TABLE"])
+    kwargs = {
+        "KeyConditionExpression": Key("username").eq(username) & Key("at").gte(since),
+        "ConsistentRead": True,
+    }
+    response = table.query(**kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.query(**kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
+
+
+def scan_sign_in_events(since: str) -> list[dict]:
+    """Every user's events from `since` on (a Scan: a handful of operators, a few rows a day)."""
+    table = get_table(os.environ["SIGN_INS_TABLE"])
+    return _paginated_scan(table, Attr("at").gte(since))

@@ -1,6 +1,11 @@
+variable "unique_name_prefix" {
+  type        = string
+  description = "What every resource name starts with, without a trailing hyphen (the calling root's var.unique_name_prefix, \"bloggerbear\" by default). Every alarm, dashboard, metric filter and the alerts topic is <prefix>-<environment_name>-<what>."
+}
+
 variable "environment_name" {
   type        = string
-  description = "Short environment name (e.g. \"dev\", \"production\"), used to name the SNS topic/alarms/dashboard (bloggerbear-<environment_name>-...)."
+  description = "Short environment name (e.g. \"dev\", \"production\"), used to name the SNS topic/alarms/dashboard (<prefix>-<environment_name>-...)."
 }
 
 variable "lambda_function_names" {
@@ -46,7 +51,7 @@ variable "security_alert_log_groups" {
 variable "edge_dashboard_enabled" {
   type        = bool
   default     = false
-  description = "Create the bloggerbear-<env>-edge dashboard (API Gateway and firewall, api_waf_dashboards.tf). Off by default: CloudWatch bills US$3 a month for every dashboard past the account's first three, so only production turns it on."
+  description = "Create the <prefix>-<env>-edge dashboard (API Gateway and firewall, api_waf_dashboards.tf). Off by default: CloudWatch bills US$3 a month for every dashboard past the account's first three, so only production turns it on."
 }
 
 variable "api_dashboard_apis" {
@@ -78,7 +83,7 @@ variable "waf_regional_acls" {
     log_group   = string
   }))
   default     = []
-  description = "The REGIONAL web ACLs (ap-southeast-2) on the edge dashboard."
+  description = "The REGIONAL web ACLs (in var.aws_region) on the edge dashboard."
 }
 
 variable "waf_cloudfront_acl" {
@@ -95,4 +100,9 @@ variable "feedback_rejections_alarm_threshold" {
   type        = number
   default     = 150
   description = "Rejected feedback submissions in one hour that raise the spam alarm. Half the default daily model-check budget (screening_limit, 300): a real reader rarely has more than a comment or two turned away."
+}
+
+variable "aws_region" {
+  type        = string
+  description = "The deployment's home region (the calling root's var.aws_region): the region every widget reads its metrics and logs from, except the CloudFront ones, which only exist in us-east-1 (local.cloudfront_region). No default, so a root cannot forget to pass it."
 }

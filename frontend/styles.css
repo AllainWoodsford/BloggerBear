@@ -666,6 +666,25 @@ a {
   margin: -14px 0 20px;
 }
 
+/* Source credit ("Powered by CoinGecko API", "Data sourced from GitHub Trending"): one italic
+   line under an article's title block and under a topic's title, also baked into the static
+   article pages (common/static_pages.py). The wording and links come from the adapters
+   (lambdas/common/attribution.py).
+   Do not shrink it: CoinGecko's API terms require their credit "in a legible font ... no smaller
+   than font size 10". 0.9rem is 14.4px (10.8pt) at the browser's default size, so it clears
+   10pt with room to spare; .lineage-summary's 0.8rem would not. */
+.source-attribution {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-style: italic;
+  margin: 0 0 20px;
+  overflow-wrap: anywhere;
+}
+
+.lineage-summary + .source-attribution {
+  margin-top: -14px;
+}
+
 /* Full lineage stats footer -- same treatment as .sources-footer, with a
    definition list for the label/value rows. */
 .lineage-footer {
@@ -878,6 +897,7 @@ a {
   display: block;
   width: 112px;
   height: 112px;
+  -webkit-user-select: none; /* Safari still needs the prefix */
   user-select: none;
   -webkit-user-drag: none;
 }
@@ -1029,6 +1049,7 @@ a {
 
 .paw {
   margin: 0 0.6em 0 0.15em;
+  -webkit-user-select: none;
   user-select: none;
 }
 

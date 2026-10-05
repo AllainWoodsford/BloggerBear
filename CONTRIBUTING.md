@@ -15,9 +15,14 @@ public discussion.
 
 The code is under the [Apache License 2.0](LICENSE). To run it yourself:
 
-- **Deploying:** the "Deploying this" section of the [README](README.md) is the run sheet, from the
-  one-time bootstrap to the first production release.
-- **Running the checks locally:** the README's "Local development" section has the same commands
+- **Deploying:** [docs/deployment-runsheet.md](docs/deployment-runsheet.md) takes you from the
+  one-time bootstrap to a working dev environment, and
+  [docs/production-runsheet.md](docs/production-runsheet.md) from there to the first production
+  release. Every setting is in [docs/configuration.md](docs/configuration.md).
+- **Running the checks locally:** the runsheet's
+  [Local development](docs/deployment-runsheet.md#local-development) section has the same commands
   CI runs: pytest (moto-mocked, no AWS credentials needed), ruff, bandit and `terraform validate`.
+- **Lint before you push:** `ruff check --fix lambdas/ scripts/` with the ruff pinned in
+  `lambdas/requirements-dev.txt` applies the safe fixes CI would otherwise fail on.
 - **How it's built and why:** [docs/project-plan.md](docs/project-plan.md) covers the
   architecture and its rules; [docs/PROGRESS.md](docs/PROGRESS.md) is the phase-by-phase history.

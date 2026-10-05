@@ -5,6 +5,9 @@ missing. The full reference is [README.md](README.md) in this folder.
 
 ## 1. Set it up (once per terminal)
 
+Use the region your copy is deployed in; `ap-southeast-2` is the original deployment's, and the
+default.
+
 Git Bash:
 
 ```bash
@@ -49,13 +52,14 @@ python scripts/admin_cli.py equipment list   # what the bear is wearing
 | **How the CLI reads its settings** | [README.md](README.md), the "Configuration" section: `BLOGGERBEAR_ADMIN_API_URL` (or `--api-url`) and `AWS_REGION` / `AWS_DEFAULT_REGION` (or `--region`). |
 | **Every command** | [README.md](README.md) "Usage", or `--help`. |
 | **Approving things, and the gear** | [README.md](README.md): "What is waiting for you: `inbox` and `approve`" and "What the bear wears: `equipment`". |
-| **Seeding a topic** | The run sheet in the repo's top-level `README.md` ("Deploying this", step 6). |
-| **How it all fits together** | `docs/project-plan.md`. |
+| **Seeding a topic** | [../docs/deployment-runsheet.md](../docs/deployment-runsheet.md#5-after-the-first-deploy), step 5. |
+| **Every setting, and where it goes** | [../docs/configuration.md](../docs/configuration.md). |
+| **How it all fits together** | The top-level `README.md` ("Architecture"), then `docs/project-plan.md`. |
 
 ## Checking the custom domain
 
 ```bash
-python scripts/domain_check.py      # is bloggerbear.com wired up yet? Read-only, needs no AWS login
+python scripts/domain_check.py      # is your domain wired up yet? Read-only, needs no AWS login
 ```
 
 It looks the domain up in public DNS and asks the site a few questions, and says at each line what is wrong and

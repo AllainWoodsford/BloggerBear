@@ -26,7 +26,7 @@ terraform {
 # the full rationale).
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "site" {
-  bucket        = "bloggerbear-${var.environment_name}-site"
+  bucket        = "${var.unique_name_prefix}-${var.environment_name}-site"
   force_destroy = var.force_destroy
 }
 
@@ -51,7 +51,7 @@ resource "aws_s3_bucket_public_access_block" "site" {
 # CloudFront distribution with Origin Access Control (not the legacy OAI).
 # -----------------------------------------------------------------------
 resource "aws_cloudfront_origin_access_control" "site" {
-  name                              = "bloggerbear-${var.environment_name}-oac"
+  name                              = "${var.unique_name_prefix}-${var.environment_name}-oac"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
@@ -85,7 +85,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 # unnoticed later.
 # -----------------------------------------------------------------------
 resource "aws_cloudfront_response_headers_policy" "security" {
-  name = "bloggerbear-${var.environment_name}-security-headers"
+  name = "${var.unique_name_prefix}-${var.environment_name}-security-headers"
 
   security_headers_config {
     content_type_options {
@@ -124,7 +124,7 @@ resource "aws_cloudfront_response_headers_policy" "security" {
         "font-src 'self'",
         # Plus the public API's own CDN hostname (Scaling PR C), which the frontend now calls.
         join(" ", concat(
-          ["connect-src 'self' https://*.execute-api.ap-southeast-2.amazonaws.com"],
+          ["connect-src 'self' https://*.execute-api.${var.aws_region}.amazonaws.com"],
           [for host in var.extra_connect_src : "https://${host}"],
         )),
         "frame-ancestors 'none'",
@@ -147,10 +147,13 @@ resource "aws_cloudfront_response_headers_policy" "security" {
   # window.open() flow, no cross-origin postMessage handshake anywhere in
   # frontend/*.js) -- isolating the top-level browsing context from other
   # origins' windows has no feature to break here.
+  #
+  # microphone is () everywhere except an environment that sets var.allow_microphone (dev, for
+  # frontend/ask.html's push-to-talk): there it is (self), this site's own pages only.
   custom_headers_config {
     items {
       header   = "Permissions-Policy"
-      value    = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+      value    = "camera=(), microphone=(${var.allow_microphone ? "self" : ""}), geolocation=(), payment=(), usb=()"
       override = true
     }
     items {
@@ -171,7 +174,7 @@ locals {
 resource "aws_cloudfront_function" "www_redirect" {
   count = local.www_redirect ? 1 : 0
 
-  name    = "bloggerbear-${var.environment_name}-www-redirect"
+  name    = "${var.unique_name_prefix}-${var.environment_name}-www-redirect"
   runtime = "cloudfront-js-2.0"
   comment = "Redirect ${local.www_name} to ${var.domain_name}"
   publish = true

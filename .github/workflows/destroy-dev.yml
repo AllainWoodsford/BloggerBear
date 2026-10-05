@@ -17,7 +17,7 @@ jobs:
   # terraform.yml's apply-dev job. Trigger this by running the workflow
   # against the `dev` branch (the workflow_dispatch branch selector) so the
   # OIDC sub claim is `ref:refs/heads/dev`, matching
-  # gha-bloggerbear-dev-deploy's trust condition.
+  # gha-<prefix>-dev-deploy's trust condition.
   destroy:
     runs-on: ubuntu-latest
     concurrency:
@@ -29,8 +29,19 @@ jobs:
     # the real value (it tears down from state, not from a freshly
     # computed plan), so that Terraform's config evaluation sees the same
     # inputs either job would.
+    # The account check, name prefix and state bucket are the same three optional settings as
+    # apply-dev's (see the comment there; the account ID and the bucket are secrets, with no
+    # variable fallback): a destroy has to look at the same state, in the same account, under the
+    # same names, as the apply that made it.
+    # The region is the same again (AWS_REGION, and TF_STATE_REGION for the state bucket): a
+    # destroy pointed at another region would find none of the resources its state lists.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
+      TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
     steps:
       - name: Check confirmation input
         run: |
@@ -46,7 +57,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
-          aws-region: ap-southeast-2
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
           role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN || vars.AWS_DEV_DEPLOY_ROLE_ARN }}
 
       - name: Install Terraform
@@ -75,5 +86,24 @@ jobs:
           fi
 
           echo "Destroying terraform in $target_dir"
-          terraform -chdir="$target_dir" init
+          # A fork keeps its state in its own bucket (S3 bucket names are unique across every
+          # account, and a backend block cannot read a Terraform variable), so the bucket can be
+          # named by the TF_STATE_BUCKET_DEV secret. Unset, this is the plain `init` it always
+          # was, against the bucket written in the backend block.
+          # The state bucket's region is the same story: the backend block names the original
+          # deployment's, and TF_STATE_REGION (the TF_STATE_REGION variable, or else AWS_REGION,
+          # since bootstrap puts the bucket in the home region) overrides it. With neither set
+          # there is nothing to pass, and this is still the plain `init`.
+          init_args=()
+          if [ -n "${TF_STATE_BUCKET:-}" ]; then
+            init_args+=("-backend-config=bucket=${TF_STATE_BUCKET}")
+          fi
+          if [ -n "${TF_STATE_REGION:-}" ]; then
+            init_args+=("-backend-config=region=${TF_STATE_REGION}")
+          fi
+          if [ "${#init_args[@]}" -gt 0 ]; then
+            terraform -chdir="$target_dir" init "${init_args[@]}"
+          else
+            terraform -chdir="$target_dir" init
+          fi
           terraform -chdir="$target_dir" destroy -auto-approve

@@ -584,6 +584,25 @@ All shipped and deployed; the design and decisions for each are in
   AWS bill (#135)
 - [x] Staggered research and authoring schedules (production and dev)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
+- [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
+  official REST Search API (most-starred repos created in the last week),
+  with an optional token in SSM at `/bloggerbear/<env>/github-api-token`
+- [x] The operator's assistant (Alexa+ track): ops MCP server, Strands agent, memory, the Admin
+  CLI guide, `ask.html` (#185–#192)
+- [x] Alexa+ plan: the voice over the Strands agent, the add-on, the async briefing (#195;
+  `docs/enhancements/alexa-plus.md`)
+- [x] The page's voice fixed: tap to talk, per-error messages, speech that finishes, Test voice
+  (#198)
+- [x] OAuth discovery for Alexa+ account linking: PRM, AS metadata, `WWW-Authenticate`, an Alexa
+  app client per environment (#200)
+- [x] The Alexa+ add-on runbook, manifest template and values helper (#201)
+- [x] Async briefings: Alexa starts the agent and reads its answer back; opt-in keep-warm (#202)
+- [x] `firewall_review`, production only, gated three ways (#203)
+- [x] Fix: `TRENDING_URL` collision between #197 and #199 broke the adapter's import on dev (#205)
+- [x] The operator's assistant in production: MFA, account-wide data, the firewall (#206)
+- [x] The operator's assistant reads the logs: root causes, check-it-yourself, written down and
+  followed up, watch a function or table, masked addresses, a suggested command under the CLI help
+  (#218, #220, #221, #225, #226, #227, #228; docs/enhancements/ops-assistant-log-reader.md)
 
 ## Backlog / not yet scheduled
 
@@ -610,5 +629,9 @@ phase above, or a new phase, whenever you're ready to schedule them.)*
 - **WAF rule tuning** from real traffic (Phase 6)
 - **Frontend tests for the Stats page** — the new web search tiles were
   only syntax-checked
+- **Alexa+ bootstrap (operator):** needs Alexa+ toolkit access (US, partner-gated); then
+  `alexa/README.md` for dev, and separately for production. Settle whether Cognito accepts the
+  RFC 8707 `resource` parameter Alexa sends (friction 10.19-10.20)
+- **A real-microphone check of the voice** on dev and production, in Chrome and Edge (Test voice)
 - **Consider `adapter_config.provider = "agentcore"` for wow-forever:** the
   fallback triggers only when GDELT fails, not when it answers with nothing

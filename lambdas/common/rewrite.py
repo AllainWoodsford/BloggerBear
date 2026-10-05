@@ -6,10 +6,17 @@ and invokes the daily-cycle Lambda asynchronously with `{"action": "rewrite", ..
 `run_rewrite` below. The API call returns at once, so the inbox moves straight on.
 
 **Any article, steered by a person.** `admin_cli articles rewrite <id> --instructions "..."`
-(`POST /articles/{article_id}/rewrite`) does the same for an article in any state: a published
-one is taken down first and put in the inbox (reason SENT_BACK_REASON), then rewritten with the
+(`POST /articles/{article_id}/rewrite`) does the same for an article in any state, with the
 person's note as the main thing to fix. It goes through the reviews again and waits for approval
 like any other draft.
+
+**A published article stays up until its rewrite is ready.** Nothing about it changes while the
+rewrite runs. Only when the rewrite has been written, has passed the guards and has been through
+the reviews is the article taken down (status, page, musings, CDN cache) and the new text put in
+the inbox. If the rewrite fails, the article is still published exactly as it was, and its queue
+item ends as `rewrite_failed` with the reason: it never enters the inbox, where approving or
+rejecting it would act on an article that is still public. `--force` is the other order: take it
+down at once, then rewrite (for an article that must not stay up meanwhile).
 
 **What it does.** The article's text, the reasons it was held, the research it was written from
 and freshly fetched data go to the chosen model with one job: fix those issues and nothing else.
@@ -17,13 +24,13 @@ The result gets the same plain-code guards as the automatic revision pass (no fi
 that appears in none of the sources; a sensible title; a bounded length change), then the
 fresh-data review and the compliance review again. It always goes back to a person: the old
 queue item becomes `rewritten` and a new `pending` item carries the rewritten article, with
-whatever the reviews now say. The Article stays `pending_moderation` throughout.
+whatever the reviews now say. An Article that was `pending_moderation` stays so throughout.
 
 **Nothing is lost.** The text it replaces is kept in S3 (`articles/{id}.before-rewrite-{n}.md`).
 Any failure (the model call, a guard, output that isn't the expected JSON) puts the *original*
-item back to `pending` untouched, with the reason in `last_rewrite_error`. A rewrite that never
-finishes (the Lambda timed out) is released back to `pending` the next time the queue is listed
-(`release_stale_rewrites`).
+item back to `pending` untouched, with the reason in `last_rewrite_error` (`rewrite_failed` for
+an article that is still published, above). A rewrite that never finishes (the Lambda timed out)
+is released the same way the next time the queue is listed (`release_stale_rewrites`).
 
 **Cost is tracked.** Every call a rewrite makes -- the rewrite itself, and the reviews run on
 its result -- is added to the article's lineage (stage `rewrite`, with the chosen model) and to
@@ -45,6 +52,8 @@ from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, pricing_for
 from common.dynamo import (
+    REWRITE_FAILED_STATUS,
+    delete_musings_for_article,
     finish_moderation_rewrite,
     get_article,
     get_moderation_item,
@@ -54,11 +63,12 @@ from common.dynamo import (
     list_recent_findings,
     put_moderation_item,
     update_article_after_rewrite,
+    update_article_status,
 )
 from common.model_pricing import model_label
 from common.model_routing import resolve_model
 from common.relevance import topic_label
-from common.static_pages import read_article_body
+from common.static_pages import invalidate_article_page, read_article_body, remove_article_page
 from common.stats_tracking import record_article_lineage
 
 REWRITE_STAGE = "rewrite"
@@ -153,7 +163,8 @@ def release_stale_rewrites(now: datetime | None = None) -> int:
     """Put every `rewriting` item older than STALE_REWRITE_MINUTES back to `pending`, noting
     why, so a rewrite that died (a Lambda timeout) never strands an article. Returns how many.
     Called whenever the queue is listed; a rewrite that later finishes after all finds it no
-    longer owns the item and discards its result."""
+    longer owns the item and discards its result. An item whose article is still published ends
+    as `rewrite_failed` instead: that article was never in the inbox."""
     now = now or datetime.now(UTC)
     cutoff = (now - timedelta(minutes=STALE_REWRITE_MINUTES)).isoformat()
     released = 0
@@ -164,11 +175,57 @@ def release_stale_rewrites(now: datetime | None = None) -> int:
         if finish_moderation_rewrite(
             item["queue_id"],
             rewrite_id=item.get("rewrite_id") or "",
-            status="pending",
+            status=_failed_status(get_article(item["article_id"]), item),
             fields={"last_rewrite_error": f"the rewrite started {requested_at or 'earlier'} never finished"},
         ):
             released += 1
     return released
+
+
+def _is_live(article: dict | None) -> bool:
+    """Whether the article is public right now: it is being rewritten while it stays up."""
+    return article is not None and article.get("status") == "published"
+
+
+def _failed_status(article: dict | None, item: dict | None = None) -> str:
+    """Where a failed rewrite's item goes: back to the inbox, unless the article is still
+    published -- it was never in the inbox, and must not appear there as if it were held. When
+    the article could not even be read, the item's own `article_still_published` (set when the
+    rewrite of a published article was requested) decides."""
+    if article is None:
+        live = bool((item or {}).get("article_still_published"))
+    else:
+        live = _is_live(article)
+    return REWRITE_FAILED_STATUS if live else "pending"
+
+
+def _take_down(article_id: str) -> str | None:
+    """Take a published article off the site now that its rewrite is ready: status first (the
+    public API stops serving it, and a failure here leaves it published and whole), then its
+    page. Returns a note for the reviewer if the page could not be removed, else None. Safe to
+    repeat."""
+    update_article_status(article_id, "pending_moderation")
+    try:
+        remove_article_page(article_id)
+    except Exception as exc:  # noqa: BLE001 - the rewrite still goes to the inbox, with this said
+        print(f"rewrite: could not remove the page of {article_id}: {exc!r}")
+        return (
+            f"its old page could not be removed ({exc}) and is still reachable by its link: "
+            "approving this replaces it; if you reject this, run `articles unpublish` afterwards"
+        )
+    return None
+
+
+def _clear_traces(article_id: str) -> dict:
+    """What is left of a taken-down article: the musings written about it, and its page in the
+    CDN's cache (as admin_api_handler.py's unpublish does). Best effort: the article is already
+    down and in the inbox."""
+    try:
+        musings_removed = delete_musings_for_article(article_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"rewrite: could not remove the musings about {article_id}: {exc!r}")
+        musings_removed = 0
+    return {"musings_removed": musings_removed, "cache_invalidated": invalidate_article_page(article_id)}
 
 
 def _strip_disclaimer(body: str) -> tuple[str, bool]:
@@ -233,7 +290,8 @@ def _record_calls(article: dict, calls: list[dict]) -> tuple[dict, float | None]
 
 
 def _fail(item: dict, rewrite_id: str, reason: str, article: dict | None, calls: list[dict]) -> dict:
-    """Put the original item back to pending with the reason, recording any tokens spent."""
+    """Put the original item back to pending with the reason (or close it as `rewrite_failed` if
+    the article is still published: nothing about it has changed), recording any tokens spent."""
     print(f"rewrite: failed for queue_id={item['queue_id']}: {reason}")
     if article is not None and any(c is not None for c in calls):
         try:
@@ -248,9 +306,15 @@ def _fail(item: dict, rewrite_id: str, reason: str, article: dict | None, calls:
         except Exception as exc:  # noqa: BLE001 - bookkeeping must not hide the real failure
             print(f"rewrite: could not record the failed rewrite's cost: {exc!r}")
     released = finish_moderation_rewrite(
-        item["queue_id"], rewrite_id=rewrite_id, status="pending", fields={"last_rewrite_error": reason}
+        item["queue_id"],
+        rewrite_id=rewrite_id,
+        status=(status := _failed_status(article, item)),
+        fields={"last_rewrite_error": reason},
     )
-    return {"status": "failed", "queue_id": item["queue_id"], "reason": reason, "released": released}
+    result = {"status": "failed", "queue_id": item["queue_id"], "reason": reason, "released": released}
+    if status == REWRITE_FAILED_STATUS:
+        result["still_published"] = True
+    return result
 
 
 def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
@@ -353,7 +417,15 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
     ):
         return {"status": "discarded", "queue_id": queue_id, "reason": "the item was released meanwhile"}
 
+    # A published article has stayed up, untouched, until now: the rewrite is written, guarded
+    # and reviewed, so this is the moment it comes down and the new text takes its place.
+    was_live = _is_live(article)
+    taken_down = False
     try:
+        page_note = None
+        if was_live:
+            page_note = _take_down(article["article_id"])
+            taken_down = True
         _save(
             item=item,
             article=article,
@@ -367,9 +439,32 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
             compliance_review=compliance_review,
             issues=issues,
             instructions=instructions,
+            extra_reasons=[page_note] if page_note else [],
         )
     except Exception as exc:  # noqa: BLE001 - the old item is already "rewritten": re-queue
         print(f"rewrite: saving rewrite #{number} failed part-way: {exc!r}")
+        if was_live and not taken_down:
+            # It failed before anything was written, so the article is still published and whole.
+            # Try once more; if it still cannot come down, it must not go to the inbox.
+            try:
+                _take_down(article["article_id"])
+                taken_down = True
+            except Exception as down_exc:  # noqa: BLE001
+                print(f"rewrite: could not take {article['article_id']} down: {down_exc!r}")
+                reason = f"the rewrite was ready but the article could not be taken down ({down_exc})"
+                put_moderation_item(
+                    queue_id=new_queue_id,
+                    article_id=article["article_id"],
+                    topic_id=item["topic_id"],
+                    reasons=[SENT_BACK_REASON],
+                    created_at=datetime.now(UTC).isoformat(),
+                    status=REWRITE_FAILED_STATUS,
+                    extra={
+                        "last_rewrite_error": reason,
+                        "rewrite_requested_at": item.get("rewrite_requested_at"),
+                    },
+                )
+                return {"status": "failed", "queue_id": queue_id, "reason": reason, "still_published": True}
         put_moderation_item(
             queue_id=new_queue_id,
             article_id=article["article_id"],
@@ -380,12 +475,15 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
             ],
             created_at=datetime.now(UTC).isoformat(),
         )
-    return {
+    result = {
         "status": "rewritten",
         "queue_id": queue_id,
         "new_queue_id": new_queue_id,
         "article_id": article["article_id"],
     }
+    if was_live:
+        result.update({"unpublished": True, **_clear_traces(article["article_id"])})
+    return result
 
 
 def _save(
@@ -402,6 +500,7 @@ def _save(
     compliance_review: dict,
     issues: list[str],
     instructions: str = "",
+    extra_reasons: list[str] | None = None,
 ) -> None:
     """Write a finished rewrite: keep the replaced text, store the new one, update the article's
     title/lineage/review/history, and put it back in the inbox as `new_queue_id`."""
@@ -444,7 +543,7 @@ def _save(
         queue_id=new_queue_id,
         article_id=article_id,
         topic_id=item["topic_id"],
-        reasons=list(compliance_review["reasons"]),
+        reasons=list(extra_reasons or []) + list(compliance_review["reasons"]),
         created_at=finished_at,
         review_notes=fresh_review.review_notes(fresh_record),
         rewrite={

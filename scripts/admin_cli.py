@@ -408,6 +408,8 @@ def _cmd_articles_rewrite(args: argparse.Namespace) -> None:
     body = {"instructions": args.instructions}
     if args.model_id:
         body["model_id"] = args.model_id
+    if args.force:
+        body["force"] = True
     _do_request(args, "POST", f"/articles/{args.article_id}/rewrite", body)
 
 
@@ -575,10 +577,12 @@ def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
         body["review_mode"] = args.review_mode or None  # '' clears it (back to the default)
     if args.review_on_unavailable is not None:
         body["review_on_unavailable"] = args.review_on_unavailable or None
+    if args.assistant_access is not None:
+        body["assistant_access"] = args.assistant_access or None  # '' clears it (back to open)
     if not body:
         raise CliError(
-            "pipeline-config set needs --research-interval-hours, --review-mode "
-            "and/or --review-on-unavailable"
+            "pipeline-config set needs --research-interval-hours, --review-mode, "
+            "--review-on-unavailable and/or --assistant-access"
         )
     _do_request(args, "PUT", "/pipeline-config", body=body)
 
@@ -635,6 +639,43 @@ def _cmd_moderation_stats(args: argparse.Namespace) -> None:
 
 def _cmd_failed_executions_list(args: argparse.Namespace) -> None:
     _do_request(args, "GET", "/failed-executions")
+
+
+# --- security subcommands -----------------------------------------------
+
+
+def _cmd_security_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/security-incidents?status={args.status}")
+
+
+def _cmd_security_open(args: argparse.Namespace) -> None:
+    _do_request(
+        args, "POST", "/security-incidents", body={"severity": args.severity, "summary": args.summary}
+    )
+
+
+def _cmd_security_acknowledge(args: argparse.Namespace) -> None:
+    _do_request(args, "PUT", f"/security-incidents/{args.event_id}/status", body={"status": "acknowledged"})
+
+
+def _cmd_security_resolve(args: argparse.Namespace) -> None:
+    _do_request(args, "PUT", f"/security-incidents/{args.event_id}/status", body={"status": "resolved"})
+
+
+def _cmd_security_reopen(args: argparse.Namespace) -> None:
+    _do_request(args, "PUT", f"/security-incidents/{args.event_id}/status", body={"status": "open"})
+
+
+# --- sign-ins subcommands -----------------------------------------------
+
+
+def _cmd_sign_ins_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/sign-ins?days={args.days}")
+
+
+def _cmd_sign_ins_unlock(args: argparse.Namespace) -> None:
+    # The name goes in the path, so anything that is not a plain character is percent-encoded.
+    _do_request(args, "POST", f"/sign-ins/{urllib.parse.quote(args.username, safe='')}/unlock")
 
 
 # --- models / model-config subcommands --------------------------------------
@@ -1024,8 +1065,9 @@ def build_parser() -> argparse.ArgumentParser:
     rewrite_parser = articles_sub.add_parser(
         "rewrite",
         help=(
-            "Rewrite an article to fix what you say is wrong with it. A published article is "
-            "taken down first; the rewrite goes through the reviews again and waits in the inbox"
+            "Rewrite an article to fix what you say is wrong with it. A published article stays "
+            "up until its rewrite is ready, then comes down; the rewrite goes through the reviews "
+            "again and waits in the inbox"
         ),
     )
     rewrite_parser.add_argument("article_id")
@@ -1039,6 +1081,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         dest="model_id",
         help="A registered model to rewrite with (admin_cli models list). Default: the topic's model",
+    )
+    rewrite_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Published articles only: take it down now, before rewriting, instead of leaving it "
+            "up until the rewrite is ready. If the rewrite then fails, it waits in the inbox, down"
+        ),
     )
     rewrite_parser.set_defaults(func=_cmd_articles_rewrite)
 
@@ -1235,14 +1286,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     pipeline_config_parser = subparsers.add_parser(
         "pipeline-config",
-        help="Pipeline-wide settings (the default research interval, the draft review mode)",
+        help=(
+            "Pipeline-wide settings (the default research interval, the draft review mode, "
+            "who may reach the assistant)"
+        ),
     )
     pipeline_config_sub = pipeline_config_parser.add_subparsers(dest="action", required=True)
     pipeline_config_sub.add_parser("get", help="Show the pipeline-wide settings").set_defaults(
         func=_cmd_pipeline_config_get
     )
     pipeline_config_set = pipeline_config_sub.add_parser(
-        "set", help="Set pipeline-wide settings (send either or both; a setting not sent is unchanged)"
+        "set", help="Set pipeline-wide settings (send any of them; a setting not sent is unchanged)"
     )
     pipeline_config_set.add_argument(
         "--research-interval-hours",
@@ -1270,6 +1324,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "In enforce mode, when the review could not run: 'hold' the article for a person "
             "(the default) or 'note' the gap and publish; '' clears it"
+        ),
+    )
+    pipeline_config_set.add_argument(
+        "--assistant-access",
+        dest="assistant_access",
+        default=None,
+        choices=["open", "allowlist", "off", ""],
+        help=(
+            "Who may reach the operator's assistant: 'open' any signed-in caller from anywhere "
+            "(the default), 'allowlist' only from the operator's addresses, 'off' nobody; '' "
+            "clears it (back to open). Applies from the next request, no deploy"
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)
@@ -1358,6 +1423,70 @@ def build_parser() -> argparse.ArgumentParser:
     failed_executions_sub.add_parser(
         "list", help="List failed daily_cycle executions recorded by the DLQ consumer"
     ).set_defaults(func=_cmd_failed_executions_list)
+
+    security_parser = subparsers.add_parser(
+        "security", help="Security incidents: list them, move them along, or open one by hand"
+    )
+    security_sub = security_parser.add_subparsers(dest="action", required=True)
+
+    security_list_parser = security_sub.add_parser(
+        "list", help="List security incidents, newest first (default: the open ones)"
+    )
+    security_list_parser.add_argument(
+        "--status",
+        choices=["open", "acknowledged", "resolved"],
+        default="open",
+        help="Which incidents to list (default: open)",
+    )
+    security_list_parser.set_defaults(func=_cmd_security_list)
+
+    security_open_parser = security_sub.add_parser(
+        "open",
+        help=(
+            "Open an incident by hand, for something you noticed that nothing recorded. "
+            "High severity sends the alert email"
+        ),
+    )
+    security_open_parser.add_argument(
+        "--severity", choices=["low", "medium", "high"], required=True, help="How serious it is"
+    )
+    security_open_parser.add_argument(
+        "--summary", required=True, help="What you noticed, in a sentence (at most 300 characters)"
+    )
+    security_open_parser.set_defaults(func=_cmd_security_open)
+
+    for name, func, text in (
+        ("acknowledge", _cmd_security_acknowledge, "Mark an incident as seen: you are looking into it"),
+        ("resolve", _cmd_security_resolve, "Mark an incident as dealt with"),
+        ("reopen", _cmd_security_reopen, "Put an acknowledged or resolved incident back to open"),
+    ):
+        status_parser = security_sub.add_parser(name, help=text)
+        status_parser.add_argument("event_id", help="The incident's id, from `security list`")
+        status_parser.set_defaults(func=func)
+
+    sign_ins_parser = subparsers.add_parser(
+        "sign-ins", help="Sign-ins to the operator's assistant: the log, and unlocking a user"
+    )
+    sign_ins_sub = sign_ins_parser.add_subparsers(dest="action", required=True)
+
+    sign_ins_list_parser = sign_ins_sub.add_parser(
+        "list",
+        help="Each user's sign-ins, failed attempts and refusals, and who is locked out now",
+    )
+    sign_ins_list_parser.add_argument(
+        "--days", type=int, default=7, help="How far back to look, 1 to 30 (default: 7)"
+    )
+    sign_ins_list_parser.set_defaults(func=_cmd_sign_ins_list)
+
+    sign_ins_unlock_parser = sign_ins_sub.add_parser(
+        "unlock",
+        help=(
+            "Clear a user's lock after too many failed sign-ins, so they can sign in again at "
+            "once. It does not change the password"
+        ),
+    )
+    sign_ins_unlock_parser.add_argument("username", help="The user's name in the assistant's user pool")
+    sign_ins_unlock_parser.set_defaults(func=_cmd_sign_ins_unlock)
 
     models_parser = subparsers.add_parser("models", help="Manage the AI model registry")
     models_sub = models_parser.add_subparsers(dest="action", required=True)

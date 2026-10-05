@@ -32,6 +32,11 @@ variable "redirect_www" {
   description = "Only used when enable_custom_domain = true. Also answers on www.<domain_name> and 301-redirects it to <domain_name> (same path and query string). Adds a SAN to the certificate, a second CloudFront alias, www A/AAAA records and a small CloudFront Function. Without it, www.<domain_name> does not exist at all, so a visitor who types www gets an error."
 }
 
+variable "unique_name_prefix" {
+  type        = string
+  description = "What every resource name starts with, without a trailing hyphen (the calling root's var.unique_name_prefix, \"bloggerbear\" by default). The site bucket is <prefix>-<environment_name>-site, a name that must be unique across every AWS account, which is why a second deployment needs its own prefix."
+}
+
 variable "web_acl_id" {
   type        = string
   default     = ""
@@ -42,4 +47,15 @@ variable "extra_connect_src" {
   type        = list(string)
   default     = []
   description = "Extra hostnames (no scheme) the site's scripts may call, added to the Content-Security-Policy connect-src as https://<host> -- the public API's CloudFront distribution."
+}
+
+variable "allow_microphone" {
+  type        = bool
+  default     = false
+  description = "Whether the site's own pages may ask the browser for the microphone: Permissions-Policy microphone=(self) instead of microphone=(). Only for an environment that serves the operator's assistant (frontend/ask.html), whose push-to-talk button uses the browser's speech recognition. The browser still asks the person before any page hears anything, and no other origin (a frame, a third party) is ever allowed."
+}
+
+variable "aws_region" {
+  type        = string
+  description = "The deployment's home region (the calling root's var.aws_region): the region of the API hosts the site's Content-Security-Policy lets pages call (connect-src https://*.execute-api.<region>.amazonaws.com). No default, so a root cannot forget to pass it."
 }

@@ -1,4 +1,6 @@
 -r requirements.txt
+-r requirements-ops-mcp.txt
+-r requirements-ops-agent.txt
 boto3==1.34.162
 moto==5.0.13
 pytest==9.1.1

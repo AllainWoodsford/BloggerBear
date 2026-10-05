@@ -977,6 +977,15 @@ def test_approve_moderation_item(aws_resources):
     # path always needed a moderation-approve.
     assert render_kwargs["lineage"] is None
     assert render_kwargs["published_by"] == "humans"
+    # Source attribution (common/attribution.py): this fixture article has no stored credit (it
+    # predates that), so the page gets its topic's adapter's sources as declared today.
+    assert render_kwargs["attribution"] == [
+        {
+            "text": "Data sourced from GitHub Trending",
+            "label": "GitHub Trending",
+            "url": "https://github.com/trending",
+        }
+    ]
 
     # Reaching this path always needed a moderation-approve, so the musing
     # is generated with compliant=False (the more measured/thoughtful
@@ -3006,11 +3015,74 @@ def _queue_rows():
     return {row["queue_id"]: row for row in table.scan()["Items"]}
 
 
-def test_rewriting_a_published_article_takes_it_down_and_sends_it_to_the_inbox(aws_resources):
+def test_rewriting_a_published_article_leaves_it_up_until_the_rewrite_is_ready(aws_resources):
     _put_article(status="published")
     _put_moderation_item(status="approved")
 
-    result, body, client, mocks = _rewrite_article()
+    # Its queue item is made already claimed: it is never `pending`, so there is no separate claim.
+    with patch("admin_api_handler.claim_moderation_for_rewrite") as claim:
+        result, body, client, mocks = _rewrite_article()
+
+    claim.assert_not_called()
+    assert result["statusCode"] == 202
+    assert body["unpublished"] is False and body["stays_published_until_rewritten"] is True
+    mocks["remove"].assert_not_called()
+    mocks["musings"].assert_not_called()
+    mocks["invalidate"].assert_not_called()
+    assert _article_row()["status"] == "published"
+    rows = _queue_rows()
+    assert rows["queue-1"]["status"] == "approved"
+    new = rows[body["rewriting"]]
+    assert new["status"] == "rewriting" and new["reasons"] == ["sent back by a person for a rewrite"]
+    payload = json.loads(client.invoke.call_args.kwargs["Payload"])
+    assert payload == {"action": "rewrite", "queue_id": new["queue_id"], "rewrite_id": new["rewrite_id"]}
+
+
+def test_a_published_article_already_being_rewritten_is_refused(aws_resources):
+    _put_article(status="published")
+
+    first, _, _, _ = _rewrite_article()
+    second, _, client, _ = _rewrite_article()
+
+    assert first["statusCode"] == 202 and second["statusCode"] == 409
+    client.invoke.assert_not_called()
+    assert len(_queue_rows()) == 1
+
+
+def test_a_published_article_whose_rewrite_cannot_start_stays_published_and_out_of_the_inbox(aws_resources):
+    _put_article(status="published")
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+
+    result, body, _, mocks = _rewrite_article(client=client)
+
+    assert result["statusCode"] == 502 and "still published" in body["error"]
+    assert _article_row()["status"] == "published"
+    mocks["remove"].assert_not_called()
+    (row,) = _queue_rows().values()
+    assert row["status"] == "rewrite_failed" and row["last_rewrite_error"] and row["expires_at"]
+
+
+def test_the_queue_listing_says_which_rewrites_of_published_articles_failed(aws_resources):
+    _put_article(status="published")
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+    _rewrite_article(client=client)
+
+    listing = json.loads(admin_api_handler.handler(_event("GET /moderation-queue"), None)["body"])
+
+    assert listing["items"] == [] and listing["rewriting"] == 0
+    (failed,) = listing["failed_rewrites"]
+    assert failed["article_id"] == "article-1" and failed["error"] == "the rewrite could not be started"
+
+
+def test_force_takes_a_published_article_down_before_rewriting_it(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+
+    result, body, client, mocks = _rewrite_article(
+        body={"instructions": "The second section is out of date.", "force": True}
+    )
 
     assert result["statusCode"] == 202
     assert body["unpublished"] is True and body["musings_removed"] == 2 and body["cache_invalidated"] is True
@@ -3072,18 +3144,100 @@ def test_an_article_rewrite_needs_instructions_and_a_real_model(aws_resources):
     assert _rewrite_article(body={"instructions": "x" * 2001})[0]["statusCode"] == 400
     assert _rewrite_article(body={"instructions": "x", "model_id": "unknown"})[0]["statusCode"] == 400
     assert _rewrite_article(body={"instructions": "x", "model_id": "disabled-model"})[0]["statusCode"] == 400
+    assert _rewrite_article(body={"instructions": "x", "force": "yes"})[0]["statusCode"] == 400
     assert _rewrite_article(article_id="nope")[0]["statusCode"] == 404
     assert _article_row()["status"] == "published"  # nothing was taken down by a bad request
 
 
-def test_a_published_article_whose_rewrite_cannot_start_stays_down_and_waits_in_the_inbox(aws_resources):
+def test_a_forced_rewrite_that_cannot_start_stays_down_and_waits_in_the_inbox(aws_resources):
     _put_article(status="published")
     client = MagicMock()
     client.invoke.side_effect = RuntimeError("lambda down")
 
-    result, _, _, _ = _rewrite_article(client=client)
+    result, _, _, _ = _rewrite_article(client=client, body={"instructions": "Out of date.", "force": True})
 
     assert result["statusCode"] == 502
     assert _article_row()["status"] == "pending_moderation"
     (row,) = _queue_rows().values()
     assert row["status"] == "pending"
+
+
+# --- pipeline-config: assistant_access (who may reach the operator's assistant) ------------
+
+
+def _pipeline_config(method="GET", body=None):
+    result = admin_api_handler.handler(_event(f"{method} /pipeline-config", body=body), None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def _stored_pipeline_row():
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig")
+    return table.get_item(Key={"config_id": "pipeline"}).get("Item")
+
+
+def test_assistant_access_is_open_until_it_is_set(aws_resources):
+    status, body = _pipeline_config()
+
+    assert status == 200
+    assert body["assistant_access"] is None
+    assert body["effective_assistant_access"] == "open"
+
+
+@pytest.mark.parametrize("value", ["open", "allowlist", "off"])
+def test_assistant_access_can_be_set_to_each_of_its_values(aws_resources, value):
+    status, body = _pipeline_config("PUT", {"assistant_access": value})
+
+    assert status == 200
+    assert body["assistant_access"] == value and body["effective_assistant_access"] == value
+    assert _stored_pipeline_row()["assistant_access"] == value
+    assert _pipeline_config()[1]["assistant_access"] == value
+
+
+def test_assistant_access_is_cleared_with_null_back_to_open(aws_resources):
+    _pipeline_config("PUT", {"assistant_access": "off"})
+
+    status, body = _pipeline_config("PUT", {"assistant_access": None})
+
+    assert status == 200
+    assert body["assistant_access"] is None and body["effective_assistant_access"] == "open"
+    assert "assistant_access" not in _stored_pipeline_row()  # removed, not stored as null
+
+
+@pytest.mark.parametrize("bad", ["", "Open", "OFF", "allow-list", "closed", True, 1, ["off"], {"m": "off"}])
+def test_an_assistant_access_that_is_not_one_of_the_three_is_refused(aws_resources, bad):
+    _pipeline_config("PUT", {"assistant_access": "allowlist"})
+
+    status, body = _pipeline_config("PUT", {"assistant_access": bad})
+
+    assert status == 400
+    assert "'assistant_access' must be one of open, allowlist, off" in body["error"]
+    assert _stored_pipeline_row()["assistant_access"] == "allowlist"  # what was there stays
+
+
+def test_setting_assistant_access_leaves_the_other_settings_alone_and_the_reverse(aws_resources):
+    _pipeline_config("PUT", {"research_interval_hours": 3, "review_mode": "enforce"})
+
+    _, body = _pipeline_config("PUT", {"assistant_access": "allowlist"})
+    assert body["research_interval_hours"] == 3 and body["review_mode"] == "enforce"
+
+    _, body = _pipeline_config("PUT", {"review_mode": None})
+    assert body["assistant_access"] == "allowlist" and body["research_interval_hours"] == 3
+
+
+def test_a_bad_assistant_access_stops_the_whole_update(aws_resources):
+    status, _ = _pipeline_config("PUT", {"review_mode": "off", "assistant_access": "nope"})
+
+    assert status == 400
+    assert _stored_pipeline_row() is None  # nothing was written, not even the valid setting
+
+
+def test_a_stored_assistant_access_nobody_understands_is_shown_as_off(aws_resources):
+    """Written straight to the table. The assistant refuses every request on such a value
+    (it never falls back to open), so that is what the operator is shown."""
+    table = boto3.resource("dynamodb", region_name=REGION).Table("ModelConfig")
+    table.put_item(Item={"config_id": "pipeline", "assistant_access": "locked"})
+
+    _, body = _pipeline_config()
+
+    assert body["assistant_access"] == "locked"
+    assert body["effective_assistant_access"] == "off"

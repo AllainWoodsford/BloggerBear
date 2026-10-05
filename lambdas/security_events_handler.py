@@ -7,6 +7,12 @@ batch of log events from one log group. The records in a batch are grouped by ru
 common/security_events.py's record_incident stores (or adds to) each incident, escalates it, and
 raises the alarm once for a high-severity one.
 
+A second kind of batch comes from the admin API's access log (API Gateway's own line per
+request), filtered to 4xx answers. Those have no client address, so they are not incidents one by
+one: each is counted into the hour's "admin-api-errors" trend (common/security_events.py's
+record_trend), which becomes an incident at 20, rises at 50 and alerts at 100. Requests the
+firewall blocked are left out; they are already incidents from the WAF's own log.
+
 The client: behind the API's CloudFront distribution every request comes from an edge address, and
 the visitor's own is in `x-viewer-ip`, set by the distribution's function. That header is only
 believed when `x-origin-verify` is present too (redacted in the log, but still listed), the same
@@ -23,12 +29,19 @@ import json
 from datetime import UTC, datetime
 
 from common.security_events import (
+    TRENDS,
     WAF_ADMIN_API,
     WAF_OTHER,
     WAF_PUBLIC_API,
     WINDOW_MINUTES,
     record_incident,
+    record_trend,
+    trend_period_start,
 )
+
+ADMIN_API_ERRORS = "admin-api-errors"
+# What API Gateway names a request its web ACL refused (its access log's errorType).
+_WAF_FILTERED = "WAF_FILTERED"
 
 
 def _source(log_group: str) -> str:
@@ -85,6 +98,46 @@ def parse_waf_record(message: str) -> dict | None:
     }
 
 
+def is_access_log(log_group: str) -> bool:
+    """An API's access log group (infra/modules/rest-api: /aws/apigateway/<api>-access)."""
+    return log_group.startswith("/aws/apigateway/") and log_group.endswith("-access")
+
+
+def counts_as_admin_error(message: str) -> bool:
+    """Whether an access log line is a 4xx the admin API (or API Gateway in front of it) answered
+    and the firewall did not."""
+    try:
+        line = json.loads(message)
+        status = int(line.get("status"))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return 400 <= status < 500 and line.get("errorType") != _WAF_FILTERED
+
+
+def _record_access_log(payload: dict) -> dict:
+    """Count the batch's 4xx lines into their hours' trends: one write per hour in the batch."""
+    period = TRENDS[ADMIN_API_ERRORS].period
+    hours: dict[datetime, dict] = {}
+    for log_event in payload.get("logEvents") or []:
+        if not counts_as_admin_error(log_event.get("message", "")):
+            continue
+        try:
+            at = datetime.fromtimestamp(int(log_event["timestamp"]) / 1000, UTC)
+        except (KeyError, TypeError, ValueError):
+            at = datetime.now(UTC)
+        hour = hours.setdefault(trend_period_start(period, at), {"count": 0, "at": at})
+        hour["count"] += 1
+        hour["at"] = max(hour["at"], at)
+    for hour in hours.values():
+        record_trend(ADMIN_API_ERRORS, hour["at"], hour["count"])
+    return {
+        "status": "recorded",
+        "source": "admin-api-access",
+        "errors": sum(hour["count"] for hour in hours.values()),
+        "hours": len(hours),
+    }
+
+
 def _window_key(parsed: dict) -> tuple:
     at = parsed["at"]
     window = at.replace(minute=at.minute - at.minute % WINDOW_MINUTES, second=0, microsecond=0)
@@ -102,7 +155,11 @@ def handler(event, context) -> dict:
     if payload.get("messageType") != "DATA_MESSAGE":
         return {"status": "skipped", "reason": payload.get("messageType")}
 
-    source = _source(str(payload.get("logGroup", "")))
+    log_group = str(payload.get("logGroup", ""))
+    if is_access_log(log_group):
+        return _record_access_log(payload)
+
+    source = _source(log_group)
     groups: dict[tuple, dict] = {}
     for log_event in payload.get("logEvents") or []:
         parsed = parse_waf_record(log_event.get("message", ""))

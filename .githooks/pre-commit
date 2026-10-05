@@ -1,5 +1,6 @@
 #!/bin/sh
-# Blocks a commit that adds personal data or secrets, before it can be pushed anywhere.
+# Blocks a commit that adds personal data or secrets, before it can be pushed anywhere, or that
+# fails python-ci's ruff check.
 # pr-checks.yml runs the same two checks, but only after a push -- by then the content is
 # already on GitHub. Enable once per clone:
 #
@@ -29,5 +30,20 @@ if command -v gitleaks >/dev/null 2>&1; then
   gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml || exit 1
 else
   echo "pre-commit: gitleaks is not installed, so secrets and email addresses were NOT checked." >&2
-  echo "pre-commit: install it (see README, Local development); pr-checks will still run it." >&2
+  echo "pre-commit: install it (see docs/deployment-runsheet.md, Local development); pr-checks will still run it." >&2
+fi
+
+# 3. Ruff lint (check only, never fixes), the same `ruff check` python-ci runs, over the working
+#    tree. Only with the version CI pins: another ruff reports different rules (0.15 flags UP042
+#    on code 0.6.9 passes), so a mismatch warns instead of blocking.
+RUFF_PIN="$(grep -E '^ruff==' lambdas/requirements-dev.txt 2>/dev/null | tr -d '[:space:]')"
+if ! command -v ruff >/dev/null 2>&1; then
+  echo "pre-commit: ruff is not installed, so Python lint was NOT checked." >&2
+  echo "pre-commit: install it (pip install -r lambdas/requirements-dev.txt); python-ci will still run it." >&2
+elif [ "ruff $(echo "$RUFF_PIN" | sed 's/^ruff==//')" != "$(ruff --version)" ]; then
+  echo "pre-commit: $(ruff --version) is not CI's $RUFF_PIN, so Python lint was NOT checked." >&2
+  echo "pre-commit: install $RUFF_PIN; python-ci will still run it." >&2
+elif ! ruff check --quiet lambdas/ scripts/; then
+  echo "pre-commit: ruff found lint errors; fix with: ruff check --fix lambdas/ scripts/" >&2
+  exit 1
 fi

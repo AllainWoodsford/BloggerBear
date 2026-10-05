@@ -14,7 +14,7 @@
 # -----------------------------------------------------------------------
 
 resource "aws_dynamodb_table" "topics" {
-  name         = "bloggerbear-${var.environment_name}-topics"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-topics"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -33,7 +33,7 @@ resource "aws_dynamodb_table" "topics" {
 }
 
 resource "aws_dynamodb_table" "findings" {
-  name         = "bloggerbear-${var.environment_name}-findings"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-findings"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -65,7 +65,7 @@ resource "aws_dynamodb_table" "findings" {
 }
 
 resource "aws_dynamodb_table" "candidate_ideas" {
-  name         = "bloggerbear-${var.environment_name}-candidate-ideas"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-candidate-ideas"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -98,7 +98,7 @@ resource "aws_dynamodb_table" "candidate_ideas" {
 }
 
 resource "aws_dynamodb_table" "articles" {
-  name         = "bloggerbear-${var.environment_name}-articles"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-articles"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -160,7 +160,7 @@ resource "aws_dynamodb_table" "articles" {
 }
 
 resource "aws_dynamodb_table" "moderation_queue" {
-  name         = "bloggerbear-${var.environment_name}-moderation-queue"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-moderation-queue"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -232,7 +232,7 @@ resource "aws_dynamodb_table" "moderation_queue" {
 # the weekly reflection job reads back historically, not rolling research
 # history.
 resource "aws_dynamodb_table" "feedback" {
-  name         = "bloggerbear-${var.environment_name}-feedback"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-feedback"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -262,7 +262,7 @@ resource "aws_dynamodb_table" "feedback" {
 # equipped version is meant to persist, not expire -- see the ttl block
 # below for what changed in the Cleanup PR.
 resource "aws_dynamodb_table" "prompt_refinements" {
-  name         = "bloggerbear-${var.environment_name}-prompt-refinements"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-prompt-refinements"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -304,7 +304,7 @@ resource "aws_dynamodb_table" "prompt_refinements" {
 # ModerationQueue, so a bounded operational window is safe here, same as
 # CandidateIdeas above.
 resource "aws_dynamodb_table" "failed_executions" {
-  name         = "bloggerbear-${var.environment_name}-failed-executions"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-failed-executions"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -332,7 +332,7 @@ resource "aws_dynamodb_table" "failed_executions" {
 # musing_feedback_handler.py's periodic reflection on reader feedback. No
 # TTL -- this is a permanent, readable feed, not a transient record.
 resource "aws_dynamodb_table" "musings" {
-  name         = "bloggerbear-${var.environment_name}-musings"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-musings"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -356,7 +356,7 @@ resource "aws_dynamodb_table" "musings" {
 # API/CLI (common/dynamo.py's put_model), not hardcoded here. No TTL --
 # permanent configuration, not rolling data.
 resource "aws_dynamodb_table" "models" {
-  name         = "bloggerbear-${var.environment_name}-models"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-models"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -382,7 +382,7 @@ resource "aws_dynamodb_table" "models" {
 # resolve_model), never fails closed just because nobody's configured
 # this yet.
 resource "aws_dynamodb_table" "model_config" {
-  name         = "bloggerbear-${var.environment_name}-model-config"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-model-config"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -417,7 +417,7 @@ resource "aws_dynamodb_table" "model_config" {
 # separate "create the row" step. A later PR's weekly rollover copies this row into
 # stats_history below (keyed by the week that just ended) and resets it for the next week.
 resource "aws_dynamodb_table" "stats_current" {
-  name         = "bloggerbear-${var.environment_name}-stats-current"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-stats-current"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data): a table cannot be deleted by accident, and can be restored to any
   # second in the last 35 days. Off in dev, where tables are disposable.
@@ -440,7 +440,7 @@ resource "aws_dynamodb_table" "stats_current" {
 # stats_current's row, so "what changed this week vs a typical one" is a straight row-to-row
 # comparison. Empty until that rollover job exists.
 resource "aws_dynamodb_table" "stats_history" {
-  name                        = "bloggerbear-${var.environment_name}-stats-history"
+  name                        = "${var.unique_name_prefix}-${var.environment_name}-stats-history"
   billing_mode                = "PAY_PER_REQUEST"
   deletion_protection_enabled = var.protect_data
 
@@ -465,7 +465,7 @@ resource "aws_dynamodb_table" "stats_history" {
 # article had before this table existed stays on its Articles item and is added in on every read,
 # so nothing has to be migrated. No TTL: a count is permanent, like the article it belongs to.
 resource "aws_dynamodb_table" "view_counts" {
-  name                        = "bloggerbear-${var.environment_name}-view-counts"
+  name                        = "${var.unique_name_prefix}-${var.environment_name}-view-counts"
   billing_mode                = "PAY_PER_REQUEST"
   deletion_protection_enabled = var.protect_data
 
@@ -490,7 +490,7 @@ resource "aws_dynamodb_table" "view_counts" {
 # No IP address is ever stored: only a keyed hash of it (`client_hash`), enough to see the same
 # client again. Rows expire 120 days after they were last seen (TTL `expires_at`).
 resource "aws_dynamodb_table" "security_events" {
-  name                        = "bloggerbear-${var.environment_name}-security-events"
+  name                        = "${var.unique_name_prefix}-${var.environment_name}-security-events"
   billing_mode                = "PAY_PER_REQUEST"
   deletion_protection_enabled = var.protect_data
 
@@ -521,6 +521,38 @@ resource "aws_dynamodb_table" "security_events" {
     hash_key        = "status"
     range_key       = "last_seen"
     projection_type = "ALL"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}
+
+# Sign-ins to the operator's assistant (lambdas/common/sign_ins.py): one row per attempt, success,
+# refusal and unlock, written by the user pool's triggers. Keyed by the user, then by when, so the
+# lockout's question ("this user's last fifteen minutes") is one query. Rows expire by TTL
+# (expires_at), 120 days after the event.
+resource "aws_dynamodb_table" "sign_ins" {
+  name                        = "${var.unique_name_prefix}-${var.environment_name}-sign-ins"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key  = "username"
+  range_key = "at"
+
+  attribute {
+    name = "username"
+    type = "S"
+  }
+
+  attribute {
+    name = "at"
+    type = "S"
   }
 
   ttl {

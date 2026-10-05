@@ -182,6 +182,17 @@ TOPIC = {
 }
 
 
+# What GET /topics and friends return as TOPIC's source credit: its adapter's declared sources
+# (common/adapters/github_trending.py), and nothing else about the adapter.
+GITHUB_TRENDING_CREDIT = [
+    {
+        "text": "Data sourced from GitHub Trending",
+        "label": "GitHub Trending",
+        "url": "https://github.com/trending",
+    }
+]
+
+
 def _event(route_key, *, path_params=None, query_params=None, body=None):
     event = {"routeKey": route_key}
     if path_params is not None:
@@ -316,6 +327,7 @@ def test_list_topics_hides_internal_fields(aws_resources):
             "article_count": 0,
             "latest_published_at": None,
             "researching": False,
+            "attribution": GITHUB_TRENDING_CREDIT,
         }
     ]
 
@@ -345,6 +357,7 @@ def test_list_topics_article_count_and_latest_published_at(aws_resources):
             "article_count": 3,
             "latest_published_at": "2026-09-15T00:00:00+00:00",
             "researching": False,
+            "attribution": GITHUB_TRENDING_CREDIT,
         }
     ]
 
@@ -1744,6 +1757,127 @@ def test_rss_feed_description_truncated_to_300_chars(aws_resources):
     root = ET.fromstring(result["body"])
     description = root.find("channel").find("item").find("description").text
     assert len(description) == 300
+
+
+# --- Source attribution (common/attribution.py) --------------------------
+
+_CRYPTO_TOPIC = {**TOPIC, "topic_id": "crypto", "name": "Crypto", "adapter": "crypto_feed"}
+_SOURCE_KEYS = {"text", "label", "url"}
+
+
+def _set_article_field(article_id, name, value):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Articles")
+    table.update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="SET #n = :v",
+        ExpressionAttributeNames={"#n": name},
+        ExpressionAttributeValues={":v": value},
+    )
+
+
+def _article_detail(article_id="article-1"):
+    event = _event("GET /articles/{article_id}", path_params={"article_id": article_id})
+    result = public_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    return json.loads(result["body"])
+
+
+def test_topic_listing_carries_each_topics_own_credit_and_nothing_else_about_its_adapter(aws_resources):
+    _put_topic()
+    _put_topic(_CRYPTO_TOPIC)
+    _put_topic({**TOPIC, "topic_id": "odd", "name": "Odd", "adapter": "no_such_adapter"})
+
+    body = json.loads(public_api_handler.handler(_event("GET /topics"), None)["body"])
+    by_id = {topic["topic_id"]: topic for topic in body["topics"]}
+
+    assert by_id["github-trending"]["attribution"] == GITHUB_TRENDING_CREDIT
+    crypto = by_id["crypto"]["attribution"]
+    assert crypto[0] == {
+        "text": "Powered by CoinGecko API",
+        "label": "CoinGecko API",
+        "url": "https://www.coingecko.com/en/api",
+    }
+    assert "https://www.gdeltproject.org/" in [source["url"] for source in crypto]
+    assert by_id["odd"]["attribution"] == []
+    for topic in body["topics"]:
+        assert "adapter" not in topic and "adapter_config" not in topic
+        assert all(set(source) == _SOURCE_KEYS for source in topic["attribution"])
+
+
+def test_topic_page_listing_returns_the_topics_credit(aws_resources):
+    _put_topic(_CRYPTO_TOPIC)
+    event = _event("GET /articles", query_params={"topic_id": "crypto"})
+    body = json.loads(public_api_handler.handler(event, None)["body"])
+    assert [source["text"] for source in body["attribution"]] == [
+        "Powered by CoinGecko API",
+        "News search by the GDELT Project",
+    ]
+    # A topic that does not exist has nothing to credit, and is not an error.
+    event = _event("GET /articles", query_params={"topic_id": "nope"})
+    assert json.loads(public_api_handler.handler(event, None)["body"])["attribution"] == []
+
+
+def test_digest_topic_page_credits_every_topics_sources_once(aws_resources):
+    _put_topic()
+    _put_topic(_CRYPTO_TOPIC)
+    _put_topic({**TOPIC, "topic_id": "web", "name": "Web", "adapter": "web_search"})
+    event = _event("GET /articles", query_params={"topic_id": "digest"})
+    body = json.loads(public_api_handler.handler(event, None)["body"])
+    urls = [source["url"] for source in body["attribution"]]
+    assert sorted(urls) == sorted(
+        ["https://github.com/trending", "https://www.coingecko.com/en/api", "https://www.gdeltproject.org/"]
+    )
+
+
+def test_article_detail_falls_back_to_the_topics_adapter_when_nothing_was_stored(aws_resources):
+    _put_topic()
+    _put_article()
+    assert _article_detail()["attribution"] == GITHUB_TRENDING_CREDIT
+
+
+def test_article_detail_keeps_the_credit_it_was_published_with(aws_resources):
+    # The topic now uses another adapter; the article still shows what it was published with.
+    _put_topic({**TOPIC, "adapter": "hacker_news"})
+    _put_article()
+    stored = [{"text": "Powered by CoinGecko API", "label": "CoinGecko API", "url": "https://www.coingecko.com/en/api"}]
+    _set_article_field("article-1", "attribution", stored)
+    assert _article_detail()["attribution"] == stored
+
+    # Stored as "nothing to credit" is an answer too, not a reason to fall back.
+    _set_article_field("article-1", "attribution", [])
+    assert _article_detail()["attribution"] == []
+
+
+def test_article_detail_exposes_only_well_formed_credits(aws_resources):
+    _put_topic()
+    _put_article()
+    _set_article_field(
+        "article-1",
+        "attribution",
+        [
+            {"text": "Data from X", "label": "X", "url": "https://x.example/", "secret": "internal note"},
+            {"text": "Click me", "label": "Click", "url": "javascript:alert(1)"},
+            {"text": "Plain http", "label": "Plain", "url": "http://x.example/"},
+            {"text": "Label missing from text", "label": "Elsewhere", "url": "https://x.example/"},
+            "not a dict",
+        ],
+    )
+    assert _article_detail()["attribution"] == [
+        {"text": "Data from X", "label": "X", "url": "https://x.example/"}
+    ]
+
+
+def test_rss_item_description_ends_with_the_credit_even_when_the_body_is_cut(aws_resources):
+    _put_topic(_CRYPTO_TOPIC)
+    _put_article(topic_id="crypto", body_text="y" * 500)
+    result = public_api_handler.handler(_event("GET /rss.xml"), None)
+    description = ET.fromstring(result["body"]).find("channel").find("item").find("description").text
+    excerpt, _, credit = description.partition("\n\n")
+    assert excerpt == "y" * 300
+    assert credit == (
+        "Powered by CoinGecko API (https://www.coingecko.com/en/api)"
+        " · News search by the GDELT Project (https://www.gdeltproject.org/)"
+    )
 
 
 # --- Feedback -----------------------------------------------------------

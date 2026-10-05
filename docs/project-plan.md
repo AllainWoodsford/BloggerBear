@@ -115,6 +115,19 @@ Optional hooks (defaults on `Adapter` keep existing adapters unchanged):
   `fetch_state(topic_config, previous_state=...)`, letting an adapter reuse
   slow-changing data it already fetched earlier in the day.
 
+**Adding an adapter.** One new module in `common/adapters/`, one line in `registry.py`, and a
+declaration of where its data comes from: set `sources` on the class, one
+`{"text", "label", "url"}` per source (the sentence shown to readers, the words in it that
+become the link, an `https` address; plain data, never HTML). That credit is then shown, in
+italics, under the title of every article and topic page that uses the adapter, in the RSS
+item, and it is stored on each article so the article keeps the credit it was published with
+(`common/attribution.py`). Before writing the declaration, read the source's terms: use the
+wording they prescribe if they prescribe one, quote the sentence you relied on (with its URL)
+in a comment beside the declaration, and say plainly if the terms do not clearly permit the
+use. Then add the same sentence and link to the "Data sources" list in `frontend/about.html`.
+`tests/test_attribution.py` fails the build for an adapter with no source, a source without an
+`https` link, or a source the About page does not name.
+
 Reusable capabilities live in `common/` rather than in one adapter:
 `web_search.py` (web/news search behind a provider interface: GDELT by default,
 AgentCore web search as the fallback, with an optional time budget) and
@@ -1292,7 +1305,7 @@ bot, neither is what a person reads as "my feedback was rejected"). `loot_drops`
 a cost figure -- `common/musings.py`, the moment a loot-drop musing is actually written).
 
 **PR 2 -- built:** the weekly rollover job (`stats_rollover_handler.py`, a static EventBridge Scheduler
-job like `weekly_reflection`'s, `cron(15 9 ? * MON *)` -- 15 minutes after `weekly_reflection`'s own
+job like `weekly_reflection`'s, `cron(15 13 ? * MON *)` in `Australia/Sydney` -- 15 minutes after `weekly_reflection`'s own
 Monday run, so that Monday's reflection cost lands in the week it is reflecting on, not the new week
 just starting). It copies `StatsCurrent` into a new `StatsHistory` row keyed by the week it covers
 (`common/dynamo.py`'s `put_stats_history_row`, a conditional write -- a retried or duplicated invocation
@@ -1732,7 +1745,7 @@ billing data) in the same single `GetCostAndUsage` call, so it costs nothing ext
   parameter -- a managed SecureString's value is read back into state on every refresh -- it only
   grants `ssm:GetParameter` on that one name (the default `aws/ssm` key needs no KMS grant) and tells
   the two crypto Lambdas (research tick, daily cycle) where it is, via `COINGECKO_API_KEY_PARAMETER`.
-  The operator creates it once with `aws ssm put-parameter` (README.md step 3). `crypto_feed` reads it
+  The operator creates it once with `aws ssm put-parameter` (docs/deployment-runsheet.md, "API keys for the data sources"). `crypto_feed` reads it
   once per cold start, keeps a definite answer (the key, or "no such parameter") for the container's
   life and retries a failed read next run; a plain `COINGECKO_API_KEY` still wins, for local runs. No
   parameter means keyless, exactly as with no key before. `var.coingecko_api_key`,

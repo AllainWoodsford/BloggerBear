@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <meta
+    name="description"
+    content="The BloggerBear operator assistant: a signed-in page for the site's operator."
+  />
+  <title>Operator assistant — BloggerBear</title>
+  <!--
+    The operator's assistant (docs/enhancements/alexa-plus-operator-assistant-enhancement.md,
+    section 7). A static page like about.html, but not for visitors: nothing links to it, it asks
+    not to be indexed, and it shows nothing until someone has signed in. The HTML is public like
+    every other file here; what is protected is each call ask.js makes.
+
+    Each section below starts hidden except "unavailable", and ask.js shows the right one. So a
+    page whose script or configuration never arrives (production today, where config.js has no
+    assistant settings) says so and does nothing else.
+  -->
+  <link rel="stylesheet" href="normalize.css" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="ask.css" />
+  <link rel="icon" href="logo.svg" type="image/svg+xml" />
+  <link rel="alternate icon" href="favicon.ico" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header id="top">
+    <a class="site-title" href="/">
+      <picture>
+        <source srcset="logo.webp" type="image/webp" />
+        <img class="site-logo" src="logo.svg" alt="" width="32" height="32" />
+      </picture>
+      BloggerBear
+    </a>
+    <nav id="nav-site" aria-label="Site sections">
+      <a href="/#/topic/digest">Trending Everywhere</a>
+      <a href="/#/musings">Musings</a>
+      <a href="/#/stats">Stats</a>
+    </nav>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <h1>BloggerBear operator assistant</h1>
+
+    <!-- Shown until ask.js finds its settings; stays if it never does. -->
+    <section id="ask-unavailable">
+      <p>The assistant is not available here.</p>
+      <noscript><p>It also needs JavaScript, which is switched off in this browser.</p></noscript>
+    </section>
+
+    <!-- The gate: all there is to see without a token. -->
+    <section id="ask-gate" hidden>
+      <p>
+        A spoken briefing on the site's pipeline, for its operator. Sign in to ask what needs
+        attention.
+      </p>
+      <p id="ask-gate-message" class="ask-message" role="status" aria-live="polite"></p>
+      <p><button type="button" id="ask-sign-in" class="ask-button ask-button-primary">Sign in</button></p>
+    </section>
+
+    <section id="ask-app" hidden>
+      <!-- Ways to start, as plain text: what to say after pressing "Push to talk". The same
+           questions are buttons under "Show text-based controls" below; a test keeps the two
+           lists the same. -->
+      <div class="ask-starters">
+        <p id="ask-starters-title" class="ask-starters-title">Things you can ask:</p>
+        <ul class="ask-starters-list" aria-labelledby="ask-starters-title">
+          <li>What needs my attention?</li>
+          <li>What are your prior suggestions?</li>
+          <li>I'm new, where should I start?</li>
+          <li>What can you do?</li>
+          <li>How does the project work?</li>
+        </ul>
+      </div>
+
+      <div class="ask-toolbar">
+        <button type="button" id="ask-new" class="ask-button">New briefing</button>
+        <button type="button" id="ask-mute" class="ask-button" aria-pressed="false">Mute voice</button>
+        <button type="button" id="ask-voice-test" class="ask-button">Test voice</button>
+        <button type="button" id="ask-sign-out" class="ask-button">Sign out</button>
+        <span id="ask-environment" class="ask-environment" hidden></span>
+      </div>
+      <!-- What the voice test found: the page's own sentences, and the words the browser heard. -->
+      <ul id="ask-voice-report" class="ask-voice-report" aria-live="polite" hidden></ul>
+
+      <div class="ask-controls">
+        <button type="button" id="ask-talk" class="ask-talk" aria-pressed="false" aria-describedby="ask-talk-hint" hidden>
+          Push to talk
+        </button>
+        <p id="ask-talk-hint" class="ask-hint" hidden>
+          Tap the button, ask your question, and it stops when you stop speaking (or tap again).
+          You can also hold it (or Space or Enter) while you speak: it keeps listening through
+          your pauses until you let go, for up to a minute. "Test voice" checks the microphone
+          and the spoken answers.
+        </p>
+        <!-- Shown by ask.js in place of the button, once the browser's recognition has shown it
+             cannot work (Opera and other Chromium browsers with no speech service behind it). -->
+        <p id="ask-speech-broken" class="ask-hint" hidden>
+          Speech recognition does not work in this browser, so type your question instead.
+          Chrome and Edge can listen.
+        </p>
+        <p id="ask-no-speech" class="ask-hint" hidden>
+          This browser has no speech recognition, so type your question instead.
+        </p>
+
+        <!-- Everything that is not the voice: closed until asked for, and opened by ask.js
+             itself in a browser that cannot listen, where typing is the only way to ask. -->
+        <p>
+          <button type="button" id="ask-text-toggle" class="ask-button" aria-expanded="false" aria-controls="ask-text-controls">
+            Show text-based controls
+          </button>
+        </p>
+        <div id="ask-text-controls" class="ask-text-controls" hidden>
+          <div class="ask-quick" role="group" aria-label="Common questions">
+            <button type="button" id="ask-briefing" class="ask-button ask-button-primary ask-quick-question">What needs my attention?</button>
+            <button type="button" class="ask-button ask-quick-question">What are your prior suggestions?</button>
+            <button type="button" class="ask-button ask-quick-question">I'm new, where should I start?</button>
+            <button type="button" class="ask-button ask-quick-question">What can you do?</button>
+            <button type="button" class="ask-button ask-quick-question">How does the project work?</button>
+          </div>
+
+          <form id="ask-form" class="ask-form">
+            <label for="ask-question">Or type a question</label>
+            <p id="ask-question-hint" class="ask-hint">
+              You can also ask how to do something with the Admin CLI ("how do I change how often
+              topics run?") or to list your topics. The command is shown for you to copy; nothing
+              is run from here.
+            </p>
+            <div class="ask-form-row">
+              <input type="text" id="ask-question" name="question" maxlength="500" autocomplete="off" aria-describedby="ask-question-hint" />
+              <button type="submit" id="ask-send" class="ask-button">Ask</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <p id="ask-status" class="ask-message" role="status" aria-live="polite"></p>
+
+      <!-- The conversation. ask.js adds each turn with textContent; nothing here is ever HTML
+           from the API. aria-live so a screen reader hears an answer when it arrives. -->
+      <div id="ask-conversation" class="ask-conversation" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <nav class="footer-nav" aria-label="Explore">
+      <span class="footer-item"><a href="/#/topic/digest">Trending Everywhere</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <span class="footer-item"><a href="/#/musings">Musings</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <a href="/#/stats">Stats</a>
+    </nav>
+    <nav class="legal-nav" aria-label="Legal">
+      <span class="footer-item"><a href="/">Home</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <span class="footer-item"><a href="/about.html">About</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <span class="footer-item"><a href="/terms.html">Terms of Service</a><span class="paw" aria-hidden="true">&#128062;</span></span>
+      <a href="/privacy.html">Privacy Policy</a>
+    </nav>
+    <div class="footer-links">
+      <a class="back-to-top" href="#top">Back to top ↑</a>
+    </div>
+  </footer>
+
+  <!-- Generated by infra (Terraform) at deploy time; sets window.OPS_ASSISTANT on dev only. -->
+  <script src="config.js"></script>
+  <script src="ask.js"></script>
+</body>
+</html>

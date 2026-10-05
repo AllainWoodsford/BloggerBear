@@ -26,14 +26,18 @@ from decimal import Decimal
 
 import boto3
 
-from common import equipment, feedback_limits, gear
+from common import equipment, feedback_limits, gear, security_events, sign_ins
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
+from common.assistant_access import assistant_access_error, effective_assistant_access
+from common.attribution import sources_for_article
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
+    REWRITE_FAILED_STATUS,
     claim_moderation_for_rewrite,
     delete_musings_for_article,
     delete_prompt_refinement,
     delete_topic,
+    finish_moderation_rewrite,
     get_article,
     get_feedback_config,
     get_latest_finding,
@@ -55,6 +59,7 @@ from common.dynamo import (
     list_moderation_by_status,
     list_pending_moderation,
     list_prompt_refinements,
+    list_security_incidents,
     list_topics,
     put_feedback_config,
     put_model,
@@ -573,6 +578,10 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # a person approving a held article is what "reviewed by a person" means.
         fact_check=fact_check_label(article.get("review"), "humans"),
         equipment_used=article.get("equipment_used"),
+        # The source credit stored when the article was drafted; for an article from before
+        # that was stored, its topic's adapter's sources as declared today (the digest: every
+        # topic's). See common/attribution.py.
+        attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],
@@ -814,13 +823,29 @@ def _review_report(event: dict) -> dict:
 def _list_moderation_queue(event: dict) -> dict:
     """The pending items, plus how many are being rewritten right now. Listing is also when a
     Re-Write that never finished is put back (common/rewrite.py's release_stale_rewrites), so
-    opening the inbox is enough to recover one."""
+    opening the inbox is enough to recover one.
+
+    `failed_rewrites` are rewrites of articles that are still published: such an article is
+    never in the inbox, so this is where a person learns its rewrite did not work, and why.
+    They clear by themselves (TTL)."""
     try:
         release_stale_rewrites()
     except Exception as exc:  # noqa: BLE001 - listing must still work
         print(f"admin_api_handler: could not release stale rewrites: {exc!r}")
     rewriting = list_moderation_by_status("rewriting")
-    return _response(200, {"items": list_pending_moderation(), "rewriting": len(rewriting)})
+    failed = [
+        {
+            "queue_id": item.get("queue_id"),
+            "article_id": item.get("article_id"),
+            "topic_id": item.get("topic_id"),
+            "requested_at": item.get("rewrite_requested_at"),
+            "error": item.get("last_rewrite_error"),
+        }
+        for item in list_moderation_by_status(REWRITE_FAILED_STATUS)
+    ]
+    return _response(
+        200, {"items": list_pending_moderation(), "rewriting": len(rewriting), "failed_rewrites": failed}
+    )
 
 
 def _rewrite_moderation_item(event: dict) -> dict:
@@ -899,7 +924,16 @@ def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | N
         instructions=instructions or None,
     ):
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
+    return _invoke_rewrite(item, rewrite_id, model_id, extra)
 
+
+def _invoke_rewrite(
+    item: dict, rewrite_id: str, model_id: str, extra: dict | None = None, *, still_published: bool = False
+) -> dict:
+    """Start the Re-Write that owns `item` (already `rewriting` under `rewrite_id`). 202, or 502
+    with the item released if the Lambda could not be invoked: back to the inbox, or, when the
+    article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`."""
+    queue_id = item["queue_id"]
     try:
         _get_lambda_client().invoke(
             FunctionName=os.environ["DAILY_CYCLE_FUNCTION_NAME"],
@@ -910,6 +944,14 @@ def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | N
         )
     except Exception as exc:  # noqa: BLE001 - never leave it claimed with nothing running
         print(f"admin_api_handler: could not start the rewrite for {queue_id}: {exc!r}")
+        if still_published:
+            finish_moderation_rewrite(
+                queue_id,
+                rewrite_id=rewrite_id,
+                status=REWRITE_FAILED_STATUS,
+                fields={"last_rewrite_error": "the rewrite could not be started"},
+            )
+            return _error(502, "could not start the rewrite; the article is unchanged and still published")
         update_moderation_status(queue_id, "pending")
         return _error(502, "could not start the rewrite; the item is back in the inbox")
 
@@ -924,12 +966,16 @@ def _rewrite_article(event: dict) -> dict:
     rewrite <id> --instructions "..."`). The rewrite goes through the reviews again and waits in
     the inbox for approval, like any other draft (common/rewrite.py).
 
-    - published: taken down first (page deleted, musings removed, CDN cache cleared, the same as
-      `articles unpublish`), set back to `pending_moderation`, and given a new queue item.
-    - pending_moderation: its waiting queue item is rewritten (409 while one is already running).
+    - published: stays up, untouched, while it is rewritten. It is taken down (page deleted,
+      musings removed, CDN cache cleared, set back to `pending_moderation`) only once the rewrite
+      is ready to take its place in the inbox; a rewrite that fails leaves it published as it was
+      (common/rewrite.py). With `"force": true` it is taken down first, as `articles unpublish`
+      would, and then rewritten: for an article that must not stay up meanwhile.
+    - pending_moderation: its waiting queue item is rewritten.
     - rejected: put back to `pending_moderation` with a new queue item.
 
-    `model_id` is optional: by default, the model the topic would write with today.
+    409 while a rewrite of the article is already running. `model_id` is optional: by default,
+    the model the topic would write with today.
     """
     article_id = _path_param(event, "article_id")
     try:
@@ -939,6 +985,9 @@ def _rewrite_article(event: dict) -> dict:
     instructions, instructions_error = _rewrite_instructions(body, required=True)
     if instructions_error:
         return _error(400, instructions_error)
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        return _error(400, "'force' must be true or false, if given")
 
     article = get_article(article_id)
     if article is None:
@@ -958,12 +1007,39 @@ def _rewrite_article(event: dict) -> dict:
         model_id, _ = resolve_model(get_topic(article["topic_id"]))
 
     item = get_moderation_item_by_article_id(article_id)
-    if status == "pending_moderation" and item is not None and item.get("status") == "rewriting":
+    # Whatever the article's status: a published one being rewritten while it stays up has a
+    # `rewriting` item too.
+    if item is not None and item.get("status") == "rewriting":
         return _error(409, f"article '{article_id}' is already being rewritten")
 
-    # Off the site first (page, then status), so a failure part-way leaves it down, not half-up.
     extra = {}
+    still_published = status == "published" and not force
+    if still_published:
+        # Nothing changes yet: common/rewrite.py takes it down when the rewrite is ready. Its
+        # queue item is made already claimed, in one write: it must never be `pending`, where the
+        # inbox would offer to approve or reject an article that is still public.
+        rewrite_id = str(uuid.uuid4())
+        claim = {
+            "rewrite_id": rewrite_id,
+            "rewrite_model_id": model_id,
+            "rewrite_requested_at": datetime.now(UTC).isoformat(),
+            "rewrite_instructions": instructions,
+            "article_still_published": True,
+        }
+        item = put_moderation_item(
+            queue_id=str(uuid.uuid4()),
+            article_id=article_id,
+            topic_id=article["topic_id"],
+            reasons=[SENT_BACK_REASON],
+            created_at=claim["rewrite_requested_at"],
+            status="rewriting",
+            extra=claim,
+        )
+        extra = {"unpublished": False, "stays_published_until_rewritten": True}
+        return _invoke_rewrite(item, rewrite_id, model_id, extra, still_published=True)
     if status == "published":
+        # Forced. Off the site first (page, then status), so a failure part-way leaves it down,
+        # not half-up.
         remove_article_page(article_id)
         update_article_status(article_id, "pending_moderation")
         extra = {"unpublished": True, **_clear_article_traces(article_id)}
@@ -1562,6 +1638,73 @@ def _list_failed_executions(event: dict) -> dict:
     return _response(200, {"items": list_failed_executions()})
 
 
+# --- Security incidents (common/security_events.py) -----------------------------------------------
+#
+# Incidents are written by the firewalls' logs, comment screening, the sign-in triggers and the
+# trends. A person reads them here, moves them along (open -> acknowledged -> resolved), and can
+# open one by hand for something nothing recorded.
+
+_INCIDENTS_MAX = 100
+
+
+def _list_security_incidents(event: dict) -> dict:
+    status = _query_param(event, "status") or security_events.OPEN
+    if status not in security_events.STATUSES:
+        return _error(400, f"'status' must be one of {', '.join(security_events.STATUSES)}")
+    items = list_security_incidents(status, _INCIDENTS_MAX)
+    return _response(200, {"status": status, "count": len(items), "items": items})
+
+
+def _open_security_incident(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    severity, summary = body.get("severity"), body.get("summary")
+    if not isinstance(summary, str) or not isinstance(severity, str):
+        return _error(400, "'severity' (low, medium or high) and 'summary' are required")
+    try:
+        incident = security_events.open_manual_incident(severity, summary, datetime.now(UTC))
+    except ValueError as exc:
+        return _error(400, str(exc))
+    return _response(201, incident)
+
+
+def _set_security_incident_status(event: dict) -> dict:
+    event_id = _path_param(event, "event_id") or ""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    status = body.get("status")
+    if status not in security_events.STATUSES:
+        return _error(400, f"'status' must be one of {', '.join(security_events.STATUSES)}")
+    incident = security_events.change_status(event_id, status, datetime.now(UTC))
+    if incident is None:
+        return _error(404, f"no security incident '{event_id}'")
+    return _response(200, incident)
+
+
+# --- Sign-ins to the operator's assistant (common/sign_ins.py) ----------------------------------
+#
+# The log the user pool's triggers write, and the one thing a person may change in it: clearing a
+# lock. Nothing here creates a user or touches a password; that is done against the pool itself.
+
+# Cognito's own limit on a username.
+_USERNAME_MAX_CHARS = 128
+
+
+def _list_sign_ins(event: dict) -> dict:
+    return _response(200, sign_ins.report(sign_ins.clamp_days(_query_param(event, "days"))))
+
+
+def _unlock_sign_in(event: dict) -> dict:
+    username = (_path_param(event, "username") or "").strip()
+    if not username or len(username) > _USERNAME_MAX_CHARS:
+        return _error(400, "'username' is required and may be at most 128 characters")
+    return _response(200, sign_ins.unlock(username, datetime.now(UTC)))
+
+
 # --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1) ------
 #
 # The "supported models" registry (docs/project-plan.md §11) -- adding or
@@ -1650,12 +1793,14 @@ def _get_pipeline_config_route(event: dict) -> dict:
             "effective_review_mode": resolve_review_mode(config),
             "review_on_unavailable": config.get("review_on_unavailable"),
             "effective_review_on_unavailable": resolve_on_unavailable(config),
+            "assistant_access": config.get("assistant_access"),
+            "effective_assistant_access": effective_assistant_access(config),
         },
     )
 
 
 def _put_pipeline_config_route(event: dict) -> dict:
-    """Set (or, with null, clear) pipeline-wide settings. Send either or both:
+    """Set (or, with null, clear) pipeline-wide settings. Send any of:
 
     - `research_interval_hours`: how often a topic without its own interval does real
       work on a heartbeat.
@@ -1663,6 +1808,9 @@ def _put_pipeline_config_route(event: dict) -> dict:
       `enforce` (it acts). A topic's own `review_mode` overrides it.
     - `review_on_unavailable`: what enforce mode does when the review could not run:
       `hold` the article for a person (the default) or `note` it and publish.
+    - `assistant_access`: who may reach the operator's assistant: `open` (any signed-in
+      caller, the default), `allowlist` (only from the operator's addresses) or `off`
+      (nobody). The assistant reads it on every request, so it applies without a deploy.
 
     A setting that isn't in the body is left as it is.
     """
@@ -1687,11 +1835,16 @@ def _put_pipeline_config_route(event: dict) -> dict:
         if problem:
             return _error(400, f"'review_on_unavailable' {problem}")
         updates["review_on_unavailable"] = body["review_on_unavailable"]
+    if "assistant_access" in body:
+        access_problem = assistant_access_error(body["assistant_access"])
+        if access_problem:
+            return _error(400, f"'assistant_access' {access_problem}")
+        updates["assistant_access"] = body["assistant_access"]
     if not updates:
         return _error(
             400,
-            "send 'research_interval_hours', 'review_mode' and/or 'review_on_unavailable' "
-            "(null clears a setting)",
+            "send 'research_interval_hours', 'review_mode', 'review_on_unavailable' and/or "
+            "'assistant_access' (null clears a setting)",
         )
 
     put_pipeline_config(**updates)
@@ -1840,6 +1993,11 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/announce": _announce_loot,
     "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
+    "GET /security-incidents": _list_security_incidents,
+    "POST /security-incidents": _open_security_incident,
+    "PUT /security-incidents/{event_id}/status": _set_security_incident_status,
+    "GET /sign-ins": _list_sign_ins,
+    "POST /sign-ins/{username}/unlock": _unlock_sign_in,
     "GET /models": _list_models,
     "POST /models": _put_model,
     "GET /model-config": _get_model_config,

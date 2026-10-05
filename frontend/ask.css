@@ -1,0 +1,357 @@
+/* ask.html only: the operator's assistant. Loaded after styles.css and built from its variables
+   (--fg, --bg, --muted, --accent, --border), so both themes come for free. */
+
+/* The hidden attribute must win over the display rules below. */
+#content [hidden] {
+  display: none;
+}
+
+.ask-message {
+  min-height: 1.55em;
+  margin: 12px 0;
+  font-weight: 600;
+}
+
+.ask-hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 8px 0 16px;
+}
+
+/* Ways to start, said or typed: plain text under the title, not controls. */
+.ask-starters {
+  margin: 0 0 20px;
+}
+
+.ask-starters-title {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.ask-starters-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  color: var(--muted);
+}
+
+.ask-starters-list li {
+  margin: 2px 0;
+}
+
+.ask-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 20px;
+}
+
+/* The quick questions, shown with the typed one once "Show text-based controls" is pressed. */
+.ask-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 20px;
+}
+
+.ask-button,
+.ask-copy {
+  font: inherit;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.ask-button:hover:not(:disabled),
+.ask-copy:hover {
+  border-color: var(--accent);
+}
+
+.ask-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --fg/--bg inverted rather than --accent with white text: --accent is too light in dark mode
+   for AA contrast (the same note as .skip-link in styles.css). */
+.ask-button-primary {
+  background: var(--fg);
+  color: var(--bg);
+  border-color: var(--fg);
+  font-weight: 600;
+}
+
+.ask-button[aria-pressed="true"] {
+  border-color: var(--fg);
+  font-weight: 600;
+}
+
+/* Every control here shows where the keyboard is. */
+.ask-button:focus-visible,
+.ask-copy:focus-visible,
+.ask-talk:focus-visible,
+.ask-form input:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The push-to-talk button: big enough to hit without looking. */
+.ask-talk {
+  display: block;
+  width: 100%;
+  min-height: 96px;
+  font: inherit;
+  font-size: 1.3rem;
+  font-weight: 600;
+  border: 2px solid var(--fg);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+  /* A long press must talk, not select the label or open a touch menu. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  /* none, not manipulation: a finger that moves while holding must not turn the press into a
+     scroll, which cancels the pointer and used to stop the microphone. */
+  touch-action: none;
+}
+
+/* Which environment the page asks about: dev's commands are for dev's admin API. */
+.ask-environment {
+  align-self: center;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+
+.ask-voice-report {
+  margin: 12px 0;
+  padding-left: 1.2rem;
+}
+
+.ask-talk[aria-pressed="true"] {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.ask-talk:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ask-talk[aria-pressed="true"] {
+    animation: ask-listening 1.2s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes ask-listening {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.7;
+  }
+}
+
+.ask-form label {
+  display: block;
+  margin: 0 0 6px;
+}
+
+.ask-form-row {
+  display: flex;
+  gap: 8px;
+}
+
+.ask-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.ask-turn {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+}
+
+.ask-turn-question {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.ask-turn-answer {
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+}
+
+.ask-turn h2 {
+  font-size: 1rem;
+  margin: 16px 0 8px;
+}
+
+.ask-tool-calls {
+  margin: 0;
+  padding-left: 24px;
+  font-size: 0.9rem;
+}
+
+.ask-tool-calls code,
+.ask-command code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* break-word first: Safari before 15.4 does not know `anywhere` and would not wrap at all. */
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* A suggestion card (the design's section 3): label on the left, text on the right. */
+.ask-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin: 0 0 12px;
+}
+
+.ask-card dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 0;
+}
+
+.ask-card dt {
+  color: var(--muted);
+}
+
+.ask-card dd {
+  margin: 0;
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.ask-command {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.ask-command pre {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+}
+
+.ask-copy {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+}
+
+/* A command's own --help, as the CLI prints it: fixed-width lines that keep their layout, so the
+   block scrolls (sideways on a narrow screen, down when it is long) and the card does not grow. */
+.ask-help {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+  white-space: pre;
+  overflow: auto;
+  max-height: 24rem;
+}
+
+/* A template for a command that deletes or takes something down: said in words, not by colour
+   alone, with a heavier edge so it does not read as an ordinary card. */
+.ask-card-destructive {
+  border-width: 2px;
+  border-color: var(--fg);
+}
+
+.ask-warning {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-left: 4px solid var(--fg);
+}
+
+/* The topics and their settings. A real table inside a region that scrolls sideways, so twelve
+   columns fit a phone without squeezing the text. */
+.ask-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ask-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+
+.ask-table caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: 600;
+  padding: 8px 12px;
+}
+
+.ask-table th,
+.ask-table td {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.ask-table thead th {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.ask-table tbody th {
+  font-weight: 600;
+}
+
+.ask-help:focus-visible,
+.ask-table-wrap:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+/* Text that came from outside (a request path, an alarm's name): shown, and marked. */
+.ask-untrusted {
+  border-left: 3px solid var(--muted);
+  padding-left: 8px;
+}
+
+.ask-untrusted-mark {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--muted);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 480px) {
+  .ask-card dl {
+    grid-template-columns: 1fr;
+  }
+}

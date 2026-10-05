@@ -419,6 +419,134 @@ def test_a_stale_rewrite_is_released_and_a_recent_one_is_not(aws):
     assert queue["q2"]["status"] == "rewriting"
 
 
+# --- a published article stays up until its rewrite is ready ----------------------------------------
+
+
+def _publish_seeded_article():
+    _table("Articles").update_item(
+        Key={"article_id": "a1"},
+        UpdateExpression="SET #s = :p",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":p": "published"},
+    )
+
+
+def _article_status():
+    return _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["status"]
+
+
+def _run_live(*, remove_error=None, **kwargs):
+    """_run, for an article that is published: its page, musings and CDN cache are faked."""
+    with (
+        patch("common.rewrite.remove_article_page", side_effect=remove_error) as remove,
+        patch("common.rewrite.delete_musings_for_article", return_value=1) as musings,
+        patch("common.rewrite.invalidate_article_page", return_value=True) as invalidate,
+    ):
+        result, _, _ = _run(**kwargs)
+    return result, {"remove": remove, "musings": musings, "invalidate": invalidate}
+
+
+def test_a_published_article_comes_down_only_when_its_rewrite_is_ready(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+    seen = {}
+
+    def reply_while_still_up(*args, **kwargs):
+        seen["status"], seen["body"] = _article_status(), _s3_text("articles/a1.md")
+        return _model_reply()
+
+    result, mocks = _run_live(invoke_error=reply_while_still_up)  # a side effect that replies
+
+    assert seen == {"status": "published", "body": BODY}  # untouched while the rewrite ran
+    assert result["status"] == "rewritten" and result["unpublished"] is True
+    assert result["musings_removed"] == 1 and result["cache_invalidated"] is True
+    mocks["remove"].assert_called_once_with("a1")
+    mocks["musings"].assert_called_once_with("a1")
+    assert _article_status() == "pending_moderation"
+    assert "You should buy it now" not in _s3_text("articles/a1.md")
+    assert _s3_text("articles/a1.before-rewrite-1.md") == BODY
+    assert _queue()[result["new_queue_id"]]["status"] == "pending"
+
+
+def test_a_failed_rewrite_leaves_a_published_article_exactly_as_it_was(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+
+    result, mocks = _run_live(invoke_error=RuntimeError("throttled"))
+
+    assert result["status"] == "failed" and result["still_published"] is True
+    assert _article_status() == "published" and _s3_text("articles/a1.md") == BODY
+    for mock in mocks.values():
+        mock.assert_not_called()
+    (item,) = _queue().values()  # never in the inbox: approving or rejecting it there would be wrong
+    assert item["status"] == "rewrite_failed" and "throttled" in item["last_rewrite_error"]
+    assert item["expires_at"]
+
+
+def test_a_rewrite_the_guards_reject_leaves_a_published_article_up(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+
+    result, mocks = _run_live(reply=_model_reply(body=BODY.replace("$81,000", "$99,999")))
+
+    assert result["status"] == "failed" and _article_status() == "published"
+    mocks["remove"].assert_not_called()
+    assert _queue()["q1"]["status"] == "rewrite_failed"
+
+
+def test_a_page_that_cannot_be_removed_is_said_on_the_inbox_item(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+
+    result, _ = _run_live(remove_error=RuntimeError("s3 down"))
+
+    assert result["status"] == "rewritten" and _article_status() == "pending_moderation"
+    reasons = _queue()[result["new_queue_id"]]["reasons"]
+    assert "could not be removed" in reasons[0] and "articles unpublish" in reasons[0]
+
+
+def test_an_article_that_cannot_be_taken_down_stays_published_and_out_of_the_inbox(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+
+    with patch("common.rewrite.update_article_status", side_effect=RuntimeError("dynamo down")):
+        result, mocks = _run_live()
+
+    assert result["status"] == "failed" and result["still_published"] is True
+    assert _article_status() == "published" and _s3_text("articles/a1.md") == BODY
+    mocks["musings"].assert_not_called()
+    statuses = sorted(item["status"] for item in _queue().values())
+    assert statuses == ["rewrite_failed", "rewritten"]  # nothing pending for a public article
+
+
+def test_an_article_that_cannot_be_read_does_not_put_a_published_one_in_the_inbox(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+    _table("ModerationQueue").update_item(
+        Key={"queue_id": "q1"},
+        UpdateExpression="SET article_still_published = :t",
+        ExpressionAttributeValues={":t": True},
+    )
+
+    with patch("common.rewrite.get_article", side_effect=RuntimeError("dynamo down")):
+        result, _ = _run_live()
+
+    assert result["status"] == "failed" and result["still_published"] is True
+    assert _queue()["q1"]["status"] == "rewrite_failed"
+
+
+def test_a_stale_rewrite_of_a_published_article_is_closed_not_put_in_the_inbox(aws):
+    old = (datetime.now(UTC) - timedelta(minutes=rewrite.STALE_REWRITE_MINUTES + 5)).isoformat()
+    _seed(requested_at=old)
+    _publish_seeded_article()
+
+    assert rewrite.release_stale_rewrites() == 1
+
+    item = _queue()["q1"]
+    assert item["status"] == "rewrite_failed" and "never finished" in item["last_rewrite_error"]
+    assert _article_status() == "published"
+
+
 # --- the Lambda entry point ---------------------------------------------------------------------------
 
 

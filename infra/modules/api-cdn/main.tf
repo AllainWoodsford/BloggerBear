@@ -26,7 +26,7 @@
 # forged through the CDN. (Direct calls to the API can forge it, which is why the WAF only trusts it
 # on requests that also carry the origin_verify header below.)
 resource "aws_cloudfront_function" "viewer_ip" {
-  name    = "bloggerbear-${var.environment_name}-api-viewer-ip"
+  name    = "${var.unique_name_prefix}-${var.environment_name}-api-viewer-ip"
   runtime = "cloudfront-js-2.0"
   comment = "Adds the viewer IP for the public API's WAF rate limits"
   publish = true
@@ -34,7 +34,7 @@ resource "aws_cloudfront_function" "viewer_ip" {
 }
 
 resource "aws_cloudfront_cache_policy" "api" {
-  name        = "bloggerbear-${var.environment_name}-public-api"
+  name        = "${var.unique_name_prefix}-${var.environment_name}-public-api"
   comment     = "Cache only what the public API marks cacheable (default TTL 0)"
   min_ttl     = 0
   default_ttl = 0
@@ -69,7 +69,7 @@ data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
 
 resource "aws_cloudfront_distribution" "api" {
   enabled         = true
-  comment         = "bloggerbear-${var.environment_name} public API"
+  comment         = "${var.unique_name_prefix}-${var.environment_name} public API"
   is_ipv6_enabled = true
   web_acl_id      = var.web_acl_id != "" ? var.web_acl_id : null
 

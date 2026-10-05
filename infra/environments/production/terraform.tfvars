@@ -1,4 +1,4 @@
-# The site's domain, bought at GoDaddy. Production's static-site module call has
+# The site's domain, bought at a registrar (any will do). Production's static-site module call has
 # enable_custom_domain = true, so BOTH of these must be set before the first production apply, and the
 # apply stops early with a plain-English message if hosted_zone_id is missing.
 #
@@ -17,10 +17,12 @@ hosted_zone_id = "Z08528613LTNU3HR75ODZ"
 # `ParamValidationError: Invalid length for parameter modelId, value: 0`.
 # Confirmed the hard way via a real research_tick invocation on dev
 # (same bug, same fix applies here). Leaving this variable entirely
-# unset here means variables.tf's own default (currently
-# "au.anthropic.claude-sonnet-5") actually takes effect. Set a real
-# value in *this* file again only if a value different from that default
-# is ever needed for production specifically.
+# unset here means variables.tf's own default (the AU Claude Haiku 4.5
+# inference profile, built from var.bedrock_inference_profile_id)
+# actually takes effect. Set a real value in *this* file again only if a
+# value different from that default is ever needed for production
+# specifically. Outside Australia, set bedrock_inference_profile_id here
+# instead (docs/deployment-runsheet.md).
 
 # admin_allowed_cidrs is deliberately NOT set here -- see its description in
 # variables.tf. It's supplied in CI via a TF_VAR_admin_allowed_cidrs env var

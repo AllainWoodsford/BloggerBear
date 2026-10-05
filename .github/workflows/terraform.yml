@@ -21,7 +21,7 @@ on:
   # waiting for an actual push to dev. Run this from the Actions tab
   # against the `dev` branch (branch selector must be `dev`, not just the
   # default -- that's what makes the OIDC sub claim `ref:refs/heads/dev`,
-  # matching gha-bloggerbear-dev-deploy's trust condition, same as the
+  # matching gha-<prefix>-dev-deploy's trust condition, same as the
   # push trigger above).
   workflow_dispatch:
     inputs:
@@ -30,7 +30,7 @@ on:
           After apply, query CloudTrail for every AWS API call this run's
           assumed role made (both successful and AccessDenied) and print
           the deduplicated service+action list to the job summary. Use
-          this to audit/tighten gha-bloggerbear-dev-deploy's IAM policy
+          this to audit/tighten gha-<prefix>-dev-deploy's IAM policy
           (infra/bootstrap/main.tf) -- e.g. after loosening it to unblock
           a deploy, paste the output back for a review of what's actually
           used vs. just granted.
@@ -54,7 +54,7 @@ jobs:
 
   # Deliberately NOT scoped to a GitHub `environment:` -- doing so changes
   # the OIDC sub claim to `environment:<name>` instead of `ref:<ref>`, which
-  # would stop matching gha-bloggerbear-dev-deploy's trust condition
+  # would stop matching gha-<prefix>-dev-deploy's trust condition
   # (`ref:refs/heads/dev`). If a "dev" GitHub Environment is later added for
   # deployment-history visibility, do not reference it on this job unless
   # the IAM trust policy is updated to match.
@@ -88,9 +88,38 @@ jobs:
     # (empty secret) is fine -- every alarm/subscription it gates is
     # count-gated on `var.alert_email != ""`, so nothing is created without
     # it, same fail-closed-to-"off" pattern as admin_allowed_cidrs' `[]`.
+    # TF_VAR_aws_account_id, TF_VAR_unique_name_prefix, TF_STATE_BUCKET: what lets a fork deploy
+    # to its own AWS account without editing code (docs/deployment-runsheet.md). All three are
+    # optional. Unset, the account ID and the state bucket are empty strings, which Terraform and
+    # the init step below both read as "as before": no account check, the state bucket written in
+    # the backend block. The account ID and the state bucket's name are secrets, and only secrets:
+    # a variable prints in plain text in these public logs, and GitHub masks a secret's text
+    # wherever it appears. There is deliberately no `|| vars.` fallback for them (the role ARN and
+    # the alert email have one only because they were variables once): a fallback would let the
+    # value be set unmasked by mistake, and nothing ever shipped that read them from a variable.
+    # TF_VAR_unique_name_prefix is what every resource name starts with (<prefix>-<env>-<what>),
+    # from the UNIQUE_NAME_PREFIX variable (a plain variable: it is part of public bucket and
+    # sign-in host names anyway). Unset, it is the prefix this project has always used, written
+    # out here as the fallback: an empty string would be refused by the variable's validation,
+    # and "bloggerbear" is the value its own default already is, so the original deployment's
+    # names do not change. It must be the prefix infra/bootstrap was applied with, because the
+    # deploy role may only touch resources whose names start with it.
+    # scripts/setup_repo.py sets all of them.
+    # TF_VAR_aws_region, TF_STATE_REGION: the deployment's home region, from the AWS_REGION
+    # variable (a plain variable: a region is not a secret, and it is in every ARN and host name
+    # the logs print anyway). Unset, it is the region this project has always used, written out
+    # here as the fallback, so Terraform is handed the same value its own default already is and
+    # the credentials step below gets the region it always got. TF_STATE_REGION is only for the
+    # state bucket (see the init step): its own TF_STATE_REGION variable if the bucket is not in
+    # the home region, else AWS_REGION, else empty, which leaves the backend block's region alone.
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
+      TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
+      TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
+      TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
@@ -119,7 +148,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a
         with:
-          aws-region: ap-southeast-2
+          aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
           role-to-assume: ${{ secrets.AWS_DEV_DEPLOY_ROLE_ARN || vars.AWS_DEV_DEPLOY_ROLE_ARN }}
 
       # Pinned to the same actions/setup-python commit python-ci.yml already uses.
@@ -154,7 +183,26 @@ jobs:
 
           echo "Applying terraform in $target_dir"
           plan_file="tfplan"
-          terraform -chdir="$target_dir" init
+          # A fork keeps its state in its own bucket (S3 bucket names are unique across every
+          # account, and a backend block cannot read a Terraform variable), so the bucket can be
+          # named by the TF_STATE_BUCKET_DEV secret. Unset, this is the plain `init` it always
+          # was, against the bucket written in the backend block.
+          # The state bucket's region is the same story: the backend block names the original
+          # deployment's, and TF_STATE_REGION (the TF_STATE_REGION variable, or else AWS_REGION,
+          # since bootstrap puts the bucket in the home region) overrides it. With neither set
+          # there is nothing to pass, and this is still the plain `init`.
+          init_args=()
+          if [ -n "${TF_STATE_BUCKET:-}" ]; then
+            init_args+=("-backend-config=bucket=${TF_STATE_BUCKET}")
+          fi
+          if [ -n "${TF_STATE_REGION:-}" ]; then
+            init_args+=("-backend-config=region=${TF_STATE_REGION}")
+          fi
+          if [ "${#init_args[@]}" -gt 0 ]; then
+            terraform -chdir="$target_dir" init "${init_args[@]}"
+          else
+            terraform -chdir="$target_dir" init
+          fi
           terraform -chdir="$target_dir" fmt -check
           terraform -chdir="$target_dir" validate
           terraform -chdir="$target_dir" plan -out="$plan_file" -input=false
@@ -171,13 +219,13 @@ jobs:
       # far as an AccessDenied even when the apply step above failed --
       # that's the main use case (loosen the policy enough to get further,
       # then paste this output back for a review of what's actually used).
-      # gha-bloggerbear-dev-deploy needs cloudtrail:LookupEvents for this
+      # gha-<prefix>-dev-deploy needs cloudtrail:LookupEvents for this
       # step to work at all (see infra/bootstrap/main.tf).
       - name: "Debug: required IAM permissions (CloudTrail lookup)"
         if: always() && github.event.inputs.debug_permissions == 'true'
         run: |
           set -euo pipefail
-          role_fragment="gha-bloggerbear-dev-deploy"
+          role_fragment="gha-${TF_VAR_unique_name_prefix}-dev-deploy"
 
           {
             echo "## Required IAM permissions (CloudTrail, from ${JOB_START_TIME} onward)"

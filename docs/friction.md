@@ -1,7 +1,9 @@
 # Friction log
 
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
-plus the hackathon-planning and public-repo session of 2026-10-03.
+plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
+of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it, and what of the
+Alexa+ add-on could not be tested (2026-10-05).
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -16,13 +18,15 @@ AWS platform friction gets its own section.
 | Theme | Entries | The pattern |
 |---|---|---|
 | AWS platform | 11 | errors that don't say what's wrong; limits found only at runtime |
-| Terraform and CI | 8 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
-| Tests vs reality | 5 | the test environment isn't the deployed one |
+| Terraform and CI | 9 | `validate` passes, `plan` or `apply` fails; scans that cover less than they look |
+| Tests vs reality | 6 | the test environment isn't the deployed one |
 | Frontend | 4 | the hash router, and a performance fix that broke styling |
-| The model in the pipeline | 3 | model output trusted without checking it |
-| Agentic coding | 8 | confident output that wasn't checked against reality |
-| GitHub and the repo | 11 | free private repos can't protect anything |
+| The model in the pipeline | 6 | model output trusted without checking it |
+| Agentic coding | 9 | confident output that wasn't checked against reality |
+| GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
+| Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
+| Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -137,6 +141,17 @@ hash-verified binaries, the three packages bumped, and an on-demand workflow tha
 over the whole history at every severity. **Lesson:** a green check says nothing about what it
 looked at; read what it scanned at least once.
 
+**2.9 A dashboard only production creates failed production's apply.** The v0.2.6 release stopped on
+`PutDashboard` with 84 validation errors ("metrics/0 Should be array"). One widget built its
+`metrics` with `flatten()`, which goes all the way down: six metric lists became 42 loose values.
+`validate` and `plan` both passed, because Terraform sees the dashboard body as a string and only
+CloudWatch checks its shape, at apply. And dev never creates that dashboard (it costs US$3 a month),
+so production was its first apply. **Fix:** `concat(...)` for one level, and a `terraform test`
+assertion on the shape CloudWatch insists on. **Lesson:** a resource one environment skips is
+untested until the release; give it a test that doesn't need the environment. A `Release` tag on
+every resource was considered and dropped: dashboards can't carry tags, and it would have put a
+change on every resource in every plan. (#174)
+
 ## 3. Tests vs reality
 
 **3.1 The tests passed, but the deployed Lambdas couldn't import `requests`.** The zip never included
@@ -158,6 +173,13 @@ plain ints. (#104)
 
 **3.5 Cost lineage under-reported.** The article summary showed the authoring cost only, not
 authoring plus research. (#125)
+
+**3.6 117 local failures that weren't ours.** On the Windows machine the Lambda suite fails 117
+tests with or without a change: Python on Windows has no time zone database, and `tzdata`, pinned in
+`lambdas/requirements.txt`, wasn't installed, so everything touching the feedback limits'
+`Australia/Sydney` day fails. Telling a regression from that noise took a second full run on a clean
+tree and a comparison of the two lists. **Lesson:** install the pinned requirements before trusting a
+local run, and compare failures against a baseline, not against zero. (2026-10-04)
 
 ## 4. Frontend
 
@@ -198,6 +220,29 @@ angles and titles, a retry, and a hold for moderation when it still fails. (#117
 **5.3 The same story two days running.** Ideation only saw today's findings, so a repo trending for
 days looked new every day. **Fix:** the ideation prompt gets the topic's last five titles under
 "Already covered recently". (#117)
+
+**5.4 A musing with a mood and no words.** A musing went out on 4 October as "BloggerBear was
+feeling proud", a link, and nothing else. The model had answered with an empty string, and the
+article and feedback musings stored whatever came back; the loot and rejection musings already fell
+back to plain text. **Fix:** the same fallback for all four. **Lesson:** an empty reply is not an
+exception, so nothing catches it; check for it wherever a reply is published. (2026-10-04)
+
+**5.5 An article published inside a code fence.** An article published on 2 October with no person
+involved has `**"..."**` around its title and its whole body inside a ` ```markdown ` fence, so the
+page shows it as a scrolling block of code. The model wrapped its reply; nothing stripped or
+rejected the wrapper. Found by a person reading the site, two days later. **Not fixed yet, on
+purpose:** it is the demo case for the operator assistant's content checks. The pipeline guard that
+would have held it is still to write. **Lesson:** 5.1, 5.2 and now this are the same failure: the
+reply's shape was assumed. (2026-10-04)
+
+**5.6 Fixing an article took it off the site first.** `articles rewrite` unpublished a published
+article before the rewrite had even started, so a rewrite that failed left a good article down and
+waiting in the inbox. For a one-sentence fault (5.4) that is a poor trade. **Fix:** the article
+stays up until the rewrite has been written, guarded and reviewed, and only then comes down;
+`--force` keeps the old order for an article that must come down now. A review of the change found
+three ways a still-published article could land in the inbox, where rejecting it would have left its
+page up; each got a fix and a test. **Lesson:** "take it down, then fix it" is only the safe order
+when being down is cheaper than being wrong. (2026-10-04)
 
 ## 6. Agentic coding
 
@@ -242,6 +287,16 @@ branch name with another PR's title. Minor, but it makes history harder to read.
 blocked by the agent's auto-mode safety check (2026-10-03), so the settings went into a script and
 then the runsheet for a person to run. That was the right outcome for outward-facing changes, but it
 means some steps can't be fully hands-off.
+
+**6.9 A green pipe that hid a red test, and a "passed" that was ruff's.** During the Alexa+ build
+(2026-10-04) Claude ran `pytest ... | tail -1 && git commit`: the pipe's exit status is `tail`'s,
+so a run with one failure still committed. Later a wait loop watched for the word "passed" to know
+the suite had finished, and stopped on ruff's "All checks passed!" six minutes early. And the
+first PRs were linted with whatever `ruff` was on the PATH (0.15) instead of the pinned 0.6.9,
+which reports different rules, so three PRs went up with lines CI then refused. **Fix:** check the
+exit code (`set -o pipefail`, or no pipe), wait for pytest's own summary line, and run
+`python -m ruff` from the pinned requirements. **Lesson:** a check whose output is read by eye, or
+by a loose pattern, is only as good as the reading.
 
 ## 7. GitHub and the repo (2026-10-03)
 
@@ -307,6 +362,14 @@ checks (#167):
 not a reviewer remembering. Writing a sensitive value into the doc about protecting it is easy
 when the doc's job is to describe exactly that value.
 
+**7.12 Two green PRs made a red `dev`.** #197 (source credits) added `"url": TRENDING_URL` to the
+GitHub adapter; #199 (the Search API instead of scraping) removed `TRENDING_URL` from the same
+file. Each PR's checks ran against the `dev` it started from, so each passed; after both merged,
+importing the adapter raised `NameError`, every Lambda that loads the adapter registry would have
+failed on the next deploy, and ruff's F821 turned every open PR's lint red. **Fix:** #205
+defines it again. **Lesson:** without a merge queue (or "require branches to be up to date"),
+the merge of two PRs is untested; the first PR to see `dev` afterwards is the test.
+
 ## 8. Multi-account and OIDC
 
 **8.1 Role chaining on another project (AiSandbox).** The setup there: GitHub OIDC → a role in an
@@ -346,6 +409,282 @@ docs/enhancements/supply-chain-tracker-enhancement.md).
 
 **9.4 OpenCV 5 on Graviton is unconfirmed.** Whether an `opencv-python-headless` 5.x wheel exists for
 Linux aarch64 is still the first thing to settle.
+
+## 10. Alexa+ and MCP (2026-10-04)
+
+Planning the Alexa+ entry, before any of it is built. The design these led to is
+[docs/enhancements/alexa-plus-operator-assistant-enhancement.md](enhancements/alexa-plus-operator-assistant-enhancement.md).
+
+**10.1 Our first idea was the rules' own example of an obvious one.** The plan was a public MCP
+server wrapping the public API, answering one question at a time. The judging criteria name exactly
+that for Alexa+: "single-turn Q&A bot, basic MCP wrapper around an existing API", against "agentic
+workflow that orchestrates across services autonomously, context-aware add-on that maintains state
+across sessions". The first rules check had read the eligibility rules and not the criteria.
+**Changed:** the entry is now an operator's assistant that works out what needs attention across
+services and remembers what it suggested; the public wrapper is parked. **Lesson:** read the judging
+criteria before the design, not after.
+
+**10.2 The minimum spec version and the linked one work differently.** The rules require MCP
+`2025-11-25` or later; the hackathon's resources link to `2026-07-28`, which drops the `initialize`
+handshake, sessions and the GET stream. That suits a Lambda, but a client that only speaks
+`2025-11-25` can't talk to a `2026-07-28`-only server, and neither the spec pages nor the MCP Apps
+page says which Python SDK release speaks which version (the MCP Apps page names TypeScript packages
+only). **Decided:** `2026-07-28` first; the first day's work is finding out what the Python SDK and
+Strands' MCP client each speak. **Feedback:** a table of SDK release against protocol version, next
+to the spec, would have answered this in a minute.
+
+**10.3 "Streamable HTTP" was read as "must stream".** A draft transport decision treated Streamable
+HTTP as Server-Sent Events and planned API Gateway response streaming for it. The spec lets a server
+answer every request with one JSON object, which is all read-only tools need, and which an ordinary
+API Gateway and Lambda integration already does. **Lesson:** the transport's name describes what it
+can do, not what a server must do.
+
+**10.4 A layer ARN for the wrong region.** The same draft carried the Lambda Web Adapter's layer ARN
+for us-east-1; the stack is in ap-southeast-2 and layers are regional, so it would have failed at
+apply. Caught in review, before any apply. **Lesson:** an ARN copied from an example carries the
+example's region.
+
+**10.5 Every Lambda shares one role.** All the functions use one execution role with write and
+delete on every app table. That was fine while every function was ours and did pipeline work; a
+"read-only" assistant on that role would not be read-only. **Decided:** the MCP server gets its own
+role, scoped to what its tools read, with one table it may write.
+
+**10.6 The admin API's protection can't be reused.** Admin requests are IAM-signed and behind a WAF
+IP allowlist that fails closed; the console is a local CLI so no browser holds credentials. A voice
+page can't hold IAM keys, and a judge's network isn't on the allowlist, so the assistant is a second
+way in, with its own sign-in (Cognito, MFA in production). The MCP authorization spec's own flow is
+left out of the hackathon build: a page we control doesn't need it, and it was the largest unknown
+in the schedule. Whether Alexa+ developer access works from Australia is still unknown, so the entry
+simulates the experience in a web page, which the rules allow.
+
+**10.7 A switch in a table can't be a WAF rule.** The operator wanted to be able to lock the
+assistant to known addresses later, from a configuration table, without a deploy. WAF rules are
+Terraform's; a table row can't change one. **Decided:** the check is in the Lambdas, read from the
+existing config row on every request, and a failed read refuses the request.
+
+**10.8 Managed memory stores the wrong thing for this job.** AgentCore Memory keeps conversation
+turns and facts a model extracts from them. "Did I fix what you suggested?" needs an exact answer,
+and text extracted from tool output is a way for hostile text in a draft or a log line to be
+remembered. **Decided:** the assistant's memory is a DynamoDB table of what it suggested (kinds, ids
+and timestamps, no text), re-checked in code each session; AgentCore Memory is optional, and only
+for the operator's own words. Unconfirmed: whether it is available in ap-southeast-2.
+
+**10.9 A suggestion is a command someone will run.** The assistant shows the operator the
+`admin_cli` command that would fix what it found. If the model wrote that command, text in an
+article could put `topics delete` on the screen. **Decided:** commands come from a fixed catalogue in
+code, with ids read from the tables; the model only chooses which findings to talk about, and
+nothing in the catalogue deletes.
+
+**10.10 The agent SDK caps the MCP SDK.** The newest `mcp` is 2.3.0, but `strands-agents` 1.57.2
+requires `mcp<2.2`, so installing both fails to resolve. **Decided:** pin `mcp==2.1.1`, which
+Strands accepts and which already speaks `2026-07-28`. **Feedback:** the cap is easy to miss until
+the two are installed together; it would help to see it stated next to Strands' MCP instructions.
+
+**10.11 Every `mcp` 1.x example fails to import on 2.x.** FastMCP was renamed `MCPServer` and
+moved. The SDK handles it well: the old import raises an error that names the new one and links
+the migration guide. Most examples found by searching are still 1.x.
+
+**10.12 The first request to the server was a 421.** The SDK checks the `Host` header against a
+list, as well as `Origin`, and a test client's host isn't `localhost`. Nothing in the spec's
+transport page mentions a Host check; it is the SDK's own protection against DNS rebinding. Behind
+API Gateway the host is the API's domain, so an unset list would have refused every request in
+the first deploy. **Fix:** the lists come from the environment, an empty one refuses everything
+on purpose, and a contract test holds both. **Lesson:** run the real SDK in a test before
+writing any Terraform for it.
+
+**10.13 A new requirements file is invisible to the vulnerability scan.** Same as 2.8: Trivy only
+reads files named `requirements.txt`, plus the patterns it is given, and the MCP server's
+dependencies live in `requirements-ops-mcp.txt` so the pipeline's shared zip doesn't carry them.
+**Fix:** the pattern in both scan workflows now names it. The file pins only `mcp` itself, so what
+`mcp` pulls in is still not scanned; a lock file for that Lambda's build is the proper fix.
+
+**10.14 The `allowlist` setting refused the assistant's own agent.** The access check was written
+for the MCP server and tested there, then repeated in the agent's handler and tested there. Each
+passed. Together, the agent admitted the operator and then called the server from Lambda's address,
+which is on nobody's list, so every question under `allowlist` ended in a 502. It failed closed,
+and it was noticed while writing the design doc, not by a test: no test ran the two checks in one
+request with a setting other than `open` or `off`. **Fix:** the agent sends the server a key only
+the two functions hold (Terraform makes it) and the address of the operator it has admitted; a
+request with the right key is judged by that address. The key admits nobody by itself, and a wire
+test now runs agent and server together under `allowlist`. **Lesson:** a rule enforced in two
+places needs one test that goes through both, with every value of the setting.
+
+**10.15 The dev assistant could see production's alarms and the account's bill.** Its tables, bucket
+and log group were dev's by ARN, so it looked separated. But dev and production are one AWS
+account, and two of its tools read things that belong to the account: `alarms` asked CloudWatch for
+every alarm named `bloggerbear-*`, production's included (a `DescribeAlarms` that lists by prefix is
+authorized against every alarm, so the role could not be narrowed), and `spend` reported the whole
+AWS bill, which the Cost Explorer poll writes into each environment's own Stats table. Nothing
+failed and no test was wrong: each tool did what its test said, and no test asked whose data it
+was. **Fix:** `alarms` asks only
+for `bloggerbear-<env>-` and refuses with no environment configured; the bill is reported only
+where the module's `account_wide_data` is on (production); and both roles carry a Deny on anything
+tagged for another environment, which by the Service Authorization Reference can only take effect
+for DynamoDB and logs, and does nothing for S3, Bedrock or a list of alarms. **Lesson:** in a
+shared account, "named resources only" covers what has a name to scope by; list every call that is
+account-wide (list calls, billing, anything shared) and decide each one in code. Separate accounts
+are the only hard wall.
+
+
+**10.16 An apostrophe stopped the first deploy of the assistant.** The Cognito resource server was
+named "BloggerBear operator's assistant". Cognito only allows that name to match `[\w\s+=,.@-]+`,
+and says so at apply: `validate`, `plan` and every CI check passed. The apply stopped part-way, with
+the user pool and the API created and the resource server, app client and authorizer not. **Fix:**
+no apostrophes, and a `terraform test` that holds the patterns Cognito enforces for the pool, the
+client, the resource server and the sign-in prefix. **Lesson:** the same as 2.9: what only AWS
+checks, and only at apply, needs a test of its own. (#183)
+
+**10.17 Reserved concurrency on an account with none to spare.** The agent's Lambda asked for a
+reserved concurrency of 2, as a ceiling on how many questions could be at Bedrock at once. The apply
+failed: "decreases account's UnreservedConcurrentExecution below its minimum value of [10]". This
+account's whole Lambda quota is 10, which is also the minimum Lambda keeps unreserved, so nothing can
+be reserved in it at all. The failure left `/ask` on the API but not on the deployed stage, so the
+page reported "could not reach the assistant" while sign-in worked: the browser's preflight met API
+Gateway's 403 "Missing Authentication Token", which is its answer for a route the stage does not
+have. **Fix:** no reservation by default; the stage's throttle is the only bound until the quota is
+raised. **Lesson:** a new account's quotas are part of the design, and the default Lambda quota is
+far below the 1,000 the documentation leads with. **Feedback:** "Missing Authentication Token" for a
+route that does not exist sent the first look in the wrong direction. (#187)
+
+**10.18 A proposal that read like documentation, and wasn't.** An externally written `AlexaMCP.md`
+proposed moving to a native Alexa+ add-on. Checked line by line against the toolkit pages, the
+MCP authorization spec and RFC 9728, it said the opposite of the spec in one place (401 "without a
+`WWW-Authenticate` header"; the header is how a client finds the metadata), named a protocol
+version the toolkit doesn't use (it supports `2025-11-25`), put `ui://` URIs inside
+`structuredContent` (they belong in the tool's `_meta`), pointed at a manifest "in the original
+configuration" that wasn't there, and pasted its first half twice. It also dropped the Strands
+agent, which is the part the judging criteria reward. **Decided:**
+[docs/enhancements/alexa-plus.md](enhancements/alexa-plus.md) replaces it. **Lesson:** 6.5 again: a
+confident spec is a draft until each claim is checked against its source.
+
+**10.19 `.well-known` can't live at the root of an execute-api URL.** RFC 9728 puts Protected
+Resource Metadata at `https://host/.well-known/oauth-protected-resource`. On a REST API's default
+URL the first path segment is the stage, so that path asks for a stage named `.well-known` and gets
+a 403. The way out is in the MCP spec: a client must use the `resource_metadata` URL from the 401's
+`WWW-Authenticate` header first, and that URL can sit under the stage. **Feedback:** the toolkit
+pages would save a day by saying whether Alexa+ follows the header or only the root path.
+
+**10.20 Cognito doesn't advertise the PKCE it enforces.** Its OIDC discovery document has no
+`code_challenge_methods_supported`, and the MCP spec tells a client to refuse an authorization
+server that doesn't list S256. **Fix:** our own RFC 8414 document, static JSON from an API Gateway
+mock integration, naming Cognito's endpoints. **Feedback (AWS):** one line in Cognito's discovery
+document would make every user pool usable by MCP clients as it stands.
+
+**10.21 The voice button "doesn't work", and the page's logic was fine.** With a fake speech
+engine in headless Chromium the button, the request and the spoken answer all worked. What fails
+is the browser's side: a long press on a phone cancels the pointer and stopped listening at once;
+`lang="en"` where Safari wants a full tag; `cancel()` then `speak()` in the same tick, which
+Chrome drops; one long utterance, which Chrome's network voices cut off at about 15 seconds; and
+every recognition error, including `network` from Chromium builds with no Google speech service,
+reported as one vague "failed". Headless Chromium also ships the unprefixed `SpeechRecognition`
+now, so a stub that only replaced `webkitSpeechRecognition` tested the real one by mistake.
+**Fix:** tap to talk, per-error messages, interim words on screen, speech sentence by sentence, and
+a "Test voice" button that says which part is broken. **Lesson:** browser speech APIs fail
+differently per browser and per device; a self-test is worth more than another guess.
+
+**10.22 Alexa+'s latency limit rules out the agent in the loop.** The toolkit asks for a round
+trip under 500 ms; a Strands briefing is 10 to 25 seconds and a cold MCP Lambda alone 1 to 3. It
+also showed the web path was close to API Gateway's 29-second ceiling, where a 504 reads on the
+page as "could not answer". **Decided:** Alexa starts a briefing (an async Lambda invoke, as the
+user) and reads the last one back; both are one DynamoDB call. A "nightly cron" was rejected: it
+has no user to call the tools as, and the memory is per user.
+
+
+**10.23 A role name the deploy role can't manage.** The async briefing's opt-in `keep_warm`
+schedule needs an IAM role, first named `bloggerbear-<env>-ops-mcp-keep-warm`. The deploy role may
+manage only roles that fit its patterns (`bloggerbear-*-lambda-exec`, `-states-exec`,
+`-scheduler-invoke`, `-agentcore-gateway`), so the first apply with `keep_warm` on would have
+failed with AccessDenied, after `validate`, `terraform test` and review had all passed. Caught
+while wiring production, before any apply. **Fix:** `...-ops-mcp-scheduler-invoke`, and a test
+that holds the name to the pattern. **Lesson:** 1.2 again, from the other side: every new IAM
+name is checked against what the deploy role may touch, not only against what the function needs.
+
+**10.24 The page read "US$12.40" as "twelve dollars. forty".** The voice fix (10.21) speaks an
+answer a sentence or two at a time, and found sentences with `[^.!?]+`, which ends one at every
+full stop, including the point in a number, a version or a domain. The pieces were then joined with
+a space, so "US$12.40" was spoken as two sentences, and a briefing reports spend in dollars and
+cents. The test said "nothing lost or reordered, only the spacing" and compared both sides by
+`.split()`, which cannot see a space added inside a word: "12." and "40" are words too. Found in
+review. **Fix:** a sentence ends at a stop followed by a space or the end, and the test compares
+the joined text exactly, with a number in it. **Lesson:** a test that normalises before comparing
+must not normalise away the thing that can break; compare what the user gets (here, the spoken
+text). (#198)
+
+**10.25 Three voice faults a review found, none of them visible to the tests that passed.** A
+review of the series found the speech unlock listening for `pointerdown`, which is a user activation
+for a mouse but not for a touch, so on iOS the utterance meant to unlock speech was itself refused,
+and the unlock marked itself done anyway; the voice test starting the microphone 2.5 s after its
+sample sentence began, and starting the microphone cancels speech; and a Lambda client that
+retried a timed-out async invoke, which may already have been queued, so one `start_briefing`
+could run the agent twice. The fix for the first then failed its own browser check: "tap anywhere
+to hear the answer" listened on the app's section only, so a tap on the heading did nothing.
+**Fix:** unlock on `click` anywhere in the document, done only when the silent utterance starts,
+and a refused answer kept and spoken from the next tap; the test listens when its sample ends;
+no retry on the invoke. **Lesson:** the browser's rules (what counts as a gesture, what cancels
+what) are the specification here, and a fake that skips them passes everything; the headless
+check with events like the real ones is what found the last one.
+
+**10.26 The Alexa+ workflow itself could not be tested this time (2026-10-05).** Amazon's Alexa+
+MCP Toolkit (the `alexa-ai` CLI) is US-only and partner-gated, and the developer account did not
+have access. So the one-time bootstrap in [alexa/README.md](../alexa/README.md) (`alexa-ai
+configure`, `configure-account-linking`, `deploy`, then the simulator) was never run, against dev
+or production. Untested end to end: account linking through the Cognito pool, Alexa calling the MCP
+server, and the `start_briefing` and `latest_briefing` pair that exists because Alexa cannot wait
+for the agent (10.22). Two questions stay open with it: whether Alexa+ follows the 401's
+`resource_metadata` URL (10.19), and whether Cognito's sign-in page accepts the `resource`
+parameter. Built and tested without it: the MCP server and its OAuth metadata, the Alexa app client
+in Terraform, and the same assistant through the browser page (`/ask.html`), which is the working
+stand-in. **Decided:** the add-on is shipped ready to link, and the bootstrap can be run later,
+when access is granted; the runbook is written and no code change is expected. **Lesson:** 10.6
+again: when a platform's access is gated, build the part that can be tested without it first, and
+write down what is left.
+
+**The assistant reads the logs (2026-10-05).** Entries from the stack that let the assistant read
+logs ([design](enhancements/ops-assistant-log-reader.md)), prefixed with their PR so parallel PRs
+adding to this log do not collide.
+
+**#218 · A secret scanner caught the test fixtures, and a fix-up commit could not clear it.** The
+redaction tests held a made-up AWS key id and a made-up e-mail address; gitleaks flagged both. It scans every commit
+in the PR, so a second commit removing them still failed. **Fix:** the branch was ours, so the
+commit was amended; the key is now built from parts (`"AKIA" + ...`) and addresses use
+`@example.com`. **Lesson:** fixtures for a secret scrubber are secrets to a secret scanner: write
+them so the source never holds one, from the first commit.
+
+**#218 · The module tests could only run in CI, and failed there twice.** The cloud session's
+proxy refuses `registry.terraform.io`, so `terraform test` could not fetch providers. CI found an
+assertion on a value unknown at plan (a role id) and a list compared with a set. **Fix:** assert on
+plan-time strings, and compare conditions as `"test variable values"` strings the way the other
+tests do. **Lesson:** where a check cannot run locally, copy the idiom of the tests that already
+pass rather than writing a new shape.
+
+**#218, #220, #221 · dev changed a rule under a stack of open PRs.** The name-prefix setting (#219)
+merged while the stack was open, with a test that forbids `bloggerbear-` written out in code or
+Terraform. Three PRs went red at once. Then the first three merged while their fixes were being
+pushed, leaving commits on merged branches. **Fix:** names from `common.naming.NAME_PREFIX`,
+`architecture.PREFIX` and `var.unique_name_prefix`; the late fix rode in the next open PR (#225),
+retargeted to `dev`. **Lesson:** in a stack, merge `dev` into the bottom PR early and often, and
+check what is merged before pushing to a branch.
+
+**#225 · DynamoDB hands numbers back as `Decimal`.** The "getting worse / easing off" trend never
+appeared: the stored count was a `Decimal`, and `isinstance(value, int)` said no. The moto-backed
+test caught it, not the unit tests with plain dicts. **Fix:** counts are converted on read.
+**Lesson:** test what is read back from the table, not only what was written.
+
+**#226 · An address at the end of a sentence slipped through the PII sweep.** The IPv4 rule refused
+a match followed by a dot (to leave version numbers alone), so "...from 198.51.100.7." was not
+masked. Found when the agent's answer sweep was tested with a real sentence. **Fix:** refuse only a
+following digit or dot-digit. **Lesson:** test a scrubber on prose, not just on bare values.
+
+**#228 · One tool call could run past the request's time limit.** `follow_up` and `watch_list`
+could start a Logs Insights read per watched function, each allowed 15 seconds, in a function that
+stops at 30 behind an API that gives up at 29. **Fix:** at most two log reads per call, eight
+seconds each; the rest stay open for next time, never taken for calm. **Lesson:** a tool that fans
+out needs a budget for the whole request, not only for each call.
+
+**#228 · The suggested command could point at another topic.** The drafted `topics create` command
+made `--topic-id` from `--name`, which is what the operator asked for; on `topics update` the same
+rule turned a rename into a command for a different topic. **Fix:** only a `create` command derives
+an id. **Lesson:** a convenience that fills a value in must be scoped to where that value is new.
 
 ---
 

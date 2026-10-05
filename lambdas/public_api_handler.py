@@ -41,7 +41,22 @@ from xml.sax.saxutils import escape
 import boto3
 
 from common import equipment, feedback_limits, feedback_verification, gear, security_events, wear
-from common.comment_screening import INJECTION, MARKUP, SHELL, SQL, screen_comment
+from common.attribution import (
+    clean_sources,
+    sources_for_article,
+    sources_for_topic,
+    sources_for_topics,
+)
+from common.comment_screening import (
+    INJECTION,
+    MARKUP,
+    MODEL_BUDGET,
+    MODEL_ERROR,
+    SHELL,
+    SQL,
+    screen_comment,
+)
+from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
     get_current_stats,
@@ -166,6 +181,9 @@ def _list_topics(event: dict) -> dict:
     for article in list_published_articles():
         published_by_topic.setdefault(article["topic_id"], []).append(article)
 
+    # `attribution` is the topic's source credit (common/attribution.py): the sources its adapter
+    # declares in code, as [{"text", "label", "url"}]. Only that: the adapter's name and its
+    # adapter_config stay private, as before.
     public_topics = []
     for t in list_topics():
         topic_id = t["topic_id"]
@@ -182,6 +200,7 @@ def _list_topics(event: dict) -> dict:
                 "article_count": article_count,
                 "latest_published_at": latest_published_at,
                 "researching": researching,
+                "attribution": sources_for_topic(t),
             }
         )
     return _response(200, {"topics": public_topics}, cache_seconds=_LISTING_CACHE_SECONDS)
@@ -282,6 +301,21 @@ def _topic_activity(event: dict) -> dict:
 # --- Articles -------------------------------------------------------------
 
 
+def _topic_attribution(topic_id: str) -> list[dict]:
+    """The source credit shown under a topic's title: its adapter's declared sources. The digest
+    is not a Topics row and draws on every topic, so its page credits all of their sources (each
+    digest article carries the narrower credit of the topics that actually contributed)."""
+    if topic_id == DIGEST_TOPIC_ID:
+        return sources_for_topics(list_topics())
+    return sources_for_topic(get_topic(topic_id))
+
+
+def _article_attribution(article: dict) -> list[dict]:
+    """The source credit an article was published with (or, for one from before that was stored,
+    its topic's adapter's sources today). See common/attribution.py's sources_for_article."""
+    return sources_for_article(article, get_topic=get_topic, list_topics=list_topics)
+
+
 def _list_articles(event: dict) -> dict:
     topic_id = _query_param(event, "topic_id")
     if not topic_id:
@@ -317,7 +351,10 @@ def _list_articles(event: dict) -> dict:
         for a in articles
     ]
     return _response(
-        200, {"topic_id": topic_id, "articles": summaries}, cache_seconds=_LISTING_CACHE_SECONDS
+        200,
+        # `attribution`: the topic's source credit, for the line under the topic page's title.
+        {"topic_id": topic_id, "articles": summaries, "attribution": _topic_attribution(topic_id)},
+        cache_seconds=_LISTING_CACHE_SECONDS,
     )
 
 
@@ -350,6 +387,8 @@ def _get_article_detail(event: dict) -> dict:
             # common/static_pages.py's equipment_snapshot for why this is live rather than a
             # frozen-at-publish-time snapshot like the static article page's own copy.
             "equipment_used": equipment_snapshot(article.get("equipment_used")),
+            # The source credit shown under the title: [{"text", "label", "url"}], nothing else.
+            "attribution": _article_attribution(article),
         },
         # Its view_count can be a minute behind; the page shows the live count the view POST returns.
         cache_seconds=_LISTING_CACHE_SECONDS,
@@ -409,6 +448,9 @@ HONEYPOT_FIELD = "referral_code"
 # Comment-screening reasons that mean someone tried to attack the system, not just post a bad
 # comment: recorded as security events as well as rejected.
 _ATTACK_REASONS = frozenset({INJECTION, SQL, MARKUP, SHELL})
+# Drops that say nothing about the comment: the day's model checks ran out, or the model failed.
+# Every other drop counts toward the day's "feedback-drops" trend (common/security_events.py).
+_NOT_THE_COMMENTS_DOING = frozenset({MODEL_BUDGET, MODEL_ERROR})
 
 
 def _client_ip(event: dict) -> str:
@@ -540,6 +582,10 @@ def _submit_feedback(event: dict) -> dict:
                 method="POST",
                 path=f"/articles/{article_id}/feedback",
             )
+        if screened["dropped_because"] not in _NOT_THE_COMMENTS_DOING:
+            # Whatever the reason and whoever sent it: ten in a day opens a low incident, fifty
+            # makes it medium, a hundred high (and alerts). A count only -- nothing of the comment.
+            security_events.record_trend("feedback-drops", datetime.now(UTC))
         try:
             record_feedback_rejected_comment()
         except Exception as exc:  # noqa: BLE001 - the rejection itself must still be returned
@@ -659,11 +705,26 @@ def _rss_pub_date(published_at: str | None) -> str | None:
     return format_datetime(parsed)
 
 
+def _rss_credit_line(attribution: list[dict] | None) -> str:
+    """The source credit as one plain-text line for a feed item, or "".
+
+    The feed item's description is the opening of the article, which is exactly where a crypto
+    article states its prices, and a feed reader never loads the page that carries the credit. So
+    the credit travels with the excerpt: CoinGecko's guide asks for it "close to where the data is
+    displayed". Plain text with the address written out, because a description's markup is not
+    reliably rendered by feed readers; the caller XML-escapes it with the rest."""
+    return " · ".join(f"{source['text']} ({source['url']})" for source in clean_sources(attribution))
+
+
 def _rss_item_xml(article: dict, site_url: str) -> str:
     article_id = article["article_id"]
     title = article.get("title", "")
     body = article.get("body", "")
     description = body if len(body) <= _RSS_DESCRIPTION_MAX_CHARS else body[:_RSS_DESCRIPTION_MAX_CHARS]
+    # Appended after the cut, so a long article can never truncate its own credit away.
+    credit = _rss_credit_line(article.get("attribution"))
+    if credit:
+        description = f"{description}\n\n{credit}" if description else credit
     link = f"{site_url}/#/article/{article_id}"
 
     pub_date = _rss_pub_date(article.get("published_at"))
@@ -690,8 +751,16 @@ def _rss_feed(event: dict) -> dict:
     # The body text lives in S3, not the Articles item, but only the first
     # ~300 chars are needed for the description -- fetch each body directly
     # rather than pulling in the full article-detail path.
+    # One Topics scan for the whole feed, not a read per item: an article with no stored credit
+    # falls back to its topic's adapter (common/attribution.py).
+    topics = list_topics() if articles else []
+    topics_by_id = {topic["topic_id"]: topic for topic in topics}
+
     items_xml = []
     for article in articles:
+        attribution = sources_for_article(
+            article, get_topic=topics_by_id.get, list_topics=lambda: topics
+        )
         body = ""
         body_s3_key = article.get("body_s3_key")
         if body_s3_key:
@@ -700,7 +769,7 @@ def _rss_feed(event: dict) -> dict:
             except Exception as exc:  # noqa: BLE001 - one bad S3 object must not break the whole feed
                 article_id = article.get("article_id")
                 print(f"public_api_handler: failed to read body for RSS item {article_id}: {exc!r}")
-        items_xml.append(_rss_item_xml({**article, "body": body}, site_url))
+        items_xml.append(_rss_item_xml({**article, "body": body, "attribution": attribution}, site_url))
 
     channel_title = escape("BloggerBear")
     channel_link = escape(site_url)

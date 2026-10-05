@@ -15,13 +15,19 @@ terraform {
 
 # The same tags as the environments' default_tags (see infra/environments/*/main.tf), with
 # Environment = "shared": the state bucket, OIDC provider, deploy roles, hosted zone and API
-# Gateway account settings serve dev and production alike.
+# Gateway account settings serve dev and production alike. Project follows the name prefix by the
+# same rule as theirs: "BloggerBear" for the default prefix (the tag the original deployment has
+# always had), and otherwise the prefix as given.
 provider "aws" {
   region = var.aws_region
+  # Refuses to plan or apply against any account but var.aws_account_id, when that is set: a
+  # run that picked up the wrong credentials stops at once instead of half-working. Unset (the
+  # default) is null here, which is the same as not writing the argument at all.
+  allowed_account_ids = var.aws_account_id == "" ? null : [var.aws_account_id]
   default_tags {
     tags = {
       ManagedBy     = "Terraform"
-      Project       = "BloggerBear"
+      Project       = var.unique_name_prefix == "bloggerbear" ? "BloggerBear" : var.unique_name_prefix
       Environment   = "shared"
       TerraformRoot = "infra/bootstrap"
     }
@@ -34,11 +40,11 @@ provider "aws" {
 # Bucket name is a real, working default ("bloggerbear-terraform-state"),
 # not a placeholder token -- it only needs to change if it collides with
 # an existing bucket somewhere in AWS (S3 bucket names are globally
-# unique). If you do change var.state_bucket_name, copy the exact same
-# literal string into the `backend "s3" { bucket = "..." }` blocks in BOTH
-# infra/environments/dev/main.tf and infra/environments/production/main.tf
-# -- those blocks cannot reference variables or interpolation. See
-# outputs.tf for the same note next to the bucket name output.
+# unique). If you do change var.state_bucket_name, the environments'
+# `backend "s3"` blocks still name the default (they cannot reference
+# variables), so tell CI the real name with the GitHub Actions secrets
+# TF_STATE_BUCKET_DEV / TF_STATE_BUCKET_PROD. See outputs.tf for the same
+# note next to the bucket name output, and docs/deployment-runsheet.md.
 #
 # prevent_destroy protects the bucket resource itself from accidental
 # deletion (e.g. a careless `terraform destroy` run against this
@@ -220,7 +226,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["*"]
   }
 
-  # Phase 1: application data tables. Scoped to the bloggerbear-* table
+  # Phase 1: application data tables. Scoped to the <prefix>-* table
   # name prefix (not "*") -- more sensitive than the S3/CloudFront/etc.
   # wildcards above, since these are real app tables, not per-environment
   # buckets created fresh each time.
@@ -232,7 +238,7 @@ data "aws_iam_policy_document" "gha_deploy" {
   # create/read/update/delete that aren't obvious from the resource's own
   # arguments, and enumerating them by hitting each one is not a
   # sustainable way to build this policy. The resource ARN pattern below
-  # is what actually bounds the blast radius (only bloggerbear-* tables,
+  # is what actually bounds the blast radius (only <prefix>-* tables,
   # never "*") -- widening the action list within that boundary costs
   # nothing security-wise, since anything DynamoDB lets you do to a table
   # was already reachable via the enumerated actions this replaces, minus
@@ -241,25 +247,25 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "DynamoDBAppTables"
     effect    = "Allow"
     actions   = ["dynamodb:*"]
-    resources = ["arn:aws:dynamodb:ap-southeast-2:*:table/bloggerbear-*"]
+    resources = ["arn:aws:dynamodb:${var.aws_region}:*:table/${var.unique_name_prefix}-*"]
   }
 
   # Phase 1: the two pipeline Lambda functions. Scoped to the
-  # bloggerbear-* function name prefix. AddPermission/RemovePermission
+  # <prefix>-* function name prefix. AddPermission/RemovePermission
   # (added here in Phase 4, though the gap predates it -- Phase 2's
   # aws_lambda_permission.admin_api_apigw already needed these) is what
   # aws_lambda_permission resources need to create/update/destroy the
   # resource-based policy statement that lets API Gateway invoke a
   # function; both the Phase 2 admin API and the Phase 4 public API
-  # permissions fall under this same bloggerbear-* scoped statement.
+  # permissions fall under this same <prefix>-* scoped statement.
   # lambda:* rather than an enumerated list -- see DynamoDBAppTables above
-  # for why. Scoped to the bloggerbear-* function name prefix, same as
+  # for why. Scoped to the <prefix>-* function name prefix, same as
   # before.
   statement {
     sid       = "LambdaFunctions"
     effect    = "Allow"
     actions   = ["lambda:*"]
-    resources = ["arn:aws:lambda:ap-southeast-2:*:function:bloggerbear-*"]
+    resources = ["arn:aws:lambda:${var.aws_region}:*:function:${var.unique_name_prefix}-*"]
   }
 
   # DLQ consumer (PR #43, feature/topic-logging-dlq-consumer-force-publish):
@@ -269,14 +275,14 @@ data "aws_iam_policy_document" "gha_deploy" {
   # AccessDeniedException on CreateEventSourceMapping. An event source
   # mapping's ARN identifies it by a generated UUID, not by the function
   # it's attached to (unlike LambdaFunctions above), so it can't be scoped
-  # to the bloggerbear-* naming convention the same way -- this is
+  # to the <prefix>-* naming convention the same way -- this is
   # necessarily broader than the function-scoped statement above, but
   # still confined to this account/region rather than resources = ["*"].
   statement {
     sid       = "LambdaEventSourceMappings"
     effect    = "Allow"
     actions   = ["lambda:*"]
-    resources = ["arn:aws:lambda:ap-southeast-2:*:event-source-mapping:*"]
+    resources = ["arn:aws:lambda:${var.aws_region}:*:event-source-mapping:*"]
   }
 
   # Reading a mapping that no longer exists is authorized against resource "*", not its ARN, so
@@ -294,7 +300,7 @@ data "aws_iam_policy_document" "gha_deploy" {
 
   # Phase 1: the CloudWatch log groups Lambda creates on first invocation
   # (and that Terraform may come to manage directly for retention). Scoped
-  # to the /aws/lambda/bloggerbear-* log group prefix. Now exercised (Cleanup
+  # to the /aws/lambda/<prefix>-* log group prefix. Now exercised (Cleanup
   # PR): every pipeline/API Lambda's log group gets an explicit
   # aws_cloudwatch_log_group with retention_in_days = 90 in each environment
   # -- each one already exists from a prior real invocation, though, so the
@@ -309,8 +315,8 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect  = "Allow"
     actions = ["logs:*"]
     resources = [
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*",
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/lambda/bloggerbear-*:*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/${var.unique_name_prefix}-*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/${var.unique_name_prefix}-*:*",
     ]
   }
 
@@ -319,8 +325,8 @@ data "aws_iam_policy_document" "gha_deploy" {
   # the sensitive one -- IAM actions are deliberately NEVER granted
   # against resources = ["*"] anywhere in this policy, unlike the
   # S3/CloudFront/WAF/Route53/ACM statements above. `resources` is scoped
-  # to exactly the bloggerbear-*-lambda-exec / bloggerbear-*-states-exec /
-  # bloggerbear-*-scheduler-invoke role name patterns, and nothing else.
+  # to exactly the <prefix>-*-lambda-exec / <prefix>-*-states-exec /
+  # <prefix>-*-scheduler-invoke role name patterns, and nothing else.
   # This is what stops a compromised (or merely buggy) CI deploy role from
   # creating or passing an arbitrary, more-privileged IAM role --
   # including PassRole, which is the specific permission that would
@@ -347,12 +353,15 @@ data "aws_iam_policy_document" "gha_deploy" {
     effect  = "Allow"
     actions = ["iam:*"]
     resources = [
-      "arn:aws:iam::*:role/bloggerbear-*-lambda-exec",
-      "arn:aws:iam::*:role/bloggerbear-*-states-exec",
-      "arn:aws:iam::*:role/bloggerbear-*-scheduler-invoke",
+      # Also matches the operator's assistant's separate, read-only role
+      # (<prefix>-<env>-ops-mcp-lambda-exec, infra/modules/ops-assistant), which was named to
+      # fit this pattern so that no new role pattern had to be added here.
+      "arn:aws:iam::*:role/${var.unique_name_prefix}-*-lambda-exec",
+      "arn:aws:iam::*:role/${var.unique_name_prefix}-*-states-exec",
+      "arn:aws:iam::*:role/${var.unique_name_prefix}-*-scheduler-invoke",
       # infra/modules/web-search's gateway execution role (created, and
       # passed to the gateway, by the deploy).
-      "arn:aws:iam::*:role/bloggerbear-*-agentcore-gateway",
+      "arn:aws:iam::*:role/${var.unique_name_prefix}-*-agentcore-gateway",
     ]
   }
 
@@ -382,7 +391,7 @@ data "aws_iam_policy_document" "gha_deploy" {
   # "public_api"). API Gateway management-API ARNs deliberately don't
   # carry an account ID -- this is the correct ARN shape for apigateway:*
   # actions, not an oversight -- so this can't be scoped down to
-  # bloggerbear-* the way Lambda/DynamoDB/logs are above; it's scoped by
+  # <prefix>-* the way Lambda/DynamoDB/logs are above; it's scoped by
   # action + region instead.
   #
   # /restapis, not /apis -- REST API v1's resource-namespace prefix, not
@@ -400,28 +409,28 @@ data "aws_iam_policy_document" "gha_deploy" {
     # (ManagedBy, Project, Environment, TerraformRoot) need it to tag the REST APIs and stages.
     # Only resources in this account and region; nothing else in it is API Gateway.
     resources = [
-      "arn:aws:apigateway:ap-southeast-2::/restapis",
-      "arn:aws:apigateway:ap-southeast-2::/restapis/*",
-      "arn:aws:apigateway:ap-southeast-2::/tags/*",
+      "arn:aws:apigateway:${var.aws_region}::/restapis",
+      "arn:aws:apigateway:${var.aws_region}::/restapis/*",
+      "arn:aws:apigateway:${var.aws_region}::/tags/*",
     ]
   }
 
   # Scaling PR C: each REST API stage's access log group (infra/modules/rest-api's
-  # aws_cloudwatch_log_group.access, /aws/apigateway/bloggerbear-<env>-<api>-access). Same shape as
+  # aws_cloudwatch_log_group.access, /aws/apigateway/<prefix>-<env>-<api>-access). Same shape as
   # LambdaLogGroups above: logs:* on both ARN forms, scoped to this project's prefix.
   statement {
     sid     = "ApiAccessLogGroups"
     effect  = "Allow"
     actions = ["logs:*"]
     resources = [
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*",
-      "arn:aws:logs:ap-southeast-2:*:log-group:/aws/apigateway/bloggerbear-*:*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/apigateway/${var.unique_name_prefix}-*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:/aws/apigateway/${var.unique_name_prefix}-*:*",
     ]
   }
 
   # Phase 3: the Step Functions state machine that wraps the daily_cycle
   # Lambda invocation for retries + a DLQ on failure. Scoped to the
-  # bloggerbear-* state machine name prefix. states:* rather than an
+  # <prefix>-* state machine name prefix. states:* rather than an
   # enumerated list -- see DynamoDBAppTables above for why (this also
   # preemptively covers states:ListTagsForResource, which Step Functions
   # needs separately from DescribeStateMachine to drift-detect tags and
@@ -431,18 +440,18 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "StepFunctions"
     effect    = "Allow"
     actions   = ["states:*"]
-    resources = ["arn:aws:states:ap-southeast-2:*:stateMachine:bloggerbear-*"]
+    resources = ["arn:aws:states:${var.aws_region}:*:stateMachine:${var.unique_name_prefix}-*"]
   }
 
   # Phase 3: the dead-letter queue the state machine sends failed
-  # executions to. Scoped to the bloggerbear-* queue name prefix.
+  # executions to. Scoped to the <prefix>-* queue name prefix.
   # sqs:* rather than an enumerated list -- see DynamoDBAppTables above for
   # why (ListQueueTags was the specific gap that surfaced here).
   statement {
     sid       = "SQS"
     effect    = "Allow"
     actions   = ["sqs:*"]
-    resources = ["arn:aws:sqs:ap-southeast-2:*:bloggerbear-*"]
+    resources = ["arn:aws:sqs:${var.aws_region}:*:${var.unique_name_prefix}-*"]
   }
 
   # Phase 5: unlike the per-topic schedules research_tick/daily_cycle use
@@ -456,7 +465,7 @@ data "aws_iam_policy_document" "gha_deploy" {
   # Terraform/CI itself -- not the runtime Lambda execution role -- needs
   # to create/read/update/delete/tag it, so this CI deploy role needs its
   # own scheduler:* grant. Scoped to the same default schedule group and
-  # bloggerbear-* name prefix as scheduler_manage's grant above, not to a
+  # <prefix>-* name prefix as scheduler_manage's grant above, not to a
   # bare "*".
   # scheduler:* rather than an enumerated list -- see DynamoDBAppTables
   # above for why.
@@ -464,7 +473,7 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "SchedulerStaticSchedules"
     effect    = "Allow"
     actions   = ["scheduler:*"]
-    resources = ["arn:aws:scheduler:ap-southeast-2:*:schedule/default/bloggerbear-*"]
+    resources = ["arn:aws:scheduler:${var.aws_region}:*:schedule/default/${var.unique_name_prefix}-*"]
   }
 
   # Phase 6: the per-environment SNS alerts topic (module.observability's
@@ -472,27 +481,27 @@ data "aws_iam_policy_document" "gha_deploy" {
   # var.alert_email. This whole statement was missing before the first
   # real apply -- Phase 6 built the module but the deploy policy was never
   # updated to match, so every SNS call failed AccessDenied. Scoped to the
-  # bloggerbear-* topic name prefix.
+  # <prefix>-* topic name prefix.
   # sns:* rather than an enumerated list -- see DynamoDBAppTables above for
   # why.
   statement {
     sid       = "SNSAlerts"
     effect    = "Allow"
     actions   = ["sns:*"]
-    resources = ["arn:aws:sns:ap-southeast-2:*:bloggerbear-*"]
+    resources = ["arn:aws:sns:${var.aws_region}:*:${var.unique_name_prefix}-*"]
   }
 
   # Phase 6: the Lambda error/throttle, DLQ-depth, and Step Functions
   # failure alarms (module.observability's aws_cloudwatch_metric_alarm.*),
   # each publishing to the SNS topic above. Same "missing since Phase 6"
-  # gap as SNSAlerts. Scoped to the bloggerbear-* alarm name prefix.
+  # gap as SNSAlerts. Scoped to the <prefix>-* alarm name prefix.
   # cloudwatch:* rather than an enumerated list -- see DynamoDBAppTables
   # above for why.
   statement {
     sid       = "CloudWatchAlarms"
     effect    = "Allow"
     actions   = ["cloudwatch:*"]
-    resources = ["arn:aws:cloudwatch:ap-southeast-2:*:alarm:bloggerbear-*"]
+    resources = ["arn:aws:cloudwatch:${var.aws_region}:*:alarm:${var.unique_name_prefix}-*"]
   }
 
   # Phase 6: the pipeline-health dashboard (module.observability's
@@ -506,14 +515,14 @@ data "aws_iam_policy_document" "gha_deploy" {
     sid       = "CloudWatchDashboard"
     effect    = "Allow"
     actions   = ["cloudwatch:*"]
-    resources = ["arn:aws:cloudwatch::*:dashboard/bloggerbear-*"]
+    resources = ["arn:aws:cloudwatch::*:dashboard/${var.unique_name_prefix}-*"]
   }
 
   # Phase 0/6: the CloudWatch Logs log groups the WAF logging
   # configurations (infra/environments/*/main.tf's
   # aws_wafv2_web_acl_logging_configuration.*) write into
   # (aws_cloudwatch_log_group.waf_admin/waf_public_api). Also missing
-  # before the first real apply. Scoped to the aws-waf-logs-bloggerbear-*
+  # before the first real apply. Scoped to the aws-waf-logs-<prefix>-*
   # log group prefix -- the trailing `:*` matches CloudWatch Logs' own
   # documented ARN format for the log-group resource type, not a
   # log-stream scoping (unlike LambdaLogGroups above, which predates this
@@ -524,19 +533,21 @@ data "aws_iam_policy_document" "gha_deploy" {
   # since it's unclear which of the widened action set expects which
   # shape, and listing both costs nothing.
   #
-  # us-east-1 as well as ap-southeast-2: a WAF ACL attached to CloudFront has to live in us-east-1
+  # us-east-1 as well as the home region (var.aws_region): a WAF ACL attached to CloudFront has to live in us-east-1
   # (scope CLOUDFRONT), and its log group must be in the same region. Production's shared ACL logs to
-  # aws-waf-logs-bloggerbear-shared there. Dev has no CloudFront ACL, so it never needed this, and the
+  # aws-waf-logs-<prefix>-shared there. Dev has no CloudFront ACL, so it never needed this, and the
   # first production apply stopped on `logs:CreateLogGroup` in us-east-1.
   statement {
     sid     = "WafLogGroups"
     effect  = "Allow"
     actions = ["logs:*"]
     resources = [
-      "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*",
-      "arn:aws:logs:ap-southeast-2:*:log-group:aws-waf-logs-bloggerbear-*:*",
-      "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*",
-      "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-*:*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-${var.unique_name_prefix}-*",
+      "arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-${var.unique_name_prefix}-*:*",
+      # us-east-1 written out, whatever the home region: the CloudFront web ACL's log group can
+      # only live there (see above).
+      "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-${var.unique_name_prefix}-*",
+      "arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-${var.unique_name_prefix}-*:*",
     ]
   }
 
@@ -583,7 +594,7 @@ data "aws_iam_policy_document" "gha_deploy" {
   #     this action's resource as a bare stateMachine:* wildcard
   #     regardless of what name the machine being validated will actually
   #     get, which StepFunctions above (scoped to
-  #     stateMachine:bloggerbear-*) never matches.
+  #     stateMachine:<prefix>-*) never matches.
   statement {
     sid    = "NotResourceScopable"
     effect = "Allow"
@@ -618,6 +629,55 @@ data "aws_iam_policy_document" "gha_deploy" {
     resources = ["*"]
   }
 
+  # The operator's assistant (infra/modules/ops-assistant): its Cognito user pool, with the pool's
+  # hosted domain, resource server and app client, all of which are addressed by the pool's ARN.
+  # A pool's id is generated (<region>_XXXXXXXXX), so there is no <prefix>-* name to scope
+  # to the way tables and functions are: this is scoped to user pools in this project's one region
+  # instead, the same trade as LambdaEventSourceMappings above. cognito-idp:* rather than a list --
+  # see DynamoDBAppTables for why (creating a pool with MFA set also calls SetUserPoolMfaConfig and
+  # GetUserPoolMfaConfig, which nothing in the resource's own arguments suggests).
+  #
+  # What this lets the deploy role do that it could not before: manage any user pool in the
+  # account's home region (var.aws_region), including creating and deleting users in it. The account has no pool
+  # but the assistant's. Nothing in Terraform creates a user; that stays with the operator.
+  statement {
+    sid       = "CognitoUserPools"
+    effect    = "Allow"
+    actions   = ["cognito-idp:*"]
+    resources = ["arn:aws:cognito-idp:${var.aws_region}:*:userpool/*"]
+  }
+
+  # The three Cognito calls the above cannot cover, because they name no pool and so only ever
+  # match "*" (the same story as NotResourceScopable above):
+  #   - CreateUserPool: the pool has no ARN until it exists.
+  #   - DescribeUserPoolDomain: looks a domain prefix up across the region, to see whether it is
+  #     taken and to read it back (aws_cognito_user_pool_domain's read after create).
+  #   - ListUserPools: listing only.
+  statement {
+    sid    = "CognitoNotResourceScopable"
+    effect = "Allow"
+    actions = [
+      "cognito-idp:CreateUserPool",
+      "cognito-idp:DescribeUserPoolDomain",
+      "cognito-idp:ListUserPools",
+    ]
+    resources = ["*"]
+  }
+
+  # The assistant's Lambda runs behind the AWS Lambda Web Adapter, attached as a layer that the
+  # adapter project publishes from its own AWS account (the one in the ARN below; see the URL
+  # beside the same ARN in infra/modules/ops-assistant/main.tf). Creating or updating a function
+  # with a layer needs lambda:GetLayerVersion on that layer version, and LambdaFunctions above
+  # covers only this account's <prefix>-* functions. Read-only, on that one layer; any version
+  # of it, so pinning a newer one is a change to the module alone. x86_64 only: nothing here runs
+  # on arm64.
+  statement {
+    sid       = "LambdaWebAdapterLayer"
+    effect    = "Allow"
+    actions   = ["lambda:GetLayerVersion"]
+    resources = ["arn:aws:lambda:${var.aws_region}:753240598075:layer:LambdaAdapterLayerX86:*"]
+  }
+
   # Deliberately excluded: bedrock:* of any kind. Bedrock is only ever
   # invoked by the Lambda execution role at runtime (see
   # infra/environments/*/main.tf's aws_iam_role_policy.lambda_exec) --
@@ -625,7 +685,7 @@ data "aws_iam_policy_document" "gha_deploy" {
 }
 
 resource "aws_iam_policy" "gha_deploy" {
-  name   = "bloggerbear-gha-deploy"
+  name   = "${var.unique_name_prefix}-gha-deploy"
   policy = data.aws_iam_policy_document.gha_deploy.json
 }
 
@@ -671,7 +731,7 @@ data "aws_iam_policy_document" "gha_dev_trust" {
 }
 
 resource "aws_iam_role" "gha_dev_deploy" {
-  name               = "gha-bloggerbear-dev-deploy"
+  name               = "gha-${var.unique_name_prefix}-dev-deploy"
   assume_role_policy = data.aws_iam_policy_document.gha_dev_trust.json
 }
 
@@ -716,7 +776,7 @@ data "aws_iam_policy_document" "gha_prod_trust" {
 }
 
 resource "aws_iam_role" "gha_prod_deploy" {
-  name               = "gha-bloggerbear-prod-deploy"
+  name               = "gha-${var.unique_name_prefix}-prod-deploy"
   assume_role_policy = data.aws_iam_policy_document.gha_prod_trust.json
 }
 
@@ -756,7 +816,7 @@ resource "aws_route53_zone" "site" {
 resource "aws_budgets_budget" "bedrock_spend" {
   count = var.budget_alert_email != "" ? 1 : 0
 
-  name         = "bloggerbear-bedrock-spend"
+  name         = "${var.unique_name_prefix}-bedrock-spend"
   budget_type  = "COST"
   limit_amount = var.bedrock_budget_limit_usd
   limit_unit   = "USD"
@@ -806,7 +866,7 @@ data "aws_iam_policy_document" "apigateway_logs_trust" {
 }
 
 resource "aws_iam_role" "apigateway_logs" {
-  name               = "bloggerbear-apigateway-cloudwatch-logs"
+  name               = "${var.unique_name_prefix}-apigateway-cloudwatch-logs"
   assume_role_policy = data.aws_iam_policy_document.apigateway_logs_trust.json
 }
 

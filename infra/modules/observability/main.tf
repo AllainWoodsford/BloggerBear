@@ -20,7 +20,7 @@
 # aws_s3_bucket.content for the full cost/complexity rationale).
 # trivy:ignore:AVD-AWS-0095
 resource "aws_sns_topic" "alerts" {
-  name = "bloggerbear-${var.environment_name}-alerts"
+  name = "${var.unique_name_prefix}-${var.environment_name}-alerts"
 }
 
 resource "aws_sns_topic_subscription" "alerts_email" {
@@ -43,8 +43,8 @@ resource "aws_sns_topic_subscription" "alerts_email" {
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   for_each = toset(var.lambda_function_names)
 
-  alarm_name          = "bloggerbear-${var.environment_name}-${each.value}-errors"
-  alarm_description   = "bloggerbear-${var.environment_name}: ${each.value} had at least one invocation error in the last 5 minutes."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-${each.value}-errors"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: ${each.value} had at least one invocation error in the last 5 minutes."
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = each.value }
@@ -62,8 +62,8 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
 resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
   for_each = toset(var.lambda_function_names)
 
-  alarm_name          = "bloggerbear-${var.environment_name}-${each.value}-throttles"
-  alarm_description   = "bloggerbear-${var.environment_name}: ${each.value} was throttled in the last 5 minutes."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-${each.value}-throttles"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: ${each.value} was throttled in the last 5 minutes."
   namespace           = "AWS/Lambda"
   metric_name         = "Throttles"
   dimensions          = { FunctionName = each.value }
@@ -83,8 +83,8 @@ resource "aws_cloudwatch_metric_alarm" "lambda_throttles" {
 # in dev/production main.tf) and needs a human to look at it -- there's no
 # automatic replay.
 resource "aws_cloudwatch_metric_alarm" "pipeline_dlq_messages" {
-  alarm_name          = "bloggerbear-${var.environment_name}-pipeline-dlq-messages"
-  alarm_description   = "bloggerbear-${var.environment_name}: the daily-cycle dead-letter queue has at least one failed execution waiting on it."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-pipeline-dlq-messages"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: the daily-cycle dead-letter queue has at least one failed execution waiting on it."
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
   dimensions          = { QueueName = var.dlq_queue_name }
@@ -103,8 +103,8 @@ resource "aws_cloudwatch_metric_alarm" "pipeline_dlq_messages" {
 # an execution fails, before/regardless of whether it ultimately lands in
 # the DLQ (e.g. it also catches a failure on the first retry attempt).
 resource "aws_cloudwatch_metric_alarm" "daily_cycle_executions_failed" {
-  alarm_name          = "bloggerbear-${var.environment_name}-daily-cycle-executions-failed"
-  alarm_description   = "bloggerbear-${var.environment_name}: the daily-cycle Step Functions state machine had a failed execution."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-daily-cycle-executions-failed"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: the daily-cycle Step Functions state machine had a failed execution."
   namespace           = "AWS/States"
   metric_name         = "ExecutionsFailed"
   dimensions          = { StateMachineArn = var.state_machine_arn }
@@ -127,7 +127,7 @@ resource "aws_cloudwatch_metric_alarm" "daily_cycle_executions_failed" {
 # resets. Proof-of-work starts well before that (feedback_limits.load_percent); this is the human's
 # signal.
 resource "aws_cloudwatch_log_metric_filter" "feedback_rejected" {
-  name           = "bloggerbear-${var.environment_name}-feedback-rejected"
+  name           = "${var.unique_name_prefix}-${var.environment_name}-feedback-rejected"
   log_group_name = var.feedback_log_group_name
   pattern        = "\"rejected a feedback submission\""
 
@@ -140,7 +140,7 @@ resource "aws_cloudwatch_log_metric_filter" "feedback_rejected" {
 }
 
 resource "aws_cloudwatch_log_metric_filter" "feedback_screening_budget_used_up" {
-  name           = "bloggerbear-${var.environment_name}-feedback-screening-budget-used-up"
+  name           = "${var.unique_name_prefix}-${var.environment_name}-feedback-screening-budget-used-up"
   log_group_name = var.feedback_log_group_name
   pattern        = "\"rejected a feedback submission (screening_budget)\""
 
@@ -155,7 +155,7 @@ resource "aws_cloudwatch_log_metric_filter" "feedback_screening_budget_used_up" 
 # For the Lambda runs dashboard: what was kept, next to what was rejected. The same handler logs
 # "accepted a feedback submission (comment kept|vote only)" -- a tag, never the comment.
 resource "aws_cloudwatch_log_metric_filter" "feedback_accepted" {
-  name           = "bloggerbear-${var.environment_name}-feedback-accepted"
+  name           = "${var.unique_name_prefix}-${var.environment_name}-feedback-accepted"
   log_group_name = var.feedback_log_group_name
   pattern        = "\"accepted a feedback submission\""
 
@@ -168,7 +168,7 @@ resource "aws_cloudwatch_log_metric_filter" "feedback_accepted" {
 }
 
 resource "aws_cloudwatch_log_metric_filter" "feedback_comment_kept" {
-  name           = "bloggerbear-${var.environment_name}-feedback-comment-kept"
+  name           = "${var.unique_name_prefix}-${var.environment_name}-feedback-comment-kept"
   log_group_name = var.feedback_log_group_name
   pattern        = "\"accepted a feedback submission (comment kept)\""
 
@@ -181,7 +181,7 @@ resource "aws_cloudwatch_log_metric_filter" "feedback_comment_kept" {
 }
 
 resource "aws_cloudwatch_log_metric_filter" "feedback_model_dropped" {
-  name           = "bloggerbear-${var.environment_name}-feedback-model-dropped"
+  name           = "${var.unique_name_prefix}-${var.environment_name}-feedback-model-dropped"
   log_group_name = var.feedback_log_group_name
   pattern        = "\"rejected a feedback submission (model_dropped)\""
 
@@ -194,8 +194,8 @@ resource "aws_cloudwatch_log_metric_filter" "feedback_model_dropped" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "feedback_rejections_spike" {
-  alarm_name          = "bloggerbear-${var.environment_name}-feedback-rejections-spike"
-  alarm_description   = "bloggerbear-${var.environment_name}: at least ${var.feedback_rejections_alarm_threshold} feedback submissions were rejected in the last hour -- likely comment spam. Check the public API WAF log group for the source."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-feedback-rejections-spike"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: at least ${var.feedback_rejections_alarm_threshold} feedback submissions were rejected in the last hour -- likely comment spam. Check the public API WAF log group for the source."
   namespace           = "BloggerBear/${var.environment_name}"
   metric_name         = aws_cloudwatch_log_metric_filter.feedback_rejected.metric_transformation[0].name
   statistic           = "Sum"
@@ -210,8 +210,8 @@ resource "aws_cloudwatch_metric_alarm" "feedback_rejections_spike" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "feedback_screening_budget_used_up" {
-  alarm_name          = "bloggerbear-${var.environment_name}-feedback-screening-budget-used-up"
-  alarm_description   = "bloggerbear-${var.environment_name}: today's comment model checks are used up, so every comment is being rejected until the day resets (Australia/Sydney). See admin_cli.py feedback-config get."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-feedback-screening-budget-used-up"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: today's comment model checks are used up, so every comment is being rejected until the day resets (Australia/Sydney). See admin_cli.py feedback-config get."
   namespace           = "BloggerBear/${var.environment_name}"
   metric_name         = aws_cloudwatch_log_metric_filter.feedback_screening_budget_used_up.metric_transformation[0].name
   statistic           = "Sum"
@@ -227,14 +227,12 @@ resource "aws_cloudwatch_metric_alarm" "feedback_screening_budget_used_up" {
 
 # Single dashboard: one widget per Lambda (Invocations/Errors/Duration/
 # Throttles) plus one widget for the daily-cycle state machine + DLQ.
-# Region is hardcoded to ap-southeast-2 rather than pulled from a
-# data "aws_region" source -- every other resource in this codebase that
-# needs the region as a literal (e.g. the BedrockInvoke IAM statement in
-# dev/production main.tf) does the same, since this project's region is a
-# fixed, non-negotiable choice per docs/project-plan.md §3, not a
-# per-environment variable.
+# The region each widget reads is var.aws_region, handed in by the calling root (its own
+# var.aws_region, the deployment's home region) rather than read from a data "aws_region"
+# source: a variable is a plain string at plan time, so the dashboard body is fully known in
+# the plan and in this module's tests.
 resource "aws_cloudwatch_dashboard" "pipeline" {
-  dashboard_name = "bloggerbear-${var.environment_name}-pipeline"
+  dashboard_name = "${var.unique_name_prefix}-${var.environment_name}-pipeline"
 
   # Opens on the last 7 days at one point per hour. With no start or period it opened on CloudWatch's
   # 3-hour default, where a job that runs every few hours is a dot or two and the dashboard looked
@@ -250,7 +248,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           width  = 24
           height = 2
           properties = {
-            markdown = "## Pipeline health (${var.environment_name})\nPer Lambda: runs, errors and throttles (left axis, per hour) and average duration in ms (right axis). Recent errors from every Lambda's log are at the bottom. Run counts over any span are on the **bloggerbear-${var.environment_name}-lambda-runs** dashboard."
+            markdown = "## Pipeline health (${var.environment_name})\nPer Lambda: runs, errors and throttles (left axis, per hour) and average duration in ms (right axis). Recent errors from every Lambda's log are at the bottom. Run counts over any span are on the **${var.unique_name_prefix}-${var.environment_name}-lambda-runs** dashboard."
           }
         }
       ],
@@ -261,7 +259,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           height = 6
           properties = {
             title  = fn
-            region = "ap-southeast-2"
+            region = var.aws_region
             view   = "timeSeries"
             period = 3600
             yAxis  = { left = { min = 0, label = "count" }, right = { min = 0, label = "ms" } }
@@ -281,7 +279,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           height = 6
           properties = {
             title  = "Daily cycle: Step Functions + dead-letter queue"
-            region = "ap-southeast-2"
+            region = var.aws_region
             view   = "timeSeries"
             period = 3600
             yAxis  = { left = { min = 0 } }
@@ -298,7 +296,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
           height = 8
           properties = {
             title  = "Recent errors (every Lambda)"
-            region = "ap-southeast-2"
+            region = var.aws_region
             view   = "table"
             query = join(" | ", concat(
               [for fn in var.lambda_function_names : "SOURCE '/aws/lambda/${fn}'"],
@@ -320,7 +318,7 @@ resource "aws_cloudwatch_dashboard" "pipeline" {
 # picker is set to: the number tiles add up the whole selected range (setPeriodToTimeRange), and the
 # chart below them shows the same runs per day. Opens on the last 24 hours.
 resource "aws_cloudwatch_dashboard" "lambda_runs" {
-  dashboard_name = "bloggerbear-${var.environment_name}-lambda-runs"
+  dashboard_name = "${var.unique_name_prefix}-${var.environment_name}-lambda-runs"
 
   dashboard_body = jsonencode({
     start          = "-PT24H"
@@ -340,12 +338,12 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
         height = 5
         properties = {
           title                = "Runs in the selected range"
-          region               = "ap-southeast-2"
+          region               = var.aws_region
           view                 = "singleValue"
           setPeriodToTimeRange = true
           metrics = [
             for fn in var.lambda_function_names :
-            ["AWS/Lambda", "Invocations", "FunctionName", fn, { stat = "Sum", label = trimprefix(fn, "bloggerbear-${var.environment_name}-") }]
+            ["AWS/Lambda", "Invocations", "FunctionName", fn, { stat = "Sum", label = trimprefix(fn, "${var.unique_name_prefix}-${var.environment_name}-") }]
           ]
         }
       },
@@ -355,7 +353,7 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
         height = 4
         properties = {
           title                = "Feedback in the selected range"
-          region               = "ap-southeast-2"
+          region               = var.aws_region
           view                 = "singleValue"
           setPeriodToTimeRange = true
           metrics = [
@@ -373,13 +371,13 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
         height = 7
         properties = {
           title   = "Runs per day"
-          region  = "ap-southeast-2"
+          region  = var.aws_region
           view    = "bar"
           stacked = true
           period  = 86400
           metrics = [
             for fn in var.lambda_function_names :
-            ["AWS/Lambda", "Invocations", "FunctionName", fn, { stat = "Sum", label = trimprefix(fn, "bloggerbear-${var.environment_name}-") }]
+            ["AWS/Lambda", "Invocations", "FunctionName", fn, { stat = "Sum", label = trimprefix(fn, "${var.unique_name_prefix}-${var.environment_name}-") }]
           ]
         }
       },
@@ -394,7 +392,7 @@ resource "aws_cloudwatch_dashboard" "lambda_runs" {
 # recorded in the SecurityEvents table, never emailed.
 resource "aws_cloudwatch_log_metric_filter" "security_high_severity" {
   for_each       = toset(var.security_alert_log_groups)
-  name           = "bloggerbear-${var.environment_name}-security-high-severity"
+  name           = "${var.unique_name_prefix}-${var.environment_name}-security-high-severity"
   log_group_name = each.value
   pattern        = "\"SECURITY_ALERT\""
 
@@ -408,8 +406,8 @@ resource "aws_cloudwatch_log_metric_filter" "security_high_severity" {
 
 resource "aws_cloudwatch_metric_alarm" "security_high_severity" {
   count               = length(var.security_alert_log_groups) > 0 ? 1 : 0
-  alarm_name          = "bloggerbear-${var.environment_name}-security-high-severity"
-  alarm_description   = "bloggerbear-${var.environment_name}: a high-severity security incident was recorded (an exploit attempt such as SQL injection, file inclusion, SSRF or RCE, or a sustained attack). Open incidents, with suggested next steps, are in the SecurityEvents table (index by_status_last_seen, status = open)."
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-security-high-severity"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: a high-severity security incident was recorded (an exploit attempt such as SQL injection, file inclusion, SSRF or RCE, or a sustained attack). Open incidents, with suggested next steps, are in the SecurityEvents table (index by_status_last_seen, status = open)."
   namespace           = "BloggerBear/${var.environment_name}"
   metric_name         = "SecurityHighSeverityIncidents"
   statistic           = "Sum"
