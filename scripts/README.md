@@ -9,8 +9,8 @@ else.
 ## First-time setup of your repository: `setup_repo.py`
 
 Deploying your own copy? This one comes before the admin CLI. It asks for the GitHub secrets and
-variables a deployment needs (the AWS region first, then your allowed address ranges, alert emails, the AWS account IDs and
-deploy role ARNs, the state bucket names, the name suffix and `PII_DENYLIST`), checks each answer,
+variables a deployment needs (the AWS region and the name prefix first, then your allowed address ranges, alert emails, the AWS account IDs and
+deploy role ARNs, the state bucket names and `PII_DENYLIST`), checks each answer,
 shows what is already set, and sets what is missing. It also tells you how to turn on the git hook
 that stops personal data being committed.
 
@@ -478,7 +478,8 @@ and check `aws logs tail /aws/lambda/bloggerbear-dev-dlq-handler --since 5m`
 for the `dlq_handler: daily_cycle failed for topic_id=test-topic: ...` log
 line. If `pipeline_dlq_url` isn't an existing Terraform output yet, get the
 queue URL instead with
-`aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`.
+`aws sqs get-queue-url --queue-name bloggerbear-dev-pipeline-dlq`. (Both names start with
+your `UNIQUE_NAME_PREFIX`; `bloggerbear` is the default.)
 
 Responses are pretty-printed JSON on stdout. A non-2xx response prints the
 error body to stderr and exits non-zero.

@@ -26,7 +26,7 @@ terraform {
 # the full rationale).
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "site" {
-  bucket        = "bloggerbear-${var.environment_name}-site${var.bucket_name_suffix}"
+  bucket        = "${var.unique_name_prefix}-${var.environment_name}-site"
   force_destroy = var.force_destroy
 }
 
@@ -51,7 +51,7 @@ resource "aws_s3_bucket_public_access_block" "site" {
 # CloudFront distribution with Origin Access Control (not the legacy OAI).
 # -----------------------------------------------------------------------
 resource "aws_cloudfront_origin_access_control" "site" {
-  name                              = "bloggerbear-${var.environment_name}-oac"
+  name                              = "${var.unique_name_prefix}-${var.environment_name}-oac"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
@@ -85,7 +85,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 # unnoticed later.
 # -----------------------------------------------------------------------
 resource "aws_cloudfront_response_headers_policy" "security" {
-  name = "bloggerbear-${var.environment_name}-security-headers"
+  name = "${var.unique_name_prefix}-${var.environment_name}-security-headers"
 
   security_headers_config {
     content_type_options {
@@ -174,7 +174,7 @@ locals {
 resource "aws_cloudfront_function" "www_redirect" {
   count = local.www_redirect ? 1 : 0
 
-  name    = "bloggerbear-${var.environment_name}-www-redirect"
+  name    = "${var.unique_name_prefix}-${var.environment_name}-www-redirect"
   runtime = "cloudfront-js-2.0"
   comment = "Redirect ${local.www_name} to ${var.domain_name}"
   publish = true

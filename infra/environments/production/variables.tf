@@ -154,26 +154,52 @@ variable "aws_account_id" {
   }
 }
 
-variable "unique_name_suffix" {
+variable "unique_name_prefix" {
   type        = string
-  default     = ""
+  default     = "bloggerbear"
   description = <<-EOT
-    Added to the end of the two names in this environment that must be unique across every AWS
-    account, not just this one: the content bucket (bloggerbear-production-content) and the site
-    bucket (bloggerbear-production-site). A second deployment of this project, in another account,
-    cannot create either under the plain name while the first deployment exists, so a fork sets
-    this to something of its own, such as "-yourname".
+    What every resource name in this environment starts with: <prefix>-production-<resource>, for
+    example bloggerbear-production-topics. Write it without a trailing hyphen; the names add it. It is
+    also the first part of the SSM parameter paths (/<prefix>/production/...), and every Lambda is told
+    it as NAME_PREFIX.
 
-    Empty (the default) keeps the plain names. NEVER change this on a deployment that already
-    exists: a bucket cannot be renamed, so Terraform would destroy it and create a new, empty one.
+    A second deployment of this project (a fork, in its own account) must set its own: S3 bucket
+    names (<prefix>-production-content, <prefix>-production-site) and the operator's assistant's Cognito
+    sign-in host (<prefix>-production-ops) are unique across every AWS account, so the default is
+    taken while the original deployment exists. It must be the same value infra/bootstrap was
+    applied with (-var="unique_name_prefix=..."): the deploy role may only create resources whose
+    names start with it.
 
-    CI supplies it as TF_VAR_unique_name_suffix from the repo-level `UNIQUE_NAME_SUFFIX` variable (a
-    variable, not a secret: the suffix ends up in public bucket and sign-in host names anyway).
+    NEVER change this on a deployment that already exists. Every name changes with it, and a
+    bucket or a table cannot be renamed: Terraform would destroy each one and create a new, empty
+    one.
+
+    At most 14 characters. The name that sets the limit is a topic's EventBridge Scheduler
+    schedule in production, <prefix>-production-<topic_id>-research-tick: Scheduler allows 64
+    characters, the fixed parts take 26, and 14 leaves 24 for the topic id, the longest one the
+    project's own examples use (finance-crypto-investing). A shorter prefix leaves more: the
+    default's 11 characters leave 27. Every other name has room to spare at 14: the longest IAM
+    role, <prefix>-production-ops-mcp-scheduler-invoke, is 50 of 64; the longest Lambda function,
+    <prefix>-production-cost-explorer-poll, 44 of 64; the content bucket, 33 of 63.
+
+    CI supplies it as TF_VAR_unique_name_prefix from the repo-level `UNIQUE_NAME_PREFIX` variable
+    (a variable, not a secret: the prefix ends up in public bucket and sign-in host names anyway),
+    falling back to "bloggerbear" when that is not set.
   EOT
 
   validation {
-    condition     = var.unique_name_suffix == "" || can(regex("^[a-z0-9-]{0,19}[a-z0-9]$", var.unique_name_suffix))
-    error_message = "unique_name_suffix must be empty, or up to 20 lowercase letters, digits and hyphens ending in a letter or digit (it becomes part of S3 bucket names), such as \"-yourname\"."
+    condition     = can(regex("^[a-z]([a-z0-9-]{0,12}[a-z0-9])?$", var.unique_name_prefix))
+    error_message = "unique_name_prefix must be 1 to 14 characters: lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen (no trailing \"-\": the names add it), such as \"bloggerbear\" or \"acme-blog\"."
+  }
+
+  validation {
+    condition     = !strcontains(var.unique_name_prefix, "--")
+    error_message = "unique_name_prefix must not contain two hyphens in a row (the web search gateway's name does not allow it)."
+  }
+
+  validation {
+    condition     = !can(regex("aws|amazon|cognito", var.unique_name_prefix))
+    error_message = "unique_name_prefix must not contain \"aws\", \"amazon\" or \"cognito\": Cognito refuses a sign-in host name that does, and the operator's assistant's is <prefix>-<env>-ops."
   }
 }
 

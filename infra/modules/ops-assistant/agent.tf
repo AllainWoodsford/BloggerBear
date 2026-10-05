@@ -32,7 +32,7 @@
 # -----------------------------------------------------------------------
 
 locals {
-  agent_name      = "bloggerbear-${var.environment_name}-ops-agent"
+  agent_name      = "${var.unique_name_prefix}-${var.environment_name}-ops-agent"
   agent_build_dir = "${path.module}/lambda-build/ops-agent-package"
 
   # The MCP endpoint the agent calls: this module's own. Written out from the API's id and the
@@ -117,9 +117,9 @@ data "archive_file" "agent_package" {
 
 # Named "...-lambda-exec" for the reason the MCP server's role is: it falls under the pattern the
 # CI deploy role may create and pass (infra/bootstrap/main.tf's LambdaExecRole,
-# bloggerbear-*-lambda-exec), so nothing has to be added there. It is neither the role the
-# pipeline Lambdas share (bloggerbear-<env>-lambda-exec) nor the MCP server's
-# (bloggerbear-<env>-ops-mcp-lambda-exec).
+# <prefix>-*-lambda-exec), so nothing has to be added there. It is neither the role the
+# pipeline Lambdas share (<prefix>-<env>-lambda-exec) nor the MCP server's
+# (<prefix>-<env>-ops-mcp-lambda-exec).
 resource "aws_iam_role" "ops_agent" {
   name               = "${local.agent_name}-lambda-exec"
   assume_role_policy = data.aws_iam_policy_document.assume.json
@@ -228,6 +228,9 @@ resource "aws_lambda_function" "ops_agent" {
     variables = {
       # The Bedrock model or inference profile, passed to Converse as it is given.
       OPS_AGENT_MODEL_ID = var.agent_model_id
+
+      # What every resource name in this deployment starts with, as on every other function.
+      NAME_PREFIX = var.unique_name_prefix
 
       # This module's own MCP endpoint (see local.agent_mcp_url for why it is built by hand).
       OPS_MCP_URL = local.agent_mcp_url
