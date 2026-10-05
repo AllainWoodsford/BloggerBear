@@ -832,3 +832,13 @@ def test_the_review_mode_shown_is_the_one_the_pipeline_would_use(topic_mode, pip
     assert (cli_guide.REVIEW_MODES, cli_guide.DEFAULT_REVIEW_MODE) == (
         fresh_review.REVIEW_MODES, fresh_review.DEFAULT_REVIEW_MODE,
     )  # fmt: skip
+
+
+def test_a_new_name_on_update_never_becomes_the_topic_id():
+    """On topics update a name is the topic's new name; an id made from it would point the command
+    at another topic. The id stays a placeholder."""
+    drafted = _drafts(cli_guide.cli_help(["topics update"], {"name": "Crypto Weekly"}))[0]
+    assert drafted["suggestion"]["command"] == (
+        "python scripts/admin_cli.py topics update <topic_id> --name 'Crypto Weekly'"
+    )
+    assert "made from the name" not in drafted["where"]

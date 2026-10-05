@@ -124,6 +124,12 @@ FIX_TYPES = frozenset({*log_review.FIX_WORDS, *api_errors.FIX_WORDS})
 COUNT_MAX = 10**9
 # The longest window follow_up reads a function's log over: logs.MAX_HOURS, a week.
 SINCE_MAX_HOURS = 168
+# One follow_up or watch_list is one request to a function that stops at 30 seconds, behind an API
+# that gives up at 29. Each log read waits for Logs Insights, so a call reads at most LOG_READS_MAX
+# logs, each waiting at most LOG_READ_WAIT_SECONDS; past that a row is left open, unchecked this
+# time, and checked first next time (the oldest rows are checked first).
+LOG_READS_MAX = 2
+LOG_READ_WAIT_SECONDS = 8
 
 SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"}) | LOGGED_KINDS
 
@@ -434,15 +440,30 @@ class _Sources:
         hours = int((self.now - since).total_seconds() // 3600) + 1
         return max(1, min(SINCE_MAX_HOURS, hours))
 
+    def _log_read(self, name: str, read: Callable[[], dict]) -> dict:
+        """A log read, at most LOG_READS_MAX per call (see it); one over the budget raises, and
+        the row it was for is left open, unchecked this time."""
+        if name not in self._read:
+            reads = self._read.setdefault("#log-reads", [0])
+            if reads[0] >= LOG_READS_MAX:
+                raise RuntimeError("the log read budget for this call is spent")
+            reads[0] += 1
+        return self._once(name, read)
+
     def function_log(self, function_key: str, hours: int) -> dict:
-        return self._once(
+        return self._log_read(
             f"log#{function_key}#{hours}",
-            lambda: log_review.review(function=function_key, hours=hours, now=self.now),
+            lambda: log_review.review(
+                function=function_key, hours=hours, now=self.now, wait_seconds=LOG_READ_WAIT_SECONDS
+            ),
         )
 
     def api_log(self, api_key: str, hours: int) -> dict:
-        return self._once(
-            f"api#{api_key}#{hours}", lambda: api_errors.api_errors(api=api_key, hours=hours, now=self.now)
+        return self._log_read(
+            f"api#{api_key}#{hours}",
+            lambda: api_errors.api_errors(
+                api=api_key, hours=hours, now=self.now, wait_seconds=LOG_READ_WAIT_SECONDS
+            ),
         )
 
 
@@ -520,13 +541,11 @@ def _still(kind: str, function_key: str, count: int, before, label: str) -> dict
     suggestion, and the count then and now."""
     counted = isinstance(before, int) and not isinstance(before, bool)
     earlier = f" ({before} when I flagged it)" if counted else ""
-    item = finding(
-        kind,
-        f"Still happening: {function_key} {label}, {count} time{'s' if count != 1 else ''} since I last "
-        f"looked{earlier}",
-        function_key,
-        function=function_key,
-    )
+    if kind.startswith("api_"):
+        what = f"{count} {label} on {function_key}'s API since I last looked"
+    else:
+        what = f"{function_key} {label}, {count} time{'s' if count != 1 else ''} since I last looked"
+    item = finding(kind, f"Still happening: {what}{earlier}", function_key, function=function_key)
     item["root_cause"] = {"count": count, "count_before": before if earlier else None}
     return item
 
@@ -851,12 +870,16 @@ def _flagged_words(flagged: list[dict], now_causes: dict[str, int], now: datetim
     )
     since = tools._parse(row.get("first_suggested_at"))
     still = now_causes.get(kind, 0)
+    when = tools._age(since, now) if since else "a while"
+    if kind.startswith("api_"):
+        # Its API's errors are not in the function's own log: said as flagged, not re-judged here.
+        return f"; {when} ago I flagged {label} on its API"
     tail = "and it's still happening" if still else "and that has calmed down"
-    return f"; I flagged that it {label}, {tools._age(since, now) if since else 'a while'} ago, {tail}"
+    return f"; I flagged that it {label}, {when} ago, {tail}"
 
 
 def _watched_function(target_id: str, now: datetime, flagged: list[dict]) -> tuple[dict, str]:
-    result = log_review.review(function=target_id, hours=24, now=now)
+    result = log_review.review(function=target_id, hours=24, now=now, wait_seconds=LOG_READ_WAIT_SECONDS)
     if result.get("complete") is not True or result.get("refused"):
         return {"state": "unreadable"}, f"{target_id}, whose log I couldn't read completely"
     row = next((f for f in result.get("functions") or [] if f.get("function") == target_id), None) or {}
@@ -946,9 +969,15 @@ def watch_list(user_id: str | None, *, now: datetime | None = None) -> dict:
         for suggestion in _rows(user_id, SUGGESTION):
             if suggestion["kind"] in LOGGED_KINDS and not suggestion.get("dismissed"):
                 flagged.setdefault(suggestion["target_id"], []).append(suggestion)
+    function_reads = 0
     for row in watched:
         kind, target_id = row["kind"], row["target_id"]
         try:
+            if kind == "function":
+                function_reads += 1
+                if function_reads > LOG_READS_MAX:
+                    # Each one is a Logs Insights read: past the budget it is listed, not read.
+                    raise RuntimeError("the log read budget for this call is spent")
             state, said = _watched_state(kind, target_id, now, flagged.get(target_id))
         except Exception as exc:  # noqa: BLE001 - one item that can't be read must not hide the rest
             print(f"ops_memory: could not read a watched {kind} ({type(exc).__name__})")

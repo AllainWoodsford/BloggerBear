@@ -348,7 +348,7 @@ def test_the_question_that_got_a_shrug_now_gets_the_api_runsheet(dev):
     assert 1 <= len(answer["findings"]) <= runsheets.QUERIES_MAX
     first = answer["findings"][0]
     assert first["kind"] == "how_to" and "| filter status = 400" in first["suggestion"]["command"]
-    assert answer["assistant_tools"] == ["alarms", "security_events"]
+    assert answer["assistant_tools"] == ["api_errors", "alarms", "security_events"]
 
 
 def test_the_edge_dashboard_step_says_what_to_do_instead_in_dev(dev, monkeypatch):

@@ -638,7 +638,10 @@ def draft(command: str, options: Mapping | None = None) -> dict | None:
                 given[argument["name"]] = value
 
     derived: list[str] = []
-    if "topic_id" in index and index["topic_id"]["name"] not in given and "name" in index:
+    # Only when the command makes something new: on `topics update`, a name is the new name of a
+    # topic that already has its id, and an id made from it would point at another topic.
+    creates = path.endswith(" create")
+    if creates and "topic_id" in index and index["topic_id"]["name"] not in given and "name" in index:
         slug = _slug_from(given.get(index["name"]["name"]))
         if slug is not None:
             given[index["topic_id"]["name"]] = slug

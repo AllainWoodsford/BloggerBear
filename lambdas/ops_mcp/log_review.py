@@ -369,6 +369,7 @@ def review(
     now: datetime | None = None,
     run: Callable[[list], dict] | None = None,
     readable: Callable[[list[str]], tuple[list[str], list[dict]]] | None = None,
+    wait_seconds: float = logs.WAIT_SECONDS,
 ) -> dict:
     env = architecture.environment()
     if env is None:
@@ -397,7 +398,10 @@ def review(
         (("all", "runs"), region, groups, text["runs"], when.start, when.end),
         (("all", "baseline"), region, groups, text["baseline"], baseline_start, when.start),
     ]
-    results = (run or (lambda batch: logs.run_queries(batch, label="ops_log_review")))(jobs)
+    # `wait_seconds` is shorter when a caller reads several logs in one request (memory.py).
+    if run is None:
+        run = lambda batch: logs.run_queries(batch, label="ops_log_review", wait_seconds=wait_seconds)  # noqa: E731
+    results = run(jobs)
     sample = results.get(("all", "sample"))
     totals = results.get(("all", "totals"))
     runs = results.get(("all", "runs"))

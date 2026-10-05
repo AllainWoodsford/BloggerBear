@@ -836,7 +836,14 @@ def test_follow_up_says_a_logged_problem_is_still_happening_with_the_trend(table
     monkeypatch.setattr(memory.log_review, "review", review)
     answer = memory.follow_up(ALICE, now=NOW + timedelta(hours=5))
 
-    assert asked == [{"function": "research-tick", "hours": 6, "now": NOW + timedelta(hours=5)}]
+    assert asked == [
+        {
+            "function": "research-tick",
+            "hours": 6,
+            "now": NOW + timedelta(hours=5),
+            "wait_seconds": memory.LOG_READ_WAIT_SECONDS,
+        }
+    ]
     (still,) = answer["open"]
     assert (still["count_now"], still["count_before"]) == (30, 12)
     assert "research-tick for 5 hours, and it's getting worse" in answer["spoken"]
@@ -942,3 +949,40 @@ def test_watching_a_table_reports_whether_each_topic_is_written_on_time(tables, 
 def test_watch_refuses_a_function_or_table_we_do_not_have_or_never_read(tables, kind, name):
     assert memory.watch(ALICE, kind, name, now=NOW)["watching"] is False
     assert rows(tables) == []
+
+
+def test_one_follow_up_reads_at_most_a_few_logs_and_leaves_the_rest_open(tables, monkeypatch):
+    """One request stops at 30 seconds: past LOG_READS_MAX log reads a row is left open, unchecked
+    this time, never taken for calm and never deleted."""
+    functions = ["research-tick", "daily-cycle", "dlq-handler", "trending-digest"]
+    for index, function in enumerate(functions):
+        found = {"spoken": "x", "findings": [_timeout_finding(5, function=function)]}
+        memory.remember(ALICE, found, now=NOW + timedelta(minutes=index))
+    asked = []
+    monkeypatch.setattr(memory.log_review, "review", lambda **kwargs: asked.append(kwargs) or _log_result(0))
+
+    answer = memory.follow_up(ALICE, now=LATER)
+
+    assert len(asked) == memory.LOG_READS_MAX
+    # The oldest first.
+    assert [entry["id"] for entry in answer["cleared"]] == ["research-tick", "daily-cycle"]
+    assert len(answer["open"]) == len(functions) - memory.LOG_READS_MAX
+    assert len(rows(tables)) == len(functions) - memory.LOG_READS_MAX
+
+
+def test_one_watch_list_reads_at_most_a_few_function_logs(tables, monkeypatch):
+    for function in ("research-tick", "daily-cycle", "dlq-handler"):
+        assert memory.watch(ALICE, "function", function, now=NOW)["watching"] is True
+    asked = []
+    def review(**kwargs):
+        asked.append(kwargs)
+        quiet = {"function": kwargs["function"], "errors": 0, "causes": []}
+        return {"complete": True, "refused": [], "functions": [quiet]}
+
+    monkeypatch.setattr(memory.log_review, "review", review)
+
+    listed = memory.watch_list(ALICE, now=LATER)
+
+    assert len(asked) == memory.LOG_READS_MAX
+    assert all(call["wait_seconds"] == memory.LOG_READ_WAIT_SECONDS for call in asked)
+    assert [item["now"]["state"] for item in listed["watching"]].count("unreadable") == 1
