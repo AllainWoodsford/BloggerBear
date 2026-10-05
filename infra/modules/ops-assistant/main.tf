@@ -327,7 +327,7 @@ resource "aws_lambda_function" "ops_mcp" {
   function_name = local.name
   # The log group first (see it), and the policy too: a function that exists before its role can
   # read anything would answer its first requests with AccessDenied.
-  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings, aws_iam_role_policy.ops_mcp_firewall]
+  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings, aws_iam_role_policy.ops_mcp_firewall, aws_iam_role_policy.ops_mcp_logs]
   role          = aws_iam_role.ops_mcp.arn
   handler       = "run.sh"
   runtime       = "python3.11"
