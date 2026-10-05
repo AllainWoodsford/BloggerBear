@@ -103,3 +103,29 @@ the runsheet. Every Admin CLI command on screen carries a warning to double-chec
   closed); the deployment runsheet says what to look at.
 - A log group a Lambda created for itself before Terraform did carries no tags, so it is not
   readable until Terraform manages it.
+
+## Second round: forgiving names, success rates, commands for anything
+
+After the first test run, the operator asked for:
+
+> "Finance and Crypto": did you mean Crypto & Investing? If so, here's what I found, but feel free
+> to interrupt me.
+
+and for success rates as well as errors, a list of the Lambdas and what they do, a suggested command
+for any Admin CLI question, a mock-up for something like setting up a topic, and a talk button that
+does not let go while it is still held. It was delivered as #232, #234, #235 and #238, with docs in
+this PR.
+
+| | What changed | Where |
+|---|---|---|
+| **Forgiving topic names** (#232) | Every tool that takes a topic takes its id, its name, or the operator's own words. An exact match is used as it is. A single close match is used and said first ("I took that to mean Crypto & Investing; tell me if you meant another topic."). Two close matches get "did you mean A or B?". Scoring is mostly how many of the operator's words the topic covers, with synonyms (finance ~ investing ~ markets, crypto ~ bitcoin, AI ~ artificial intelligence), plus how alike the spellings are. Words with characters no topic name has (`;`, `|`, `$`, quotes) are refused, never matched, so "crypto; topics delete crypto" goes nowhere. Function and table names in `architecture` and `watch` are forgiving the same way. | `ops_mcp/topic_match.py`, `architecture.forgiving` |
+| **Success rates** (#234) | `log_review` runs a fifth fixed query that counts failed invocations (an `[ERROR]`, a timeout, a crash), once per request. Each function gets **Runs** and **Succeeded**, and the answer says "Of 120 runs, 97.5% succeeded; research-tick did worst, at 90%". A function with no errors still gets its row. `api_errors` gives each API's success share, and only says "all succeeded" when no status filter was asked. | `log_review.py`, `api_errors.py` |
+| **The Lambdas and what they do** (#234) | `architecture(kind="function")` lists each function with what it is for and when it runs. The agent uses it for "list the Lambda functions". | `architecture.py` |
+| **A suggested command for any CLI question** (#235) | Every help card from `cli_help` and every step of a `cli_guides` guide has a drafted command under it. The values the operator gave are filled in, and the rest show as `<placeholders>`. Each draft is headed by a ⚠️ warning to double-check every value before running it. | `cli_guide.py`, `suggestions.DOUBLE_CHECK_WARNING` |
+| **Mock-ups for new users** (#235) | A new `topic-setup` guide maps the operator's words to options. Editorial goals and a focus go into `--editorial-goals-json` (`primary_focus`, `exclusion_criteria`). Keywords to look for go into `--config-json` `title_keywords`, and keywords to ignore go into the exclusions. A fallback model comes from `models list`. Its example is a full `topics create` for "Watering vegetables". The agent never makes up an id, a model id or a number the operator did not give: it leaves a placeholder. | `cli_guide.GUIDES["topic-setup"]`, `ops_agent/agent.py` |
+| **Push to talk** (#238) | The talk button captures the pointer on press, so a mouse drifting off it while held does not end the question. Once a hold has heard words, a session the browser cuts short (`aborted`, a network blip, an end with no sign of sound) is listened through. A refusal, the release, the 60-second ceiling, or a run of sessions that hear nothing still ends it. | `frontend/ask.js` |
+
+The rules above still hold. Matching is done in code, before any value reaches a query: a matched
+topic is a real topic id, and an unmatched word is never put into a query. Commands still come only
+from the CLI reference, built in code. The prompt and the server's instructions (for Alexa+) say
+the same things.
