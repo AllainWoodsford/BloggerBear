@@ -449,7 +449,8 @@ def test_a_how_to_question_gets_the_help_of_the_right_command_and_no_briefing():
     assert result["turn"] == "briefing"
     assert [call["name"] for call in result["tool_calls"]] == ["cli_help"]
     assert fakes["pipeline_health"].calls == [] and fakes["admin_inbox"].calls == []
-    (card,) = result["findings"]
+    card, drafted = result["findings"]  # the help, then the suggested command under it
+    assert drafted["draft"] is True and drafted["warning"]
     assert card["kind"] == "how_to" and card["where"] == {"command": "topics update"}
     # The help block, as the CLI prints it, and the one line that prints it.
     assert card["help"] == cli_guide.reference()["commands"]["topics update"]["help_text"]

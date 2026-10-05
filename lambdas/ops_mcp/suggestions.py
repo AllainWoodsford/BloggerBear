@@ -19,6 +19,10 @@ from dataclasses import dataclass
 from common.naming import NAME_PREFIX
 
 ADMIN_CLI = "python scripts/admin_cli.py"
+DOUBLE_CHECK_WARNING = (
+    "Suggested by the assistant: double-check it is the right article or topic before you run it. "
+    "Nothing runs until you do."
+)
 
 # Topic ids are slugs and article ids are UUIDs: letters, digits, "-" and "_". Anything else is
 # refused, so an id can never carry a quote, a space or a second command into the template.
@@ -206,6 +210,8 @@ def suggest(kind: str, target_id: str | None = None) -> dict | None:
         "action": entry.action,
         "command": f"{ADMIN_CLI} {arguments}",
         "what_it_does": entry.what_it_does,
+        # The owner's rule for every Admin CLI command on screen: check it before running it.
+        "warning": DOUBLE_CHECK_WARNING,
     }
 
 
