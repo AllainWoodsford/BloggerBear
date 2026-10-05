@@ -695,3 +695,10 @@ def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not(
 
     assert {"cli_help", "cli_guides", "cli_command"} <= set(first.offered[0])
     assert "firewall_review" not in first.offered[0] and "firewall_review" in later.offered[0]
+
+
+
+def test_the_model_is_told_about_success_rates_and_listing_functions():
+    prompt = agent.SYSTEM_PROMPT
+    for rule in ("a success rate", "the share that succeeded", 'call architecture with kind "function"'):
+        assert rule in prompt, rule

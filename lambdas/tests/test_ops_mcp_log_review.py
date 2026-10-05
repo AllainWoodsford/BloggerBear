@@ -38,12 +38,13 @@ def everything_readable(names):
 class Run:
     """Stands in for logs.run_queries: answers each query by its key, and records the jobs."""
 
-    def __init__(self, sample=(), totals=(), runs=(), baseline=(), missing=()):
+    def __init__(self, sample=(), totals=(), runs=(), baseline=(), missing=(), failed=()):
         self.answers = {
             "sample": list(sample),
             "totals": list(totals),
             "runs": list(runs),
             "baseline": list(baseline),
+            "failed": list(failed),
         }
         self.missing = set(missing)
         self.jobs: list = []
@@ -116,7 +117,7 @@ def test_every_cause_has_a_catalogue_suggestion_with_no_command():
 def test_with_nothing_named_every_function_of_this_environment_is_read_in_one_query_each():
     run = Run()
     result = review(run)
-    assert len(run.jobs) == 4
+    assert len(run.jobs) == 5
     groups = run.jobs[0][2]
     assert isinstance(groups, tuple) and len(groups) > 5
     assert all(name.startswith("/aws/lambda/bloggerbear-dev-") for name in groups)
@@ -311,7 +312,9 @@ def test_a_line_that_reads_like_instructions_is_withheld_and_said():
 def test_a_quiet_window_says_so_with_how_many_runs():
     run = Run(runs=[{"@log": at("daily-cycle"), "runs": "3"}])
     spoken = review(run, function="daily-cycle")["spoken"]
-    assert spoken.startswith("I found no errors in daily-cycle in the last 24 hours. They ran 3 times.")
+    assert spoken.startswith(
+        "I found no errors in daily-cycle in the last 24 hours. They ran 3 times, and every run succeeded."
+    )
 
 
 def test_a_query_that_did_not_answer_is_said():
@@ -335,7 +338,7 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran_for_the_same_window(
 
 def test_the_queries_are_fixed_text():
     text = log_review.queries()
-    assert set(text) == {"sample", "totals", "runs", "baseline"}
+    assert set(text) == {"sample", "totals", "runs", "baseline", "failed"}
     assert f"limit {log_review.SAMPLE_LINES}" in text["sample"]
     assert 'filter @type = "REPORT"' in text["runs"]
     for query in text.values():
@@ -365,3 +368,41 @@ def test_a_range_is_kept_inside_the_limits():
 
 def test_an_unreadable_time_falls_back_to_hours():
     assert not logs.window(start="yesterday", end=None, now=NOW).asked
+
+
+def test_success_rate_is_runs_less_failed_invocations_per_function():
+    run = _crypto_day()
+    run.answers["failed"] = [{"@log": at("research-tick"), "failed": "6"}]
+    result = review(run)
+    row = result["functions"][0]
+    assert (row["failed_runs"], row["success_rate"]) == (6, 85.0)  # 40 runs, 6 failed
+    assert "Of 40 runs, 85.0% succeeded." in result["spoken"]
+    assert result["table"]["columns"][:3] == ["Function", "Runs", "Succeeded"]
+    assert result["table"]["rows"][0][:3] == ["research-tick", 40, "85.0%"]
+
+
+def test_a_quiet_window_says_every_run_succeeded_and_tabulates_it():
+    run = Run(runs=[{"@log": at("daily-cycle"), "runs": "3"}, {"@log": at("research-tick"), "runs": "20"}])
+    result = review(run)
+    assert "They ran 23 times, and every run succeeded." in result["spoken"]
+    assert [r[:3] for r in result["table"]["rows"]] == [
+        ["daily-cycle", 3, "100.0%"],
+        ["research-tick", 20, "100.0%"],
+    ]
+
+
+def test_the_worst_function_is_named_when_several_ran():
+    run = Run(
+        runs=[{"@log": at("daily-cycle"), "runs": "10"}, {"@log": at("research-tick"), "runs": "10"}],
+        totals=[{"@log": at("research-tick"), "errors": "2"}],
+        sample=[
+            {"@timestamp": "t", "@log": at("research-tick"), "@message": "Task timed out after 30.00 seconds"}
+        ],
+        failed=[{"@log": at("research-tick"), "failed": "2"}],
+    )
+    assert "Of 20 runs, 90.0% succeeded; research-tick did worst, at 80.0%." in review(run)["spoken"]
+
+
+def test_the_failed_query_counts_each_failed_request_once():
+    query = log_review.queries()["failed"]
+    assert "count_distinct(@requestId)" in query and "Task timed out" in query and "\\[ERROR\\]" in query

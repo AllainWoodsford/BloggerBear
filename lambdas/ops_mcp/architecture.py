@@ -1031,6 +1031,10 @@ def _overview(kind: str | None, env: str | None) -> dict:
         ]
         for c in components
     ][:OVERVIEW_MAX_ROWS]
+    if kind == "function":
+        # "List the Lambdas and what they do": when each runs is what the operator asks next.
+        runs = {c.key: next((text for label, text in c.details if label == "Runs"), "") for c in components}
+        rows = [[row[0], row[2], runs[c.key]] for row, c in zip(rows, components)]
     what = KIND_LABELS[kind] + "s" if kind else "resources"
     counted = f"{len(components)} {what.lower() if kind else what}"
     return {
@@ -1040,7 +1044,11 @@ def _overview(kind: str | None, env: str | None) -> dict:
         "components": [{"kind": c.kind, "key": c.key, "name": fill(c.name, env)} for c in components],
         "table": {
             "title": f"BloggerBear {env or ''} architecture: {what}".replace("  ", " "),
-            "columns": ["Name", "Kind", "What it's for"],
+            "columns": (
+                ["Name", "What it's for", "When it runs"]
+                if kind == "function"
+                else ["Name", "Kind", "What it's for"]
+            ),
             "rows": rows,
         },
     }
