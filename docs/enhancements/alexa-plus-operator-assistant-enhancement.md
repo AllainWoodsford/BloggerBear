@@ -790,7 +790,13 @@ button. The reply is spoken with the browser's speech synthesis.
   Space/Enter, while speaking; or press once to start and again to stop), a text box everywhere, and
   a "What needs my attention?" button that starts a fresh briefing. The API's limits (500
   characters; 6 turns of history, 1,000 characters each) are applied before sending. The
-  conversation is an array in the page; "New briefing" clears it.
+  conversation is an array in the page; "New briefing" clears it. A held button keeps listening
+  through pauses, for up to a minute: the browser ends a recognition session at each pause, so the
+  page starts another while the button is down and sends the words of all of them as one question.
+  A browser that has the recognition interface but nothing behind it (Opera, Brave and other
+  Chromium builds without Google's speech service) is found out from the errors it reports when
+  tried, never from its name: the page says so, opens the text-based controls, and after a second
+  failure puts the talk button away until the page is reloaded.
 - **Answering.** The question, the answer as text, the answer spoken (a mute button; speech stops
   when a new question starts), the tool calls in order with their arguments, and one card per
   finding: Noticed, Where, Suggested, the command with a Copy button, What it does. A suggestion
