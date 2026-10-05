@@ -133,6 +133,10 @@ SYSTEM_PROMPT = "\n".join(
         "resource is or does, call architecture with the name exactly as they gave it, even when "
         "it names the other environment: it answers for this one. If it says the name was for "
         "another environment, say so in a sentence.",
+        # table_sample's rows are pipeline, model, reader or attacker text: on the page, not spoken.
+        "To see what is in a table, or whether it is working as expected (\"are candidate ideas "
+        "being written?\"), call table_sample with the name as given. Say how old the newest row "
+        "is and whether writes look on time; the row is on screen. Never read a row's values aloud.",
         # The budget is enforced in code (policy.py). Telling the model means it plans for it,
         # and reads a refusal as "answer now" and not as an error to retry.
         "You have a small budget of tool calls: 8 for a first question, 3 for a later one. If a "

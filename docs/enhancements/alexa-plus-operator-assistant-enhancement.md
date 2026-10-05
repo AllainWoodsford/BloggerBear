@@ -389,6 +389,7 @@ longer answers "check CloudWatch yourself". Full write-up:
 |---|---|---|
 | `architecture(name?, kind?)` | nothing: the catalogue in `lambdas/ops_mcp/architecture.py` | what a resource is for in **this** environment: keys, indexes, TTL, who writes and reads it, its log groups, dashboards, alarms and a console link, as a `table`. A name from the other environment is answered for this one (`rewritten`); a name for neither environment is described but `data_allowed` is false |
 | `investigate(symptom?, status?, api?)` | nothing: the runsheets in `lambdas/ops_mcp/runsheets.py` | a runsheet as a `table`: what the assistant can check itself first, then dashboards, AWS's own console dashboards, log groups and console links in order, with each Logs Insights query as a `how_to` card to copy |
+| `table_sample(name, topic?, rows=1)` | the named table, if it carries the project's default tags and an Environment this assistant may read (checked by IAM and in code; never `ops-briefings`) | the newest row(s), redacted, as a `table`, and for findings and candidate ideas whether each topic's newest row is on time. SecurityEvents' `untrusted` payload and `client_hash` are never fetched |
 
 ### 2. The briefing: the agent orchestrates
 

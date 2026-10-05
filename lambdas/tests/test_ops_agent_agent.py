@@ -610,6 +610,8 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
         "never stop at saying you can't: call investigate",
         "a runsheet is on screen",
         "call architecture with the name exactly as they gave it",
+        "call table_sample with the name as given",
+        "Never read a row's values aloud",
         "it answers for this one",
     ):
         assert rule in prompt, rule

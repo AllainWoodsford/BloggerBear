@@ -2548,6 +2548,14 @@ module "ops_assistant" {
 
   environment_name = "production"
 
+  # The tags every resource of this root carries, minus Environment and TerraformRoot: the
+  # assistant reads a table's rows (table_sample) only when it carries these and an Environment
+  # it may read (production's own, or "shared"). IAM and the code both check them.
+  default_tags = {
+    ManagedBy = local.default_tags.ManagedBy
+    Project   = local.default_tags.Project
+  }
+
   # The nine app tables its tools read (read-only), as in dev.
   tables = {
     TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }

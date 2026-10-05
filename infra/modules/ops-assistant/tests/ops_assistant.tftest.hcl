@@ -21,6 +21,12 @@ variables {
   # What a root passes when nothing is set: the original deployment's region.
   aws_region = "ap-southeast-2"
 
+  # The roots' provider default_tags, without Environment and TerraformRoot.
+  default_tags = {
+    ManagedBy = "Terraform"
+    Project   = "BloggerBear"
+  }
+
   environment_name = "test"
   tables = {
     TOPICS_TABLE = {
@@ -120,6 +126,7 @@ run "the_role_can_only_read_and_write_its_own_table" {
         "dynamodb:Query",
         "dynamodb:Scan",
         "dynamodb:BatchGetItem",
+        "dynamodb:ListTagsOfResource",
         "s3:GetObject",
         "cloudwatch:DescribeAlarms",
         "logs:CreateLogStream",

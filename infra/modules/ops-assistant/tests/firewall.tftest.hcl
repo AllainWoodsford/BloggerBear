@@ -18,6 +18,12 @@ mock_provider "aws" {
 }
 
 variables {
+  # The roots' provider default_tags, without Environment and TerraformRoot.
+  default_tags = {
+    ManagedBy = "Terraform"
+    Project   = "BloggerBear"
+  }
+
   aws_region       = "ap-southeast-2"
   environment_name = "production"
   tables = {
