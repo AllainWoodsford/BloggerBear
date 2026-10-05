@@ -1805,6 +1805,8 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
                     ("briefings.tf", "ops_mcp_briefings"),
                     # Production's firewall deep dive (the test below holds what it may do).
                     ("firewall.tf", "ops_mcp_firewall"),
+                    # Reading this environment's logs (the test below holds what it may do).
+                    ("logs.tf", "ops_mcp_logs"),
                 }
         if path.name not in ("memory.tf", "briefings.tf"):
             for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
@@ -1859,6 +1861,34 @@ def test_the_firewall_policy_is_production_only_and_queries_named_groups():
     dev = _uncommented(_read("environments", "dev", "main.tf"))
     module = re.search(r'^module "ops_assistant" \{\n(.*?)^\}', dev, re.S | re.M).group(1)
     assert not re.search(r"^\s*(waf_log_groups|account_wide_data)\s*=", module, re.M)
+
+
+def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_else():
+    """log_review and api_errors (logs.tf). StartQuery and ListTagsForResource on the Lambda and
+    access log groups named for a readable environment, only with the project's default tags and
+    that Environment; the two query-id actions are the only ones on "*"; no other logs action (no
+    GetLogEvents or FilterLogEvents, which return raw lines without a fixed query)."""
+    text = _uncommented(_read("modules", "ops-assistant", "logs.tf"))
+
+    assert set(re.findall(r'"(logs:[A-Za-z]+)"', text)) == {
+        "logs:StartQuery",
+        "logs:ListTagsForResource",
+        "logs:GetQueryResults",
+        "logs:StopQuery",
+    }
+    assert re.search(r"for env in local\.readable_environments", text)
+    assert re.search(r'for service in \["lambda", "apigateway"\]', text)
+    assert "log-group:/aws/${service}/bloggerbear-${env}-*" in text
+    for tag, values in (
+        ("ManagedBy", r'\[var\.default_tags\["ManagedBy"\]\]'),
+        ("Project", r'\[var\.default_tags\["Project"\]\]'),
+        ("Environment", r"local\.readable_environments"),
+    ):
+        assert re.search(rf'variable\s*=\s*"aws:ResourceTag/{tag}"\s*values\s*=\s*{values}', text), tag
+    on_star = r'actions\s*=\s*\["logs:GetQueryResults", "logs:StopQuery"\]\s*resources\s*=\s*\["\*"\]'
+    assert re.search(on_star, text), "only the query-id actions are on *"
+    assert text.count('["*"]') == 1
+    assert not re.search(r"^\s*count\s*=", text, re.M), "every environment's assistant reads its own logs"
 
 
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and

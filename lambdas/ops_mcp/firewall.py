@@ -34,10 +34,8 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from statistics import median
 
-import boto3
-from botocore.config import Config
-
 from common.security_events import untrusted_text
+from ops_mcp import logs
 from ops_mcp.account import ENVIRONMENT_ENV, account_wide_data
 from ops_mcp.suggestions import finding
 
@@ -55,8 +53,7 @@ TOP_PATHS = 5
 PATH_MAX_CHARS = 80
 # Logs Insights runs a query in the background; the tool waits this long for all of them, then
 # answers with what has finished. Well inside the function's 30 seconds and the agent's patience.
-WAIT_SECONDS = 15
-POLL_SECONDS = 0.5
+WAIT_SECONDS = logs.WAIT_SECONDS
 
 # The queries. Fixed text: nothing a caller or the model says is ever put into one.
 QUERY_ACTIONS = "stats count(*) as requests by action"
@@ -72,14 +69,10 @@ QUERY_BASELINE = 'filter action = "BLOCK" | stats count(*) as blocks by bin(1d)'
 
 NOT_AVAILABLE = "The firewall review isn't available from this environment."
 
-_LOGS_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 2, "mode": "standard"})
-_clients: dict[str, object] = {}
 
 
 def _logs(region: str):
-    if region not in _clients:
-        _clients[region] = boto3.client("logs", region_name=region, config=_LOGS_CONFIG)
-    return _clients[region]
+    return logs.client(region)
 
 
 def log_groups() -> list[tuple[str, str]] | None:
@@ -123,46 +116,9 @@ def _run_queries(
     wait_seconds: float = WAIT_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
 ) -> dict[tuple[str, str], list[dict] | None]:
-    """Start every (key, region, group, query, start, end) query at once, then wait for them. Each
-    result is a list of rows ({field: value}), or None for a query that failed or did not finish."""
-    started: dict[tuple[str, str], tuple[str, str]] = {}
-    results: dict[tuple[str, str], list[dict] | None] = {}
-    for key, region, group, query, start, end in jobs:
-        try:
-            response = client(region).start_query(
-                logGroupName=group,
-                startTime=int(start.timestamp()),
-                endTime=int(end.timestamp()),
-                queryString=query,
-                limit=100,
-            )
-            started[key] = (region, response["queryId"])
-        except Exception as exc:  # noqa: BLE001 - one group that cannot be read is reported as such
-            print(f"ops_firewall: start failed error={type(exc).__name__}")
-            results[key] = None
-    deadline = time.monotonic() + wait_seconds
-    while started and time.monotonic() < deadline:
-        for key, (region, query_id) in list(started.items()):
-            try:
-                response = client(region).get_query_results(queryId=query_id)
-            except Exception as exc:  # noqa: BLE001
-                print(f"ops_firewall: results failed error={type(exc).__name__}")
-                results[key] = None
-                del started[key]
-                continue
-            status = response.get("status")
-            if status == "Complete":
-                rows = response.get("results", [])
-                results[key] = [{field.get("field"): field.get("value") for field in row} for row in rows]
-                del started[key]
-            elif status in ("Failed", "Cancelled", "Timeout", "Unknown"):
-                results[key] = None
-                del started[key]
-        if started:
-            sleep(POLL_SECONDS)
-    for key in started:
-        results[key] = None  # still running: what finished is reported, and this is said
-    return results
+    """The shared runner (logs.run_queries): every query started at once, each ending as rows or
+    None, and one still running at the deadline stopped."""
+    return logs.run_queries(jobs, client=client, wait_seconds=wait_seconds, sleep=sleep, label="ops_firewall")
 
 
 def _count(value) -> int:
