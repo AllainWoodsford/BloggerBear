@@ -173,8 +173,8 @@ def test_the_apis_and_log_groups_are_named_as_the_terraform_names_them():
 def test_the_fixed_schedules_are_the_ones_the_catalogue_gives():
     dev = _read("environments", "dev", "main.tf")
     for function, expression, said in (
-        ("weekly_reflection", "cron(0 9 ? * MON *)", "Mondays 09:00 UTC"),
-        ("stats_rollover", "cron(15 9 ? * MON *)", "Mondays 09:15 UTC"),
+        ("weekly_reflection", "cron(0 13 ? * MON *)", "Mondays 13:00 Sydney time"),
+        ("stats_rollover", "cron(15 13 ? * MON *)", "Mondays 13:15 Sydney time"),
         ("cost_explorer_poll", "cron(0 10 * * ? *)", "daily at 10:00 UTC"),
         ("trending_digest", "cron(0 7 * * ? *)", "daily at 07:00 UTC"),
         ("musing_feedback", "rate(4 days)", "every 4 days"),
