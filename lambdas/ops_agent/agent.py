@@ -119,6 +119,20 @@ SYSTEM_PROMPT = "\n".join(
         "When the operator asks to list topics or about a topic's settings, call "
         "topics_overview. The table is on screen: say how many there are and answer what was "
         "asked, without reading the table out.",
+        # The answer the owner did not want: "I can't read logs, check CloudWatch yourself". The
+        # assistant cannot read logs, on purpose, but it knows the architecture (ops_mcp/
+        # architecture.py), so it can say exactly where to look.
+        "You cannot read logs, metrics or dashboards. When the operator asks for one (\"any 400s "
+        'in the logs?", "why did it fail?") or for anything else no tool reads, never stop at '
+        "saying you can't: call investigate with their words (and `status` if they named one) "
+        "and say that a runsheet is on screen, naming the first place to look. Check with your "
+        "own tools first only what the runsheet's `assistant_tools` lists.",
+        # The architecture tool answers for this environment whatever name is pasted; the model
+        # only has to pass the name as given and repeat what came back about the environment.
+        "When the operator asks what a table, function, log group, dashboard or other AWS "
+        "resource is or does, call architecture with the name exactly as they gave it, even when "
+        "it names the other environment: it answers for this one. If it says the name was for "
+        "another environment, say so in a sentence.",
         # The budget is enforced in code (policy.py). Telling the model means it plans for it,
         # and reads a refusal as "answer now" and not as an error to retry.
         "You have a small budget of tool calls: 8 for a first question, 3 for a later one. If a "

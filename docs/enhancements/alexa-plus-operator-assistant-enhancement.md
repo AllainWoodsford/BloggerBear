@@ -378,6 +378,18 @@ given the values.
   in `admin_cli`, where they are today. The only thing the server can write is the assistant's own
   list of suggestions.
 
+#### The architecture expert
+
+The assistant cannot read logs, metrics or dashboards, and should not. It does know the project's
+architecture, so "any 400s in the logs?" gets a runsheet: where to look and what to run. It no
+longer answers "check CloudWatch yourself". Full write-up:
+[ops-assistant-architecture-expert.md](ops-assistant-architecture-expert.md).
+
+| Tool | Reads | Returns |
+|---|---|---|
+| `architecture(name?, kind?)` | nothing: the catalogue in `lambdas/ops_mcp/architecture.py` | what a resource is for in **this** environment: keys, indexes, TTL, who writes and reads it, its log groups, dashboards, alarms and a console link, as a `table`. A name from the other environment is answered for this one (`rewritten`); a name for neither environment is described but `data_allowed` is false |
+| `investigate(symptom?, status?, api?)` | nothing: the runsheets in `lambdas/ops_mcp/runsheets.py` | a runsheet as a `table`: what the assistant can check itself first, then dashboards, AWS's own console dashboards, log groups and console links in order, with each Logs Insights query as a `how_to` card to copy |
+
 ### 2. The briefing: the agent orchestrates
 
 The agent isn't given a script. It is given the tools, a goal ("find what needs the operator's

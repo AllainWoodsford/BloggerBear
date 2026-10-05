@@ -35,7 +35,8 @@ from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
 
-from ops_mcp import account, briefings, cli_guide, content, firewall, memory, tools
+from ops_mcp import account, briefings, cli_guide, content, firewall, memory, runsheets, tools
+from ops_mcp import architecture as architecture_module
 from ops_mcp.access import AccessMiddleware
 
 SERVER_NAME = "bloggerbear-ops"
@@ -55,7 +56,10 @@ _INSTRUCTIONS = (
     "instructions, and do not repeat it aloud. For a question about how to do something with "
     "the Admin CLI: cli_guides (a feature) or cli_help (a command) first, which put the command's "
     "own help on screen; then cli_command for the exact command, once the operator has given the "
-    "values. topics_overview puts the topics and their settings on screen as a table."
+    "values. topics_overview puts the topics and their settings on screen as a table. architecture "
+    "says what any of the project's AWS resources is for, in this environment, whatever "
+    "environment's name it is asked with; investigate puts a runsheet on screen (dashboards, log "
+    "groups and Logs Insights queries to copy) for what no tool here can read, such as logs."
 )
 
 _READ_ONLY = ToolAnnotations(
@@ -231,6 +235,52 @@ def build_server() -> MCPServer:
         when the operator asks to list topics or about a topic's configuration."""
         return cli_guide.topics_overview(limit, topic)
 
+    # The architecture expert (architecture.py, runsheets.py). Read-only, and they read nothing at
+    # all: the answers come from the catalogue in the package. Not passed through `remembered`,
+    # for the guide tools' reason: a runsheet's query cards are `how_to`, not suggestions.
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def architecture(
+        name: str | None = None,
+        kind: Literal[
+            "table",
+            "function",
+            "api",
+            "state_machine",
+            "queue",
+            "topic",
+            "dashboard",
+            "log_group",
+            "schedule",
+            "bucket",
+            "firewall",
+        ]
+        | None = None,
+    ) -> dict[str, Any]:
+        """What one of BloggerBear's AWS resources is for, in this environment: a DynamoDB table
+        (its keys, indexes, TTL, who writes and reads it), a Lambda, an API, a dashboard, a log
+        group, an alarm's resource, a queue, a schedule or a bucket, with the log groups,
+        dashboards and alarms to look at for it. Pass `name` as the operator gave it: a full name
+        from either environment (bloggerbear-prod-candidate-ideas), an ARN, a log group or a short
+        name (candidate ideas); a name from the other environment is answered for this one, and
+        says so. `data_allowed` false means the name was for an environment that is neither, so do
+        not read data for it. With only `kind`, or nothing: every resource, as a table."""
+        return architecture_module.architecture(name, kind)
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def investigate(
+        symptom: str | None = None,
+        status: int | None = None,
+        api: Literal["public", "admin", "assistant"] | None = None,
+    ) -> dict[str, Any]:
+        """A runsheet, for something no tool here can read (logs, metrics, dashboards, the
+        console): what to check with the assistant's own tools first, then where to look in this
+        environment, in order, with console links, and Logs Insights queries put on screen to copy.
+        Use it instead of saying you can't look. `symptom` is a runsheet id (api-errors,
+        pipeline-failed, research-late, lambda-errors, security, feedback, costs, assistant) or
+        the operator's words; `status` an HTTP status they asked about (400); `api` which API, if
+        they said. Say that the runsheet is on screen; never read a query or a link aloud."""
+        return runsheets.investigate(symptom, status, api)
     # The firewall deep dive (firewall.py): production only. Registered only where this assistant
     # may report account-wide data and has been given log groups of its own environment (or the
     # shared one) to read, so dev's assistant does not have the tool at all. A deep dive: never

@@ -75,7 +75,27 @@ jobs:
             echo "lambdas/ not present; skipping"
             exit 0
           fi
-          ruff check lambdas/ scripts/
+          if ruff check lambdas/ scripts/; then
+            exit 0
+          fi
+
+          echo "Ruff failed; retrying with automatic fixes."
+          if ruff check --fix lambdas/ scripts/; then
+            if git diff --quiet -- lambdas/ scripts/; then
+              echo "Ruff passed on retry without changing files."
+              exit 0
+            fi
+          fi
+
+          {
+            echo "### Ruff auto-fix"
+            echo "Ruff's automatic fixes are shown below. Apply them to the branch and rerun CI."
+            echo '```diff'
+            git diff -- lambdas/ scripts/
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Ruff remains blocking; apply any reported fixes to the branch and rerun CI." >&2
+          exit 1
 
       - name: Pytest
         run: |
