@@ -108,7 +108,7 @@ variable "web_acl_arn" {
     use a web ACL owned by its own account (AWS WAF has no cross-account association), so a
     two-account deployment leaves this empty and dev's two distributions go without the shared
     ACL. The regional ACLs in front of dev's APIs are dev's own and are not affected. See
-    docs/deploying-your-own.md.
+    docs/deployment-runsheet.md.
   EOT
 
   # Catches the two-account mistake at plan time, when var.aws_account_id says which account this
@@ -215,7 +215,7 @@ variable "aws_region" {
     things AWS only hosts in us-east-1 (CloudFront's certificate and its web ACL, which keep
     that region written out beside a comment saying why). The default is the original
     deployment's region, so leaving it unset changes nothing. CI passes it as TF_VAR_aws_region
-    from the AWS_REGION GitHub Actions variable (docs/deploying-your-own.md).
+    from the AWS_REGION GitHub Actions variable (docs/deployment-runsheet.md).
 
     Not a setting to change on a deployment that already exists: AWS cannot move a resource
     between regions, so a different value here plans to create everything again somewhere else.

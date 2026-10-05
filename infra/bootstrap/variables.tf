@@ -28,7 +28,7 @@ variable "state_bucket_name" {
     GitHub Actions secrets TF_STATE_BUCKET_DEV and TF_STATE_BUCKET_PROD
     (it runs `terraform init -backend-config="bucket=..."` when they are
     set), and a local init needs the same `-backend-config` flag. See
-    docs/deploying-your-own.md.
+    docs/deployment-runsheet.md.
   EOT
 }
 

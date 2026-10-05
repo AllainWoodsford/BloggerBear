@@ -9,9 +9,11 @@ force_destroy = true
 # `ParamValidationError: Invalid length for parameter modelId, value: 0`.
 # Confirmed the hard way via a real research_tick invocation. Leaving
 # this variable entirely unset here means variables.tf's own default
-# (currently "au.anthropic.claude-sonnet-5") actually takes effect. Set
-# a real value in *this* file again only if a value different from that
-# default is ever needed for dev specifically.
+# (the AU Claude Haiku 4.5 inference profile, built from
+# var.bedrock_inference_profile_id) actually takes effect. Set a real
+# value in *this* file again only if a value different from that default
+# is ever needed for dev specifically. Outside Australia, set
+# bedrock_inference_profile_id here instead (docs/deployment-runsheet.md).
 
 # admin_allowed_cidrs is deliberately NOT set here -- see its description in
 # variables.tf. It's supplied in CI via a TF_VAR_admin_allowed_cidrs env var

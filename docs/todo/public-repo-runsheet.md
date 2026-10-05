@@ -1,7 +1,15 @@
 # Run sheet: making the repo public
 
-**Date:** 2026-10-03 · **Status:** ready, not started · **Why:** the Qloo and Nebius hackathons need a
-public repository with an open-source license (Amazon accepts a public one too).
+**Date:** 2026-10-03 · **Status:** ready, not started (the repository was still private on
+2026-10-05) · **Why:** the Qloo and Nebius hackathons need a public repository with an open-source
+license (Amazon accepts a public one too).
+
+**Using this for your own fork:** "Already done" below is the original repository's history, and
+does not apply to you. Steps 1 to 4 do: they are the GitHub settings a public copy should have.
+Replace `AllainWoodsford/BloggerBear` with your repository
+(`gh repo view --json nameWithOwner --jq .nameWithOwner`) and the reviewer id in step 3e with your
+own (`gh api user --jq .id`). Rulesets, secret scanning and fork-PR approval exist only on public
+repositories or paid plans, which is why they wait until the repository is public.
 
 ## Already done
 
@@ -103,8 +111,9 @@ EOF
 
 ## 5. Follow-ups
 
-- **README "Branch & release model"** already describes the ruleset, the required reviewer and the
-  token settings from step 3. If step 3 changes, update it to match.
+- **README "Branch & release model"** and `docs/configuration.md` ("GitHub repository settings")
+  describe the ruleset, the required reviewer and the token settings from step 3 as settings to
+  apply. If step 3 changes, update them to match.
 - **Backup bundle** (`D:\BloggerBear\BloggerBear-pre-rewrite.bundle`): it is the only copy of the
   pre-rewrite history, and it still contains the old email. Keep it off GitHub and out of the repo.
   Delete it after the next production release has deployed cleanly from the rewritten history.

@@ -1073,7 +1073,7 @@ def test_the_script_has_no_way_to_take_the_key():
 
 
 def test_the_deploy_guide_documents_the_key_with_the_same_names():
-    guide = (REPO_ROOT / "docs" / "deploying-your-own.md").read_text(encoding="utf-8")
+    guide = (REPO_ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     for env in ("dev", "prod"):
         assert sr.COINGECKO_PARAMETERS[env] in guide
     assert "https://www.coingecko.com/en/api" in guide and "SecureString" in guide
@@ -1097,7 +1097,7 @@ def test_an_actions_value_never_shows_in_its_repr(tmp_path):
     assert "hunter2-value" not in action.described(REPO, tmp_path)
 
 
-# --- The region (docs/deploying-your-own.md, "Deploying to another region") ------------------------
+# --- The region (docs/deployment-runsheet.md, "Deploying to another region") ------------------------
 
 
 def _role(name="AWS_DEV_DEPLOY_ROLE_ARN"):
@@ -1144,7 +1144,7 @@ def test_another_region_says_what_else_to_change_by_hand_and_the_default_says_no
     notes = sr.region_notes(REGION)
     for needed in (
         "bedrock_inference_profile_id", "terraform.tfvars", "Bedrock model access", "Lambda Web Adapter",
-        f'-var="aws_region={REGION}"', "frontend/privacy.html", "us-east-1", "docs/deploying-your-own.md",
+        f'-var="aws_region={REGION}"', "frontend/privacy.html", "us-east-1", "docs/deployment-runsheet.md",
     ):
         assert needed in notes, needed
     assert sr.DEFAULT_REGION not in notes

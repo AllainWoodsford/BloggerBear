@@ -7,7 +7,7 @@ output "state_bucket_name" {
     value as the GitHub Actions secret TF_STATE_BUCKET_DEV and/or
     TF_STATE_BUCKET_PROD -- backend blocks cannot reference variables, so
     CI passes it to `terraform init -backend-config="bucket=..."` instead.
-    See docs/deploying-your-own.md.
+    See docs/deployment-runsheet.md.
   EOT
 }
 

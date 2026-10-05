@@ -89,7 +89,7 @@ jobs:
     # count-gated on `var.alert_email != ""`, so nothing is created without
     # it, same fail-closed-to-"off" pattern as admin_allowed_cidrs' `[]`.
     # TF_VAR_aws_account_id, TF_VAR_unique_name_suffix, TF_STATE_BUCKET: what lets a fork deploy
-    # to its own AWS account without editing code (docs/deploying-your-own.md). All three are
+    # to its own AWS account without editing code (docs/deployment-runsheet.md). All three are
     # optional, and unset they are empty strings, which Terraform and the init step below both
     # read as "as before": no account check, the plain bucket names, the state bucket written in
     # the backend block. The account ID and the state bucket's name are secrets, and only secrets:

@@ -1,6 +1,6 @@
 # BloggerBear admin CLI
 
-A local operator CLI for the Phase 2 Admin API. This is a plain script you
+A local operator CLI for the Admin API. This is a plain script you
 run on your own machine -- it is **not** deployed to Lambda or anywhere
 else.
 
@@ -28,7 +28,7 @@ It needs only Python 3.11+ and the GitHub CLI (`gh auth login`): no AWS credenti
 `pip install`. Secret values are never printed and never passed on a command line. Nothing is set
 until you have seen a summary and confirmed; if a write then fails part-way, it stops and lists
 what was and was not set. See
-[docs/deploying-your-own.md](../docs/deploying-your-own.md#quick-start-the-setup-script).
+[docs/deployment-runsheet.md](../docs/deployment-runsheet.md#quick-start-the-setup-script).
 
 ## Why a CLI, not a web page
 
@@ -175,6 +175,9 @@ python scripts/admin_cli.py model-config set --model-id "au.anthropic.claude-hai
 python scripts/admin_cli.py topics update github-trending     --model-candidates "model-id-a,model-id-b" --fallback-model-id "model-id-a"
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
+
+Setting the registry up on a new deployment, with a sample `model-config` item, is in
+[docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
 
 `models`/`model-config` back the AI lineage/cost-tracking enhancement's
 DynamoDB-backed model registry (docs/project-plan.md §11) -- adding a

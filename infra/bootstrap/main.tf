@@ -42,7 +42,7 @@ provider "aws" {
 # `backend "s3"` blocks still name the default (they cannot reference
 # variables), so tell CI the real name with the GitHub Actions secrets
 # TF_STATE_BUCKET_DEV / TF_STATE_BUCKET_PROD. See outputs.tf for the same
-# note next to the bucket name output, and docs/deploying-your-own.md.
+# note next to the bucket name output, and docs/deployment-runsheet.md.
 #
 # prevent_destroy protects the bucket resource itself from accidental
 # deletion (e.g. a careless `terraform destroy` run against this

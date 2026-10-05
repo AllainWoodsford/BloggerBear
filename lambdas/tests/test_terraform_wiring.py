@@ -945,7 +945,7 @@ def test_deploy_role_arns_come_from_secrets():
         assert f"role-to-assume: ${{{{ vars.{role} }}}}" not in text, name
 
 
-# --- Configurable AWS accounts (docs/deploying-your-own.md) ---------------------------------------
+# --- Configurable AWS accounts (docs/deployment-runsheet.md) ---------------------------------------
 #
 # A fork deploys to its own account, or to two, by setting GitHub secrets and variables. The
 # original deployment sets none of them, so every one must fall back to exactly what ran before.
@@ -1203,8 +1203,12 @@ def test_dev_refuses_a_shared_web_acl_from_another_account():
 
 
 def test_the_fork_guide_names_every_setting_the_workflows_read():
-    guide = (ROOT / "docs" / "deploying-your-own.md").read_text(encoding="utf-8")
-    assert "(docs/deploying-your-own.md)" in (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
+    # The settings table is its own page, which the guide and the README both link to.
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "(docs/deployment-runsheet.md)" in readme and "(docs/configuration.md)" in readme
+    assert "(configuration.md" in guide
     settings = set()
     for name in ("terraform.yml", "destroy-dev.yml", "terraform-production-release.yml"):
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
@@ -1213,11 +1217,11 @@ def test_the_fork_guide_names_every_setting_the_workflows_read():
     new = {"AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "UNIQUE_NAME_SUFFIX"}
     assert new <= settings
     for setting in sorted(settings):
-        assert f"`{setting}`" in guide, setting
+        assert f"`{setting}`" in table, setting
     # The account IDs and the state buckets are documented as secrets, the only way they are read.
     sensitive = ("AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD")
     for setting in sensitive:
-        assert re.search(rf"^\| `{setting}` \| secret \|", guide, re.M), setting
+        assert re.search(rf"^\| `{setting}` \| secret \|", table, re.M), setting
     # And the setup script is the first thing the guide offers, dry run first.
     quick = guide.split("## Quick start: the setup script")[1].split("\n## ")[0]
     assert quick.index("setup_repo.py --dry-run") < quick.index("setup_repo.py   ")
@@ -2762,7 +2766,7 @@ def test_api_gateways_own_errors_carry_the_cors_header_for_the_one_origin():
     assert f'"arn:aws:apigateway:{_HOME}::/restapis/*"' in api_gateway
 
 
-# --- Configurable region (docs/deploying-your-own.md, "Deploying to another region") --------------
+# --- Configurable region (docs/deployment-runsheet.md, "Deploying to another region") --------------
 #
 # One plain setting, the AWS_REGION GitHub variable (var.aws_region in Terraform), chooses the
 # deployment's home region. Unset it is the region this project has always used, so the original
@@ -2964,14 +2968,15 @@ def test_each_deploy_workflow_reads_the_region_from_a_plain_variable(workflow):
 
 
 def test_the_fork_guide_says_what_another_region_needs():
-    guide = (ROOT / "docs" / "deploying-your-own.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     section = guide.split("## Deploying to another region")[1].split("\n## ")[0]
 
     for needed in ("`AWS_REGION`", "`TF_STATE_REGION`", "bedrock_inference_profile_id", "`us-east-1`"):
         assert needed in section, needed
-    # In the settings table as a variable, not a secret.
-    assert re.search(r"^\| `AWS_REGION` \| variable \| repo \|", guide, re.M)
-    assert re.search(r"^\| `TF_STATE_REGION` \| variable \| repo \|", guide, re.M)
+    # In the settings table (docs/configuration.md) as a variable, not a secret.
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `AWS_REGION` \| variable \| repo \|", table, re.M)
+    assert re.search(r"^\| `TF_STATE_REGION` \| variable \| repo \|", table, re.M)
     # And no longer listed as something a fork cannot change.
     tied = guide.split("## What is still tied to the original deployment")[1]
     assert "**The region.**" not in tied

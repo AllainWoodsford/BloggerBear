@@ -30,7 +30,7 @@ if command -v gitleaks >/dev/null 2>&1; then
   gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml || exit 1
 else
   echo "pre-commit: gitleaks is not installed, so secrets and email addresses were NOT checked." >&2
-  echo "pre-commit: install it (see README, Local development); pr-checks will still run it." >&2
+  echo "pre-commit: install it (see docs/deployment-runsheet.md, Local development); pr-checks will still run it." >&2
 fi
 
 # 3. Ruff lint (check only, never fixes), the same `ruff check` python-ci runs, over the working
