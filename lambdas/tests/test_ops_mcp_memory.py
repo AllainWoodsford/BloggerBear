@@ -447,8 +447,11 @@ def test_every_kind_with_a_command_about_an_id_has_a_checker():
         for kind, entry in suggestions.CATALOGUE.items()
         if entry.arguments is not None and kind != "awaiting_review"  # about no id: never recorded
     }
+    # And what the logs showed (log_review, api_errors): recorded although there is no command.
+    recorded |= memory.LOGGED_KINDS
 
     assert set(memory.CHECKERS) == recorded
+    assert memory.LOGGED_KINDS and all(kind.startswith(("log_", "api_")) for kind in memory.LOGGED_KINDS)
 
 
 def test_a_kind_with_no_checker_or_a_check_that_fails_stays_open_and_is_never_deleted(tables, monkeypatch):
@@ -519,7 +522,14 @@ def test_watch_rejects_an_unknown_kind_or_id(tables):
     assert rows(tables) == []
 
 
-def test_watch_list_reports_each_watched_items_state_and_unwatch_removes_it(tables):
+QUIET_LOG = {
+    "complete": True,
+    "refused": [],
+    "functions": [{"function": "daily-cycle", "errors": 0, "causes": []}],
+}
+
+
+def test_watch_list_reports_each_watched_items_state_and_unwatch_removes_it(tables, monkeypatch):
     put_topic(tables, researched=ago(minutes=5))
     tables.Table("Articles").put_item(
         Item={"article_id": "a1", "topic_id": "crypto", "status": "published", "created_at": ago(hours=2)}
@@ -527,6 +537,7 @@ def test_watch_list_reports_each_watched_items_state_and_unwatch_removes_it(tabl
     assert memory.watch(ALICE, "topic", "crypto", now=NOW)["watching"] is True
     assert memory.watch(ALICE, "topic", "crypto", now=NOW)["watching"] is True  # twice is one row
     assert memory.watch(ALICE, "function", "bloggerbear-dev-daily-cycle", now=NOW)["watching"] is True
+    monkeypatch.setattr(memory.log_review, "review", lambda **kwargs: QUIET_LOG)
     (function_row, topic_row) = rows(tables)
     assert topic_row["item"] == "watch#topic#crypto"
     assert topic_row["expires_at"] == int((NOW + timedelta(days=30)).timestamp())
@@ -537,7 +548,9 @@ def test_watch_list_reports_each_watched_items_state_and_unwatch_removes_it(tabl
     assert by_kind["topic"]["id"] == "crypto" and by_kind["topic"]["watched_since"] == NOW.isoformat()
     assert by_kind["topic"]["now"]["research"]["state"] == "late"  # three days on, nothing since
     assert by_kind["topic"]["now"]["article"]["state"] == "none"
-    assert by_kind["function"]["now"] == {"state": "not_checked"}
+    assert by_kind["function"]["id"] == "daily-cycle"  # the catalogue's key, whatever name was asked
+    assert by_kind["function"]["now"]["state"] == "read" and by_kind["function"]["now"]["errors"] == 0
+    assert "daily-cycle had no errors in the last day" in listed["spoken"]
     assert listed["spoken"].startswith("You asked me to watch 2 things.")
     assert "Crypto has no article in the last day, and research is late" in listed["spoken"]
     assert all(row["expires_at"] == int((LATER + timedelta(days=30)).timestamp()) for row in rows(tables))
@@ -546,7 +559,7 @@ def test_watch_list_reports_each_watched_items_state_and_unwatch_removes_it(tabl
     memory.unwatch(BOB, "topic", "crypto")  # not Bob's to remove
     assert len(rows(tables)) == 2
     memory.unwatch(ALICE, "topic", "crypto")
-    assert [row["item"] for row in rows(tables)] == ["watch#function#bloggerbear-dev-daily-cycle"]
+    assert [row["item"] for row in rows(tables)] == ["watch#function#daily-cycle"]
 
 
 def test_the_account_bill_can_only_be_watched_where_it_is_reported(tables, monkeypatch):
@@ -753,3 +766,175 @@ def test_no_table_other_than_the_assistants_own_changes(client, tables):
     assert len(rows(tables)) >= 4  # the memory did change
     assert snapshot(tables) == before
     assert [entry["ETag"] for entry in bucket.list_objects_v2(Bucket=BUCKET)["Contents"]] == objects
+
+
+# --- what the logs showed (log_review, api_errors) -----------------------------------------------------
+
+
+def _timeout_finding(count=12, *, kind="log_lambda_timeout", function="research-tick"):
+    return {
+        "kind": kind,
+        "id": function,
+        "noticed": "research-tick hit its time limit: 12 times in the last 24 hours",
+        "where": {"function": function},
+        "suggestion": suggestions.suggest(kind, function),
+        "root_cause": {"cause": "lambda_timeout", "fix_type": "settings", "count": count},
+    }
+
+
+def _log_result(count: int, *, complete=True):
+    causes = [{"cause": "lambda_timeout", "count": count, "fix_type": "settings"}] if count else []
+    return {
+        "complete": complete,
+        "refused": [],
+        "functions": [{"function": "research-tick", "errors": count, "causes": causes}],
+    }
+
+
+def test_a_root_cause_from_the_logs_is_written_down_with_its_count_and_fix_type_only(tables):
+    result = memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding()]}, now=NOW)
+
+    assert result["remembered"] == 1
+    (row,) = rows(tables)
+    assert row["item"] == "suggestion#log_lambda_timeout#research-tick"
+    assert (row["first_count"], row["last_count"], row["fix_type"]) == (12, 12, "settings")
+    assert set(row) <= {"user_id", "item", *memory._ALLOWED}
+
+    memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding(3)]}, now=LATER)
+    (row,) = rows(tables)
+    assert (row["first_count"], row["last_count"]) == (12, 3)  # the first count is kept
+
+
+def test_a_logged_finding_with_text_where_a_count_or_fix_type_goes_writes_neither(tables):
+    hostile = _timeout_finding()
+    hostile["root_cause"] = {"count": HOSTILE, "fix_type": HOSTILE}
+    memory.remember(ALICE, {"spoken": "x", "findings": [hostile]}, now=NOW)
+    (row,) = rows(tables)
+    assert "last_count" not in row and "fix_type" not in row
+    assert HOSTILE not in json.dumps(row, default=str)
+
+
+def test_the_write_refuses_a_count_or_fix_type_that_is_not_one():
+    refused = ({"last_count": -1}, {"last_count": True}, {"last_count": "12"}, {"fix_type": "drop table"})
+    for always in refused:
+        with pytest.raises(ValueError):
+            memory._write(ALICE, memory.SUGGESTION, "log_lambda_timeout", "research-tick", always=always)
+
+
+def test_follow_up_says_a_logged_problem_is_still_happening_with_the_trend(tables, monkeypatch):
+    memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding(12)]}, now=NOW)
+    asked = []
+
+    def review(**kwargs):
+        asked.append(kwargs)
+        return _log_result(30)
+
+    monkeypatch.setattr(memory.log_review, "review", review)
+    answer = memory.follow_up(ALICE, now=NOW + timedelta(hours=5))
+
+    assert asked == [{"function": "research-tick", "hours": 6, "now": NOW + timedelta(hours=5)}]
+    (still,) = answer["open"]
+    assert (still["count_now"], still["count_before"]) == (30, 12)
+    assert "research-tick for 5 hours, and it's getting worse" in answer["spoken"]
+    (found,) = answer["findings"]
+    assert found["kind"] == "log_lambda_timeout"
+    assert found["noticed"].startswith("Still happening: research-tick")
+    assert rows(tables)[0]["last_count"] == 30
+
+
+def test_follow_up_says_a_logged_problem_has_calmed_down_and_forgets_it(tables, monkeypatch):
+    memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding(12)]}, now=NOW)
+    monkeypatch.setattr(memory.log_review, "review", lambda **kwargs: _log_result(0))
+
+    answer = memory.follow_up(ALICE, now=LATER)
+
+    assert answer["cleared"][0]["kind"] == "log_lambda_timeout"
+    assert "1 thing I saw in the logs has calmed down, for research-tick." in answer["spoken"]
+    assert rows(tables) == []
+
+
+def test_a_log_that_could_not_be_read_completely_is_never_taken_for_calm(tables, monkeypatch):
+    memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding(12)]}, now=NOW)
+    monkeypatch.setattr(memory.log_review, "review", lambda **kwargs: _log_result(0, complete=False))
+
+    answer = memory.follow_up(ALICE, now=LATER)
+
+    assert answer["cleared"] == [] and len(answer["open"]) == 1
+    assert len(rows(tables)) == 1
+
+
+def test_an_api_problem_is_followed_up_from_the_access_log(tables, monkeypatch):
+    finding = _timeout_finding(15, kind="api_lambda_failed", function="public-api")
+    finding["root_cause"] = {"cause": "lambda_failed", "fix_type": "code", "count": 15}
+    memory.remember(ALICE, {"spoken": "x", "findings": [finding]}, now=NOW)
+    monkeypatch.setattr(
+        memory.api_errors,
+        "api_errors",
+        lambda **kwargs: {
+            "complete": True,
+            "refused": [],
+            "by_api": [{"api": kwargs["api"], "causes": [{"cause": "lambda_failed", "count": 2}]}],
+        },
+    )
+
+    answer = memory.follow_up(ALICE, now=LATER)
+
+    assert answer["open"][0]["count_now"] == 2
+    assert "though it's easing off" in answer["spoken"]
+
+
+def test_watching_a_function_names_what_the_suggestions_table_says_was_wrong(tables, monkeypatch):
+    memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding(12)]}, now=NOW)
+    assert memory.watch(ALICE, "function", "research tick", now=NOW)["watching"] is True
+    monkeypatch.setattr(memory.log_review, "review", lambda **kwargs: _log_result(4))
+
+    listed = memory.watch_list(ALICE, now=LATER)
+
+    (item,) = listed["watching"]
+    assert item["id"] == "research-tick" and item["now"]["errors"] == 4
+    spoken = listed["spoken"]
+    assert "research-tick had 4 error lines in the last day, mostly that it hit its time limit" in spoken
+    assert "I flagged that it hit its time limit, 3 days ago, and it's still happening" in listed["spoken"]
+
+
+def test_a_watched_function_that_has_calmed_down_says_so(tables, monkeypatch):
+    memory.remember(ALICE, {"spoken": "x", "findings": [_timeout_finding(12)]}, now=NOW)
+    memory.watch(ALICE, "function", "research-tick", now=NOW)
+    monkeypatch.setattr(memory.log_review, "review", lambda **kwargs: _log_result(0))
+
+    assert "and that has calmed down" in memory.watch_list(ALICE, now=LATER)["spoken"]
+
+
+def test_watching_a_table_reports_whether_each_topic_is_written_on_time(tables, monkeypatch):
+    assert memory.watch(ALICE, "table", "candidate ideas", now=NOW)["watching"] is True
+    assert rows(tables)[0]["item"] == "watch#table#candidate-ideas"
+    monkeypatch.setattr(
+        memory.samples,
+        "table_sample",
+        lambda name, now=None: {
+            "read": True,
+            "rows_shown": 1,
+            "freshness": [
+                {"topic": "Crypto", "on_time": True},
+                {"topic": "AI news", "on_time": False},
+            ],
+        },
+    )
+
+    listed = memory.watch_list(ALICE, now=LATER)
+
+    assert "candidate-ideas is written on time for 1 of 2 topics, and late for AI news" in listed["spoken"]
+
+
+@pytest.mark.parametrize(
+    ("kind", "name"),
+    [
+        ("function", "no-such-function"),
+        ("table", "no-such-table"),
+        ("table", "ops briefings"),
+        ("table", HOSTILE),
+    ],
+)
+def test_watch_refuses_a_function_or_table_we_do_not_have_or_never_read(tables, kind, name):
+    assert memory.watch(ALICE, kind, name, now=NOW)["watching"] is False
+    assert rows(tables) == []

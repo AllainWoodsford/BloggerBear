@@ -7,11 +7,13 @@ design is docs/enhancements/alexa-plus-operator-assistant-enhancement.md, sectio
 **Rows hold kinds, ids, booleans and timestamps. Never text a model wrote, never a command.**
 
     suggestion#<kind>#<id>  kind, target_id, first_suggested_at, last_mentioned_at, dismissed,
-                            expires_at
+                            expires_at; for what the logs showed, also first_count and last_count
+                            (how many times it was seen) and fix_type (code, settings, ...)
     watch#<kind>#<id>       kind, target_id, watched_since, expires_at
 
 A kind is a key of the catalogue (suggestions.CATALOGUE) or one of WATCH_KINDS; an id passes
-ID_PATTERN; the timestamps are ours. Everything written goes through `_write`, which checks each
+ID_PATTERN; the timestamps are ours; a count is a whole number; a fix type is one of FIX_TYPES.
+Everything written goes through `_write`, which checks each
 value against that list and refuses anything else, so there is nowhere for a title, a review note
 or a log line to go. Hostile text that reaches a tool's result cannot get itself remembered. A
 finding's words and its command are rebuilt from code and the catalogue every time.
@@ -52,6 +54,19 @@ with how long, and the finding goes back with its suggestion. Gone (the article 
 longer exists): the row is deleted and nothing is said. A kind with no checker, or a check that
 fails, is reported as still open and is never deleted.
 
+**What the logs showed is remembered too** (LOGGED_KINDS: log_review's `log_<cause>` and
+api_errors' `api_<cause>`, about a function). They have no command, but they are the root causes the
+operator was told about, so they are "written to the suggestions table": the kind, the function,
+how many times it was seen and the fix type. Never a log line. `follow_up` reads that function's
+log again over the time since the row was last mentioned and says whether it is still happening
+(with the count then and now) or has calmed down, which is a kind that clears by itself.
+
+**Watching a function or a table.** A watched function's log is read (log_review) and the row it
+has in the suggestions table, if any, is named: "you asked me to watch research-tick; I flagged it
+for timeouts; it's still happening". A watched table (candidate ideas, findings) is sampled
+(samples.table_sample) for whether each topic's newest row is on time. The id is the catalogue's
+key for it, whatever name it was asked with.
+
 **Every row expires** 30 days after it was last mentioned (DynamoDB TTL on `expires_at`).
 """
 
@@ -62,6 +77,7 @@ import os
 import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import NamedTuple
 
 from boto3.dynamodb.conditions import Key
@@ -75,7 +91,7 @@ from common.dynamo import (
     list_musings,
     list_pending_moderation,
 )
-from ops_mcp import account, content, tools
+from ops_mcp import account, api_errors, architecture, content, log_review, samples, tools
 from ops_mcp.access import REQUEST_CONTEXT_HEADER
 from ops_mcp.suggestions import CATALOGUE, ID_PATTERN, finding
 
@@ -85,7 +101,7 @@ FOLLOW_UP_SPOKEN_LINES = 5
 
 SUGGESTION = "suggestion"
 WATCH = "watch"
-WATCH_KINDS = ("topic", "function", "incident", "spend")
+WATCH_KINDS = ("topic", "function", "incident", "spend", "table")
 # What a spend watch can be about: the two figures account.spend reports.
 SPEND_IDS = ("ai", "aws")
 
@@ -101,7 +117,15 @@ FIXED, OPEN, GONE = "fixed", "open", "gone"
 # day, the next scheduled research or daily run happens. follow_up cannot tell that from the
 # operator running the suggested command, so it does not say "you fixed": it says they cleared.
 # The other kinds only change when a person acts on the article.
-SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"})
+# What the logs showed (log_review, api_errors): recorded although it has no command, and it clears by
+# itself when the errors stop.
+LOGGED_KINDS = frozenset(kind for kind in CATALOGUE if kind.startswith(("log_", "api_")))
+FIX_TYPES = frozenset({*log_review.FIX_WORDS, *api_errors.FIX_WORDS})
+COUNT_MAX = 10**9
+# The longest window follow_up reads a function's log over: logs.MAX_HOURS, a week.
+SINCE_MAX_HOURS = 168
+
+SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"}) | LOGGED_KINDS
 
 
 # --- who is asking -------------------------------------------------------------------------------
@@ -161,6 +185,17 @@ def _is_timestamp(value) -> bool:
     return isinstance(value, str) and tools._parse(value) is not None and len(value) <= 40
 
 
+def _is_count(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= COUNT_MAX
+
+
+def _stored_count(value) -> int | None:
+    """A count as read back: DynamoDB returns numbers as Decimal. None for anything else."""
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        value = int(value)
+    return value if _is_count(value) else None
+
+
 # What each attribute may hold. `_write` refuses a value that fails its check, and an attribute
 # that is not here: the rule in the module docstring, enforced where the write happens.
 _ALLOWED: dict[str, Callable[[object], bool]] = {
@@ -171,6 +206,9 @@ _ALLOWED: dict[str, Callable[[object], bool]] = {
     "watched_since": _is_timestamp,
     "dismissed": lambda value: isinstance(value, bool),
     "expires_at": lambda value: isinstance(value, int) and not isinstance(value, bool),
+    "first_count": lambda value: _is_count(value),
+    "last_count": lambda value: _is_count(value),
+    "fix_type": lambda value: value in FIX_TYPES,
 }
 
 
@@ -262,9 +300,23 @@ def _has_key(found) -> bool:
 
 
 def _recordable(found) -> bool:
-    """A finding whose suggestion has a command, about an id. The command is asked of the
-    catalogue, not read from the finding."""
-    return _has_key(found) and CATALOGUE[found["kind"]].arguments is not None
+    """A finding whose suggestion has a command, about an id, or a root cause the logs showed
+    (LOGGED_KINDS). The command is asked of the catalogue, not read from the finding."""
+    if not _has_key(found):
+        return False
+    return CATALOGUE[found["kind"]].arguments is not None or found["kind"] in LOGGED_KINDS
+
+
+def _seen(found) -> tuple[int | None, str | None]:
+    """How many times a logged finding was seen, and its fix type, if the finding says and both are
+    shaped as the table holds them. Anything else is left out, not written."""
+    cause = found.get("root_cause") if isinstance(found, dict) else None
+    if not isinstance(cause, dict) or found.get("kind") not in LOGGED_KINDS:
+        return None, None
+    count = cause.get("count")
+    count = count if _is_count(count) else None
+    fix_type = cause.get("fix_type") if cause.get("fix_type") in FIX_TYPES else None
+    return count, fix_type
 
 
 def remember(user_id: str | None, result, *, now: datetime | None = None):
@@ -277,7 +329,7 @@ def remember(user_id: str | None, result, *, now: datetime | None = None):
         dismissed = {
             (row["kind"], row["target_id"]) for row in _rows(user_id, SUGGESTION) if row.get("dismissed")
         }
-        kept, written = [], set()
+        kept, written, noted = [], set(), 0
         for found in result["findings"]:
             key = (found["kind"], found["id"]) if _has_key(found) else None
             if key in dismissed:
@@ -289,24 +341,46 @@ def remember(user_id: str | None, result, *, now: datetime | None = None):
                 continue
             kept.append(found)
             if key is not None and key not in written and _recordable(found):
-                _mention(user_id, *key, now)
+                count, fix_type = _seen(found)
+                _mention(user_id, *key, now, count=count, fix_type=fix_type)
                 written.add(key)
-        if len(kept) == len(result["findings"]):
-            return result
-        return {**result, "findings": kept, "findings_dismissed": len(result["findings"]) - len(kept)}
+                noted += 1
+        out = result if len(kept) == len(result["findings"]) else {
+            **result,
+            "findings": kept,
+            "findings_dismissed": len(result["findings"]) - len(kept),
+        }
+        # Said so the assistant can tell the operator its findings are written down for next time.
+        return {**out, "remembered": noted} if noted else out
     except Exception as exc:  # noqa: BLE001 - the tool's answer matters more than remembering it
         print(f"ops_memory: could not record findings ({type(exc).__name__})")
         return result
 
 
-def _mention(user_id: str, kind: str, target_id: str, now: datetime, *, only_if_exists: bool = False) -> None:
+def _mention(
+    user_id: str,
+    kind: str,
+    target_id: str,
+    now: datetime,
+    *,
+    only_if_exists: bool = False,
+    count: int | None = None,
+    fix_type: str | None = None,
+) -> None:
+    always = {"last_mentioned_at": now.isoformat(), "expires_at": _expires_at(now)}
+    if_absent = {"first_suggested_at": now.isoformat(), "dismissed": False}
+    if count is not None:
+        always["last_count"] = count
+        if_absent["first_count"] = count
+    if fix_type is not None:
+        always["fix_type"] = fix_type
     _write(
         user_id,
         SUGGESTION,
         kind,
         target_id,
-        always={"last_mentioned_at": now.isoformat(), "expires_at": _expires_at(now)},
-        if_absent={"first_suggested_at": now.isoformat(), "dismissed": False},
+        always=always,
+        if_absent=if_absent,
         only_if_exists=only_if_exists,
     )
 
@@ -318,6 +392,7 @@ class Check(NamedTuple):
     state: str  # FIXED, OPEN or GONE
     finding: dict | None = None  # for OPEN: the finding as its tool would return it now
     topic: str | None = None  # the topic's name, for speech
+    count: int | None = None  # for a logged kind: how many times it was seen in the window read
 
 
 class _Sources:
@@ -326,6 +401,8 @@ class _Sources:
     def __init__(self, now: datetime) -> None:
         self.now = now
         self._read: dict[str, object] = {}
+        # The row being checked: the logged kinds read the log since it was last mentioned.
+        self.row: dict = {}
 
     def _once(self, name: str, read: Callable[[], object]):
         if name not in self._read:
@@ -347,6 +424,26 @@ class _Sources:
     @property
     def musings(self):
         return self._once("musings", lambda: list_musings(content.CONTENT_MAX_MUSINGS))
+
+    def hours_since_mentioned(self) -> int:
+        """The window a logged kind is read over: since its row was last mentioned, from one hour
+        to SINCE_MAX_HOURS."""
+        since = tools._parse(self.row.get("last_mentioned_at"))
+        if since is None:
+            return 24
+        hours = int((self.now - since).total_seconds() // 3600) + 1
+        return max(1, min(SINCE_MAX_HOURS, hours))
+
+    def function_log(self, function_key: str, hours: int) -> dict:
+        return self._once(
+            f"log#{function_key}#{hours}",
+            lambda: log_review.review(function=function_key, hours=hours, now=self.now),
+        )
+
+    def api_log(self, api_key: str, hours: int) -> dict:
+        return self._once(
+            f"api#{api_key}#{hours}", lambda: api_errors.api_errors(api=api_key, hours=hours, now=self.now)
+        )
 
 
 def _article_topic(article: dict) -> str:
@@ -410,6 +507,73 @@ def _content_checker(kind: str) -> Callable[[str, _Sources], Check]:
     return check
 
 
+def _read_complete(result: dict) -> dict:
+    """A log read follow_up can judge from, or an error: a refusal or an incomplete read is never
+    taken for "it has calmed down"."""
+    if not isinstance(result, dict) or result.get("complete") is not True or result.get("refused"):
+        raise RuntimeError("the log could not be read completely")
+    return result
+
+
+def _still(kind: str, function_key: str, count: int, before, label: str) -> dict:
+    """The finding for a logged kind that is still happening: fixed words, the catalogue's
+    suggestion, and the count then and now."""
+    counted = isinstance(before, int) and not isinstance(before, bool)
+    earlier = f" ({before} when I flagged it)" if counted else ""
+    item = finding(
+        kind,
+        f"Still happening: {function_key} {label}, {count} time{'s' if count != 1 else ''} since I last "
+        f"looked{earlier}",
+        function_key,
+        function=function_key,
+    )
+    item["root_cause"] = {"count": count, "count_before": before if earlier else None}
+    return item
+
+
+def _log_checker(kind: str) -> Callable[[str, _Sources], Check]:
+    """For log_review's kinds: read the function's log since the row was last mentioned, and look
+    for the same root cause."""
+    cause = log_review.BY_KEY[kind.removeprefix("log_")]
+
+    def check(function_key: str, sources: _Sources) -> Check:
+        try:
+            architecture.by_key("function", function_key)
+        except KeyError:
+            return Check(GONE)
+        result = _read_complete(sources.function_log(function_key, sources.hours_since_mentioned()))
+        row = next((f for f in result.get("functions") or [] if f.get("function") == function_key), None)
+        count = next((c["count"] for c in (row or {}).get("causes") or [] if c.get("cause") == cause.key), 0)
+        if count:
+            before = _stored_count(sources.row.get("last_count"))
+            still = _still(kind, function_key, count, before, cause.label)
+            return Check(OPEN, still, function_key, count)
+        return Check(FIXED, None, function_key, 0)
+
+    return check
+
+
+def _api_checker(kind: str) -> Callable[[str, _Sources], Check]:
+    """For api_errors' kinds: read the API's access log since the row was last mentioned. The row's
+    id is the Lambda behind the API (api_errors.APIS)."""
+    cause = api_errors.CAUSES[kind.removeprefix("api_")]
+
+    def check(function_key: str, sources: _Sources) -> Check:
+        api = next((a for a in api_errors.APIS.values() if a.function == function_key), None)
+        if api is None:
+            return Check(GONE)
+        result = _read_complete(sources.api_log(api.key, sources.hours_since_mentioned()))
+        row = next((r for r in result.get("by_api") or [] if r.get("api") == api.key), None)
+        count = next((c["count"] for c in (row or {}).get("causes") or [] if c.get("cause") == cause.key), 0)
+        if count:
+            before = _stored_count(sources.row.get("last_count"))
+            still = _still(kind, function_key, count, before, cause.label)
+            return Check(OPEN, still, function_key, count)
+        return Check(FIXED, None, function_key, 0)
+
+    return check
+
+
 # Kind -> its check. Every catalogue kind that has a command and is about an id has one
 # (tests/test_ops_mcp_memory.py holds that), so a new kind without one fails the build.
 CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
@@ -421,6 +585,8 @@ CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
     "title_markup": _content_checker("title_markup"),
     "body_code_fence": _content_checker("body_code_fence"),
     "title_markup_and_body_code_fence": _content_checker("title_markup_and_body_code_fence"),
+    **{kind: _log_checker(kind) for kind in LOGGED_KINDS if kind.startswith("log_")},
+    **{kind: _api_checker(kind) for kind in LOGGED_KINDS if kind.startswith("api_")},
 }
 
 
@@ -443,6 +609,7 @@ def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
     for row in rows:
         kind, target_id = row["kind"], row["target_id"]
         checker = CHECKERS.get(kind)
+        sources.row = row
         try:
             check = checker(target_id, sources) if checker else _unchecked(kind, target_id)
         except Exception as exc:  # noqa: BLE001 - a check that fails leaves the suggestion open
@@ -458,7 +625,7 @@ def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
         }
         try:
             if check.state == OPEN:
-                _mention(user_id, kind, target_id, now, only_if_exists=True)
+                _mention(user_id, kind, target_id, now, only_if_exists=True, count=check.count)
             else:
                 _delete(user_id, SUGGESTION, kind, target_id)
         except Exception as exc:  # noqa: BLE001 - the answer is still right; the row is tried again next time
@@ -466,7 +633,10 @@ def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
         if check.state == FIXED:
             (cleared if kind in SELF_CLEARING_KINDS else fixed).append(entry)
         elif check.state == OPEN:
-            still_open.append({**entry, "waiting": tools._age(since, now)})
+            counted = {}
+            if kind in LOGGED_KINDS and check.count is not None:
+                counted = {"count_now": check.count, "count_before": _stored_count(row.get("last_count"))}
+            still_open.append({**entry, "waiting": tools._age(since, now), **counted})
             findings.append(check.finding)
 
     return {
@@ -488,25 +658,47 @@ def _about(entries: list[dict]) -> str:
     return f", for {tools._join(names[:FOLLOW_UP_SPOKEN_LINES])}" if names else ""
 
 
+def _trend(entry: dict) -> str:
+    """For something the logs showed and still show: whether it is easing or getting worse, from
+    the count when it was flagged and the count since. Empty for anything else."""
+    now, before = entry.get("count_now"), entry.get("count_before")
+    if not isinstance(now, int) or not isinstance(before, int) or isinstance(before, bool) or before <= 0:
+        return ""
+    if now > before * 1.5:
+        return ", and it's getting worse"
+    if now * 2 < before:
+        return ", though it's easing off"
+    return ", about as often as before"
+
+
 def _follow_up_spoken(fixed: list[dict], still_open: list[dict], cleared: list[dict] | None = None) -> str:
     """Fixed first, then what cleared, then what is waiting and for how long. Counts and topic
     names only. "You fixed" is kept for what only a person could have changed."""
     cleared = cleared or []
     if not fixed and not still_open and not cleared:
         return "I have no open suggestions to follow up."
+
     sentences = []
     if fixed:
         sentences.append(f"You fixed {_things(len(fixed))} I suggested{_about(fixed)}.")
+    calmed = [entry for entry in cleared if entry["kind"] in LOGGED_KINDS]
+    cleared = [entry for entry in cleared if entry["kind"] not in LOGGED_KINDS]
     if cleared:
         count = len(cleared)
         sentences.append(
             f"{_things(count).capitalize()} I flagged {'have' if count != 1 else 'has'} "
             f"cleared{_about(cleared)}."
         )
+    if calmed:
+        count = len(calmed)
+        sentences.append(
+            f"{_things(count).capitalize()} I saw in the logs {'have' if count != 1 else 'has'} "
+            f"calmed down{_about(calmed)}."
+        )
     if still_open:
         count = len(still_open)
         lines = [
-            f"{entry['topic'] or 'one'} for {entry['waiting']}"
+            f"{entry['topic'] or 'one'} for {entry['waiting']}{_trend(entry)}"
             for entry in still_open[:FOLLOW_UP_SPOKEN_LINES]
         ]
         rest = count - len(lines)
@@ -552,11 +744,36 @@ def dismiss(user_id: str | None, kind: str, target_id: str, *, now: datetime | N
 # --- watch items ---------------------------------------------------------------------------------
 
 
+def _catalogue_key(kind: str, name: str) -> str | None:
+    """A function's or a table's key in the architecture catalogue (research-tick, candidate-ideas),
+    from any name architecture.py understands, if it is deployed in this environment."""
+    resolved = architecture.resolve(name, kind=kind)
+    if resolved.asked_env is not None and resolved.asked_env not in architecture.ENVIRONMENTS:
+        return None
+    env = architecture.environment()
+    found = [c for c in resolved.matches if c.kind == kind and architecture.exists_in(c, env)]
+    return found[0].key if found else None
+
+
+def _normalized(kind: str, target_id) -> str:
+    """The id a watch is kept under: a function's or a table's catalogue key; anything else as
+    given."""
+    if kind in ("function", "table") and isinstance(target_id, str):
+        return _catalogue_key(kind, target_id) or target_id
+    return target_id
+
+
 def _watchable(kind: str, target_id) -> str | None:
     """Why `target_id` cannot be watched as a `kind`, in words for speech, or None if it can.
     Checked against what exists where one read answers it."""
     if kind not in WATCH_KINDS:
-        return "I can watch a topic, a function, an incident or spend."
+        return "I can watch a topic, a function, an incident, spend or a table."
+    if kind in ("function", "table") and isinstance(target_id, str) and len(target_id) <= 200:
+        if _catalogue_key(kind, target_id) is None:
+            return f"I don't know a {kind} by that name in this environment."
+        if kind == "table" and _catalogue_key(kind, target_id) in samples.NEVER_SAMPLED:
+            return "That table is one I never read."
+        return None
     if not isinstance(target_id, str) or not ID_PATTERN.match(target_id):
         return "That isn't an id I can watch."
     if kind == "topic" and get_topic(target_id) is None:
@@ -570,7 +787,7 @@ def _watchable(kind: str, target_id) -> str | None:
         return f"{account.BILL_NOT_AVAILABLE} For spend I can watch ai."
     if kind == "incident" and _incident(target_id) is None:
         return "I can't find an open incident with that id."
-    return None  # a function: no list of them is one read away, so its id only has to look like one
+    return None
 
 
 def _incident(event_id: str, *, now: datetime | None = None) -> dict | None:
@@ -585,6 +802,7 @@ def watch(user_id: str | None, kind: str, target_id: str, *, now: datetime | Non
     refusal = _watchable(kind, target_id)
     if refusal:
         return {"spoken": refusal, "findings": [], "watching": False}
+    target_id = _normalized(kind, target_id)
     now = tools._now(now)
     _write(
         user_id,
@@ -606,6 +824,7 @@ def watch(user_id: str | None, kind: str, target_id: str, *, now: datetime | Non
 def unwatch(user_id: str | None, kind: str, target_id: str) -> dict:
     if user_id is None:
         return _needs_user()
+    target_id = _normalized(kind, target_id) if kind in WATCH_KINDS else target_id
     if kind not in WATCH_KINDS or not isinstance(target_id, str) or not ID_PATTERN.match(target_id):
         return {"spoken": "That isn't something I could have been watching.", "findings": []}
     _delete(user_id, WATCH, kind, target_id)
@@ -618,7 +837,64 @@ def unwatch(user_id: str | None, kind: str, target_id: str) -> dict:
     }
 
 
-def _watched_state(kind: str, target_id: str, now: datetime) -> tuple[dict, str]:
+def _flagged_words(flagged: list[dict], now_causes: dict[str, int], now: datetime) -> str:
+    """What the suggestions table says was wrong with a watched function, and whether it still is:
+    "; I flagged it for hitting its time limit 2 days ago, and it's still happening"."""
+    if not flagged:
+        return ""
+    row = max(flagged, key=lambda r: str(r.get("last_mentioned_at") or ""))
+    kind = row["kind"]
+    label = (
+        log_review.BY_KEY[kind.removeprefix("log_")].label
+        if kind.startswith("log_")
+        else api_errors.CAUSES[kind.removeprefix("api_")].label
+    )
+    since = tools._parse(row.get("first_suggested_at"))
+    still = now_causes.get(kind, 0)
+    tail = "and it's still happening" if still else "and that has calmed down"
+    return f"; I flagged that it {label}, {tools._age(since, now) if since else 'a while'} ago, {tail}"
+
+
+def _watched_function(target_id: str, now: datetime, flagged: list[dict]) -> tuple[dict, str]:
+    result = log_review.review(function=target_id, hours=24, now=now)
+    if result.get("complete") is not True or result.get("refused"):
+        return {"state": "unreadable"}, f"{target_id}, whose log I couldn't read completely"
+    row = next((f for f in result.get("functions") or [] if f.get("function") == target_id), None) or {}
+    errors = int(row.get("errors") or 0)
+    causes = {f"log_{c['cause']}": c["count"] for c in row.get("causes") or []}
+    state = {
+        "state": "read",
+        "errors": errors,
+        "causes": row.get("causes") or [],
+        "unusual": row.get("unusual"),
+    }
+    if errors:
+        top = log_review.BY_KEY[(row.get("causes") or [{"cause": "other"}])[0]["cause"]]
+        lines = f"{errors} error line{'s' if errors != 1 else ''}"
+        words = f"{target_id} had {lines} in the last day, mostly that it {top.label}"
+    else:
+        words = f"{target_id} had no errors in the last day"
+    return state, words + _flagged_words(flagged, causes, now)
+
+
+def _watched_table(target_id: str, now: datetime) -> tuple[dict, str]:
+    result = samples.table_sample(target_id, now=now)
+    if not result.get("read"):
+        return {"state": "unreadable"}, f"the {target_id} table, which I couldn't read"
+    fresh = result.get("freshness") or []
+    late = [entry for entry in fresh if not entry.get("on_time")]
+    state = {"state": "read", "freshness": fresh, "rows_shown": result.get("rows_shown")}
+    if not fresh:
+        return state, f"the {target_id} table is readable; it has no on-time rule to check"
+    words = f"{target_id} is written on time for {len(fresh) - len(late)} of {len(fresh)} topics"
+    if late:
+        words += f", and late for {tools._join([entry['topic'] for entry in late[:3]])}"
+    return state, words
+
+
+def _watched_state(
+    kind: str, target_id: str, now: datetime, flagged: list[dict] | None = None
+) -> tuple[dict, str]:
     """A watched item's state now, from the tool that reads it, and a few words for speech."""
     if kind == "topic":
         rows = tools.pipeline_health(target_id, now=now).get("topics") or []
@@ -651,8 +927,9 @@ def _watched_state(kind: str, target_id: str, now: datetime) -> tuple[dict, str]
             return {"state": "not_open"}, "an incident that is no longer open"
         state = {key: row[key] for key in ("category", "severity", "source", "requests", "last_seen")}
         return {"state": "read", **state}, f"a {row['severity']}-severity incident, still open"
-    # A function: the tool that would read its log (log_review) is not built yet.
-    return {"state": "not_checked"}, "a function I can't check yet"
+    if kind == "table":
+        return _watched_table(target_id, now)
+    return _watched_function(target_id, now, flagged or [])
 
 
 def watch_list(user_id: str | None, *, now: datetime | None = None) -> dict:
@@ -662,10 +939,17 @@ def watch_list(user_id: str | None, *, now: datetime | None = None) -> dict:
         return _needs_user()
     now = tools._now(now)
     items, words = [], []
-    for row in sorted(_rows(user_id, WATCH), key=lambda row: row["item"]):
+    # What the suggestions table holds about each function: what was flagged in its logs.
+    flagged: dict[str, list[dict]] = {}
+    watched = sorted(_rows(user_id, WATCH), key=lambda row: row["item"])
+    if any(row["kind"] == "function" for row in watched):
+        for suggestion in _rows(user_id, SUGGESTION):
+            if suggestion["kind"] in LOGGED_KINDS and not suggestion.get("dismissed"):
+                flagged.setdefault(suggestion["target_id"], []).append(suggestion)
+    for row in watched:
         kind, target_id = row["kind"], row["target_id"]
         try:
-            state, said = _watched_state(kind, target_id, now)
+            state, said = _watched_state(kind, target_id, now, flagged.get(target_id))
         except Exception as exc:  # noqa: BLE001 - one item that can't be read must not hide the rest
             print(f"ops_memory: could not read a watched {kind} ({type(exc).__name__})")
             state, said = {"state": "unreadable"}, f"a {kind} I could not read"
