@@ -40,6 +40,8 @@ from common.security_events import (
     MEDIUM,
     PLAYBOOK,
     SIGN_IN,
+    SUMMARY_MAX_CHARS,
+    TRENDS,
     WAF_ADMIN_API,
     WAF_OTHER,
     WAF_PUBLIC_API,
@@ -110,6 +112,14 @@ def _incident_row(incident: dict, now: datetime) -> dict:
     except (TypeError, ValueError):
         requests = 0
     written = incident.get("untrusted") if isinstance(incident.get("untrusted"), dict) else {}
+    untrusted = {
+        "path": untrusted_text(written.get("path")),
+        "matched": untrusted_text(written.get("matched")),
+    }
+    if source == MANUAL:
+        # What the operator wrote when they opened it. Their own words, but still text from a
+        # table: for the page, never for speech, like the rest of `untrusted`.
+        untrusted["summary"] = untrusted_text(incident.get("summary"), SUMMARY_MAX_CHARS)
     return {
         "event_id": event_id if isinstance(event_id, str) and ID_PATTERN.match(event_id) else None,
         "category": category,
@@ -121,11 +131,20 @@ def _incident_row(incident: dict, now: datetime) -> dict:
         "last_seen_ago": _age(last, now),
         "next_steps": PLAYBOOK[category][2],
         # The blocked client wrote these: for the page, never for speech.
-        "untrusted": {
-            "path": untrusted_text(written.get("path")),
-            "matched": untrusted_text(written.get("matched")),
-        },
+        "untrusted": untrusted,
     }
+
+
+# Categories that are a finding from medium up, not only at high. A medium incident about one
+# client (a scanner at the admin API, a scraper over the rate limit) is routine and only counted;
+# a trend that has passed its second threshold, or something an operator reported, is worth a card.
+_FINDING_FROM_MEDIUM = frozenset({*TRENDS, "manual-report"})
+
+
+def _is_finding(row: dict) -> bool:
+    if row["severity"] == HIGH:
+        return True
+    return row["severity"] == MEDIUM and row["category"] in _FINDING_FROM_MEDIUM
 
 
 def _incident_words(row: dict) -> str:
@@ -152,13 +171,15 @@ def security_events(days: int = SECURITY_DEFAULT_DAYS, *, now: datetime | None =
     findings = [
         finding(
             "security_incident",
-            f"A high-severity security incident is open: {_incident_words(row)}",
+            f"A {row['severity']}-severity security incident is open: {_incident_words(row)}",
             row["event_id"],
             category=row["category"],
             source=row["source"],
+            # Only for one opened by hand: its summary, marked as text nobody here wrote.
+            untrusted={"summary": row["untrusted"]["summary"]} if row["untrusted"].get("summary") else None,
         )
         for row in rows
-        if row["severity"] == HIGH
+        if _is_finding(row)
     ]
     return {
         "spoken": _security_spoken(rows, counts, days, more),

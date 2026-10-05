@@ -969,6 +969,82 @@ GUIDES: dict[str, dict] = {
             },
         ],
     },
+    "security": {
+        "title": "Security: incidents, and sign-ins to the assistant",
+        "keywords": (
+            "security",
+            "incident",
+            "attack",
+            "acknowledge",
+            "resolve",
+            "lockout",
+            "locked",
+            "unlock",
+            "sign-in",
+            "signed in",
+            "login",
+        ),
+        "explanation": [
+            # common/security_events.py: the sources, record_incident and the playbook.
+            "An incident is something worth a look: what a firewall blocked, a comment shaped "
+            "like an attack, a user locked out of the assistant. Each has a severity and next "
+            "steps. A high one emails the alert address, once.",
+            # common/security_events.py's TRENDS.
+            "Two are counted in bulk, whoever sent them: comments dropped by screening in a day "
+            "(10 is low, 50 medium, 100 high) and errors answered by the admin API in an hour "
+            "(20, 50, 100). Below the first number there is no incident.",
+            # admin_cli's `security` subcommands; security_events.change_status and open_manual_incident.
+            "security list shows the open ones. acknowledge says you are looking into one, "
+            "resolve that it is dealt with, reopen puts it back. security open records "
+            "something you noticed that nothing else did; at high severity it emails too.",
+            # common/sign_ins.py: the lockout and the unlock.
+            "Sign-ins to the assistant are logged. Five failed attempts in fifteen minutes lock "
+            "the user for fifteen minutes; sign-ins unlock lets them in at once and does not "
+            "change the password. If the failures were not yours, change the password first.",
+        ],
+        "commands": [
+            "security list",
+            "security open",
+            "security acknowledge",
+            "security resolve",
+            "sign-ins list",
+            "sign-ins unlock",
+            "security reopen",
+        ],
+        "steps": [
+            {"say": "See the open incidents", "command": "security list", "options": {}, "ask": []},
+            {
+                "say": "Say you are looking into one",
+                "command": "security acknowledge",
+                "options": {},
+                "ask": ["event_id"],
+            },
+            {
+                "say": "Close one that is dealt with",
+                "command": "security resolve",
+                "options": {},
+                "ask": ["event_id"],
+            },
+            {
+                "say": "Report something you noticed",
+                "command": "security open",
+                "options": {},
+                "ask": ["severity", "summary"],
+            },
+            {
+                "say": "See who signed in, and who failed",
+                "command": "sign-ins list",
+                "options": {},
+                "ask": [],
+            },
+            {
+                "say": "Let a locked user in",
+                "command": "sign-ins unlock",
+                "options": {},
+                "ask": ["username"],
+            },
+        ],
+    },
     "review": {
         "title": "Reviewing and publishing",
         "keywords": (

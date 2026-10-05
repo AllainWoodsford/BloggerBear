@@ -199,7 +199,9 @@ def build_server() -> MCPServer:
     def security_events(ctx: Context, days: int = account.SECURITY_DEFAULT_DAYS) -> dict[str, Any]:
         """The open security incidents of the last `days` (1 to 30): how many at each severity,
         and for each its category, request count, first and last seen, and next steps. Part of a
-        briefing; only high-severity incidents are findings."""
+        briefing. A finding for each high-severity incident, and for a medium one that is a
+        trend (many dropped comments in a day, many admin API errors in an hour) or was opened
+        by hand; each finding has the command that marks it as seen."""
         return remembered(ctx, account.security_events(days))
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
@@ -244,8 +246,9 @@ def build_server() -> MCPServer:
     def cli_guides(topic: str | None = None) -> dict[str, Any]:
         """Short guides to how a feature works and which commands it uses: cutting costs and how
         often topics run (`costs`), gear (`gear`), editorial goals for a topic
-        (`editorial-goals`), getting started with a first topic (`first-topic`), reviewing and
-        publishing (`review`). Pass a guide's id, or a few words of what the operator wants to
+        (`editorial-goals`), getting started with a first topic (`first-topic`), security
+        incidents and sign-ins (`security`), reviewing and publishing (`review`). Pass a guide's
+        id, or a few words of what the operator wants to
         do. It puts the help of the guide's main commands on screen, so cli_help is not needed
         as well. Use it first for a "how do I" question that is about a feature and not one
         command. With nothing: the guides there are."""

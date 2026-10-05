@@ -601,6 +601,24 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         assert rule in prompt, rule
 
 
+def test_the_model_is_told_where_security_questions_go():
+    """Sign-ins have a tool of their own, incidents carry a command, and closing one is a guide:
+    without the rule the model answers all three from security_events and a search of commands."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "Asked whether anyone signed in or tried to, or about a locked user: call sign_ins",
+        "Asked about security incidents, attacks, or what was blocked: call security_events",
+        "has the command that marks it as seen",
+        "call cli_guides with `security`",
+        "api_errors gives the breakdown",
+        "including security incidents and sign-ins to this assistant",
+    ):
+        assert rule in prompt, rule
+    # The guide it names is one the server has.
+    assert "security" in cli_guide.GUIDES
+
+
 def test_the_model_is_told_how_to_answer_the_pages_starter_questions():
     """The page offers a few questions as ways to start (test_frontend_ask.py holds the list). Each
     is a first question, and none but "what needs my attention" is a briefing."""

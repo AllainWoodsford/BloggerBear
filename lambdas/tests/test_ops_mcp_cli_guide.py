@@ -564,6 +564,10 @@ FILLER = {
     "text": "Lead with the most useful fact.",
     "scope": "global",
     "instructions": "the second section is wrong",
+    "event_id": "0123456789abcdef0123456789abcdef",
+    "severity": "medium",
+    "summary": "odd requests overnight",
+    "username": "operator",
     "editorial_goals_json": cli_guide.STAR_COUNT_GOAL,
 }
 
@@ -575,7 +579,14 @@ def _steps():
 
 
 def test_the_guides_are_the_ones_the_owner_asked_for():
-    assert list(cli_guide.GUIDES) == ["costs", "gear", "editorial-goals", "first-topic", "review"]
+    assert list(cli_guide.GUIDES) == [
+        "costs",
+        "gear",
+        "editorial-goals",
+        "first-topic",
+        "security",
+        "review",
+    ]
     listing = cli_guide.cli_guides()
     assert [guide["id"] for guide in listing["guides"]] == list(cli_guide.GUIDES)
     assert listing["findings"] == []
@@ -617,6 +628,9 @@ def test_every_command_a_guide_names_exists_and_its_main_ones_get_their_help(key
         ("getting started", "first-topic"),
         ("how do I add a topic", "first-topic"),
         ("how do I approve what is in the inbox", "review"),
+        ("how do I close a security incident", "security"),
+        ("someone is locked out of the assistant, how do I unlock them", "security"),
+        ("how do I report an attack I noticed", "security"),
         ("first-topic", "first-topic"),
     ],
 )
