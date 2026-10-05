@@ -11,7 +11,7 @@ and prints the command for you to run (see coingecko_step for why). The settings
 the ones the deploy workflows read (.github/workflows/terraform.yml, destroy-dev.yml,
 terraform-production-release.yml, pr-checks.yml); SETTINGS below is the one list of them, and
 scripts/tests/test_setup_repo.py fails if a workflow starts reading a name that is not in it.
-docs/deploying-your-own.md explains each setting at more length.
+docs/deployment-runsheet.md explains each setting at more length.
 
 How it is built, and why:
 
@@ -53,7 +53,7 @@ from pii_denylist_check import DENYLIST_FILE, parse_entries
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION = "production"  # the GitHub environment terraform-production-release.yml deploys through
-HOOKS_PATH = ".githooks"  # what the README and .githooks/pre-commit say to set core.hooksPath to
+HOOKS_PATH = ".githooks"  # what the deployment runsheet and .githooks/pre-commit say to set core.hooksPath to
 REDACTED = "<redacted>"
 # The region a deployment uses when AWS_REGION is left unset: the default of every aws_region
 # variable in infra/, and the workflows' fallback. The test suite keeps the three in step.
@@ -362,7 +362,7 @@ def region_notes(region: str) -> str:
         "  4. frontend/privacy.html tells readers the logs are kept in Sydney. Reword it.",
         "CloudFront's certificate and the firewall in front of the site stay in us-east-1 whatever",
         "you choose: AWS only hosts them there. Nothing to do for those.",
-        'More: docs/deploying-your-own.md, "Deploying to another region".',
+        'More: docs/deployment-runsheet.md, "Deploying to another region".',
     ])
 
 
@@ -702,7 +702,7 @@ def role_steps(setting: Setting, repo: str, have_account: bool, region: str = DE
     if setting.env == "prod":
         lines.append(
             "  With two AWS accounts, run the bootstrap a second time with the production account's\n"
-            "  credentials and its own state bucket. See docs/deploying-your-own.md, \"One account or two\"."
+            "  credentials and its own state bucket. See docs/deployment-runsheet.md, \"One account or two\"."
         )
     if have_account:
         lines.append(

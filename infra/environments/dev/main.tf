@@ -642,7 +642,7 @@ resource "aws_lambda_function" "research_tick" {
 # (common/adapters/crypto_feed.py). It is never in Terraform state, a Lambda's environment or a
 # GitHub secret: Terraform doesn't create the parameter -- a managed SecureString's value is read
 # back into state on every refresh -- it only grants read access to this one name. The operator
-# creates it once (see README.md):
+# creates it once (see docs/deployment-runsheet.md):
 #
 #   aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --value <key> --overwrite
 #
@@ -679,7 +679,7 @@ resource "aws_iam_role_policy" "lambda_coingecko_key" {
 # allows 10 requests a minute per IP unauthenticated (and Lambda's egress IPs are shared); a token,
 # fine-grained with no permissions, raises that to 30 on its own budget. research_tick fetches and
 # daily_cycle's fresh-data review re-fetches, so both are told where it is
-# (common/adapters/github_trending.py). The operator creates it once (see README.md):
+# (common/adapters/github_trending.py). The operator creates it once (see docs/deployment-runsheet.md):
 #
 #   aws ssm put-parameter --name /bloggerbear/dev/github-api-token --type SecureString --value <token> --overwrite
 #

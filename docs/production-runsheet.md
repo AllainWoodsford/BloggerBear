@@ -7,7 +7,7 @@ you go.
 It is written for anyone running their own copy. Where the original deployment's values appear
 (`bloggerbear.com`, GoDaddy as the registrar), they are examples: use your own domain and whichever
 registrar you bought it from. If you have not set up dev yet, do
-[deploying-your-own.md](deploying-your-own.md) first; this picks up where it stops.
+[deployment-runsheet.md](deployment-runsheet.md) first; this picks up where it stops.
 
 Wherever it says **check it**, `python scripts/domain_check.py` is the read-only tool that tells you where
 the domain stands. It reads the domain from production's `terraform.tfvars` (or pass one:
@@ -22,7 +22,8 @@ the domain stands. It reads the domain from production's `terraform.tfvars` (or 
 | A domain you control, at any registrar | You can sign in to the registrar and change the domain's name servers. |
 | The GitHub settings for production | `python scripts/setup_repo.py --dry-run` shows what is set and what is missing. |
 | A `prod` branch and a `production` GitHub environment | Step 5 creates both if they are missing. |
-| Bedrock model access in your region, for the model you use | See "The model" in [deploying-your-own.md](deploying-your-own.md#deploying-to-another-region). |
+| The model available to your account in your region | The `converse` test in [deployment-runsheet.md](deployment-runsheet.md#before-you-start) answers. |
+| DynamoDB tag-based access control on, in the production account and region | DynamoDB console > Settings. The assistant's `table_sample` tool needs it: [why](deployment-runsheet.md#dynamodb-tag-based-access-control-abac). |
 
 Two things about the account that are worth knowing before the first release:
 
@@ -30,9 +31,9 @@ Two things about the account that are worth knowing before the first release:
   for the whole account, shared by every function in dev and production. The site works within it,
   but nothing can be reserved for one function (Lambda refuses: friction log 10.17), and a burst
   can throttle the pipeline. Ask for more under Service Quotas > AWS Lambda > "Concurrent executions".
-- **One account or two.** Dev and production can share an account or have one each. The original
-  deployment shares one. [deploying-your-own.md](deploying-your-own.md#3-one-account-or-two) says what
-  differs.
+- **One account or two.** Dev and production can share an account or have one each. Two is
+  recommended if you have them; the original deployment shares one.
+  [deployment-runsheet.md](deployment-runsheet.md#3-one-account-or-two) says what differs.
 
 ## 1. Create the DNS zone and the budget alarm (you, locally, once)
 
@@ -147,12 +148,13 @@ python scripts/setup_repo.py
 For production it sets `AWS_PROD_DEPLOY_ROLE_ARN` and `ADMIN_ALLOWED_CIDRS_PROD` (both required),
 and, if you give them, `AWS_PROD_ACCOUNT_ID`, `TF_STATE_BUCKET_PROD` and `ALERT_EMAIL_PROD`. The
 full table, and why each is a secret or a variable, is in
-[deploying-your-own.md](deploying-your-own.md#2-github-settings).
+[configuration.md](configuration.md#github-secrets-and-variables).
 
 Also worth doing while you are in Settings:
 
-- Protect `dev` and `prod` (require a pull request and the checks). On a private repository this
-  needs a paid GitHub plan; the AWS trust policy still gates production either way.
+- Protect `dev` and `prod` (require a pull request, block force-pushes and deletions). On a
+  private repository this needs a paid GitHub plan; the AWS trust policy still gates production
+  either way. The commands are in [todo/public-repo-runsheet.md](todo/public-repo-runsheet.md).
 - Check no credential is stored as a repository **variable**. Variables are shown in plain text and
   are not masked in logs; a credential should only ever be a secret.
 
@@ -194,17 +196,16 @@ Then, in order:
    export BLOGGERBEAR_ADMIN_API_URL=$(terraform -chdir=infra/environments/production output -raw admin_api_url)
    python scripts/admin_cli.py topics list
    ```
-3. **Seed the topics** you want (README step 6). Creating a topic creates its schedules; after that
-   it runs unattended. Trigger one by hand first: `topics trigger <id> --pipeline research_tick`,
-   then `daily_cycle`.
-4. **Optional: a CoinGecko API key**, if you run a crypto topic. Without one the adapter uses
-   CoinGecko's keyless public API. The key is not a GitHub secret: it is a SecureString in SSM
-   Parameter Store, read by the Lambda at run time.
-   ```bash
-   aws ssm put-parameter --name /bloggerbear/production/coingecko-api-key \
-     --type SecureString --value <key> --overwrite
-   ```
-   (In Git Bash on Windows put `MSYS_NO_PATHCONV=1` in front, or the leading `/` is rewritten.)
+3. **Seed the topics** you want
+   ([deployment-runsheet.md, step 5](deployment-runsheet.md#5-after-the-first-deploy)). Creating a
+   topic creates its schedules; after that it runs unattended. Trigger one by hand first:
+   `topics trigger <id> --pipeline research_tick`, then `daily_cycle`.
+4. **Optional, but recommended: the API keys and the model registry.** Each is per environment,
+   so what you set up for dev is not here yet. Store production's CoinGecko key and GitHub token
+   (`/bloggerbear/production/coingecko-api-key`, `/bloggerbear/production/github-api-token`) and
+   seed production's model tables (`bloggerbear-production-models`,
+   `bloggerbear-production-model-config`) the same way as dev's:
+   [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
 5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land
    on the bare domain).
@@ -262,4 +263,4 @@ Check the AWS pricing pages before relying on these numbers.
 - **No email at the domain.** If you want it later, the MX records go in the Route 53 zone.
 - **The original deployment keeps both environments in one AWS account.** Names never collide, but
   a quota or a bad permission change touches both. Two accounts are supported:
-  see [deploying-your-own.md](deploying-your-own.md#3-one-account-or-two).
+  see [deployment-runsheet.md](deployment-runsheet.md#3-one-account-or-two).

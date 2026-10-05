@@ -187,7 +187,7 @@ variable "aws_region" {
     things AWS only hosts in us-east-1 (CloudFront's certificate and its web ACL, which keep
     that region written out beside a comment saying why). The default is the original
     deployment's region, so leaving it unset changes nothing. CI passes it as TF_VAR_aws_region
-    from the AWS_REGION GitHub Actions variable (docs/deploying-your-own.md).
+    from the AWS_REGION GitHub Actions variable (docs/deployment-runsheet.md).
 
     Not a setting to change on a deployment that already exists: AWS cannot move a resource
     between regions, so a different value here plans to create everything again somewhere else.
