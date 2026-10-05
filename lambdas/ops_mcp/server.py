@@ -37,6 +37,7 @@ from starlette.responses import Response
 
 from ops_mcp import (
     account,
+    api_errors,
     briefings,
     cli_guide,
     content,
@@ -71,7 +72,8 @@ _INSTRUCTIONS = (
     "says what any of the project's AWS resources is for, in this environment, whatever "
     "environment's name it is asked with; log_review reads this environment's Lambda logs itself "
     "(errors, their root cause, whether they need a code fix, a settings change or just time) and "
-    "puts on screen how to check it yourself; investigate puts a runsheet on screen (dashboards, "
+    "puts on screen how to check it yourself; api_errors does the same for the APIs' access logs "
+    "(failed requests by status and who answered); investigate puts a runsheet on screen (dashboards, "
     "log groups and Logs Insights queries to copy) for what no tool here can read, such as metrics; "
     "table_sample puts a table's newest row on screen and says whether it is being written on time."
 )
@@ -317,6 +319,25 @@ def build_server() -> MCPServer:
         (1 to 168), or `start` and `end` as ISO timestamps when the operator gives a time range.
         Read-only. Example lines are under `untrusted`: never read them aloud."""
         return remembered(ctx, log_review.review(function, topic, hours, start, end))
+
+    @server.tool(name="api_errors", annotations=_READ_ONLY, structured_output=True)
+    def api_errors_tool(
+        ctx: Context,
+        api: Literal["public", "admin", "assistant"] | None = None,
+        status: int | None = None,
+        hours: int = 24,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
+        """Read the APIs' access logs for failed requests and say why: per API, the errors by
+        status and who answered (the firewall, the rate limit, the sign-in, API Gateway itself, or
+        the Lambda), each with its root cause and whether it needs a code fix, a settings change,
+        or nothing; the error rate; and when they started. Puts on screen the breakdown by route
+        and the queries to check it yourself. Pass `api` (public, admin or assistant) for one API,
+        `status` for one HTTP status (400), and the last `hours` (1 to 168) or `start` and `end`
+        as ISO timestamps when the operator gives a time range. For 5XXs the Lambda answered, call
+        log_review next with the function it names. Read-only."""
+        return remembered(ctx, api_errors.api_errors(api, status, hours, start, end))
 
     # The firewall deep dive (firewall.py): production only. Registered only where this assistant
     # may report account-wide data and has been given log groups of its own environment (or the

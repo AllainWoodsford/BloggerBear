@@ -155,6 +155,18 @@ CATALOGUE: dict[str, Suggestion] = {
     "log_conflict": Suggestion(action="Nothing to do: the code expects this race"),
     "log_code_error": Suggestion(action="A code fix, and a test for the case it did not handle"),
     "log_other": Suggestion(action="Read the example lines on screen; the function's log has the rest"),
+    # What api_errors found in an API's access log (api_errors.py), one kind per root cause, about
+    # the Lambda behind the API. No command: these are fixed in Terraform, code or by the caller.
+    "api_firewall_blocked": Suggestion(action="In production, ask about the firewall: rules and addresses"),
+    "api_throttled": Suggestion(action="Raise the stage's throttle in Terraform, or fix a looping client"),
+    "api_auth_refused": Suggestion(action="Renew the caller's credentials or sign-in"),
+    "api_no_such_route": Suggestion(action="Nothing to do unless one route repeats: usually scanners"),
+    "api_bad_request": Suggestion(action="Look at what the caller sends to the route on screen"),
+    "api_handler_4xx": Suggestion(action="Not a bug unless the site sends it: look at the route on screen"),
+    "api_integration_timeout": Suggestion(action="Read the Lambda's log for what it waited on; speed it up"),
+    "api_lambda_failed": Suggestion(action="Read the Lambda's own log for the traceback (log_review)"),
+    "api_aws_5xx": Suggestion(action="Usually passes; if it lasts, check the AWS Health Dashboard"),
+    "api_other": Suggestion(action="Read the breakdown on screen"),
 }
 
 
