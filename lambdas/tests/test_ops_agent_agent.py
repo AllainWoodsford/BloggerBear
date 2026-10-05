@@ -600,6 +600,23 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         assert rule in prompt, rule
 
 
+def test_the_model_is_told_how_to_answer_the_pages_starter_questions():
+    """The page offers a few questions as ways to start (test_frontend_ask.py holds the list). Each
+    is a first question, and none but "what needs my attention" is a briefing."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "Four other first questions are not briefings either, so do not check the pipeline",
+        "Asked what you can do: call no tool",
+        "Asked what you suggested before: call follow_up",
+        "Asked where someone new should start: call cli_guides with `first-topic`",
+        "Asked how the project works: call architecture with no arguments",
+    ):
+        assert rule in prompt, rule
+    # The guide it names is one the server has.
+    assert "first-topic" in cli_guide.GUIDES
+
+
 def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     """"I don't have access to logs, check CloudWatch" was the answer the owner did not want: the
     assistant knows the architecture, so it says where to look (ops_mcp/runsheets.py)."""

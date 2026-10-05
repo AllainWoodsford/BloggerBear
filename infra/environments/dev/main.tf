@@ -2026,14 +2026,17 @@ resource "aws_lambda_function" "weekly_reflection" {
   }
 }
 
-# Static weekly schedule -- Monday 9am UTC, a fixed literal (not
+# Static weekly schedule -- Monday 1pm Sydney time, a fixed literal (not
 # topic-driven config), since there's nothing per-topic to configure about
 # this global job. group_name = "default" matches the same schedule group
 # Phase 3's dynamically-created per-topic schedules use.
 resource "aws_scheduler_schedule" "weekly_reflection" {
   name                = "${var.unique_name_prefix}-dev-weekly-reflection"
   group_name          = "default"
-  schedule_expression = "cron(0 9 ? * MON *)"
+  schedule_expression = "cron(0 13 ? * MON *)"
+
+  # Read in Sydney wall-clock time, so the run stays at 1pm across daylight saving.
+  schedule_expression_timezone = "Australia/Sydney"
 
   flexible_time_window {
     mode = "OFF"
@@ -2068,7 +2071,10 @@ resource "aws_lambda_function" "stats_rollover" {
 resource "aws_scheduler_schedule" "stats_rollover" {
   name                = "${var.unique_name_prefix}-dev-stats-rollover"
   group_name          = "default"
-  schedule_expression = "cron(15 9 ? * MON *)"
+  schedule_expression = "cron(15 13 ? * MON *)"
+
+  # Same zone as weekly_reflection's schedule, so this stays 15 minutes behind it.
+  schedule_expression_timezone = "Australia/Sydney"
 
   flexible_time_window {
     mode = "OFF"

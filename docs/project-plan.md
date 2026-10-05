@@ -1305,7 +1305,7 @@ bot, neither is what a person reads as "my feedback was rejected"). `loot_drops`
 a cost figure -- `common/musings.py`, the moment a loot-drop musing is actually written).
 
 **PR 2 -- built:** the weekly rollover job (`stats_rollover_handler.py`, a static EventBridge Scheduler
-job like `weekly_reflection`'s, `cron(15 9 ? * MON *)` -- 15 minutes after `weekly_reflection`'s own
+job like `weekly_reflection`'s, `cron(15 13 ? * MON *)` in `Australia/Sydney` -- 15 minutes after `weekly_reflection`'s own
 Monday run, so that Monday's reflection cost lands in the week it is reflecting on, not the new week
 just starting). It copies `StatsCurrent` into a new `StatsHistory` row keyed by the week it covers
 (`common/dynamo.py`'s `put_stats_history_row`, a conditional write -- a retried or duplicated invocation
