@@ -138,7 +138,9 @@ def test_open_incidents_are_counted_by_severity_and_listed_high_first(tables):
     assert (
         found["noticed"] == "A high-severity security incident is open: rate-limit blocks on the public API"
     )
-    assert found["suggestion"]["command"] is None and "dashboard" in found["suggestion"]["action"]
+    # The next steps are for reading; the one command marks the incident as seen.
+    assert found["suggestion"]["command"] == "python scripts/admin_cli.py security acknowledge e-high"
+    assert "dashboard" in found["suggestion"]["action"]
 
 
 def test_nothing_high_is_said_so(tables):
@@ -173,6 +175,8 @@ def test_only_open_incidents_in_the_window_and_days_is_kept_between_1_and_30(tab
 def test_every_category_and_source_has_words_for_it():
     assert set(account._CATEGORY_SPOKEN) == set(PLAYBOOK)
     assert set(account._SOURCE_SPOKEN) == {
+        "admin-api-access",
+        "manual",
         "sign-in",
         "waf-public-api",
         "waf-admin-api",
@@ -231,10 +235,14 @@ def test_what_an_attacker_wrote_is_never_spoken_and_nothing_names_the_client(tab
     for row in result["incidents"]:
         del row["untrusted"]
     everything_else = json.dumps(result)
-    for word in ("Ignore", "delete", "script", "203.0.113.9", "attacker@example.com", CLIENT_HASH, "ZZ"):
+    hostile = ("Ignore", "delete", "<script", "alert(1)", "203.0.113.9", "attacker@example.com")
+    hostile += (CLIENT_HASH, "ZZ")
+    for word in hostile:
         assert word not in everything_else
-    for found in result["findings"]:
-        assert found["suggestion"]["command"] is None
+    # The one command a finding carries is the catalogue's, with the incident's own id in it.
+    assert [found["suggestion"]["command"] for found in result["findings"]] == [
+        "python scripts/admin_cli.py security acknowledge e2"
+    ]
     assert result["spoken"] == (
         "2 open security incidents in the last 7 days: 1 high and 1 medium. "
         "High: SQL injection attempts on the public API, 1 request, last seen 5 hours ago."

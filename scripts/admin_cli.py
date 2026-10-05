@@ -641,6 +641,31 @@ def _cmd_failed_executions_list(args: argparse.Namespace) -> None:
     _do_request(args, "GET", "/failed-executions")
 
 
+# --- security subcommands -----------------------------------------------
+
+
+def _cmd_security_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/security-incidents?status={args.status}")
+
+
+def _cmd_security_open(args: argparse.Namespace) -> None:
+    _do_request(
+        args, "POST", "/security-incidents", body={"severity": args.severity, "summary": args.summary}
+    )
+
+
+def _cmd_security_acknowledge(args: argparse.Namespace) -> None:
+    _do_request(args, "PUT", f"/security-incidents/{args.event_id}/status", body={"status": "acknowledged"})
+
+
+def _cmd_security_resolve(args: argparse.Namespace) -> None:
+    _do_request(args, "PUT", f"/security-incidents/{args.event_id}/status", body={"status": "resolved"})
+
+
+def _cmd_security_reopen(args: argparse.Namespace) -> None:
+    _do_request(args, "PUT", f"/security-incidents/{args.event_id}/status", body={"status": "open"})
+
+
 # --- sign-ins subcommands -----------------------------------------------
 
 
@@ -1398,6 +1423,46 @@ def build_parser() -> argparse.ArgumentParser:
     failed_executions_sub.add_parser(
         "list", help="List failed daily_cycle executions recorded by the DLQ consumer"
     ).set_defaults(func=_cmd_failed_executions_list)
+
+    security_parser = subparsers.add_parser(
+        "security", help="Security incidents: list them, move them along, or open one by hand"
+    )
+    security_sub = security_parser.add_subparsers(dest="action", required=True)
+
+    security_list_parser = security_sub.add_parser(
+        "list", help="List security incidents, newest first (default: the open ones)"
+    )
+    security_list_parser.add_argument(
+        "--status",
+        choices=["open", "acknowledged", "resolved"],
+        default="open",
+        help="Which incidents to list (default: open)",
+    )
+    security_list_parser.set_defaults(func=_cmd_security_list)
+
+    security_open_parser = security_sub.add_parser(
+        "open",
+        help=(
+            "Open an incident by hand, for something you noticed that nothing recorded. "
+            "High severity sends the alert email"
+        ),
+    )
+    security_open_parser.add_argument(
+        "--severity", choices=["low", "medium", "high"], required=True, help="How serious it is"
+    )
+    security_open_parser.add_argument(
+        "--summary", required=True, help="What you noticed, in a sentence (at most 300 characters)"
+    )
+    security_open_parser.set_defaults(func=_cmd_security_open)
+
+    for name, func, text in (
+        ("acknowledge", _cmd_security_acknowledge, "Mark an incident as seen: you are looking into it"),
+        ("resolve", _cmd_security_resolve, "Mark an incident as dealt with"),
+        ("reopen", _cmd_security_reopen, "Put an acknowledged or resolved incident back to open"),
+    ):
+        status_parser = security_sub.add_parser(name, help=text)
+        status_parser.add_argument("event_id", help="The incident's id, from `security list`")
+        status_parser.set_defaults(func=func)
 
     sign_ins_parser = subparsers.add_parser(
         "sign-ins", help="Sign-ins to the operator's assistant: the log, and unlocking a user"

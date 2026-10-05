@@ -172,7 +172,10 @@ flowchart TB
   lets nothing in. Blocked requests and comments dropped as attacks are grouped into incidents
   (category, severity, next steps; a keyed hash of the client, never the IP), and a
   high-severity incident emails an alarm. Sign-ins to the operator's assistant are logged, and
-  a user is locked out after repeated failures, which is such an incident.
+  a user is locked out after repeated failures, which is such an incident. Two trends are
+  incidents too, rising from low to high as they grow: comments dropped by screening in a day,
+  and errors answered by the admin API in an hour. The operator lists, acknowledges, resolves
+  and opens incidents from the CLI.
 - **Observability:** CloudWatch alarms and dashboards, a daily Cost Explorer poll that feeds the
   Stats page, and an AWS Budget alarm on Bedrock spend.
 - **Operator's assistant:** a read-only assistant that tells the operator, by voice, what needs

@@ -2033,6 +2033,43 @@ def claim_security_alert(event_id: str, alerted_at: str) -> bool:
     return True
 
 
+def get_security_incident(event_id: str) -> dict | None:
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    return table.get_item(Key={"event_id": event_id}).get("Item")
+
+
+def set_security_incident_status(
+    event_id: str, status: str, *, only_from: str | None = None, fields: dict | None = None
+) -> bool:
+    """Set incident `event_id`'s status, with any `fields` beside it (who changed it, and when).
+    Only an incident that exists; with `only_from`, only one whose status is that now, so a count
+    that reaches its first threshold opens the incident once and never reopens one a person has
+    since closed. False when the condition did not hold."""
+    table = get_table(os.environ["SECURITY_EVENTS_TABLE"])
+    names = {"#status": "status"}
+    values = {":status": status}
+    sets = ["#status = :status"]
+    for n, (key, value) in enumerate((fields or {}).items()):
+        names[f"#f{n}"] = key
+        values[f":f{n}"] = value
+        sets.append(f"#f{n} = :f{n}")
+    condition = "attribute_exists(event_id)"
+    if only_from is not None:
+        condition += " AND #status = :from"
+        values[":from"] = only_from
+    try:
+        table.update_item(
+            Key={"event_id": event_id},
+            UpdateExpression=f"SET {', '.join(sets)}",
+            ConditionExpression=condition,
+            ExpressionAttributeNames=names,
+            ExpressionAttributeValues=values,
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
 def list_security_incidents(status: str = "open", limit: int = 50) -> list[dict]:
     """The newest incidents with `status` (open, acknowledged, resolved), newest first."""
     table = get_table(os.environ["SECURITY_EVENTS_TABLE"])

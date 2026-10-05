@@ -162,6 +162,17 @@ python scripts/admin_cli.py sign-ins list
 python scripts/admin_cli.py sign-ins list --days 30
 python scripts/admin_cli.py sign-ins unlock <username>
 
+# Security incidents: what the firewalls blocked, attack-shaped comments, sign-in lockouts, and
+# the two trends (dropped feedback comments per day: 10 low, 50 medium, 100 high; the admin API's
+# 4xx answers per hour: 20, 50, 100). High severity sends the alert email. `open` records
+# something you noticed that nothing else did; high severity there emails too.
+python scripts/admin_cli.py security list
+python scripts/admin_cli.py security list --status acknowledged
+python scripts/admin_cli.py security open --severity medium --summary "odd requests to the admin API overnight"
+python scripts/admin_cli.py security acknowledge <event_id>   # you are looking into it
+python scripts/admin_cli.py security resolve <event_id>       # dealt with
+python scripts/admin_cli.py security reopen <event_id>
+
 # Lineage/cost data: where it is missing, and repair. `backfill` is a dry run
 # unless --apply; it only rewrites `lineage` (tokens are kept), and is safe to repeat.
 python scripts/admin_cli.py lineage audit

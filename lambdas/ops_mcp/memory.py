@@ -595,8 +595,34 @@ def _api_checker(kind: str) -> Callable[[str, _Sources], Check]:
 
 # Kind -> its check. Every catalogue kind that has a command and is about an id has one
 # (tests/test_ops_mcp_memory.py holds that), so a new kind without one fails the build.
+def _check_security_incident(event_id: str, sources: _Sources) -> Check:
+    """Fixed once the incident is no longer open: acknowledged or resolved (the suggested
+    command), or aged out."""
+    row = _incident(event_id, now=sources.now)
+    if row is None:
+        return Check(FIXED)
+    return Check(
+        OPEN,
+        finding(
+            "security_incident",
+            f"A security incident is still open: {account._incident_words(row)}",
+            event_id,
+            category=row["category"],
+            source=row["source"],
+        ),
+    )
+
+
+def _check_firewall_spike(log_group: str, sources: _Sources) -> Check:
+    """A spike is a moment, and whether it deserved an incident was the operator's call: it is
+    forgotten, not chased. If the firewall is still busy, the next briefing says so afresh."""
+    return Check(GONE)
+
+
 CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
     "draft_truncated": _check_draft_truncated,
+    "security_incident": _check_security_incident,
+    "firewall_spike": _check_firewall_spike,
     "research_overdue": _topic_checker("research_overdue"),
     "no_article_today": _topic_checker("no_article_today"),
     "run_failed": _topic_checker("run_failed"),

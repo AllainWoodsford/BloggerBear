@@ -146,13 +146,19 @@ def test_a_quiet_day_is_counted_and_said_plainly(production):
     )
 
 
-def test_a_spike_is_a_finding_with_nothing_to_run(production):
+def test_a_spike_is_a_finding_that_suggests_opening_an_incident(production):
     result = firewall.firewall_review(24, now=NOW, run=_results(400))
 
     assert len(result["findings"]) == 3
     spike = result["findings"][0]
     assert spike["kind"] == "firewall_spike"
-    assert spike["suggestion"]["command"] is None and "edge dashboard" in spike["suggestion"]["action"]
+    assert "edge dashboard" in spike["suggestion"]["action"]
+    # Something unusual that is not an incident yet: the command puts it on record. Fixed words,
+    # for the operator to edit; nothing from the log is in it.
+    assert spike["suggestion"]["command"] == (
+        "python scripts/admin_cli.py security open --severity medium "
+        '--summary "the firewall is blocking far more than usual"'
+    )
     assert "unusually high" in result["spoken"]
 
 

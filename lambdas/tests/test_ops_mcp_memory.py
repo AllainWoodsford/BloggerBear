@@ -274,7 +274,6 @@ def test_findings_with_no_command_or_no_id_are_not_recorded(tables):
         "spoken": "x",
         "findings": [
             suggestions.finding("alarm_firing", "An alarm", "bloggerbear-dev-errors"),
-            suggestions.finding("security_incident", "An incident", "evt-1"),
             suggestions.finding("spend_unusual", "Spend", None, what="ai"),
             suggestions.finding("musing_dangling", "A musing", "m1"),
             suggestions.finding("awaiting_review", "2 articles are waiting for review", None, count=2),
