@@ -58,7 +58,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from common.bedrock import invoke_model_tracked
-from common.cost_explorer import BILL_CATEGORIES, bill_category
+from common.cost_explorer import AI_CATEGORY, BILL_CATEGORIES, bill_category
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.dynamo import (
     increment_current_stats,
@@ -649,15 +649,121 @@ def _aws_bill_view(row: dict) -> dict | None:
     if not isinstance(services, dict):
         return None
     rate = Decimal(str(USD_TO_AUD_RATE))
-    totals = {category: Decimal("0") for category in BILL_CATEGORIES}
-    for service, usd in services.items():
-        totals[bill_category(service)] += Decimal(usd)
+    totals = _bill_groups_usd(services)
     return {
         "categories": [
             {"category": category, "cost_aud": float(totals[category] * rate)} for category in BILL_CATEGORIES
         ],
         "total_aud": float(sum(totals.values()) * rate),
         "since": since,
+    }
+
+
+def _bill_groups_usd(services: dict) -> dict[str, Decimal]:
+    """A per-service bill (USD) summed into bill_category's three groups."""
+    totals = {category: Decimal("0") for category in BILL_CATEGORIES}
+    for service, usd in services.items():
+        totals[bill_category(service)] += Decimal(usd)
+    return totals
+
+
+# --- Total Stats' cost summary: the assistant, infrastructure, and the overall total -------------
+#
+# Three figures at the top of the Stats page, and the rule that keeps the last one honest:
+#
+#     total overall cost = the AWS bill's AI group + the AWS bill's other two groups
+#                        = the whole AWS bill (before tax), and nothing else.
+#
+# Bedrock is counted twice in this project: by tokens (every `*_cost_aud` on these rows, and
+# common/stats.py's per-article figures -- estimates, this environment's own) and by AWS (the
+# bill's AI group -- what was charged, the whole account's). They are the same dollars. So the
+# overall total is built from the bill alone and no token estimate is ever added to it: the
+# assistant's spend, the articles' and every other category's are already inside the AI group.
+#
+# The bill here is the all-time row's AWS_BILL_TOTAL_USD: every *complete* week since
+# AWS_BILL_TOTAL_SINCE, not since the project began (a week from before the weekly rollover
+# existed has no row to carry a bill, and Cost Explorer is only re-read COMPLETE_WEEKS back). It
+# is the whole account's: dev and production share one, so both pages show the same figure, and
+# it is labelled as the account's, never as one environment's.
+
+OVERALL_BILL_SCOPE = "account"
+
+
+def _assistant_to_date(totals_row: dict, current_row: dict) -> dict:
+    """The assistant's own tally, all time *including* this week: the all-time row (every week
+    rolled over) plus the current week's. A row from before the assistant existed has none of
+    these fields, which is a zero, not an error."""
+    prefix = ASSISTANT_CATEGORY
+    rows = (totals_row, current_row)
+    calls = sum(int(row.get(f"{prefix}_calls", 0)) for row in rows)
+    costs = [row[f"{prefix}_cost_aud"] for row in rows if row.get(f"{prefix}_cost_aud") is not None]
+    if costs:
+        cost_aud: float | None = float(sum((Decimal(cost) for cost in costs), Decimal("0")))
+    else:
+        # Never ran: a real $0. Ran, but nothing was priced: unknown, never passed off as free.
+        cost_aud = 0.0 if calls == 0 else None
+    return {
+        "calls": calls,
+        "input_tokens": sum(int(row.get(f"{prefix}_input_tokens", 0)) for row in rows),
+        "output_tokens": sum(int(row.get(f"{prefix}_output_tokens", 0)) for row in rows),
+        "cost_aud": cost_aud,
+        "unpriced": sum(int(row.get(f"{prefix}_unpriced_calls", 0)) for row in rows),
+    }
+
+
+def _overall_bill(totals_row: dict) -> dict | None:
+    """The all-time AWS bill as the two figures Total Stats adds up, and their sum. None until
+    the daily poll has totalled at least one complete week."""
+    services = totals_row.get(AWS_BILL_TOTAL_USD)
+    if not isinstance(services, dict):
+        return None
+    rate = Decimal(str(USD_TO_AUD_RATE))
+    groups = _bill_groups_usd(services)
+    ai = groups[AI_CATEGORY]
+    # "Infrastructure" on this tile is everything that is not AI: bill_category's Infrastructure
+    # group and its Security group (the firewall) together.
+    not_ai = sum((usd for category, usd in groups.items() if category != AI_CATEGORY), Decimal("0"))
+    weeks = totals_row.get(AWS_BILL_TOTAL_WEEKS)
+    return {
+        "ai_aud": float(ai * rate),
+        "infrastructure_aud": float(not_ai * rate),
+        "total_aud": float((ai + not_ai) * rate),
+        "since": totals_row.get(AWS_BILL_TOTAL_SINCE),
+        "weeks": int(weeks) if weeks is not None else None,
+        "scope": OVERALL_BILL_SCOPE,
+    }
+
+
+def _overall_note(bill: dict | None) -> str:
+    if bill is None:
+        return (
+            "Total infrastructure cost and Total overall cost come from the AWS bill, which has not "
+            "been totalled for a complete week yet."
+        )
+    weeks = bill["weeks"]
+    period = f"every complete week since {bill['since']}" if bill["since"] else "every complete week"
+    if weeks is not None:
+        period += f" ({weeks} week{'' if weeks == 1 else 's'})"
+    return (
+        "Total overall cost is the whole AWS bill: its AI charges plus Total infrastructure cost "
+        "(everything else on it: hosting, data, monitoring and the firewall). The token estimates "
+        "on this page, the operator assistant's among them, are already inside the bill's AI "
+        "charges and are not added again, so each dollar is counted once. The bill covers "
+        f"{period}, for the whole AWS account (dev and production together), before tax, about a "
+        "day behind, converted at the same fixed USD to AUD rate."
+    )
+
+
+def overall_view(totals_row: dict, current_row: dict) -> dict:
+    """Total Stats' cost summary (see the block comment above for the formula): the assistant's
+    spend to date in this environment, and the account's all-time bill as AI, everything else
+    ("infrastructure") and their sum. `aws_bill` is None until there is a bill to report; the
+    token estimate is never offered as a total in its place."""
+    bill = _overall_bill(totals_row)
+    return {
+        "assistant": _assistant_to_date(totals_row, current_row),
+        "aws_bill": bill,
+        "note": _overall_note(bill),
     }
 
 
