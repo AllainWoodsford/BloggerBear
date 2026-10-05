@@ -56,6 +56,11 @@ def test_personal_data_and_secrets_are_replaced(raw, placeholder, gone):
     assert redact.personal_data_kinds(text) == []
 
 
+def test_an_address_at_the_end_of_a_sentence_is_still_masked():
+    assert redact.scrub("Most blocks came from 198.51.100.7.") == "Most blocks came from 198.XXX.XXX.7."
+    assert redact.scrub("version 1.2.3.4.5 is not an address") == "version 1.2.3.4.5 is not an address"
+
+
 def test_names_ids_and_paths_are_kept():
     text = redact.scrub(
         "research_tick_handler: unhandled exception for topic_id=crypto-weekly in "

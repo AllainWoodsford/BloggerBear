@@ -132,16 +132,18 @@ def build_server() -> MCPServer:
 
     @server.tool(annotations=own_list, structured_output=True)
     def watch(  # noqa: A002
-        ctx: Context, kind: Literal["topic", "function", "incident", "spend"], id: str
+        ctx: Context, kind: Literal["topic", "function", "incident", "spend", "table"], id: str
     ) -> dict[str, Any]:
-        """Keep an eye on something: a `topic` (its topic id), a `function` (its name), an
-        `incident` (its event id) or `spend` (`ai` or `aws`). It changes only the assistant's own
-        watch list."""
+        """Keep an eye on something: a `topic` (its topic id), a `function` (any name for it, such
+        as research-tick), an `incident` (its event id), `spend` (`ai` or `aws`) or a `table` (any
+        name for it, such as candidate ideas). Offer it after finding a problem, so the next
+        briefing says whether it is still happening. It changes only the assistant's own watch
+        list."""
         return memory.watch(caller(ctx), kind, id)
 
     @server.tool(annotations=own_list, structured_output=True)
     def unwatch(  # noqa: A002
-        ctx: Context, kind: Literal["topic", "function", "incident", "spend"], id: str
+        ctx: Context, kind: Literal["topic", "function", "incident", "spend", "table"], id: str
     ) -> dict[str, Any]:
         """Stop watching something `watch` was asked to. It changes only the assistant's own
         watch list."""
@@ -149,7 +151,9 @@ def build_server() -> MCPServer:
 
     @server.tool(annotations=own_list, structured_output=True)
     def watch_list(ctx: Context) -> dict[str, Any]:
-        """What the operator asked to have watched, and how each is now. Part of a briefing. It
+        """What the operator asked to have watched, and how each is now: a watched function's errors
+        in the last day and whether what was flagged in its logs is still happening, a watched
+        table's on-time writes. Part of a briefing. It
         changes only the assistant's own watch list (reading it keeps each item for another 30
         days)."""
         return memory.watch_list(caller(ctx))
