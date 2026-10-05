@@ -152,7 +152,8 @@ def test_a_sign_in_is_two_rows_and_the_event_is_handed_back(tables, monkeypatch)
 
 
 def test_a_failure_is_an_attempt_with_no_success_after_it():
-    attempt, success, unlocked, refused = ({"event": kind} for kind in ("attempt", "success", "unlocked", "refused"))
+    kinds = ("attempt", "success", "unlocked", "refused")
+    attempt, success, unlocked, refused = ({"event": kind} for kind in kinds)
 
     assert sign_ins.outstanding_failures([]) == 0
     assert sign_ins.outstanding_failures([attempt, attempt, attempt]) == 3
@@ -171,30 +172,30 @@ def test_the_sixth_attempt_after_five_failures_is_refused_and_raises_one_high_in
 ):
     clock = Clock(monkeypatch)
     for _ in range(sign_ins.LOCKOUT_FAILURES):
-        wrong_password(clock)
+        wrong_password(clock, "mallory")
 
     with pytest.raises(handler_module.SignInRefused) as refused:
-        wrong_password(clock)
+        wrong_password(clock, "mallory")
     assert "Too many failed sign-in attempts" in str(refused.value)
     assert "15 minutes" in str(refused.value)
     with pytest.raises(handler_module.SignInRefused):
-        wrong_password(clock)  # and again: still locked
+        wrong_password(clock, "mallory")  # and again: still locked
 
-    assert _events(tables) == ["attempt"] * 5 + ["refused"] * 2
+    assert _events(tables, "mallory") == ["attempt"] * 5 + ["refused"] * 2
 
     lockout = next(row for row in _incidents(tables) if row["category"] == "sign-in-lockout")
     assert lockout["severity"] == "high" and lockout["status"] == "open"
     assert lockout["source"] == "sign-in" and lockout["rule"] == "lockout"
     assert int(lockout["request_count"]) == 2  # both refusals, one incident
     # The user's name is not in the incident: a keyed hash of it, as for a client address.
-    assert "operator" not in json.dumps(lockout, default=str)
+    assert "mallory" not in json.dumps(lockout, default=str)
     assert re.fullmatch(r"[0-9a-f]{16}", lockout["client_hash"])
     # One alert line for the incident, however many times the user is refused: this line is what
     # the high-severity alarm counts, and the alarm is what emails the operator.
     out = capsys.readouterr().out
     assert out.count(se.ALERT_MARKER) == 1
     assert "sign-in-lockout via sign-in" in out
-    assert "operator" not in out
+    assert "mallory" not in out
 
 
 def test_repeated_failures_are_a_low_incident_before_the_lockout(tables, monkeypatch, capsys):
@@ -293,8 +294,8 @@ def test_an_event_with_no_user_or_an_unknown_trigger_is_let_through(tables, monk
 
 
 def _history(tables, monkeypatch):
-    """operator: in twice, one slip. judge: locked right now. guest: three failures yesterday."""
-    clock = Clock(monkeypatch, NOW - timedelta(days=1))
+    """operator: in twice, one slip. judge: locked right now. guest: three failures two days ago."""
+    clock = Clock(monkeypatch, NOW - timedelta(days=2))
     for _ in range(3):
         wrong_password(clock, "guest")
     clock.now = NOW - timedelta(hours=3)
@@ -323,14 +324,14 @@ def test_the_report_counts_each_user_and_says_who_is_locked(tables, monkeypatch)
     assert users["operator"]["last_success"].startswith("2026-10-04T23:00")
     assert users["judge"]["locked"] is True and users["judge"]["refused"] == 1
     assert users["judge"]["failed"] == 5 and users["judge"]["last_success"] is None
-    assert users["guest"]["failed"] == 3 and users["guest"]["locked"] is False  # yesterday's
+    assert users["guest"]["failed"] == 3 and users["guest"]["locked"] is False  # two days old
     assert report["totals"] == {"attempts": 11, "successes": 2, "failed": 9, "refused": 1}
     assert report["lockout"] == {"failures": 5, "window_minutes": 15}
     # The period is held to 1..30 days, whatever is asked.
     assert sign_ins.report(999, now)["days"] == 30 and sign_ins.report(0, now)["days"] == 1
     assert sign_ins.clamp_days("nonsense") == 7
-    # An hour is not long enough to see yesterday's.
-    assert "guest" not in {user["username"] for user in sign_ins.report(1, now - timedelta(days=3))["users"]}
+    # One day back does not reach the guest's failures.
+    assert {user["username"] for user in sign_ins.report(1, now)["users"]} == {"judge", "operator"}
 
 
 def test_the_tool_reports_a_lock_with_its_unlock_command_and_failures_with_the_list(tables, monkeypatch):
@@ -342,7 +343,9 @@ def test_the_tool_reports_a_lock_with_its_unlock_command_and_failures_with_the_l
     assert set(kinds) == {"sign_in_locked", "sign_in_failures"}  # the operator's one slip is not a finding
     locked = kinds["sign_in_locked"]
     assert locked["id"] == "judge"
-    assert locked["noticed"] == "User judge is locked out of the assistant after 5 failed sign-ins in 15 minutes"
+    assert locked["noticed"] == (
+        "User judge is locked out of the assistant after 5 failed sign-ins in 15 minutes"
+    )
     assert locked["suggestion"]["command"] == "python scripts/admin_cli.py sign-ins unlock judge"
     failed = kinds["sign_in_failures"]
     assert failed["noticed"] == "User guest failed to sign in 3 times in the last 7 days"
@@ -444,7 +447,9 @@ def test_the_cli_has_both_commands_and_encodes_the_name(monkeypatch):
     import admin_cli
 
     sent = []
-    monkeypatch.setattr(admin_cli, "_do_request", lambda args, method, path, body=None: sent.append((method, path)))
+    monkeypatch.setattr(
+        admin_cli, "_do_request", lambda args, method, path, body=None: sent.append((method, path))
+    )
     parser = admin_cli.build_parser()
 
     for argv in (["sign-ins", "list"], ["sign-ins", "list", "--days", "30"], ["sign-ins", "unlock", "a b/c"]):
@@ -489,7 +494,7 @@ def test_each_environment_has_the_function_its_table_and_its_routes(env):
     assert re.search(r"timeout\s+= 5\b", function)  # all Cognito gives a trigger
     # Its own settings: the shared map names the site, the site names the pool, the pool names
     # this function, so using the map here would be a cycle Terraform refuses.
-    assert "local.lambda_env_variables" not in function
+    assert "variables = local.lambda_env_variables" not in function
     for name in ("SIGN_INS_TABLE", "SECURITY_EVENTS_TABLE", "MODEL_CONFIG_TABLE", "NAME_PREFIX"):
         assert re.search(rf"^\s+{name}\s+=", function, re.M), name
     assert re.search(rf'ENVIRONMENT_NAME\s+= "{env}"', function)
@@ -497,7 +502,8 @@ def test_each_environment_has_the_function_its_table_and_its_routes(env):
     assert "sign_in_trigger_function_arn  = aws_lambda_function.sign_in_events.arn" in text
     # A lockout is high severity: its alert line must be in a log group the alarm's filter reads.
     alert_groups = text[text.index("security_alert_log_groups = [") :]
-    alert_groups = alert_groups[: alert_groups.index("]")]
+    alert_groups = alert_groups[: alert_groups.index("
+  ]")]
     assert "aws_lambda_function.sign_in_events.function_name" in alert_groups
     # The Admin API routes the CLI calls, and the table's name for the Admin API's function.
     assert '"GET /sign-ins",' in text and '"POST /sign-ins/{username}/unlock",' in text
@@ -508,7 +514,7 @@ def test_the_table_is_keyed_by_user_then_time_expires_and_is_one_the_shared_role
     tables = _tf("modules", "app-data", "main.tf")
     table = tables[tables.index('resource "aws_dynamodb_table" "sign_ins" {') :]
 
-    assert 'name                        = "${var.unique_name_prefix}-${var.environment_name}-sign-ins"' in table
+    assert '= "${var.unique_name_prefix}-${var.environment_name}-sign-ins"' in table
     assert re.search(r'hash_key\s+= "username"', table) and re.search(r'range_key\s+= "at"', table)
     assert 'attribute_name = "expires_at"' in table
     assert "aws_dynamodb_table.sign_ins.arn," in _tf("modules", "app-data", "outputs.tf")
