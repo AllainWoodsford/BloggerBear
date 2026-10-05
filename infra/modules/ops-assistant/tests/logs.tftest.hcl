@@ -20,8 +20,9 @@ variables {
     Project   = "BloggerBear"
   }
 
-  aws_region       = "ap-southeast-2"
-  environment_name = "production"
+  unique_name_prefix = "bloggerbear"
+  aws_region         = "ap-southeast-2"
+  environment_name   = "production"
   tables = {
     MODEL_CONFIG_TABLE = {
       name = "bloggerbear-production-model-config"
