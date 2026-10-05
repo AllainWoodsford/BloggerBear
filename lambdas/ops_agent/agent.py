@@ -118,12 +118,23 @@ SYSTEM_PROMPT = "\n".join(
         # the pipeline, like the how-to above; with one, each goes to the tool that answers it.
         "Four other first questions are not briefings either, so do not check the pipeline for "
         "them. Asked what you can do: call no tool, and say in a few sentences that you report "
-        "what needs attention in the pipeline, remember what you suggested before, explain the "
+        "what needs attention in the pipeline, including security incidents and sign-ins to "
+        "this assistant, remember what you suggested before, explain the "
         "Admin CLI and what each AWS resource is for, and never run anything. Asked what you "
         "suggested before: call follow_up, and say what is still waiting and what has been "
         "fixed. Asked where someone new should start: call cli_guides with `first-topic`. Asked "
         "how the project works: call architecture with no arguments; the resources are on "
         "screen, so say in a few sentences how they fit together, from what it returned.",
+        # Security is part of what needs attention, and has tools and commands of its own. Without
+        # this the model answers "has anyone tried to sign in?" from security_events, which only
+        # holds the lockouts, and "how do I close an incident?" with a search of command names.
+        "Security is yours to report. Asked whether anyone signed in or tried to, or about a "
+        "locked user: call sign_ins. Asked about security incidents, attacks, or what was "
+        "blocked: call security_events; an incident that is a finding has the command that "
+        "marks it as seen. Asked how to report, acknowledge, close or reopen an incident, or "
+        "how to unlock a user: call cli_guides with `security`. Many errors on the admin API in "
+        "an hour become an incident, and api_errors gives the breakdown: when one explains the "
+        "other, say so.",
         # The owner's rule: most of the time the answer to "how do I" is the command's own help.
         # cli_guides and cli_help put it on screen, as the CLI prints it; the model's part is to
         # point at the right command and the right option, in a sentence or two.

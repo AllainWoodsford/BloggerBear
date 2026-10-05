@@ -203,7 +203,9 @@ def build_server() -> MCPServer:
     def security_events(ctx: Context, days: int = account.SECURITY_DEFAULT_DAYS) -> dict[str, Any]:
         """The open security incidents of the last `days` (1 to 30): how many at each severity,
         and for each its category, request count, first and last seen, and next steps. Part of a
-        briefing; only high-severity incidents are findings."""
+        briefing. A finding for each high-severity incident, and for a medium one that is a
+        trend (many dropped comments in a day, many admin API errors in an hour) or was opened
+        by hand; each finding has the command that marks it as seen."""
         return remembered(ctx, account.security_events(days))
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
@@ -250,7 +252,8 @@ def build_server() -> MCPServer:
         often topics run (`costs`), gear (`gear`), editorial goals for a topic
         (`editorial-goals`), getting started with a first topic (`first-topic`), setting a topic
         up fully with its focus, keywords, exclusions and models (`topic-setup`, also for "too
-        many options, mock it up"), reviewing and publishing (`review`). Pass a guide's id, or a
+        many options, mock it up"), security incidents and sign-ins (`security`), reviewing and
+        publishing (`review`). Pass a guide's id, or a
         few words of what the operator wants to do. It puts the help of the guide's main
         commands on screen, each with a suggested command under it, so cli_help is not needed as
         well. `options` fills the suggested commands in with what the operator described (as

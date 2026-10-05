@@ -494,8 +494,10 @@ CATALOGUE: tuple[Component, ...] = (
     ),
     _lambda(
         "security-events",
-        "Turns the regional firewalls' block records into security incidents.",
-        "on each batch of BLOCK records from the public and admin APIs' WAF logs (a log subscription)",
+        "Turns the regional firewalls' block records into security incidents, and counts the "
+        "admin API's 4xx answers toward the hour's admin-api-errors incident.",
+        "on each batch of BLOCK records from the public and admin APIs' WAF logs, and of 4xx "
+        "lines from the admin API's access log (log subscriptions)",
         alarms=(f"{PREFIX}{ENV}-security-high-severity",),
     ),
     _lambda(

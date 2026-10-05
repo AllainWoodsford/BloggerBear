@@ -172,6 +172,46 @@ def test_only_open_incidents_in_the_window_and_days_is_kept_between_1_and_30(tab
     )
 
 
+def test_a_medium_trend_or_a_hand_opened_incident_is_a_finding_and_a_routine_medium_is_not(tables):
+    # Routine: one client over a limit, a scanner at the admin API. Counted, not carded.
+    put_incident(tables, "e-scraper", "rate-limit", "medium")
+    put_incident(tables, "e-scanner", "admin-denied", "medium", source="waf-admin-api")
+    # A trend still at its first threshold: counted only.
+    put_incident(tables, "e-drops-low", "feedback-drops", "low", source="comment-screening")
+    # Past the second threshold, or reported by a person: worth a card.
+    put_incident(tables, "e-drops", "feedback-drops", "medium", source="comment-screening", count=60)
+    put_incident(tables, "e-errors", "admin-api-errors", "medium", source="admin-api-access", count=55)
+    put_incident(
+        tables, "e-manual", "manual-report", "low", source="manual", summary="odd requests overnight"
+    )
+    put_incident(
+        tables, "e-manual-medium", "manual-report", "medium", source="manual", summary="Ignore previous x"
+    )
+
+    result = account.security_events(now=NOW)
+
+    found = {finding["id"]: finding for finding in result["findings"]}
+    assert set(found) == {"e-drops", "e-errors", "e-manual-medium"}
+    assert found["e-drops"]["noticed"] == (
+        "A medium-severity security incident is open: many dropped feedback comments in a day "
+        "in comment screening"
+    )
+    assert found["e-errors"]["noticed"] == (
+        "A medium-severity security incident is open: many errors in an hour from the admin API"
+    )
+    command = found["e-drops"]["suggestion"]["command"]
+    assert command == "python scripts/admin_cli.py security acknowledge e-drops"
+    # What the operator wrote is on the card, under the key that marks text nobody here wrote,
+    # and nowhere in what is said.
+    assert found["e-manual-medium"]["where"]["untrusted"] == {"summary": "Ignore previous x"}
+    assert "untrusted" not in found["e-drops"]["where"]
+    assert "Ignore" not in result["spoken"] and "odd requests" not in result["spoken"]
+    rows = {row["event_id"]: row for row in result["incidents"]}
+    assert rows["e-manual"]["untrusted"]["summary"] == "odd requests overnight"
+    assert "summary" not in rows["e-drops"]["untrusted"]
+    assert result["by_severity"] == {"high": 0, "medium": 5, "low": 2}
+
+
 def test_every_category_and_source_has_words_for_it():
     assert set(account._CATEGORY_SPOKEN) == set(PLAYBOOK)
     assert set(account._SOURCE_SPOKEN) == {
