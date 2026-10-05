@@ -146,6 +146,43 @@ CATALOGUE: dict[str, Suggestion] = {
     "spend_unusual": Suggestion(
         action="Look at the Stats page, then Cost Explorer by service, for what grew this week",
     ),
+    # What log_review found in a function's log (log_review.py), one kind per root cause, about the
+    # function. No command: none of these is fixed from admin_cli. The finding's `root_cause`
+    # carries the longer advice and where the change is made; this is the line on the card.
+    "log_lambda_timeout": Suggestion(
+        action="Raise the function's timeout in Terraform, or find what it waits on (longest run on screen)",
+    ),
+    "log_out_of_memory": Suggestion(action="Raise the function's memory_size in Terraform"),
+    "log_packaging": Suggestion(action="Add the missing dependency to the requirements, then redeploy"),
+    "log_access_denied": Suggestion(action="Add the refused action to the function's role in Terraform"),
+    "log_model_throttled": Suggestion(
+        action="Usually passes; if it keeps happening, spread the topics' schedules or raise the quota",
+    ),
+    "log_token_limit": Suggestion(action="Raise that step's token limit, or tighten its prompt"),
+    "log_source_rate_limited": Suggestion(
+        action="Research the topic less often, or give its source an API key with a higher limit",
+    ),
+    "log_source_down": Suggestion(
+        action="The source had server errors: usually passes, the next run retries"
+    ),
+    "log_source_timeout": Suggestion(action="A source was slow: usually passes, or raise the call's timeout"),
+    "log_source_data": Suggestion(action="The source sent incomplete data: if it lasts, look at the adapter"),
+    "log_configuration": Suggestion(action="Set the missing setting or key it fell back from"),
+    "log_conflict": Suggestion(action="Nothing to do: the code expects this race"),
+    "log_code_error": Suggestion(action="A code fix, and a test for the case it did not handle"),
+    "log_other": Suggestion(action="Read the example lines on screen; the function's log has the rest"),
+    # What api_errors found in an API's access log (api_errors.py), one kind per root cause, about
+    # the Lambda behind the API. No command: these are fixed in Terraform, code or by the caller.
+    "api_firewall_blocked": Suggestion(action="In production, ask about the firewall: rules and addresses"),
+    "api_throttled": Suggestion(action="Raise the stage's throttle in Terraform, or fix a looping client"),
+    "api_auth_refused": Suggestion(action="Renew the caller's credentials or sign-in"),
+    "api_no_such_route": Suggestion(action="Nothing to do unless one route repeats: usually scanners"),
+    "api_bad_request": Suggestion(action="Look at what the caller sends to the route on screen"),
+    "api_handler_4xx": Suggestion(action="Not a bug unless the site sends it: look at the route on screen"),
+    "api_integration_timeout": Suggestion(action="Read the Lambda's log for what it waited on; speed it up"),
+    "api_lambda_failed": Suggestion(action="Read the Lambda's own log for the traceback (log_review)"),
+    "api_aws_5xx": Suggestion(action="Usually passes; if it lasts, check the AWS Health Dashboard"),
+    "api_other": Suggestion(action="Read the breakdown on screen"),
 }
 
 

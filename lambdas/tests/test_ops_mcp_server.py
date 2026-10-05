@@ -184,12 +184,14 @@ MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}
 # The architecture expert (architecture.py, runsheets.py): answered from the package's catalogue.
 EXPERT_TOOLS = {"architecture", "investigate", "table_sample"}
+# The tools that read this environment's logs (log_review.py), read-only like the rest.
+LOG_TOOLS = {"log_review", "api_errors"}
 
 
 def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
 
-    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS
+    assert set(tools) == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS | LOG_TOOLS
     for name, tool in tools.items():
         # Only the memory tools say they write, and each says what: its own list and nothing else.
         assert tool["annotations"]["readOnlyHint"] is (name not in MEMORY_TOOLS)
@@ -217,6 +219,27 @@ def test_a_tool_call_returns_one_json_object_with_the_structured_result(client):
     assert response.headers["content-type"].startswith("application/json")  # not an event stream
     result = response.json()["result"]
     assert result["isError"] is False and result["structuredContent"] == answer
+
+
+def test_log_review_passes_on_what_the_operator_asked_for(client):
+    answer = {"spoken": "I found no errors.", "findings": [], "errors": 0, "functions": []}
+    with patch("ops_mcp.log_review.review", return_value=answer) as mock_review:
+        response = call(
+            client,
+            "tools/call",
+            {
+                "name": "log_review",
+                "arguments": {
+                    "topic": "crypto",
+                    "start": "2026-10-05T01:00:00Z",
+                    "end": "2026-10-05T03:00:00Z",
+                },
+            },
+            name="log_review",
+        )
+
+    mock_review.assert_called_once_with(None, "crypto", 24, "2026-10-05T01:00:00Z", "2026-10-05T03:00:00Z")
+    assert response.json()["result"]["structuredContent"] == answer
 
 
 def test_a_tool_that_fails_says_so_without_the_reason(client):
@@ -267,7 +290,9 @@ def test_the_only_thing_any_tool_can_write_is_the_assistants_own_table():
 
     registered = asyncio.run(server.build_server().list_tools())
 
-    assert {tool.name for tool in registered} == PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS
+    assert {tool.name for tool in registered} == (
+        PIPELINE_TOOLS | MEMORY_TOOLS | GUIDE_TOOLS | EXPERT_TOOLS | LOG_TOOLS
+    )
 
     package = pathlib.Path(server.__file__).parent
     writes = re.compile(r"\.(put_item|update_item|delete_item|batch_writer|put_object|delete_object)\(")
