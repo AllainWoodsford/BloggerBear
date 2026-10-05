@@ -95,8 +95,8 @@ DESTRUCTIVE_WARNING = (
 # On every Admin CLI command the assistant puts on screen (the owner's rule): it is a suggestion,
 # built by code from what the operator said, and they check it before it runs in their terminal.
 DOUBLE_CHECK_WARNING = (
-    "Suggested by the assistant: double-check every value against the help above and what you "
-    "meant before you run it. Nothing runs until you do."
+    "⚠️ Suggested by the assistant: double-check every value against the help above and what "
+    "you meant before you run it. Nothing runs until you do."
 )
 
 # Commands that change settings and refuse to run with nothing to change (admin_cli raises
@@ -613,7 +613,13 @@ def _slug_from(name) -> str | None:
     return slug if slug and _POSITIONAL.match(slug) else None
 
 
-def draft(command: str, options: Mapping | None = None) -> dict | None:
+def draft(
+    command: str,
+    options: Mapping | None = None,
+    *,
+    quiet_unknown: bool = False,
+    show: tuple[str, ...] | list[str] = (),
+) -> dict | None:
     """The suggested command under a command's help: built as cli_command builds it, but never
     refused. A value the operator gave that fits goes in; one that does not, and anything required
     and not given, is a <placeholder>, listed on the card. A topic's id missing beside its name is
@@ -659,7 +665,8 @@ def draft(command: str, options: Mapping | None = None) -> dict | None:
                 continue
             except _Refused:
                 pass  # what was given does not fit: a placeholder, and the operator fills it in
-        if argument["required"] or name in given:
+        # `show`: optional arguments a guide wants seen even when not given (its step's "ask").
+        if argument["required"] or name in given or argument["dest"] in show:
             holder = _placeholder(argument)
             placeholders.append(name)
             positional = argument["kind"] == "positional"
@@ -679,7 +686,7 @@ def draft(command: str, options: Mapping | None = None) -> dict | None:
         where["fill in"] = ", ".join(name if name.startswith("an ") else f"<{name}>" for name in placeholders)
     if derived:
         where["made from the name"] = ", ".join(derived)
-    if unknown:
+    if unknown and not quiet_unknown:
         where["left out"] = ", ".join(f"{name} (not an option of {path})" for name in unknown)
     found = _how_to(
         f"draft-{_slug(path)}",
@@ -969,6 +976,73 @@ GUIDES: dict[str, dict] = {
             },
         ],
     },
+    # For "there are too many options, mock up what I'm trying to do": one topic set up fully. The
+    # mapping from what the operator says to which option holds it is the point of this guide.
+    "topic-setup": {
+        "title": "Setting a topic up fully: focus, keywords, exclusions and models",
+        "keywords": (
+            "mock",
+            "too many options",
+            "everything",
+            "all the settings",
+            "fully",
+            "keyword",
+            "phrase",
+            "ignore",
+            "exclude",
+            "fallback",
+            "set up a topic",
+        ),
+        "explanation": [
+            "Most of a topic is said in three options. What it is about and what to leave out go in "
+            "--editorial-goals-json: primary_focus (what to write about) and exclusion_criteria (what "
+            "to ignore, and any rule about how to write), up to 1,000 characters each.",
+            # common/adapters/web_search.py: queries, title_keywords, max_age_hours.
+            "Where it looks goes in --config-json, for the web_search adapter: queries (what to "
+            "search for), title_keywords (keep only results whose title has one of these words; "
+            "a trailing * matches a prefix) and max_age_hours (default 24). There is no list of "
+            "words to ignore: that is exclusion_criteria.",
+            # admin_cli topics create --model-id / --fallback-model-id; models list shows the ids.
+            "--model-id pins its model and --fallback-model-id is the one tried when that fails; "
+            "both take an exact id from models list. --financial makes every article wait for you. "
+            + SHELL_NOTE,
+        ],
+        "commands": ["topics create", "models list", "topics get"],
+        "questions": [
+            "What should it write about? (the name, and its focus)",
+            "What should it ignore, or how should it write?",
+            "What should it search for, and which words must a result's title have?",
+            "Which model, and which fallback? (exact ids from models list)",
+            "Is it about money or investing?",
+        ],
+        "steps": [
+            {"say": "See the model ids", "command": "models list", "options": {}, "ask": []},
+            {
+                "say": "Create the topic with everything set",
+                "command": "topics create",
+                "options": {},
+                "ask": ["topic_id", "name", "editorial_goals_json", "config_json", "fallback_model_id"],
+            },
+            {"say": "Check what was saved", "command": "topics get", "options": {}, "ask": ["topic_id"]},
+        ],
+        "example": {
+            "say": "Worked example: a vegetable-garden topic, set up fully",
+            "command": "topics create",
+            "options": {
+                "topic_id": "watering-vegetables",
+                "name": "Watering vegetables",
+                "editorial_goals_json": {
+                    "primary_focus": "Practical watering for home vegetable gardens: timing, amounts, "
+                    "drip and soaker systems, and saving water in hot weather.",
+                    "exclusion_criteria": "Ignore lawns, ornamental flowers and product promotions.",
+                },
+                "config_json": {
+                    "queries": ["vegetable garden watering", "drip irrigation vegetables"],
+                    "title_keywords": ["water*", "irrigat*", "drip"],
+                },
+            },
+        },
+    },
     "review": {
         "title": "Reviewing and publishing",
         "keywords": (
@@ -1064,7 +1138,7 @@ def _topics_sentence() -> tuple[str, int | None]:
     return f"You already have {count} {plural}; this is how you would add another.", count
 
 
-def cli_guides(topic: str | None = None) -> dict:
+def cli_guides(topic: str | None = None, options: Mapping | None = None) -> dict:
     """With nothing: the guides there are. With a guide's id, or a few words about what the
     operator wants: that guide (how the feature works, the commands involved, the steps as
     cli_command entries) and, on screen, the help of its main commands and its worked example."""
@@ -1088,7 +1162,21 @@ def cli_guides(topic: str | None = None) -> dict:
         result["topics"] = count
         result["adapters"] = dict(ADAPTERS)
 
-    findings = _help_findings(guide["commands"])
+    findings = []
+    # Each main command's help, and under it the suggested command for the guide's step that uses
+    # it: the step's own options, then what the operator gave (`options`), placeholders for the rest.
+    step_options: dict[str, dict] = {}
+    step_asks: dict[str, list[str]] = {}
+    for step in guide["steps"]:
+        step_options.setdefault(step["command"], dict(step.get("options") or {}))
+        step_asks.setdefault(step["command"], list(step.get("ask") or []))
+    for help_card in _help_findings(guide["commands"]):
+        findings.append(help_card)
+        path = help_card["where"]["command"]
+        wanted = {**step_options.get(path, {}), **(dict(options) if isinstance(options, Mapping) else {})}
+        drafted = draft(path, wanted, quiet_unknown=True, show=step_asks.get(path, ()))
+        if drafted is not None:
+            findings.append(drafted)
     example = guide.get("example")
     if example:
         built = cli_command(example["command"], example["options"])
@@ -1096,7 +1184,10 @@ def cli_guides(topic: str | None = None) -> dict:
             findings.append({**found, "id": f"example-{key}", "noticed": example["say"]})
 
     shown = [found["where"]["command"] for found in findings if "help" in found]
-    spoken = f"{explanation[0]} The help for {_join(shown)} is on screen."
+    spoken = (
+        f"{explanation[0]} The help for {_join(shown)} is on screen, each with a suggested "
+        "command under it to check before you run it."
+    )
     if example:
         spoken += " So is a worked example."
     return {

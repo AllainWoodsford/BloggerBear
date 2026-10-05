@@ -20,8 +20,8 @@ from common.naming import NAME_PREFIX
 
 ADMIN_CLI = "python scripts/admin_cli.py"
 DOUBLE_CHECK_WARNING = (
-    "Suggested by the assistant: double-check it is the right article or topic before you run it. "
-    "Nothing runs until you do."
+    "⚠️ Suggested by the assistant: double-check it is the right article or topic before you run "
+    "it. Nothing runs until you do."
 )
 
 # Topic ids are slugs and article ids are UUIDs: letters, digits, "-" and "_". Anything else is

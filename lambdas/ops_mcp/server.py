@@ -245,21 +245,26 @@ def build_server() -> MCPServer:
         return cli_guide.cli_help(commands, options)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
-    def cli_guides(topic: str | None = None) -> dict[str, Any]:
+    def cli_guides(topic: str | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Short guides to how a feature works and which commands it uses: cutting costs and how
         often topics run (`costs`), gear (`gear`), editorial goals for a topic
-        (`editorial-goals`), getting started with a first topic (`first-topic`), reviewing and
-        publishing (`review`). Pass a guide's id, or a few words of what the operator wants to
-        do. It puts the help of the guide's main commands on screen, so cli_help is not needed
-        as well. Use it first for a "how do I" question that is about a feature and not one
-        command. With nothing: the guides there are."""
-        return cli_guide.cli_guides(topic)
+        (`editorial-goals`), getting started with a first topic (`first-topic`), setting a topic
+        up fully with its focus, keywords, exclusions and models (`topic-setup`, also for "too
+        many options, mock it up"), reviewing and publishing (`review`). Pass a guide's id, or a
+        few words of what the operator wants to do. It puts the help of the guide's main
+        commands on screen, each with a suggested command under it, so cli_help is not needed as
+        well. `options` fills the suggested commands in with what the operator described (as
+        cli_command takes them, e.g. {"name": "...", "editorial_goals_json": {"primary_focus":
+        "...", "exclusion_criteria": "..."}, "config_json": {"queries": [...]}}); anything not
+        given is a <placeholder>. Use it first for a "how do I" question that is about a feature
+        and not one command. With nothing: the guides there are."""
+        return cli_guide.cli_guides(topic, options)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def cli_command(command: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """The second step of a "how do I" answer: one exact command, built by the server and put
-        on screen for the operator to copy. Use it only when the operator has given the values,
-        or asks for the exact command; otherwise show the help (cli_help, cli_guides). `command`
+        """One exact command, built by the server and put on screen for the operator to copy, once
+        every value is known; to mock one up from a described goal, with placeholders for what
+        is not, use cli_guides or cli_help with `options`. `command`
         is a command path ("topics update"); `options` maps each argument or flag to its value
         ({"topic_id": "crypto", "research_interval_hours": 3}): a switch takes true, a
         `--...-json` flag takes an object. Use only values the operator gave: if `questions`
