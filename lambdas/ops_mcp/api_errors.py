@@ -235,6 +235,7 @@ def api_errors(
     now: datetime | None = None,
     run: Callable[[list], dict] | None = None,
     readable: Callable[[list[str]], tuple[list[str], list[dict]]] | None = None,
+    wait_seconds: float = logs.WAIT_SECONDS,
 ) -> dict:
     env = architecture.environment()
     if env is None:
@@ -259,7 +260,10 @@ def api_errors(
     for group in allowed:
         key = by_group[group].key
         jobs += [((key, name), region, group, query, when.start, when.end) for name, query in text.items()]
-    results = (run or (lambda batch: logs.run_queries(batch, label="ops_api_errors")))(jobs)
+    # `wait_seconds` is shorter when a caller reads several logs in one request (memory.py).
+    if run is None:
+        run = lambda batch: logs.run_queries(batch, label="ops_api_errors", wait_seconds=wait_seconds)  # noqa: E731
+    results = run(jobs)
 
     rows, findings, complete = [], [], True
     totals = {"requests": 0, "errors": 0}

@@ -1,11 +1,10 @@
 """Where to look when the assistant cannot look itself: `investigate`, a runsheet per symptom.
 
-The assistant has no tool that reads a log, a metric or a dashboard, and should not: logs hold what
-visitors and attackers sent, and its role is held to a few tables (ops-assistant/main.tf). What it
-does have is the architecture (architecture.py), so when the operator asks "any 400s in the logs?"
-it can still answer like someone who knows the system: which dashboards to open, which log groups
-to query and with what query, which AWS console pages show it, and which of its own tools to ask
-first. That is a runsheet.
+The assistant reads this environment's logs itself (log_review, api_errors), but not metrics or
+dashboards, and the operator often wants to look for themselves: "how can I check these myself?".
+It knows the architecture (architecture.py), so it answers like someone who knows the system: which
+dashboards to open, which log groups to query and with what query, which AWS console pages show it,
+and which of its own tools to ask first. That is a runsheet.
 
 **Every word and every query is ours.** A runsheet is chosen by its id or by matching the
 operator's words against fixed keywords; nothing they said is put into a step. Names come from the
@@ -233,7 +232,7 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
                 "log",
             ),
             "API errors are in API Gateway's access logs, which say which status and who answered.",
-            ("alarms", "security_events"),
+            ("api_errors", "alarms", "security_events"),
             (_EDGE, *[step for one in apis for step in _api_steps(one, status)]),
         ),
         Runsheet(
@@ -257,7 +256,7 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
             ),
             "A failed daily run shows in the state machine's executions, the dead-letter queue and "
             "the daily cycle's log.",
-            ("pipeline_health", "admin_inbox", "alarms"),
+            ("pipeline_health", "admin_inbox", "log_review", "alarms"),
             (
                 _PIPELINE,
                 Step(
@@ -302,7 +301,7 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
             ),
             "Research runs on a per-topic EventBridge schedule; a late topic is a schedule that "
             "did not fire or a research-tick run that failed.",
-            ("pipeline_health",),
+            ("pipeline_health", "log_review"),
             (
                 Step(
                     f"EventBridge console > Scheduler > Schedules > {PREFIX}{ENV}-<topic_id>-research-tick",
@@ -345,7 +344,7 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
             ),
             "Each Lambda has an errors and a throttles alarm, a widget on the pipeline dashboard "
             "and a log group named after it.",
-            ("alarms", "pipeline_health"),
+            ("log_review", "alarms", "pipeline_health"),
             (
                 _PIPELINE,
                 _ALARMS,
@@ -586,7 +585,7 @@ def investigate(symptom: str | None = None, status: int | None = None, api: str 
             findings.append(_query_card(sheet, number, step, env))
 
     spoken = (
-        f"{sheet.summary} I can't read logs or metrics myself, so a runsheet for {env or 'this environment'} "
+        f"{sheet.summary} To check it yourself, a runsheet for {env or 'this environment'} "
         f"is on screen: {len(steps)} places to look"
     )
     spoken += f", with {len(findings)} queries to copy." if findings else "."
