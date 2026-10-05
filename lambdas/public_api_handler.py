@@ -47,7 +47,15 @@ from common.attribution import (
     sources_for_topic,
     sources_for_topics,
 )
-from common.comment_screening import INJECTION, MARKUP, SHELL, SQL, screen_comment
+from common.comment_screening import (
+    INJECTION,
+    MARKUP,
+    MODEL_BUDGET,
+    MODEL_ERROR,
+    SHELL,
+    SQL,
+    screen_comment,
+)
 from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
@@ -440,6 +448,9 @@ HONEYPOT_FIELD = "referral_code"
 # Comment-screening reasons that mean someone tried to attack the system, not just post a bad
 # comment: recorded as security events as well as rejected.
 _ATTACK_REASONS = frozenset({INJECTION, SQL, MARKUP, SHELL})
+# Drops that say nothing about the comment: the day's model checks ran out, or the model failed.
+# Every other drop counts toward the day's "feedback-drops" trend (common/security_events.py).
+_NOT_THE_COMMENTS_DOING = frozenset({MODEL_BUDGET, MODEL_ERROR})
 
 
 def _client_ip(event: dict) -> str:
@@ -571,6 +582,10 @@ def _submit_feedback(event: dict) -> dict:
                 method="POST",
                 path=f"/articles/{article_id}/feedback",
             )
+        if screened["dropped_because"] not in _NOT_THE_COMMENTS_DOING:
+            # Whatever the reason and whoever sent it: ten in a day opens a low incident, fifty
+            # makes it medium, a hundred high (and alerts). A count only -- nothing of the comment.
+            security_events.record_trend("feedback-drops", datetime.now(UTC))
         try:
             record_feedback_rejected_comment()
         except Exception as exc:  # noqa: BLE001 - the rejection itself must still be returned

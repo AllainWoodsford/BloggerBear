@@ -129,10 +129,17 @@ CATALOGUE: dict[str, Suggestion] = {
     "musing_dangling": Suggestion(
         action="Look at the article the musing links to: a reader who follows the link finds nothing",
     ),
+    # A high-severity incident: the next steps are on screen; the command marks it as seen, which
+    # is what takes it out of the briefing.
     "security_incident": Suggestion(
         action=(
             f"Read the incident's next steps on screen; the edge dashboard ({NAME_PREFIX}-<env>-edge) "
-            "shows what the firewall blocked"
+            "shows what the firewall blocked. Then mark it as seen"
+        ),
+        arguments="security acknowledge {id}",
+        what_it_does=(
+            "Marks the incident as acknowledged, so it stops being reported as open. It blocks "
+            "nobody and changes nothing else; `security resolve` closes it when it is dealt with."
         ),
     ),
     "alarm_firing": Suggestion(
@@ -141,10 +148,18 @@ CATALOGUE: dict[str, Suggestion] = {
             "shows what led up to it"
         ),
     ),
+    # Something unusual that is not an incident yet: the command opens one, so it is written
+    # down and followed up. The words after --summary are fixed, for the operator to edit.
     "firewall_spike": Suggestion(
         action=(
-            f"Look at the edge dashboard ({NAME_PREFIX}-<env>-edge) for which rule is blocking, and at "
-            "the security incidents for what it caught"
+            f"Look at the edge dashboard ({NAME_PREFIX}-<env>-edge) for which rule is blocking; if it "
+            "is not ordinary noise, open a security incident for it"
+        ),
+        arguments='security open --severity medium --summary "the firewall is blocking far more than usual"',
+        what_it_does=(
+            "Opens a security incident with your summary, so the spike is on record and shows in "
+            "`security list` until you resolve it. It blocks nobody. High severity would also "
+            "send the alert email."
         ),
     ),
     "spend_unusual": Suggestion(

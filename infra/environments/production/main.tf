@@ -991,6 +991,11 @@ module "admin_api" {
     # admin_api_handler.py's _list_sign_ins/_unlock_sign_in and admin_cli.py's `sign-ins`.
     "GET /sign-ins",
     "POST /sign-ins/{username}/unlock",
+    # Security incidents: listing them, moving one along, and opening one by hand -- see
+    # admin_api_handler.py's _list_security_incidents and admin_cli.py's `security`.
+    "GET /security-incidents",
+    "POST /security-incidents",
+    "PUT /security-incidents/{event_id}/status",
     # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
     # of 5): the DynamoDB-backed model registry and global default/
     # fallback model config -- see admin_api_handler.py's _list_models/
@@ -2354,6 +2359,8 @@ module "observability" {
     aws_cloudwatch_log_group.lambda[aws_lambda_function.security_events.function_name].name,
     aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name,
     aws_cloudwatch_log_group.lambda[aws_lambda_function.sign_in_events.function_name].name,
+    # An incident opened by hand at high severity (admin_cli security open) alerts too.
+    aws_cloudwatch_log_group.lambda[aws_lambda_function.admin_api.function_name].name,
   ]
 
   # Scaling PR C: the edge dashboard, API Gateway and WAF (api_waf_dashboards.tf in the module).
@@ -2558,6 +2565,31 @@ resource "aws_cloudwatch_log_subscription_filter" "security_events" {
   destination_arn = aws_lambda_function.security_events.arn
 
   depends_on = [aws_lambda_permission.security_events_from_waf_logs]
+}
+
+# The admin API's own 4xx answers, from its access log (not its firewall's): a burst of them is an
+# incident too (common/security_events.py's "admin-api-errors" trend: 20 in an hour opens it, 50
+# makes it medium, 100 high). Status only is matched here; the function leaves out what the
+# firewall refused, which the subscription above already delivers from the WAF's log.
+locals {
+  admin_api_access_log_group_arn = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${module.admin_api.access_log_group_name}"
+}
+
+resource "aws_lambda_permission" "security_events_from_admin_access_log" {
+  statement_id  = "AllowAdminApiAccessLog"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.security_events.function_name
+  principal     = "logs.amazonaws.com"
+  source_arn    = "${local.admin_api_access_log_group_arn}:*"
+}
+
+resource "aws_cloudwatch_log_subscription_filter" "security_events_admin_api_errors" {
+  name            = "${var.unique_name_prefix}-production-security-events-admin-api-errors"
+  log_group_name  = module.admin_api.access_log_group_name
+  filter_pattern  = "{ $.status >= 400 && $.status < 500 }"
+  destination_arn = aws_lambda_function.security_events.arn
+
+  depends_on = [aws_lambda_permission.security_events_from_admin_access_log]
 }
 
 # =========================================================================

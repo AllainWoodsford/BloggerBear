@@ -26,7 +26,7 @@ from decimal import Decimal
 
 import boto3
 
-from common import equipment, feedback_limits, gear, sign_ins
+from common import equipment, feedback_limits, gear, security_events, sign_ins
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
@@ -59,6 +59,7 @@ from common.dynamo import (
     list_moderation_by_status,
     list_pending_moderation,
     list_prompt_refinements,
+    list_security_incidents,
     list_topics,
     put_feedback_config,
     put_model,
@@ -1637,6 +1638,53 @@ def _list_failed_executions(event: dict) -> dict:
     return _response(200, {"items": list_failed_executions()})
 
 
+# --- Security incidents (common/security_events.py) -----------------------------------------------
+#
+# Incidents are written by the firewalls' logs, comment screening, the sign-in triggers and the
+# trends. A person reads them here, moves them along (open -> acknowledged -> resolved), and can
+# open one by hand for something nothing recorded.
+
+_INCIDENTS_MAX = 100
+
+
+def _list_security_incidents(event: dict) -> dict:
+    status = _query_param(event, "status") or security_events.OPEN
+    if status not in security_events.STATUSES:
+        return _error(400, f"'status' must be one of {', '.join(security_events.STATUSES)}")
+    items = list_security_incidents(status, _INCIDENTS_MAX)
+    return _response(200, {"status": status, "count": len(items), "items": items})
+
+
+def _open_security_incident(event: dict) -> dict:
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    severity, summary = body.get("severity"), body.get("summary")
+    if not isinstance(summary, str) or not isinstance(severity, str):
+        return _error(400, "'severity' (low, medium or high) and 'summary' are required")
+    try:
+        incident = security_events.open_manual_incident(severity, summary, datetime.now(UTC))
+    except ValueError as exc:
+        return _error(400, str(exc))
+    return _response(201, incident)
+
+
+def _set_security_incident_status(event: dict) -> dict:
+    event_id = _path_param(event, "event_id") or ""
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    status = body.get("status")
+    if status not in security_events.STATUSES:
+        return _error(400, f"'status' must be one of {', '.join(security_events.STATUSES)}")
+    incident = security_events.change_status(event_id, status, datetime.now(UTC))
+    if incident is None:
+        return _error(404, f"no security incident '{event_id}'")
+    return _response(200, incident)
+
+
 # --- Sign-ins to the operator's assistant (common/sign_ins.py) ----------------------------------
 #
 # The log the user pool's triggers write, and the one thing a person may change in it: clearing a
@@ -1945,6 +1993,9 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/announce": _announce_loot,
     "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
+    "GET /security-incidents": _list_security_incidents,
+    "POST /security-incidents": _open_security_incident,
+    "PUT /security-incidents/{event_id}/status": _set_security_incident_status,
     "GET /sign-ins": _list_sign_ins,
     "POST /sign-ins/{username}/unlock": _unlock_sign_in,
     "GET /models": _list_models,

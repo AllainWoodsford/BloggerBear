@@ -32,9 +32,11 @@ from common.costing import USD_TO_AUD_RATE
 from common.dynamo import get_current_stats, list_security_incidents, list_stats_history_weeks
 from common.naming import NAME_PREFIX
 from common.security_events import (
+    ADMIN_API_ACCESS,
     COMMENT_SCREENING,
     HIGH,
     LOW,
+    MANUAL,
     MEDIUM,
     PLAYBOOK,
     SIGN_IN,
@@ -77,6 +79,9 @@ _CATEGORY_SPOKEN = {
     "comment-attack": "comments shaped like an attack",
     "sign-in-failures": "repeated failed sign-ins",
     "sign-in-lockout": "a user locked out after failed sign-ins",
+    "feedback-drops": "many dropped feedback comments in a day",
+    "admin-api-errors": "many errors in an hour",
+    "manual-report": "something reported by hand",
     "other": "blocks by a rule I don't recognise",
 }
 _SOURCE_SPOKEN = {
@@ -85,6 +90,8 @@ _SOURCE_SPOKEN = {
     WAF_OTHER: "at the firewall",
     COMMENT_SCREENING: "in comment screening",
     SIGN_IN: "at the assistant's sign-in",
+    ADMIN_API_ACCESS: "from the admin API",
+    MANUAL: "by an operator",
 }
 
 

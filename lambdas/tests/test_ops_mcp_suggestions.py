@@ -67,7 +67,9 @@ def test_the_kinds_with_no_command_are_the_ones_the_cli_cannot_fix():
 
     log_kinds = [f"log_{cause.key}" for cause in (*log_review.CAUSES, log_review.OTHER)]
     log_kinds += [f"api_{key}" for key in api_errors.CAUSES]
-    others = ["alarm_firing", "firewall_spike", "musing_dangling", "security_incident", "spend_unusual"]
+    # A security incident and a firewall spike have one each now: `security acknowledge` and
+    # `security open`.
+    others = ["alarm_firing", "musing_dangling", "spend_unusual"]
     assert WITHOUT_A_COMMAND == sorted(others + log_kinds)
     for kind in WITH_A_COMMAND:
         assert suggestions.CATALOGUE[kind].what_it_does
