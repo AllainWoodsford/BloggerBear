@@ -155,6 +155,13 @@ python scripts/admin_cli.py articles rewrite <article_id> -i "names the wrong co
 
 python scripts/admin_cli.py failed-executions list
 
+# Sign-ins to the operator's assistant. Every attempt and success is logged; five failed
+# attempts in fifteen minutes lock the user, raise a high-severity security incident and send
+# the alert email. `unlock` lets them in again at once and does not change the password.
+python scripts/admin_cli.py sign-ins list
+python scripts/admin_cli.py sign-ins list --days 30
+python scripts/admin_cli.py sign-ins unlock <username>
+
 # Lineage/cost data: where it is missing, and repair. `backfill` is a dry run
 # unless --apply; it only rewrites `lineage` (tokens are kept), and is safe to repeat.
 python scripts/admin_cli.py lineage audit

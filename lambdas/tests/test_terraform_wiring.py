@@ -160,7 +160,7 @@ def test_every_table_is_protected_when_asked_and_production_asks():
     assert tables.count('resource "aws_dynamodb_table"') == 16
     assert tables.count("deletion_protection_enabled = var.protect_data") == 16
     assert (
-        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 15
+        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 16
     )  # point-in-time recovery
     assert re.search(r"protect_data\s*=\s*true", _read("environments", "production", "main.tf"))
     assert "protect_data" not in _read("environments", "dev", "main.tf")

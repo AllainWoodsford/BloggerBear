@@ -502,8 +502,7 @@ def test_each_environment_has_the_function_its_table_and_its_routes(env):
     assert "sign_in_trigger_function_arn  = aws_lambda_function.sign_in_events.arn" in text
     # A lockout is high severity: its alert line must be in a log group the alarm's filter reads.
     alert_groups = text[text.index("security_alert_log_groups = [") :]
-    alert_groups = alert_groups[: alert_groups.index("
-  ]")]
+    alert_groups = alert_groups[: alert_groups.index("\n  ]")]
     assert "aws_lambda_function.sign_in_events.function_name" in alert_groups
     # The Admin API routes the CLI calls, and the table's name for the Admin API's function.
     assert '"GET /sign-ins",' in text and '"POST /sign-ins/{username}/unlock",' in text

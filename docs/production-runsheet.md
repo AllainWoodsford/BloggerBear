@@ -226,7 +226,9 @@ Then, in order:
    Open `https://<your domain>/ask.html`, sign in, and set up the authenticator app it asks for.
    Press **Test voice**, then **What needs my attention?**. "What's happening with the firewall?"
    as a follow-up is production's deep dive. Check `pipeline-config get` shows `assistant_access`
-   as `open` (or absent), unless you mean to lock it to your addresses.
+   as `open` (or absent), unless you mean to lock it to your addresses. Five failed sign-ins in
+   fifteen minutes lock a user and email the alert address; `sign-ins unlock <you>` clears it
+   ([deployment-runsheet.md, step 5](deployment-runsheet.md#5-after-the-first-deploy)).
 8. **Optional: Alexa+.** Production's own add-on, linked to production's pool only, is a one-time
    bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
    `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).

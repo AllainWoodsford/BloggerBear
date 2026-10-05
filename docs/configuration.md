@@ -149,6 +149,7 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | How often research really runs, for every topic | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --research-interval-hours N` | 1 hour |
 | The fresh-data review of each draft | same item | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note` | `shadow`; hold |
 | Who may reach the operator's assistant | same item | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
+| A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`, `feedback-lock`, `feedback-unlock` | See `feedback-config --help` |
 | A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
 

@@ -171,7 +171,8 @@ flowchart TB
   admin API also sits behind IAM auth and an IP allowlist that fails closed: an empty allowlist
   lets nothing in. Blocked requests and comments dropped as attacks are grouped into incidents
   (category, severity, next steps; a keyed hash of the client, never the IP), and a
-  high-severity incident emails an alarm.
+  high-severity incident emails an alarm. Sign-ins to the operator's assistant are logged, and
+  a user is locked out after repeated failures, which is such an incident.
 - **Observability:** CloudWatch alarms and dashboards, a daily Cost Explorer poll that feeds the
   Stats page, and an AWS Budget alarm on Bedrock spend.
 - **Operator's assistant:** a read-only assistant that tells the operator, by voice, what needs
