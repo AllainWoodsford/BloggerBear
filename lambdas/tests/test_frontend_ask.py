@@ -38,6 +38,12 @@ def _code(js: str) -> str:
     return re.sub(r"(?m)^\s*//.*$|(?<=[;{}),])\s*//.*$", "", js)
 
 
+def _between(text: str, start: str, end: str) -> str:
+    """The part of `text` from `start` up to the next `end`."""
+    begin = text.index(start)
+    return text[begin : text.index(end, begin)]
+
+
 # --- deployed -----------------------------------------------------------------------------------
 
 
@@ -344,14 +350,79 @@ def test_the_voice_test_listens_only_after_its_sample_has_been_spoken():
 
 def test_recognition_shows_words_as_heard_and_asks_once_it_ends():
     code = _code(_read("ask.js"))
-    start = code[code.index("function startListening(onHeard)") : code.index("function stopListening()")]
+    listener = code[code.index("function createListener(env)") : code.index("function pickVoice(")]
+    done = _between(code, "function listeningDone(result, options)", "var listener = createListener(")
 
-    assert "current.interimResults = true;" in start
-    assert "current.lang = LANG;" in start
-    # The question goes once, from onend, and only with words heard.
-    onend = start[start.index("current.onend") :]
-    assert "(onHeard || ask)(heard)" in onend
-    assert "ask(" not in start[: start.index("current.onend")]
+    assert "current.interimResults = true;" in listener
+    assert "current.lang = env.lang;" in listener and "lang: LANG," in code
+    # One short session at a time: a tap must still stop by itself when the person stops speaking.
+    assert "current.continuous = false;" in listener and "continuous = true" not in code
+    # The listener never asks: it hands the words over once, and the page asks with them.
+    assert "ask(" not in listener
+    assert listener.count("env.onDone(") == 1
+    assert done.count("ask(result.heard);") == 1 and "options.onHeard(result.heard);" in done
+    assert "onDone: listeningDone," in code
+    # Listening cancels speech, and does not start while a question is being answered.
+    start = _between(code, "function startListening(onHeard, onFailed, press)", "function stopListening()")
+    assert "if (listening || busy || !Recognition || voiceUnusable) {" in start
+    assert start.index("stopSpeaking();") < start.index("listener.start(")
+
+
+def test_a_held_button_keeps_listening_and_only_a_press_of_the_talk_button_counts_as_held():
+    code = _code(_read("ask.js"))
+    html = _read("ask.html")
+
+    assert "var LISTEN_MAX_MS = 60000;" in code
+    held = code[code.index("isHeld: function (options) {") :]
+    held = held[: held.index("},")]
+    assert "options.press === true" in held and "pressedAt !== 0" in held and "pressStarted" in held
+    assert "Date.now() - pressedAt >= HOLD_MS" in held
+    # Only the talk button's own press says so; the voice test and a screen reader's click do not.
+    assert code.count("startListening(null, null, true);") == 1
+    press_down = code[code.index("function pressDown()") : code.index("function pressUp()")]
+    assert "startListening(null, null, true);" in press_down
+    # A held key repeats: only the first keydown is the press.
+    assert "if (!event.repeat) {" in code
+    # The ceiling ends the press, so the click its release makes is not taken for a tap.
+    ceiling = _between(code, "onCeiling: function () {", "onDone: listeningDone,")
+    assert re.search(r"if \(pressedAt\) \{\s*pressedAt = 0;\s*skipClick = true;", ceiling)
+    assert "if (skipClick || Date.now() - lastPressAt < CLICK_AFTER_PRESS_MS) {" in code
+    assert "for up to a minute" in _between(html, 'id="ask-talk-hint"', 'id="ask-speech-broken"')
+
+
+def test_a_browser_whose_recognition_cannot_work_gets_the_text_controls_and_loses_the_button():
+    code = _code(_read("ask.js"))
+    html = _read("ask.html")
+
+    # Decided from the errors received, never from the browser's name.
+    assert "userAgent" not in code and "navigator.vendor" not in code
+    assert re.search(r'<p id="ask-speech-broken" class="ask-hint" hidden>', html)
+    retire = code[code.index("function retireVoice()") : code.index("function listeningDone(")]
+    for line in (
+        "voiceUnusable = true;",
+        "talkButton.hidden = true;",
+        'el("ask-talk-hint").hidden = true;',
+        'el("ask-speech-broken").hidden = false;',
+        "showTextControls(true);",
+        "questionInput.focus();",
+    ):
+        assert line in retire, line
+    done = _between(code, "function listeningDone(result, options)", "var listener = createListener(")
+    # Any failure that tells the operator to type opens the box to type in.
+    assert re.search(r'if \(verdict !== "none"\) \{\s*showTextControls\(true\);', done)
+    assert 'if (verdict === "unusable" || serviceFailures >= SERVICE_FAILURES_MAX) {' in done
+    assert "var SERVICE_FAILURES_MAX = 2;" in code
+    # Words heard clear the count: one bad moment on a working browser does not cost the button.
+    assert re.search(r"if \(result\.heard\) \{\s*serviceFailures = 0;", done)
+    # Said through the status line, which is announced.
+    assert "status.textContent = message;" in done
+    # The voice test reports the same finding, in the same words.
+    test = code[code.index("function testVoice()") :]
+    assert "if (voiceUnusable) {" in test and "lastVoiceFailure" in test
+    assert '"Listening: did not work this time. " + message' in test
+    # Signing out, or typing a question, ends listening without asking what was heard.
+    gate = code[code.index("function showGate(message)") : code.index("function showApp()")]
+    assert "abandonListening();" in gate and "stopListening();" not in gate
 
 
 # --- ways to start, and the text-based controls --------------------------------------------------
@@ -476,6 +547,10 @@ const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
     numberChunks: ask.speechChunks(input.numberAnswer, 180),
     noChunks: ask.speechChunks("   ", 180),
     messages: input.errorCodes.map((code) => ask.recognitionMessage(code)),
+    verdicts: input.verdictCases.map(([code, online]) => ask.recognitionVerdict(code, online)),
+    joined: input.heardSets.map((pieces) => ask.joinHeard(pieces)),
+    keepOn: input.keepCases.map((state) => ask.keepListening(state)),
+    listenMax: ask.LISTEN_MAX_MS,
     voices: input.voiceSets.map((set) => {
       const picked = ask.pickVoice(set.voices, set.lang);
       return picked ? picked.name : null;
@@ -493,6 +568,7 @@ _CONFIG = {
     "scope": "bloggerbear-ops/read",
     "redirectUri": "https://d111.cloudfront.net/ask.html",
 }
+_HELD = {"held": True, "stopping": False, "code": "", "elapsedMs": 5000, "quickEnds": 0}
 _COMMAND = 'python scripts/admin_cli.py articles rewrite 01J8 -i "the draft was cut short"'
 _FINDINGS = [
     {"kind": "truncated", "suggestion": {"action": "Rewrite it", "command": _COMMAND, "what_it_does": "x"}},
@@ -544,6 +620,49 @@ def node_result():
             "aborted",
             "made-up",
             "constructor",
+            "service-not-allowed",
+            "silent",
+            "no-start",
+            "start-failed",
+            "offline",
+        ],
+        "verdictCases": [
+            ["", True],
+            ["no-speech", True],
+            ["aborted", True],
+            ["not-allowed", True],
+            ["audio-capture", True],
+            ["service-not-allowed", True],
+            ["language-not-supported", True],
+            ["network", True],
+            ["network", False],
+            ["silent", True],
+            ["no-start", True],
+            ["start-failed", True],
+            ["made-up", True],
+        ],
+        "heardSets": [
+            ["what needs", " my   attention ", "", None, "today"],
+            ["what needs", "What needs my attention"],
+            ["what needs my attention", "what needs my attention"],
+            ["what needs", "what needsmore"],
+            ["no", "no way"],
+            [],
+            None,
+            ["  ", ""],
+        ],
+        "keepCases": [
+            _HELD,
+            {**_HELD, "code": "no-speech"},
+            {**_HELD, "held": False},
+            {**_HELD, "stopping": True},
+            {**_HELD, "code": "network"},
+            {**_HELD, "code": "silent"},
+            {**_HELD, "code": "aborted"},
+            {**_HELD, "elapsedMs": 60000},
+            {**_HELD, "elapsedMs": 59999},
+            {**_HELD, "quickEnds": 3},
+            None,
         ],
         "voiceSets": [
             {"lang": "en-AU", "voices": [{"name": "us", "lang": "en-US"}, {"name": "au", "lang": "en_AU"}]},
@@ -891,7 +1010,7 @@ def test_the_minified_copy_is_built_from_these_files_and_still_has_the_new_rende
     minify.minify_frontend(FRONTEND, tmp_path)
 
     built = (tmp_path / "ask.js").read_text(encoding="utf-8")
-    for kept in ("how_to", "ask-help", "ask-table-wrap", "Copy template", "renderTable"):
+    for kept in ("how_to", "ask-help", "ask-table-wrap", "Copy template", "renderTable", "createListener"):
         assert kept in built, kept
     assert "innerHTML" not in built
     assert ".ask-table-wrap" in (tmp_path / "ask.css").read_text(encoding="utf-8")
@@ -927,7 +1046,7 @@ def test_an_answer_is_spoken_in_whole_sentences_each_short_enough(node_result):
 
 @needs_node
 def test_each_recognition_error_says_what_to_do(node_result):
-    not_allowed, network, capture, no_speech, aborted, unknown, inherited = node_result["messages"]
+    not_allowed, network, capture, no_speech, aborted, unknown, inherited = node_result["messages"][:7]
     assert "site settings" in not_allowed
     assert "Chrome or Edge" in network
     assert "microphone" in capture.lower()
@@ -935,6 +1054,355 @@ def test_each_recognition_error_says_what_to_do(node_result):
     assert aborted == ""
     # An error the page does not know, even one named like an object's own property, is generic.
     assert unknown == inherited == "Speech recognition failed. Type your question instead."
+    # A browser that has recognition and no service behind it: each way that shows up names the
+    # browsers that can listen, and typing.
+    service, silent, no_start, start_failed, offline = node_result["messages"][7:]
+    assert "Opera" in network and "Opera" in silent
+    for told in (service, silent, no_start, start_failed):
+        assert "Chrome or Edge" in told and "type your question" in told
+    assert "allow it and press again" in no_start
+    assert "offline" in offline and "Chrome or Edge" not in offline
+
+
+@needs_node
+def test_what_a_recognition_failure_means_for_the_talk_button(node_result):
+    assert node_result["verdicts"] == [
+        "none",  # ended cleanly
+        "none",  # nothing was said
+        "none",  # the page stopped it
+        "blocked",  # the microphone was refused: the operator can allow it
+        "blocked",  # no microphone
+        "unusable",  # the browser says it will not do it
+        "unusable",
+        "service",  # no speech service could be reached, though the browser is online
+        "offline",  # ...or it is not online, which is not the browser's fault
+        "service",  # ended without ever opening the microphone
+        "service",  # never reported anything
+        "service",  # start() threw
+        "service",  # an error the page does not know
+    ]
+
+
+@needs_node
+def test_words_heard_in_several_sessions_are_one_question_in_order_without_duplicates(node_result):
+    assert node_result["joined"] == [
+        "what needs my attention today",
+        "What needs my attention",  # a session that gives back what is kept, and more, replaces it
+        "what needs my attention",  # ...or gives back exactly what is kept
+        "what needs what needsmore",  # only whole words count as the same beginning
+        "no way",
+        "",
+        "",
+        "",
+    ]
+
+
+@needs_node
+def test_another_session_starts_only_while_held_unstopped_unfailed_and_under_the_ceiling(node_result):
+    assert node_result["listenMax"] == 60000
+    assert node_result["keepOn"] == [True, True, False, False, False, False, False, False, True, False, False]
+
+
+# --- listening, start to finish, with a scripted recogniser --------------------------------------
+# createListener is given a recogniser the test scripts (to end early, raise errors, deliver words
+# in pieces, or say nothing at all) and a clock the test moves, so what a held button and a broken
+# browser do is run, not read.
+
+_LISTEN_RUNNER = """
+const ask = require(process.argv[1]);
+
+function harness(Recognition) {
+  const made = [];
+  class Fake {
+    constructor() { this.calls = []; made.push(this); }
+    start() { this.calls.push("start"); if (Fake.startThrows) { throw new Error("no"); } }
+    stop() { this.calls.push("stop"); }
+    abort() { this.calls.push("abort"); }
+    fire(type, event) { if (this["on" + type]) { this["on" + type](event || {}); } }
+    words(...pieces) {
+      this.fire("result", { results: pieces.map(([transcript, isFinal]) =>
+        Object.assign([{ transcript }], { isFinal })) });
+    }
+  }
+  let now = 1000;
+  let timers = [];
+  let nextId = 1;
+  const log = { states: [], texts: [], done: [], ceilings: 0 };
+  const world = { held: false };
+  const listener = ask.createListener({
+    Recognition: Recognition === null ? undefined : Fake,
+    lang: "en-AU",
+    now: () => now,
+    setTimeout: (fn, ms) => { timers.push({ id: nextId, at: now + ms, fn }); return nextId++; },
+    clearTimeout: (id) => { timers = timers.filter((timer) => timer.id !== id); },
+    isHeld: (options) => options.press === true && world.held,
+    onState: (value) => log.states.push(value),
+    onText: (text) => log.texts.push(text),
+    onCeiling: () => { log.ceilings += 1; },
+    onDone: (result, options) => log.done.push(Object.assign({ press: options.press === true }, result)),
+  });
+  function advance(ms) {
+    const until = now + ms;
+    for (;;) {
+      const due = timers.filter((timer) => timer.at <= until).sort((a, b) => a.at - b.at)[0];
+      if (!due) { break; }
+      timers = timers.filter((timer) => timer !== due);
+      now = due.at;
+      due.fn();
+    }
+    now = until;
+  }
+  return { Fake, made, log, world, listener, advance, last: () => made[made.length - 1] };
+}
+
+const out = {};
+
+{ // A tap: one session, which the browser ends when the person stops speaking.
+  const h = harness();
+  const began = h.listener.start({});
+  const again = h.listener.start({});
+  const r = h.last();
+  out.settings = [r.lang, r.interimResults, r.continuous, r.maxAlternatives];
+  r.fire("start"); r.fire("audiostart");
+  r.words(["what needs", false]);
+  r.words(["what needs my attention", true]);
+  r.fire("end");
+  h.advance(120000);
+  out.tap = { began, again, sessions: h.made.length, log: h.log };
+}
+
+{ // A hold: the browser ends a session at each pause, and once for a long silence; the words of
+  // all of them are one question, asked once, when the button is let go.
+  const h = harness();
+  h.world.held = true;
+  h.listener.start({ press: true });
+  let r = h.last();
+  r.fire("audiostart"); r.words(["what needs", true]); r.fire("end");
+  h.advance(3000);
+  r = h.last();
+  r.fire("audiostart"); r.words([" my", true], [" atten", false]);
+  r.words([" my", true], [" attention", true]); r.fire("end");
+  h.advance(8000);
+  r = h.last();
+  r.fire("audiostart"); r.fire("error", { error: "no-speech" }); r.fire("end");
+  r = h.last();
+  r.fire("audiostart"); r.words(["What needs my attention today", false]);
+  const before = h.log.done.length;
+  h.world.held = false;
+  h.listener.stop();
+  h.listener.stop();
+  r.words(["What needs my attention today", true]);
+  r.fire("end");
+  h.advance(120000);
+  out.hold = { before, sessions: h.made.length, calls: h.made.map((made) => made.calls), log: h.log };
+}
+
+{ // Recognition is there and nothing is behind it: an error, then the end. Held or not, the page
+  // does not try again by itself.
+  const h = harness();
+  h.world.held = true;
+  h.listener.start({ press: true });
+  h.last().fire("start"); h.last().fire("error", { error: "network" }); h.last().fire("end");
+  h.advance(120000);
+  out.network = { sessions: h.made.length, log: h.log };
+}
+
+{ // ...or it ends at once, with no error and the microphone never opened.
+  const h = harness();
+  h.world.held = true;
+  h.listener.start({ press: true });
+  h.last().fire("start"); h.last().fire("end");
+  h.advance(120000);
+  out.silent = { sessions: h.made.length, log: h.log };
+}
+
+{ // ...or it reports nothing at all, ever.
+  const h = harness();
+  h.listener.start({});
+  h.advance(9999);
+  const early = h.log.done.length;
+  h.advance(1);
+  h.last().fire("error", { error: "aborted" }); h.last().fire("end");
+  h.advance(120000);
+  out.nothing = { early, calls: h.last().calls, log: h.log };
+}
+
+{ // ...or it reports an error and never the end.
+  const h = harness();
+  h.listener.start({});
+  h.last().fire("error", { error: "service-not-allowed" });
+  const early = h.log.done.length;
+  h.advance(1000);
+  out.noEnd = { early, log: h.log };
+}
+
+{ // ...or start() throws.
+  const h = harness();
+  h.Fake.startThrows = true;
+  const began = h.listener.start({});
+  out.throws = { began, log: h.log };
+}
+
+{ // No recognition at all: nothing starts.
+  const h = harness(null);
+  out.none = { began: h.listener.start({}), log: h.log };
+}
+
+{ // Nothing said, with the microphone open: not a broken browser.
+  const h = harness();
+  h.listener.start({});
+  h.last().fire("audiostart"); h.last().fire("end");
+  out.quiet = h.log;
+}
+
+{ // Held for longer than the ceiling: the question is ended for the operator, once.
+  const h = harness();
+  h.world.held = true;
+  h.listener.start({ press: true });
+  for (let i = 0; i < 11; i++) {
+    const r = h.last();
+    r.fire("audiostart"); h.advance(5000); r.words(["word " + i, true]); r.fire("end");
+  }
+  const r = h.last();
+  r.fire("audiostart"); r.words(["and more", false]);
+  h.advance(4999);
+  const before = [h.log.ceilings, r.calls.slice()];
+  h.advance(1);
+  const after = [h.log.ceilings, r.calls.slice()];
+  r.fire("end");
+  h.advance(120000);
+  out.ceiling = { before, after, sessions: h.made.length, log: h.log };
+}
+
+{ // Held, and sessions that end as fast as they start with nothing heard: it gives up, not loops.
+  const h = harness();
+  h.world.held = true;
+  h.listener.start({ press: true });
+  for (let i = 0; i < 10 && !h.log.done.length; i++) { h.last().fire("audiostart"); h.last().fire("end"); }
+  out.loop = { sessions: h.made.length, log: h.log };
+}
+
+{ // Let go, and the browser never says it has ended: the words so far are still asked.
+  const h = harness();
+  h.listener.start({});
+  h.last().fire("audiostart"); h.last().words(["publish it", false]);
+  h.listener.stop();
+  h.advance(3999);
+  const early = h.log.done.length;
+  h.advance(1);
+  h.last().words(["publish it now", true]); h.last().fire("end");
+  out.noEndAfterStop = { early, log: h.log };
+}
+
+{ // Abandoned (sign-out, or a typed question): nothing is asked, then or later.
+  const h = harness();
+  h.listener.start({});
+  h.last().fire("audiostart"); h.last().words(["delete everything", true]);
+  h.listener.abandon();
+  h.last().fire("end");
+  h.advance(120000);
+  const restarted = h.listener.start({});
+  out.abandoned = { calls: h.made[0].calls, restarted, log: h.log };
+}
+
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def listened():
+    done = subprocess.run(
+        [NODE, "-e", _LISTEN_RUNNER, str(FRONTEND / "ask.js")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+@needs_node
+def test_a_tap_listens_once_and_asks_once_when_the_browser_stops(listened):
+    tap = listened["tap"]
+
+    assert listened["settings"] == ["en-AU", True, False, 1]
+    assert tap["began"] is True and tap["again"] is False  # a second start while listening is refused
+    assert tap["sessions"] == 1  # not held: the session the browser ended is not followed by another
+    assert tap["log"]["states"] == [True, False]
+    assert tap["log"]["texts"] == ["what needs", "what needs my attention"]
+    assert tap["log"]["done"] == [{"press": False, "heard": "what needs my attention", "code": ""}]
+
+
+@needs_node
+def test_a_held_button_listens_across_pauses_and_sends_one_question_on_release(listened):
+    hold = listened["hold"]
+
+    # Four sessions: one for each stretch of speech, and one that heard only silence.
+    assert hold["sessions"] == 4
+    assert hold["before"] == 0  # nothing is asked while the button is down
+    # The button reads "listening" the whole time: no flicker between sessions.
+    assert hold["log"]["states"] == [True, False]
+    # The words on screen only ever grow, in order.
+    assert hold["log"]["texts"] == [
+        "what needs",
+        "what needs my atten",
+        "what needs my attention",
+        "What needs my attention today",
+        "What needs my attention today",
+    ]
+    # The last session gave back the whole question: it is kept once, not twice.
+    assert hold["log"]["done"] == [{"press": True, "heard": "What needs my attention today", "code": ""}]
+    # Only the last session is stopped, and only once however often release is reported.
+    assert hold["calls"] == [["start"], ["start"], ["start"], ["start", "stop"]]
+
+
+@needs_node
+def test_recognition_that_exists_but_cannot_work_is_reported_and_never_retried_by_itself(listened):
+    assert listened["network"]["sessions"] == 1
+    assert listened["network"]["log"]["done"] == [{"press": True, "heard": "", "code": "network"}]
+    assert listened["silent"]["sessions"] == 1
+    assert listened["silent"]["log"]["done"] == [{"press": True, "heard": "", "code": "silent"}]
+    # Nothing for ten seconds: stopped by the page, and what the browser says after that is ignored.
+    nothing = listened["nothing"]
+    assert nothing["early"] == 0 and nothing["calls"] == ["start", "abort"]
+    assert nothing["log"]["done"] == [{"press": False, "heard": "", "code": "no-start"}]
+    assert nothing["log"]["states"] == [True, False]
+    # An error with no "end" after it does not leave the page listening for ever.
+    assert listened["noEnd"]["early"] == 0
+    assert listened["noEnd"]["log"]["done"] == [{"press": False, "heard": "", "code": "service-not-allowed"}]
+    assert listened["throws"]["began"] is False
+    assert listened["throws"]["log"]["done"] == [{"press": False, "heard": "", "code": "start-failed"}]
+    assert listened["throws"]["log"]["states"] == [True, False]
+    assert listened["none"] == {"began": False, "log": {"states": [], "texts": [], "done": [], "ceilings": 0}}
+    # Silence with the microphone open is the operator saying nothing, not the browser failing.
+    assert listened["quiet"]["done"] == [{"press": False, "heard": "", "code": ""}]
+
+
+@needs_node
+def test_a_held_button_stops_at_the_ceiling_and_does_not_loop_on_sessions_that_go_nowhere(listened):
+    ceiling = listened["ceiling"]
+
+    assert ceiling["before"] == [0, ["start"]]
+    assert ceiling["after"] == [1, ["start", "stop"]]  # at 60 seconds, to the millisecond
+    assert ceiling["sessions"] == 12
+    (done,) = ceiling["log"]["done"]
+    assert done["heard"] == " ".join(f"word {i}" for i in range(11)) + " and more"
+    assert ceiling["log"]["states"] == [True, False]
+    loop = listened["loop"]
+    assert loop["sessions"] == 3 and loop["log"]["done"] == [{"press": True, "heard": "", "code": ""}]
+
+
+@needs_node
+def test_letting_go_always_ends_in_one_question_and_abandoning_in_none(listened):
+    stuck = listened["noEndAfterStop"]
+    assert stuck["early"] == 0
+    # Words the browser never marked final are still what was said; late ones are not asked again.
+    assert stuck["log"]["done"] == [{"press": False, "heard": "publish it", "code": ""}]
+    abandoned = listened["abandoned"]
+    assert abandoned["calls"] == ["start", "abort"]
+    assert abandoned["log"]["done"] == [] and abandoned["log"]["states"] == [True, False, True]
+    assert abandoned["restarted"] is True
 
 
 @needs_node

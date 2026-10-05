@@ -8,7 +8,7 @@ Settings live in six places:
 
 | Where | What kind of setting | How you set it |
 |---|---|---|
-| [GitHub secrets and variables](#github-secrets-and-variables) | Which account, region and bucket a deploy uses; who may reach the admin API | `python scripts/setup_repo.py`, or Settings → Secrets and variables → Actions |
+| [GitHub secrets and variables](#github-secrets-and-variables) | Which account, region, bucket and name prefix a deploy uses; who may reach the admin API | `python scripts/setup_repo.py`, or Settings → Secrets and variables → Actions |
 | [Bootstrap variables](#bootstrap-variables) | The state bucket, the deploy roles, the DNS zone | `-var` on the one-time local `terraform apply` |
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
 | [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources | `aws ssm put-parameter`, or the console |
@@ -19,6 +19,8 @@ Two more are set in a console and nowhere else: [AWS account settings](#aws-acco
 [GitHub repository settings](#github-repository-settings).
 
 Account IDs here are AWS's documentation placeholders. `<env>` is `dev` or `production`.
+`<prefix>` is your name prefix, the [`UNIQUE_NAME_PREFIX`](#github-secrets-and-variables) setting:
+every resource name starts with it (`<prefix>-<env>-<resource>`), and unset it is `bloggerbear`.
 
 ## GitHub secrets and variables
 

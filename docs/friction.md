@@ -2,7 +2,8 @@
 
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
 plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
-of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it.
+of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it, and what of the
+Alexa+ add-on could not be tested (2026-10-05).
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -25,7 +26,7 @@ AWS platform friction gets its own section.
 | GitHub and the repo | 12 | free private repos can't protect anything |
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
-| Alexa+ and MCP | 25 | the rules and the spec say less, or something else, than a first reading |
+| Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 
 ---
 
@@ -622,6 +623,21 @@ and a refused answer kept and spoken from the next tap; the test listens when it
 no retry on the invoke. **Lesson:** the browser's rules (what counts as a gesture, what cancels
 what) are the specification here, and a fake that skips them passes everything; the headless
 check with events like the real ones is what found the last one.
+
+**10.26 The Alexa+ workflow itself could not be tested this time (2026-10-05).** Amazon's Alexa+
+MCP Toolkit (the `alexa-ai` CLI) is US-only and partner-gated, and the developer account did not
+have access. So the one-time bootstrap in [alexa/README.md](../alexa/README.md) (`alexa-ai
+configure`, `configure-account-linking`, `deploy`, then the simulator) was never run, against dev
+or production. Untested end to end: account linking through the Cognito pool, Alexa calling the MCP
+server, and the `start_briefing` and `latest_briefing` pair that exists because Alexa cannot wait
+for the agent (10.22). Two questions stay open with it: whether Alexa+ follows the 401's
+`resource_metadata` URL (10.19), and whether Cognito's sign-in page accepts the `resource`
+parameter. Built and tested without it: the MCP server and its OAuth metadata, the Alexa app client
+in Terraform, and the same assistant through the browser page (`/ask.html`), which is the working
+stand-in. **Decided:** the add-on is shipped ready to link, and the bootstrap can be run later,
+when access is granted; the runbook is written and no code change is expected. **Lesson:** 10.6
+again: when a platform's access is gated, build the part that can be tested without it first, and
+write down what is left.
 
 ---
 
