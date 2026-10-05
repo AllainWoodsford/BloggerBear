@@ -641,6 +641,18 @@ def _cmd_failed_executions_list(args: argparse.Namespace) -> None:
     _do_request(args, "GET", "/failed-executions")
 
 
+# --- sign-ins subcommands -----------------------------------------------
+
+
+def _cmd_sign_ins_list(args: argparse.Namespace) -> None:
+    _do_request(args, "GET", f"/sign-ins?days={args.days}")
+
+
+def _cmd_sign_ins_unlock(args: argparse.Namespace) -> None:
+    # The name goes in the path, so anything that is not a plain character is percent-encoded.
+    _do_request(args, "POST", f"/sign-ins/{urllib.parse.quote(args.username, safe='')}/unlock")
+
+
 # --- models / model-config subcommands --------------------------------------
 
 
@@ -1386,6 +1398,30 @@ def build_parser() -> argparse.ArgumentParser:
     failed_executions_sub.add_parser(
         "list", help="List failed daily_cycle executions recorded by the DLQ consumer"
     ).set_defaults(func=_cmd_failed_executions_list)
+
+    sign_ins_parser = subparsers.add_parser(
+        "sign-ins", help="Sign-ins to the operator's assistant: the log, and unlocking a user"
+    )
+    sign_ins_sub = sign_ins_parser.add_subparsers(dest="action", required=True)
+
+    sign_ins_list_parser = sign_ins_sub.add_parser(
+        "list",
+        help="Each user's sign-ins, failed attempts and refusals, and who is locked out now",
+    )
+    sign_ins_list_parser.add_argument(
+        "--days", type=int, default=7, help="How far back to look, 1 to 30 (default: 7)"
+    )
+    sign_ins_list_parser.set_defaults(func=_cmd_sign_ins_list)
+
+    sign_ins_unlock_parser = sign_ins_sub.add_parser(
+        "unlock",
+        help=(
+            "Clear a user's lock after too many failed sign-ins, so they can sign in again at "
+            "once. It does not change the password"
+        ),
+    )
+    sign_ins_unlock_parser.add_argument("username", help="The user's name in the assistant's user pool")
+    sign_ins_unlock_parser.set_defaults(func=_cmd_sign_ins_unlock)
 
     models_parser = subparsers.add_parser("models", help="Manage the AI model registry")
     models_sub = models_parser.add_subparsers(dest="action", required=True)

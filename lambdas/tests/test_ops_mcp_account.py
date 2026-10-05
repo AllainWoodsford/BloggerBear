@@ -173,6 +173,7 @@ def test_only_open_incidents_in_the_window_and_days_is_kept_between_1_and_30(tab
 def test_every_category_and_source_has_words_for_it():
     assert set(account._CATEGORY_SPOKEN) == set(PLAYBOOK)
     assert set(account._SOURCE_SPOKEN) == {
+        "sign-in",
         "waf-public-api",
         "waf-admin-api",
         "waf-other",

@@ -304,6 +304,20 @@ Dev is up once the `terraform` workflow goes green. What is left is by hand.
    `open` is the default). Check
    [DynamoDB's tag-based access control](#dynamodb-tag-based-access-control-abac) is on, or its
    `table_sample` tool refuses every table.
+
+   **Sign-ins are logged, and a user is locked after five failed attempts in fifteen minutes.**
+   The next attempt is refused before the password is looked at, a high-severity security
+   incident is raised, and the alert email is sent. The lock lifts by itself as the attempts
+   age past fifteen minutes. To see the log, or to let a locked user in at once:
+   ```bash
+   python scripts/admin_cli.py sign-ins list            # who signed in, who failed, who is locked
+   python scripts/admin_cli.py sign-ins unlock <you>    # clears the lock; the password is unchanged
+   ```
+   If the lock was not your own doing, change that user's password before you unlock them
+   (`aws cognito-idp admin-set-user-password`, as above). Anyone who knows a username can lock
+   that user out by guessing, so if it keeps happening set the assistant's access to
+   `allowlist`. Guesses at usernames that do not exist are not seen: Cognito does not report
+   them. The assistant reads the same log ("has anyone tried to sign in?").
 6. **Production and your domain:** follow [production-runsheet.md](production-runsheet.md). It
    covers the DNS zone, pointing your registrar at it, the first release, and what to check after.
 

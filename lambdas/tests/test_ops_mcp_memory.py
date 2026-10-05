@@ -445,7 +445,11 @@ def test_every_kind_with_a_command_about_an_id_has_a_checker():
     recorded = {
         kind
         for kind, entry in suggestions.CATALOGUE.items()
-        if entry.arguments is not None and kind != "awaiting_review"  # about no id: never recorded
+        if entry.arguments is not None
+        and kind != "awaiting_review"  # about no id: never recorded
+        # Never recorded either: the sign_ins tool is not passed through memory (a lock lifts by
+        # itself in minutes; test_ops_mcp_sign_ins.py holds that the server leaves it out).
+        and kind not in ("sign_in_locked", "sign_in_failures")
     }
     # And what the logs showed (log_review, api_errors): recorded although there is no command.
     recorded |= memory.LOGGED_KINDS

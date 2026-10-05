@@ -155,8 +155,19 @@ output "table_arns" {
     aws_dynamodb_table.stats_history.arn,
     aws_dynamodb_table.view_counts.arn,
     aws_dynamodb_table.security_events.arn,
+    aws_dynamodb_table.sign_ins.arn,
   ]
-  description = "All 15 table ARNs as a list, convenient for building an IAM policy resources list in the calling environment."
+  description = "Every table's ARN as a list, convenient for building an IAM policy resources list in the calling environment."
+}
+
+output "sign_ins_table_name" {
+  value       = aws_dynamodb_table.sign_ins.name
+  description = "Name of the SignIns DynamoDB table (sign-ins to the operator's assistant)."
+}
+
+output "sign_ins_table_arn" {
+  value       = aws_dynamodb_table.sign_ins.arn
+  description = "ARN of the SignIns DynamoDB table."
 }
 
 output "security_events_table_name" {

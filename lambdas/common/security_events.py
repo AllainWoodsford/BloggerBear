@@ -1,9 +1,10 @@
 """Security events: what was blocked, grouped into incidents a person or an agent can work through.
 
 Sources: the regional WAFs' logs (security_events_handler.py, via a CloudWatch Logs subscription
-filter on BLOCK records) and the public API's comment screening (a comment dropped as an attack:
-prompt injection, SQL, script/markup or shell). The CloudFront WAF is not a source yet: its logs
-live in us-east-1, and public API traffic also passes the regional ACL.
+filter on BLOCK records), the public API's comment screening (a comment dropped as an attack:
+prompt injection, SQL, script/markup or shell), and sign-ins to the operator's assistant
+(sign_in_events_handler.py: repeated failures, and a lockout). The CloudFront WAF is not a source
+yet: its logs live in us-east-1, and public API traffic also passes the regional ACL.
 
 **Incidents, not requests.** Blocked requests are grouped by source, rule, client and 15-minute
 window into one SecurityEvents row with a request count, first/last seen, a category, a severity,
@@ -52,6 +53,11 @@ WAF_PUBLIC_API = "waf-public-api"
 WAF_ADMIN_API = "waf-admin-api"
 WAF_OTHER = "waf-other"
 COMMENT_SCREENING = "comment-screening"
+SIGN_IN = "sign-in"
+
+# The two things a sign-in is recorded for (the `rule` of a SIGN_IN incident).
+SIGN_IN_FAILURES_RULE = "failed-attempts"
+SIGN_IN_LOCKOUT_RULE = "lockout"
 
 LOW, MEDIUM, HIGH = "low", "medium", "high"
 
@@ -144,6 +150,23 @@ PLAYBOOK: dict[str, tuple[str, int, str]] = {
         "dropped by comment screening. Nothing was stored, and none of these can run here. "
         "Repeated attempts mean someone is probing the feedback path.",
     ),
+    "sign-in-failures": (
+        LOW,
+        20,
+        "Someone failed to sign in to the operator's assistant several times in a row as a user "
+        "that exists. Usually a mistyped password or authenticator code. If it was not you, "
+        "someone knows the username: run `sign-ins list` to see when, and change that user's "
+        "password. Five failures in fifteen minutes lock the user.",
+    ),
+    "sign-in-lockout": (
+        HIGH,
+        1,
+        "A user of the operator's assistant was locked after too many failed sign-ins, and a "
+        "further attempt was refused. If it was you, wait fifteen minutes or run `sign-ins "
+        "unlock`. If it was not, someone is guessing that user's password: change it, make sure "
+        "the user has an authenticator app set up, and consider setting the assistant's access "
+        "to `allowlist`.",
+    ),
     "other": (
         MEDIUM,
         100,
@@ -159,6 +182,8 @@ def classify_rule(source: str, rule: str) -> str:
     or a comment-screening reason code."""
     if source == COMMENT_SCREENING:
         return "prompt-injection" if rule == "prompt_injection" else "comment-attack"
+    if source == SIGN_IN:
+        return "sign-in-lockout" if rule == SIGN_IN_LOCKOUT_RULE else "sign-in-failures"
     leaf = rule.rsplit("/", 1)[-1]
     if leaf == "Default_Action":
         return "admin-denied" if source == WAF_ADMIN_API else "other"
@@ -221,15 +246,20 @@ def record_incident(
     country: str = "",
     matched: str = "",
     first_at: datetime | None = None,
+    subject: str = "",
 ) -> dict | None:
     """Add `count` blocked requests to their incident (creating it), escalate it to high when it
     passes its category's threshold, and alert once if it is high. Returns the incident, or None
-    if it could not be recorded (logged, never raised)."""
+    if it could not be recorded (logged, never raised).
+
+    `subject` is for an incident about an account and not a client address (a sign-in: the
+    trigger is given no address). It is hashed the same way and takes the address's place, so
+    incidents are grouped per user and the name itself is never stored here."""
     try:
         category = classify_rule(source, rule)
         severity, escalate_at, next_steps = PLAYBOOK[category]
         environment = os.environ.get("ENVIRONMENT_NAME", "unknown")
-        hashed = client_hash(client_ip)
+        hashed = client_hash(subject or client_ip)
         window = _window_start(first_at or at)
         event_id = hashlib.sha256(
             f"{environment}|{source}|{rule}|{hashed}|{window.isoformat()}".encode()

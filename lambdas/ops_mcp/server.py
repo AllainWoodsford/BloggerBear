@@ -46,6 +46,7 @@ from ops_mcp import (
     memory,
     runsheets,
     samples,
+    sign_in_tool,
     tools,
 )
 from ops_mcp import architecture as architecture_module
@@ -200,6 +201,14 @@ def build_server() -> MCPServer:
         and for each its category, request count, first and last seen, and next steps. Part of a
         briefing; only high-severity incidents are findings."""
         return remembered(ctx, account.security_events(days))
+
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def sign_ins(days: int = sign_in_tool.DEFAULT_DAYS) -> dict[str, Any]:
+        """Sign-ins to this assistant over the last `days` (1 to 30): for each user, how many
+        attempts, successes, failures and refusals, when they last got in, and whether they are
+        locked out now. A finding for a user who is locked, was refused, or failed several
+        times. Part of a briefing, and the answer to "has anyone tried to sign in?"."""
+        return sign_in_tool.sign_ins(days)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def alarms(ctx: Context) -> dict[str, Any]:

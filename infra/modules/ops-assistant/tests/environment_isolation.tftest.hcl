@@ -43,16 +43,18 @@ variables {
       arn  = "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-dev-model-config"
     }
   }
-  agent_model_id          = "au.example.test-model-v1:0"
-  content_bucket_name     = "bloggerbear-dev-content"
-  content_bucket_arn      = "arn:aws:s3:::bloggerbear-dev-content"
-  stage_name              = "dev"
-  hosted_ui_domain_prefix = "bloggerbear-dev-ops"
-  callback_urls           = ["https://example.com/ask.html"]
-  logout_urls             = ["https://example.com/ask.html"]
-  mfa_configuration       = "OPTIONAL"
-  throttling_rate_limit   = 5
-  throttling_burst_limit  = 10
+  agent_model_id                = "au.example.test-model-v1:0"
+  content_bucket_name           = "bloggerbear-dev-content"
+  sign_in_trigger_function_arn  = "arn:aws:lambda:ap-southeast-2:123456789012:function:bloggerbear-test-sign-in-events"
+  sign_in_trigger_function_name = "bloggerbear-test-sign-in-events"
+  content_bucket_arn            = "arn:aws:s3:::bloggerbear-dev-content"
+  stage_name                    = "dev"
+  hosted_ui_domain_prefix       = "bloggerbear-dev-ops"
+  callback_urls                 = ["https://example.com/ask.html"]
+  logout_urls                   = ["https://example.com/ask.html"]
+  mfa_configuration             = "OPTIONAL"
+  throttling_rate_limit         = 5
+  throttling_burst_limit        = 10
 }
 
 run "dev_is_denied_anything_tagged_for_another_environment" {

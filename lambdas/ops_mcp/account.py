@@ -37,6 +37,7 @@ from common.security_events import (
     LOW,
     MEDIUM,
     PLAYBOOK,
+    SIGN_IN,
     WAF_ADMIN_API,
     WAF_OTHER,
     WAF_PUBLIC_API,
@@ -74,6 +75,8 @@ _CATEGORY_SPOKEN = {
     "admin-denied": "requests from outside the allowlist",
     "prompt-injection": "comments that tried to instruct the model",
     "comment-attack": "comments shaped like an attack",
+    "sign-in-failures": "repeated failed sign-ins",
+    "sign-in-lockout": "a user locked out after failed sign-ins",
     "other": "blocks by a rule I don't recognise",
 }
 _SOURCE_SPOKEN = {
@@ -81,6 +84,7 @@ _SOURCE_SPOKEN = {
     WAF_ADMIN_API: "on the admin API",
     WAF_OTHER: "at the firewall",
     COMMENT_SCREENING: "in comment screening",
+    SIGN_IN: "at the assistant's sign-in",
 }
 
 
