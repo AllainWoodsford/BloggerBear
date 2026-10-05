@@ -37,11 +37,12 @@ What it does, in order:
 2. Lists what is already set, by name. A secret's value cannot be read back, by anyone, and the
    script never tries. Settings that are already set are skipped unless you ask to replace them.
 3. Asks for each setting that is left, with a short explanation and a check. The region comes
-   first (`AWS_REGION`; press Enter for the default, `ap-southeast-2`), because the steps it
-   prints later name it. Then your allowed address ranges, the alert emails, the two account IDs,
+   first (`AWS_REGION`; press Enter for the default, `ap-southeast-2`), then the name prefix
+   (`UNIQUE_NAME_PREFIX`; a fork must choose its own), because the steps it prints later are
+   built from both. Then your allowed address ranges, the alert emails, the two account IDs,
    the two deploy role ARNs (with the steps to create them and the ARN it expects, which you can
-   accept by pressing Enter), the state bucket names, the name suffix, and `PII_DENYLIST`. Press
-   Enter to leave an optional setting unset.
+   accept by pressing Enter), the state bucket names, and `PII_DENYLIST`. Press Enter to leave
+   an optional setting unset.
 4. Shows a summary. Secret values are masked: you see a length and the last two characters.
 5. Asks once more, then sets everything.
 6. Tells you how to turn on the git hook that stops personal data being committed, and offers to
@@ -121,6 +122,7 @@ terraform apply \
   -var="aws_account_id=111111111111" \
   -var="github_repo=your-name/your-fork" \
   -var="state_bucket_name=yourname-bloggerbear-terraform-state" \
+  -var="unique_name_prefix=acme-blog" \
   -var="domain_name=example.com" \
   -var="budget_alert_email=you@example.com"
 ```
@@ -130,12 +132,19 @@ terraform apply \
 | `aws_account_id` | The account you mean to apply to. The apply refuses any other. | empty: no check |
 | `github_repo` | `owner/repo` allowed to assume the deploy roles. **A fork must set this**, or the roles trust the original repository and your workflows are refused. | the original repository |
 | `state_bucket_name` | The state bucket. Bucket names are unique across all of AWS, so **a fork must choose its own**. | `bloggerbear-terraform-state` |
+| `unique_name_prefix` | What every resource name starts with: `<prefix>-<env>-<resource>`. Here it names the deploy roles (`gha-<prefix>-dev-deploy`, `gha-<prefix>-prod-deploy`) and limits them to resources named `<prefix>-*`. **A fork must set it**: the default's bucket names are taken. No hyphen at the end. | `bloggerbear` |
 | `domain_name` | Your site's domain. Creates the hosted zone. Pass `""` for no zone (dev only, or until you have a domain). **A fork must set this**, or it creates a zone for the original domain. | `bloggerbear.com` |
 | `budget_alert_email` | Where the Bedrock budget alert goes. Empty creates no budget. | empty |
 | `aws_region` | Region for the state bucket, and the region the deploy roles are allowed to work in. Must be the same as the `AWS_REGION` GitHub variable. | `ap-southeast-2` |
 
 Keep the outputs: `state_bucket_name`, `dev_deploy_role_arn`, `prod_deploy_role_arn`,
 `hosted_zone_id`, `hosted_zone_name_servers`.
+
+**The prefix here and the `UNIQUE_NAME_PREFIX` GitHub variable (step 2) must be the same word.**
+Bootstrap allows the deploy roles only resources named `<prefix>-*`, and the deploys name
+everything `<prefix>-<env>-<resource>`. If the two differ, every deploy is refused with
+AccessDenied. Changing the prefix later means applying bootstrap again, which renames the two
+roles, so set both role ARN secrets again too.
 
 Bootstrap keeps its state in a local file. Keep that file somewhere safe; it is not in git.
 
@@ -164,16 +173,22 @@ deploy cannot do without:
 
 - `AWS_DEV_DEPLOY_ROLE_ARN` and `AWS_PROD_DEPLOY_ROLE_ARN`: the bootstrap outputs.
 - `TF_STATE_BUCKET_DEV` and `TF_STATE_BUCKET_PROD`: your state bucket.
-- `UNIQUE_NAME_SUFFIX`: added to the bucket names and the sign-in host name, which must be unique
-  across all of AWS.
+- `UNIQUE_NAME_PREFIX`: what every resource name starts with (`<prefix>-<env>-<resource>`). The
+  same word you gave bootstrap as `unique_name_prefix`. Unset, it is `bloggerbear`, which only
+  the original deployment can use: bucket names and the sign-in host name must be unique across
+  all of AWS.
 - `ADMIN_ALLOWED_CIDRS_DEV` and `ADMIN_ALLOWED_CIDRS_PROD`: your public IP. Without it nothing can
   call the admin API: the allowlist fails closed.
 
 Dev's settings must be at repository level, because the dev job runs in no environment.
 Production's can be on the `production` environment or on the repository.
 
-Set `UNIQUE_NAME_SUFFIX` **before your first deploy and never change it**. A bucket cannot be
-renamed: changing the suffix later makes Terraform delete the buckets and create empty ones.
+Set `UNIQUE_NAME_PREFIX` **before your first deploy and never change it**. Every name starts
+with it, and a bucket or a table cannot be renamed: changing the prefix later makes Terraform
+delete them and create empty ones. Write it without a hyphen at the end (`acme-blog`, not
+`acme-blog-`). Lowercase letters, digits and hyphens, starting with a letter, at most 14
+characters: a topic's schedule is named `<prefix>-production-<topic_id>-research-tick` and AWS
+allows 64, so a 14-character prefix leaves a topic id 24 and a shorter one leaves more.
 
 **Protecting the branches.** Require a pull request on `dev` and `prod`, and block force-pushes
 and deletions. GitHub offers rulesets and branch protection only on public repositories or paid
@@ -211,8 +226,8 @@ environment, and nothing is applied before the security scans, lint and tests pa
   secrets name the same bucket; dev and production use different keys inside it.
 - Dev may share production's CloudFront web ACL: after production's first apply, put its
   `wafv2_web_acl_arn` output in `infra/environments/dev/terraform.tfvars` as `web_acl_arn`.
-- You cannot run two copies of the same environment in one account: resource names are
-  `bloggerbear-<environment>-<resource>`.
+- You cannot run two copies of the same environment under one prefix in one account: resource
+  names are `<prefix>-<environment>-<resource>`.
 
 A third arrangement, one deployment account whose role assumes a role in each environment's
 account, is not built. [Enhancement: a deployment account](#enhancement-a-deployment-account-that-assumes-a-role-in-each-environments-account)
@@ -223,7 +238,7 @@ sketches it.
 1. Merge anything under `infra/`, `lambdas/` or `frontend/` to `dev`. The `terraform` workflow
    runs the security scans, lint and tests, then applies dev. No approval is needed.
 2. In the `apply-dev` job's log, the init step should succeed (your state bucket's name shows as
-   `***`, because it is a secret), and the plan should list resources named with your suffix. The
+   `***`, because it is a secret), and the plan should list resources named with your prefix. The
    first run creates everything: the tables, the buckets, the Lambda functions, both APIs, the web
    ACLs, the dashboards and the static site.
 3. To prove the account check works, set `AWS_DEV_ACCOUNT_ID` to a wrong 12-digit number and
@@ -311,10 +326,13 @@ rejected or rate-limited at run time falls back to it. Never put a key in a topi
 
 | Parameter | For | Without it |
 |---|---|---|
-| `/bloggerbear/dev/coingecko-api-key` | The crypto adapter. A free key will do: <https://www.coingecko.com/en/api>. | The keyless public API, which is throttled often enough to lose some research ticks. |
-| `/bloggerbear/production/coingecko-api-key` | The same, for production. | The same. |
-| `/bloggerbear/dev/github-api-token` | The GitHub adapter, which calls GitHub's REST Search API. A fine-grained personal access token with **no permissions** is enough: it reads public data only. | Unauthenticated search: 10 requests a minute, shared with whatever else uses the same Lambda address. With a token, 30 a minute on its own budget. |
-| `/bloggerbear/production/github-api-token` | The same, for production. | The same. |
+| `/<prefix>/dev/coingecko-api-key` | The crypto adapter. A free key will do: <https://www.coingecko.com/en/api>. | The keyless public API, which is throttled often enough to lose some research ticks. |
+| `/<prefix>/production/coingecko-api-key` | The same, for production. | The same. |
+| `/<prefix>/dev/github-api-token` | The GitHub adapter, which calls GitHub's REST Search API. A fine-grained personal access token with **no permissions** is enough: it reads public data only. | Unauthenticated search: 10 requests a minute, shared with whatever else uses the same Lambda address. With a token, 30 a minute on its own budget. |
+| `/<prefix>/production/github-api-token` | The same, for production. | The same. |
+
+`<prefix>` is your `UNIQUE_NAME_PREFIX`. With the default it is `bloggerbear`, so dev's CoinGecko
+parameter is `/bloggerbear/dev/coingecko-api-key`; put your own prefix in the commands below.
 
 ```bash
 aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --overwrite \
@@ -345,7 +363,7 @@ Which model a call uses, first match wins:
 1. the topic's rotation list (`model_id_candidates`): one is picked at random per run, so every
    call that goes into one article uses the same model;
 2. the topic's own `model_id`;
-3. the global default, the `default` row of the `bloggerbear-<env>-model-config` table;
+3. the global default, the `default` row of the `<prefix>-<env>-model-config` table;
 4. `BEDROCK_MODEL_ID`, from Terraform.
 
 The fallback model resolves separately (topic, then global). When a call to the chosen model
@@ -375,8 +393,8 @@ python scripts/admin_cli.py model-config set \
 python scripts/admin_cli.py model-config get
 ```
 
-That writes one item to the `bloggerbear-dev-model-config` table (`bloggerbear-production-model-config`
-in production). For `ap-southeast-2`, the item looks like this, and you can create or edit it
+That writes one item to the `<prefix>-dev-model-config` table (`<prefix>-production-model-config`
+in production; with the default prefix, `bloggerbear-dev-model-config`). For `ap-southeast-2`, the item looks like this, and you can create or edit it
 straight in the DynamoDB console instead:
 
 ```json
@@ -416,7 +434,10 @@ Before you add a model anywhere:
 
 The operator's assistant has a `table_sample` tool ("what is in this table?"). Its permission to
 read a table is written as tag conditions: a table is readable only if it is tagged
-`ManagedBy = Terraform`, `Project = BloggerBear` and an `Environment` that assistant may read.
+`ManagedBy = Terraform`, this deployment's `Project` and an `Environment` that assistant may
+read. `Project` is `BloggerBear` by default, and is your `UNIQUE_NAME_PREFIX` if you set one
+(`Project = acme-blog`), so one deployment's assistant never reads another's tables. Terraform
+puts the same tags on every table it makes, so there is nothing to tag by hand.
 DynamoDB applies tag conditions only where attribute-based access control is switched on for the
 account, and it is an account setting, per region.
 
@@ -524,8 +545,8 @@ hop needs **one more step in each deploy workflow**. Terraform itself needs no c
        "Effect": "Allow",
        "Action": ["sts:AssumeRole", "sts:TagSession"],
        "Resource": [
-         "arn:aws:iam::111111111111:role/gha-bloggerbear-dev-deploy",
-         "arn:aws:iam::123456789012:role/gha-bloggerbear-prod-deploy"
+         "arn:aws:iam::111111111111:role/gha-<prefix>-dev-deploy",
+         "arn:aws:iam::123456789012:role/gha-<prefix>-prod-deploy"
        ]
      }]
    }
@@ -537,7 +558,7 @@ hop needs **one more step in each deploy workflow**. Terraform itself needs no c
      "Version": "2012-10-17",
      "Statement": [{
        "Effect": "Allow",
-       "Principal": { "AWS": "arn:aws:iam::000000000000:role/gha-bloggerbear-hub" },
+       "Principal": { "AWS": "arn:aws:iam::000000000000:role/gha-<prefix>-hub" },
        "Action": ["sts:AssumeRole", "sts:TagSession"]
      }]
    }
@@ -622,12 +643,10 @@ These need a hand edit in your fork, or cannot be changed yet.
   `ap-southeast-2`. Terraform does not allow a variable there. CI overrides the name with
   `TF_STATE_BUCKET_DEV` / `TF_STATE_BUCKET_PROD`, and the region with `AWS_REGION` (or
   `TF_STATE_REGION`); if you forget the bucket, the init is refused, because that bucket is not
-  yours.
+  yours. The state bucket's name is not built from `UNIQUE_NAME_PREFIX`: it has its own
+  bootstrap variable, `state_bucket_name`.
 - **The OIDC trust.** It is a bootstrap variable (`github_repo`), not a GitHub setting, because
   it is part of the roles. If you rename or transfer your fork, re-apply bootstrap.
-- **Resource names** other than the three covered by `UNIQUE_NAME_SUFFIX` all start with
-  `bloggerbear-`, and the deploy roles' permissions are written against that prefix. They only
-  need to be unique within an account, so they work as they are, but the prefix is not a setting.
 - **The model.** Leaving `bedrock_model_id` unset uses the AU Claude Haiku 4.5 inference profile
   in your account and region. Outside Australia that profile does not exist: set
   `bedrock_inference_profile_id` in the environment's `terraform.tfvars` (see

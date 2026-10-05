@@ -28,8 +28,8 @@ DEV_ACCOUNT = "111111111111"
 PROD_ACCOUNT = "123456789012"
 BUCKET = "zz9marker-state"
 PII = "Zz9 Marker Street"
-SUFFIX = "-zz9fork"
-# Regions are public (plain variables), so these are not in SECRET_VALUES.
+# Regions and the name prefix are public (plain variables), so these are not in SECRET_VALUES.
+PREFIX = "zz9fork"
 REGION = "eu-west-1"
 STATE_REGION = "eu-central-1"
 SECRET_VALUES = (CIDR, "198.51.100.23", EMAIL, DEV_ACCOUNT, PROD_ACCOUNT, BUCKET, PII, PII.lower())
@@ -39,6 +39,7 @@ FULL_RUN = [
     "y",  # this is the repository
     REGION,  # AWS_REGION: asked first, because later steps print commands that name it
     STATE_REGION,  # TF_STATE_REGION
+    PREFIX,  # UNIQUE_NAME_PREFIX: before the roles, whose names are built from it
     CIDR,  # ADMIN_ALLOWED_CIDRS_DEV
     "y",  # ADMIN_ALLOWED_CIDRS_PROD: same as dev
     EMAIL,  # ALERT_EMAIL_DEV
@@ -50,7 +51,6 @@ FULL_RUN = [
     "",  # AWS_PROD_DEPLOY_ROLE_ARN: accept the stub
     BUCKET,  # TF_STATE_BUCKET_DEV
     "y",  # TF_STATE_BUCKET_PROD: same as dev
-    SUFFIX,  # UNIQUE_NAME_SUFFIX
     PII,  # PII_DENYLIST, entry 1
     "",  # ...no more entries
     "y",  # save the local .pii-denylist
@@ -74,6 +74,7 @@ class FakeCommands:
         hooks_path=None,
         ignored=True,
         region="",
+        prefix="",
         aws_account=None,
         aws_signed_in=True,
         parameters=(),
@@ -87,6 +88,7 @@ class FakeCommands:
         self.environment, self.fail_on = environment, set(fail_on)
         self.hooks_path, self.ignored = hooks_path, ignored
         self.region = region  # the AWS_REGION repository variable's value, if it is set
+        self.prefix = prefix  # the UNIQUE_NAME_PREFIX repository variable's value, if it is set
         self.calls: list[tuple[list[str], str | None]] = []
 
     def __call__(self, argv, stdin=None):
@@ -132,6 +134,8 @@ class FakeCommands:
                 return sr.Result(0, "\n".join(sorted(self.secrets)))
             if path.endswith("/actions/variables/AWS_REGION"):
                 return sr.Result(0, f"{self.region}\n") if self.region else sr.Result(1, "", "HTTP 404")
+            if path.endswith("/actions/variables/UNIQUE_NAME_PREFIX"):
+                return sr.Result(0, f"{self.prefix}\n") if self.prefix else sr.Result(1, "", "HTTP 404")
             repo_level = path.endswith("/actions/variables")
             return sr.Result(0, "\n".join(sorted(self.variables)) if repo_level else "")
         if rest[1] == "set":
@@ -248,7 +252,12 @@ def test_the_role_names_and_outputs_are_the_ones_bootstrap_really_creates():
     for env, resource in (("dev", "gha_dev_deploy"), ("prod", "gha_prod_deploy")):
         role = sr.ROLES[env]
         block = main.split(f'resource "aws_iam_role" "{resource}" {{')[1].split("\n}\n")[0]
-        assert re.search(rf'^\s*name\s*=\s*"{role.name}"$', block, re.M)
+        # Bootstrap builds the name from its unique_name_prefix; the script from the same word.
+        in_terraform = role.name.replace("{prefix}", "${var.unique_name_prefix}")
+        assert re.search(rf'^\s*name\s*=\s*"{re.escape(in_terraform)}"$', block, re.M)
+        # With the default, it is the name the original deployment's role has always had.
+        assert role.named() == f"gha-bloggerbear-{env}-deploy"
+        assert role.named("acme-blog") == f"gha-acme-blog-{env}-deploy"
         output = outputs.split(f'output "{role.output}" {{')[1].split("\n}\n")[0]
         assert f"aws_iam_role.{resource}.arn" in output
     # Every variable the printed bootstrap command passes is one bootstrap declares.
@@ -393,15 +402,35 @@ def test_bad_bucket_names(raw):
         sr.check_bucket(raw)
 
 
-def test_the_suffix_rule_is_the_terraform_variables_rule():
-    for env in ("dev", "production"):
-        variables = (REPO_ROOT / "infra" / "environments" / env / "variables.tf").read_text(encoding="utf-8")
-        assert 'can(regex("^[a-z0-9-]{0,19}[a-z0-9]$", var.unique_name_suffix))' in variables
-    for good in ("-yourname", "x", "a" * 20):
-        assert sr.check_suffix(good) == good
-    for bad in ("", "-", "Upper", "ends-", "a" * 21, "under_score", "dot.dot"):
+def test_the_prefix_rule_is_the_terraform_variables_rule():
+    """An answer the script accepts is one every root accepts, and the other way round: the
+    script's checks are the three validations of the Terraform variable, read from the files."""
+    for root in ("bootstrap", "environments/dev", "environments/production"):
+        variables = (REPO_ROOT / "infra" / root / "variables.tf").read_text(encoding="utf-8")
+        block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
+        assert re.search(rf'^  default\s*=\s*"{sr.DEFAULT_PREFIX}"$', block, re.M), root
+        assert f'can(regex("^{sr.PREFIX_SHAPE}$", var.unique_name_prefix))' in block, root
+        assert '!strcontains(var.unique_name_prefix, "--")' in block, root
+        assert f'!can(regex("{"|".join(sr.PREFIX_RESERVED)}", var.unique_name_prefix))' in block, root
+        assert block.count("validation {") == 3, root
+        assert f"At most {sr.PREFIX_MAX} characters." in block, root
+    assert sr.DEFAULT_PREFIX == "bloggerbear" and sr.check_prefix(sr.DEFAULT_PREFIX) == sr.DEFAULT_PREFIX
+    for good in ("a", "acme", "acme-blog", "blog2", "a" * sr.PREFIX_MAX, "  padded  "):
+        assert sr.check_prefix(good) == good.strip()
+    bad = (
+        "", "-", "Upper", "ends-", "-starts", "2blog", "a" * (sr.PREFIX_MAX + 1), "under_score",
+        "dot.dot", "two--hyphens", "myawsblog", "amazon-blog", "cognito",
+    )  # fmt: skip
+    for value in bad:
         with pytest.raises(sr.Invalid):
-            sr.check_suffix(bad)
+            sr.check_prefix(value)
+
+
+def test_a_trailing_hyphen_is_explained_not_just_refused():
+    """The one mistake the old setting invited ("-yourname"): the names add the hyphen."""
+    with pytest.raises(sr.Invalid, match="Leave the hyphen off the end"):
+        sr.check_prefix("acme-blog-")
+    assert "no hyphen at the end" in next(s for s in sr.SETTINGS if s.name == "UNIQUE_NAME_PREFIX").help
 
 
 def test_the_denylist_is_stored_the_way_the_checker_reads_it():
@@ -489,13 +518,14 @@ def test_a_first_run_sets_everything_with_values_on_stdin_and_never_in_argv(tmp_
     assert sets["ALERT_EMAIL_PROD"][1] == EMAIL
     assert sets["AWS_DEV_ACCOUNT_ID"][1] == DEV_ACCOUNT and sets["AWS_PROD_ACCOUNT_ID"][1] == PROD_ACCOUNT
     # The stub: the account given for each environment, and the role name bootstrap creates.
-    assert sets["AWS_DEV_DEPLOY_ROLE_ARN"][1] == f"arn:aws:iam::{DEV_ACCOUNT}:role/gha-bloggerbear-dev-deploy"
-    prod_role = f"arn:aws:iam::{PROD_ACCOUNT}:role/gha-bloggerbear-prod-deploy"
+    # Bootstrap names it from the prefix, which was answered earlier in the same run.
+    assert sets["AWS_DEV_DEPLOY_ROLE_ARN"][1] == f"arn:aws:iam::{DEV_ACCOUNT}:role/gha-{PREFIX}-dev-deploy"
+    prod_role = f"arn:aws:iam::{PROD_ACCOUNT}:role/gha-{PREFIX}-prod-deploy"
     assert sets["AWS_PROD_DEPLOY_ROLE_ARN"][1] == prod_role
     assert sets["TF_STATE_BUCKET_PROD"][1] == BUCKET
     assert sets["PII_DENYLIST"][1] == PII.lower()
-    assert sets["UNIQUE_NAME_SUFFIX"][0][:3] == ["gh", "variable", "set"]
-    assert sets["UNIQUE_NAME_SUFFIX"][1] == SUFFIX
+    assert sets["UNIQUE_NAME_PREFIX"][0][:3] == ["gh", "variable", "set"]
+    assert sets["UNIQUE_NAME_PREFIX"][1] == PREFIX
     # The region is a plain variable at repository level, never a secret.
     assert sets["AWS_REGION"][0][:3] == ["gh", "variable", "set"] and sets["AWS_REGION"][1] == REGION
     assert sets["TF_STATE_REGION"][0][:3] == ["gh", "variable", "set"]
@@ -547,7 +577,7 @@ def test_nothing_is_written_before_the_confirmation(tmp_path):
     assert 'AWS_DEV_ACCOUNT_ID  [secret, repository]  12 characters, ending "11"' in summary
     assert "ADMIN_ALLOWED_CIDRS_PROD  [secret, production environment]  1 range" in summary
     assert "PII_DENYLIST  [secret, repository]  1 entry" in summary
-    assert f"UNIQUE_NAME_SUFFIX  [variable, repository]  {SUFFIX}" in summary  # public by definition
+    assert f"UNIQUE_NAME_PREFIX  [variable, repository]  {PREFIX}" in summary  # public by definition
 
 
 @pytest.mark.parametrize("answer", ["n", "", "no"])
@@ -577,16 +607,17 @@ def test_a_failure_part_way_says_what_was_and_was_not_written_and_exits_non_zero
     attempted = [argv[3] for argv, _ in commands.writes]
     assert attempted == [
         "AWS_REGION", "TF_STATE_REGION",  # the region is asked, and so written, first
+        "UNIQUE_NAME_PREFIX",  # then the name prefix
         "ADMIN_ALLOWED_CIDRS_DEV", "ADMIN_ALLOWED_CIDRS_PROD", "ALERT_EMAIL_DEV", "ALERT_EMAIL_PROD",
         "AWS_DEV_ACCOUNT_ID",
     ]  # it stopped at the failure: nothing after it was tried
     report = out.split("Stopped at AWS_DEV_ACCOUNT_ID.")[1]
     written = report.split("Written:")[1].split("\n")[0]
     not_written = report.split("NOT written:")[1].split("\n")[0]
-    assert [name.strip() for name in written.split(",")] == attempted[:6]
+    assert [name.strip() for name in written.split(",")] == attempted[:7]
     assert [name.strip() for name in not_written.split(",")] == [
         "AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN", "AWS_PROD_DEPLOY_ROLE_ARN",
-        "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "UNIQUE_NAME_SUFFIX", "PII_DENYLIST",
+        "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD", "PII_DENYLIST",
         ".pii-denylist (local file)", "core.hooksPath (this clone's git config)",
     ]
     assert "Nothing was undone." in out
@@ -602,7 +633,7 @@ def test_settings_already_present_are_skipped_by_default(tmp_path):
     commands = FakeCommands(
         secrets=present | {"ADMIN_ALLOWED_CIDRS_PROD"},  # a production secret kept at repository level
         env_secrets={"AWS_PROD_DEPLOY_ROLE_ARN"},
-        variables={"UNIQUE_NAME_SUFFIX", "ALERT_EMAIL_DEV"},
+        variables={"UNIQUE_NAME_PREFIX", "ALERT_EMAIL_DEV"},
         hooks_path=".githooks",
     )
     answers = [
@@ -866,8 +897,9 @@ def test_a_dry_run_still_asks_for_production_when_the_environment_is_missing(tmp
 
 ENVIRONMENTS = REPO_ROOT / "infra" / "environments"
 TF_FOLDER = {"dev": "dev", "prod": "production"}
-DEV_PARAMETER = sr.COINGECKO_PARAMETERS["dev"]
-PROD_PARAMETER = sr.COINGECKO_PARAMETERS["prod"]
+# The names a FULL_RUN prints and looks up: its UNIQUE_NAME_PREFIX answer is PREFIX.
+DEV_PARAMETER = sr.coingecko_parameter("dev", PREFIX)
+PROD_PARAMETER = sr.coingecko_parameter("prod", PREFIX)
 # What a person's key would look like if the script ever asked for one. It never does, so this
 # must never reach a command or the output.
 KEY_MARKER = "CG-zz9markerNotARealKey"
@@ -886,7 +918,11 @@ def test_the_parameter_names_and_region_are_the_ones_terraform_uses(env):
     """The script's names are a copy of Terraform's; renaming either side fails here."""
     main_tf = (ENVIRONMENTS / TF_FOLDER[env] / "main.tf").read_text(encoding="utf-8")
     declared = re.findall(r'^\s*coingecko_api_key_parameter\s*=\s*"([^"]+)"', main_tf, re.M)
-    assert declared == [sr.COINGECKO_PARAMETERS[env]]
+    # Terraform puts var.unique_name_prefix where the script puts {prefix}...
+    assert declared == [sr.COINGECKO_PARAMETERS[env].replace("{prefix}", "${var.unique_name_prefix}")]
+    # ...so with the default it is the path the original deployment's key has always been at.
+    assert sr.coingecko_parameter(env) == f"/bloggerbear/{TF_FOLDER[env]}/coingecko-api-key"
+    assert sr.coingecko_parameter(env, "acme-blog") == f"/acme-blog/{TF_FOLDER[env]}/coingecko-api-key"
     # The Lambda is granted read access to that very name, in the deployment's region: the
     # aws_region variable, which CI fills from the AWS_REGION setting the script reads too.
     assert (
@@ -897,10 +933,12 @@ def test_the_parameter_names_and_region_are_the_ones_terraform_uses(env):
     # With nothing set, the printed command names the script's one default region.
     assert f"--region {sr.DEFAULT_REGION} " in sr.coingecko_command(env)
     # And the hand-run command in Terraform's own comment stores to the same name and type.
-    assert f"aws ssm put-parameter --name {sr.COINGECKO_PARAMETERS[env]} --type SecureString" in main_tf
+    in_comment = sr.COINGECKO_PARAMETERS[env].replace("{prefix}", "<prefix>")
+    assert f"aws ssm put-parameter --name {in_comment} --type SecureString" in main_tf
     assert sr.coingecko_command(env).startswith(
-        f"aws ssm put-parameter --name {sr.COINGECKO_PARAMETERS[env]} --type SecureString "
+        f"aws ssm put-parameter --name {sr.coingecko_parameter(env)} --type SecureString "
     )
+    assert f"--name {sr.coingecko_parameter(env, PREFIX)} " in sr.coingecko_command(env, prefix=PREFIX)
 
 
 def test_the_step_writes_no_region_of_its_own():
@@ -908,12 +946,14 @@ def test_the_step_writes_no_region_of_its_own():
     source = (REPO_ROOT / "scripts" / "setup_repo.py").read_text(encoding="utf-8")
     step = source.split("# --- The CoinGecko API key")[1].split("def _setup(")[0]
     assert "ap-southeast-2" not in step
-    assert "coingecko_step(prompter, run, answers, deploy_region(answers, state))" in source
+    assert "prompter, run, answers, deploy_region(answers, state), deploy_prefix(answers, state)" in source
+    # Nor a name prefix: the parameter names are templates, filled in by deploy_prefix.
+    assert "/bloggerbear/" not in step and '"/{prefix}/dev/coingecko-api-key"' in step
 
 
 def _command(env: str) -> str:
-    """The command a FULL_RUN prints: its AWS_REGION answer is REGION."""
-    return sr.coingecko_command(env, REGION)
+    """The command a FULL_RUN prints: its AWS_REGION answer is REGION, its prefix PREFIX."""
+    return sr.coingecko_command(env, REGION, PREFIX)
 
 
 def test_the_adapter_reads_the_parameter_the_way_the_script_tells_you_to_store_it():
@@ -1010,17 +1050,18 @@ def test_with_no_account_id_given_in_this_run_the_step_says_to_check_the_account
     present = {setting.name for setting in sr.SETTINGS}
     commands = FakeCommands(
         secrets=present, env_secrets=present, variables=present, hooks_path=".githooks",
-        aws_account=DEV_ACCOUNT, region="us-west-2",
+        aws_account=DEV_ACCOUNT, region="us-west-2", prefix=PREFIX,
     )
     code, out, _ = run([], ["y", ""], commands, clone(tmp_path))  # the repository; replace any? no
     assert code == 0 and commands.writes == []
     section = _coingecko_section(out)
     assert f"  dev: {DEV_PARAMETER} is not set in this account (make sure it is dev's)." in section
     # Nothing to set on GitHub, and the summary still says what is left: in the region the
-    # repository's AWS_REGION variable already names, since it was not asked for in this run.
+    # repository's AWS_REGION variable already names, and under the prefix its UNIQUE_NAME_PREFIX
+    # variable already names, since neither was asked for in this run.
     summary = out.split("== Summary ==")[1]
-    assert "Nothing to set." in summary and sr.coingecko_command("prod", "us-west-2") in summary
-    assert sr.DEFAULT_REGION not in section
+    assert "Nothing to set." in summary and sr.coingecko_command("prod", "us-west-2", PREFIX) in summary
+    assert sr.DEFAULT_REGION not in section and f"/{sr.DEFAULT_PREFIX}/" not in section
 
 
 def test_a_dry_run_shows_the_step_does_not_need_aws_and_cannot_run_the_ssm_write(tmp_path):
@@ -1075,7 +1116,9 @@ def test_the_script_has_no_way_to_take_the_key():
 def test_the_deploy_guide_documents_the_key_with_the_same_names():
     guide = (REPO_ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     for env in ("dev", "prod"):
-        assert sr.COINGECKO_PARAMETERS[env] in guide
+        # The guide writes the path with the prefix as a placeholder, and says what the default is.
+        assert sr.COINGECKO_PARAMETERS[env].replace("{prefix}", "<prefix>") in guide
+    assert f"`/{sr.DEFAULT_PREFIX}/dev/coingecko-api-key`" in guide
     assert "https://www.coingecko.com/en/api" in guide and "SecureString" in guide
 
 
@@ -1176,7 +1219,7 @@ def test_a_run_with_another_region_uses_it_everywhere_it_prints(tmp_path):
 
 def test_a_run_with_the_default_region_prints_no_extra_steps(tmp_path):
     answers = list(FULL_RUN)
-    answers[1:3] = ["", ""]  # AWS_REGION and TF_STATE_REGION left blank
+    answers[1:4] = ["", "", ""]  # AWS_REGION, TF_STATE_REGION and UNIQUE_NAME_PREFIX left blank
     commands = FakeCommands()
     code, out, _ = run([], [*answers, "y"], commands, clone(tmp_path))
     assert code == 0
@@ -1186,7 +1229,110 @@ def test_a_run_with_the_default_region_prints_no_extra_steps(tmp_path):
     assert "aws_region=" not in out
     # Nothing is written for a setting left blank: the workflows fall back to the default.
     written = {argv[3] for argv, _ in commands.writes if argv[0] == "gh"}
-    assert {"AWS_REGION", "TF_STATE_REGION"}.isdisjoint(written)
+    assert {"AWS_REGION", "TF_STATE_REGION", "UNIQUE_NAME_PREFIX"}.isdisjoint(written)
+
+
+# --- The name prefix -------------------------------------------------------------------------------
+
+
+def test_the_prefix_is_asked_before_anything_that_is_named_from_it():
+    names = [setting.name for setting in sr.SETTINGS]
+    assert names[:3] == ["AWS_REGION", "TF_STATE_REGION", "UNIQUE_NAME_PREFIX"]
+    assert names.index("UNIQUE_NAME_PREFIX") < names.index("AWS_DEV_DEPLOY_ROLE_ARN")
+    setting = _role("UNIQUE_NAME_PREFIX")
+    # A plain variable (it is in public bucket and sign-in host names), which a fork must set and
+    # the original deployment leaves alone; the old suffix setting is gone.
+    assert (setting.kind, setting.where, setting.need) == ("variable", "repo", "fork")
+    assert setting.tf_var == "unique_name_prefix" and "UNIQUE_NAME_SUFFIX" not in names
+    # The help says the default, that it must be chosen first, and that bootstrap must match.
+    for needed in (sr.DEFAULT_PREFIX, "BEFORE your first", "never change it", "bootstrap", "<prefix>-<env>-"):
+        assert needed in setting.help, needed
+    for name in ("terraform.yml", "destroy-dev.yml", "terraform-production-release.yml"):
+        text = (sr.ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        line = f"TF_VAR_unique_name_prefix: ${{{{ vars.UNIQUE_NAME_PREFIX || '{sr.DEFAULT_PREFIX}' }}}}"
+        assert line in text, name
+
+
+def test_deploy_prefix_is_the_answer_then_what_is_already_set_then_the_default():
+    """The one place anything in the script reads the prefix from."""
+    assert sr.deploy_prefix({}) == sr.DEFAULT_PREFIX
+    assert sr.deploy_prefix({}, sr.State()) == sr.DEFAULT_PREFIX
+    assert sr.deploy_prefix({}, sr.State(prefix="acme")) == "acme"
+    assert sr.deploy_prefix({"UNIQUE_NAME_PREFIX": "other"}, sr.State(prefix="acme")) == "other"
+
+
+def test_the_bootstrap_steps_pass_another_prefix_and_say_it_must_match():
+    steps = sr.role_steps(_role(), REPO, True, sr.DEFAULT_REGION, PREFIX)
+    assert f'-var="unique_name_prefix={PREFIX}"' in steps
+    assert "must be the same word as the UNIQUE_NAME_PREFIX variable" in steps
+    assert f"arn:aws:iam::<the account id you gave>:role/gha-{PREFIX}-dev-deploy" in steps
+    assert sr.DEFAULT_PREFIX not in steps
+    # The default needs no argument, and names the role the original deployment has.
+    default = sr.role_steps(_role(), REPO, True)
+    assert "unique_name_prefix" not in default
+    assert "role/gha-bloggerbear-dev-deploy" in default
+
+
+def test_a_run_with_another_prefix_uses_it_everywhere_it_prints(tmp_path):
+    commands = FakeCommands(aws_account=DEV_ACCOUNT)
+    code, out, _ = run(["--dry-run"], FULL_RUN, commands, clone(tmp_path))
+    assert code == 0 and commands.writes == []
+
+    assert f"The prefix is {PREFIX}: resources will be named {PREFIX}-dev-..." in out
+    assert f"Because {PREFIX} is not the default prefix" in out
+    # The notes, and both role questions, print the bootstrap argument.
+    assert out.count(f'-var="unique_name_prefix={PREFIX}"') >= 3
+    assert f"role/gha-{PREFIX}-dev-deploy" in out and f"role/gha-{PREFIX}-prod-deploy" in out
+    assert f"/{PREFIX}/dev/coingecko-api-key" in out and f"/{PREFIX}/production/coingecko-api-key" in out
+    summary = out.split("== Summary ==")[1]
+    assert f"UNIQUE_NAME_PREFIX  [variable, repository]  {PREFIX}" in summary
+    assert f"Remember: {PREFIX} is not the default name prefix." in summary
+    # After the question is answered, nothing is named with the original deployment's prefix. (The
+    # state bucket's help still names the bucket in the backend block, which is not built from it.)
+    rest = out.split("== UNIQUE_NAME_PREFIX")[1].replace("bloggerbear-terraform-state", "")
+    after_help = rest.split(f"The prefix is {PREFIX}")[1]
+    assert sr.DEFAULT_PREFIX not in after_help
+
+
+def test_a_run_with_the_default_prefix_names_everything_as_the_original_deployment_does(tmp_path):
+    answers = list(FULL_RUN)
+    answers[3] = ""  # UNIQUE_NAME_PREFIX left blank
+    commands = FakeCommands(aws_account=DEV_ACCOUNT)
+    code, out, _ = run([], [*answers, "y"], commands, clone(tmp_path))
+    assert code == 0
+
+    assert f"The prefix is {sr.DEFAULT_PREFIX}: " in out and "(Nothing to set.)" in out
+    assert "unique_name_prefix=" not in out and "not the default prefix" not in out
+    sets = {argv[3]: stdin for argv, stdin in commands.writes if argv[0] == "gh"}
+    assert "UNIQUE_NAME_PREFIX" not in sets  # left unset: the workflows fall back to the default
+    assert sets["AWS_DEV_DEPLOY_ROLE_ARN"] == f"arn:aws:iam::{DEV_ACCOUNT}:role/gha-bloggerbear-dev-deploy"
+    assert "/bloggerbear/dev/coingecko-api-key" in out and "/bloggerbear/production/coingecko-api-key" in out
+
+
+def test_a_prefix_already_set_is_skipped_and_still_used(tmp_path):
+    """A variable's value can be read back, so a prefix set on an earlier run still names the role
+    without being asked again."""
+    commands = FakeCommands(variables={"UNIQUE_NAME_PREFIX"}, prefix=PREFIX, hooks_path=".githooks")
+    answers = ["y", "", DEV_ACCOUNT, "", "y"]  # repository; replace any: no; account id; stub; confirm
+    code, out, _ = run(
+        ["--only", "UNIQUE_NAME_PREFIX", "AWS_DEV_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN"],
+        answers, commands, clone(tmp_path),
+    )  # fmt: skip
+    assert code == 0
+    written = {argv[3]: stdin for argv, stdin in commands.writes}
+    assert set(written) == {"AWS_DEV_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN"}
+    assert written["AWS_DEV_DEPLOY_ROLE_ARN"] == f"arn:aws:iam::{DEV_ACCOUNT}:role/gha-{PREFIX}-dev-deploy"
+    assert f"UNIQUE_NAME_PREFIX is already set to {PREFIX}." in out
+    assert f'-var="unique_name_prefix={PREFIX}"' in out.split("== AWS_DEV_DEPLOY_ROLE_ARN")[1]
+    # Reading it back is a read: a dry run may do it too.
+    path = f"repos/{REPO}/actions/variables/UNIQUE_NAME_PREFIX"
+    assert sr.is_read_only(["gh", "api", path, "--jq", ".value"])
+
+
+def test_a_stored_prefix_that_is_not_prefix_shaped_is_ignored():
+    commands = FakeCommands(variables={"UNIQUE_NAME_PREFIX"}, prefix="$(nonsense)")
+    assert sr.read_state(commands, REPO).prefix == ""
+    assert sr.deploy_prefix({}, sr.read_state(commands, REPO)) == sr.DEFAULT_PREFIX
 
 
 def test_a_region_already_set_is_skipped_and_still_used(tmp_path):
