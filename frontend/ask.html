@@ -94,8 +94,15 @@
         </button>
         <p id="ask-talk-hint" class="ask-hint" hidden>
           Tap the button, ask your question, and it stops when you stop speaking (or tap again).
-          You can also hold it (or Space or Enter) while you speak. "Test voice" checks the
-          microphone and the spoken answers.
+          You can also hold it (or Space or Enter) while you speak: it keeps listening through
+          your pauses until you let go, for up to a minute. "Test voice" checks the microphone
+          and the spoken answers.
+        </p>
+        <!-- Shown by ask.js in place of the button, once the browser's recognition has shown it
+             cannot work (Opera and other Chromium browsers with no speech service behind it). -->
+        <p id="ask-speech-broken" class="ask-hint" hidden>
+          Speech recognition does not work in this browser, so type your question instead.
+          Chrome and Edge can listen.
         </p>
         <p id="ask-no-speech" class="ask-hint" hidden>
           This browser has no speech recognition, so type your question instead.
