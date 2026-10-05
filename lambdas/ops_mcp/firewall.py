@@ -33,8 +33,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from statistics import median
-import boto3
-from botocore.config import Config
+
 from common.naming import NAME_PREFIX
 from common.security_events import untrusted_text
 from ops_mcp import logs
