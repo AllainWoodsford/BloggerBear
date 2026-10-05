@@ -304,7 +304,7 @@ def test_speech_stops_for_a_new_question_and_can_be_muted():
 
 def test_speech_is_spoken_in_pieces_on_the_next_tick_and_held_until_it_ends():
     code = _code(_read("ask.js"))
-    say = code[code.index("function say(text)") : code.index("function speak(text)")]
+    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
 
     assert "speechChunks(text, SPEECH_CHUNK_CHARS)" in say
     # Never in the same tick as cancel(), and every utterance held until it ends.
@@ -314,6 +314,32 @@ def test_speech_is_spoken_in_pieces_on_the_next_tick_and_held_until_it_ends():
     assert re.search(r"if \(synth && \(synth\.speaking \|\| synth\.pending\)\) \{\s*synth\.cancel\(\);", code)
     # The language is the browser's English tag, never <html lang>'s bare "en".
     assert "documentElement.lang" not in code
+
+
+def test_speech_is_unlocked_by_a_click_and_a_refused_answer_waits_for_the_next_tap():
+    """iOS speaks only from a user activation, and a touch's pointerdown is not one: the unlock
+    listens for click. It counts as done only once the silent utterance starts, and an answer the
+    browser refused (\"not-allowed\") is kept and spoken from the next tap."""
+    code = _code(_read("ask.js"))
+
+    assert 'doc.addEventListener("click", unlockSpeech, true)' in code
+    assert 'addEventListener("pointerdown", unlockSpeech' not in code
+    unlock = code[code.index("function unlockSpeech(event)") :]
+    unlock = unlock[: unlock.index("\n  }\n")]
+    assert "silent.onstart = function () {" in unlock and "speechUnlocked = true;" in unlock
+    assert "blockedSpeech" in unlock
+    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
+    assert 'event.error === "not-allowed"' in say and "blockedSpeech = text;" in say
+
+
+def test_the_voice_test_listens_only_after_its_sample_has_been_spoken():
+    code = _code(_read("ask.js"))
+    test = code[code.index("function testVoice()") :]
+
+    assert "whenSampleDone(function () {" in test
+    assert "}, 2500);" not in test
+    say = code[code.index("function say(text, onDone)") : code.index("function speak(text)")]
+    assert "position === chunks.length - 1" in say and "SPEECH_DONE_FALLBACK_MS" in say
 
 
 def test_recognition_shows_words_as_heard_and_asks_once_it_ends():
@@ -365,6 +391,7 @@ const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
     langs: input.langs.map((tag) => ask.speechLang(tag)),
     chunks: ask.speechChunks(input.longAnswer, 180),
     shortChunks: ask.speechChunks("One. Two!  Three?", 180),
+    numberChunks: ask.speechChunks(input.numberAnswer, 180),
     noChunks: ask.speechChunks("   ", 180),
     messages: input.errorCodes.map((code) => ask.recognitionMessage(code)),
     voices: input.voiceSets.map((set) => {
@@ -426,6 +453,7 @@ def node_result():
         + "throttled around two in the morning while the retry ran out of attempts and gave up. "
         + "Spend is normal. "
         + ("word " * 60),
+        "numberAnswer": "AI spend was US$12.40 this week, up from 9.80. Python 3.11 is fine.",
         "errorCodes": [
             "not-allowed",
             "network",
@@ -797,14 +825,21 @@ def test_an_answer_is_spoken_in_whole_sentences_each_short_enough(node_result):
     chunks = node_result["chunks"]
     assert len(chunks) > 2
     assert all(0 < len(chunk) <= 180 for chunk in chunks)
-    # Nothing lost or reordered, only the spacing.
-    assert " ".join(chunks).split() == (
-        "Since yesterday crypto did not publish. Its draft was cut short, so it is held in the inbox and the "
-        "authoring function was throttled around two in the morning while the retry ran out of attempts and "
-        "gave up. Spend is normal. " + "word " * 60
-    ).split()
+    # Nothing lost, reordered or split inside a word, only runs of spaces made one. (Comparing
+    # `.split()` of both sides missed a space put into "12.40": "12." and "40" are words too.)
+    assert " ".join(chunks) == " ".join(
+        (
+            "Since yesterday crypto did not publish. Its draft was cut short, so it is held in the inbox and "
+            "the authoring function was throttled around two in the morning while the retry ran out of "
+            "attempts and gave up. Spend is normal. " + "word " * 60
+        ).split()
+    )
     assert chunks[0].startswith("Since yesterday crypto did not publish.")
     assert node_result["shortChunks"] == ["One. Two! Three?"]
+    # A point inside a number ends no sentence: "US$12. 40" would be spoken "twelve dollars. forty".
+    assert node_result["numberChunks"] == [
+        "AI spend was US$12.40 this week, up from 9.80. Python 3.11 is fine."
+    ]
     assert node_result["noChunks"] == []
 
 

@@ -77,7 +77,12 @@ STILL_RUNNING = "The assistant is still looking. Ask me again in a moment."
 NOT_FINISHED = "The last briefing didn't finish. Ask me to start another one."
 NOT_AVAILABLE = "Briefings aren't available here."
 
-_LAMBDA_CONFIG = Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2, "mode": "standard"})
+# No retry: an async Invoke that timed out may still have been queued, and a retry would queue the
+# same run again, a second model run for one start_briefing. A start that fails is said, and the
+# caller can ask again.
+_LAMBDA_CONFIG = Config(
+    connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 1, "mode": "standard"}
+)
 _lambda_client = None
 
 
