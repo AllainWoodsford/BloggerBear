@@ -250,6 +250,8 @@ run "the_agent_is_told_what_it_needs_and_tracing_is_not_switched_on" {
       "OPS_ASSISTANT_ALLOWED_CIDRS",
       "OPS_AGENT_FORWARD_KEY",
       "OPS_BRIEFINGS_TABLE",
+      "OPS_AGENT_DAILY_QUESTION_CAP",
+      "STATS_CURRENT_TABLE",
     ])
     error_message = "the agent's environment holds a variable this test does not expect, or lacks one it does"
   }

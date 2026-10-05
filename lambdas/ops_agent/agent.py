@@ -49,6 +49,7 @@ from strands.tools.executors import SequentialToolExecutor
 from strands.tools.mcp import MCPClient
 from strands.types.exceptions import MaxTokensReachedException
 
+from common import stats_tracking
 from ops_agent import policy
 
 # The answer is spoken: about 120 words is some 200 tokens, and a turn that asks for two or three
@@ -298,6 +299,10 @@ def run(question: str, history: list[dict] | None, tools: list, model: Any = Non
         if not _cut_off(exc):
             raise AgentError(type(exc).__name__) from exc
         result = None
+    finally:
+        # What the run cost, whether it answered, was cut off or failed: tokens a failed run
+        # spent were still billed. Recorded here, by code, from Strands' own count.
+        _record_usage(agent)
     return {
         "answer": _answer_text(result, ledger),
         "tool_calls": ledger.tool_calls,
@@ -305,6 +310,22 @@ def run(question: str, history: list[dict] | None, tools: list, model: Any = Non
         "tables": ledger.tables,
         "turn": turn,
     }
+
+
+def _record_usage(agent: Agent) -> None:
+    """Tally this run's model calls, tokens and cost onto the week's Stats row (the "assistant"
+    category, common/stats_tracking.py). Never raises: bookkeeping never costs the answer."""
+    try:
+        metrics = agent.event_loop_metrics
+        usage = metrics.accumulated_usage or {}
+        stats_tracking.record_assistant_run(
+            os.environ.get("OPS_AGENT_MODEL_ID", ""),
+            usage.get("inputTokens", 0),
+            usage.get("outputTokens", 0),
+            metrics.cycle_count,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"ops_agent: usage not recorded error={type(exc).__name__}")
 
 
 def _cut_off(exc: Exception) -> bool:

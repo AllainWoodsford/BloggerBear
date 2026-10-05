@@ -208,7 +208,7 @@ resource "aws_lambda_function" "ops_agent" {
   function_name = local.agent_name
   # The log group first, and the policy too: a function that exists before its role can read the
   # access switch would refuse its first requests (which is the safe way to be wrong, but wrong).
-  depends_on    = [aws_cloudwatch_log_group.agent, aws_iam_role_policy.ops_agent, aws_iam_role_policy.ops_agent_briefings]
+  depends_on    = [aws_cloudwatch_log_group.agent, aws_iam_role_policy.ops_agent, aws_iam_role_policy.ops_agent_briefings, aws_iam_role_policy.ops_agent_stats]
   role          = aws_iam_role.ops_agent.arn
   handler       = "ops_agent_handler.handler"
   runtime       = "python3.11"
@@ -247,8 +247,14 @@ resource "aws_lambda_function" "ops_agent" {
       # admitted, so that under "allowlist" the server judges the request by that address and
       # not by this function's own (ops_mcp/access.py). The same value the server is given.
       OPS_AGENT_FORWARD_KEY = var.agent_forward_key
-      # Where each briefing is written for latest_briefing (briefings.tf).
-      OPS_BRIEFINGS_TABLE = aws_dynamodb_table.briefings.name
+      # Where each briefing is written for latest_briefing (briefings.tf), and where each
+      # user's questions are counted against the daily cap (ops_agent/quota.py).
+      OPS_BRIEFINGS_TABLE          = aws_dynamodb_table.briefings.name
+      OPS_AGENT_DAILY_QUESTION_CAP = tostring(var.agent_daily_question_cap)
+      # Each run's tokens and cost, onto the week's Stats row (common/stats_tracking.py's
+      # "assistant" category). Empty where the caller passed no Stats table: then nothing is
+      # recorded, and the page and the answer are unaffected.
+      STATS_CURRENT_TABLE = local.agent_stats_table == null ? "" : local.agent_stats_table.name
     }
   }
 }
