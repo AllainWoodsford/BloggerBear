@@ -1,0 +1,192 @@
+name: ruff-autofix
+
+# Applies Ruff's *safe* automatic fixes to a pull request's own branch and pushes them back, so a
+# PR that is red only on an import sort (I001) or a pyupgrade rewrite (UP) fixes itself.
+#
+# Pull requests only: this is deliberately a separate workflow from python-ci.yml, which
+# terraform.yml (dev apply) and terraform-production-release.yml also call as a deploy gate. A
+# deploy must never be gated on, or change, code it is about to ship. python-ci.yml's
+# `ruff check` stays the blocking check; this workflow only tries to make it pass.
+#
+# Two modes, picked by whether the RUFF_AUTOFIX_TOKEN secret exists:
+#   - push mode: commit the fixes to the PR branch with that token. It must NOT be
+#     GITHUB_TOKEN -- a push made with GITHUB_TOKEN starts no workflow runs, so python-ci would
+#     never re-run on the fixed commit and the required check would stay red. Use a fine-grained
+#     PAT or GitHub App token with contents:write on this repository only.
+#   - report-only mode (no secret, e.g. before it is created): run the fixes in the runner's
+#     checkout, show the diff in the job summary, push nothing.
+#
+# pull_request, not pull_request_target: the job checks out the PR's own code, and only for
+# branches in this repository (fork PRs get no secrets and must not be written to). No repo code
+# runs while the token is on disk -- only the pinned ruff release from PyPI.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'lambdas/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+
+# One run per PR at a time. Not cancel-in-progress: the fix commit's own push starts a new run,
+# which would otherwise cancel the run that pushed it and leave a confusing cancelled check.
+# Queued runs for older commits exit at the stale-run guard.
+concurrency:
+  group: ruff-autofix-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  BOT_NAME: ruff-autofix
+  BOT_EMAIL: ruff-autofix@users.noreply.github.com
+
+jobs:
+  autofix:
+    # Same-repo branches only; never the dev/prod branches themselves (copilot-instructions:
+    # nothing pushes to them directly). Put [skip-autofix] in the PR title to opt out.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref != 'dev' && github.head_ref != 'prod' &&
+      !contains(github.event.pull_request.title, '[skip-autofix]')
+    runs-on: ubuntu-latest
+    steps:
+      # Secrets can't be tested in `if:` directly; map it to an env var and record only whether
+      # it is set.
+      - name: Detect push token
+        id: mode
+        env:
+          RUFF_AUTOFIX_TOKEN: ${{ secrets.RUFF_AUTOFIX_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${RUFF_AUTOFIX_TOKEN}" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::RUFF_AUTOFIX_TOKEN is not set: report-only mode (fixes shown in the job summary, nothing pushed)."
+          fi
+
+      # Two checkouts rather than one with a possibly-empty token, so neither mode depends on how
+      # actions/checkout treats an empty `token:`. Both check out the branch (not the merge
+      # commit), so a fix commit lands on top of exactly what the author pushed.
+      - name: Checkout PR branch (push mode)
+        if: steps.mode.outputs.push == 'true'
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.RUFF_AUTOFIX_TOKEN }}
+
+      - name: Checkout PR branch (report-only mode)
+        if: steps.mode.outputs.push != 'true'
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: false
+
+      # Loop guard: the fix commit's own push re-triggers this workflow (that is the point of the
+      # token), so stop when the branch tip is already ours -- by author name OR email, so a
+      # rewritten display name can't defeat it. Also stop when the branch has moved past the
+      # commit this run was started for: a newer run owns the newer commit.
+      - name: Guard against loops and stale runs
+        id: guard
+        env:
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          author_name="$(git log -1 --format=%an)"
+          author_email="$(git log -1 --format=%ae)"
+          if [ "${author_name}" = "${BOT_NAME}" ] || [ "${author_email}" = "${BOT_EMAIL}" ]; then
+            echo "Branch tip is already a ${BOT_NAME} commit; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(git rev-parse HEAD)" != "${EVENT_SHA}" ]; then
+            echo "Branch has moved past ${EVENT_SHA}; the run for the newer commit handles it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Pinned to the actual v5.6.0 tag commit, the same pin as python-ci.yml.
+      - name: Set up Python
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+
+      # Only ruff, at the exact version CI lints with -- a newer ruff flags and fixes different
+      # things (0.15 reports UP042 on code 0.6.9 passes). Nothing from the repo is installed or
+      # executed.
+      - name: Install ruff (pin from lambdas/requirements-dev.txt)
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          pin="$(grep -E '^ruff==' lambdas/requirements-dev.txt | tr -d '[:space:]')"
+          if [ -z "${pin}" ]; then
+            echo "No ruff== pin in lambdas/requirements-dev.txt" >&2
+            exit 1
+          fi
+          python -m pip install --disable-pip-version-check --quiet "${pin}"
+          ruff --version
+
+      # Safe fixes only: never --unsafe-fixes (those can change behaviour). No `ruff format`
+      # either -- the tree has never been formatted, and it would rewrite dozens of files.
+      - name: Apply safe fixes
+        id: fix
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          ruff check --fix --exit-zero lambdas/ scripts/
+          if git diff --quiet -- lambdas/ scripts/; then
+            echo "Nothing auto-fixable."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push fixes
+        if: steps.guard.outputs.skip != 'true' && steps.fix.outputs.changed == 'true' && steps.mode.outputs.push == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name "${BOT_NAME}"
+          git config user.email "${BOT_EMAIL}"
+          git add -- lambdas/ scripts/
+          git commit -m "style: ruff check --fix (safe fixes, ruff $(ruff --version | cut -d' ' -f2))"
+          git push origin "HEAD:refs/heads/${GITHUB_HEAD_REF}"
+          echo "::notice::Pushed Ruff's safe fixes to ${GITHUB_HEAD_REF}. Pull before your next push (git pull --rebase)."
+
+      # Report-only: the diff to apply by hand, capped at ~100 KB (the summary limit is 1 MB per
+      # step). Written to a file first so `head` can't SIGPIPE `git diff` under pipefail.
+      - name: Report fixes (report-only mode)
+        if: steps.guard.outputs.skip != 'true' && steps.fix.outputs.changed == 'true' && steps.mode.outputs.push != 'true'
+        run: |
+          set -euo pipefail
+          git diff -- lambdas/ scripts/ > "${RUNNER_TEMP}/ruff-fix.diff"
+          size="$(wc -c < "${RUNNER_TEMP}/ruff-fix.diff")"
+          {
+            echo "### Ruff safe fixes (not pushed)"
+            echo "RUFF_AUTOFIX_TOKEN is not set, so nothing was pushed. Apply locally with"
+            echo "\`ruff check --fix lambdas/ scripts/\` (ruff $(ruff --version | cut -d' ' -f2)), or apply this diff:"
+            echo '```diff'
+            head -c 100000 "${RUNNER_TEMP}/ruff-fix.diff"
+            echo
+            echo '```'
+            if [ "${size}" -gt 100000 ]; then
+              echo "_Diff truncated: ${size} bytes, first 100000 shown._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Anything left (E501 line too long, F841 unused variable, ...) has no safe fix and needs a
+      # human: keep this job red so it is visible next to python-ci's failure. In report-only mode
+      # the fixes exist only in this runner, so the branch itself still fails lint: stay red then
+      # too, rather than going green on code nobody pushed.
+      - name: Re-check
+        if: steps.guard.outputs.skip != 'true'
+        env:
+          PUSH_MODE: ${{ steps.mode.outputs.push }}
+          CHANGED: ${{ steps.fix.outputs.changed }}
+        run: |
+          set -euo pipefail
+          ruff check lambdas/ scripts/
+          if [ "${PUSH_MODE}" != "true" ] && [ "${CHANGED}" = "true" ]; then
+            echo "The branch still fails ruff: apply the fixes in the job summary and push." >&2
+            exit 1
+          fi
