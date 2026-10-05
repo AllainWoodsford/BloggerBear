@@ -1,6 +1,11 @@
+variable "unique_name_prefix" {
+  type        = string
+  description = "What every resource name starts with, without a trailing hyphen (the calling root's var.unique_name_prefix, \"bloggerbear\" by default). Every alarm, dashboard, metric filter and the alerts topic is <prefix>-<environment_name>-<what>."
+}
+
 variable "environment_name" {
   type        = string
-  description = "Short environment name (e.g. \"dev\", \"production\"), used to name the SNS topic/alarms/dashboard (bloggerbear-<environment_name>-...)."
+  description = "Short environment name (e.g. \"dev\", \"production\"), used to name the SNS topic/alarms/dashboard (<prefix>-<environment_name>-...)."
 }
 
 variable "lambda_function_names" {
@@ -46,7 +51,7 @@ variable "security_alert_log_groups" {
 variable "edge_dashboard_enabled" {
   type        = bool
   default     = false
-  description = "Create the bloggerbear-<env>-edge dashboard (API Gateway and firewall, api_waf_dashboards.tf). Off by default: CloudWatch bills US$3 a month for every dashboard past the account's first three, so only production turns it on."
+  description = "Create the <prefix>-<env>-edge dashboard (API Gateway and firewall, api_waf_dashboards.tf). Off by default: CloudWatch bills US$3 a month for every dashboard past the account's first three, so only production turns it on."
 }
 
 variable "api_dashboard_apis" {

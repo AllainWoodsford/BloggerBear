@@ -1,6 +1,6 @@
 variable "name" {
   type        = string
-  description = "Name prefix for this environment's resources, e.g. \"bloggerbear-dev\"."
+  description = "Name prefix for this environment's resources, e.g. \"<prefix>-dev\"."
 }
 
 variable "region" {

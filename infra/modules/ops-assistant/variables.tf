@@ -1,14 +1,19 @@
+variable "unique_name_prefix" {
+  type        = string
+  description = "What every resource name starts with, without a trailing hyphen (the calling root's var.unique_name_prefix, \"bloggerbear\" by default). Part of every resource's name here, and passed to both functions as NAME_PREFIX, which is how the assistant knows what this deployment's resources are called."
+}
+
 variable "environment_name" {
   type        = string
-  description = "\"dev\" or \"production\": part of every resource's name, and passed to the function as ENVIRONMENT_NAME. It is also what keeps this assistant to its own environment: the alarms tool asks CloudWatch only for alarms named bloggerbear-<environment_name>-, and both roles are denied anything tagged with another Environment (isolation.tf), so it must be the same word as the calling root's Environment default tag."
+  description = "\"dev\" or \"production\": part of every resource's name, and passed to the function as ENVIRONMENT_NAME. It is also what keeps this assistant to its own environment: the alarms tool asks CloudWatch only for alarms named <prefix>-<environment_name>-, and both roles are denied anything tagged with another Environment (isolation.tf), so it must be the same word as the calling root's Environment default tag."
 
   # The same pattern lambdas/ops_mcp/account.py holds the name to before it builds the alarm
   # prefix from it; a name refused there would leave the alarms tool refusing to answer, so it is
   # refused here first, at plan. No hyphen on purpose: an environment called "dev-old" would have
-  # its alarms, bloggerbear-dev-old-..., answer to dev's prefix, bloggerbear-dev-.
+  # its alarms, <prefix>-dev-old-..., answer to dev's prefix, <prefix>-dev-.
   validation {
     condition     = can(regex("^[a-z][a-z0-9]{1,31}$", var.environment_name))
-    error_message = "environment_name must be a lowercase letter followed by 1 to 31 lowercase letters or digits (e.g. \"dev\", \"production\"): no hyphen, since the alarms tool tells environments apart by the prefix bloggerbear-<environment_name>-."
+    error_message = "environment_name must be a lowercase letter followed by 1 to 31 lowercase letters or digits (e.g. \"dev\", \"production\"): no hyphen, since the alarms tool tells environments apart by the prefix <prefix>-<environment_name>-."
   }
 }
 
@@ -20,11 +25,7 @@ variable "account_wide_data" {
 
 variable "default_tags" {
   type        = map(string)
-  description = "The tags every Terraform-made resource of this project carries, ManagedBy and Project (the calling root's provider default_tags, without Environment and TerraformRoot). The assistant's table_sample tool may read a table's rows only when the table carries exactly these, and an Environment it may read (locals.readable_environments in main.tf). The function is given them too (OPS_DEFAULT_TAGS), and checks a table's own tags against them before reading it. Defaults to this project's values, so a module test need not repeat them; every root passes its own explicitly (test_terraform_wiring.py holds that)."
-  default = {
-    ManagedBy = "Terraform"
-    Project   = "BloggerBear"
-  }
+  description = "The tags every Terraform-made resource of this deployment carries, ManagedBy and Project (the calling root's provider default_tags, without Environment and TerraformRoot). No default: Project is \"BloggerBear\" in the original deployment and the name prefix in any other, and only the root knows which. The assistant's table_sample tool may read a table's rows only when the table carries exactly these, and an Environment it may read (locals.readable_environments in main.tf). The function is given them too (OPS_DEFAULT_TAGS), and checks a table's own tags against them before reading it. Defaults to this project's values, so a module test need not repeat them; every root passes its own explicitly (test_terraform_wiring.py holds that)."
 
   validation {
     condition     = toset(keys(var.default_tags)) == toset(["ManagedBy", "Project"]) && alltrue([for value in values(var.default_tags) : length(value) > 0])
@@ -215,12 +216,12 @@ variable "waf_log_groups" {
     name   = string
   }))
   default     = []
-  description = "The firewall's log groups firewall_review may query (firewall.tf), each with its region: this environment's own regional WAF logs (aws-waf-logs-bloggerbear-<environment_name>-*) and the shared CloudFront one (aws-waf-logs-bloggerbear-shared, in us-east-1). Used only where account_wide_data is on. Empty (the default, and always dev's): no tool, and no right to any WAF log group."
+  description = "The firewall's log groups firewall_review may query (firewall.tf), each with its region: this environment's own regional WAF logs (aws-waf-logs-<prefix>-<environment_name>-*) and the shared CloudFront one (aws-waf-logs-<prefix>-shared, in us-east-1). Used only where account_wide_data is on. Empty (the default, and always dev's): no tool, and no right to any WAF log group."
 
   validation {
     condition = alltrue([
       for group in var.waf_log_groups :
-      group.name == "aws-waf-logs-bloggerbear-shared" || startswith(group.name, "aws-waf-logs-bloggerbear-${var.environment_name}-")
+      group.name == "aws-waf-logs-${var.unique_name_prefix}-shared" || startswith(group.name, "aws-waf-logs-${var.unique_name_prefix}-${var.environment_name}-")
     ])
     error_message = "waf_log_groups may name this environment's own WAF log groups and the shared one, nothing else."
   }

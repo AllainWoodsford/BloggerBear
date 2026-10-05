@@ -17,7 +17,7 @@ jobs:
   # terraform.yml's apply-dev job. Trigger this by running the workflow
   # against the `dev` branch (the workflow_dispatch branch selector) so the
   # OIDC sub claim is `ref:refs/heads/dev`, matching
-  # gha-bloggerbear-dev-deploy's trust condition.
+  # gha-<prefix>-dev-deploy's trust condition.
   destroy:
     runs-on: ubuntu-latest
     concurrency:
@@ -29,7 +29,7 @@ jobs:
     # the real value (it tears down from state, not from a freshly
     # computed plan), so that Terraform's config evaluation sees the same
     # inputs either job would.
-    # The account check, name suffix and state bucket are the same three optional settings as
+    # The account check, name prefix and state bucket are the same three optional settings as
     # apply-dev's (see the comment there; the account ID and the bucket are secrets, with no
     # variable fallback): a destroy has to look at the same state, in the same account, under the
     # same names, as the apply that made it.
@@ -38,7 +38,7 @@ jobs:
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_aws_account_id: ${{ secrets.AWS_DEV_ACCOUNT_ID }}
-      TF_VAR_unique_name_suffix: ${{ vars.UNIQUE_NAME_SUFFIX }}
+      TF_VAR_unique_name_prefix: ${{ vars.UNIQUE_NAME_PREFIX || 'bloggerbear' }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}

@@ -17,6 +17,10 @@ The catalogue cannot drift from what is deployed without the build saying so.
 at import: answering a question about a resource reads no table, no file and no AWS API. It costs
 nothing to ask and works when everything else is down, which is when it is most needed.
 
+**One deployment's names.** Nothing here assumes what the resources are called: every name starts
+with this deployment's prefix (common/naming.py, the NAME_PREFIX variable Terraform sets on the
+function), which is "bloggerbear" in the original deployment and in the examples below.
+
 **One environment, whatever name is pasted.** Every name is a template, "bloggerbear-{env}-...",
 filled in with this assistant's own environment (ENVIRONMENT_NAME, as account.py reads it). A name
 from the other environment is answered for this one: asked "bloggerbear-prod-candidate-ideas" in
@@ -37,10 +41,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+from common.naming import NAME_PREFIX
+
 # This assistant's environment. The module sets it on the function (ops-assistant/main.tf).
 ENVIRONMENT_ENV = "ENVIRONMENT_NAME"
 _ENVIRONMENT_NAME = re.compile(r"[a-z][a-z0-9]{1,31}")
-PREFIX = "bloggerbear-"
+# What every name starts with, hyphen included: "bloggerbear-" unless this deployment has its own.
+PREFIX = f"{NAME_PREFIX}-"
+# The prefix as the words a pasted name is split into (a prefix may itself hold a hyphen).
+_PREFIX_WORDS = NAME_PREFIX.split("-")
+# The CloudFront firewall's log group: one for the deployment, not one per environment.
+SHARED_WAF_LOG_GROUP = f"aws-waf-logs-{PREFIX}shared"
 ENV = "{env}"
 
 # The environments the project deploys, and the words people use for them. "prod" is what the
@@ -112,7 +123,7 @@ class Component:
 def _lambda(key: str, purpose: str, trigger: str, *, alarmed: bool = True, **more) -> Component:
     """A Lambda function: its log group is always /aws/lambda/<name>, and the pipeline's own
     functions each have an errors and a throttles alarm (observability/main.tf, which names them
-    "bloggerbear-<env>-" + the function's own name, so the prefix appears twice)."""
+    "<prefix>-<env>-" + the function's own name, so the prefix appears twice)."""
     name = f"{PREFIX}{ENV}-{key}"
     alarms = (f"{PREFIX}{ENV}-{name}-errors", f"{PREFIX}{ENV}-{name}-throttles") if alarmed else ()
     dashboards = (f"{PREFIX}{ENV}-pipeline", f"{PREFIX}{ENV}-lambda-runs") if alarmed else ()
@@ -400,7 +411,7 @@ CATALOGUE: tuple[Component, ...] = (
         "per topic, on the topic's own EventBridge schedule (its research interval)",
         details=(
             ("Writes", "findings; topics.last_research_at"),
-            ("Schedules", "bloggerbear-{env}-<topic_id>-research-tick"),
+            ("Schedules", f"{PREFIX}{ENV}-<topic_id>-research-tick"),
         ),
     ),
     _lambda(
@@ -414,7 +425,7 @@ CATALOGUE: tuple[Component, ...] = (
                 "Writes",
                 "candidate-ideas, articles, moderation-queue, the content bucket; topics.last_article_at",
             ),
-            ("Schedules", "bloggerbear-{env}-<topic_id>-daily-cycle"),
+            ("Schedules", f"{PREFIX}{ENV}-<topic_id>-daily-cycle"),
         ),
         alarms=(f"{PREFIX}{ENV}-daily-cycle-executions-failed", f"{PREFIX}{ENV}-pipeline-dlq-messages"),
     ),
@@ -438,7 +449,7 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "dlq-handler",
         "Turns each message on the pipeline's dead-letter queue into a failed-executions row.",
-        "on each message on bloggerbear-{env}-pipeline-dlq",
+        f"on each message on {PREFIX}{ENV}-pipeline-dlq",
     ),
     _lambda(
         "weekly-reflection",
@@ -644,7 +655,7 @@ CATALOGUE: tuple[Component, ...] = (
     Component(
         kind="log_group",
         key="waf-shared",
-        name="aws-waf-logs-bloggerbear-shared",
+        name=SHARED_WAF_LOG_GROUP,
         purpose="The site's CloudFront firewall log, shared by both environments; in us-east-1, "
         "where CloudFront's firewall lives.",
         only_in=("production",),
@@ -688,7 +699,7 @@ CATALOGUE: tuple[Component, ...] = (
         key="content",
         name=f"{PREFIX}{ENV}-content",
         purpose="Article bodies (articles/) and the raw source snapshots research works from.",
-        details=(("Name", "may carry a suffix (var.unique_name_suffix)"),),
+        details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
         aliases=("content-bucket", "s3"),
     ),
     Component(
@@ -696,7 +707,7 @@ CATALOGUE: tuple[Component, ...] = (
         key="site",
         name=f"{PREFIX}{ENV}-site",
         purpose="The static site CloudFront serves: HTML, scripts and the pre-built pages.",
-        details=(("Name", "may carry a suffix (var.bucket_name_suffix)"),),
+        details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
         aliases=("site-bucket", "frontend"),
     ),
     Component(
@@ -787,6 +798,10 @@ class Resolved:
     suggestions: tuple[str, ...] = ()
 
 
+# The prefix in any case, as a word of its own: not the same letters inside a longer word.
+_PREFIX_ANY_CASE = re.compile(rf"(?<![A-Za-z0-9])(?i:{re.escape(NAME_PREFIX)})(?![a-z0-9])")
+
+
 def _strip(raw: str) -> tuple[str, str | None]:
     """The name inside an ARN or a log group's path, and a hint: the kind of resource an ARN is
     for, or the kind of log group ("lambda", "access", "waf")."""
@@ -797,8 +812,9 @@ def _strip(raw: str) -> tuple[str, str | None]:
         if found:
             text, arn_kind = found.group(1), kind
             break
-    # "BloggerBear" is one word, whatever its case: the CamelCase split must not make it two.
-    text = re.sub(r"(?i)bloggerbear", "bloggerbear", text)
+    # The prefix is itself, whatever its case: "BloggerBear" is one word, and the CamelCase split
+    # must not make it two.
+    text = _PREFIX_ANY_CASE.sub(NAME_PREFIX, text)
     for prefix, hint in _LOG_PREFIXES:
         if text.lower().startswith(prefix):
             return text[len(prefix) :], hint
@@ -843,9 +859,9 @@ def resolve(raw: str, kind: str | None = None) -> Resolved:
     text, hint = _strip(raw) if isinstance(raw, str) else ("", None)
     words = _slug(text).split("-") if text else []
     words = [word for word in words if word]
-    prefixed = bool(words) and words[0] == "bloggerbear"
+    prefixed = words[: len(_PREFIX_WORDS)] == _PREFIX_WORDS
     if prefixed:
-        words = words[1:]
+        words = words[len(_PREFIX_WORDS) :]
     asked_env = env_word = None
     if words and _key(words, hint) not in _INDEX:
         if words[0] in ENVIRONMENT_ALIASES:
@@ -853,7 +869,7 @@ def resolve(raw: str, kind: str | None = None) -> Resolved:
             words = words[1:]
         elif prefixed and len(words) > 1 and _key(words[1:], hint) in _INDEX:
             # Something in the environment's place that is not an environment ("staging"). Only
-            # after "bloggerbear-": without it, a typo ("candidte-ideas") is a typo.
+            # after the prefix: without it, a typo ("candidte-ideas") is a typo.
             env_word = asked_env = words[0]
             words = words[1:]
     key = _key(words, hint)
@@ -896,7 +912,7 @@ def log_group_region(name: str) -> str | None:
     """Where a log group lives: the shared CloudFront firewall's is in us-east-1, everything else
     in this region."""
     # A CLOUDFRONT-scope web ACL, with its log group, can only be created in us-east-1.
-    return "us-east-1" if name == "aws-waf-logs-bloggerbear-shared" else region()
+    return "us-east-1" if name == SHARED_WAF_LOG_GROUP else region()
 
 
 # --- The tool ---------------------------------------------------------------------------------------
