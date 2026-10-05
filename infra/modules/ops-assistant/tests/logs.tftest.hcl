@@ -113,11 +113,15 @@ run "production_also_reads_shared_and_never_dev" {
   }
 
   assert {
-    condition = one([
+    condition = toset(one([
       for statement in data.aws_iam_policy_document.ops_mcp_logs.statement : [
-        for condition in statement.condition : condition.values if condition.variable == "aws:ResourceTag/Environment"
-      ][0] if statement.sid == "QueryReadableEnvironmentLogs"
-    ]) == ["production", "shared"]
-    error_message = "production's tag condition allows production and shared only"
+        for condition in statement.condition : "${condition.test} ${condition.variable} ${join(",", condition.values)}"
+      ] if statement.sid == "QueryReadableEnvironmentLogs"
+      ])) == toset([
+      "StringEquals aws:ResourceTag/ManagedBy Terraform",
+      "StringEquals aws:ResourceTag/Project BloggerBear",
+      "StringEquals aws:ResourceTag/Environment production,shared",
+    ])
+    error_message = "production's tag condition allows production and shared only, with the project's default tags"
   }
 }
