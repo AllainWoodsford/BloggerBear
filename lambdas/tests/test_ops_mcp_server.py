@@ -170,7 +170,15 @@ def test_a_version_it_does_not_speak_is_refused_with_the_ones_it_does(client):
 
 
 # The tools that look at the pipeline, and the ones that keep the assistant's own list (memory.py).
-PIPELINE_TOOLS = {"pipeline_health", "admin_inbox", "content_checks", "security_events", "alarms", "spend"}
+PIPELINE_TOOLS = {
+    "pipeline_health",
+    "admin_inbox",
+    "content_checks",
+    "security_events",
+    "sign_ins",
+    "alarms",
+    "spend",
+}
 MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 # The guide to the Admin CLI (cli_guide.py): help, how-to commands, and the topics as a table.
 GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}

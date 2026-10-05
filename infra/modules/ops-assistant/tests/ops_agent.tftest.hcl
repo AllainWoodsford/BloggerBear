@@ -42,19 +42,21 @@ variables {
       arn  = "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-model-config"
     }
   }
-  content_bucket_name     = "bloggerbear-test-content"
-  content_bucket_arn      = "arn:aws:s3:::bloggerbear-test-content"
-  stage_name              = "test"
-  hosted_ui_domain_prefix = "bloggerbear-test-ops"
-  callback_urls           = ["https://example.com/ask.html"]
-  logout_urls             = ["https://example.com/ask.html"]
-  mfa_configuration       = "OPTIONAL"
-  throttling_rate_limit   = 5
-  throttling_burst_limit  = 10
-  allowed_cidrs           = ["203.0.113.0/24", "2001:db8::/32"]
-  agent_model_id          = "au.example.test-model-v1:0"
-  agent_allowed_origin    = "https://example.com"
-  agent_forward_key       = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+  content_bucket_name           = "bloggerbear-test-content"
+  sign_in_trigger_function_arn  = "arn:aws:lambda:ap-southeast-2:123456789012:function:bloggerbear-test-sign-in-events"
+  sign_in_trigger_function_name = "bloggerbear-test-sign-in-events"
+  content_bucket_arn            = "arn:aws:s3:::bloggerbear-test-content"
+  stage_name                    = "test"
+  hosted_ui_domain_prefix       = "bloggerbear-test-ops"
+  callback_urls                 = ["https://example.com/ask.html"]
+  logout_urls                   = ["https://example.com/ask.html"]
+  mfa_configuration             = "OPTIONAL"
+  throttling_rate_limit         = 5
+  throttling_burst_limit        = 10
+  allowed_cidrs                 = ["203.0.113.0/24", "2001:db8::/32"]
+  agent_model_id                = "au.example.test-model-v1:0"
+  agent_allowed_origin          = "https://example.com"
+  agent_forward_key             = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 }
 
 run "the_agent_role_can_invoke_the_model_and_read_one_row" {

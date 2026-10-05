@@ -374,6 +374,21 @@ CATALOGUE: tuple[Component, ...] = (
         alarms=(f"{PREFIX}{ENV}-security-high-severity",),
     ),
     _table(
+        "sign-ins",
+        "Sign-ins to the operator's assistant: one row per attempt, success, refusal and unlock, "
+        "by user and time. It is what the lockout counts from. No address is kept.",
+        ("username", "at"),
+        ttl="expires_at",
+        details=(
+            ("Written by", "sign-in-events (the user pool's triggers) and the Admin API's unlock"),
+            ("Read by", "the assistant's sign_ins tool, the Admin API"),
+            ("Expires", "120 days after the event (TTL)"),
+        ),
+        aliases=("logins", "sign-in log", "signins"),
+        assistant_reads=True,
+        alarms=(f"{PREFIX}{ENV}-security-high-severity",),
+    ),
+    _table(
         "operator-suggestions",
         "The assistant's own memory: the fixes it suggested and what the operator asked it to "
         "watch, per signed-in user. The one table the assistant writes to.",
@@ -482,6 +497,13 @@ CATALOGUE: tuple[Component, ...] = (
         "Turns the regional firewalls' block records into security incidents.",
         "on each batch of BLOCK records from the public and admin APIs' WAF logs (a log subscription)",
         alarms=(f"{PREFIX}{ENV}-security-high-severity",),
+    ),
+    _lambda(
+        "sign-in-events",
+        "Logs every sign-in to the assistant, and refuses a user after too many failed attempts.",
+        "before and after every sign-in to the assistant's user pool (its Cognito triggers)",
+        alarms=(f"{PREFIX}{ENV}-security-high-severity",),
+        aliases=("sign-ins", "lockout"),
     ),
     _lambda(
         "ops-mcp",

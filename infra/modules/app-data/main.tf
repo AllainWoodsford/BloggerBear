@@ -528,3 +528,35 @@ resource "aws_dynamodb_table" "security_events" {
     enabled        = true
   }
 }
+
+# Sign-ins to the operator's assistant (lambdas/common/sign_ins.py): one row per attempt, success,
+# refusal and unlock, written by the user pool's triggers. Keyed by the user, then by when, so the
+# lockout's question ("this user's last fifteen minutes") is one query. Rows expire by TTL
+# (expires_at), 120 days after the event.
+resource "aws_dynamodb_table" "sign_ins" {
+  name                        = "${var.unique_name_prefix}-${var.environment_name}-sign-ins"
+  billing_mode                = "PAY_PER_REQUEST"
+  deletion_protection_enabled = var.protect_data
+
+  point_in_time_recovery {
+    enabled = var.protect_data
+  }
+
+  hash_key  = "username"
+  range_key = "at"
+
+  attribute {
+    name = "username"
+    type = "S"
+  }
+
+  attribute {
+    name = "at"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}

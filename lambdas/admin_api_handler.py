@@ -26,7 +26,7 @@ from decimal import Decimal
 
 import boto3
 
-from common import equipment, feedback_limits, gear
+from common import equipment, feedback_limits, gear, sign_ins
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
@@ -1637,6 +1637,26 @@ def _list_failed_executions(event: dict) -> dict:
     return _response(200, {"items": list_failed_executions()})
 
 
+# --- Sign-ins to the operator's assistant (common/sign_ins.py) ----------------------------------
+#
+# The log the user pool's triggers write, and the one thing a person may change in it: clearing a
+# lock. Nothing here creates a user or touches a password; that is done against the pool itself.
+
+# Cognito's own limit on a username.
+_USERNAME_MAX_CHARS = 128
+
+
+def _list_sign_ins(event: dict) -> dict:
+    return _response(200, sign_ins.report(sign_ins.clamp_days(_query_param(event, "days"))))
+
+
+def _unlock_sign_in(event: dict) -> dict:
+    username = (_path_param(event, "username") or "").strip()
+    if not username or len(username) > _USERNAME_MAX_CHARS:
+        return _error(400, "'username' is required and may be at most 128 characters")
+    return _response(200, sign_ins.unlock(username, datetime.now(UTC)))
+
+
 # --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1) ------
 #
 # The "supported models" registry (docs/project-plan.md §11) -- adding or
@@ -1925,6 +1945,8 @@ _ROUTES = {
     "POST /prompt-refinements/{topic_id}/{version}/announce": _announce_loot,
     "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
     "GET /failed-executions": _list_failed_executions,
+    "GET /sign-ins": _list_sign_ins,
+    "POST /sign-ins/{username}/unlock": _unlock_sign_in,
     "GET /models": _list_models,
     "POST /models": _put_model,
     "GET /model-config": _get_model_config,

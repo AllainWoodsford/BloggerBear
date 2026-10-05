@@ -55,17 +55,19 @@ variables {
       arn  = "arn:aws:dynamodb:ap-southeast-2:111111111111:table/bloggerbear-test-model-config"
     }
   }
-  content_bucket_name     = "bloggerbear-test-content"
-  content_bucket_arn      = "arn:aws:s3:::bloggerbear-test-content"
-  stage_name              = "test"
-  hosted_ui_domain_prefix = "bloggerbear-test-ops"
-  callback_urls           = ["https://example.com/ask.html"]
-  logout_urls             = ["https://example.com/ask.html"]
-  mfa_configuration       = "OPTIONAL"
-  throttling_rate_limit   = 5
-  throttling_burst_limit  = 10
-  agent_model_id          = "au.example.test-model-v1:0"
-  agent_allowed_origin    = "https://example.com"
+  content_bucket_name           = "bloggerbear-test-content"
+  sign_in_trigger_function_arn  = "arn:aws:lambda:ap-southeast-2:123456789012:function:bloggerbear-test-sign-in-events"
+  sign_in_trigger_function_name = "bloggerbear-test-sign-in-events"
+  content_bucket_arn            = "arn:aws:s3:::bloggerbear-test-content"
+  stage_name                    = "test"
+  hosted_ui_domain_prefix       = "bloggerbear-test-ops"
+  callback_urls                 = ["https://example.com/ask.html"]
+  logout_urls                   = ["https://example.com/ask.html"]
+  mfa_configuration             = "OPTIONAL"
+  throttling_rate_limit         = 5
+  throttling_burst_limit        = 10
+  agent_model_id                = "au.example.test-model-v1:0"
+  agent_allowed_origin          = "https://example.com"
 }
 
 run "the_metadata_documents_say_what_the_spec_needs" {

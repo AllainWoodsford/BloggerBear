@@ -157,10 +157,10 @@ def test_the_zone_lives_in_bootstrap_and_cannot_be_destroyed_by_accident():
 def test_every_table_is_protected_when_asked_and_production_asks():
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('resource "aws_dynamodb_table"') == 15
-    assert tables.count("deletion_protection_enabled = var.protect_data") == 15
+    assert tables.count('resource "aws_dynamodb_table"') == 16
+    assert tables.count("deletion_protection_enabled = var.protect_data") == 16
     assert (
-        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 15
+        len(re.findall(r"^\s+enabled\s*=\s*var\.protect_data", tables, re.M)) == 16
     )  # point-in-time recovery
     assert re.search(r"protect_data\s*=\s*true", _read("environments", "production", "main.tf"))
     assert "protect_data" not in _read("environments", "dev", "main.tf")
@@ -215,11 +215,11 @@ def test_raw_source_snapshots_expire_separately_from_the_rest_of_the_bucket(env)
 def test_four_more_tables_gained_a_ttl_in_the_cleanup_pr():
     """Findings and ModelConfig already had one; CandidateIdeas, ModerationQueue,
     PromptRefinements and FailedExecutions are the four this PR adds. SecurityEvents (120 days
-    after last seen) came later."""
+    after last seen) and SignIns (120 days after the event) came later."""
     tables = _read("modules", "app-data", "main.tf")
 
-    assert tables.count('attribute_name = "expires_at"') == 7
-    assert tables.count("ttl {") == 7
+    assert tables.count('attribute_name = "expires_at"') == 8
+    assert tables.count("ttl {") == 8
 
 
 @pytest.mark.parametrize("env", ["dev", "production"])
@@ -233,8 +233,8 @@ def test_every_pipeline_lambda_gets_one_90_day_log_group(env):
     assert 'resource "aws_cloudwatch_log_group" "lambda"' in text
     assert "for_each          = toset(local.lambda_log_group_function_names)" in text
     function_names = re.findall(r"aws_lambda_function\.[a-z_]+\.function_name,", text)
-    assert len(function_names) == 11  # module.observability's list: each function named once
-    assert len(set(function_names)) == 11
+    assert len(function_names) == 12  # module.observability's list: each function named once
+    assert len(set(function_names)) == 12
 
 
 # --- the www redirect, as CloudFront will run it ---------------------------------------------------
@@ -1735,6 +1735,7 @@ def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
         "MODEL_CONFIG_TABLE",
         "MUSINGS_TABLE",
         "SECURITY_EVENTS_TABLE",
+        "SIGN_INS_TABLE",
         "STATS_CURRENT_TABLE",
         "STATS_HISTORY_TABLE",
     }

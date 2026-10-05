@@ -244,6 +244,7 @@ _BRIEFING_TOOLS = frozenset(
         "admin_inbox",
         "content_checks",
         "security_events",
+        "sign_ins",
         "alarms",
         "spend",
         "watch_list",

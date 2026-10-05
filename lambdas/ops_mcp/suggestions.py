@@ -107,6 +107,20 @@ CATALOGUE: dict[str, Suggestion] = {
         ),
         what_it_does=_REWRITE_PUBLISHED,
     ),
+    # Sign-ins to the assistant itself (sign_in_tool.py). The id is a username an administrator made.
+    "sign_in_locked": Suggestion(
+        action="If it is you, unlock the user; if it is not, change that user's password first",
+        arguments="sign-ins unlock {id}",
+        what_it_does=(
+            "Clears the lock, so the user's earlier failed attempts stop counting and they can "
+            "sign in again at once. It does not change the password."
+        ),
+    ),
+    "sign_in_failures": Suggestion(
+        action="See who failed to sign in, and when",
+        arguments="sign-ins list",
+        what_it_does="Lists each user's sign-ins, failures and refusals. It changes nothing.",
+    ),
     # No command from here down: what to look at, and where.
     "musing_dangling": Suggestion(
         action="Look at the article the musing links to: a reader who follows the link finds nothing",
