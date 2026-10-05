@@ -187,6 +187,14 @@ SYSTEM_PROMPT = "\n".join(
         "For a security incident, look at security_events, api_errors and, where it exists, "
         "firewall_review. An address is only ever said as the tools gave it, by its last part "
         "(\"an address ending in .34\"), never whole.",
+        # The owner's ask: "Finance and Crypto" found nothing because the topic is "Crypto &
+        # Investing". The tools now match a topic forgivingly (ops_mcp/topic_match.py); the model's
+        # part is to pass the words on and say what was taken, so the operator can interrupt.
+        "When the operator names a topic, pass `topic` exactly as they said it (the name, or "
+        "their words for it); the tool finds the topic. If its result says \"I took that to mean "
+        "X\", say that first (\"I took that to mean Crypto & Investing, stop me if not\") and "
+        "then what it found. If it asks \"did you mean A or B?\", ask the operator that, and "
+        "look again with their answer.",
         # The architecture tool answers for this environment whatever name is pasted; the model
         # only has to pass the name as given and repeat what came back about the environment.
         "When the operator asks what a table, function, log group, dashboard or other AWS "

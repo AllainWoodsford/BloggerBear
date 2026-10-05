@@ -821,7 +821,7 @@ def test_one_topic_is_shown_in_full(tables):
 
 def test_an_id_that_is_not_one_or_is_not_there_is_said_so(tables):
     assert "table" not in cli_guide.topics_overview(topic="x; topics delete y")
-    assert cli_guide.topics_overview(topic="nope")["spoken"] == "I can't find a topic with that id."
+    assert cli_guide.topics_overview(topic="nope")["spoken"].startswith("I couldn't find that topic")
     assert cli_guide.topics_overview()["spoken"] == "There are no topics yet."
 
 

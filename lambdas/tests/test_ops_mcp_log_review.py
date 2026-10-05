@@ -169,7 +169,7 @@ def test_no_environment_reads_nothing(monkeypatch):
 
 def test_a_topic_reads_its_two_functions_narrowed_to_its_id_and_adapter(monkeypatch):
     monkeypatch.setattr(
-        log_review,
+        log_review.topic_match,
         "get_topic",
         lambda topic_id: {"topic_id": topic_id, "name": "Crypto", "adapter": "crypto_feed"},
     )
@@ -189,15 +189,18 @@ def test_a_topic_reads_its_two_functions_narrowed_to_its_id_and_adapter(monkeypa
 
 def test_a_topic_with_an_adapter_we_do_not_know_filters_on_its_id_only(monkeypatch):
     monkeypatch.setattr(
-        log_review, "get_topic", lambda topic_id: {"topic_id": topic_id, "adapter": "evil|.*"}
+        log_review.topic_match, "get_topic", lambda topic_id: {"topic_id": topic_id, "adapter": "evil|.*"}
     )
     run = Run()
     review(run, topic="t1")
     assert run.jobs[0][3].count("filter @message like /t1/") == 1
 
 
-@pytest.mark.parametrize("topic", ["no/such", "a b", "x" * 200, ""])
-def test_a_topic_id_that_is_not_an_id_never_reaches_a_query(topic):
+@pytest.mark.parametrize("topic", ["no;such", "a = b", "x" * 200, ""])
+def test_a_topic_id_that_is_not_an_id_never_reaches_a_query(topic, monkeypatch):
+    only_crypto = [{"topic_id": "crypto", "name": "Crypto"}]
+    monkeypatch.setattr(log_review.topic_match, "list_topics", lambda: only_crypto)
+    monkeypatch.setattr(log_review.topic_match, "get_topic", lambda topic_id: None)
     run = Run()
     assert review(run, topic=topic)["findings"] == [] and run.jobs == []
 
