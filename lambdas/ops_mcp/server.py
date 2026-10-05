@@ -37,6 +37,7 @@ from starlette.responses import Response
 
 from ops_mcp import (
     account,
+    api_errors,
     briefings,
     cli_guide,
     content,
@@ -45,6 +46,7 @@ from ops_mcp import (
     runsheets,
     samples,
     sign_in_tool,
+    log_review,
     tools,
 )
 from ops_mcp import architecture as architecture_module
@@ -69,8 +71,11 @@ _INSTRUCTIONS = (
     "own help on screen; then cli_command for the exact command, once the operator has given the "
     "values. topics_overview puts the topics and their settings on screen as a table. architecture "
     "says what any of the project's AWS resources is for, in this environment, whatever "
-    "environment's name it is asked with; investigate puts a runsheet on screen (dashboards, log "
-    "groups and Logs Insights queries to copy) for what no tool here can read, such as logs; "
+    "environment's name it is asked with; log_review reads this environment's Lambda logs itself "
+    "(errors, their root cause, whether they need a code fix, a settings change or just time) and "
+    "puts on screen how to check it yourself; api_errors does the same for the APIs' access logs "
+    "(failed requests by status and who answered); investigate puts a runsheet on screen (dashboards, "
+    "log groups and Logs Insights queries to copy) for what no tool here can read, such as metrics; "
     "table_sample puts a table's newest row on screen and says whether it is being written on time."
 )
 
@@ -301,6 +306,48 @@ def build_server() -> MCPServer:
         the operator's words; `status` an HTTP status they asked about (400); `api` which API, if
         they said. Say that the runsheet is on screen; never read a query or a link aloud."""
         return runsheets.investigate(symptom, status, api)
+
+    # The logs (log_review.py): this environment's Lambda logs, read with fixed queries, by the
+    # name and tag rules in logs.py. Passed through `remembered` like the pipeline tools.
+    @server.tool(name="log_review", annotations=_READ_ONLY, structured_output=True)
+    def log_review_tool(
+        ctx: Context,
+        function: str | None = None,
+        topic: str | None = None,
+        hours: int = 24,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
+        """Read this environment's Lambda logs for errors and say why they happened: per function,
+        each error's root cause (a timeout, out of memory, throttling, a source's rate limit or
+        outage, incomplete source data, a permission, a code error), how many, whether it is more
+        than usual, and whether it needs a code fix, a settings change or just time. Puts on screen
+        the advice, the queries and log groups to check it yourself, and example lines (redacted).
+        Pass `function` (any name for it) for one function, `topic` (a topic id) for a deep dive
+        into one topic's runs and its adapter, or neither for every function. The last `hours`
+        (1 to 168), or `start` and `end` as ISO timestamps when the operator gives a time range.
+        Read-only. Example lines are under `untrusted`: never read them aloud."""
+        return remembered(ctx, log_review.review(function, topic, hours, start, end))
+
+    @server.tool(name="api_errors", annotations=_READ_ONLY, structured_output=True)
+    def api_errors_tool(
+        ctx: Context,
+        api: Literal["public", "admin", "assistant"] | None = None,
+        status: int | None = None,
+        hours: int = 24,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> dict[str, Any]:
+        """Read the APIs' access logs for failed requests and say why: per API, the errors by
+        status and who answered (the firewall, the rate limit, the sign-in, API Gateway itself, or
+        the Lambda), each with its root cause and whether it needs a code fix, a settings change,
+        or nothing; the error rate; and when they started. Puts on screen the breakdown by route
+        and the queries to check it yourself. Pass `api` (public, admin or assistant) for one API,
+        `status` for one HTTP status (400), and the last `hours` (1 to 168) or `start` and `end`
+        as ISO timestamps when the operator gives a time range. For 5XXs the Lambda answered, call
+        log_review next with the function it names. Read-only."""
+        return remembered(ctx, api_errors.api_errors(api, status, hours, start, end))
+
     # The firewall deep dive (firewall.py): production only. Registered only where this assistant
     # may report account-wide data and has been given log groups of its own environment (or the
     # shared one) to read, so dev's assistant does not have the tool at all. A deep dive: never

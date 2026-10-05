@@ -36,6 +36,13 @@
   var ASK_TIMEOUT_MS = 40000; // API Gateway gives up at 29 s; this is only a backstop
   var HOLD_MS = 400; // a press shorter than this is a tap: start now, stop on the next press
   var CLICK_AFTER_PRESS_MS = 700; // a click this soon after a press belongs to that press
+  var LISTEN_MAX_MS = 60000; // the longest one question is listened to, however long the button is held
+  var START_WATCHDOG_MS = 10000; // recognition that reports nothing at all in this long never started
+  var END_GRACE_MS = 1000; // how long "end" may follow an error before the page stops waiting for it
+  var STOP_GRACE_MS = 4000; // and how long it may follow stop(), while the last words are worked out
+  var QUICK_END_MS = 1000; // a session over this soon with nothing heard got nowhere
+  var QUICK_ENDS_MAX = 3; // that many in a row and a held button stops starting new ones
+  var SERVICE_FAILURES_MAX = 2; // "the browser's recognition does not work", this many times running
   var SPEECH_CHUNK_CHARS = 180; // Chrome's online voices stop partway through a long utterance
   var SPEECH_DELAY_MS = 80;
   var SPEECH_DONE_FALLBACK_MS = 15000; // the longest say() waits for a browser to report the end // Chrome drops an utterance spoken in the same tick as cancel()
@@ -486,7 +493,15 @@
       "This browser will not let the page use speech recognition. Try Chrome or Edge, or type your question.",
     "audio-capture": "No microphone was found. Plug one in or check it is switched on, or type your question.",
     network:
-      "Speech recognition needs the browser's online speech service, which could not be reached. Some browsers (Brave, and many Chromium builds) do not include one: try Chrome or Edge, or type your question.",
+      "Speech recognition needs the browser's online speech service, which could not be reached. Some browsers (Opera, Brave, and many Chromium builds) do not include one: try Chrome or Edge, or type your question.",
+    // The next four are the page's own findings, not codes a browser sends (see createListener).
+    offline:
+      "You appear to be offline, and speech recognition needs the browser's online speech service. Check your connection, then try again.",
+    silent:
+      "Speech recognition stopped before the microphone was even opened. Some browsers (Opera, and many Chromium builds) have the feature but no speech service behind it: try Chrome or Edge, or type your question.",
+    "no-start":
+      "Speech recognition did not start. If the browser is asking to use the microphone, allow it and press again. Otherwise this browser cannot listen: try Chrome or Edge, or type your question.",
+    "start-failed": "Speech recognition could not be started in this browser. Try Chrome or Edge, or type your question.",
     "language-not-supported": "Speech recognition does not support this language here. Type your question instead.",
     "no-speech": "Heard nothing. Try again, or type your question.",
     aborted: "",
@@ -497,6 +512,264 @@
       return RECOGNITION_MESSAGES[code];
     }
     return "Speech recognition failed. Type your question instead.";
+  }
+
+  // What a recognition failure means for the talk button. Decided from what the browser actually
+  // reported, never from its name: a Chromium browser with no speech service says so only when
+  // it is tried.
+  //   "none"      nothing wrong with the browser: nothing was said, or the page stopped it
+  //   "blocked"   the operator's to put right (permission, or no microphone): the button stays
+  //   "offline"   no connection just now: the button stays
+  //   "service"   the browser's recognition did not work; twice running and the button goes
+  //   "unusable"  the browser says it will not do it at all: the button goes at once
+  function recognitionVerdict(code, online) {
+    if (!code || code === "no-speech" || code === "aborted") {
+      return "none";
+    }
+    if (code === "not-allowed" || code === "audio-capture") {
+      return "blocked";
+    }
+    if (code === "service-not-allowed" || code === "language-not-supported") {
+      return "unusable";
+    }
+    if (code === "network" && online === false) {
+      return "offline";
+    }
+    return "service";
+  }
+
+  // What was heard, as one question. A held button listens in several sessions (the browser ends
+  // one at each pause), and each gives its own words: they are joined in order with single
+  // spaces. A session that gives back everything already kept, alone or with more after it, takes
+  // its place and is not added a second time.
+  function joinHeard(pieces) {
+    var joined = "";
+    (Array.isArray(pieces) ? pieces : []).forEach(function (piece) {
+      var text = typeof piece === "string" ? piece.replace(/\s+/g, " ").trim() : "";
+      if (!text) {
+        return;
+      }
+      var had = joined.toLowerCase();
+      var now = text.toLowerCase();
+      if (!joined || now === had || now.indexOf(had + " ") === 0) {
+        joined = text;
+      } else {
+        joined = joined + " " + text;
+      }
+    });
+    return joined;
+  }
+
+  // Whether to start another session when the browser has ended one: only while the button is
+  // still held, the page has not asked to stop, nothing went wrong ("no-speech" is a long pause,
+  // which a hold listens through), the ceiling has not been reached and sessions are not ending
+  // as fast as they start.
+  function keepListening(state) {
+    return (
+      !!state &&
+      state.held === true &&
+      !state.stopping &&
+      (state.code === "" || state.code === "no-speech") &&
+      state.elapsedMs < LISTEN_MAX_MS &&
+      state.quickEnds < QUICK_ENDS_MAX
+    );
+  }
+
+  // Listening, from the first press to the one question it ends with. The browser's recognition
+  // is used one short session at a time (continuous = false: it ends by itself at the first
+  // pause, which is what a tap wants); while `env.isHeld` says the button is still down, each
+  // session the browser ends is followed by another, and the words are kept together.
+  //
+  // Everything it touches is handed in, so the Node test can drive it with a scripted recogniser
+  // and its own clock: env = { Recognition, lang, now(), setTimeout(fn, ms), clearTimeout(id),
+  // isHeld(options), onState(listening), onText(heardSoFar), onCeiling(), onDone(result, options) }.
+  // `onDone` is called exactly once for each start(), with { heard, code }: the words (maybe none)
+  // and the first error the last session reported, or one of the page's own: "silent" (ended
+  // with no error and no sign the microphone was opened), "no-start" (no event of any kind) and
+  // "start-failed" (start() threw).
+  function createListener(env) {
+    var session = null;
+
+    function finish(code) {
+      var done = session;
+      session = null;
+      env.clearTimeout(done.ceiling);
+      env.onState(false);
+      env.onDone({ heard: joinHeard(done.parts), code: code }, done.options);
+    }
+
+    function listen() {
+      var mine = session;
+      var current = null;
+      var finalText = "";
+      var interim = "";
+      var code = "";
+      var opened = false; // the browser said it was capturing sound, or gave words
+      var closed = false;
+      var began = env.now();
+      var watchdog = 0;
+      var endTimer = 0;
+
+      function ended() {
+        if (closed) {
+          return;
+        }
+        closed = true;
+        env.clearTimeout(watchdog);
+        env.clearTimeout(endTimer);
+        if (session !== mine) {
+          return; // abandoned: nothing is asked
+        }
+        // Words the browser never marked final (it was cut off) are still words that were said.
+        var text = joinHeard([finalText + interim]);
+        if (text) {
+          mine.parts.push(text);
+          mine.quickEnds = 0;
+        } else if (env.now() - began < QUICK_END_MS) {
+          mine.quickEnds += 1;
+        } else {
+          mine.quickEnds = 0;
+        }
+        if (!code && !text && !opened && !mine.stopping) {
+          code = "silent";
+        }
+        var again = keepListening({
+          held: env.isHeld(mine.options) === true,
+          stopping: mine.stopping,
+          code: code,
+          elapsedMs: env.now() - mine.startedAt,
+          quickEnds: mine.quickEnds,
+        });
+        if (again) {
+          listen();
+        } else {
+          finish(code);
+        }
+      }
+
+      function alive() {
+        env.clearTimeout(watchdog);
+      }
+
+      function capturing() {
+        alive();
+        opened = true;
+      }
+
+      try {
+        current = new env.Recognition();
+        current.lang = env.lang;
+        current.interimResults = true; // shown as they come, so it is clear the microphone is working
+        current.continuous = false;
+        current.maxAlternatives = 1;
+        current.onstart = alive;
+        current.onaudiostart = current.onsoundstart = current.onspeechstart = capturing;
+        current.onresult = function (event) {
+          if (closed) {
+            return;
+          }
+          capturing();
+          finalText = "";
+          interim = "";
+          var results = (event && event.results) || [];
+          for (var i = 0; i < results.length; i++) {
+            var best = results[i] && results[i][0];
+            var text = best && typeof best.transcript === "string" ? best.transcript : "";
+            if (results[i].isFinal === false) {
+              interim += text;
+            } else {
+              finalText += text;
+            }
+          }
+          env.onText(joinHeard(mine.parts.concat([finalText + interim])));
+        };
+        current.onerror = function (event) {
+          if (closed) {
+            return;
+          }
+          alive();
+          if (!code) {
+            code = String((event && event.error) || "unknown");
+          }
+          // "end" follows an error; a browser that never sends it must not leave the page listening.
+          env.clearTimeout(endTimer);
+          endTimer = env.setTimeout(ended, END_GRACE_MS);
+        };
+        current.onend = ended;
+        mine.recognition = current;
+        mine.forceEnd = ended;
+        current.start();
+      } catch (err) {
+        closed = true;
+        finish("start-failed");
+        return;
+      }
+      watchdog = env.setTimeout(function () {
+        if (closed) {
+          return;
+        }
+        code = "no-start";
+        try {
+          current.abort();
+        } catch (err) {
+          // It never started: there is nothing to abort.
+        }
+        ended();
+      }, START_WATCHDOG_MS);
+    }
+
+    function stop() {
+      if (!session || session.stopping) {
+        return;
+      }
+      var mine = session;
+      var forceEnd = mine.forceEnd;
+      mine.stopping = true;
+      try {
+        mine.recognition.stop(); // delivers what was heard so far, then "end"
+      } catch (err) {
+        forceEnd();
+        return;
+      }
+      env.setTimeout(forceEnd, STOP_GRACE_MS);
+    }
+
+    return {
+      // True if listening began. `options` comes back with onDone and goes to isHeld.
+      start: function (options) {
+        if (session || !env.Recognition) {
+          return false;
+        }
+        var mine = { parts: [], options: options || {}, startedAt: env.now(), stopping: false, quickEnds: 0 };
+        session = mine;
+        env.onState(true);
+        mine.ceiling = env.setTimeout(function () {
+          if (session === mine) {
+            env.onCeiling();
+            stop();
+          }
+        }, LISTEN_MAX_MS);
+        listen();
+        return session === mine;
+      },
+      // Ends the question: the browser gives its last words, and onDone gets all of them.
+      stop: stop,
+      // Stops without a question: onDone is not called.
+      abandon: function () {
+        if (!session) {
+          return;
+        }
+        var mine = session;
+        session = null;
+        env.clearTimeout(mine.ceiling);
+        try {
+          mine.recognition.abort();
+        } catch (err) {
+          // Already over.
+        }
+        env.onState(false);
+      },
+    };
   }
 
   // The voice to speak with: one for the exact tag, then the browser's default English voice,
@@ -530,6 +803,11 @@
     speechLang: speechLang,
     speechChunks: speechChunks,
     recognitionMessage: recognitionMessage,
+    recognitionVerdict: recognitionVerdict,
+    joinHeard: joinHeard,
+    keepListening: keepListening,
+    createListener: createListener,
+    LISTEN_MAX_MS: LISTEN_MAX_MS,
     pickVoice: pickVoice,
     isHowTo: isHowTo,
     isDestructive: isDestructive,
@@ -733,7 +1011,7 @@
     tokenExpiresAt = 0;
     turns = [];
     stopSpeaking();
-    stopListening();
+    abandonListening(); // nothing heard after this is a question: there is no token to ask with
     clear(conversation);
     status.textContent = "";
     unavailable.hidden = true;
@@ -933,6 +1211,7 @@
       return;
     }
     stopSpeaking(); // a new question interrupts the last answer
+    abandonListening(); // and a typed one ends a spoken one that was still being listened to
     var checked = checkQuestion(text);
     if (checked.error) {
       status.textContent = checked.error;
@@ -1035,15 +1314,19 @@
 
   // -- talking -------------------------------------------------------------------------------
   // Tap to start and tap again to stop, or let the browser stop when you stop speaking; or hold
-  // (pointer, Space or Enter) and let go to finish. The words are shown as they are heard, and
-  // the question is asked once recognition ends with something heard.
+  // (pointer, Space or Enter) and let go to finish: a held button keeps listening through pauses,
+  // for up to LISTEN_MAX_MS. The words are shown as they are heard, and the one question is asked
+  // once listening ends with something heard (createListener, above).
 
   var Recognition = root.SpeechRecognition || root.webkitSpeechRecognition;
-  var recognition = null;
   var listening = false;
+  var voiceUnusable = false; // recognition is there but has shown it does not work: the button is gone
+  var serviceFailures = 0; // how many times running it has failed in a way that is the browser's
+  var lastVoiceFailure = ""; // what the operator was last told about it, for the voice test
   var pressedAt = 0; // when the current press began; 0 when nothing is held
   var pressStarted = false; // whether that press was the one that started listening
   var lastPressAt = 0; // when a pointer or key press was last dealt with, to ignore its own click
+  var skipClick = false; // the press was ended by the ceiling: the click its release makes is not a tap
 
   function setListening(value) {
     listening = value;
@@ -1051,71 +1334,105 @@
     talkButton.textContent = value ? "Listening. Press to stop" : "Push to talk";
   }
 
-  // Starts the microphone. `onHeard(text)` gets what was said once recognition ends: by default
-  // the question is asked; the voice test only reports it.
-  function startListening(onHeard) {
-    if (listening || busy || !Recognition) {
+  // Recognition exists here and cannot work: put the button away, say so where it was, and open
+  // the controls that do work. Until the page is reloaded; nothing about it is stored.
+  function retireVoice() {
+    var hadFocus = doc.activeElement === talkButton;
+    voiceUnusable = true;
+    talkButton.hidden = true;
+    el("ask-talk-hint").hidden = true;
+    el("ask-speech-broken").hidden = false;
+    showTextControls(true);
+    if (hadFocus) {
+      questionInput.focus();
+    }
+  }
+
+  // Listening is over. With words, they are the question (or the voice test's finding). With
+  // none, the operator is told why, and what the reason means for the button is acted on.
+  function listeningDone(result, options) {
+    if (result.heard) {
+      serviceFailures = 0;
+      if (options.onHeard) {
+        options.onHeard(result.heard);
+        return;
+      }
+      if (checkQuestion(result.heard).error) {
+        showTextControls(true); // too long to send: it is in the box, to be cut down
+      }
+      ask(result.heard);
+      return;
+    }
+    var online = !(root.navigator && root.navigator.onLine === false);
+    var verdict = recognitionVerdict(result.code, online);
+    var message = recognitionMessage(verdict === "offline" ? "offline" : result.code || "no-speech");
+    if (verdict !== "none") {
+      // Every one of these ends "type your question": the box must be there to type in.
+      showTextControls(true);
+      lastVoiceFailure = message;
+    }
+    if (verdict === "service") {
+      serviceFailures += 1;
+    }
+    if (verdict === "unusable" || serviceFailures >= SERVICE_FAILURES_MAX) {
+      retireVoice();
+      message = message + " The talk button has been put away; reload the page to try it again.";
+    }
+    status.textContent = message;
+    if (message && options.onFailed) {
+      options.onFailed(message);
+    }
+  }
+
+  var listener = createListener({
+    Recognition: Recognition,
+    lang: LANG,
+    now: function () {
+      return Date.now();
+    },
+    setTimeout: function (callback, ms) {
+      return root.setTimeout(callback, ms);
+    },
+    clearTimeout: function (id) {
+      root.clearTimeout(id);
+    },
+    // Still down, on the press that started this, and for long enough to be a hold and not a tap.
+    isHeld: function (options) {
+      return options.press === true && pressedAt !== 0 && pressStarted && Date.now() - pressedAt >= HOLD_MS;
+    },
+    onState: setListening,
+    onText: function (text) {
+      questionInput.value = text;
+      status.textContent = "Heard: " + text;
+    },
+    onCeiling: function () {
+      if (pressedAt) {
+        pressedAt = 0; // this press has had its question; letting go now does nothing more
+        skipClick = true;
+      }
+    },
+    onDone: listeningDone,
+  });
+
+  // Starts the microphone. `onHeard(text)` gets what was said once listening ends: by default
+  // the question is asked; the voice test only reports it, and takes `onFailed(message)` too.
+  // `press` says the talk button started it, so holding that button keeps it listening.
+  function startListening(onHeard, onFailed, press) {
+    if (listening || busy || !Recognition || voiceUnusable) {
       return;
     }
     stopSpeaking();
-    var heard = "";
-    var failed = false;
-    var current = new Recognition();
-    recognition = current;
-    current.lang = LANG;
-    current.interimResults = true; // shown as they come, so it is clear the microphone is working
-    current.continuous = false;
-    current.maxAlternatives = 1;
-    current.onresult = function (event) {
-      var finalText = "";
-      var interim = "";
-      var results = event.results || [];
-      for (var i = 0; i < results.length; i++) {
-        var best = results[i] && results[i][0];
-        var text = best && typeof best.transcript === "string" ? best.transcript : "";
-        if (results[i].isFinal === false) {
-          interim += text;
-        } else {
-          finalText += text;
-        }
-      }
-      heard = finalText.trim();
-      questionInput.value = (finalText + interim).trim();
-      status.textContent = "Heard: " + questionInput.value;
-    };
-    current.onerror = function (event) {
-      failed = true;
-      var message = recognitionMessage(event && event.error);
-      if (message) {
-        status.textContent = message;
-      }
-    };
-    current.onend = function () {
-      if (recognition === current) {
-        recognition = null;
-      }
-      setListening(false);
-      if (heard) {
-        (onHeard || ask)(heard);
-      } else if (!failed) {
-        status.textContent = recognitionMessage("no-speech");
-      }
-    };
-    try {
-      current.start();
-      setListening(true);
+    if (listener.start({ onHeard: onHeard, onFailed: onFailed, press: press === true })) {
       status.textContent = "Listening.";
-    } catch (err) {
-      recognition = null;
-      setListening(false);
-      status.textContent = recognitionMessage("");
     }
   }
 
   function stopListening() {
-    if (listening && recognition) {
-      recognition.stop(); // delivers what was heard so far, then onend
-    }
+    listener.stop();
+  }
+
+  function abandonListening() {
+    listener.abandon();
   }
 
   function pressDown() {
@@ -1125,10 +1442,11 @@
     pressedAt = Date.now();
     lastPressAt = pressedAt;
     pressStarted = !listening;
+    skipClick = false;
     if (listening) {
       stopListening();
     } else {
-      startListening();
+      startListening(null, null, true);
     }
   }
 
@@ -1196,9 +1514,14 @@
     talkButton.addEventListener("keydown", function (event) {
       if (isTalkKey(event)) {
         event.preventDefault(); // Space must not scroll the page
-        pressDown();
+        if (!event.repeat) {
+          pressDown(); // a held key repeats: only the first is the press
+        }
       }
     });
+    // Focus gone (another window, another control) while it is held: the key or button will be
+    // let go somewhere this page cannot see, so this is the letting go.
+    talkButton.addEventListener("blur", pressUp);
     talkButton.addEventListener("keyup", function (event) {
       if (isTalkKey(event)) {
         event.preventDefault();
@@ -1208,7 +1531,8 @@
     // A click with no pointer or key press just before it comes from assistive technology (a
     // screen reader's "activate"): treat it as a tap. One that follows a press is that press.
     talkButton.addEventListener("click", function () {
-      if (Date.now() - lastPressAt < CLICK_AFTER_PRESS_MS) {
+      if (skipClick || Date.now() - lastPressAt < CLICK_AFTER_PRESS_MS) {
+        skipClick = false;
         return;
       }
       if (listening) {
@@ -1268,6 +1592,14 @@
       report(lines);
       return;
     }
+    if (voiceUnusable) {
+      lines.push(
+        "Listening: this browser has speech recognition, but it does not work here. Type your questions; Chrome or Edge can listen. What happened: " +
+          lastVoiceFailure
+      );
+      report(lines);
+      return;
+    }
     var permissions = root.navigator && root.navigator.permissions;
     var checked = permissions && permissions.query ? permissions.query({ name: "microphone" }) : null;
     var listen = function (state) {
@@ -1284,11 +1616,18 @@
       report(lines);
       // After the sample has been spoken: listening cancels speech, so a fixed wait could cut it off.
       whenSampleDone(function () {
-        startListening(function (heard) {
-          lines.push("Listening works. Heard: " + heard);
-          report(lines);
-          status.textContent = "Voice test finished.";
-        });
+        startListening(
+          function (heard) {
+            lines.push("Listening works. Heard: " + heard);
+            report(lines);
+            status.textContent = "Voice test finished.";
+          },
+          function (message) {
+            // The same words the talk button would have shown, so the test and the button agree.
+            lines.push("Listening: did not work this time. " + message);
+            report(lines);
+          }
+        );
       });
     };
     if (checked && checked.then) {
