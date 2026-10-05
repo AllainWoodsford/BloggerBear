@@ -177,7 +177,7 @@ GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics
 # The architecture expert (architecture.py, runsheets.py): answered from the package's catalogue.
 EXPERT_TOOLS = {"architecture", "investigate", "table_sample"}
 # The tools that read this environment's logs (log_review.py), read-only like the rest.
-LOG_TOOLS = {"log_review"}
+LOG_TOOLS = {"log_review", "api_errors"}
 
 
 def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):

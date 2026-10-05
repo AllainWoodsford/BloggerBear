@@ -100,7 +100,9 @@ def test_only_production_lists_the_tool_and_it_is_a_deep_dive(monkeypatch):
 # --- what it says ---------------------------------------------------------------------------------
 
 
-def _results(blocks_today: int, *, baseline_days=(10, 12, 8, 11, 9, 10, 10), paths=None, missing=()):
+def _results(
+    blocks_today: int, *, baseline_days=(10, 12, 8, 11, 9, 10, 10), paths=None, missing=(), clients=None
+):
     """Fake query results for every configured group: the same numbers for each."""
 
     def run(jobs):
@@ -122,6 +124,9 @@ def _results(blocks_today: int, *, baseline_days=(10, 12, 8, 11, 9, 10, 10), pat
                 out[key] = [
                     {"bin(1d)": f"2026-09-{i:02d}", "blocks": str(n)} for i, n in enumerate(baseline_days, 1)
                 ]
+            elif query == firewall.QUERY_CLIENTS:
+                spread = [{"httpRequest.clientIp": "198.51.100.9", "blocks": "2"}]
+                out[key] = clients if clients is not None else spread
         return out
 
     return run
@@ -215,10 +220,37 @@ def test_the_queries_are_fixed_text_and_read_only_the_configured_groups(producti
         firewall.QUERY_RULES,
         firewall.QUERY_PATHS,
         firewall.QUERY_BASELINE,
+        firewall.QUERY_CLIENTS,
     }
     assert {(job[1], job[2]) for job in seen} == set(firewall.log_groups())
     for query in {job[3] for job in seen}:
-        assert "clientIp" not in query and "headers" not in query and "args" not in query
+        assert "headers" not in query and "args" not in query
+        # Only the clients query reads the address, and only to count by it; it is masked on the way out.
+        assert ("clientIp" in query) == (query == firewall.QUERY_CLIENTS)
+
+
+def test_addresses_leave_only_masked(production):
+    clients = [
+        {"httpRequest.clientIp": "203.0.113.34", "blocks": "300"},
+        {"httpRequest.clientIp": "2001:db8::7", "blocks": "1"},
+    ]
+    result = firewall.firewall_review(24, now=NOW, run=_results(400, clients=clients))
+    shown = result["groups"][0]["clients"]
+    assert shown == [{"address": "203.XXX.XXX.34", "blocks": 300}, {"address": "2001:XXXX:…:7", "blocks": 1}]
+    assert "203.0.113.34" not in str(result) and "2001:db8" not in str(result)
+
+
+def test_one_address_behind_most_blocks_is_said_by_its_last_part(production):
+    clients = [{"httpRequest.clientIp": "203.0.113.34", "blocks": "300"}]
+    result = firewall.firewall_review(24, now=NOW, run=_results(400, clients=clients))
+    assert result["groups"][0]["one_source"] == "203.XXX.XXX.34"
+    assert "Most of the admin API blocks came from an address ending in .34." in result["spoken"]
+    assert "203" not in result["spoken"]
+
+
+def test_a_spread_of_addresses_is_not_called_one_source(production):
+    result = firewall.firewall_review(24, now=NOW, run=_results(400))
+    assert "one_source" not in result["groups"][0] and "ending in" not in result["spoken"]
 
 
 # --- running the queries --------------------------------------------------------------------------
