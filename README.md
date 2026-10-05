@@ -19,8 +19,11 @@ fork of this repository, Terraform, the AWS CLI, Python 3.11+ and the GitHub CLI
    ```bash
    cd infra/bootstrap && terraform init
    terraform apply -var="github_repo=your-name/your-fork" \
-     -var="state_bucket_name=yourname-bloggerbear-terraform-state" -var="domain_name="
+     -var="state_bucket_name=yourname-bloggerbear-terraform-state" \
+     -var="unique_name_prefix=acme-blog" -var="domain_name="
    ```
+   `unique_name_prefix` is what every resource name starts with (`acme-blog-dev-topics`). Pick
+   your own, and give the setup script the same word when it asks for `UNIQUE_NAME_PREFIX`.
 2. **Run the setup script.** It asks for every GitHub secret and variable a deployment needs,
    checks each answer, and sets them. Start with the dry run, which changes nothing:
    ```bash
@@ -29,7 +32,9 @@ fork of this repository, Terraform, the AWS CLI, Python 3.11+ and the GitHub CLI
    ```
 3. **Merge a pull request into `dev`.** GitHub Actions runs the security scans, lint and tests,
    then deploys the dev environment.
-4. **Seed a topic** with the admin CLI, and it runs by itself from there.
+4. **Seed a topic** with the admin CLI, and it runs by itself from there. The admin CLI quick
+   start ([scripts/QUICKSTART.md](scripts/QUICKSTART.md)) points the CLI at your environment and
+   shows the first commands.
 
 Each step, with what to check and what can go wrong, is in the deployment runsheet
 ([docs/deployment-runsheet.md](docs/deployment-runsheet.md)).
@@ -42,7 +47,7 @@ In the order you are likely to need them.
 |---|---|
 | [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, another region, local development. |
 | [Configuration](docs/configuration.md) | Every setting in one table, and where it goes: GitHub, Terraform, SSM, DynamoDB, your machine. |
-| [Admin CLI quickstart](scripts/QUICKSTART.md) | Point the CLI at your environment and run your first commands. |
+| [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
 | [Repository protection](docs/todo/public-repo-runsheet.md) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. |

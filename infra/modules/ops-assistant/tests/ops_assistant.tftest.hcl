@@ -18,6 +18,9 @@ mock_provider "aws" {
 }
 
 variables {
+  # What a root passes when UNIQUE_NAME_PREFIX is not set: the original deployment's prefix.
+  unique_name_prefix = "bloggerbear"
+
   # What a root passes when nothing is set: the original deployment's region.
   aws_region = "ap-southeast-2"
 
@@ -361,5 +364,54 @@ run "another_region_moves_the_layer_the_host_names_and_the_policy" {
       "arn:aws:cloudwatch:eu-west-1:*:alarm:*",
     )
     error_message = "the alarms the role may list are the ones in the region it runs in"
+  }
+}
+
+# The prefix is the caller's (var.unique_name_prefix). Every run above uses the original
+# deployment's, "bloggerbear", and pins the names it has always had; this one shows that another
+# deployment's names all move together and that both functions are told the prefix.
+run "another_name_prefix_moves_every_name_and_reaches_both_functions" {
+  command = plan
+
+  variables {
+    unique_name_prefix = "acme-blog"
+  }
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.function_name == "acme-blog-test-ops-mcp" && aws_lambda_function.ops_agent.function_name == "acme-blog-test-ops-agent"
+    error_message = "both functions are <prefix>-<env>-<name>"
+  }
+  assert {
+    condition     = aws_iam_role.ops_mcp.name == "acme-blog-test-ops-mcp-lambda-exec" && aws_iam_role.ops_agent.name == "acme-blog-test-ops-agent-lambda-exec"
+    error_message = "both roles are named from the prefix (the deploy role may only manage <prefix>-*-lambda-exec)"
+  }
+  assert {
+    condition     = aws_dynamodb_table.operator_suggestions.name == "acme-blog-test-operator-suggestions" && aws_dynamodb_table.briefings.name == "acme-blog-test-ops-briefings"
+    error_message = "the assistant's own tables are named from the prefix"
+  }
+  assert {
+    condition     = aws_cognito_user_pool.this.name == "acme-blog-test-ops-assistant" && aws_api_gateway_rest_api.this.name == "acme-blog-test-ops-mcp"
+    error_message = "the user pool and the API are named from the prefix"
+  }
+  assert {
+    condition     = aws_cloudwatch_log_group.lambda.name == "/aws/lambda/acme-blog-test-ops-mcp" && aws_cloudwatch_log_group.access.name == "/aws/apigateway/acme-blog-test-ops-mcp-access"
+    error_message = "the log groups are named from the prefix"
+  }
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.NAME_PREFIX == "acme-blog" && aws_lambda_function.ops_agent.environment[0].variables.NAME_PREFIX == "acme-blog"
+    error_message = "both functions must be told the prefix as NAME_PREFIX, with no trailing hyphen"
+  }
+  assert {
+    condition     = aws_cognito_resource_server.ops.identifier == "bloggerbear-ops"
+    error_message = "the scope's name is not a resource name: it does not follow the prefix"
+  }
+}
+
+run "the_default_prefix_is_what_the_functions_are_told" {
+  command = plan
+
+  assert {
+    condition     = aws_lambda_function.ops_mcp.environment[0].variables.NAME_PREFIX == "bloggerbear" && aws_lambda_function.ops_agent.environment[0].variables.NAME_PREFIX == "bloggerbear"
+    error_message = "NAME_PREFIX is the prefix as given"
   }
 }

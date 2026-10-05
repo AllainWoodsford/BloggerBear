@@ -20,6 +20,9 @@ mock_provider "aws" {
 }
 
 variables {
+  # What a root passes when UNIQUE_NAME_PREFIX is not set: the original deployment's prefix.
+  unique_name_prefix = "bloggerbear"
+
   # What a root passes when nothing is set: the original deployment's region.
   aws_region = "ap-southeast-2"
 
@@ -234,4 +237,49 @@ run "an_environment_name_that_is_not_lowercase_is_refused" {
   }
 
   expect_failures = [var.environment_name]
+}
+
+# Project is the deployment's tag: "BloggerBear" in the original deployment (every run above), and
+# a deployment's own name prefix when it has one (the roots' local.project_tag). Whatever the root
+# hands over is what the function is told and what IAM compares against, so another deployment's
+# assistant reads tables tagged with its own Project and never ones tagged "BloggerBear".
+run "another_deployments_project_tag_is_the_one_the_tables_must_carry" {
+  command = plan
+
+  variables {
+    unique_name_prefix = "acme-blog"
+    default_tags = {
+      ManagedBy = "Terraform"
+      Project   = "acme-blog"
+    }
+  }
+
+  assert {
+    condition     = jsondecode(aws_lambda_function.ops_mcp.environment[0].variables.OPS_DEFAULT_TAGS) == { ManagedBy = "Terraform", Project = "acme-blog" }
+    error_message = "the function is told this deployment's Project tag, not the original deployment's"
+  }
+
+  assert {
+    condition = toset(one([
+      for statement in data.aws_iam_policy_document.ops_mcp.statement : [
+        for condition in statement.condition : "${condition.test} ${condition.variable} ${join(",", condition.values)}"
+      ] if statement.sid == "SampleTaggedTables"
+      ])) == toset([
+      "StringEquals aws:ResourceTag/ManagedBy Terraform",
+      "StringEquals aws:ResourceTag/Project acme-blog",
+      "StringEquals aws:ResourceTag/Environment dev",
+    ])
+    error_message = "table_sample reads a table only if it carries this deployment's Project tag"
+  }
+
+  assert {
+    condition = toset(one([
+      for statement in data.aws_iam_policy_document.ops_mcp.statement : statement.resources
+      if statement.sid == "SampleTaggedTables"
+      ])) == toset([
+      "arn:aws:dynamodb:ap-southeast-2:*:table/acme-blog-*",
+      "arn:aws:dynamodb:ap-southeast-2:*:table/acme-blog-*/index/*",
+    ])
+    error_message = "and only tables named with this deployment's prefix"
+  }
 }

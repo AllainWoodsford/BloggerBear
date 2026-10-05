@@ -9,6 +9,49 @@ variable "aws_region" {
   }
 }
 
+variable "unique_name_prefix" {
+  type        = string
+  default     = "bloggerbear"
+  description = <<-EOT
+    What every resource name in the deployment starts with (<prefix>-<env>-<resource>), without a
+    trailing hyphen. Here it names the two deploy roles (gha-<prefix>-dev-deploy,
+    gha-<prefix>-prod-deploy) and is every name scope in their policy: they may create, change
+    and delete only resources named <prefix>-*.
+
+    It must be the same value the environments are deployed with (their unique_name_prefix, which
+    CI takes from the `UNIQUE_NAME_PREFIX` GitHub Actions variable). If the two differ, every
+    apply is refused: the roles would be scoped to names the environments never use. A fork sets
+    its own (the default is taken, see infra/environments/dev/variables.tf) and passes the same
+    word in both places. Changing it later renames the deploy roles, so the GitHub secrets
+    AWS_DEV_DEPLOY_ROLE_ARN and AWS_PROD_DEPLOY_ROLE_ARN have to be set again.
+
+    At most 14 characters. The name that sets the limit is a topic's EventBridge Scheduler
+    schedule in production, <prefix>-production-<topic_id>-research-tick: Scheduler allows 64
+    characters, the fixed parts take 26, and 14 leaves 24 for the topic id, the longest one the
+    project's own examples use (finance-crypto-investing). A shorter prefix leaves more: the
+    default's 11 characters leave 27. Every other name has room to spare at 14: the longest IAM
+    role, <prefix>-production-ops-mcp-scheduler-invoke, is 50 of 64; the longest Lambda function,
+    <prefix>-production-cost-explorer-poll, 44 of 64; the content bucket, 33 of 63.
+
+    The state bucket is not named from this: it has its own variable, state_bucket_name.
+  EOT
+
+  validation {
+    condition     = can(regex("^[a-z]([a-z0-9-]{0,12}[a-z0-9])?$", var.unique_name_prefix))
+    error_message = "unique_name_prefix must be 1 to 14 characters: lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen (no trailing \"-\": the names add it), such as \"bloggerbear\" or \"acme-blog\"."
+  }
+
+  validation {
+    condition     = !strcontains(var.unique_name_prefix, "--")
+    error_message = "unique_name_prefix must not contain two hyphens in a row (the web search gateway's name does not allow it)."
+  }
+
+  validation {
+    condition     = !can(regex("aws|amazon|cognito", var.unique_name_prefix))
+    error_message = "unique_name_prefix must not contain \"aws\", \"amazon\" or \"cognito\": Cognito refuses a sign-in host name that does, and the operator's assistant's is <prefix>-<env>-ops."
+  }
+}
+
 variable "state_bucket_name" {
   type        = string
   default     = "bloggerbear-terraform-state"

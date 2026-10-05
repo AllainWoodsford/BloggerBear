@@ -202,9 +202,10 @@ Then, in order:
    `topics trigger <id> --pipeline research_tick`, then `daily_cycle`.
 4. **Optional, but recommended: the API keys and the model registry.** Each is per environment,
    so what you set up for dev is not here yet. Store production's CoinGecko key and GitHub token
-   (`/bloggerbear/production/coingecko-api-key`, `/bloggerbear/production/github-api-token`) and
-   seed production's model tables (`bloggerbear-production-models`,
-   `bloggerbear-production-model-config`) the same way as dev's:
+   (`/<prefix>/production/coingecko-api-key`, `/<prefix>/production/github-api-token`) and
+   seed production's model tables (`<prefix>-production-models`,
+   `<prefix>-production-model-config`) the same way as dev's (`<prefix>` is your
+   `UNIQUE_NAME_PREFIX`, `bloggerbear` by default):
    [deployment-runsheet.md, "Optional, but recommended"](deployment-runsheet.md#optional-but-recommended).
 5. **Smoke-test in a browser**: the home page, an article, the Stats page, `/rss.xml`, a thumbs-up
    on an article (this exercises the feedback token), and `https://www.<your domain>` (should land

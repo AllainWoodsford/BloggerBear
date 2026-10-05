@@ -32,10 +32,9 @@ variable "redirect_www" {
   description = "Only used when enable_custom_domain = true. Also answers on www.<domain_name> and 301-redirects it to <domain_name> (same path and query string). Adds a SAN to the certificate, a second CloudFront alias, www A/AAAA records and a small CloudFront Function. Without it, www.<domain_name> does not exist at all, so a visitor who types www gets an error."
 }
 
-variable "bucket_name_suffix" {
+variable "unique_name_prefix" {
   type        = string
-  default     = ""
-  description = "Added to the end of the site bucket's name. S3 bucket names are unique across every AWS account, so a second deployment of this project (a fork, in its own account) cannot use the plain name while the first one exists. Empty (the default) keeps the plain name, bloggerbear-<environment>-site."
+  description = "What every resource name starts with, without a trailing hyphen (the calling root's var.unique_name_prefix, \"bloggerbear\" by default). The site bucket is <prefix>-<environment_name>-site, a name that must be unique across every AWS account, which is why a second deployment needs its own prefix."
 }
 
 variable "web_acl_id" {

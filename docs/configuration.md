@@ -8,7 +8,7 @@ Settings live in six places:
 
 | Where | What kind of setting | How you set it |
 |---|---|---|
-| [GitHub secrets and variables](#github-secrets-and-variables) | Which account, region and bucket a deploy uses; who may reach the admin API | `python scripts/setup_repo.py`, or Settings → Secrets and variables → Actions |
+| [GitHub secrets and variables](#github-secrets-and-variables) | Which account, region, bucket and name prefix a deploy uses; who may reach the admin API | `python scripts/setup_repo.py`, or Settings → Secrets and variables → Actions |
 | [Bootstrap variables](#bootstrap-variables) | The state bucket, the deploy roles, the DNS zone | `-var` on the one-time local `terraform apply` |
 | [Environment Terraform variables](#environment-terraform-variables) | The domain, the model, a few switches | `infra/environments/<env>/terraform.tfvars`, by pull request |
 | [SSM Parameter Store](#ssm-parameter-store) | API keys for the data sources | `aws ssm put-parameter`, or the console |
@@ -19,6 +19,8 @@ Two more are set in a console and nowhere else: [AWS account settings](#aws-acco
 [GitHub repository settings](#github-repository-settings).
 
 Account IDs here are AWS's documentation placeholders. `<env>` is `dev` or `production`.
+`<prefix>` is your name prefix, the [`UNIQUE_NAME_PREFIX`](#github-secrets-and-variables) setting:
+every resource name starts with it (`<prefix>-<env>-<resource>`), and unset it is `bloggerbear`.
 
 ## GitHub secrets and variables
 
@@ -28,15 +30,15 @@ be on the `production` environment or on the repository.
 
 | Name | Kind | Where | What it is | Example |
 |---|---|---|---|---|
-| `AWS_DEV_DEPLOY_ROLE_ARN` | secret | repo | Bootstrap's `dev_deploy_role_arn` output. Required. | `arn:aws:iam::111111111111:role/gha-bloggerbear-dev-deploy` |
-| `AWS_PROD_DEPLOY_ROLE_ARN` | secret | `production` | Bootstrap's `prod_deploy_role_arn` output. Required. | `arn:aws:iam::123456789012:role/gha-bloggerbear-prod-deploy` |
+| `AWS_DEV_DEPLOY_ROLE_ARN` | secret | repo | Bootstrap's `dev_deploy_role_arn` output. Required. The role is named `gha-<prefix>-dev-deploy`. | `arn:aws:iam::111111111111:role/gha-bloggerbear-dev-deploy` |
+| `AWS_PROD_DEPLOY_ROLE_ARN` | secret | `production` | Bootstrap's `prod_deploy_role_arn` output. Required. The role is named `gha-<prefix>-prod-deploy`. | `arn:aws:iam::123456789012:role/gha-bloggerbear-prod-deploy` |
 | `AWS_DEV_ACCOUNT_ID` | secret | repo | The account dev must land in. Optional, recommended. | `111111111111` |
 | `AWS_PROD_ACCOUNT_ID` | secret | `production` | The account production must land in. Optional, recommended. | `123456789012` |
 | `TF_STATE_BUCKET_DEV` | secret | repo | The state bucket dev uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
 | `TF_STATE_BUCKET_PROD` | secret | `production` | The state bucket production uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
 | `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. Read [Deploying to another region](deployment-runsheet.md#deploying-to-another-region) before setting it. | `eu-west-1` |
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
-| `UNIQUE_NAME_SUFFIX` | variable | repo | Added to the bucket names and the sign-in host name, which must be unique across all of AWS. **Required for a fork.** Lowercase letters, digits and hyphens, at most 20. Set it before the first deploy and never change it. | `-yourname` |
+| `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
 | `ALERT_EMAIL_DEV` | secret | repo | Where dev's alarm emails go. Optional: without it the alarms still fire, but nobody is told. | `you@example.com` |
@@ -63,9 +65,11 @@ Why some are secrets and some are variables:
   secret.
 - Your IP and your alert email are never put in `terraform.tfvars`: a value checked in there
   stays in git history for good. CI passes them to Terraform at apply time.
-- The name suffix and the region are **variables**. They are part of bucket names, addresses and
+- The name prefix and the region are **variables**. They are part of bucket names, addresses and
   resource names, which the logs print anyway. The `production` environment may set its own
-  `AWS_REGION` and `TF_STATE_REGION`, which win for production.
+  `AWS_REGION` and `TF_STATE_REGION`, which win for production. Do not give it its own
+  `UNIQUE_NAME_PREFIX`: dev and production share one prefix, and the environment's name is what
+  tells their resources apart.
 
 ## Bootstrap variables
 
@@ -77,7 +81,8 @@ account.
 |---|---|---|
 | `aws_account_id` | The account you mean to apply to. The apply refuses any other. | empty: no check |
 | `github_repo` | `owner/repo` allowed to assume the deploy roles. **A fork must set this.** | the original repository |
-| `state_bucket_name` | The Terraform state bucket. **A fork must choose its own.** | `bloggerbear-terraform-state` |
+| `state_bucket_name` | The Terraform state bucket. **A fork must choose its own.** It is not built from the prefix below. | `bloggerbear-terraform-state` |
+| `unique_name_prefix` | What every resource name starts with. Names the deploy roles (`gha-<prefix>-dev-deploy`, `gha-<prefix>-prod-deploy`) and limits them to resources named `<prefix>-*`. **A fork must set it**, to the same word as `UNIQUE_NAME_PREFIX`: if the two differ, every deploy is refused. | `bloggerbear` |
 | `domain_name` | Your site's domain; creates the Route 53 zone. `""` for no zone. **A fork must set this.** | `bloggerbear.com` |
 | `budget_alert_email` | Where the Bedrock budget alert goes. Empty creates no budget. | empty |
 | `bedrock_budget_limit_usd` | The monthly Bedrock spend, in USD, that triggers the budget alert. | `20` |
@@ -105,7 +110,15 @@ only production's domain.
 | `force_destroy` | dev | Whether dev's site bucket can be destroyed while not empty. | `true` |
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
-`admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_suffix`, `aws_region`.
+`admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`.
+
+`unique_name_prefix` is the `UNIQUE_NAME_PREFIX` setting: every name in the environment is
+`<prefix>-<env>-<resource>`, and its default is `bloggerbear`. It is at most 14 characters. The
+name that sets that limit is a topic's schedule in production,
+`<prefix>-production-<topic_id>-research-tick`, which must fit EventBridge Scheduler's 64
+characters: 14 leaves a topic id 24, and a shorter prefix leaves more (the default leaves 27).
+It also decides the `Project` tag on every resource: `BloggerBear` with the default prefix, and
+the prefix itself with any other.
 
 The times of the fixed jobs (the weekly reflection, the Stats rollover, the daily digest and the
 cost poll) are not variables: they are written in each environment's `main.tf`.
@@ -118,23 +131,26 @@ them, so a key is never in Terraform state, a Lambda's environment variables or 
 
 | Parameter | What it is | Without it |
 |---|---|---|
-| `/bloggerbear/<env>/coingecko-api-key` | CoinGecko API key, for the crypto adapter. | The keyless public API. |
-| `/bloggerbear/<env>/github-api-token` | A GitHub token with no permissions, for the GitHub adapter. | Unauthenticated search, at a lower rate limit. |
+| `/<prefix>/<env>/coingecko-api-key` | CoinGecko API key, for the crypto adapter. | The keyless public API. |
+| `/<prefix>/<env>/github-api-token` | A GitHub token with no permissions, for the GitHub adapter. | Unauthenticated search, at a lower rate limit. |
+
+`<prefix>` is your `UNIQUE_NAME_PREFIX`: with the default, `/bloggerbear/dev/coingecko-api-key`.
 
 ## DynamoDB: settings changed with no deploy
 
-Tables are named `bloggerbear-<env>-<name>`. Use the admin CLI
+Tables are named `<prefix>-<env>-<name>`, where `<prefix>` is your `UNIQUE_NAME_PREFIX`: with the
+default, `bloggerbear-dev-topics`. Use the admin CLI
 ([scripts/README.md](../scripts/README.md)); editing the item in the console works too.
 
 | Setting | Table and item | Command | Default |
 |---|---|---|---|
-| The model registry: each model's name, provider and price | `bloggerbear-<env>-models`, one item per `model_id` | `models add`, `models list` | Empty. Claude Haiku 4.5 has a built-in price; any other model is unpriced until registered. |
-| The global default and fallback model | `bloggerbear-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
-| How often research really runs, for every topic | `bloggerbear-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --research-interval-hours N` | 1 hour |
+| The model registry: each model's name, provider and price | `<prefix>-<env>-models`, one item per `model_id` | `models add`, `models list` | Empty. Claude Haiku 4.5 has a built-in price; any other model is unpriced until registered. |
+| The global default and fallback model | `<prefix>-<env>-model-config`, item `config_id` = `default` | `model-config set --model-id … --fallback-model-id …` | No item: the model Terraform set (`BEDROCK_MODEL_ID`), no fallback. |
+| How often research really runs, for every topic | `<prefix>-<env>-model-config`, item `config_id` = `pipeline` | `pipeline-config set --research-interval-hours N` | 1 hour |
 | The fresh-data review of each draft | same item | `pipeline-config set --review-mode off\|shadow\|enforce`, `--review-on-unavailable hold\|note` | `shadow`; hold |
 | Who may reach the operator's assistant | same item | `pipeline-config set --assistant-access open\|allowlist\|off` | `open` |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`, `feedback-lock`, `feedback-unlock` | See `feedback-config --help` |
-| A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `bloggerbear-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
+| A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
 
 Seeding the model tables, with a sample item, is in
 [The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).

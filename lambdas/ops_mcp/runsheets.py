@@ -194,7 +194,7 @@ _RUNS = Step(
     "that did not fire.",
 )
 _ALARMS = Step(
-    "CloudWatch console > Alarms > filter bloggerbear-{env}-",
+    f"CloudWatch console > Alarms > filter {PREFIX}{ENV}-",
     "console",
     "Which alarms are firing or fired recently, and their history.",
 )

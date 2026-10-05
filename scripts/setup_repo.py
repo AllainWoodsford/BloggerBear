@@ -58,22 +58,30 @@ REDACTED = "<redacted>"
 # The region a deployment uses when AWS_REGION is left unset: the default of every aws_region
 # variable in infra/, and the workflows' fallback. The test suite keeps the three in step.
 DEFAULT_REGION = "ap-southeast-2"
+# What every resource name starts with when UNIQUE_NAME_PREFIX is not set: the original
+# deployment's prefix, and the default of every unique_name_prefix variable in infra/.
+DEFAULT_PREFIX = "bloggerbear"
 MIN_DENYLIST_ENTRY = 4  # shorter than this and an entry matches ordinary text all over the repo
 
 
 @dataclass(frozen=True)
 class Role:
     """A deploy role as infra/bootstrap creates it (main.tf's aws_iam_role names, outputs.tf's
-    outputs). The test suite checks both against those files, so they cannot drift."""
+    outputs). The test suite checks both against those files, so they cannot drift. `name` has
+    {prefix} where bootstrap puts var.unique_name_prefix: call named()."""
 
     name: str
     output: str
     credentials: str
 
+    def named(self, prefix: str = DEFAULT_PREFIX) -> str:
+        """The role's name in a deployment with this prefix: gha-bloggerbear-dev-deploy by default."""
+        return self.name.format(prefix=prefix)
+
 
 ROLES = {
-    "dev": Role("gha-bloggerbear-dev-deploy", "dev_deploy_role_arn", "the dev account"),
-    "prod": Role("gha-bloggerbear-prod-deploy", "prod_deploy_role_arn", "the production account"),
+    "dev": Role("gha-{prefix}-dev-deploy", "dev_deploy_role_arn", "the dev account"),
+    "prod": Role("gha-{prefix}-prod-deploy", "prod_deploy_role_arn", "the production account"),
 }
 
 
@@ -105,6 +113,10 @@ class Setting:
     tf_var: str = ""
 
 
+# The longest prefix infra's unique_name_prefix variables accept, and why: see their description
+# (a topic's schedule name in production must fit EventBridge Scheduler's 64 characters).
+PREFIX_MAX = 14
+
 _CIDR_HELP = (
     "The public IP addresses allowed to call the admin API. Everything else is blocked, and with\n"
     "this unset nothing can call it at all. Give one or more IPv4 ranges separated by commas, such\n"
@@ -125,7 +137,8 @@ _BUCKET_HELP = (
     "belongs to the original deployment, so a fork must set its own."
 )
 
-# THE list. Order matters: the region comes first, because later steps print commands that name it;
+# THE list. Order matters: the region and the name prefix come first, because later steps print
+# commands and role names built from them;
 # an account ID comes before the role ARN that is checked against it, and a dev setting before the
 # production one that can reuse its answer.
 SETTINGS: tuple[Setting, ...] = (
@@ -143,6 +156,19 @@ SETTINGS: tuple[Setting, ...] = (
             "above. Almost nobody needs it: the bootstrap makes the bucket in its own region, and\n"
             "blank means \"the same as AWS_REGION\" (or, with that blank too, the region written in\n"
             "the backend block). A variable, like the region itself."),
+    Setting("UNIQUE_NAME_PREFIX", "variable", "repo", "fork", "prefix",
+            "What every AWS resource name starts with: <prefix>-<env>-<resource>, such as\n"
+            f"{DEFAULT_PREFIX}-dev-topics. Leave it blank for the default, {DEFAULT_PREFIX}, which is the\n"
+            "original deployment's, so a fork needs its own: bucket names and the sign-in address must\n"
+            "be unique across all of AWS, and the default ones are taken. Type the word only, such as\n"
+            "acme-blog, with no hyphen at the end (the names add it). Lowercase letters, digits and\n"
+            f"hyphens, starting with a letter, at most {PREFIX_MAX} characters. Set it BEFORE your first\n"
+            "deploy and never change it: every name changes with it, and a bucket or a table cannot be\n"
+            "renamed, so changing it later deletes them and makes empty ones. It must be the prefix the\n"
+            "bootstrap is applied with (its unique_name_prefix), because the deploy roles may only\n"
+            "touch resources whose names start with it. It is a variable, not a secret: it ends up in\n"
+            "public names.",
+            tf_var="unique_name_prefix"),
     Setting("ADMIN_ALLOWED_CIDRS_DEV", "secret", "repo", "required", "cidrs",
             _CIDR_HELP, env="dev", tf_var="admin_allowed_cidrs"),
     Setting("ADMIN_ALLOWED_CIDRS_PROD", "secret", PRODUCTION, "required", "cidrs",
@@ -166,14 +192,6 @@ SETTINGS: tuple[Setting, ...] = (
     Setting("TF_STATE_BUCKET_PROD", "secret", PRODUCTION, "fork", "bucket",
             _BUCKET_HELP + "\nWith one AWS account for both, it is the same bucket as dev's.",
             env="prod", same_as="TF_STATE_BUCKET_DEV"),
-    Setting("UNIQUE_NAME_SUFFIX", "variable", "repo", "fork", "suffix",
-            "A short word added to names that must be unique across all of AWS: the content and site\n"
-            "buckets and the sign-in address. The original deployment holds the plain names, so a fork\n"
-            "needs its own, such as -yourname (it is added to the end as typed, so start with a\n"
-            "hyphen). Lowercase letters, digits and hyphens, at most 20. Set it BEFORE your first\n"
-            "deploy and never change it: a bucket cannot be renamed, so changing it later deletes the\n"
-            "buckets and makes empty ones. It is a variable, not a secret: it ends up in public names.",
-            tf_var="unique_name_suffix"),
     Setting("PII_DENYLIST", "secret", "repo", "optional", "denylist",
             "A list of strings, such as your real name or home address, that must never be committed\n"
             "or pushed. The pre-commit hook and the pii-denylist check on pull requests refuse any\n"
@@ -309,14 +327,32 @@ def check_bucket(raw: str) -> str:
     return text
 
 
-def check_suffix(raw: str) -> str:
-    """The same rule as the Terraform variable's validation (unique_name_suffix)."""
+# The shape infra's unique_name_prefix variables accept (their first validation's regex, without
+# the anchors), and the words their third one refuses.
+PREFIX_SHAPE = r"[a-z]([a-z0-9-]{0,12}[a-z0-9])?"
+PREFIX_RESERVED = ("aws", "amazon", "cognito")
+
+
+def check_prefix(raw: str) -> str:
+    """The same rules as the Terraform variable's validations (unique_name_prefix)."""
     text = raw.strip()
-    if not re.fullmatch(r"[a-z0-9-]{0,19}[a-z0-9]", text):
+    if text.endswith("-"):
         raise Invalid(
-            "Use up to 20 lowercase letters, digits and hyphens, ending in a letter or digit, "
-            "such as -yourname."
+            "Leave the hyphen off the end: the names add it. Type acme-blog, not acme-blog-."
         )
+    if not re.fullmatch(PREFIX_SHAPE, text):
+        raise Invalid(
+            f"Use 1 to {PREFIX_MAX} lowercase letters, digits and hyphens, starting with a letter and "
+            "ending with a letter or digit, such as acme-blog."
+        )
+    if "--" in text:
+        raise Invalid("No two hyphens in a row.")
+    for word in PREFIX_RESERVED:
+        if word in text:
+            raise Invalid(
+                f'It cannot contain "{word}": AWS refuses a sign-in address that does, and the '
+                "prefix is part of it."
+            )
     return text
 
 
@@ -344,6 +380,28 @@ def deploy_region(answers: dict[str, str], state: State | None = None) -> str:
     write a region out: call this.
     """
     return answers.get("AWS_REGION") or (state.region if state else "") or DEFAULT_REGION
+
+
+def deploy_prefix(answers: dict[str, str], state: State | None = None) -> str:
+    """THE name prefix this deployment uses, for anything the script prints or runs that names a
+    resource (a role, a parameter). The answer given in this run; else the UNIQUE_NAME_PREFIX
+    variable already on the repository; else the default. Never write a prefix out: call this.
+    """
+    return answers.get("UNIQUE_NAME_PREFIX") or (state.prefix if state else "") or DEFAULT_PREFIX
+
+
+def prefix_notes(prefix: str) -> str:
+    """What has to match when the prefix is not the default. "" for the default."""
+    if prefix == DEFAULT_PREFIX:
+        return ""
+    return "\n".join([
+        f"Because {prefix} is not the default prefix, apply the bootstrap with",
+        f'  -var="unique_name_prefix={prefix}"',
+        "It must be the same word in both places. The bootstrap names the deploy roles from it",
+        f"(gha-{prefix}-dev-deploy, gha-{prefix}-prod-deploy) and allows them only resources named",
+        f"{prefix}-*; the deploys name everything {prefix}-<env>-<resource>. If the two differ, every",
+        "deploy is refused.",
+    ])
 
 
 def region_notes(region: str) -> str:
@@ -380,7 +438,7 @@ CHECKS: dict[str, Callable[..., str]] = {
     "account_id": check_account_id,
     "role_arn": check_role_arn,
     "bucket": check_bucket,
-    "suffix": check_suffix,
+    "prefix": check_prefix,
     "region": check_region,
     "denylist": check_denylist,
 }
@@ -484,7 +542,8 @@ def read_only(run: Run) -> Run:
 
 @dataclass
 class State:
-    """Names of what exists (and one public value, the region). None means "could not find out"."""
+    """Names of what exists (and two public values, the region and the name prefix). None means
+    "could not find out"."""
 
     repo_secrets: set[str] | None = None
     repo_variables: set[str] | None = None
@@ -492,6 +551,7 @@ class State:
     env_secrets: set[str] | None = None
     env_variables: set[str] | None = None
     region: str = ""  # the AWS_REGION repository variable's value, when it exists
+    prefix: str = ""  # the UNIQUE_NAME_PREFIX repository variable's value, when it exists
 
 
 def _names(run: Run, path: str, key: str) -> set[str] | None:
@@ -510,6 +570,10 @@ def read_state(run: Run, repo: str) -> State:
         value = found.out.strip()
         # Only a value this script would itself accept: anything else is treated as not known.
         state.region = value if found.code == 0 and re.fullmatch(REGION_SHAPE, value) else ""
+    if "UNIQUE_NAME_PREFIX" in (state.repo_variables or set()):
+        found = run(["gh", "api", f"repos/{repo}/actions/variables/UNIQUE_NAME_PREFIX", "--jq", ".value"])
+        value = found.out.strip()
+        state.prefix = value if found.code == 0 and re.fullmatch(PREFIX_SHAPE, value) else ""
     environment = run(["gh", "api", f"repos/{repo}/environments/{PRODUCTION}", "--jq", ".name"])
     if environment.code == 0:
         state.env_exists = True
@@ -670,9 +734,16 @@ class Prompter:
             self.say("Please answer y or n.")
 
 
-def role_steps(setting: Setting, repo: str, have_account: bool, region: str = DEFAULT_REGION) -> str:
+def role_steps(
+    setting: Setting,
+    repo: str,
+    have_account: bool,
+    region: str = DEFAULT_REGION,
+    prefix: str = DEFAULT_PREFIX,
+) -> str:
     """How to create the role and find its ARN: what infra/bootstrap does, with placeholders."""
     role = ROLES[setting.env]
+    name = role.named(prefix)
     # A placeholder, never the ID itself: the steps are printed, and the ID is treated as a secret.
     account = "<the account id you gave>" if have_account else "<account id>"
     lines = [
@@ -693,11 +764,20 @@ def role_steps(setting: Setting, repo: str, have_account: bool, region: str = DE
         # or the roles are made for the wrong one and every deploy is refused.
         lines[-1] += " \\"
         lines.append(f'         -var="aws_region={region}"')
+    if prefix != DEFAULT_PREFIX:
+        # The same again: the default needs no argument, and any other prefix does, or the roles
+        # are named and scoped for the original deployment's names and every deploy is refused.
+        lines[-1] += " \\"
+        lines.append(f'         -var="unique_name_prefix={prefix}"')
+        lines.append(
+            "     unique_name_prefix must be the same word as the UNIQUE_NAME_PREFIX variable: the role\n"
+            f"     may only touch resources named {prefix}-*."
+        )
     lines += [
         "  2. Read the ARN from the bootstrap's outputs:",
         f"       terraform output {role.output}",
-        f"  3. Bootstrap always names this role {role.name}, so the ARN is:",
-        f"       arn:aws:iam::{account}:role/{role.name}",
+        f"  3. With that prefix, bootstrap names this role {name}, so the ARN is:",
+        f"       arn:aws:iam::{account}:role/{name}",
     ]
     if setting.env == "prod":
         lines.append(
@@ -744,7 +824,12 @@ def ask_denylist(prompter: Prompter, root: Path) -> tuple[str, int]:
 
 
 def ask_setting(
-    setting: Setting, prompter: Prompter, answers: dict[str, str], repo: str, region: str = DEFAULT_REGION
+    setting: Setting,
+    prompter: Prompter,
+    answers: dict[str, str],
+    repo: str,
+    region: str = DEFAULT_REGION,
+    prefix: str = DEFAULT_PREFIX,
 ) -> str:
     """Ask for one ordinary setting until the answer passes its check. "" means leave it unset."""
     account = ""
@@ -767,9 +852,9 @@ def ask_setting(
                     break
                 except Invalid as problem:
                     prompter.say(f"  {problem}")
-        prompter.say(role_steps(setting, repo, bool(account), region))
+        prompter.say(role_steps(setting, repo, bool(account), region, prefix))
         if account:
-            default = f"arn:aws:iam::{account}:role/{ROLES[setting.env].name}"
+            default = f"arn:aws:iam::{account}:role/{ROLES[setting.env].named(prefix)}"
 
     reuse = answers.get(setting.same_as, "") if setting.same_as else ""
     if reuse and prompter.yes(f"Use the same value as {setting.same_as}?", True):
@@ -877,22 +962,30 @@ def hooks_step(prompter: Prompter, run: Run, root: Path) -> Action | None:
 # guards, so it needs its own lock for --dry-run, and it is left as a decision for the owner.
 
 # The parameter names, exactly as each environment's Terraform builds them
-# (locals.coingecko_api_key_parameter in infra/environments/{dev,production}/main.tf).
+# (locals.coingecko_api_key_parameter in infra/environments/{dev,production}/main.tf), with
+# {prefix} where Terraform puts var.unique_name_prefix: call coingecko_parameter().
 # scripts/tests/test_setup_repo.py reads those files and fails if either side is renamed.
 COINGECKO_PARAMETERS = {
-    "dev": "/bloggerbear/dev/coingecko-api-key",
-    "prod": "/bloggerbear/production/coingecko-api-key",
+    "dev": "/{prefix}/dev/coingecko-api-key",
+    "prod": "/{prefix}/production/coingecko-api-key",
 }
+
+
+def coingecko_parameter(env: str, prefix: str = DEFAULT_PREFIX) -> str:
+    """`env`'s parameter in a deployment with this prefix (the default one's, if none is given)."""
+    return COINGECKO_PARAMETERS[env].format(prefix=prefix)
+
+
 # The region is never written here: it comes from deploy_region (this run's AWS_REGION answer,
 # else the repository's variable, else the default), like everything else that names a region.
 COINGECKO_KEY_PLACEHOLDER = "YOUR_COINGECKO_API_KEY"
 _ENV_LABEL = {"dev": "dev", "prod": "production"}
 
 
-def coingecko_command(env: str, region: str = DEFAULT_REGION) -> str:
+def coingecko_command(env: str, region: str = DEFAULT_REGION, prefix: str = DEFAULT_PREFIX) -> str:
     """The command that stores the key for `env`, with a placeholder where the key goes."""
     return (
-        f"aws ssm put-parameter --name {COINGECKO_PARAMETERS[env]} --type SecureString --overwrite "
+        f"aws ssm put-parameter --name {coingecko_parameter(env, prefix)} --type SecureString --overwrite "
         f"--region {region} --value {COINGECKO_KEY_PLACEHOLDER}"
     )
 
@@ -907,10 +1000,12 @@ def aws_account(run: Run) -> str | None:
     return account if found.code == 0 and re.fullmatch(r"[0-9]{12}", account) else None
 
 
-def coingecko_parameter_exists(run: Run, env: str, region: str) -> bool | None:
+def coingecko_parameter_exists(
+    run: Run, env: str, region: str, prefix: str = DEFAULT_PREFIX
+) -> bool | None:
     """Whether `env`'s parameter exists in the signed-in account; None if that could not be read.
     `describe-parameters` lists names and metadata. The value is never fetched."""
-    name = COINGECKO_PARAMETERS[env]
+    name = coingecko_parameter(env, prefix)
     found = run([
         "aws", "ssm", "describe-parameters", "--region", region,
         "--parameter-filters", f"Key=Name,Option=Equals,Values={name}",
@@ -919,7 +1014,13 @@ def coingecko_parameter_exists(run: Run, env: str, region: str) -> bool | None:
     return name in found.out.split() if found.code == 0 else None
 
 
-def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str], region: str) -> list[str]:
+def coingecko_step(
+    prompter: Prompter,
+    run: Run,
+    answers: dict[str, str],
+    region: str,
+    prefix: str = DEFAULT_PREFIX,
+) -> list[str]:
     """Explain the optional CoinGecko API key and say, per environment, whether it is already
     stored and how to store it. Returns the commands still left for the person to run (each with
     a placeholder for the key), for the summary. Changes nothing and asks nothing.
@@ -928,7 +1029,8 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str], region
     the environment's own account, so when the AWS CLI is signed in to a different one this
     refuses to call that environment checked, and says to sign in to the right account first.
     `region` is the deployment's (deploy_region): a parameter stored in any other region is
-    one the Lambdas cannot read.
+    one the Lambdas cannot read. `prefix` is the deployment's too (deploy_prefix): the parameter's
+    name starts with it.
     """
     prompter.say("\n== CoinGecko API key (optional; kept in AWS, not on GitHub) ==")
     prompter.say(
@@ -950,7 +1052,8 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str], region
         prompter.say(f'AWS CLI: signed in to the account ending "{account[-4:]}". Region: {region}.')
 
     pending: list[str] = []
-    for env, name in COINGECKO_PARAMETERS.items():
+    for env in COINGECKO_PARAMETERS:
+        name = coingecko_parameter(env, prefix)
         label = _ENV_LABEL[env]
         expected = answers.get(f"AWS_{env.upper()}_ACCOUNT_ID", "")
         if account is None:
@@ -961,7 +1064,7 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str], region
                 "Sign in to it first"
             )
         else:
-            exists = coingecko_parameter_exists(run, env, region)
+            exists = coingecko_parameter_exists(run, env, region, prefix)
             if exists:
                 prompter.say(f"  {label}: {name} is already set. Nothing to do.")
                 continue
@@ -969,8 +1072,8 @@ def coingecko_step(prompter: Prompter, run: Run, answers: dict[str, str], region
             if not expected:
                 state += f" in this account (make sure it is {label}'s)"
         prompter.say(f"  {label}: {name} is {state}. To store a key, run:")
-        prompter.say(f"      {coingecko_command(env, region)}")
-        pending.append(f"CoinGecko API key, {label}: {coingecko_command(env, region)}")
+        prompter.say(f"      {coingecko_command(env, region, prefix)}")
+        pending.append(f"CoinGecko API key, {label}: {coingecko_command(env, region, prefix)}")
     if pending:
         prompter.say(
             f"Put your key in place of {COINGECKO_KEY_PLACEHOLDER}. Typed like that it stays in your\n"
@@ -1070,6 +1173,11 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
         # Not asked in this run, but already set to another region: the same reminders apply.
         prompter.say(f"\nAWS_REGION is already set to {existing}.")
         prompter.say(region_notes(existing))
+    existing = deploy_prefix(answers, state)
+    if all(setting.name != "UNIQUE_NAME_PREFIX" for setting in asking) and prefix_notes(existing):
+        # The same for the name prefix: not asked, but the bootstrap still has to match it.
+        prompter.say(f"\nUNIQUE_NAME_PREFIX is already set to {existing}.")
+        prompter.say(prefix_notes(existing))
     for setting in asking:
         where = "repository" if setting.where == "repo" else f"{PRODUCTION} environment"
         prompter.say(f"\n== {setting.name} ({setting.kind}, {where}, {_NEED_LABEL[setting.need]}) ==")
@@ -1078,13 +1186,23 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
             value, from_file = ask_denylist(prompter, root)
         else:
             region = deploy_region(answers, state)
-            value, from_file = ask_setting(setting, prompter, answers, repo, region), 0
+            prefix = deploy_prefix(answers, state)
+            value, from_file = ask_setting(setting, prompter, answers, repo, region, prefix), 0
         if setting.name == "AWS_REGION":
             # Said once, here, where the choice is made. Left blank, it is whatever it already was.
             chosen = value or deploy_region(answers, state)
             prompter.say(f"The region is {chosen}." + ("" if value else " (Nothing to set.)"))
             if region_notes(chosen):
                 prompter.say(region_notes(chosen))
+        if setting.name == "UNIQUE_NAME_PREFIX":
+            # Said once, here, like the region: every later step names things with it.
+            chosen = value or deploy_prefix(answers, state)
+            prompter.say(
+                f"The prefix is {chosen}: resources will be named {chosen}-dev-..., {chosen}-production-..."
+                + ("" if value else " (Nothing to set.)")
+            )
+            if prefix_notes(chosen):
+                prompter.say(prefix_notes(chosen))
         if not value:
             prompter.say("Left unset.")
             continue
@@ -1108,7 +1226,9 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
     # with --only is about the named settings, so it is left out of those.
     left_for_you: list[str] = []
     if not args.only:
-        left_for_you = coingecko_step(prompter, run, answers, deploy_region(answers, state))
+        left_for_you = coingecko_step(
+            prompter, run, answers, deploy_region(answers, state), deploy_prefix(answers, state)
+        )
 
     # 4. Summary. Secret values are masked; the personal-data list is only a count.
     prompter.say("\n== Summary ==")
@@ -1129,6 +1249,11 @@ def _setup(args, reader: Callable[[], str], out, err, run: Run, root: Path) -> i
         prompter.say(
             f"\nRemember: {deploy_region(answers, state)} is not the default region. The four things to "
             "change by hand are listed above, under AWS_REGION."
+        )
+    if prefix_notes(deploy_prefix(answers, state)):
+        prompter.say(
+            f"\nRemember: {deploy_prefix(answers, state)} is not the default name prefix. Apply the "
+            f'bootstrap with -var="unique_name_prefix={deploy_prefix(answers, state)}".'
         )
 
     if dry:
