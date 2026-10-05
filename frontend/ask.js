@@ -593,6 +593,8 @@
   var questionInput = el("ask-question");
   var talkButton = el("ask-talk");
   var muteButton = el("ask-mute");
+  var textToggle = el("ask-text-toggle");
+  var textControls = el("ask-text-controls");
 
   function make(tag, className, text) {
     return makeNode(doc, tag, className, text);
@@ -1154,9 +1156,21 @@
     return event.key === " " || event.key === "Spacebar" || event.key === "Enter";
   }
 
+  // -- the text-based controls ------------------------------------------------------------------
+  // The quick questions and the typed one sit behind a toggle, so the page opens on the voice
+  // alone. Nothing is remembered: closed again on every load, like the rest of the page's state.
+
+  function showTextControls(show) {
+    textControls.hidden = !show;
+    textToggle.setAttribute("aria-expanded", show ? "true" : "false");
+    textToggle.textContent = show ? "Hide text-based controls" : "Show text-based controls";
+  }
+
   function wireTalkButton() {
     if (!Recognition) {
       el("ask-no-speech").hidden = false;
+      // Typing is the only way to ask here, so it must not be hidden behind a press.
+      showTextControls(true);
       return;
     }
     talkButton.hidden = false;
@@ -1316,15 +1330,25 @@
     envLabel.textContent = "Environment: " + config.environment;
     envLabel.hidden = false;
   }
-  // The API treats a question with no history as a briefing, so the shortcut starts afresh.
-  el("ask-briefing").addEventListener("click", function () {
+  textToggle.addEventListener("click", function () {
+    showTextControls(textControls.hidden);
+  });
+  // Each quick question asks its own label, as a new conversation: the API treats a question
+  // with no history as a first one (a briefing, when it is about what needs attention), so each
+  // starts afresh. The label is the page's own text, never anything from the API.
+  function askQuick(event) {
     if (busy) {
       return;
     }
+    var label = String(event.currentTarget.textContent || "").trim();
     turns = [];
     clear(conversation);
-    ask(BRIEFING_QUESTION);
-  });
+    ask(label || BRIEFING_QUESTION);
+  }
+  var quickButtons = doc.querySelectorAll(".ask-quick-question");
+  for (var quickIndex = 0; quickIndex < quickButtons.length; quickIndex++) {
+    quickButtons[quickIndex].addEventListener("click", askQuick);
+  }
   el("ask-form").addEventListener("submit", function (event) {
     event.preventDefault();
     ask(questionInput.value);

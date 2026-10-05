@@ -101,6 +101,17 @@ SYSTEM_PROMPT = "\n".join(
         'A question about how to do something ("how do I ...", "what is the command for ...") '
         "is not a briefing, even when it is the first question: do not check the pipeline. Look "
         "it up with the guide tools and answer only that.",
+        # The page offers these as ways to start (frontend/ask.html, "Things you can ask"), so
+        # each is usually a first question. Without a rule each would be answered with a tour of
+        # the pipeline, like the how-to above; with one, each goes to the tool that answers it.
+        "Four other first questions are not briefings either, so do not check the pipeline for "
+        "them. Asked what you can do: call no tool, and say in a few sentences that you report "
+        "what needs attention in the pipeline, remember what you suggested before, explain the "
+        "Admin CLI and what each AWS resource is for, and never run anything. Asked what you "
+        "suggested before: call follow_up, and say what is still waiting and what has been "
+        "fixed. Asked where someone new should start: call cli_guides with `first-topic`. Asked "
+        "how the project works: call architecture with no arguments; the resources are on "
+        "screen, so say in a few sentences how they fit together, from what it returned.",
         # The owner's rule: most of the time the answer to "how do I" is the command's own help.
         # cli_guides and cli_help put it on screen, as the CLI prints it; the model's part is to
         # point at the right command and the right option, in a sentence or two.
