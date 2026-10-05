@@ -187,8 +187,8 @@ NOT_ASKED = {
     # Only claude-issue-worker.yml reads it. That workflow is an optional extra with its own
     # sign-in step; no deploy needs it.
     "CLAUDE_CODE_OAUTH_TOKEN",
-    # Only ruff-autofix.yml reads it, and without it that workflow runs in report-only mode
-    # (fixes shown in the job summary, nothing pushed). Optional; no deploy needs it.
+    # Only ruff-autofix.yml reads it, and it is optional: without it that workflow reports the
+    # fixes in its job summary and pushes nothing. No deploy needs it.
     "RUFF_AUTOFIX_TOKEN",
 }
 
