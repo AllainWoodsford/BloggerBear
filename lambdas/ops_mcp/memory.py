@@ -91,7 +91,7 @@ from common.dynamo import (
     list_musings,
     list_pending_moderation,
 )
-from ops_mcp import account, api_errors, architecture, content, log_review, samples, tools
+from ops_mcp import account, api_errors, architecture, content, log_review, samples, tools, topic_match
 from ops_mcp.access import REQUEST_CONTEXT_HEADER
 from ops_mcp.suggestions import CATALOGUE, ID_PATTERN, finding
 
@@ -792,7 +792,7 @@ def dismiss(user_id: str | None, kind: str, target_id: str, *, now: datetime | N
 def _catalogue_key(kind: str, name: str) -> str | None:
     """A function's or a table's key in the architecture catalogue (research-tick, candidate-ideas),
     from any name architecture.py understands, if it is deployed in this environment."""
-    resolved = architecture.resolve(name, kind=kind)
+    resolved, _, _ = architecture.forgiving(name, kind)
     if resolved.asked_env is not None and resolved.asked_env not in architecture.ENVIRONMENTS:
         return None
     env = architecture.environment()
@@ -805,6 +805,9 @@ def _normalized(kind: str, target_id) -> str:
     given."""
     if kind in ("function", "table") and isinstance(target_id, str):
         return _catalogue_key(kind, target_id) or target_id
+    if kind == "topic" and isinstance(target_id, str):
+        one, _, _ = topic_match.pick(target_id)
+        return (one or {}).get("topic_id") or target_id
     return target_id
 
 
@@ -819,10 +822,12 @@ def _watchable(kind: str, target_id) -> str | None:
         if kind == "table" and _catalogue_key(kind, target_id) in samples.NEVER_SAMPLED:
             return "That table is one I never read."
         return None
+    if kind == "topic" and isinstance(target_id, str) and len(target_id) <= topic_match.ASKED_MAX_CHARS:
+        # The topic as the operator said it: an exact or a clear match is watched by its id.
+        one, _, refusal = topic_match.pick(target_id)
+        return refusal if one is None else None
     if not isinstance(target_id, str) or not ID_PATTERN.match(target_id):
         return "That isn't an id I can watch."
-    if kind == "topic" and get_topic(target_id) is None:
-        return "I can't find a topic with that id."
     if kind == "spend" and target_id not in SPEND_IDS:
         return "For spend I can watch ai or aws."
     # The AWS bill is the whole account's, and only an assistant told it may report account-wide

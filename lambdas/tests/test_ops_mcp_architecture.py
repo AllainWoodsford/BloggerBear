@@ -431,3 +431,19 @@ def test_every_lambda_and_rest_api_in_any_module_is_in_the_catalogue():
             local = re.search(r"^\s*name\s*=\s*local\.(\w+)", body, re.M).group(1)
             value = re.search(rf'^\s*{local}\s*=\s*"([^"]+)"', text, re.M)
             assert _template(value.group(1)) in apis, (path.name, value.group(1))
+
+
+@pytest.mark.parametrize(
+    ("asked", "key"), [("reserch tick", "research-tick"), ("dialy cycle", "daily-cycle")]
+)
+def test_a_near_miss_of_a_function_is_taken_and_said(monkeypatch, asked, key):
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    resolved, took, did_you_mean = architecture.forgiving(asked, "function")
+    assert [c.key for c in resolved.matches] == [key] and did_you_mean is None
+    assert took == f"I took that to mean {key}; tell me if you meant another."
+
+
+def test_an_exact_function_name_needs_no_forgiving(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    resolved, took, did_you_mean = architecture.forgiving("bloggerbear-dev-research-tick", "function")
+    assert [c.key for c in resolved.matches] == ["research-tick"] and took is None and did_you_mean is None

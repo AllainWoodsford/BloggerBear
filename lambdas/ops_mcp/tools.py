@@ -36,7 +36,8 @@ from common.dynamo import (
 )
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
-from ops_mcp.suggestions import ID_PATTERN, finding
+from ops_mcp import topic_match
+from ops_mcp.suggestions import finding
 
 DAY_WINDOW = timedelta(hours=26)
 # Research is late once two of its intervals have passed with no check: one missed heartbeat is
@@ -189,12 +190,12 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None) ->
     """Per topic: was it researched on time, and what became of its daily run in the last 26
     hours. With `topic`, that topic alone, and the error of a run that failed."""
     now = _now(now)
+    matched = None
     if topic is not None:
-        if not ID_PATTERN.match(topic):
-            return {"spoken": "That isn't a topic id I can look up.", "findings": [], "topics": []}
-        one = get_topic(topic)
+        # The topic as the operator said it: its id, its name, or something close (topic_match.py).
+        one, matched, refusal = topic_match.pick(topic)
         if one is None:
-            return {"spoken": "I can't find a topic with that id.", "findings": [], "topics": []}
+            return {"spoken": refusal, "findings": [], "topics": [], "matched_topic": matched}
         topics = [one]
     else:
         topics = sorted(list_topics(), key=lambda t: t.get("topic_id") or "")
@@ -207,7 +208,11 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None) ->
         rows.append(row)
         findings.extend(found)
 
-    return {"spoken": _health_spoken(rows), "findings": findings, "topics": rows, "as_of": now.isoformat()}
+    result = {"spoken": _health_spoken(rows), "findings": findings, "topics": rows, "as_of": now.isoformat()}
+    if matched is not None:
+        result["matched_topic"] = matched
+        result["spoken"] = topic_match.took(matched) + result["spoken"]
+    return result
 
 
 def _health_spoken(rows: list[dict]) -> str:
@@ -274,6 +279,12 @@ def admin_inbox(
     the topic, how long it has waited and why it is held. With `topic`, that topic's alone."""
     now = _now(now)
     limit = min(max(int(limit), 1), INBOX_MAX_LIMIT)
+    matched = None
+    if topic is not None:
+        one, matched, refusal = topic_match.pick(topic)
+        if one is None:
+            return {"spoken": refusal, "findings": [], "waiting": 0, "items": [], "matched_topic": matched}
+        topic = one.get("topic_id")
     waiting = list_pending_moderation()  # oldest first
     if topic is not None:
         waiting = [item for item in waiting if item.get("topic_id") == topic]
@@ -317,13 +328,17 @@ def admin_inbox(
         noticed = f"{count} article{'s are' if count != 1 else ' is'} waiting for review"
         findings.append(finding("awaiting_review", noticed, None, count=count))
 
-    return {
+    result = {
         "spoken": _inbox_spoken(len(waiting), rows),
         "findings": findings,
         "waiting": len(waiting),
         "items": rows,
         "as_of": now.isoformat(),
     }
+    if matched is not None:
+        result["matched_topic"] = matched
+        result["spoken"] = topic_match.took(matched) + result["spoken"]
+    return result
 
 
 def _inbox_spoken(count: int, rows: list[dict]) -> str:
