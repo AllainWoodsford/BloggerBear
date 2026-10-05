@@ -92,6 +92,13 @@ DESTRUCTIVE_WARNING = (
     "shows you, and read it again before you run it."
 )
 
+# On every Admin CLI command the assistant puts on screen (the owner's rule): it is a suggestion,
+# built by code from what the operator said, and they check it before it runs in their terminal.
+DOUBLE_CHECK_WARNING = (
+    "Suggested by the assistant: double-check every value against the help above and what you "
+    "meant before you run it. Nothing runs until you do."
+)
+
 # Commands that change settings and refuse to run with nothing to change (admin_cli raises
 # CliError before any request). argparse cannot say so, so it is said here; the test runs each
 # one's handler with no options and expects that refusal, and expects no other command to have it.
@@ -270,18 +277,29 @@ def _help_findings(paths: list[str]) -> list[dict]:
     return findings
 
 
-def cli_help(commands) -> dict:
+def cli_help(commands, options: Mapping | None = None) -> dict:
     """The `--help` of up to HELP_MAX commands, most relevant first, each on a card with the one
-    line that prints it. `commands` is a list of command paths (or one path)."""
+    line that prints it, and under each a suggested command (`draft`): the first command filled
+    in from `options` (the values the operator gave, as cli_command takes them), every other one
+    with <placeholders>. `commands` is a list of command paths (or one path)."""
     asked = [commands] if isinstance(commands, str) else list(commands or [])
     paths = [path for path in (_path(item) for item in asked) if path]
     known = [path for path in paths if path in reference()["commands"]]
     if not known:
         return _unknown(paths[0] if paths else "")
-    findings = _help_findings(known)
-    shown = [found["where"]["command"] for found in findings]
+    helps = _help_findings(known)
+    findings = []
+    for index, help_card in enumerate(helps):
+        findings.append(help_card)
+        drafted = draft(help_card["where"]["command"], options if index == 0 else None)
+        if drafted is not None:
+            findings.append(drafted)
+    shown = [found["where"]["command"] for found in helps]
     left_out = len(dict.fromkeys(known)) - len(shown)
-    spoken = f"The help for {_join(shown)} is on screen."
+    spoken = (
+        f"The help for {_join(shown)} is on screen, with a suggested command under it to check "
+        "before you run it."
+    )
     if left_out > 0:
         spoken += f" I show {HELP_MAX} at a time; ask for the other{'s' if left_out > 1 else ''}."
     return {
@@ -570,6 +588,7 @@ def cli_command(command: str, options: Mapping | None = None) -> dict:
             "command": built,
             "what_it_does": _what_it_does(path, entry, used),
         },
+        warning=DOUBLE_CHECK_WARNING,
     )
     found["where"].update(where)
     return {
@@ -579,6 +598,100 @@ def cli_command(command: str, options: Mapping | None = None) -> dict:
         "destructive": False,
         "built": True,
     }
+
+
+_SLUG_SEPARATORS = re.compile(r"[^a-z0-9]+")
+
+
+def _slug_from(name) -> str | None:
+    """A topic id made from a topic's name, the way the ids in this project look ("Watering
+    vegetables" -> "watering-vegetables"): derived by code from what the operator said, never
+    invented. None when nothing usable is left."""
+    if not isinstance(name, str):
+        return None
+    slug = _SLUG_SEPARATORS.sub("-", name.lower()).strip("-")[:64].strip("-")
+    return slug if slug and _POSITIONAL.match(slug) else None
+
+
+def draft(command: str, options: Mapping | None = None) -> dict | None:
+    """The suggested command under a command's help: built as cli_command builds it, but never
+    refused. A value the operator gave that fits goes in; one that does not, and anything required
+    and not given, is a <placeholder>, listed on the card. A topic's id missing beside its name is
+    made from the name (and said so). A command that deletes or takes something down is the
+    template, as always. None for a group of commands or one not in the reference."""
+    path, entry = _lookup(command)
+    if entry is None or entry["group"]:
+        return None
+    if entry["destructive"]:
+        return {**_template(path, entry, [])["findings"][0], "draft": True}
+    index = _names(entry["arguments"])
+    given: dict[str, object] = {}
+    unknown: list[str] = []
+    if isinstance(options, Mapping):
+        for key, value in options.items():
+            argument = index.get(_normal(key))
+            if argument is None:
+                # The key is the model's text: named only if it is a plain word.
+                plain = isinstance(key, str) and _WORD.match(key.lstrip("-"))
+                unknown.append(key if plain else "(not a name)")
+            elif not argument["destructive"]:
+                given[argument["name"]] = value
+
+    derived: list[str] = []
+    if "topic_id" in index and index["topic_id"]["name"] not in given and "name" in index:
+        slug = _slug_from(given.get(index["name"]["name"]))
+        if slug is not None:
+            given[index["topic_id"]["name"]] = slug
+            derived.append(index["topic_id"]["name"])
+
+    words_by_name: dict[str, list[str]] = {}
+    placeholders: list[str] = []
+    quoted_any = False
+    for argument in entry["arguments"]:
+        name = argument["name"]
+        if name in given:
+            try:
+                words_by_name[name], quoted = _words(argument, given[name])
+                quoted_any = quoted_any or quoted
+                continue
+            except _Refused:
+                pass  # what was given does not fit: a placeholder, and the operator fills it in
+        if argument["required"] or name in given:
+            holder = _placeholder(argument)
+            placeholders.append(name)
+            positional = argument["kind"] == "positional"
+            words_by_name[name] = [holder] if positional else [argument["flags"][0], holder]
+    changes = [w for w in words_by_name.values() if w and w[0].startswith("-") and w[-1][:1] != "<"]
+    if path in AT_LEAST_ONE_OPTION and not changes:
+        words_by_name["(option)"] = ["<--option value>"]
+        placeholders.append("an option to change")
+
+    ordered = sorted(entry["arguments"], key=lambda argument: bool(argument["flags"]))
+    words = [word for argument in ordered for word in words_by_name.get(argument["name"], [])]
+    words += words_by_name.get("(option)", [])
+    built = " ".join([reference()["program"], path, *words])
+    used = [argument for argument in ordered if argument["name"] in words_by_name]
+    where = {"shell": SHELL_NOTE} if quoted_any else {}
+    if placeholders:
+        where["fill in"] = ", ".join(name if name.startswith("an ") else f"<{name}>" for name in placeholders)
+    if derived:
+        where["made from the name"] = ", ".join(derived)
+    if unknown:
+        where["left out"] = ", ".join(f"{name} (not an option of {path})" for name in unknown)
+    found = _how_to(
+        f"draft-{_slug(path)}",
+        f"Suggested {path} command, from what you said",
+        path,
+        {
+            "action": "Check every value, replace any <placeholder>, then run it in your own terminal",
+            "command": built,
+            "what_it_does": _what_it_does(path, entry, used),
+        },
+        draft=True,
+        warning=DOUBLE_CHECK_WARNING,
+    )
+    found["where"].update(where)
+    return found
 
 
 def _cannot_build(path: str, problems: list[dict], questions: list[dict]) -> dict:

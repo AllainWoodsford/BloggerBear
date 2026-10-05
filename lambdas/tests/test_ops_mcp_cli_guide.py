@@ -150,10 +150,19 @@ def test_a_command_that_does_not_exist_is_answered_with_the_nearest_that_do():
 # --- cli_help: the command's own --help ----------------------------------------------------------
 
 
+def _helps(result: dict) -> list[dict]:
+    """The help cards of a cli_help result, without the suggested command under each."""
+    return [found for found in result["findings"] if not found.get("draft")]
+
+
+def _drafts(result: dict) -> list[dict]:
+    return [found for found in result["findings"] if found.get("draft")]
+
+
 def test_help_is_a_card_with_the_cli_s_own_text_and_the_line_that_prints_it(parser):
     result = cli_guide.cli_help(["topics update"])
 
-    (found,) = result["findings"]
+    (found,) = _helps(result)
     assert found["kind"] == "how_to" and found["id"] == "help-topics-update"
     assert found["help"] == cli_guide.reference()["commands"]["topics update"]["help_text"]
     assert found["help"].startswith("usage: admin_cli.py topics update [-h]")
@@ -172,17 +181,79 @@ def test_a_question_that_spans_commands_gets_each_one_s_help_capped_and_in_order
 
     result = cli_guide.cli_help(asked)
 
-    assert [found["where"]["command"] for found in result["findings"]] == asked[: cli_guide.HELP_MAX]
+    assert [found["where"]["command"] for found in _helps(result)] == asked[: cli_guide.HELP_MAX]
+    # Each help is followed by its suggested command.
+    assert [found["where"]["command"] for found in result["findings"]] == [
+        path for path in asked[: cli_guide.HELP_MAX] for _ in (0, 1)
+    ]
     assert "ask for the other" in result["spoken"]
     assert cli_guide.cli_help("topics delete")["findings"][0]["help"]  # help is shown for any command
 
 
 @pytest.mark.parametrize("path", cli_guide.command_paths(groups=True))
 def test_every_command_has_help_that_names_it(path):
-    (found,) = cli_guide.cli_help([path])["findings"]
+    (found,) = _helps(cli_guide.cli_help([path]))
 
     assert found["help"].startswith(f"usage: admin_cli.py {path} ")
     assert len(found["help"]) < 4000
+
+
+# --- the suggested command under the help (the owner's ask) ---------------------------------------
+
+
+def test_seeding_a_topic_by_name_puts_the_exact_command_under_the_help(parser):
+    result = cli_guide.cli_help(["topics create"], {"name": "Watering vegetables"})
+
+    (helped,) = _helps(result)
+    (drafted,) = _drafts(result)
+    assert result["findings"] == [helped, drafted]  # under it
+    command = drafted["suggestion"]["command"]
+    assert command == (
+        "python scripts/admin_cli.py topics create --topic-id watering-vegetables "
+        "--name 'Watering vegetables'"
+    )
+    parsed = parser.parse_args(shlex.split(command[len(PROGRAM) :]))
+    assert (parsed.topic_id, parsed.name) == ("watering-vegetables", "Watering vegetables")
+    assert drafted["where"]["made from the name"] == "--topic-id"
+    assert drafted["warning"] == cli_guide.DOUBLE_CHECK_WARNING and drafted["kind"] == "how_to"
+    assert "check before you run it" in result["spoken"]
+
+
+def test_what_is_missing_or_does_not_fit_is_a_placeholder_never_a_guess():
+    drafted = _drafts(cli_guide.cli_help(["topics update"], {"topic_id": "bad id with spaces"}))[0]
+    assert drafted["suggestion"]["command"] == (
+        "python scripts/admin_cli.py topics update <topic_id> <--option value>"
+    )
+    assert drafted["where"]["fill in"] == "<topic_id>, an option to change"
+
+    asked = {"topic_id": "crypto", "research_interval_hours": 3}
+    filled = _drafts(cli_guide.cli_help(["topics update"], asked))[0]
+    assert filled["suggestion"]["command"] == (
+        "python scripts/admin_cli.py topics update crypto --research-interval-hours 3"
+    )
+    assert "fill in" not in filled["where"]
+
+
+def test_only_the_first_command_is_filled_in_and_an_unknown_option_is_said():
+    result = cli_guide.cli_help(["topics trigger", "topics get"], {"topic_id": "crypto", "colour": "blue"})
+    first, second = _drafts(result)
+    assert first["suggestion"]["command"].startswith("python scripts/admin_cli.py topics trigger crypto")
+    assert "colour (not an option of topics trigger)" in first["where"]["left out"]
+    assert second["suggestion"]["command"] == "python scripts/admin_cli.py topics get <topic_id>"
+
+
+def test_a_destructive_command_is_drafted_as_the_template_whatever_was_said():
+    (drafted,) = _drafts(cli_guide.cli_help(["topics delete"], {"topic_id": "crypto"}))
+    assert drafted["suggestion"]["command"] == "python scripts/admin_cli.py topics delete <topic_id>"
+    assert drafted["destructive"] is True
+
+
+def test_every_command_on_screen_carries_the_double_check_warning():
+    built = cli_guide.cli_command("topics trigger", {"topic_id": "crypto", "pipeline": "research_tick"})
+    assert built["findings"][0]["warning"] == cli_guide.DOUBLE_CHECK_WARNING
+    assert suggestions.suggest("research_overdue", "crypto")["warning"] == suggestions.DOUBLE_CHECK_WARNING
+    look_at = suggestions.suggest("alarm_firing")
+    assert look_at["command"] is None and "warning" not in look_at  # nothing to run, nothing to check
 
 
 # --- cli_command: built in code ------------------------------------------------------------------

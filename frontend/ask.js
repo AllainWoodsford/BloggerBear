@@ -353,6 +353,13 @@
         )
       );
       card.appendChild(warning);
+    } else if (isText(finding.warning) || (suggestion && isText(suggestion.warning))) {
+      // Every Admin CLI command the assistant suggests carries this: check it before running it.
+      var check = makeNode(doc, "p", "ask-warning ask-warning-check");
+      check.setAttribute("role", "note");
+      check.appendChild(makeNode(doc, "strong", "", "Check before you run it. "));
+      check.appendChild(doc.createTextNode(isText(finding.warning) ? finding.warning : suggestion.warning));
+      card.appendChild(check);
     }
 
     if (kind === "fix") {

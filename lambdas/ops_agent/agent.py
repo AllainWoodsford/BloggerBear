@@ -131,6 +131,12 @@ SYSTEM_PROMPT = "\n".join(
         "(costs, gear, editorial goals, a first topic, reviewing), cli_help with the command "
         "paths when it is about a command. Then say which command it is, which option answers "
         "the question, and that its help is on screen. Never read the help aloud.",
+        # The owner's ask: under the help, a suggested exact command, filled in from what they
+        # said ("seed a topic called Watering vegetables"), marked to be checked before running.
+        "Pass cli_help the values the operator gave as `options` (for \"seed a topic called "
+        "Watering vegetables\": {\"name\": \"Watering vegetables\"}), so a suggested command, "
+        "filled in with them, is on screen under the help. Say it is there and to double-check "
+        "it before running it. Pass only values the operator gave.",
         # The exact command is the second step, and is built by the server from the values given
         # (ops_mcp/cli_guide.py). A value the model made up would be a wrong command that looks
         # right, so what is missing is asked for, not guessed.

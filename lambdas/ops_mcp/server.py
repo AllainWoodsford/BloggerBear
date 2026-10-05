@@ -228,8 +228,8 @@ def build_server() -> MCPServer:
         return cli_guide.cli_reference(command)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True, description=_cli_help_description())
-    def cli_help(commands: list[str]) -> dict[str, Any]:
-        return cli_guide.cli_help(commands)
+    def cli_help(commands: list[str], options: dict[str, Any] | None = None) -> dict[str, Any]:
+        return cli_guide.cli_help(commands, options)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def cli_guides(topic: str | None = None) -> dict[str, Any]:
@@ -420,7 +420,12 @@ def _cli_help_description() -> str:
         f"`commands` is a list of up to {cli_guide.HELP_MAX} command paths, the most relevant "
         "first; a question that spans several commands gets each one's help. Say in a sentence "
         "or two which command it is and which option answers the question; never read the help "
-        "aloud. The command paths: " + "; ".join(cli_guide.command_paths()) + "."
+        "aloud. Under each help is a suggested command to check before running: pass `options`, "
+        "the values the operator gave for the first command (as cli_command takes them, e.g. "
+        '{"name": "Watering vegetables"}), and it is filled in with them; anything missing is a '
+        "<placeholder>. Never pass a value the operator did not give. The command paths: "
+        + "; ".join(cli_guide.command_paths())
+        + "."
     )
 
 
