@@ -198,6 +198,24 @@ a separate change; until then, try the read tools: "ask BloggerBear how the pipe
 (`pipeline_health`), "...what is in the admin inbox" (`admin_inbox`), "...about alarms"
 (`alarms`).
 
+**Reading logs.** The add-on lists the same tools as the page's agent, so it can read logs too,
+read-only, with the same PII sweep (addresses only as `123.XXX.XXX.34`, said as "an address ending
+in .34"):
+
+| Say | Tool |
+|---|---|
+| "ask BloggerBear whether there were any errors in the logs" | `log_review` |
+| "...to look at the logs for the crypto topic" | `log_review` with `topic` |
+| "...about API failures", "...about 400s on the public API" | `api_errors` |
+| "...to watch research tick" | `watch` (function), then `watch_list` in the next briefing |
+| "...to watch candidate ideas" | `watch` (table) |
+| "...what it is watching" | `watch_list`: still happening, or calmed down |
+| "...what's happening with the firewall" (production only) | `firewall_review` |
+
+A log read waits for Logs Insights (up to 15 seconds), which can be close to Alexa's own time limit.
+If Alexa gives up, ask for a briefing instead ("ask BloggerBear to start a briefing"): the agent
+reads the logs in the background, and "ask BloggerBear for the briefing" reads its answer back.
+
 ### 6. If sign-in fails with `invalid_request`
 
 Unsettled: Alexa may send the RFC 8707 `resource` parameter on the authorization request, and we do

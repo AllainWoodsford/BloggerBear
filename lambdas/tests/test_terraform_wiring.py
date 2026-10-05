@@ -2677,6 +2677,8 @@ def test_the_agents_package_holds_what_the_handler_imports_built_for_the_runtime
         'cp "${local.lambdas_dir}/ops_mcp/__init__.py" "$build_dir/ops_mcp/__init__.py"',
         'cp "${local.lambdas_dir}/ops_mcp/access.py" "$build_dir/ops_mcp/access.py"',
         'cp "${local.lambdas_dir}/ops_mcp/briefings.py" "$build_dir/ops_mcp/briefings.py"',
+        # The PII sweep of the agent's answer (ops_agent/agent.py).
+        'cp "${local.lambdas_dir}/ops_mcp/redact.py" "$build_dir/ops_mcp/redact.py"',
         "--platform manylinux2014_x86_64 --implementation cp --python-version 3.11 --only-binary=:all:",
         '-r "${local.lambdas_dir}/requirements-ops-agent.txt"',
         '-t "$build_dir"',
@@ -2734,9 +2736,14 @@ def test_the_agents_package_holds_what_the_handler_imports_built_for_the_runtime
         "common/assistant_access.py",
         "ops_mcp/access.py",
         "ops_mcp/briefings.py",
+        "ops_mcp/redact.py",
     ):
         roots = {name.split(".")[0] for name in imported(path)}
         assert roots <= allowed, (path, roots - allowed)
+    # The agent itself reaches one more copied module: the sweep of its answer, and nothing else of
+    # the server's.
+    agent_ops_mcp = {name for name in imported("ops_agent/agent.py") if name.startswith("ops_mcp")}
+    assert agent_ops_mcp == {"ops_mcp", "ops_mcp.redact"}
     access_imports = {name for name in imported("ops_mcp/access.py") if name.startswith("common")}
     assert {name.rsplit(".", 1)[0] for name in access_imports if "." in name} <= {
         "common",

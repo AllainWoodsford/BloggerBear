@@ -89,6 +89,7 @@ resource "terraform_data" "agent_package" {
       cp "${local.lambdas_dir}/ops_mcp/__init__.py" "$build_dir/ops_mcp/__init__.py"
       cp "${local.lambdas_dir}/ops_mcp/access.py" "$build_dir/ops_mcp/access.py"
       cp "${local.lambdas_dir}/ops_mcp/briefings.py" "$build_dir/ops_mcp/briefings.py"
+      cp "${local.lambdas_dir}/ops_mcp/redact.py" "$build_dir/ops_mcp/redact.py"
       find "$build_dir" -type d -name __pycache__ -prune -exec rm -rf {} +
       if python3 -c "" >/dev/null 2>&1; then
         py_cmd="python3"
