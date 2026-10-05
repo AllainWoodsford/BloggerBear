@@ -353,7 +353,7 @@ def _lambda_group(component: architecture.Component, env: str) -> str:
 
 
 def _function_key(group: str, env: str) -> str:
-    return group.removeprefix(f"/aws/lambda/bloggerbear-{env}-")
+    return group.removeprefix(f"/aws/lambda/{architecture.PREFIX}{env}-")
 
 
 _TIMED_OUT_AFTER = re.compile(r"Task timed out after ([\d.]+) seconds")
