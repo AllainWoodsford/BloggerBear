@@ -25,7 +25,7 @@ variable "protect_data" {
 # What a row holds is kinds, ids, booleans and timestamps: never text a model wrote, never a
 # command. That rule is kept by the code that writes (memory.py's _write) and by its tests.
 resource "aws_dynamodb_table" "operator_suggestions" {
-  name         = "bloggerbear-${var.environment_name}-operator-suggestions"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-operator-suggestions"
   billing_mode = "PAY_PER_REQUEST"
   # Production only (var.protect_data), as on the app tables: the table cannot be deleted by
   # accident, and can be restored to any second in the last 35 days. Off in dev.

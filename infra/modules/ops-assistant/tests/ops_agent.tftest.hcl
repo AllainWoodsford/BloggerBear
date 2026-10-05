@@ -19,6 +19,9 @@ mock_provider "aws" {
 }
 
 variables {
+  # What a root passes when UNIQUE_NAME_PREFIX is not set: the original deployment's prefix.
+  unique_name_prefix = "bloggerbear"
+
   # What a root passes when nothing is set: the original deployment's region.
   aws_region = "ap-southeast-2"
 
@@ -244,6 +247,8 @@ run "the_agent_is_told_what_it_needs_and_tracing_is_not_switched_on" {
   assert {
     condition = toset(keys(aws_lambda_function.ops_agent.environment[0].variables)) == toset([
       "OPS_AGENT_MODEL_ID",
+      # What every resource name starts with (var.unique_name_prefix), as on every function.
+      "NAME_PREFIX",
       "OPS_MCP_URL",
       "OPS_AGENT_ALLOWED_ORIGIN",
       "MODEL_CONFIG_TABLE",

@@ -18,7 +18,7 @@
 # =============================================================================
 
 resource "aws_dynamodb_table" "briefings" {
-  name         = "bloggerbear-${var.environment_name}-ops-briefings"
+  name         = "${var.unique_name_prefix}-${var.environment_name}-ops-briefings"
   billing_mode = "PAY_PER_REQUEST"
 
   # Overwritten by every briefing and gone after two days: nothing here is worth restoring, and

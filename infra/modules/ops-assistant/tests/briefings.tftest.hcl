@@ -34,6 +34,9 @@ override_resource {
 }
 
 variables {
+  # What a root passes when UNIQUE_NAME_PREFIX is not set: the original deployment's prefix.
+  unique_name_prefix = "bloggerbear"
+
   # The roots' provider default_tags, without Environment and TerraformRoot.
   default_tags = {
     ManagedBy = "Terraform"

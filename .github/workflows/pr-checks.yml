@@ -15,8 +15,8 @@ jobs:
   #
   # Read-only: deliberately does NOT authenticate to AWS. GitHub's OIDC subject claim for a
   # pull_request-triggered job is `repo:<owner>/<repo>:pull_request`, which matches neither
-  # deploy role's trust condition (gha-bloggerbear-dev-deploy trusts `ref:refs/heads/dev`;
-  # gha-bloggerbear-prod-deploy trusts `environment:production`), and there is deliberately no
+  # deploy role's trust condition (gha-<prefix>-dev-deploy trusts `ref:refs/heads/dev`;
+  # gha-<prefix>-prod-deploy trusts `environment:production`), and there is deliberately no
   # third role for this. So no `terraform plan` here: this config reads
   # data.aws_caller_identity.current and the AWS provider validates credentials on init, so a
   # plan cannot succeed without live AWS access. Real plan diffs happen at apply time, where
