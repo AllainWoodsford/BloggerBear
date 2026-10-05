@@ -47,7 +47,9 @@ TEXT_MAX_CHARS = 300
 WITHHELD = "[withheld: this line reads like instructions to the assistant]"
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+# Not inside a longer dotted number (a version "1.2.3.4.5"), but a sentence's full stop after it is
+# fine: "blocked from 198.51.100.7." is an address.
+_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
 # Two or more colons between hex groups; checked with ipaddress before it is masked, so a time
 # ("12:30:45") or a Python repr is left alone.
 _IPV6 = re.compile(r"(?<![0-9A-Za-z:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Za-z:])")
@@ -169,6 +171,18 @@ def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
     text = _CONTROL.sub(" ", str(value if value is not None else ""))
     if looks_like_instructions(text):
         return WITHHELD
+    return untrusted_text(_personal(text), limit)
+
+
+def sweep_answer(text) -> str:
+    """The last sweep of what the agent is about to say or show (ops_agent): personal data and
+    secrets replaced as `scrub` replaces them, and nothing else changed. Not the instruction rule:
+    the answer is the assistant's own words, and "a suggested fix is on screen" is not an attack."""
+    return _personal(_CONTROL.sub(" ", str(text if text is not None else "")))
+
+
+def _personal(text: str) -> str:
+    """Personal data and secrets out, in the order `scrub` explains."""
     text = _EMAIL.sub("[email]", text)
     text = _JWT.sub("[token]", text)
     text = _BEARER.sub(lambda match: f"{match.group(1)} [token]", text)
@@ -179,8 +193,7 @@ def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
     text = _ACCOUNT.sub("[account]", text)
     text = _IPV4.sub(_ipv4, text)
     text = _IPV6.sub(_ipv6, text)
-    text = _LONG_SECRET.sub(_long_secret, text)
-    return untrusted_text(text, limit)
+    return _LONG_SECRET.sub(_long_secret, text)
 
 
 def scrub_tree(value, limit: int = TEXT_MAX_CHARS, *, depth: int = 0):
