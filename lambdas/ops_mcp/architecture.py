@@ -327,7 +327,7 @@ CATALOGUE: tuple[Component, ...] = (
         "changed after.",
         ("week_start",),
         details=(
-            ("Written by", "stats-rollover, Mondays 09:15 UTC; cost-explorer-poll adds AWS costs"),
+            ("Written by", "stats-rollover, Mondays 13:15 Sydney time; cost-explorer-poll adds AWS costs"),
             ("Read by", "the public Stats page, the Admin API, the assistant's spend tool"),
         ),
         aliases=("weekly-stats",),
@@ -443,12 +443,12 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "weekly-reflection",
         "Reads a week of reader feedback and proposes prompt refinements per topic.",
-        "Mondays 09:00 UTC (EventBridge Scheduler)",
+        "Mondays 13:00 Sydney time (EventBridge Scheduler)",
     ),
     _lambda(
         "stats-rollover",
         "Copies the week's stats-current row into stats-history and starts a new week.",
-        "Mondays 09:15 UTC (EventBridge Scheduler)",
+        "Mondays 13:15 Sydney time (EventBridge Scheduler)",
     ),
     _lambda(
         "cost-explorer-poll",
