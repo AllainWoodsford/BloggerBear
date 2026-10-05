@@ -339,6 +339,7 @@ def _work_out(api: Api, breakdown: list[dict], total: list[dict], timeline: list
         "requests": requests,
         "errors": errors,
         "error_rate": round(errors / requests, 4) if requests else None,
+        "success_rate": round(100 * (requests - errors) / requests, 1) if requests else None,
         "by_status": {str(code): count for code, count in sorted(by_status.items())},
         "causes": [
             {"cause": key, "count": count, "fix_type": CAUSES[key].fix_type}
@@ -445,12 +446,15 @@ def _spoken(rows, chosen, status, when, totals, complete, refused, env) -> str:
     words = []
     if totals["errors"] == 0:
         served = f" out of {totals['requests']} requests" if totals["requests"] else ""
+        if served and status is None:
+            served += ": all succeeded"
         words.append(f"In {when.words()}, {which} answered no {what}{served}.")
     else:
         rate = ""
         if totals["requests"]:
             percent = round(100 * totals["errors"] / totals["requests"], 1)
-            rate = f" out of {totals['requests']} requests ({percent}%)"
+            rate = f" out of {totals['requests']} requests ({percent}%"
+            rate += f"; {round(100 - percent, 1)}% succeeded)" if status is None else ")"
         words.append(f"In {when.words()}, {which} answered {totals['errors']} {what}{rate}.")
         merged: Counter = Counter()
         for row in rows:

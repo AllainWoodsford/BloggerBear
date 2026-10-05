@@ -476,11 +476,14 @@ def test_a_question_about_a_feature_calls_the_guide_then_builds_the_command_the_
 
     assert [call["name"] for call in result["tool_calls"]] == ["cli_guides", "cli_command"]
     assert all(found["kind"] == "how_to" for found in result["findings"])
-    assert [found["id"] for found in result["findings"][:3]] == [
+    assert [found["id"] for found in result["findings"] if "help" in found] == [
         "help-pipeline-config-set",
         "help-topics-update",
         "help-model-config-set",
     ]
+    # Each with its suggested command under it.
+    first_two = [found["id"] for found in result["findings"]][:2]
+    assert first_two == ["help-pipeline-config-set", "draft-pipeline-config-set"]
     assert result["findings"][-1]["suggestion"]["command"] == (
         "python scripts/admin_cli.py topics update crypto --research-interval-hours 6"
     )
@@ -590,8 +593,8 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         "is not a briefing, even when it is the first question: do not check the pipeline",
         "show the help first",
         "Never read the help aloud",
-        "only when the operator has given the values",
-        "never invent a topic id, a name or any other value",
+        "Every answer about the Admin CLI offers a suggested command",
+        "Never make up an id, a model id or a number they did not give",
         "never write one in your answer",
         "a command reaches the screen only from a tool",
         "comes back as a template",
@@ -713,3 +716,10 @@ def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not(
 
     assert {"cli_help", "cli_guides", "cli_command"} <= set(first.offered[0])
     assert "firewall_review" not in first.offered[0] and "firewall_review" in later.offered[0]
+
+
+
+def test_the_model_is_told_about_success_rates_and_listing_functions():
+    prompt = agent.SYSTEM_PROMPT
+    for rule in ("a success rate", "the share that succeeded", 'call architecture with kind "function"'):
+        assert rule in prompt, rule

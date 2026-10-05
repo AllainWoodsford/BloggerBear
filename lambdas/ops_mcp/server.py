@@ -247,22 +247,27 @@ def build_server() -> MCPServer:
         return cli_guide.cli_help(commands, options)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
-    def cli_guides(topic: str | None = None) -> dict[str, Any]:
+    def cli_guides(topic: str | None = None, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Short guides to how a feature works and which commands it uses: cutting costs and how
         often topics run (`costs`), gear (`gear`), editorial goals for a topic
-        (`editorial-goals`), getting started with a first topic (`first-topic`), security
-        incidents and sign-ins (`security`), reviewing and publishing (`review`). Pass a guide's
-        id, or a few words of what the operator wants to
-        do. It puts the help of the guide's main commands on screen, so cli_help is not needed
-        as well. Use it first for a "how do I" question that is about a feature and not one
-        command. With nothing: the guides there are."""
-        return cli_guide.cli_guides(topic)
+        (`editorial-goals`), getting started with a first topic (`first-topic`), setting a topic
+        up fully with its focus, keywords, exclusions and models (`topic-setup`, also for "too
+        many options, mock it up"), security incidents and sign-ins (`security`), reviewing and
+        publishing (`review`). Pass a guide's id, or a
+        few words of what the operator wants to do. It puts the help of the guide's main
+        commands on screen, each with a suggested command under it, so cli_help is not needed as
+        well. `options` fills the suggested commands in with what the operator described (as
+        cli_command takes them, e.g. {"name": "...", "editorial_goals_json": {"primary_focus":
+        "...", "exclusion_criteria": "..."}, "config_json": {"queries": [...]}}); anything not
+        given is a <placeholder>. Use it first for a "how do I" question that is about a feature
+        and not one command. With nothing: the guides there are."""
+        return cli_guide.cli_guides(topic, options)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def cli_command(command: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
-        """The second step of a "how do I" answer: one exact command, built by the server and put
-        on screen for the operator to copy. Use it only when the operator has given the values,
-        or asks for the exact command; otherwise show the help (cli_help, cli_guides). `command`
+        """One exact command, built by the server and put on screen for the operator to copy, once
+        every value is known; to mock one up from a described goal, with placeholders for what
+        is not, use cli_guides or cli_help with `options`. `command`
         is a command path ("topics update"); `options` maps each argument or flag to its value
         ({"topic_id": "crypto", "research_interval_hours": 3}): a switch takes true, a
         `--...-json` flag takes an object. Use only values the operator gave: if `questions`
@@ -312,7 +317,8 @@ def build_server() -> MCPServer:
         from either environment (bloggerbear-prod-candidate-ideas), an ARN, a log group or a short
         name (candidate ideas); a name from the other environment is answered for this one, and
         says so. `data_allowed` false means the name was for an environment that is neither, so do
-        not read data for it. With only `kind`, or nothing: every resource, as a table."""
+        not read data for it. With only `kind`, or nothing: every resource, as a table; `kind`
+        "function" lists every Lambda with what it is for and when it runs."""
         return architecture_module.architecture(name, kind)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
@@ -344,7 +350,9 @@ def build_server() -> MCPServer:
         """Read this environment's Lambda logs for errors and say why they happened: per function,
         each error's root cause (a timeout, out of memory, throttling, a source's rate limit or
         outage, incomplete source data, a permission, a code error), how many, whether it is more
-        than usual, and whether it needs a code fix, a settings change or just time. Puts on screen
+        than usual, and whether it needs a code fix, a settings change or just time; and how many
+        runs there were and what share succeeded (use it for "how is X doing?" and success rates
+        too, not only for errors). Puts on screen
         the advice, the queries and log groups to check it yourself, and example lines (redacted).
         Pass `function` (any name for it) for one function, `topic` (its id, its name, or the operator's
         own words for it) for a deep dive
@@ -364,7 +372,8 @@ def build_server() -> MCPServer:
     ) -> dict[str, Any]:
         """Read the APIs' access logs for failed requests and say why: per API, the errors by
         status and who answered (the firewall, the rate limit, the sign-in, API Gateway itself, or
-        the Lambda), each with its root cause and whether it needs a code fix, a settings change,
+        the Lambda), the share of requests that succeeded, each with its root cause and whether
+        it needs a code fix, a settings change,
         or nothing; the error rate; and when they started. Puts on screen the breakdown by route
         and the queries to check it yourself. Pass `api` (public, admin or assistant) for one API,
         `status` for one HTTP status (400), and the last `hours` (1 to 168) or `start` and `end`

@@ -37,7 +37,8 @@ DEFAULT_DAILY_WINDOW_DAYS = 30
 COST_BASIS_NOTE = (
     "Estimated from recorded token counts and the registered per-model prices "
     "(converted at a fixed USD to AUD rate). Not AWS billing: excludes Lambda, "
-    "DynamoDB, S3, CloudFront and other non-AI services."
+    "DynamoDB, S3, CloudFront and other non-AI services, except where a figure says it is from "
+    "the AWS bill."
 )
 
 

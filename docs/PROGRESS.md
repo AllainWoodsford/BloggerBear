@@ -582,6 +582,9 @@ All shipped and deployed; the design and decisions for each are in
 - [x] AgentCore Web Search as the fallback when GDELT fails (#132)
 - [x] Web search usage and spend on Stats: counted (#134) and read from the
   AWS bill (#135)
+- [x] Stats: the assistant's spend, total infrastructure cost and a total overall cost
+  that is the AWS bill alone (Bedrock counted once), with the assistant's tile in
+  the all-time and weekly sections
 - [x] Staggered research and authoring schedules (production and dev)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the

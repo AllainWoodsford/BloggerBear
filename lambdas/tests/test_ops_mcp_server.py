@@ -354,8 +354,8 @@ def test_the_guide_tools_say_when_to_use_each_and_never_to_write_a_command(clien
 
     # Help first; the exact command second, and only from the operator's own values.
     assert "first step" in described["cli_help"] and "never read the help aloud" in described["cli_help"]
-    assert "second step" in described["cli_command"]
-    assert "only when the operator has given the values" in described["cli_command"]
+    assert "once every value is known" in described["cli_command"]
+    assert "with placeholders for what is not" in described["cli_command"]
     assert "never invent a value" in described["cli_command"]
     assert "never write one in your answer" in described["cli_command"]
     assert "Use it first" in described["cli_guides"] and "editorial-goals" in described["cli_guides"]

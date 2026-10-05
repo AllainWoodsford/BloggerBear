@@ -987,6 +987,78 @@
     );
   }
 
+  // The operator's assistant (the "assistant" category): what its agent runs cost, estimated
+  // from tokens like every other category, in this environment. `assistant` is one entry of
+  // public_view's `categories`, or `overall.assistant` (the same shape). `period` leads the
+  // small print ("est." for a section that already says its period, "AUD, all time, est." for
+  // the Total Stats tile).
+  function assistantTile(assistant, period) {
+    var cost = assistant.cost_aud;
+    var calls = Number(assistant.calls || 0);
+    if ((cost === null || cost === undefined) && calls === 0) {
+      cost = 0; // never ran: a real $0, not "unpriced"
+    }
+    var sub = period + ", " + formatCount(calls) + (calls === 1 ? " model call" : " model calls");
+    if (cost !== null && cost !== undefined && assistant.unpriced > 0) {
+      sub += " (lower bound: " + formatCount(assistant.unpriced) + " unpriced)";
+    }
+    return statTile("Operator assistant spend", formatAud(cost), sub);
+  }
+
+  // Absent from a response older than the assistant itself: then there is no tile.
+  function appendAssistantTile(tiles, categories) {
+    (categories || []).forEach(function (category) {
+      if (category.category === "assistant") {
+        tiles.appendChild(assistantTile(category, "est."));
+      }
+    });
+  }
+
+  // Total Stats' cost summary: GET /stats's `overall` (common/stats_tracking.py's overall_view,
+  // which also holds the formula). The assistant's spend to date, then the all-time AWS bill as
+  // three tiles that add up, the total last:
+  //
+  //     Total overall cost = AI charges on the AWS bill + Total infrastructure cost
+  //
+  // Only the bill goes into the total. Every token estimate on this page (the assistant's too)
+  // is already inside the bill's AI charges, so adding one would count those dollars twice. The
+  // sum is done by the API, never here.
+  //
+  // A response cached from before `overall` existed has none: the page is then as it was.
+  function appendOverallTiles(tiles, overall) {
+    if (!overall) {
+      return;
+    }
+    if (overall.assistant) {
+      tiles.appendChild(assistantTile(overall.assistant, "AUD, all time, est."));
+    }
+    var bill = overall.aws_bill;
+    if (!bill) {
+      // No bill yet: say so. The AI estimate above is never offered as the total instead.
+      tiles.appendChild(statTile("Total infrastructure cost", "No data", "no complete week of the AWS bill yet"));
+      tiles.appendChild(statTile("Total overall cost", "No data", "no complete week of the AWS bill yet"));
+      return;
+    }
+    var period = "complete weeks" + (bill.since ? " since " + bill.since : "");
+    tiles.appendChild(
+      statTile("AI charges on the AWS bill", formatAud(bill.ai_aud), "AUD, as billed, " + period)
+    );
+    tiles.appendChild(
+      statTile(
+        "Total infrastructure cost",
+        formatAud(bill.infrastructure_aud),
+        "AUD, AWS bill other than AI, " + period
+      )
+    );
+    tiles.appendChild(
+      statTile(
+        "Total overall cost",
+        formatAud(bill.total_aud),
+        "AUD, whole AWS bill (AI + infrastructure), " + period
+      )
+    );
+  }
+
   // `apiGatewayNote` distinguishes Weekly Stats' rolling-30-day reading from Total Stats'
   // reuse of that same reading (a snapshot, never summed across weeks -- see this section's
   // own note in renderStats). `isCurrentWeek` is true for Weekly Stats.
@@ -1032,6 +1104,7 @@
         );
       }
     }
+    appendAssistantTile(tiles, data.categories);
     wrap.appendChild(tiles);
     wrap.appendChild(
       statsTable(
@@ -1246,7 +1319,12 @@
         )
       );
     }
+    appendOverallTiles(tiles, stats.overall);
     contentEl.appendChild(tiles);
+    // What the last tiles are made of, and why nothing is counted twice (the API's wording).
+    if (stats.overall && stats.overall.note) {
+      contentEl.appendChild(el("p", { className: "stats-note", text: stats.overall.note }));
+    }
 
     var daily = stats.daily || [];
     var activeDays = daily.filter(function (day) {

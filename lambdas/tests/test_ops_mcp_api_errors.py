@@ -187,7 +187,8 @@ def test_firewall_blocks_point_at_the_firewall_only_in_production(monkeypatch):
 def test_spoken_is_counts_and_fixed_words():
     spoken = call(_a_bad_morning(), api="public")["spoken"]
     assert spoken.startswith(
-        "In the last 24 hours, the public API answered 110 errors out of 2000 requests (5.5%)."
+        "In the last 24 hours, the public API answered 110 errors out of 2000 requests "
+        "(5.5%; 94.5% succeeded)."
     )
     assert (
         "Most were 80 4XXs the handler chose itself: that looks like the caller sending something wrong"
@@ -217,3 +218,11 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran():
     ran = {job[3] for job in run.jobs}
     assert len(cards) == 2 and all(card["suggestion"]["command"] in ran for card in cards)
     assert cards[0]["where"]["open"].startswith("https://ap-southeast-2.console.aws.amazon.com/cloudwatch/")
+
+
+def test_success_rate_is_reported_per_api_and_not_claimed_under_a_status_filter():
+    row = call(_a_bad_morning(), api="public")["by_api"][0]
+    assert row["success_rate"] == 94.5
+    quiet = Run({("admin", "total"): [{"requests": "40"}]})
+    assert "all succeeded" in call(quiet, api="admin")["spoken"]
+    assert "all succeeded" not in call(quiet, api="admin", status=400)["spoken"]

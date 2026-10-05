@@ -65,6 +65,9 @@ ERROR_PATTERN = (
     r"too many|rate limit|killed|out of memory|could not|failed|unable to|dropping|no usable|"
     r"missing anchor|refused)/"
 )
+# Lines that mean the invocation itself failed (Lambda's own "[ERROR]" for an unhandled exception,
+# a timeout, a crash), as opposed to an error the code logged and carried on from.
+FAILED_PATTERN = r"/\[ERROR\]|Task timed out|Runtime exited|Status: (error|timeout)/"
 # Lambda's own lines that are not errors even when a word above appears in them.
 _NOT_ERRORS = r"/^(START|END|INIT_START) /"
 
@@ -281,6 +284,12 @@ def queries(topic_id: str | None = None, prefix: str | None = None) -> dict[str,
             "  by @log"
         ),
         "baseline": f"{errors}\n| stats count(*) as errors by @log, bin(1d)",
+        # Invocations that failed: an unhandled error, a timeout or a crash, once per request.
+        # With RUNS, each function's success rate. Not narrowed to a topic: a run is a run.
+        "failed": (
+            f"filter @message like {FAILED_PATTERN}\n"
+            "| stats count_distinct(@requestId) as failed by @log"
+        ),
     }
 
 
@@ -400,6 +409,7 @@ def review(
         (("all", "totals"), region, groups, text["totals"], when.start, when.end),
         (("all", "runs"), region, groups, text["runs"], when.start, when.end),
         (("all", "baseline"), region, groups, text["baseline"], baseline_start, when.start),
+        (("all", "failed"), region, groups, text["failed"], when.start, when.end),
     ]
     # `wait_seconds` is shorter when a caller reads several logs in one request (memory.py).
     if run is None:
@@ -409,9 +419,10 @@ def review(
     totals = results.get(("all", "totals"))
     runs = results.get(("all", "runs"))
     baseline = results.get(("all", "baseline"))
-    complete = all(part is not None for part in (sample, totals, runs, baseline))
+    failed = results.get(("all", "failed"))
+    complete = all(part is not None for part in (sample, totals, runs, baseline, failed))
 
-    per_function = _work_out(sample or [], totals or [], runs or [], baseline, env, when)
+    per_function = _work_out(sample or [], totals or [], runs or [], baseline, env, when, failed or [])
     findings = _findings(per_function, chosen, when)
     total = sum(row["errors"] for row in per_function.values())
     examples_withheld = sum(row["withheld"] for row in per_function.values())
@@ -441,7 +452,7 @@ def _refusal(spoken: str, **more) -> dict:
     return {"spoken": spoken, "findings": [], "errors": 0, "functions": [], **more}
 
 
-def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
+def _work_out(sample, totals, runs, baseline, env, when, failed=()) -> dict[str, dict]:
     """Per function: error lines, the share of each cause (scaled to the total), examples
     (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline."""
     rows: dict[str, dict] = {}
@@ -458,6 +469,7 @@ def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
                 "first_seen": None,
                 "last_seen": None,
                 "runs": None,
+                "failed": 0,
                 "typical": None,
                 "timeout_seconds": None,
             },
@@ -491,6 +503,8 @@ def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
             "max_memory_mb": logs.count(line.get("max_memory_mb")),
             "memory_mb": logs.count(line.get("memory_mb")),
         }
+    for line in failed:
+        row(logs.group_of(line.get("@log")))["failed"] = logs.count(line.get("failed"))
     if baseline is not None:
         daily: dict[str, list[int]] = {}
         for line in baseline:
@@ -509,6 +523,9 @@ def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
         row_["causes"] = {
             key: (round(total * n / sampled) if sampled else 0) for key, n in row_["sampled"].most_common()
         }
+        ran = (row_["runs"] or {}).get("runs", 0)
+        row_["failed"] = min(row_["failed"], ran) if ran else row_["failed"]
+        row_["success_rate"] = round(100 * (ran - row_["failed"]) / ran, 1) if ran else None
         typical = row_["typical"]
         row_["unusual"] = (
             typical is not None and total >= UNUSUAL_MIN and total > UNUSUAL_TIMES * max(typical, 0.5)
@@ -541,6 +558,8 @@ def _public_row(key: str, row: dict) -> dict:
             for cause, count in row["causes"].items()
         ],
         "runs": row["runs"],
+        "failed_runs": row["failed"],
+        "success_rate": row["success_rate"],
         "near_limit": _near_limit(row),
         # Lines a log held: scrubbed, and for the page only. Never spoken, never instructions.
         "untrusted": {"examples": row["examples"]},
@@ -618,15 +637,24 @@ def _check_yourself(
 
 
 def _table(rows: dict[str, dict], when: logs.Window) -> dict:
+    """Per function: runs and how many succeeded, then each root cause of its errors with what to
+    do. A function with no errors is one row with its success rate, so "how is it doing?" has an
+    answer on screen too."""
     table_rows = []
-    for key, row in sorted(rows.items(), key=lambda item: -item[1]["errors"]):
+    for key, row in sorted(rows.items(), key=lambda item: (-item[1]["errors"], item[0])):
+        ran = (row.get("runs") or {}).get("runs", 0)
+        success = f"{row['success_rate']}%" if row.get("success_rate") is not None else ""
         if not row["errors"]:
+            if ran:
+                table_rows.append([key, ran, success, "", 0, "", "", ""])
             continue
         for cause_key, count in row["causes"].items():
             cause = BY_KEY[cause_key]
             table_rows.append(
                 [
                     key,
+                    ran,
+                    success,
                     cause_key.replace("_", " "),
                     count,
                     FIX_WORDS[cause.fix_type],
@@ -635,10 +663,28 @@ def _table(rows: dict[str, dict], when: logs.Window) -> dict:
                 ]
             )
     return {
-        "title": f"Errors in the Lambdas' logs, {when.words()}",
-        "columns": ["Function", "Root cause", "Count", "Needs", "What to do", "Where"],
+        "title": f"The Lambdas' runs and errors, {when.words()}",
+        "columns": ["Function", "Runs", "Succeeded", "Root cause", "Count", "Needs", "What to do", "Where"],
         "rows": table_rows,
     }
+
+
+def _success_words(rows: dict[str, dict]) -> str:
+    """How many runs there were and how many succeeded, overall and for the worst function: "Of 120
+    runs, 97.5% succeeded; research-tick did worst, at 90%." Empty when nothing ran."""
+    ran = sum((row.get("runs") or {}).get("runs", 0) for row in rows.values())
+    if not ran:
+        return ""
+    failed = sum(row.get("failed", 0) for row in rows.values())
+    if not failed:
+        return f"They ran {ran} time{'s' if ran != 1 else ''}, and every run succeeded."
+    rate = round(100 * (ran - failed) / ran, 1)
+    words = f"Of {ran} runs, {rate}% succeeded"
+    rated = [(row["success_rate"], key) for key, row in rows.items() if row.get("success_rate") is not None]
+    worst = min(rated) if rated else None
+    if worst and worst[0] < 100 and len(rated) > 1:
+        words += f"; {worst[1]} did worst, at {worst[0]}%"
+    return words + "."
 
 
 def _spoken(rows, chosen: Scope, when: logs.Window, total: int, complete: bool, refused: list) -> str:
@@ -646,10 +692,8 @@ def _spoken(rows, chosen: Scope, when: logs.Window, total: int, complete: bool, 
     if chosen.note:
         words.append(chosen.note)
     if total == 0:
-        ran = sum((row.get("runs") or {}).get("runs", 0) for row in rows.values())
         words.append(f"I found no errors in {chosen.words()} in {when.words()}.")
-        if ran:
-            words.append(f"They ran {ran} times.")
+        words.append(_success_words(rows))
     else:
         erroring = [key for key, row in rows.items() if row["errors"]]
         about = "about " if any(row["estimated"] for row in rows.values()) else ""
@@ -673,6 +717,7 @@ def _spoken(rows, chosen: Scope, when: logs.Window, total: int, complete: bool, 
                 f"{lead} {key}, which {cause.label}, {count} times: "
                 f"that looks like {FIX_WORDS[cause.fix_type]}."
             )
+        words.append(_success_words(rows))
         unusual = [key for key, row in rows.items() if row["unusual"]]
         if unusual:
             words.append(f"That is more than usual for {_join(sorted(unusual))}.")

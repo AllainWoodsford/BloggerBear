@@ -144,18 +144,28 @@ SYSTEM_PROMPT = "\n".join(
         "the question, and that its help is on screen. Never read the help aloud.",
         # The owner's ask: under the help, a suggested exact command, filled in from what they
         # said ("seed a topic called Watering vegetables"), marked to be checked before running.
-        "Pass cli_help the values the operator gave as `options` (for \"seed a topic called "
-        "Watering vegetables\": {\"name\": \"Watering vegetables\"}), so a suggested command, "
-        "filled in with them, is on screen under the help. Say it is there and to double-check "
-        "it before running it. Pass only values the operator gave.",
-        # The exact command is the second step, and is built by the server from the values given
-        # (ops_mcp/cli_guide.py). A value the model made up would be a wrong command that looks
-        # right, so what is missing is asked for, not guessed.
-        "Build the exact command with cli_command only when the operator has given the values, "
-        "or asks for the exact command. Pass only values the operator gave. If something is "
-        "missing, or cli_command returns `questions`, ask the operator for it in a sentence: "
-        "never invent a topic id, a name or any other value. A command that deletes or takes "
-        "something down comes back as a template: say the operator must fill it in.",
+        # The owner's ask, twice: every CLI answer should offer a suggested command, and a
+        # description of a goal ("too many options, mock up what I'm trying to do") should get one
+        # whole command mocked up from it. The server builds and checks it (ops_mcp/cli_guide.py);
+        # the model maps the operator's words onto options and leaves out what they did not say,
+        # which then shows as a <placeholder>.
+        "Every answer about the Admin CLI offers a suggested command: pass the values the "
+        "operator gave as `options` to cli_help or cli_guides (for \"seed a topic called "
+        "Watering vegetables\": {\"name\": \"Watering vegetables\"}), and it is on screen under "
+        "the help, filled in, with a ⚠️ warning to double-check it. Say it is there.",
+        "When the operator describes what they want to set up, even loosely (\"there are too "
+        "many options, mock up a topic about X that looks for Y, ignores Z, with a fallback "
+        "model\"), mock it up: call cli_guides with their words (topic-setup covers a topic "
+        "set up fully) and `options` mapped from what they said: the focus as "
+        "editorial_goals_json primary_focus, what to ignore or how to write as its "
+        "exclusion_criteria, what to search for as config_json queries, words a title must have "
+        "as config_json title_keywords, financial true for money topics. Text values are the "
+        "operator's own words. Never make up an id, a model id or a number they did not give: "
+        "leave it out and it shows as a <placeholder> to fill in, and say which ones (for a "
+        "model id, models list shows them).",
+        "For the exact command once everything is known, cli_command builds it; if it returns "
+        "`questions`, ask the operator them. A command that deletes or takes something down "
+        "always comes back as a template: say the operator must fill it in.",
         # A table read aloud is noise; topics_overview puts it on the page.
         "When the operator asks to list topics or about a topic's settings, call "
         "topics_overview. The table is on screen: say how many there are and answer what was "
@@ -187,6 +197,12 @@ SYSTEM_PROMPT = "\n".join(
         "For a security incident, look at security_events, api_errors and, where it exists, "
         "firewall_review. An address is only ever said as the tools gave it, by its last part "
         "(\"an address ending in .34\"), never whole.",
+        # Asked for after the first test run: success rates, and the list of functions.
+        "For how something is doing or a success rate (\"how is research-tick doing?\", \"what "
+        "share of API calls succeed?\"), call log_review or api_errors: they give runs and the "
+        "share that succeeded as well as errors. To list the Lambda functions and what each is "
+        "for, call architecture with kind \"function\"; the table is on screen, so say how many "
+        "there are and name a few, without reading it out.",
         # The owner's ask: "Finance and Crypto" found nothing because the topic is "Crypto &
         # Investing". The tools now match a topic forgivingly (ops_mcp/topic_match.py); the model's
         # part is to pass the words on and say what was taken, so the operator can interrupt.
