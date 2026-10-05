@@ -663,6 +663,12 @@ def node_result():
             {**_HELD, "elapsedMs": 59999},
             {**_HELD, "quickEnds": 3},
             None,
+            {**_HELD, "heard": True, "code": "aborted"},
+            {**_HELD, "heard": True, "code": "network"},
+            {**_HELD, "heard": True, "code": "silent"},
+            {**_HELD, "heard": True, "code": "not-allowed"},
+            {**_HELD, "heard": True, "code": "aborted", "held": False},
+            {**_HELD, "heard": True, "code": "aborted", "quickEnds": 3},
         ],
         "voiceSets": [
             {"lang": "en-AU", "voices": [{"name": "us", "lang": "en-US"}, {"name": "au", "lang": "en_AU"}]},
@@ -1100,7 +1106,12 @@ def test_words_heard_in_several_sessions_are_one_question_in_order_without_dupli
 @needs_node
 def test_another_session_starts_only_while_held_unstopped_unfailed_and_under_the_ceiling(node_result):
     assert node_result["listenMax"] == 60000
-    assert node_result["keepOn"] == [True, True, False, False, False, False, False, False, True, False, False]
+    assert node_result["keepOn"] == [
+        True, True, False, False, False, False, False, False, True, False, False,
+        # Once words have been heard, a session the browser cut short is listened through too,
+        # but never a refusal, a release or a run of sessions that go nowhere.
+        True, True, True, False, False, False,
+    ]  # fmt: skip
 
 
 # --- listening, start to finish, with a scripted recogniser --------------------------------------
@@ -1195,6 +1206,28 @@ const out = {};
   r.fire("end");
   h.advance(120000);
   out.hold = { before, sessions: h.made.length, calls: h.made.map((made) => made.calls), log: h.log };
+}
+
+{ // A hold the browser cuts short mid-question ("aborted", then a session that ends with no
+  // sign of sound): the button is still down, so it keeps listening and asks once on release.
+  const h = harness();
+  h.world.held = true;
+  h.listener.start({ press: true });
+  let r = h.last();
+  r.fire("audiostart"); r.words(["how is the finance", true]);
+  r.fire("error", { error: "aborted" }); r.fire("end");
+  h.advance(2000);
+  r = h.last();
+  r.fire("start"); r.fire("end");
+  h.advance(2000);
+  r = h.last();
+  r.fire("audiostart"); r.words(["topic doing", true]);
+  const before = h.log.done.length;
+  h.world.held = false;
+  h.listener.stop();
+  r.fire("end");
+  h.advance(120000);
+  out.cutShort = { before, sessions: h.made.length, log: h.log };
 }
 
 { // Recognition is there and nothing is behind it: an error, then the end. Held or not, the page
@@ -1355,6 +1388,27 @@ def test_a_held_button_listens_across_pauses_and_sends_one_question_on_release(l
     assert hold["log"]["done"] == [{"press": True, "heard": "What needs my attention today", "code": ""}]
     # Only the last session is stopped, and only once however often release is reported.
     assert hold["calls"] == [["start"], ["start"], ["start"], ["start", "stop"]]
+
+
+@needs_node
+def test_a_hold_the_browser_cuts_short_keeps_listening_until_the_button_is_let_go(listened):
+    cut = listened["cutShort"]
+
+    assert cut["before"] == 0 and cut["sessions"] == 3
+    assert cut["log"]["states"] == [True, False]
+    assert cut["log"]["done"] == [{"press": True, "heard": "how is the finance topic doing", "code": ""}]
+
+
+def test_the_talk_button_keeps_the_pointer_so_drifting_off_it_does_not_let_go():
+    code = _code(_read("ask.js"))
+
+    on = 'talkButton.addEventListener("'
+    down = _between(code, on + 'pointerdown"', on + 'pointerup"')
+    assert "talkButton.setPointerCapture(event.pointerId);" in down
+    assert down.index("setPointerCapture") < down.index("pressDown();")
+    leave = _between(code, on + 'pointerleave"', on + 'contextmenu"')
+    assert 'event.pointerType === "mouse" && !holdsPointer(event.pointerId)' in leave
+    assert "talkButton.hasPointerCapture(pointerId)" in code
 
 
 @needs_node
