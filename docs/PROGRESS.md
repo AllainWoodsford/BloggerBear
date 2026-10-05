@@ -600,6 +600,9 @@ All shipped and deployed; the design and decisions for each are in
 - [x] `firewall_review`, production only, gated three ways (#203)
 - [x] Fix: `TRENDING_URL` collision between #197 and #199 broke the adapter's import on dev (#205)
 - [x] The operator's assistant in production: MFA, account-wide data, the firewall (#206)
+- [x] The operator's assistant reads the logs: root causes, check-it-yourself, written down and
+  followed up, watch a function or table, masked addresses, a suggested command under the CLI help
+  (#218, #220, #221, #225, #226, #227, #228; docs/enhancements/ops-assistant-log-reader.md)
 
 ## Backlog / not yet scheduled
 

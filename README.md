@@ -257,20 +257,32 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
         v                                        v
  agent Lambda (Strands, Bedrock) ──MCP──> ops MCP server Lambda ──> the app's tables (read),
    briefing: follows leads,                start_briefing ──async──> agent   alarms, S3 bodies,
-   8 tool calls at most                    latest_briefing (1 read)          WAF logs (prod only)
+   8 tool calls at most                    latest_briefing (1 read)          its env's Lambda and
+                                                                             API logs (by tag),
+                                                                             WAF logs (prod only)
 ```
 
 - **What it can do:** briefings (`pipeline_health`, `admin_inbox`, `content_checks`,
   `security_events`, `alarms`, `spend`), memory across sessions (`follow_up`, `dismiss`, `watch`),
-  the Admin CLI guide (`cli_help`, `cli_command`, `topics_overview`), and in production only
-  `firewall_review`. Every suggested command comes from a fixed catalogue in code, never from the
-  model, and nothing it can call changes the pipeline.
+  the Admin CLI guide (`cli_help`, which now puts a suggested exact command under each help,
+  `cli_command`, `topics_overview`), and in production only `firewall_review`. Every suggested
+  command comes from a fixed catalogue or the CLI reference in code, never from the model, carries a
+  warning to double-check it, and nothing it can call changes the pipeline.
+- **It reads the logs** ([design](docs/enhancements/ops-assistant-log-reader.md)): `log_review`
+  (Lambda errors, a topic's runs and its adapter, a time range) and `api_errors` (failed requests by
+  status and who answered) find each error's root cause in code and say whether it needs a code fix,
+  a settings change or just time, with how to check it yourself on screen. Findings are written to
+  its suggestions table; it offers to watch a function or a table, and the next "what needs my
+  attention?" says whether it is still happening or has calmed down. Read-only, by environment,
+  project and ManagedBy tag; personal data swept out (addresses only as `123.XXX.XXX.34`); a log
+  line that reads like instructions is withheld, never obeyed.
 - **Alexa+ cannot wait for the agent** (its limit is 500 ms; a briefing takes 10–25 s), so Alexa
   starts a briefing in the background (`start_briefing`, which invokes the agent as the caller)
   and reads the last one back (`latest_briefing`). Every briefing asked on the page is kept too.
-- **Each environment is its own.** Dev's assistant reads dev's tables, bucket and alarms; it has
-  no firewall tool and no right to any WAF log, and never reports the AWS bill. Production's reads
-  production's, plus the bill and the firewall (both are the account's). Each has its own
+- **Each environment is its own.** Dev's assistant reads dev's tables, bucket, alarms and logs; it
+  has no firewall tool and no right to any WAF log, never reads production's or shared logs, and
+  never reports the AWS bill. Production's reads production's, plus what is shared, the bill and
+  the firewall (all the account's). Each has its own
   Cognito pool and, if linked, its own Alexa+ add-on.
 - **The access switch:** `python scripts/admin_cli.py pipeline-config set --assistant-access
   open|allowlist|off` (no deploy). Alexa+ calls from Amazon's addresses, so it needs `open`.

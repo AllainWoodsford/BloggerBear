@@ -7,8 +7,10 @@ Asked "Can you check what's in logs like any 400 error?", the assistant answered
 > I don't have access to logs or the ability to search for specific errors like 400s. [...] you'd
 > need to check CloudWatch logs or your monitoring system directly.
 
-The first half is true and stays true: the assistant cannot read logs, on purpose (its role is read-only
-on named tables, and logs hold what visitors and attackers sent). The second half is the problem.
+The first half was true when this was written: the assistant could not read logs (its role was
+read-only on named tables, and logs hold what visitors and attackers sent). It reads them now, with
+fixed queries, by tag, and a PII sweep: [the log reader](ops-assistant-log-reader.md). The runsheets
+below stay, for "how can I check this myself?". The second half was the problem.
 Someone who knows the system would say *which* log group, *which* dashboard, which of AWS's own
 console pages, and what query to run. This enhancement gives the assistant that knowledge.
 
