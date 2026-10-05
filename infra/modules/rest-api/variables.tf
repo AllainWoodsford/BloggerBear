@@ -1,6 +1,6 @@
 variable "name" {
   type        = string
-  description = "Base name for this API's resources, e.g. \"bloggerbear-dev-admin\"."
+  description = "Base name for this API's resources, e.g. \"<prefix>-dev-admin\"."
 }
 
 variable "stage_name" {

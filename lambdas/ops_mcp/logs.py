@@ -6,12 +6,12 @@ set of fixed Logs Insights queries together and waiting for them (`run_queries`)
 **Which log groups. The owner's rule is environment, project and ManagedBy, held three ways:**
 
 1. IAM (infra/modules/ops-assistant/logs.tf): logs:StartQuery is allowed only on
-   /aws/lambda/bloggerbear-<env>-* and /aws/apigateway/bloggerbear-<env>-*, for each environment
+   /aws/lambda/<prefix>-<env>-* and /aws/apigateway/<prefix>-<env>-*, for each environment
    this assistant may read, and only when the group carries the project's default tags
    (ManagedBy, Project) and that Environment. The Deny in isolation.tf refuses every other
    Environment.
 2. Here, by name, before anything is asked of AWS: a group must be a Lambda's or an API's access
-   log, named bloggerbear-<env>-..., with <env> one this assistant may read
+   log, named <prefix>-<env>-... (common/naming.py), with <env> one this assistant may read
    (samples.readable_environments: dev reads dev's; production reads production's and "shared";
    dev never reads production's or the shared ones, and production never reads dev's).
 3. Here, by tags: the group's own tags are listed and compared with the default tags the function
@@ -43,6 +43,7 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from common.naming import NAME_PREFIX
 from ops_mcp import architecture, samples
 
 QUERY_LIMIT = 1000
@@ -55,8 +56,10 @@ TAG_CACHE_SECONDS = 300
 # A log group this assistant could ever read: a Lambda's own log, or an API's access log, of one
 # of the project's environments. The environment is the same word architecture.py and the alarms
 # tool use: a lowercase letter, then letters and digits (no hyphen, so "dev" never matches "dev-x").
+# The prefix is this deployment's (common/naming.py), never written out.
 GROUP_PATTERN = re.compile(
-    r"^/aws/(?P<service>lambda|apigateway)/bloggerbear-(?P<env>[a-z][a-z0-9]{1,31})-[a-z0-9][a-z0-9-]{0,100}$"
+    rf"^/aws/(?P<service>lambda|apigateway)/{re.escape(NAME_PREFIX)}-"
+    r"(?P<env>[a-z][a-z0-9]{1,31})-[a-z0-9][a-z0-9-]{0,100}$"
 )
 
 _LOGS_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 2, "mode": "standard"})

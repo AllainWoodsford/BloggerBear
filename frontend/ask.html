@@ -64,6 +64,20 @@
     </section>
 
     <section id="ask-app" hidden>
+      <!-- Ways to start, as plain text: what to say after pressing "Push to talk". The same
+           questions are buttons under "Show text-based controls" below; a test keeps the two
+           lists the same. -->
+      <div class="ask-starters">
+        <p id="ask-starters-title" class="ask-starters-title">Things you can ask:</p>
+        <ul class="ask-starters-list" aria-labelledby="ask-starters-title">
+          <li>What needs my attention?</li>
+          <li>What are your prior suggestions?</li>
+          <li>I'm new, where should I start?</li>
+          <li>What can you do?</li>
+          <li>How does the project work?</li>
+        </ul>
+      </div>
+
       <div class="ask-toolbar">
         <button type="button" id="ask-new" class="ask-button">New briefing</button>
         <button type="button" id="ask-mute" class="ask-button" aria-pressed="false">Mute voice</button>
@@ -87,20 +101,35 @@
           This browser has no speech recognition, so type your question instead.
         </p>
 
-        <p><button type="button" id="ask-briefing" class="ask-button ask-button-primary">What needs my attention?</button></p>
-
-        <form id="ask-form" class="ask-form">
-          <label for="ask-question">Or type a question</label>
-          <p id="ask-question-hint" class="ask-hint">
-            You can also ask how to do something with the Admin CLI ("how do I change how often
-            topics run?") or to list your topics. The command is shown for you to copy; nothing
-            is run from here.
-          </p>
-          <div class="ask-form-row">
-            <input type="text" id="ask-question" name="question" maxlength="500" autocomplete="off" aria-describedby="ask-question-hint" />
-            <button type="submit" id="ask-send" class="ask-button">Ask</button>
+        <!-- Everything that is not the voice: closed until asked for, and opened by ask.js
+             itself in a browser that cannot listen, where typing is the only way to ask. -->
+        <p>
+          <button type="button" id="ask-text-toggle" class="ask-button" aria-expanded="false" aria-controls="ask-text-controls">
+            Show text-based controls
+          </button>
+        </p>
+        <div id="ask-text-controls" class="ask-text-controls" hidden>
+          <div class="ask-quick" role="group" aria-label="Common questions">
+            <button type="button" id="ask-briefing" class="ask-button ask-button-primary ask-quick-question">What needs my attention?</button>
+            <button type="button" class="ask-button ask-quick-question">What are your prior suggestions?</button>
+            <button type="button" class="ask-button ask-quick-question">I'm new, where should I start?</button>
+            <button type="button" class="ask-button ask-quick-question">What can you do?</button>
+            <button type="button" class="ask-button ask-quick-question">How does the project work?</button>
           </div>
-        </form>
+
+          <form id="ask-form" class="ask-form">
+            <label for="ask-question">Or type a question</label>
+            <p id="ask-question-hint" class="ask-hint">
+              You can also ask how to do something with the Admin CLI ("how do I change how often
+              topics run?") or to list your topics. The command is shown for you to copy; nothing
+              is run from here.
+            </p>
+            <div class="ask-form-row">
+              <input type="text" id="ask-question" name="question" maxlength="500" autocomplete="off" aria-describedby="ask-question-hint" />
+              <button type="submit" id="ask-send" class="ask-button">Ask</button>
+            </div>
+          </form>
+        </div>
       </div>
 
       <p id="ask-status" class="ask-message" role="status" aria-live="polite"></p>

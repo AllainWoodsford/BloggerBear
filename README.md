@@ -19,8 +19,11 @@ fork of this repository, Terraform, the AWS CLI, Python 3.11+ and the GitHub CLI
    ```bash
    cd infra/bootstrap && terraform init
    terraform apply -var="github_repo=your-name/your-fork" \
-     -var="state_bucket_name=yourname-bloggerbear-terraform-state" -var="domain_name="
+     -var="state_bucket_name=yourname-bloggerbear-terraform-state" \
+     -var="unique_name_prefix=acme-blog" -var="domain_name="
    ```
+   `unique_name_prefix` is what every resource name starts with (`acme-blog-dev-topics`). Pick
+   your own, and give the setup script the same word when it asks for `UNIQUE_NAME_PREFIX`.
 2. **Run the setup script.** It asks for every GitHub secret and variable a deployment needs,
    checks each answer, and sets them. Start with the dry run, which changes nothing:
    ```bash

@@ -897,6 +897,7 @@ a {
   display: block;
   width: 112px;
   height: 112px;
+  -webkit-user-select: none; /* Safari still needs the prefix */
   user-select: none;
   -webkit-user-drag: none;
 }
@@ -1048,6 +1049,7 @@ a {
 
 .paw {
   margin: 0 0.6em 0 0.15em;
+  -webkit-user-select: none;
   user-select: none;
 }
 

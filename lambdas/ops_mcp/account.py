@@ -30,6 +30,7 @@ import boto3
 
 from common.costing import USD_TO_AUD_RATE
 from common.dynamo import get_current_stats, list_security_incidents, list_stats_history_weeks
+from common.naming import NAME_PREFIX
 from common.security_events import (
     COMMENT_SCREENING,
     HIGH,
@@ -184,13 +185,15 @@ def _security_spoken(rows: list[dict], counts: dict[str, int], days: int, more: 
 
 # --- alarms --------------------------------------------------------------------------------------
 
-ALARM_PREFIX = "bloggerbear-"
+# What every alarm in this deployment starts with: its name prefix (common/naming.py, from the
+# NAME_PREFIX variable Terraform sets on the function), "bloggerbear-" in the original deployment.
+ALARM_PREFIX = f"{NAME_PREFIX}-"
 # Which environment this assistant is for: "dev" or "production". The module sets it on the
 # function (infra/modules/ops-assistant/main.tf), and common/scheduler.py reads the same variable.
 ENVIRONMENT_ENV = "ENVIRONMENT_NAME"
 # What an environment's name may look like. It becomes part of the prefix CloudWatch is asked for,
 # so it is held to what the alarms' own names are built from: infra/modules/observability names
-# every alarm "bloggerbear-${var.environment_name}-<what>", and the ops-assistant module refuses
+# every alarm "<prefix>-${var.environment_name}-<what>", and the ops-assistant module refuses
 # an environment name that is not a lowercase letter followed by lowercase letters and digits.
 # No hyphen on purpose: with one, an environment called "dev-old" would have its alarms answer to
 # dev's prefix, "bloggerbear-dev-".
@@ -223,14 +226,14 @@ def _alarm_label(name: str) -> str:
 def alarm_prefix() -> str | None:
     """What every one of this environment's alarms starts with, "bloggerbear-dev-" in dev, or None
     when the function has not been told its environment (or was told something that is not a
-    name). None is never widened to "bloggerbear-": that prefix is both environments'."""
+    name). None is never widened to the bare prefix, "bloggerbear-": that is both environments'."""
     name = os.environ.get(ENVIRONMENT_ENV, "")
     return f"{ALARM_PREFIX}{name}-" if _ENVIRONMENT_NAME.fullmatch(name) else None
 
 
 def alarms(*, now: datetime | None = None) -> dict:
     """This environment's CloudWatch alarms that are in ALARM right now (the ones whose names
-    start with "bloggerbear-<environment>-"), and since when each has been.
+    start with "<prefix>-<environment>-"), and since when each has been.
 
     The role cannot be held to one environment's alarms: a DescribeAlarms that lists by prefix is
     authorized against every alarm in the account. So the separation is here: the other

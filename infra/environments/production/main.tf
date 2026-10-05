@@ -29,13 +29,21 @@ terraform {
 
 # Every resource this root creates carries these tags (the provider's default_tags), so the
 # account can be filtered by them -- by a person, or by an agent looking for orphaned resources
-# (Project = BloggerBear but no ManagedBy) or ones to import (TerraformRoot says which state owns
+# (Project = BloggerBear, or the deployment's own prefix, but no ManagedBy) or ones to import (TerraformRoot says which state owns
 # it). Resources the app creates at runtime (per-topic schedules) carry ManagedBy = "admin-api"
 # instead: they are not Terraform's, and must never be imported into it.
+#
+# Project says which deployment a resource belongs to, and the operator's assistant may read a
+# table only if its Project tag is this deployment's (infra/modules/ops-assistant, the
+# SampleTaggedTables statement, and the same check in lambdas/ops_mcp/samples.py). So it follows
+# the name prefix: a deployment with its own var.unique_name_prefix is tagged with that prefix, as
+# given. The default prefix keeps the tag the original deployment has always had, "BloggerBear",
+# capitals and all, so none of its tags change.
 locals {
+  project_tag = var.unique_name_prefix == "bloggerbear" ? "BloggerBear" : var.unique_name_prefix
   default_tags = {
     ManagedBy     = "Terraform"
-    Project       = "BloggerBear"
+    Project       = local.project_tag
     Environment   = "production"
     TerraformRoot = "infra/environments/production"
   }
@@ -79,7 +87,7 @@ provider "aws" {
 resource "aws_wafv2_web_acl" "this" {
   provider = aws.us_east_1
 
-  name = "bloggerbear-shared"
+  name = "${var.unique_name_prefix}-shared"
   # No apostrophe/parens here -- aws_wafv2_web_acl's description is
   # validated against a restrictive AWS-side regex
   # (^[\w+=:#@/\-,.][\w+=:#@/\-,.\s]+[\w+=:#@/\-,.]$) that rejects them,
@@ -108,7 +116,7 @@ resource "aws_wafv2_web_acl" "this" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-rate-limit"
+      metric_name                = "${var.unique_name_prefix}-rate-limit"
       sampled_requests_enabled   = true
     }
   }
@@ -130,14 +138,14 @@ resource "aws_wafv2_web_acl" "this" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-common-rule-set"
+      metric_name                = "${var.unique_name_prefix}-common-rule-set"
       sampled_requests_enabled   = true
     }
   }
 
   visibility_config {
     cloudwatch_metrics_enabled = true
-    metric_name                = "bloggerbear-shared-acl"
+    metric_name                = "${var.unique_name_prefix}-shared-acl"
     sampled_requests_enabled   = true
   }
 }
@@ -159,7 +167,7 @@ module "static_site" {
   hosted_zone_id       = var.hosted_zone_id
   redirect_www         = true
   web_acl_id           = aws_wafv2_web_acl.this.arn
-  bucket_name_suffix   = var.unique_name_suffix
+  unique_name_prefix   = var.unique_name_prefix
 
   # The frontend calls the public API through its CDN (module.public_api_cdn). The operator's
   # assistant page (frontend/ask.html) also swaps its sign-in code for a token at Cognito's
@@ -185,8 +193,9 @@ module "static_site" {
 module "app_data" {
   source = "../../modules/app-data"
 
-  environment_name = "production"
-  protect_data     = true
+  unique_name_prefix = var.unique_name_prefix
+  environment_name   = "production"
+  protect_data       = true
 }
 
 # -----------------------------------------------------------------------
@@ -207,7 +216,7 @@ module "app_data" {
 # other resource this applies to in infra/.
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "content" {
-  bucket = "bloggerbear-production-content${var.unique_name_suffix}"
+  bucket = "${var.unique_name_prefix}-production-content"
 }
 
 resource "aws_s3_bucket_ownership_controls" "content" {
@@ -416,7 +425,7 @@ data "aws_iam_policy_document" "lambda_assume" {
 }
 
 resource "aws_iam_role" "lambda_exec" {
-  name               = "bloggerbear-production-lambda-exec"
+  name               = "${var.unique_name_prefix}-production-lambda-exec"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
@@ -527,12 +536,12 @@ data "aws_iam_policy_document" "lambda_exec" {
       "logs:CreateLogStream",
       "logs:PutLogEvents",
     ]
-    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/bloggerbear-production-*"]
+    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:/aws/lambda/${var.unique_name_prefix}-production-*"]
   }
 }
 
 resource "aws_iam_role_policy" "lambda_exec" {
-  name   = "bloggerbear-production-lambda-exec"
+  name   = "${var.unique_name_prefix}-production-lambda-exec"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_exec.json
 }
@@ -569,8 +578,8 @@ locals {
     # (not computed), so it's identical either way; keep these in sync
     # with the function_name arguments on aws_lambda_function.research_tick
     # and aws_lambda_function.daily_cycle below.
-    RESEARCH_TICK_FUNCTION_NAME = "bloggerbear-production-research-tick"
-    DAILY_CYCLE_FUNCTION_NAME   = "bloggerbear-production-daily-cycle"
+    RESEARCH_TICK_FUNCTION_NAME = "${var.unique_name_prefix}-production-research-tick"
+    DAILY_CYCLE_FUNCTION_NAME   = "${var.unique_name_prefix}-production-daily-cycle"
 
     # Phase 3: lets admin_api_handler's common/scheduler.py create/update/
     # delete per-topic EventBridge Scheduler schedules at runtime (topics
@@ -597,10 +606,14 @@ locals {
     # do. SCHEDULER_INVOKE_ROLE_ARN has no such issue (scheduler_invoke's
     # own attributes don't depend on any Lambda/state-machine resource) so
     # it's referenced directly.
-    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:bloggerbear-production-research-tick"
-    STATE_MACHINE_ARN          = "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:bloggerbear-production-daily-cycle"
+    RESEARCH_TICK_FUNCTION_ARN = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:${var.unique_name_prefix}-production-research-tick"
+    STATE_MACHINE_ARN          = "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:${var.unique_name_prefix}-production-daily-cycle"
     SCHEDULER_INVOKE_ROLE_ARN  = aws_iam_role.scheduler_invoke.arn
     ENVIRONMENT_NAME           = "production"
+    # What every resource name starts with (var.unique_name_prefix), for the code that builds
+    # or matches one: common/naming.py reads it once, at import, and common/scheduler.py names
+    # the per-topic schedules "<prefix>-<env>-<topic_id>-...".
+    NAME_PREFIX = var.unique_name_prefix
 
     # Phase 4: consumed by public_api_handler.py.
     SITE_URL = local.site_url
@@ -675,7 +688,7 @@ locals {
 
 module "web_search" {
   source = "../../modules/web-search"
-  name   = "bloggerbear-production"
+  name   = "${var.unique_name_prefix}-production"
 }
 
 # Lets the Lambdas call the web search gateway (IAM inbound auth -- see
@@ -691,7 +704,7 @@ data "aws_iam_policy_document" "lambda_web_search" {
 }
 
 resource "aws_iam_role_policy" "lambda_web_search" {
-  name   = "bloggerbear-production-lambda-web-search"
+  name   = "${var.unique_name_prefix}-production-lambda-web-search"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_web_search.json
 }
@@ -715,7 +728,7 @@ locals {
 # 429s) or a web search, then a Bedrock summary of a much larger state. Later
 # ticks reuse that day history and are far cheaper.
 resource "aws_lambda_function" "research_tick" {
-  function_name = "bloggerbear-production-research-tick"
+  function_name = "${var.unique_name_prefix}-production-research-tick"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "research_tick_handler.handler"
@@ -743,11 +756,11 @@ resource "aws_lambda_function" "research_tick" {
 # back into state on every refresh -- it only grants read access to this one name. The operator
 # creates it once (see docs/deployment-runsheet.md):
 #
-#   aws ssm put-parameter --name /bloggerbear/production/coingecko-api-key --type SecureString --value <key> --overwrite
+#   aws ssm put-parameter --name /<prefix>/production/coingecko-api-key --type SecureString --value <key> --overwrite
 #
 # No parameter -> the adapter uses CoinGecko's keyless public API, exactly as with no key before.
 locals {
-  coingecko_api_key_parameter = "/bloggerbear/production/coingecko-api-key"
+  coingecko_api_key_parameter = "/${var.unique_name_prefix}/production/coingecko-api-key"
   coingecko_env_variables = {
     COINGECKO_API_KEY_PARAMETER = local.coingecko_api_key_parameter
     COINGECKO_API_PLAN          = var.coingecko_api_plan
@@ -768,7 +781,7 @@ data "aws_iam_policy_document" "lambda_coingecko_key" {
 }
 
 resource "aws_iam_role_policy" "lambda_coingecko_key" {
-  name   = "bloggerbear-production-lambda-coingecko-key"
+  name   = "${var.unique_name_prefix}-production-lambda-coingecko-key"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_coingecko_key.json
 }
@@ -780,11 +793,11 @@ resource "aws_iam_role_policy" "lambda_coingecko_key" {
 # daily_cycle's fresh-data review re-fetches, so both are told where it is
 # (common/adapters/github_trending.py). The operator creates it once (see docs/deployment-runsheet.md):
 #
-#   aws ssm put-parameter --name /bloggerbear/production/github-api-token --type SecureString --value <token> --overwrite
+#   aws ssm put-parameter --name /<prefix>/production/github-api-token --type SecureString --value <token> --overwrite
 #
 # No parameter -> unauthenticated search; a token GitHub rejects falls back to unauthenticated too.
 locals {
-  github_api_token_parameter = "/bloggerbear/production/github-api-token"
+  github_api_token_parameter = "/${var.unique_name_prefix}/production/github-api-token"
   github_env_variables = {
     GITHUB_API_TOKEN_PARAMETER = local.github_api_token_parameter
   }
@@ -800,13 +813,13 @@ data "aws_iam_policy_document" "lambda_github_token" {
 }
 
 resource "aws_iam_role_policy" "lambda_github_token" {
-  name   = "bloggerbear-production-lambda-github-token"
+  name   = "${var.unique_name_prefix}-production-lambda-github-token"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_github_token.json
 }
 
 resource "aws_lambda_function" "daily_cycle" {
-  function_name = "bloggerbear-production-daily-cycle"
+  function_name = "${var.unique_name_prefix}-production-daily-cycle"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "daily_cycle_handler.handler"
@@ -835,7 +848,7 @@ resource "aws_lambda_function" "daily_cycle" {
 # =========================================================================
 
 resource "aws_lambda_function" "admin_api" {
-  function_name = "bloggerbear-production-admin-api"
+  function_name = "${var.unique_name_prefix}-production-admin-api"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "admin_api_handler.handler"
@@ -865,7 +878,7 @@ data "aws_iam_policy_document" "lambda_invoke_pipeline" {
 }
 
 resource "aws_iam_role_policy" "lambda_invoke_pipeline" {
-  name   = "bloggerbear-production-lambda-invoke-pipeline"
+  name   = "${var.unique_name_prefix}-production-lambda-invoke-pipeline"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_invoke_pipeline.json
 }
@@ -891,7 +904,7 @@ module "admin_api" {
 
   aws_region = var.aws_region
 
-  name                 = "bloggerbear-production-admin-api"
+  name                 = "${var.unique_name_prefix}-production-admin-api"
   stage_name           = "production"
   lambda_invoke_arn    = aws_lambda_function.admin_api.invoke_arn
   lambda_function_name = aws_lambda_function.admin_api.function_name
@@ -1009,14 +1022,14 @@ module "admin_api" {
 # -- not a bug.
 # -----------------------------------------------------------------------
 resource "aws_wafv2_ip_set" "admin_allowlist" {
-  name               = "bloggerbear-production-admin-allowlist"
+  name               = "${var.unique_name_prefix}-production-admin-allowlist"
   scope              = "REGIONAL"
   ip_address_version = "IPV4"
   addresses          = var.admin_allowed_cidrs
 }
 
 resource "aws_wafv2_web_acl" "admin" {
-  name = "bloggerbear-production-admin-api"
+  name = "${var.unique_name_prefix}-production-admin-api"
   # See the identical regex-safety comment on production's shared
   # aws_wafv2_web_acl.this above -- no semicolons/apostrophes/parens.
   description = "Regional WAF Web ACL for the BloggerBear production admin API -- allows only the operators allowlisted IPs, blocks everything else by default."
@@ -1042,14 +1055,14 @@ resource "aws_wafv2_web_acl" "admin" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-production-admin-allow"
+      metric_name                = "${var.unique_name_prefix}-production-admin-allow"
       sampled_requests_enabled   = true
     }
   }
 
   visibility_config {
     cloudwatch_metrics_enabled = true
-    metric_name                = "bloggerbear-production-admin-acl"
+    metric_name                = "${var.unique_name_prefix}-production-admin-acl"
     sampled_requests_enabled   = true
   }
 }
@@ -1083,7 +1096,7 @@ resource "aws_wafv2_web_acl" "admin" {
 # AWS-managed-vs-customer-managed-key rationale.
 # trivy:ignore:AVD-AWS-0096
 resource "aws_sqs_queue" "pipeline_dlq" {
-  name = "bloggerbear-production-pipeline-dlq"
+  name = "${var.unique_name_prefix}-production-pipeline-dlq"
 }
 
 # dlq_handler.py (below) consumes this queue via an event source mapping --
@@ -1104,7 +1117,7 @@ data "aws_iam_policy_document" "lambda_consume_dlq" {
 }
 
 resource "aws_iam_role_policy" "lambda_consume_dlq" {
-  name   = "bloggerbear-production-lambda-consume-dlq"
+  name   = "${var.unique_name_prefix}-production-lambda-consume-dlq"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.lambda_consume_dlq.json
 }
@@ -1122,7 +1135,7 @@ data "aws_iam_policy_document" "states_assume" {
 }
 
 resource "aws_iam_role" "states_exec" {
-  name               = "bloggerbear-production-states-exec"
+  name               = "${var.unique_name_prefix}-production-states-exec"
   assume_role_policy = data.aws_iam_policy_document.states_assume.json
 }
 
@@ -1143,13 +1156,13 @@ data "aws_iam_policy_document" "states_exec" {
 }
 
 resource "aws_iam_role_policy" "states_exec" {
-  name   = "bloggerbear-production-states-exec"
+  name   = "${var.unique_name_prefix}-production-states-exec"
   role   = aws_iam_role.states_exec.id
   policy = data.aws_iam_policy_document.states_exec.json
 }
 
 resource "aws_sfn_state_machine" "daily_cycle" {
-  name     = "bloggerbear-production-daily-cycle"
+  name     = "${var.unique_name_prefix}-production-daily-cycle"
   role_arn = aws_iam_role.states_exec.arn
 
   definition = jsonencode({
@@ -1201,7 +1214,7 @@ resource "aws_sfn_state_machine" "daily_cycle" {
 # all -- only the CloudWatch alarm on queue depth (see
 # infra/modules/observability's pipeline_dlq_messages alarm).
 resource "aws_lambda_function" "dlq_handler" {
-  function_name = "bloggerbear-production-dlq-handler"
+  function_name = "${var.unique_name_prefix}-production-dlq-handler"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "dlq_handler.handler"
@@ -1252,7 +1265,7 @@ data "aws_iam_policy_document" "scheduler_assume" {
 }
 
 resource "aws_iam_role" "scheduler_invoke" {
-  name               = "bloggerbear-production-scheduler-invoke"
+  name               = "${var.unique_name_prefix}-production-scheduler-invoke"
   assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
 }
 
@@ -1324,7 +1337,7 @@ data "aws_iam_policy_document" "scheduler_invoke" {
 }
 
 resource "aws_iam_role_policy" "scheduler_invoke" {
-  name   = "bloggerbear-production-scheduler-invoke"
+  name   = "${var.unique_name_prefix}-production-scheduler-invoke"
   role   = aws_iam_role.scheduler_invoke.id
   policy = data.aws_iam_policy_document.scheduler_invoke.json
 }
@@ -1333,7 +1346,7 @@ resource "aws_iam_role_policy" "scheduler_invoke" {
 # Phase 2's lambda_invoke_pipeline above) -- lets admin_api_handler's
 # common/scheduler.py manage per-topic EventBridge Scheduler schedules at
 # runtime. Scoped to the default schedule group (no custom group is
-# created) and the bloggerbear-production-* name prefix, never "*".
+# created) and the <prefix>-production-* name prefix, never "*".
 # iam:PassRole is scoped to exactly the one scheduler_invoke role ARN --
 # CreateSchedule / UpdateSchedule calls pass that role for EventBridge to
 # assume, and IAM requires the caller to hold explicit PassRole on it;
@@ -1350,7 +1363,7 @@ data "aws_iam_policy_document" "scheduler_manage" {
       "scheduler:DeleteSchedule",
       "scheduler:GetSchedule",
     ]
-    resources = ["arn:aws:scheduler:${var.aws_region}:*:schedule/default/bloggerbear-production-*"]
+    resources = ["arn:aws:scheduler:${var.aws_region}:*:schedule/default/${var.unique_name_prefix}-production-*"]
   }
 
   statement {
@@ -1362,7 +1375,7 @@ data "aws_iam_policy_document" "scheduler_manage" {
 }
 
 resource "aws_iam_role_policy" "scheduler_manage" {
-  name   = "bloggerbear-production-scheduler-manage"
+  name   = "${var.unique_name_prefix}-production-scheduler-manage"
   role   = aws_iam_role.lambda_exec.id
   policy = data.aws_iam_policy_document.scheduler_manage.json
 }
@@ -1384,7 +1397,7 @@ resource "aws_iam_role_policy" "scheduler_manage" {
 # =========================================================================
 
 resource "aws_lambda_function" "public_api" {
-  function_name = "bloggerbear-production-public-api"
+  function_name = "${var.unique_name_prefix}-production-public-api"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "public_api_handler.handler"
@@ -1418,7 +1431,7 @@ module "public_api" {
 
   aws_region = var.aws_region
 
-  name                 = "bloggerbear-production-public-api"
+  name                 = "${var.unique_name_prefix}-production-public-api"
   stage_name           = "production"
   lambda_invoke_arn    = aws_lambda_function.public_api.invoke_arn
   lambda_function_name = aws_lambda_function.public_api.function_name
@@ -1486,6 +1499,7 @@ resource "random_password" "api_origin_verify" {
 module "public_api_cdn" {
   source = "../../modules/api-cdn"
 
+  unique_name_prefix   = var.unique_name_prefix
   environment_name     = "production"
   api_domain           = module.public_api.api_domain
   stage_name           = module.public_api.stage_name
@@ -1508,7 +1522,7 @@ module "public_api_cdn" {
 # counter.
 # -----------------------------------------------------------------------
 resource "aws_wafv2_web_acl" "public_api" {
-  name = "bloggerbear-production-public-api"
+  name = "${var.unique_name_prefix}-production-public-api"
   # See the identical regex-safety comment above -- no semicolons.
   description = "Regional WAF Web ACL for the BloggerBear production public API -- allows all traffic by default, rate-limits any single source IP past 500 requests per 5-minute window."
   scope       = "REGIONAL"
@@ -1559,7 +1573,7 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-production-public-api-rate-limit"
+      metric_name                = "${var.unique_name_prefix}-production-public-api-rate-limit"
       sampled_requests_enabled   = true
     }
   }
@@ -1643,7 +1657,7 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-production-public-api-feedback-rate-limit"
+      metric_name                = "${var.unique_name_prefix}-production-public-api-feedback-rate-limit"
       sampled_requests_enabled   = true
     }
   }
@@ -1665,7 +1679,7 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-production-public-api-common-rule-set"
+      metric_name                = "${var.unique_name_prefix}-production-public-api-common-rule-set"
       sampled_requests_enabled   = true
     }
   }
@@ -1714,7 +1728,7 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-production-public-api-rate-limit-via-cdn"
+      metric_name                = "${var.unique_name_prefix}-production-public-api-rate-limit-via-cdn"
       sampled_requests_enabled   = true
     }
   }
@@ -1780,14 +1794,14 @@ resource "aws_wafv2_web_acl" "public_api" {
 
     visibility_config {
       cloudwatch_metrics_enabled = true
-      metric_name                = "bloggerbear-production-public-api-feedback-rate-limit-via-cdn"
+      metric_name                = "${var.unique_name_prefix}-production-public-api-feedback-rate-limit-via-cdn"
       sampled_requests_enabled   = true
     }
   }
 
   visibility_config {
     cloudwatch_metrics_enabled = true
-    metric_name                = "bloggerbear-production-public-api-acl"
+    metric_name                = "${var.unique_name_prefix}-production-public-api-acl"
     sampled_requests_enabled   = true
   }
 }
@@ -1843,12 +1857,12 @@ locals {
 }
 
 resource "aws_cloudwatch_log_group" "waf_admin" {
-  name              = "aws-waf-logs-bloggerbear-production-admin"
+  name              = "aws-waf-logs-${var.unique_name_prefix}-production-admin"
   retention_in_days = 30
 }
 
 resource "aws_cloudwatch_log_group" "waf_public_api" {
-  name              = "aws-waf-logs-bloggerbear-production-public-api"
+  name              = "aws-waf-logs-${var.unique_name_prefix}-production-public-api"
   retention_in_days = local.waf_visitor_log_retention_days
 }
 
@@ -1861,12 +1875,12 @@ data "aws_iam_policy_document" "waf_logs" {
       identifiers = ["delivery.logs.amazonaws.com"]
     }
     actions   = ["logs:PutLogEvents", "logs:CreateLogStream"]
-    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-bloggerbear-production-*:*"]
+    resources = ["arn:aws:logs:${var.aws_region}:*:log-group:aws-waf-logs-${var.unique_name_prefix}-production-*:*"]
   }
 }
 
 resource "aws_cloudwatch_log_resource_policy" "waf_logs" {
-  policy_name     = "bloggerbear-production-waf-logs"
+  policy_name     = "${var.unique_name_prefix}-production-waf-logs"
   policy_document = data.aws_iam_policy_document.waf_logs.json
 }
 
@@ -1919,7 +1933,7 @@ resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
 resource "aws_cloudwatch_log_group" "waf_shared" {
   provider = aws.us_east_1
 
-  name              = "aws-waf-logs-bloggerbear-shared"
+  name              = "aws-waf-logs-${var.unique_name_prefix}-shared"
   retention_in_days = local.waf_visitor_log_retention_days
 }
 
@@ -1936,7 +1950,7 @@ resource "aws_cloudwatch_log_group" "waf_shared" {
 # after this change needs each one imported first, or it fails with
 # ResourceAlreadyExistsException:
 #
-#   terraform import 'aws_cloudwatch_log_group.lambda["bloggerbear-production-research-tick"]' /aws/lambda/bloggerbear-production-research-tick
+#   terraform import 'aws_cloudwatch_log_group.lambda["<prefix>-production-research-tick"]' /aws/lambda/<prefix>-production-research-tick
 #   (repeat for each function_name below)
 # -----------------------------------------------------------------------
 # Every Lambda below depends_on this resource, so its log group exists before the function can be
@@ -1951,17 +1965,17 @@ resource "aws_cloudwatch_log_group" "waf_shared" {
 # test_terraform_wiring.py checks this list matches every aws_lambda_function's function_name.
 locals {
   lambda_log_group_function_names = [
-    "bloggerbear-production-research-tick",
-    "bloggerbear-production-daily-cycle",
-    "bloggerbear-production-admin-api",
-    "bloggerbear-production-dlq-handler",
-    "bloggerbear-production-public-api",
-    "bloggerbear-production-weekly-reflection",
-    "bloggerbear-production-stats-rollover",
-    "bloggerbear-production-cost-explorer-poll",
-    "bloggerbear-production-trending-digest",
-    "bloggerbear-production-musing-feedback",
-    "bloggerbear-production-security-events",
+    "${var.unique_name_prefix}-production-research-tick",
+    "${var.unique_name_prefix}-production-daily-cycle",
+    "${var.unique_name_prefix}-production-admin-api",
+    "${var.unique_name_prefix}-production-dlq-handler",
+    "${var.unique_name_prefix}-production-public-api",
+    "${var.unique_name_prefix}-production-weekly-reflection",
+    "${var.unique_name_prefix}-production-stats-rollover",
+    "${var.unique_name_prefix}-production-cost-explorer-poll",
+    "${var.unique_name_prefix}-production-trending-digest",
+    "${var.unique_name_prefix}-production-musing-feedback",
+    "${var.unique_name_prefix}-production-security-events",
   ]
 }
 
@@ -1982,14 +1996,14 @@ data "aws_iam_policy_document" "waf_logs_shared" {
     actions = ["logs:PutLogEvents", "logs:CreateLogStream"]
     # us-east-1 written out, not var.aws_region: this is the CloudFront-scope web ACL's log group,
     # and AWS only hosts a CLOUDFRONT-scope ACL, and so its logs, in that one region.
-    resources = ["arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-bloggerbear-shared:*"]
+    resources = ["arn:aws:logs:us-east-1:*:log-group:aws-waf-logs-${var.unique_name_prefix}-shared:*"]
   }
 }
 
 resource "aws_cloudwatch_log_resource_policy" "waf_logs_shared" {
   provider = aws.us_east_1
 
-  policy_name     = "bloggerbear-shared-waf-logs"
+  policy_name     = "${var.unique_name_prefix}-shared-waf-logs"
   policy_document = data.aws_iam_policy_document.waf_logs_shared.json
 }
 
@@ -2170,7 +2184,7 @@ resource "aws_s3_object" "frontend_config" {
 # =========================================================================
 
 resource "aws_lambda_function" "weekly_reflection" {
-  function_name = "bloggerbear-production-weekly-reflection"
+  function_name = "${var.unique_name_prefix}-production-weekly-reflection"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "weekly_reflection_handler.handler"
@@ -2191,7 +2205,7 @@ resource "aws_lambda_function" "weekly_reflection" {
 # this global job. group_name = "default" matches the same schedule group
 # Phase 3's dynamically-created per-topic schedules use.
 resource "aws_scheduler_schedule" "weekly_reflection" {
-  name                = "bloggerbear-production-weekly-reflection"
+  name                = "${var.unique_name_prefix}-production-weekly-reflection"
   group_name          = "default"
   schedule_expression = "cron(0 13 ? * MON *)"
 
@@ -2212,7 +2226,7 @@ resource "aws_scheduler_schedule" "weekly_reflection" {
 # 15 minutes after weekly_reflection above, so that Monday's reflection cost is tallied into the week
 # it is reflecting on, not the new week that is just starting -- see stats_rollover_handler.py.
 resource "aws_lambda_function" "stats_rollover" {
-  function_name = "bloggerbear-production-stats-rollover"
+  function_name = "${var.unique_name_prefix}-production-stats-rollover"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "stats_rollover_handler.handler"
@@ -2229,7 +2243,7 @@ resource "aws_lambda_function" "stats_rollover" {
 }
 
 resource "aws_scheduler_schedule" "stats_rollover" {
-  name                = "bloggerbear-production-stats-rollover"
+  name                = "${var.unique_name_prefix}-production-stats-rollover"
   group_name          = "default"
   schedule_expression = "cron(15 13 ? * MON *)"
 
@@ -2250,7 +2264,7 @@ resource "aws_scheduler_schedule" "stats_rollover" {
 # Bedrock/DynamoDB cost tracking above doesn't cover -- see common/cost_explorer.py for why daily,
 # and why a rolling 30-day window ending yesterday rather than today.
 resource "aws_lambda_function" "cost_explorer_poll" {
-  function_name = "bloggerbear-production-cost-explorer-poll"
+  function_name = "${var.unique_name_prefix}-production-cost-explorer-poll"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "cost_explorer_poll_handler.handler"
@@ -2267,7 +2281,7 @@ resource "aws_lambda_function" "cost_explorer_poll" {
 }
 
 resource "aws_scheduler_schedule" "cost_explorer_poll" {
-  name                = "bloggerbear-production-cost-explorer-poll"
+  name                = "${var.unique_name_prefix}-production-cost-explorer-poll"
   group_name          = "default"
   schedule_expression = "cron(0 10 * * ? *)"
 
@@ -2315,6 +2329,7 @@ module "observability" {
 
   aws_region = var.aws_region
 
+  unique_name_prefix    = var.unique_name_prefix
   environment_name      = "production"
   lambda_function_names = local.pipeline_lambda_function_names
   state_machine_arn     = aws_sfn_state_machine.daily_cycle.arn
@@ -2391,7 +2406,7 @@ module "observability" {
 # =========================================================================
 
 resource "aws_lambda_function" "trending_digest" {
-  function_name = "bloggerbear-production-trending-digest"
+  function_name = "${var.unique_name_prefix}-production-trending-digest"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "trending_digest_handler.handler"
@@ -2414,7 +2429,7 @@ resource "aws_lambda_function" "trending_digest" {
 # digest synthesizes across them. A fixed literal, not topic-driven
 # config, for the same reason as weekly_reflection's schedule above.
 resource "aws_scheduler_schedule" "trending_digest" {
-  name                = "bloggerbear-production-trending-digest"
+  name                = "${var.unique_name_prefix}-production-trending-digest"
   group_name          = "default"
   schedule_expression = "cron(0 7 * * ? *)"
 
@@ -2444,7 +2459,7 @@ resource "aws_scheduler_schedule" "trending_digest" {
 # =========================================================================
 
 resource "aws_lambda_function" "musing_feedback" {
-  function_name = "bloggerbear-production-musing-feedback"
+  function_name = "${var.unique_name_prefix}-production-musing-feedback"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "musing_feedback_handler.handler"
@@ -2465,7 +2480,7 @@ resource "aws_lambda_function" "musing_feedback" {
 # not topic-driven config, for the same reason as weekly_reflection's/
 # trending_digest's schedules above -- this isn't per-topic.
 resource "aws_scheduler_schedule" "musing_feedback" {
-  name                = "bloggerbear-production-musing-feedback"
+  name                = "${var.unique_name_prefix}-production-musing-feedback"
   group_name          = "default"
   schedule_expression = "rate(4 days)"
 
@@ -2492,7 +2507,7 @@ resource "aws_scheduler_schedule" "musing_feedback" {
 # too, so it is covered.
 # =========================================================================
 resource "aws_lambda_function" "security_events" {
-  function_name = "bloggerbear-production-security-events"
+  function_name = "${var.unique_name_prefix}-production-security-events"
   depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
   role          = aws_iam_role.lambda_exec.arn
   handler       = "security_events_handler.handler"
@@ -2527,7 +2542,7 @@ resource "aws_lambda_permission" "security_events_from_waf_logs" {
 # BLOCK records only: the public ACL logs blocks and counts, the admin ACL logs everything.
 resource "aws_cloudwatch_log_subscription_filter" "security_events" {
   for_each        = local.security_event_waf_log_groups
-  name            = "bloggerbear-production-security-events-${each.key}"
+  name            = "${var.unique_name_prefix}-production-security-events-${each.key}"
   log_group_name  = each.value.name
   filter_pattern  = "{ $.action = \"BLOCK\" }"
   destination_arn = aws_lambda_function.security_events.arn
@@ -2549,6 +2564,8 @@ resource "aws_cloudwatch_log_subscription_filter" "security_events" {
 
 module "ops_assistant" {
   source = "../../modules/ops-assistant"
+
+  unique_name_prefix = var.unique_name_prefix
 
   aws_region = var.aws_region
 
@@ -2580,7 +2597,7 @@ module "ops_assistant" {
 
   stage_name = "production"
 
-  hosted_ui_domain_prefix = "bloggerbear-production-ops${var.unique_name_suffix}"
+  hosted_ui_domain_prefix = "${var.unique_name_prefix}-production-ops"
 
   callback_urls = ["${local.site_url}/ask.html"]
   logout_urls   = ["${local.site_url}/ask.html"]

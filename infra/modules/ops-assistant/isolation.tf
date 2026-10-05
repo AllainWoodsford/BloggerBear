@@ -13,7 +13,7 @@
 #    caller hands the module the other environment's ARN, a resource tagged for the other
 #    environment is still refused, wherever the service tells IAM the resource's tags.
 # 3. Filter in code where IAM cannot help. CloudWatch lists every alarm in the account, so the
-#    alarms tool asks only for "bloggerbear-<environment>-" (lambdas/ops_mcp/account.py).
+#    alarms tool asks only for "<prefix>-<environment>-" (lambdas/ops_mcp/account.py).
 # 4. Account-wide data only where the caller says so (var.account_wide_data, variables.tf): the
 #    AWS bill is the whole account's and cannot be split, so only production's assistant has it.
 # -----------------------------------------------------------------------

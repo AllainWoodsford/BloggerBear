@@ -1,3 +1,8 @@
+variable "unique_name_prefix" {
+  type        = string
+  description = "What every resource name starts with, without a trailing hyphen (the calling root's var.unique_name_prefix, \"bloggerbear\" by default). Names the distribution's policies and its CloudFront function."
+}
+
 variable "environment_name" {
   type        = string
   description = "Short environment name (e.g. \"dev\", \"production\"), used to name resources."

@@ -7,7 +7,7 @@
 # Held three ways, any one of which is enough to keep dev out of production's logs:
 #
 #   1. this policy: logs:StartQuery only on the Lambda and API access log groups named for a
-#      readable environment (/aws/lambda/bloggerbear-<env>-*, /aws/apigateway/bloggerbear-<env>-*),
+#      readable environment (/aws/lambda/<prefix>-<env>-*, /aws/apigateway/<prefix>-<env>-*),
 #      and only when the group carries the project's default tags and that Environment;
 #   2. the Deny in isolation.tf, on anything tagged with another Environment;
 #   3. the function checks the group's name and lists its tags before every query, and refuses
@@ -34,8 +34,8 @@ locals {
   readable_log_group_arns = flatten([
     for env in local.readable_environments : [
       for service in ["lambda", "apigateway"] : [
-        "arn:aws:logs:${local.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/${service}/bloggerbear-${env}-*",
-        "arn:aws:logs:${local.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/${service}/bloggerbear-${env}-*:*",
+        "arn:aws:logs:${local.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/${service}/${var.unique_name_prefix}-${env}-*",
+        "arn:aws:logs:${local.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/${service}/${var.unique_name_prefix}-${env}-*:*",
       ]
     ]
   ])
