@@ -20,7 +20,11 @@ variable "account_wide_data" {
 
 variable "default_tags" {
   type        = map(string)
-  description = "The tags every Terraform-made resource of this project carries, ManagedBy and Project (the calling root's provider default_tags, without Environment and TerraformRoot). The assistant's table_sample tool may read a table's rows only when the table carries exactly these, and an Environment it may read (locals.readable_environments in main.tf). The function is given them too (OPS_DEFAULT_TAGS), and checks a table's own tags against them before reading it."
+  description = "The tags every Terraform-made resource of this project carries, ManagedBy and Project (the calling root's provider default_tags, without Environment and TerraformRoot). The assistant's table_sample tool may read a table's rows only when the table carries exactly these, and an Environment it may read (locals.readable_environments in main.tf). The function is given them too (OPS_DEFAULT_TAGS), and checks a table's own tags against them before reading it. Defaults to this project's values, so a module test need not repeat them; every root passes its own explicitly (test_terraform_wiring.py holds that)."
+  default = {
+    ManagedBy = "Terraform"
+    Project   = "BloggerBear"
+  }
 
   validation {
     condition     = toset(keys(var.default_tags)) == toset(["ManagedBy", "Project"]) && alltrue([for value in values(var.default_tags) : length(value) > 0])
