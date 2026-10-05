@@ -60,13 +60,13 @@ def test_a_kind_with_no_command_says_what_to_look_at_and_nothing_to_run(kind):
 
 
 def test_the_kinds_with_no_command_are_the_ones_the_cli_cannot_fix():
-    assert WITHOUT_A_COMMAND == [
-        "alarm_firing",
-        "firewall_spike",
-        "musing_dangling",
-        "security_incident",
-        "spend_unusual",
-    ]
+    # What log_review finds (one kind per root cause) is fixed in Terraform, code or the source,
+    # never from admin_cli: log_review.py's CAUSES, each as log_<cause>.
+    from ops_mcp import log_review
+
+    log_kinds = [f"log_{cause.key}" for cause in (*log_review.CAUSES, log_review.OTHER)]
+    others = ["alarm_firing", "firewall_spike", "musing_dangling", "security_incident", "spend_unusual"]
+    assert WITHOUT_A_COMMAND == sorted(others + log_kinds)
     for kind in WITH_A_COMMAND:
         assert suggestions.CATALOGUE[kind].what_it_does
 
