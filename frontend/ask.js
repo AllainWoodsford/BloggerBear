@@ -570,13 +570,17 @@
   // Whether to start another session when the browser has ended one: only while the button is
   // still held, the page has not asked to stop, nothing went wrong ("no-speech" is a long pause,
   // which a hold listens through), the ceiling has not been reached and sessions are not ending
-  // as fast as they start.
+  // as fast as they start. Once this hold has heard words the microphone is known to work, so a
+  // session the browser cut short ("aborted", a network blip, or an end with no sign of sound)
+  // is the browser's hiccup, not the operator letting go: it is listened through as well.
   function keepListening(state) {
     return (
       !!state &&
       state.held === true &&
       !state.stopping &&
-      (state.code === "" || state.code === "no-speech") &&
+      (state.code === "" ||
+        state.code === "no-speech" ||
+        (state.heard === true && (state.code === "aborted" || state.code === "network" || state.code === "silent"))) &&
       state.elapsedMs < LISTEN_MAX_MS &&
       state.quickEnds < QUICK_ENDS_MAX
     );
@@ -644,6 +648,7 @@
           held: env.isHeld(mine.options) === true,
           stopping: mine.stopping,
           code: code,
+          heard: mine.parts.length > 0,
           elapsedMs: env.now() - mine.startedAt,
           quickEnds: mine.quickEnds,
         });
@@ -1477,6 +1482,14 @@
     lastPressAt = Date.now();
   }
 
+  function holdsPointer(pointerId) {
+    try {
+      return typeof talkButton.hasPointerCapture === "function" && talkButton.hasPointerCapture(pointerId);
+    } catch (err) {
+      return false;
+    }
+  }
+
   function isTalkKey(event) {
     return event.key === " " || event.key === "Spacebar" || event.key === "Enter";
   }
@@ -1503,15 +1516,23 @@
 
     talkButton.addEventListener("pointerdown", function (event) {
       if (event.button === 0) {
+        // The button keeps the pointer until it is let go, so a hand that drifts off the button
+        // while still holding it down does not end the question: only the release does.
+        try {
+          talkButton.setPointerCapture(event.pointerId);
+        } catch (err) {
+          // Not supported here: the pointerleave below is the fallback.
+        }
         pressDown();
       }
     });
     talkButton.addEventListener("pointerup", pressUp);
     talkButton.addEventListener("pointercancel", pressCancelled);
     talkButton.addEventListener("pointerleave", function (event) {
-      // A mouse dragged off the button lets go of it; a finger lifting off a screen also
-      // "leaves", after its pointerup, and is already dealt with.
-      if (event.pointerType === "mouse") {
+      // Only where the pointer could not be kept: a mouse dragged off the button then lets go
+      // of it, as the page will not see its release. A captured pointer "leaves" only after its
+      // pointerup, which is already dealt with, as is a finger lifting off a screen.
+      if (event.pointerType === "mouse" && !holdsPointer(event.pointerId)) {
         pressUp();
       }
     });
