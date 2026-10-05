@@ -354,6 +354,88 @@ def test_recognition_shows_words_as_heard_and_asks_once_it_ends():
     assert "ask(" not in start[: start.index("current.onend")]
 
 
+# --- ways to start, and the text-based controls --------------------------------------------------
+
+STARTER_QUESTIONS = [
+    "What needs my attention?",
+    "What are your prior suggestions?",
+    "I'm new, where should I start?",
+    "What can you do?",
+    "How does the project work?",
+]
+
+
+def test_the_ways_to_start_are_plain_text_under_the_title_and_match_the_quick_buttons():
+    html = _read("ask.html")
+    app = html[html.index('<section id="ask-app" hidden>') :]
+
+    # Plain text: a list, first thing in the signed-in page, with no control inside it.
+    starters = app[app.index('<div class="ask-starters">') : app.index('<div class="ask-toolbar">')]
+    assert re.findall(r"<li>(.*?)</li>", starters) == STARTER_QUESTIONS
+    assert "<button" not in starters and "<a " not in starters
+    # The same questions, in the same order, are the quick buttons.
+    quick = app[app.index('<div class="ask-quick"') : app.index('<form id="ask-form"')]
+    assert re.findall(r"<button[^>]*ask-quick-question[^>]*>(.*?)</button>", quick) == STARTER_QUESTIONS
+    assert quick.count("<button") == len(STARTER_QUESTIONS)
+    # The toolbar is as it was.
+    toolbar = app[app.index('<div class="ask-toolbar">') : app.index('<ul id="ask-voice-report"')]
+    labels = re.findall(r">([^<>]+)</button>", toolbar)
+    assert labels == ["New briefing", "Mute voice", "Test voice", "Sign out"]
+
+
+def test_the_text_based_controls_are_closed_until_asked_for():
+    html = _read("ask.html")
+    code = _code(_read("ask.js"))
+
+    toggle = re.search(r'<button type="button" id="ask-text-toggle"[^>]*>\s*(.*?)\s*</button>', html, re.S)
+    assert toggle.group(1) == "Show text-based controls"
+    assert 'aria-expanded="false"' in toggle.group(0)
+    assert 'aria-controls="ask-text-controls"' in toggle.group(0)
+    # The quick questions and the typed one are both inside the block the toggle opens...
+    block = html[html.index('<div id="ask-text-controls" class="ask-text-controls" hidden>') :]
+    block = block[: block.index('<p id="ask-status"')]
+    assert 'id="ask-briefing"' in block and '<form id="ask-form"' in block
+    assert block.count("ask-quick-question") == len(STARTER_QUESTIONS)
+    # ...and push to talk is not.
+    assert html.index('id="ask-talk"') < html.index('id="ask-text-toggle"')
+    assert 'id="ask-talk"' not in block
+
+    show = code[code.index("function showTextControls(show)") : code.index("function wireTalkButton()")]
+    assert "textControls.hidden = !show;" in show
+    assert 'textToggle.setAttribute("aria-expanded", show ? "true" : "false");' in show
+    assert '"Hide text-based controls" : "Show text-based controls"' in show
+    assert "showTextControls(textControls.hidden);" in code
+    # A browser that cannot listen has nothing but typing, so the controls open themselves.
+    no_speech = code[code.index("if (!Recognition) {", code.index("function wireTalkButton()")) :]
+    assert "showTextControls(true);" in no_speech[: no_speech.index("return;")]
+    # Nothing about the choice is stored.
+    assert "localStorage" not in code
+
+
+def test_a_quick_question_asks_its_own_label_as_a_new_conversation():
+    code = _code(_read("ask.js"))
+
+    quick = code[code.index("function askQuick(event)") : code.index("var quickButtons")]
+    assert "if (busy) {" in quick
+    assert "event.currentTarget.textContent" in quick
+    assert quick.index("turns = [];") < quick.index("clear(conversation);") < quick.index("ask(label")
+    assert 'doc.querySelectorAll(".ask-quick-question")' in code
+    assert 'addEventListener("click", askQuick)' in code
+    # Still only the two requests the page ever makes.
+    assert len(re.findall(r"\.fetch\(", code)) == 2
+
+
+def test_the_stylesheets_carry_the_prefixes_current_browsers_still_need():
+    """Run through Autoprefixer for browsers still in use, the only declaration it adds to these
+    files is the WebKit prefix on user-select. There is no CSS build step here beyond stripping
+    comments and whitespace (scripts/minify_frontend.py), so the prefix is written by hand."""
+    for name in ("ask.css", "styles.css"):
+        css = re.sub(r"/\*.*?\*/", "", _read(name), flags=re.S)
+        for rule in re.findall(r"\{([^{}]*)\}", css):
+            if re.search(r"(?<![-\w])user-select\s*:", rule):
+                assert "-webkit-user-select" in rule, (name, rule.strip())
+
+
 def test_the_voice_test_is_on_the_page_and_reports_as_text():
     html = _read("ask.html")
     code = _code(_read("ask.js"))
