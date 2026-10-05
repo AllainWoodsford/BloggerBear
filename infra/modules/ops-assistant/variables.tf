@@ -49,6 +49,22 @@ variable "tables" {
   EOT
 }
 
+variable "sign_in_trigger_function_arn" {
+  type        = string
+  description = <<-EOT
+    The Lambda the user pool calls before and after every sign-in (its pre- and
+    post-authentication triggers): the calling root's sign_in_events_handler.py, which logs each
+    attempt and refuses a user after too many failures (lambdas/common/sign_ins.py). Required: a
+    pool with no trigger keeps no record of who signed in, and has no lockout this project can
+    see.
+  EOT
+}
+
+variable "sign_in_trigger_function_name" {
+  type        = string
+  description = "The same function's name, for the permission that lets the user pool invoke it."
+}
+
 variable "content_bucket_name" {
   type        = string
   description = "The content bucket's name, passed to the function as CONTENT_BUCKET."

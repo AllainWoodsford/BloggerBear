@@ -2043,3 +2043,41 @@ def list_security_incidents(status: str = "open", limit: int = 50) -> list[dict]
         Limit=limit,
     )
     return response.get("Items", [])
+
+
+# --- Sign-ins (common/sign_ins.py) ----------------------------------------------------------------
+#
+# One row per sign-in event at the operator's assistant: written by sign_in_events_handler.py (the
+# user pool's triggers) and by the Admin API's unlock. Keyed by the user, then by when, so "this
+# user's last few minutes" is one query. Rows expire by TTL (expires_at).
+
+
+def put_sign_in_event(username: str, at: str, fields: dict, *, expires_at: int) -> None:
+    """Write one event for `username` at `at` (an ISO timestamp). A few random characters are
+    added to the sort key, so two events in the same microsecond are both kept."""
+    table = get_table(os.environ["SIGN_INS_TABLE"])
+    table.put_item(
+        Item={**fields, "username": username, "at": f"{at}#{secrets.token_hex(3)}", "expires_at": expires_at}
+    )
+
+
+def query_sign_in_events(username: str, since: str) -> list[dict]:
+    """`username`'s events from `since` (an ISO timestamp) on, oldest first. A consistent read:
+    the lockout counts an attempt written a moment ago."""
+    table = get_table(os.environ["SIGN_INS_TABLE"])
+    kwargs = {
+        "KeyConditionExpression": Key("username").eq(username) & Key("at").gte(since),
+        "ConsistentRead": True,
+    }
+    response = table.query(**kwargs)
+    items = response.get("Items", [])
+    while "LastEvaluatedKey" in response:
+        response = table.query(**kwargs, ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+    return items
+
+
+def scan_sign_in_events(since: str) -> list[dict]:
+    """Every user's events from `since` on (a Scan: a handful of operators, a few rows a day)."""
+    table = get_table(os.environ["SIGN_INS_TABLE"])
+    return _paginated_scan(table, Attr("at").gte(since))

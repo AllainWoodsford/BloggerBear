@@ -435,6 +435,10 @@ resource "aws_lambda_function" "ops_mcp" {
 # - MFA follows var.mfa_configuration. The authenticator-app method is switched on whenever MFA
 #   is not OFF: Cognito refuses OPTIONAL or ON with no method enabled, and SMS would cost money
 #   and need a phone number.
+# - Every sign-in passes through one Lambda, before the password is checked and again once the
+#   user is in (lambda_config): it logs the attempt and the success, and refuses a user with too
+#   many failures (lambdas/common/sign_ins.py). Cognito's own back-off on wrong passwords is
+#   still there underneath, but it is neither recorded nor announced.
 resource "aws_cognito_user_pool" "this" {
   name = "${var.unique_name_prefix}-${var.environment_name}-ops-assistant"
 
@@ -466,6 +470,21 @@ resource "aws_cognito_user_pool" "this" {
       priority = 1
     }
   }
+
+  lambda_config {
+    pre_authentication  = var.sign_in_trigger_function_arn
+    post_authentication = var.sign_in_trigger_function_arn
+  }
+}
+
+# The pool may invoke the sign-in function, and only this pool: without source_arn any user pool
+# in any account could.
+resource "aws_lambda_permission" "sign_in_trigger" {
+  statement_id  = "AllowUserPoolSignInTriggers"
+  action        = "lambda:InvokeFunction"
+  function_name = var.sign_in_trigger_function_name
+  principal     = "cognito-idp.amazonaws.com"
+  source_arn    = aws_cognito_user_pool.this.arn
 }
 
 # Cognito's hosted sign-in page, at <prefix>.auth.<region>.amazoncognito.com. The prefix is

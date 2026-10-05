@@ -575,6 +575,9 @@ locals {
     # Security events (common/security_events.py): written by the security-events Lambda and the
     # public API (screened comments). Harmless on every other Lambda.
     SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name
+    # Sign-ins to the operator's assistant (common/sign_ins.py): written by the
+    # sign-in-events Lambda, read and unlocked through the Admin API.
+    SIGN_INS_TABLE = module.app_data.sign_ins_table_name
 
     # The AgentCore web search gateway (module.web_search below): the
     # fallback search backend common/web_search.py uses when GDELT fails,
@@ -885,6 +888,10 @@ module "admin_api" {
     # _list_failed_executions and scripts/admin_cli.py's
     # `failed-executions list` subcommand.
     "GET /failed-executions",
+    # Sign-ins to the operator's assistant: the log, and clearing a lock -- see
+    # admin_api_handler.py's _list_sign_ins/_unlock_sign_in and admin_cli.py's `sign-ins`.
+    "GET /sign-ins",
+    "POST /sign-ins/{username}/unlock",
     # AI lineage/cost-tracking enhancement (docs/project-plan.md §11, PR 1
     # of 5): the DynamoDB-backed model registry and global default/
     # fallback model config -- see admin_api_handler.py's _list_models/
@@ -1801,6 +1808,7 @@ locals {
     "${var.unique_name_prefix}-dev-trending-digest",
     "${var.unique_name_prefix}-dev-musing-feedback",
     "${var.unique_name_prefix}-dev-security-events",
+    "${var.unique_name_prefix}-dev-sign-in-events",
   ]
 }
 
@@ -2147,6 +2155,7 @@ locals {
     aws_lambda_function.stats_rollover.function_name,
     aws_lambda_function.cost_explorer_poll.function_name,
     aws_lambda_function.security_events.function_name,
+    aws_lambda_function.sign_in_events.function_name,
   ]
 }
 
@@ -2170,6 +2179,7 @@ module "observability" {
   security_alert_log_groups = [
     aws_cloudwatch_log_group.lambda[aws_lambda_function.security_events.function_name].name,
     aws_cloudwatch_log_group.lambda[aws_lambda_function.public_api.function_name].name,
+    aws_cloudwatch_log_group.lambda[aws_lambda_function.sign_in_events.function_name].name,
   ]
 
   # Scaling PR C: what the edge dashboard (API Gateway and WAF, api_waf_dashboards.tf in the
@@ -2380,6 +2390,46 @@ resource "aws_cloudwatch_log_subscription_filter" "security_events" {
 }
 
 # =========================================================================
+# Sign-ins to the operator's assistant (lambdas/common/sign_ins.py): the assistant's user pool
+# calls sign_in_events_handler.py before and after every sign-in (the pool's pre- and
+# post-authentication triggers, set in module.ops_assistant from the ARN passed to it below). It
+# writes each attempt, success and refusal to the SignIns table, refuses a user with five
+# outstanding failures in fifteen minutes, and records a security incident for repeated failures
+# and for a lockout. A lockout is high severity, so it raises module.observability's security alarm.
+#
+# From the shared package and the shared role: it needs the SignIns and SecurityEvents tables and
+# the config table's hash key, which that role already reaches. Five seconds is all Cognito gives
+# a trigger; the function does two DynamoDB calls.
+# =========================================================================
+resource "aws_lambda_function" "sign_in_events" {
+  function_name = "${var.unique_name_prefix}-dev-sign-in-events"
+  depends_on    = [aws_cloudwatch_log_group.lambda] # its log group first; see that resource
+  role          = aws_iam_role.lambda_exec.arn
+  handler       = "sign_in_events_handler.handler"
+  runtime       = "python3.11"
+  timeout       = 5
+  memory_size   = 512
+
+  filename         = data.archive_file.lambdas.output_path
+  source_code_hash = data.archive_file.lambdas.output_base64sha256
+
+  # Its own short list, not local.lambda_env_variables: that map holds the site's address, the
+  # site's response headers name the pool's sign-in host, and the pool names this function, so
+  # the shared map here would be a cycle. These are all it reads: its own table, the incidents
+  # table, the config table (for the key incidents hash a user's name with), and which
+  # deployment and environment it is.
+  environment {
+    variables = {
+      SIGN_INS_TABLE        = module.app_data.sign_ins_table_name
+      SECURITY_EVENTS_TABLE = module.app_data.security_events_table_name
+      MODEL_CONFIG_TABLE    = module.app_data.model_config_table_name
+      ENVIRONMENT_NAME      = "dev"
+      NAME_PREFIX           = var.unique_name_prefix
+    }
+  }
+}
+
+# =========================================================================
 # The operator's assistant: the ops MCP server (lambdas/ops_mcp) behind a Cognito sign-in. See
 # infra/modules/ops-assistant, and the design in
 # docs/enhancements/alexa-plus-operator-assistant-enhancement.md.
@@ -2431,9 +2481,15 @@ module "ops_assistant" {
     MODEL_CONFIG_TABLE      = { name = module.app_data.model_config_table_name, arn = module.app_data.model_config_table_arn }
     MUSINGS_TABLE           = { name = module.app_data.musings_table_name, arn = module.app_data.musings_table_arn }
     SECURITY_EVENTS_TABLE   = { name = module.app_data.security_events_table_name, arn = module.app_data.security_events_table_arn }
+    SIGN_INS_TABLE          = { name = module.app_data.sign_ins_table_name, arn = module.app_data.sign_ins_table_arn }
     STATS_CURRENT_TABLE     = { name = module.app_data.stats_current_table_name, arn = module.app_data.stats_current_table_arn }
     STATS_HISTORY_TABLE     = { name = module.app_data.stats_history_table_name, arn = module.app_data.stats_history_table_arn }
   }
+
+  # The function the pool calls before and after every sign-in (aws_lambda_function.sign_in_events
+  # above): the log of sign-ins, and the lockout.
+  sign_in_trigger_function_arn  = aws_lambda_function.sign_in_events.arn
+  sign_in_trigger_function_name = aws_lambda_function.sign_in_events.function_name
 
   content_bucket_name = aws_s3_bucket.content.bucket
   content_bucket_arn  = aws_s3_bucket.content.arn
