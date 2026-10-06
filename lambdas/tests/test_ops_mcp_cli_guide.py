@@ -564,7 +564,15 @@ FILLER = {
     "text": "Lead with the most useful fact.",
     "scope": "global",
     "instructions": "the second section is wrong",
+    "event_id": "0123456789abcdef0123456789abcdef",
+    "severity": "medium",
+    "summary": "odd requests overnight",
+    "username": "operator",
     "editorial_goals_json": cli_guide.STAR_COUNT_GOAL,
+    "config_json": {"queries": ["vegetable garden watering"], "title_keywords": ["water*"]},
+    "fallback_model_id": "a-fallback-model-id",
+    "musing_id": "762825f7-8358-43b3-b169-25c0fc624b64",
+    "article": "f5e88f3a",
 }
 
 
@@ -575,7 +583,16 @@ def _steps():
 
 
 def test_the_guides_are_the_ones_the_owner_asked_for():
-    assert list(cli_guide.GUIDES) == ["costs", "gear", "editorial-goals", "first-topic", "review"]
+    assert list(cli_guide.GUIDES) == [
+        "costs",
+        "gear",
+        "editorial-goals",
+        "first-topic",
+        "security",
+        "topic-setup",
+        "review",
+        "musings",
+    ]
     listing = cli_guide.cli_guides()
     assert [guide["id"] for guide in listing["guides"]] == list(cli_guide.GUIDES)
     assert listing["findings"] == []
@@ -617,7 +634,13 @@ def test_every_command_a_guide_names_exists_and_its_main_ones_get_their_help(key
         ("getting started", "first-topic"),
         ("how do I add a topic", "first-topic"),
         ("how do I approve what is in the inbox", "review"),
+        ("how do I close a security incident", "security"),
+        ("someone is locked out of the assistant, how do I unlock them", "security"),
+        ("how do I report an attack I noticed", "security"),
         ("first-topic", "first-topic"),
+        ("a musing went out blank, how do I fix it", "musings"),
+        ("how do I regenerate the musing for an article", "musings"),
+        ("how do I edit a musing", "musings"),
     ],
 )
 def test_a_few_words_find_the_right_guide(words, key, tables):
@@ -636,7 +659,7 @@ def test_the_cost_guide_points_at_the_interval_not_the_heartbeat(tables):
     assert result["guide"]["commands"][:3] == ["pipeline-config set", "topics update", "model-config set"]
     text = " ".join(result["guide"]["explanation"])
     assert "raise the interval" in text and "1 to 168" in text
-    helped = {found["where"]["command"]: found["help"] for found in result["findings"]}
+    helped = {found["where"]["command"]: found["help"] for found in result["findings"] if "help" in found}
     assert "--research-interval-hours" in helped["pipeline-config set"]
     assert "--research-interval-hours" in helped["topics update"]
 
@@ -666,7 +689,8 @@ def test_the_editorial_goals_example_is_the_owner_s_and_passes_the_api_s_validat
     assert "no key just for writing style" in text
     assert [step["command"] for step in result["guide"]["steps"]] == ["topics get", "topics update"]
     # The help comes first: the example is the last card.
-    assert [found["id"] for found in result["findings"]][:2] == ["help-topics-update", "help-topics-get"]
+    helps = [found["id"] for found in result["findings"] if "help" in found]
+    assert helps[:2] == ["help-topics-update", "help-topics-get"]
 
 
 def test_the_first_topic_guide_knows_whether_there_are_topics(tables):
@@ -842,3 +866,49 @@ def test_a_new_name_on_update_never_becomes_the_topic_id():
         "python scripts/admin_cli.py topics update <topic_id> --name 'Crypto Weekly'"
     )
     assert "made from the name" not in drafted["where"]
+
+
+
+# --- the owner's second ask: a suggested command for any CLI question, and a goal mocked up -------
+
+
+def test_every_guide_puts_a_suggested_command_with_a_warning_under_each_help(tables):
+    for key in cli_guide.GUIDES:
+        findings = cli_guide.cli_guides(key)["findings"]
+        for index, found in enumerate(findings):
+            if "help" in found:
+                drafted = findings[index + 1]
+                assert drafted.get("draft") and drafted["where"]["command"] == found["where"]["command"]
+                assert drafted["warning"].startswith("⚠️")
+
+
+def test_too_many_options_finds_the_full_setup_guide_and_mocks_up_the_goal(parser, tables):
+    asked = "too many options, mock up a topic that ignores some keywords with a fallback model"
+    result = cli_guide.cli_guides(
+        asked,
+        {
+            "name": "Watering vegetables",
+            "editorial_goals_json": {
+                "primary_focus": "Watering home vegetable gardens.",
+                "exclusion_criteria": "Ignore lawns and product promotions.",
+            },
+            "config_json": {"queries": ["vegetable garden watering"], "title_keywords": ["water*", "drip"]},
+        },
+    )
+    assert result["guide"]["id"] == "topic-setup"
+    drafted = next(f for f in result["findings"] if f["id"] == "draft-topics-create")
+    command = drafted["suggestion"]["command"]
+    assert "<fallback_model_id>" in command  # not given: a placeholder, never a guessed model id
+    args = parsed(parser, command.replace(" --fallback-model-id <fallback_model_id>", ""))
+    assert args["topic_id"] == "watering-vegetables" and args["name"] == "Watering vegetables"
+    assert json.loads(args["config_json"])["title_keywords"] == ["water*", "drip"]
+    assert json.loads(args["editorial_goals_json"])["exclusion_criteria"].startswith("Ignore lawns")
+    assert "<--fallback-model-id>" in drafted["where"]["fill in"]
+    assert drafted["warning"] == cli_guide.DOUBLE_CHECK_WARNING
+
+
+def test_the_full_setup_example_is_a_command_the_cli_accepts(parser, tables):
+    example = cli_guide.cli_guides("topic-setup")["findings"][-1]
+    args = parsed(parser, example["suggestion"]["command"])
+    assert json.loads(args["config_json"])["queries"]
+    assert json.loads(args["editorial_goals_json"])["primary_focus"]

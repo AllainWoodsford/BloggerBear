@@ -10,7 +10,9 @@ the logs.py access check; nothing a log says reaches `spoken`; example lines are
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +31,10 @@ def at(name: str) -> str:
 def dev(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
+    # The account id comes from STS; here it is a made-up one.
+    monkeypatch.setattr(
+        logs, "group_arn", lambda name, region: f"arn:aws:logs:{region}:123456789012:log-group:{name}"
+    )
 
 
 def everything_readable(names):
@@ -303,15 +309,157 @@ def test_a_line_that_reads_like_instructions_is_withheld_and_said():
     )
     result = review(run)
     assert result["functions"][0]["untrusted"]["examples"]["other"][0]["line"] == redact.WITHHELD
-    assert result["withheld_lines"] == 1
-    assert "read like instructions" in result["spoken"]
+    assert result["withheld_lines"] == 1 and result["withheld_in"] == {"public-api": 1}
+    assert "I held back 1 log line in public-api that read like instructions to me." in result["spoken"]
+    # It says where to look, and does not announce an attack: most such lines are a program's own.
+    assert "Most often that is a program's own wording" in result["spoken"]
+    assert "someone may be probing" in result["spoken"]
     assert "dismiss" not in result["spoken"]
+
+
+@pytest.mark.parametrize("function", log_review.ASSISTANT_FUNCTIONS)
+def test_the_assistants_own_log_is_never_reported_as_probing(function):
+    """Production told the operator "someone is probing" about the assistant's own log, which
+    talks about tool calls. Such a line stays withheld (it is still never shown or followed) and
+    is counted, but nothing is said about it."""
+    run = Run(
+        sample=[{"@timestamp": "t", "@log": at(function), "@message": "ERROR while handling tool_call 7"}],
+        totals=[{"@log": at(function), "errors": "1"}],
+    )
+
+    result = review(run)
+
+    assert result["functions"][0]["untrusted"]["examples"]["other"][0]["line"] == redact.WITHHELD
+    assert result["withheld_lines"] == 1 and result["withheld_in"] == {function: 1}
+    assert "read like instructions" not in result["spoken"] and "probing" not in result["spoken"]
+
+
+def test_the_assistants_record_of_a_turn_is_not_read_as_an_error():
+    """ "ops_agent: turn=briefing tool_calls=2 tools=api_errors,log_review" names its tools, so it
+    matched the error pattern ("error") and the instruction pattern ("tool_call") at once."""
+    record = "ops_agent: turn=briefing tool_calls=2 tools=api_errors,log_review findings=10 fixes=0 tables=2"
+    briefing = "ops_agent: briefing run tool_calls=3 findings=2 recorded=True"
+    excluded = re.compile(log_review._OWN_RECORD.strip("/"))
+
+    assert excluded.search(record) and excluded.search(briefing)
+    assert redact.looks_like_instructions(record)  # why it has to be left out of the query
+    # A real failure of the agent is still read.
+    assert not excluded.search("ops_agent: failed error=AgentError")
+    assert not excluded.search("ops_agent: question refused (too long)")
+    for query in log_review.queries().values():
+        if "filter @message like" in query and "(?i)(error|" in query:
+            assert f"@message not like {log_review._OWN_RECORD}" in query
+
+
+def test_the_agent_still_writes_the_record_the_query_leaves_out():
+    """The pattern is only right while the handler prints lines that start this way."""
+    source = (Path(__file__).resolve().parents[1] / "ops_agent_handler.py").read_text(encoding="utf-8")
+
+    assert 'f"ops_agent: turn={result[\'turn\']} tool_calls=' in source
+    assert 'f"ops_agent: briefing run tool_calls=' in source
 
 
 def test_a_quiet_window_says_so_with_how_many_runs():
     run = Run(runs=[{"@log": at("daily-cycle"), "runs": "3"}])
     spoken = review(run, function="daily-cycle")["spoken"]
     assert spoken.startswith("I found no errors in daily-cycle in the last 24 hours. They ran 3 times.")
+
+
+ACCOUNT = "123456789012"
+
+
+def _arn(function: str) -> str:
+    return f"arn:aws:logs:ap-southeast-2:{ACCOUNT}:log-group:/aws/lambda/bloggerbear-dev-{function}"
+
+
+def test_a_check_it_yourself_query_names_the_three_log_groups_closest_to_the_findings():
+    """The owner's ask: the card listed fourteen log groups to tick by hand. The query now starts
+    with a SOURCE line for each of the three with the most errors, as the console writes them,
+    one to a line so one can be deleted in the box before copying."""
+    run = Run(
+        totals=[
+            {"@log": at("daily-cycle"), "errors": "2"},
+            {"@log": at("research-tick"), "errors": "40"},
+            {"@log": at("public-api"), "errors": "7"},
+            {"@log": at("admin-api"), "errors": "1"},
+        ],
+    )
+
+    cards = [f for f in review(run)["findings"] if f["kind"] == "how_to"]
+
+    lines = cards[0]["suggestion"]["command"].splitlines()
+    assert lines[:4] == [
+        f'SOURCE "{_arn("research-tick")}" START=-1d END=0s |',
+        f'SOURCE "{_arn("public-api")}" |',
+        f'SOURCE "{_arn("daily-cycle")}" |',
+        "fields @timestamp, @log, @message",
+    ]
+    assert "\n".join(lines[3:]) == run.jobs[0][3]  # then the query that ran, unchanged
+    assert cards[0]["suggestion"]["action"] == logs.SOURCE_ACTION
+    # Every group that was read is still listed on the card.
+    assert "and " in cards[0]["where"]["log_groups"] and "more" in cards[0]["where"]["log_groups"]
+
+
+def test_deleting_a_source_line_leaves_a_query_that_is_still_whole():
+    cards = [f for f in review(Run())["findings"] if f["kind"] == "how_to"]
+    lines = cards[0]["suggestion"]["command"].splitlines()
+
+    sources = [line for line in lines if line.startswith("SOURCE ")]
+    assert len(sources) == logs.SOURCES_SUGGESTED == 3
+    assert all(line.endswith(" |") for line in sources)  # each stands alone
+    assert sum("START=" in line for line in sources) == 1 and "START=" in sources[0]
+
+
+@pytest.mark.parametrize(
+    ("back", "ahead", "expected"),
+    [
+        (timedelta(hours=24), timedelta(0), "START=-1d END=0s"),
+        (timedelta(days=7), timedelta(0), "START=-1w END=0s"),
+        (timedelta(hours=5), timedelta(0), "START=-5h END=0s"),
+        (timedelta(hours=8), timedelta(hours=6), "START=-8h END=-6h"),
+        (timedelta(minutes=90), timedelta(0), "START=-90m END=0s"),
+        (timedelta(minutes=90, seconds=20), timedelta(minutes=30, seconds=40), "START=-91m END=-30m"),
+        (timedelta(seconds=10), timedelta(0), "START=-1m END=0s"),
+    ],
+)
+def test_the_time_range_is_written_as_the_console_writes_it(back, ahead, expected):
+    when = logs.Window(start=NOW - back, end=NOW - ahead, asked=True, clamped=False)
+
+    assert logs.source_range(when, NOW) == expected
+
+
+def test_the_last_n_hours_is_written_whole_whenever_the_card_is_built():
+    """The tool is not handed a clock in production; a moment later must not read "-1441m"."""
+    assert logs.source_range(logs.window(24, now=NOW)) == "START=-1d END=0s"
+    assert logs.source_range(logs.window(168, now=NOW)) == "START=-1w END=0s"
+    assert logs.source_range(logs.window(3, now=NOW)) == "START=-3h END=0s"
+
+
+def test_what_cannot_be_named_safely_is_left_out_and_the_plain_query_is_the_fallback(monkeypatch):
+    when = logs.window(1, now=NOW)
+    odd = '/aws/lambda/x" | delete'
+
+    assert logs.closest_groups([odd, "/aws/lambda/ok"]) == ["/aws/lambda/ok"]
+    assert logs.source_query([odd], "fields @message", when, "ap-southeast-2", now=NOW) is None
+    built = logs.source_query([odd, "/aws/lambda/ok"], "fields @message", when, "ap-southeast-2", now=NOW)
+    assert built == (
+        f'SOURCE "arn:aws:logs:ap-southeast-2:{ACCOUNT}:log-group:/aws/lambda/ok" START=-1h END=0s |\n'
+        "fields @message"
+    )
+    assert logs.source_query(["/aws/lambda/ok"], "fields @message", when, None, now=NOW) is None
+    assert logs.source_query(["/aws/lambda/ok"], "fields @message", when, "not a region!", now=NOW) is None
+    many = [f"/aws/lambda/fn-{n}" for n in range(30)]
+    assert len(logs.closest_groups(many, limit=99)) == logs.SOURCES_MAX
+
+    def no_account(name, region):
+        raise RuntimeError("sts is unreachable")
+
+    monkeypatch.setattr(logs, "group_arn", no_account)
+    assert logs.source_query(["/aws/lambda/ok"], "fields @message", when, "ap-southeast-2", now=NOW) is None
+    # The card then carries the query alone, with the old instructions.
+    card = next(f for f in review(Run())["findings"] if f["kind"] == "how_to")
+    assert card["suggestion"]["command"].startswith("fields @timestamp")
+    assert card["suggestion"]["action"] == logs.PLAIN_QUERY_ACTION
 
 
 def test_a_query_that_did_not_answer_is_said():
@@ -324,7 +472,13 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran_for_the_same_window(
     run = Run()
     result = review(run, function="research-tick", start="2026-10-05T01:00:00Z", end="2026-10-05T03:00:00Z")
     cards = [f for f in result["findings"] if f["kind"] == "how_to"]
-    assert [c["suggestion"]["command"] for c in cards] == [run.jobs[0][3], run.jobs[1][3]]
+    # Each card is the query that ran, with the log group it ran over on a SOURCE line ahead of
+    # it and the same window, as the console writes it.
+    for card, job in zip(cards, run.jobs[:2], strict=True):
+        command = card["suggestion"]["command"]
+        assert command.startswith(f'SOURCE "{_arn("research-tick")}" START=')
+        assert command.endswith(" |\n" + job[3]) and command.count("SOURCE ") == 1
+        assert card["suggestion"]["action"] == logs.SOURCE_ACTION
     assert (
         cards[0]["where"]["from"] == "2026-10-05T01:00:00+00:00"
         and cards[0]["where"]["to"] == "2026-10-05T03:00:00+00:00"

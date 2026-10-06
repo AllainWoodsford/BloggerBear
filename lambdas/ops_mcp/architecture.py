@@ -281,7 +281,8 @@ CATALOGUE: tuple[Component, ...] = (
         ("musing_id",),
         details=(
             ("Written by", "every publish path (common/musings.py) and musing-feedback"),
-            ("Read by", "the public API, the assistant's content checks"),
+            ("Changed by", "the Admin API (admin_cli musings edit and musings regenerate)"),
+            ("Read by", "the public API, the assistant's content checks, admin_cli musings list"),
         ),
         aliases=("musing",),
         assistant_reads=True,
@@ -494,8 +495,10 @@ CATALOGUE: tuple[Component, ...] = (
     ),
     _lambda(
         "security-events",
-        "Turns the regional firewalls' block records into security incidents.",
-        "on each batch of BLOCK records from the public and admin APIs' WAF logs (a log subscription)",
+        "Turns the regional firewalls' block records into security incidents, and counts the "
+        "admin API's 4xx answers toward the hour's admin-api-errors incident.",
+        "on each batch of BLOCK records from the public and admin APIs' WAF logs, and of 4xx "
+        "lines from the admin API's access log (log subscriptions)",
         alarms=(f"{PREFIX}{ENV}-security-high-severity",),
     ),
     _lambda(
@@ -1031,6 +1034,10 @@ def _overview(kind: str | None, env: str | None) -> dict:
         ]
         for c in components
     ][:OVERVIEW_MAX_ROWS]
+    if kind == "function":
+        # "List the Lambdas and what they do": when each runs is what the operator asks next.
+        runs = {c.key: next((text for label, text in c.details if label == "Runs"), "") for c in components}
+        rows = [[row[0], row[2], runs[c.key]] for row, c in zip(rows, components)]
     what = KIND_LABELS[kind] + "s" if kind else "resources"
     counted = f"{len(components)} {what.lower() if kind else what}"
     return {
@@ -1040,7 +1047,11 @@ def _overview(kind: str | None, env: str | None) -> dict:
         "components": [{"kind": c.kind, "key": c.key, "name": fill(c.name, env)} for c in components],
         "table": {
             "title": f"BloggerBear {env or ''} architecture: {what}".replace("  ", " "),
-            "columns": ["Name", "Kind", "What it's for"],
+            "columns": (
+                ["Name", "What it's for", "When it runs"]
+                if kind == "function"
+                else ["Name", "Kind", "What it's for"]
+            ),
             "rows": rows,
         },
     }

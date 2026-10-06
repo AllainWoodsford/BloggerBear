@@ -501,7 +501,8 @@ def _check_draft_truncated(article_id: str, sources: _Sources) -> Check:
 
 def _content_checker(kind: str) -> Callable[[str, _Sources], Check]:
     """For the kinds content_checks finds. An article that is no longer published is fixed: the
-    suggested rewrite takes it down, with its musings, when the rewrite is ready."""
+    suggested rewrite takes it down, with its musings, when the rewrite is ready. A blank musing
+    is also fixed once it has text (`musings regenerate` or `musings edit`), the article still up."""
 
     def check(article_id: str, sources: _Sources) -> Check:
         article = get_article(article_id)

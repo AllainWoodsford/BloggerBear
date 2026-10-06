@@ -42,6 +42,14 @@ headers reports a network error where the page should be shown the 403.
     MODEL_CONFIG_TABLE           the config table (common/dynamo.py), where the setting is stored
     OPS_ASSISTANT_ALLOWED_CIDRS  the operator's addresses, for `allowlist`
 
+**The wake call.** The page sends `{"warm": true}` once, as the operator signs in, so the two
+Lambdas a question passes through are started before the first question and not by it. It goes
+through the same access switch and needs the same token. It opens the MCP session, lists the
+tools and stops: no model call, no tool call, nothing against the daily cap, nothing shown to the
+operator. At most one in WARM_COOLDOWN_SECONDS does anything; the rest are answered at once.
+The answer is always 200 with `{"warmed": bool, "cooldown": bool}`: a wake that fails is not the
+operator's problem, and the next question will say so if the server really is down.
+
 **What is refused, and how.** A body that is not what is described above is a 400 with a plain
 reason. A model or MCP failure is a 502 that says nothing about why. Like the other handlers,
 `handler` never raises.
@@ -56,6 +64,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import time
 
 from common import dynamo
 from ops_agent import agent, policy, quota
@@ -67,6 +76,13 @@ TURN_MAX_CHARS = 1000
 _ROLES = ("user", "assistant")
 
 _UNAVAILABLE = "The assistant could not answer just now. Try again in a moment."
+
+# The wake call (module docstring). One in this many seconds does the work; the page keeps to the
+# same interval on its side (frontend/ask.js, WARM_COOLDOWN_MS). Kept per container, which is the
+# thing being warmed: a second container that starts later is cold and should be woken.
+WARM_COOLDOWN_SECONDS = 300
+_WARM_BODY = {"warm": True}
+_warmed_at: float | None = None
 
 
 class _Invalid(Exception):
@@ -192,6 +208,24 @@ def _validated(body: dict) -> tuple[str, list[dict]]:
     return question, turns
 
 
+def _warm(authorization: str, extra_headers: dict[str, str]) -> dict:
+    """The wake call: list the MCP server's tools unless that was done in the last
+    WARM_COOLDOWN_SECONDS. Never an error to the caller, and never a word in the log."""
+    global _warmed_at
+    now = time.monotonic()
+    if _warmed_at is not None and now - _warmed_at < WARM_COOLDOWN_SECONDS:
+        return _response(200, {"warmed": False, "cooldown": True})
+    # Set before trying: a server that cannot be reached is not tried again until the next window.
+    _warmed_at = now
+    try:
+        tools = agent.warm(authorization, extra_headers)
+    except Exception as exc:  # noqa: BLE001 - a wake that fails must not look like a failed question
+        print(f"ops_agent: wake did not reach the tools ({type(exc).__name__})")
+        return _response(200, {"warmed": False, "cooldown": False})
+    print(f"ops_agent: wake tools={tools}")
+    return _response(200, {"warmed": True, "cooldown": False})
+
+
 def _ask(event: dict, *, admitted: bool = False) -> dict:
     """Answer the question. `admitted` says the access check passed for this event; only then
     is the caller's address vouched for to the MCP server."""
@@ -201,7 +235,10 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
         # the day the route is deployed without one.
         return _error(401, "a bearer token is required")
     try:
-        question, history = _validated(_body(event))
+        body = _body(event)
+        if body == _WARM_BODY and body["warm"] is True:
+            return _warm(authorization, _vouching_headers(event, admitted))
+        question, history = _validated(body)
     except _Invalid as exc:
         return _error(400, str(exc))
 

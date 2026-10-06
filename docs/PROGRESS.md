@@ -582,6 +582,9 @@ All shipped and deployed; the design and decisions for each are in
 - [x] AgentCore Web Search as the fallback when GDELT fails (#132)
 - [x] Web search usage and spend on Stats: counted (#134) and read from the
   AWS bill (#135)
+- [x] Stats: the assistant's spend, total infrastructure cost and a total overall cost
+  that is the AWS bill alone (Bedrock counted once), with the assistant's tile in
+  the all-time and weekly sections
 - [x] Staggered research and authoring schedules (production and dev)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
@@ -603,6 +606,9 @@ All shipped and deployed; the design and decisions for each are in
 - [x] The operator's assistant reads the logs: root causes, check-it-yourself, written down and
   followed up, watch a function or table, masked addresses, a suggested command under the CLI help
   (#218, #220, #221, #225, #226, #227, #228; docs/enhancements/ops-assistant-log-reader.md)
+- [x] The operator's assistant, second round: forgiving topic names with "did you mean" (#232),
+  success rates and the Lambdas listed with what they do (#234), a suggested command for any CLI
+  question and a topic-setup mock-up (#235), push to talk that does not let go while held (#238)
 
 ## Backlog / not yet scheduled
 

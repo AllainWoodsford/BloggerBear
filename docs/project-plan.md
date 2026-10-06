@@ -709,6 +709,22 @@ revision, or a failed call *holds* the article instead. The original body is kep
 `articles/<id>.original.md` (`body_original_s3_key`), private. An unexpected error while
 enforcing holds the article; it never lets an enforced article through unchecked.
 
+**Figures that move (added later, for the crypto feed).** A price is different at the research
+tick, the draft, each review and a Re-Write, so an exact figure was reported stale every time
+and crypto articles were always flagged. An adapter may now declare, as plain attributes
+(`common/adapters/base.py`; the pipeline reads them and knows nothing else about the domain):
+`figure_tolerance_percent` (crypto: 7), `figure_guidance` (write figures loosely: "more than
+30%", "at the time of checking") and `drafting_guidance` (end with an "At a glance" table and
+"Key takeaways"). With a tolerance: the reviewer is told not to flag a figure inside it; code
+drops a claim the model flags anyway when every figure in it is that close to the one in the
+claim's own evidence and the two agree on direction (`within_tolerance`; the count is kept on
+the record and shown as a note); and `revision_violations` also accepts a figure within the
+tolerance of a trusted one, or a trusted one rounded or rounded *down* by no more than 20%.
+An `unsupported` claim, a figure further off, and a figure that matches nothing are treated
+as before. An adapter that declares nothing gets the exact checks above. Financial topics
+still always go to a person; their disclaimer now also says the figures are approximate and
+may be out of date.
+
 **What reading the code found (these shape the scope).**
 1. *Drafts are being cut off.* The draft, ideation and title calls all use
    `invoke_model_tracked`'s default `max_tokens=1024`. The tokenized-gold article's draft
@@ -1609,6 +1625,37 @@ in the daily-cycle Lambda) called CoinGecko keyless. Both Lambdas now share `loc
   real name with `aws ce get-dimension-values --dimension SERVICE` and fix `AGENTCORE_SERVICE`.
 - **Not per article:** a search belongs to a research run, not to one article, so search spend is not
   added to article lineage.
+
+### The assistant, infrastructure and the overall total on the Stats page
+
+**Status: implemented.** No new stored field: everything is read from the two rows the page already used.
+
+- **Total Stats** ends with four more tiles, from `GET /stats`'s new `overall`
+  (`common/stats_tracking.py`'s `overall_view`):
+  - **Operator assistant spend:** the `assistant` category's token estimate, the all-time row plus the
+    current week, so all time to date, this environment's own.
+  - **AI charges on the AWS bill**, **Total infrastructure cost** (everything on the bill that is not AI:
+    the Infrastructure and Security groups, so the firewall is in it) and **Total overall cost**, from the
+    all-time row's `aws_bill_total_usd`.
+- **The formula:** total overall cost = AI charges on the bill + total infrastructure cost = the whole
+  bill, before tax. Bedrock is counted twice in this project, by tokens (every estimate on the page) and
+  by AWS (the bill's AI group); they are the same dollars, so no token estimate is ever added to the
+  total. The API does the sum, in `Decimal`; the page adds nothing up.
+- **Not all time:** the bill total is every *complete* week since `aws_bill_total_since`, and the tiles
+  say so. A true all-time figure needs a one-off backfill from Cost Explorer (which keeps about a year
+  of daily data) for the weeks before the first history row; the poll re-reads only the last six weeks,
+  and only fills weeks the rollover wrote a row for.
+- **The account's, not the environment's:** dev and production share the account, so both pages show the
+  same bill, labelled "the whole AWS account (dev and production together)", as the bill table already
+  was. Until a complete week has been totalled the two cost tiles read "No data"; the token estimate is
+  never shown as the total in their place.
+- **"Other AI spend and activity"** (all time) and **Weekly Stats** each end with an **Operator assistant
+  spend** tile for their own period, from the row the category table already shows.
+- **Old answers:** CloudFront and the browser keep `GET /stats` for five minutes (`max-age=300`), so the
+  page ignores a missing `overall` and draws what it drew before.
+- **Left out on purpose:** security incidents by severity (a public count that moves when an attack is
+  noticed tells the sender where the thresholds are), anything from the sign-in log, and a count of the
+  assistant's questions (only model calls are recorded per week; questions are counted per user per day).
 
 ### Staggered schedules
 

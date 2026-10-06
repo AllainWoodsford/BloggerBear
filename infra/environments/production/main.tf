@@ -983,6 +983,13 @@ module "admin_api" {
     "POST /equipment",
     "POST /prompt-refinements/{topic_id}/{version}/announce",
     "DELETE /prompt-refinements/{topic_id}/{version}",
+    # Musings: listing them (the blank ones too), replacing one's text by hand, and having
+    # an article musing written again -- see admin_api_handler.py's _list_musings_route,
+    # _edit_musing and _regenerate_* and admin_cli.py's `musings`.
+    "GET /musings",
+    "PUT /musings/{musing_id}",
+    "POST /musings/{musing_id}/regenerate",
+    "POST /articles/{article_id}/musings/regenerate",
     # DLQ-consumer visibility -- see admin_api_handler.py's
     # _list_failed_executions and scripts/admin_cli.py's
     # `failed-executions list` subcommand.

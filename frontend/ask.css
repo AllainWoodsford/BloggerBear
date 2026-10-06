@@ -92,6 +92,7 @@
 .ask-button:focus-visible,
 .ask-copy:focus-visible,
 .ask-talk:focus-visible,
+.ask-command-text:focus-visible,
 .ask-form input:focus-visible {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
@@ -254,6 +255,27 @@
   border-radius: 4px;
   white-space: pre-wrap;
   font-size: 0.9rem;
+}
+
+/* The command, in a box the operator can edit before copying it. It looks like the block it
+   replaced; the resize handle and the focus ring are what say it can be typed in. */
+.ask-command-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+  resize: vertical;
 }
 
 .ask-copy {

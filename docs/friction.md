@@ -686,6 +686,32 @@ made `--topic-id` from `--name`, which is what the operator asked for; on `topic
 rule turned a rename into a command for a different topic. **Fix:** only a `create` command derives
 an id. **Lesson:** a convenience that fills a value in must be scoped to where that value is new.
 
+**#232 · A forgiving match could be steered by what was typed around the name.** The first fuzzy
+matcher scored "crypto; topics delete crypto" as a close match for Crypto & Investing and passed
+it on. Nothing would have run the command, but a matcher that accepts anything near a name invites
+it. **Fix:** words with characters no topic name uses are refused before any scoring, and the score
+is mostly how much of what was asked a topic covers. A rule refusing apostrophes was dropped
+because real names have them. **Lesson:** decide what a name can look like before deciding how
+close it is.
+
+**#232 · The deleted head branch of a merged PR made `--force-with-lease` refuse.** The owner
+deleted the branch on merge. Restarting it from `dev` and pushing with a lease against the stale
+remote-tracking ref was refused. **Fix:** fetch first, then push plainly, since there was nothing
+left on the remote to protect. **Lesson:** after a merge, fetch before pushing to the same branch
+name.
+
+**#234 · A new query broke a test fake that answered by name.** The fake Logs Insights runner
+held one canned answer per query name, so adding the `failed` query raised `KeyError` in every
+`log_review` test. **Fix:** the fake gained an answer for it, and a test now pins the set of query
+names. **Lesson:** a new fixed query is a change to every fake that stands in for the runner.
+
+**#238 · "Released too early" was two different bugs.** Holding the talk button ended the question
+when the mouse drifted off it (a `pointerleave` counted as letting go). It also ended when the
+browser cut a recognition session short with `aborted` or a network blip while the button was still
+down. Each looks the same to the operator. **Fix:** the button captures the pointer, and a hold
+that has already heard words listens through a session the browser cut short. **Lesson:** when the
+complaint is about timing, list every event that can end the thing, not just the obvious one.
+
 ---
 
 ## Patterns worth keeping

@@ -67,6 +67,124 @@ def answer():
         yield mock_answer
 
 
+# --- the wake call --------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cold(monkeypatch):
+    """A container that has not been woken, and a clock the test moves."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(ops_agent_handler, "_warmed_at", None)
+    monkeypatch.setattr(ops_agent_handler.time, "monotonic", lambda: clock["now"])
+    return clock
+
+
+def wake(**kwargs):
+    return ops_agent_handler.handler(event({"warm": True}, **kwargs), None)
+
+
+def test_a_wake_call_lists_the_tools_and_calls_no_model(answer, cold, capsys):
+    """As the operator signs in, so the first question does not wait for two cold Lambdas."""
+    with (
+        patch.object(agent, "warm", return_value=14) as warm,
+        patch.object(ops_agent_handler.quota, "take") as take,
+    ):
+        response = wake()
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"warmed": True, "cooldown": False}
+    # The caller's own token goes to the MCP server, as a question's does.
+    assert warm.call_args.args[0] == f"Bearer {TOKEN}"
+    answer.assert_not_called()  # no model
+    take.assert_not_called()  # and nothing against the daily cap
+    assert capsys.readouterr().out.strip() == "ops_agent: wake tools=14"
+
+
+def test_only_one_wake_call_in_five_minutes_does_anything(answer, cold):
+    with patch.object(agent, "warm", return_value=14) as warm:
+        first = wake()
+        cold["now"] += ops_agent_handler.WARM_COOLDOWN_SECONDS - 1
+        second = wake()
+        cold["now"] += 1
+        third = wake()
+
+    assert ops_agent_handler.WARM_COOLDOWN_SECONDS == 300
+    assert json.loads(first["body"]) == {"warmed": True, "cooldown": False}
+    assert json.loads(second["body"]) == {"warmed": False, "cooldown": True}
+    assert json.loads(third["body"]) == {"warmed": True, "cooldown": False}
+    assert warm.call_count == 2
+
+
+def test_a_wake_that_fails_is_a_quiet_200_and_is_not_retried_inside_the_window(answer, cold, capsys):
+    with patch.object(agent, "warm", side_effect=RuntimeError(f"cannot connect with {TOKEN}")) as warm:
+        first = wake()
+        second = wake()
+
+    assert first["statusCode"] == 200 and json.loads(first["body"]) == {"warmed": False, "cooldown": False}
+    assert json.loads(second["body"]) == {"warmed": False, "cooldown": True}
+    assert warm.call_count == 1
+    out = capsys.readouterr().out
+    assert out.strip() == "ops_agent: wake did not reach the tools (RuntimeError)" and TOKEN not in out
+
+
+def test_a_wake_call_needs_the_token_and_passes_the_access_switch(cold, pipeline_config, capsys):
+    with patch.object(agent, "warm") as warm:
+        no_token = wake(headers={"Content-Type": "application/json"})
+        pipeline_config["assistant_access"] = "off"
+        switched_off = wake()
+
+    assert no_token["statusCode"] == 401 and switched_off["statusCode"] == 403
+    warm.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"warm": False}, {"warm": 1}, {"warm": "true"}, {"warm": True, "question": "hello"}, {"warm": None}],
+)
+def test_only_the_exact_wake_body_is_a_wake_call(answer, cold, body):
+    with patch.object(agent, "warm") as warm:
+        response = ops_agent_handler.handler(event(body), None)
+
+    assert response["statusCode"] == 400
+    warm.assert_not_called()
+    answer.assert_not_called()
+
+
+def test_a_question_is_still_answered_after_a_wake_call(answer, cold):
+    with patch.object(agent, "warm", return_value=3):
+        wake()
+    response = ops_agent_handler.handler(event({"question": QUESTION}), None)
+
+    assert response["statusCode"] == 200 and json.loads(response["body"])["answer"] == ANSWER["answer"]
+
+
+def test_waking_opens_the_session_and_lists_the_tools_only():
+    class Session:
+        def __init__(self):
+            self.entered = self.left = False
+
+        def __enter__(self):
+            self.entered = True
+            return self
+
+        def __exit__(self, *exc):
+            self.left = True
+
+    session = Session()
+    with (
+        patch.dict("os.environ", {"OPS_MCP_URL": "https://mcp.example/mcp"}),
+        patch.object(agent, "mcp_client", return_value=session) as client,
+        patch.object(agent, "list_tools", return_value=["a", "b", "c"]) as listed,
+        patch.object(agent, "run") as run,
+    ):
+        assert agent.warm("Bearer x", {"k": "v"}) == 3
+
+    assert client.call_args.args == ("https://mcp.example/mcp", "Bearer x", {"k": "v"})
+    listed.assert_called_once_with(session)
+    assert session.entered and session.left
+    run.assert_not_called()
+
+
 # --- what it accepts ------------------------------------------------------------------------------
 
 

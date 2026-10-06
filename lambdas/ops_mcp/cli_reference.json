@@ -52,7 +52,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -1783,6 +1783,149 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py sign-ins unlock [-h] username\n\npositional arguments:\n  username    The user's name in the assistant's user pool\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "musings": {
+      "help": "The Musings feed: list the musings, fix one's text, or have one written again",
+      "group": true,
+      "subcommands": [
+        "list",
+        "edit",
+        "regenerate"
+      ],
+      "help_text": "usage: admin_cli.py musings [-h] {list,edit,regenerate} ...\n\npositional arguments:\n  {list,edit,regenerate}\n    list                List the musings, newest first, with their ids and whether each is blank\n    edit                Replace one musing's text with your own words. Its mood, its date and the\n                        article it links to stay as they are\n    regenerate          Have a musing about a published article written again, in the mood it\n                        already has (one model call each). Give a musing id, or --article for the\n                        blank musings about one article\n\noptions:\n  -h, --help            show this help message and exit\n"
+    },
+    "musings list": {
+      "help": "List the musings, newest first, with their ids and whether each is blank",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--blank",
+          "dest": "blank",
+          "kind": "flag",
+          "flags": [
+            "--blank"
+          ],
+          "help": "Only the musings that went out with no text",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--article",
+          "dest": "article_id",
+          "kind": "option",
+          "flags": [
+            "--article"
+          ],
+          "help": "Only the musings about this article",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--limit",
+          "dest": "limit",
+          "kind": "option",
+          "flags": [
+            "--limit"
+          ],
+          "help": "How many to show, 1 to 200 (default: 20)",
+          "type": "int",
+          "choices": null,
+          "default": 20,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py musings list [-h] [--blank] [--article ARTICLE_ID] [--limit LIMIT]\n\noptions:\n  -h, --help            show this help message and exit\n  --blank               Only the musings that went out with no text\n  --article ARTICLE_ID  Only the musings about this article\n  --limit LIMIT         How many to show, 1 to 200 (default: 20)\n"
+    },
+    "musings edit": {
+      "help": "Replace one musing's text with your own words. Its mood, its date and the article it links to stay as they are",
+      "group": false,
+      "arguments": [
+        {
+          "name": "musing_id",
+          "dest": "musing_id",
+          "kind": "positional",
+          "flags": [],
+          "help": "The musing's id, from `musings list`",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--text",
+          "dest": "text",
+          "kind": "option",
+          "flags": [
+            "--text"
+          ],
+          "help": "What the musing should say (at most 280 characters)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py musings edit [-h] --text TEXT musing_id\n\npositional arguments:\n  musing_id    The musing's id, from `musings list`\n\noptions:\n  -h, --help   show this help message and exit\n  --text TEXT  What the musing should say (at most 280 characters)\n"
+    },
+    "musings regenerate": {
+      "help": "Have a musing about a published article written again, in the mood it already has (one model call each). Give a musing id, or --article for the blank musings about one article",
+      "group": false,
+      "arguments": [
+        {
+          "name": "musing_id",
+          "dest": "musing_id",
+          "kind": "positional",
+          "flags": [],
+          "help": "The musing to write again, blank or not (its id, from `musings list`)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": "?",
+          "metavar": null,
+          "destructive": false
+        },
+        {
+          "name": "--article",
+          "dest": "article_id",
+          "kind": "option",
+          "flags": [
+            "--article"
+          ],
+          "help": "Write again every blank musing about this article, and leave the others alone",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py musings regenerate [-h] [--article ARTICLE_ID] [musing_id]\n\npositional arguments:\n  musing_id             The musing to write again, blank or not (its id, from `musings list`)\n\noptions:\n  -h, --help            show this help message and exit\n  --article ARTICLE_ID  Write again every blank musing about this article, and leave the others\n                        alone\n"
     },
     "models": {
       "help": "Manage the AI model registry",

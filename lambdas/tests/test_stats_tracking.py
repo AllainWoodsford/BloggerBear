@@ -900,3 +900,181 @@ def test_public_view_of_the_all_time_row_shows_the_total_since_the_first_week():
 
 def test_public_view_has_no_bill_until_the_first_poll():
     assert st.public_view({"week_start": "2026-09-28"})["aws_bill"] is None
+
+
+# --- Total Stats' cost summary: the assistant, infrastructure and the overall total -------------
+
+_RATE = Decimal(str(st.USD_TO_AUD_RATE))
+_ALL_TIME_BILL = {
+    "Amazon Bedrock": Decimal("2.00"),
+    "Claude Haiku 4.5 (Amazon Bedrock Edition)": Decimal("1.00"),
+    "Amazon Bedrock AgentCore": Decimal("0.50"),
+    "AWS WAF": Decimal("10.00"),
+    "AWS Lambda": Decimal("4.00"),
+    "Amazon CloudFront": Decimal("0.25"),
+}
+
+
+def _aud(usd: str) -> float:
+    return float(Decimal(usd) * _RATE)
+
+
+def _bill_row(**fields) -> dict:
+    return {
+        "week_start": "all-time",
+        st.AWS_BILL_TOTAL_USD: _ALL_TIME_BILL,
+        st.AWS_BILL_TOTAL_SINCE: "2026-08-31",
+        st.AWS_BILL_TOTAL_WEEKS: 5,
+        **fields,
+    }
+
+
+def test_the_overall_total_is_the_bills_ai_plus_everything_else_on_the_bill():
+    bill = st.overall_view(_bill_row(), {})["aws_bill"]
+
+    assert bill["ai_aud"] == pytest.approx(_aud("3.50"))
+    # "Infrastructure" here is all that is not AI: hosting and data, and the firewall.
+    assert bill["infrastructure_aud"] == pytest.approx(_aud("14.25"))
+    assert bill["total_aud"] == pytest.approx(_aud("17.75"))
+    assert bill["total_aud"] == pytest.approx(bill["ai_aud"] + bill["infrastructure_aud"])
+    assert bill["total_aud"] == pytest.approx(st.public_view(_bill_row())["aws_bill"]["total_aud"])
+
+
+def test_no_token_estimate_is_ever_added_to_the_overall_total():
+    """Bedrock is counted by tokens here and charged on the bill: the same dollars. However much
+    the rows say was spent by tokens (the assistant, articles, musings, web search), the overall
+    total is the bill and only the bill."""
+    estimates = {
+        "assistant_calls": 40,
+        "assistant_cost_aud": Decimal("5.00"),
+        "articles_calls": 900,
+        "articles_cost_aud": Decimal("50.00"),
+        "musings_cost_aud": Decimal("7.00"),
+        st.WEB_SEARCH_AGENTCORE_QUERIES: 100,
+        st.WEB_SEARCH_AGENTCORE_COST_AUD: Decimal("1.00"),
+    }
+
+    without = st.overall_view(_bill_row(), {})["aws_bill"]
+    with_estimates = st.overall_view(_bill_row(**estimates), {"week_start": "2026-10-05", **estimates})
+
+    assert with_estimates["aws_bill"] == without
+    assert with_estimates["assistant"]["cost_aud"] == 10.0  # shown beside the total, never in it
+
+
+def test_this_weeks_bill_and_the_rolling_readings_are_not_in_the_overall_total():
+    """Only complete weeks: this week so far would be added again when its week completes, and
+    the 30-day readings overlap the weeks already counted."""
+    current = {
+        "week_start": "2026-10-05",
+        st.AWS_BILL_WEEK_USD: {"AWS WAF": Decimal("99")},
+        st.WAF_COST_AUD_30D: Decimal("99"),
+        st.API_GATEWAY_COST_AUD_30D: Decimal("99"),
+        st.AGENTCORE_COST_AUD_30D: Decimal("99"),
+    }
+    totals = _bill_row(**{st.WAF_COST_AUD_30D: Decimal("99"), st.API_GATEWAY_COST_AUD_30D: Decimal("99")})
+
+    assert st.overall_view(totals, current)["aws_bill"]["total_aud"] == pytest.approx(_aud("17.75"))
+
+
+def test_the_overall_bill_is_labelled_with_its_real_period_and_as_the_whole_accounts():
+    """Not "all time" (it starts at the first complete week that has a bill) and not this
+    environment's: dev and production share the account, so neither may call it its own."""
+    overall = st.overall_view(_bill_row(), {})
+
+    bill = overall["aws_bill"]
+    assert (bill["since"], bill["weeks"], bill["scope"]) == ("2026-08-31", 5, "account")
+    note = overall["note"]
+    assert "every complete week since 2026-08-31 (5 weeks)" in note
+    assert "whole AWS account (dev and production together)" in note
+    assert "before tax" in note and "fixed USD to AUD rate" in note
+    assert "not added again" in note and "counted once" in note
+    assert "all time" not in note.lower()
+
+
+def test_an_environment_with_no_bill_reports_none_never_the_ai_estimate_as_a_total():
+    """Where the daily poll has not totalled a complete week (a fresh deployment, or one where
+    the poll does not run), there is no infrastructure figure and no overall total: nothing is
+    invented, and what was spent by tokens is not passed off as the whole cost."""
+    totals = {"week_start": "all-time", "assistant_calls": 3, "assistant_cost_aud": Decimal("0.50")}
+    # This week's bill alone is not an all-time figure either.
+    current = {"week_start": "2026-10-05", st.AWS_BILL_WEEK_USD: {"AWS WAF": Decimal("3")}}
+
+    overall = st.overall_view(totals, current)
+
+    assert overall["aws_bill"] is None
+    assert overall["assistant"]["cost_aud"] == 0.5
+    assert "has not been totalled" in overall["note"]
+
+
+def test_the_assistants_spend_to_date_is_every_rolled_over_week_plus_this_one():
+    totals = {
+        "assistant_calls": 10,
+        "assistant_input_tokens": 9000,
+        "assistant_output_tokens": 1000,
+        "assistant_cost_aud": Decimal("0.30"),
+        "assistant_unpriced_calls": 1,
+    }
+    current = {
+        "assistant_calls": 2,
+        "assistant_input_tokens": 1500,
+        "assistant_output_tokens": 500,
+        "assistant_cost_aud": Decimal("0.06"),
+    }
+
+    assert st.overall_view(totals, current)["assistant"] == {
+        "calls": 12,
+        "input_tokens": 10500,
+        "output_tokens": 1500,
+        "cost_aud": 0.36,
+        "unpriced": 1,
+    }
+
+
+def test_rows_from_before_the_assistant_existed_are_zeros_not_errors():
+    """Old all-time rows have no assistant_* fields and no bill; an empty week has nothing."""
+    overall = st.overall_view({"week_start": "all-time", "musings_calls": 4}, {})
+
+    assert overall["assistant"] == {
+        "calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_aud": 0.0,
+        "unpriced": 0,
+    }
+    assert overall["aws_bill"] is None
+
+
+def test_an_assistant_that_ran_with_no_price_has_no_cost_rather_than_a_free_one():
+    current = {"assistant_calls": 4, "assistant_unpriced_calls": 4}
+
+    assistant = st.overall_view({}, current)["assistant"]
+
+    assert assistant["cost_aud"] is None and assistant["unpriced"] == 4
+
+
+def test_a_bill_total_with_no_week_count_or_start_still_adds_up():
+    """A row written by an older poll: the missing label is left out, not guessed."""
+    overall = st.overall_view({st.AWS_BILL_TOTAL_USD: {"AWS Lambda": Decimal("2")}}, {})
+
+    assert overall["aws_bill"] == {
+        "ai_aud": 0.0,
+        "infrastructure_aud": _aud("2"),
+        "total_aud": _aud("2"),
+        "since": None,
+        "weeks": None,
+        "scope": "account",
+    }
+    assert "covers every complete week, for the whole AWS account" in overall["note"]
+
+
+def test_the_overall_summary_is_money_and_counts_and_nothing_else():
+    """The Stats page is public: no service names, no timestamps of the owner's polls, and the
+    only strings are the period's first Monday, the scope word and the note."""
+    row = _bill_row(**{st.AWS_BILL_AS_OF: "2026-10-05T03:00:00+00:00", "assistant_calls": 1})
+
+    overall = st.overall_view(row, {})
+
+    assert set(overall) == {"assistant", "aws_bill", "note"}
+    assert "2026-10-05T03" not in str(overall) and "Lambda" not in str(overall)
+    fields = {**overall["assistant"], **overall["aws_bill"]}
+    assert {key for key, value in fields.items() if isinstance(value, str)} == {"since", "scope"}

@@ -476,11 +476,14 @@ def test_a_question_about_a_feature_calls_the_guide_then_builds_the_command_the_
 
     assert [call["name"] for call in result["tool_calls"]] == ["cli_guides", "cli_command"]
     assert all(found["kind"] == "how_to" for found in result["findings"])
-    assert [found["id"] for found in result["findings"][:3]] == [
+    assert [found["id"] for found in result["findings"] if "help" in found] == [
         "help-pipeline-config-set",
         "help-topics-update",
         "help-model-config-set",
     ]
+    # Each with its suggested command under it.
+    first_two = [found["id"] for found in result["findings"]][:2]
+    assert first_two == ["help-pipeline-config-set", "draft-pipeline-config-set"]
     assert result["findings"][-1]["suggestion"]["command"] == (
         "python scripts/admin_cli.py topics update crypto --research-interval-hours 6"
     )
@@ -590,8 +593,8 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         "is not a briefing, even when it is the first question: do not check the pipeline",
         "show the help first",
         "Never read the help aloud",
-        "only when the operator has given the values",
-        "never invent a topic id, a name or any other value",
+        "Every answer about the Admin CLI offers a suggested command",
+        "Never make up an id, a model id or a number they did not give",
         "never write one in your answer",
         "a command reaches the screen only from a tool",
         "comes back as a template",
@@ -599,6 +602,24 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         "`how_to` is help or a command the operator asked for, not a fix",
     ):
         assert rule in prompt, rule
+
+
+def test_the_model_is_told_where_security_questions_go():
+    """Sign-ins have a tool of their own, incidents carry a command, and closing one is a guide:
+    without the rule the model answers all three from security_events and a search of commands."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "Asked whether anyone signed in or tried to, or about a locked user: call sign_ins",
+        "Asked about security incidents, attacks, or what was blocked: call security_events",
+        "has the command that marks it as seen",
+        "call cli_guides with `security`",
+        "api_errors gives the breakdown",
+        "including security incidents and sign-ins to this assistant",
+    ):
+        assert rule in prompt, rule
+    # The guide it names is one the server has.
+    assert "security" in cli_guide.GUIDES
 
 
 def test_the_model_is_told_how_to_answer_the_pages_starter_questions():
@@ -686,6 +707,28 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
 
 
+def test_the_model_is_told_to_look_when_asked_and_not_to_push_back():
+    """Dev answered "can I look at those errors or can you go" with "I'm read-only, I can't run
+    anything". Looking is the job; read-only is said only when asked to change something."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "Looking is your job",
+        "never open an answer with being read-only",
+        "call the tool for what was just being discussed",
+        "Mention that you are read-only only when the operator asks you to change, fix, run",
+    ):
+        assert rule in prompt, rule
+    # The rule itself stays: it still cannot change anything.
+    assert "You cannot change, fix, restart or delete anything." in prompt
+
+
+def test_the_model_is_told_a_withheld_line_is_not_an_alarm():
+    prompt = agent.SYSTEM_PROMPT
+    assert "is usually a program's own wording and only sometimes someone probing" in prompt
+    assert "do not call it an attack or say someone is probing unless the tool does" in prompt
+    assert "is a sign of probing" not in prompt
+
+
 def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not():
     fakes = guide_tools()
     first, later = ScriptedModel(["ok"]), ScriptedModel(["ok"])
@@ -695,3 +738,17 @@ def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not(
 
     assert {"cli_help", "cli_guides", "cli_command"} <= set(first.offered[0])
     assert "firewall_review" not in first.offered[0] and "firewall_review" in later.offered[0]
+
+
+
+def test_the_model_is_told_to_report_status_codes_and_never_a_lambda_success_rate():
+    """A run completes even when its source was rate limited, so a success rate reads 100% and
+    says nothing. The API calls' status codes, and the errors in a function's log, are the answer."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "it counts every request by HTTP status code, the 200s as well as the errors",
+        "Never give a Lambda success rate",
+        'call architecture with kind "function"',
+    ):
+        assert rule in prompt, rule
+    assert "the share that succeeded" not in prompt

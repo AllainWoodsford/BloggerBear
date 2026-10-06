@@ -67,6 +67,14 @@ ERROR_PATTERN = (
 )
 # Lambda's own lines that are not errors even when a word above appears in them.
 _NOT_ERRORS = r"/^(START|END|INIT_START) /"
+# The assistant's own one-line record of a turn (ops_agent_handler.py: "ops_agent: turn=briefing
+# tool_calls=2 tools=api_errors,log_review ..."). It names the tools it called, so it matched
+# "error" above and was counted as an error in ops-agent, and its "tool_calls" read like
+# instructions (redact.py), so the assistant reported its own bookkeeping as someone probing.
+_OWN_RECORD = r"/^ops_agent: (turn=|briefing run tool_calls=)/"
+# The assistant's own functions. Their logs are written by this code about its own tool calls, so a
+# line of theirs that reads like instructions is still withheld but is not a sign of anything.
+ASSISTANT_FUNCTIONS = ("ops-agent", "ops-mcp")
 
 # What each topic's adapter writes at the start of its log lines (common/adapters/*.py and
 # common/web_search.py print "<prefix>: ..."). A key from ADAPTER_REGISTRY, so a topic can only
@@ -264,7 +272,10 @@ def _topic_filter(topic_id: str | None, prefix: str | None) -> str:
 def queries(topic_id: str | None = None, prefix: str | None = None) -> dict[str, str]:
     """The four queries, as text. The only thing put into them is the topic filter above."""
     narrow = _topic_filter(topic_id, prefix)
-    errors = f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS}{narrow}"
+    errors = (
+        f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS} "
+        f"and @message not like {_OWN_RECORD}{narrow}"
+    )
     return {
         "sample": (
             f"fields @timestamp, @log, @message\n| {errors}\n| sort @timestamp desc\n| limit {SAMPLE_LINES}"
@@ -415,10 +426,11 @@ def review(
     findings = _findings(per_function, chosen, when)
     total = sum(row["errors"] for row in per_function.values())
     examples_withheld = sum(row["withheld"] for row in per_function.values())
+    ranked = _by_errors(allowed, per_function, env)
 
     return {
         "spoken": _spoken(per_function, chosen, when, total, complete, refused),
-        "findings": findings + _check_yourself(allowed, text, when, region),
+        "findings": findings + _check_yourself(allowed, text, when, region, ranked, now),
         "environment": env,
         "scope": {
             "functions": [c.key for c in chosen.functions],
@@ -432,6 +444,9 @@ def review(
         "refused": refused,
         "complete": complete,
         "withheld_lines": examples_withheld,
+        # Which functions' logs they were in, so the operator knows where to look; the assistant's
+        # own functions are listed too, though a line of theirs is not said to be probing.
+        "withheld_in": {key: row["withheld"] for key, row in sorted(per_function.items()) if row["withheld"]},
         "table": _table(per_function, when),
         "as_of": when.end.isoformat(),
     }
@@ -578,12 +593,29 @@ def _findings(rows: dict[str, dict], chosen: Scope, when: logs.Window) -> list[d
     return out
 
 
+def _by_errors(groups: list[str], per_function: dict[str, dict], env: str) -> list[str]:
+    """The log groups that had errors, most first: the ones a check-it-yourself command names."""
+    counted = [(per_function.get(_function_key(group, env), {}).get("errors", 0), group) for group in groups]
+    return [group for errors, group in sorted(counted, key=lambda item: -item[0]) if errors]
+
+
 def _check_yourself(
-    groups: list[str], text: dict[str, str], when: logs.Window, region: str | None
+    groups: list[str],
+    text: dict[str, str],
+    when: logs.Window,
+    region: str | None,
+    ranked: list[str] | tuple = (),
+    now: datetime | None = None,
 ) -> list[dict]:
-    """The runsheet for exactly what was read: the error lines and the per-function counts, as
-    queries to paste, over the same groups and window. Two cards, not four: the baseline and
-    REPORT queries are on the function's own dashboard already."""
+    """The runsheet for exactly what was read: the error lines and the per-function counts, over
+    the same window, as a query to paste with its log groups on SOURCE lines ahead of it
+    (logs.py): the `ranked` ones first, the closest to what was found. Two cards, not four: the
+    baseline and REPORT queries are on the function's own dashboard already."""
+    sources = logs.closest_groups(groups, ranked)
+    queries_with_sources = {
+        name: logs.source_query(sources, text[name], when, region, now=now)
+        for name in ("sample", "totals")
+    }
     shown = ", ".join(groups[:5]) + (f" and {len(groups) - 5} more" if len(groups) > 5 else "")
     where = {
         "log_groups": shown,
@@ -606,11 +638,9 @@ def _check_yourself(
                 "noticed": f"Check it yourself: {title}",
                 "where": where,
                 "suggestion": {
-                    "action": "Open CloudWatch > Logs Insights, select the log groups above, set the "
-                    "time range to the one above, paste this and run it",
-                    "command": text[name],
-                    "what_it_does": "Reads the logs and changes nothing. Logs Insights bills per GB "
-                    "scanned, so keep the time range to when it happened.",
+                    "action": logs.SOURCE_ACTION if queries_with_sources[name] else logs.PLAIN_QUERY_ACTION,
+                    "command": queries_with_sources[name] or text[name],
+                    "what_it_does": logs.SOURCE_WHAT_IT_DOES,
                 },
             }
         )
@@ -676,11 +706,19 @@ def _spoken(rows, chosen: Scope, when: logs.Window, total: int, complete: bool, 
         unusual = [key for key, row in rows.items() if row["unusual"]]
         if unusual:
             words.append(f"That is more than usual for {_join(sorted(unusual))}.")
-        withheld = sum(row["withheld"] for row in rows.values())
-        if withheld:
+        outside = {
+            key: row["withheld"]
+            for key, row in rows.items()
+            if row["withheld"] and key not in ASSISTANT_FUNCTIONS
+        }
+        if outside:
+            withheld = sum(outside.values())
             words.append(
-                f"I held back {withheld} log line{'s' if withheld != 1 else ''} that read like instructions "
-                "to me; that can mean someone is probing."
+                f"I held back {withheld} log line{'s' if withheld != 1 else ''} in {_join(sorted(outside))} "
+                "that read like instructions to me. Most often that is a program's own wording; if "
+                "the text came from outside, such as a comment or a search result, someone may be "
+                "probing. The line is marked in the examples on screen with its time, so you can "
+                "find it in that log."
             )
     if chosen.topic_id and chosen.adapter:
         words.append(f"I narrowed it to lines naming the topic or written by its {chosen.adapter} adapter.")

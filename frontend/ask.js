@@ -28,9 +28,13 @@
   var HISTORY_MAX_TURNS = 6;
   var TURN_MAX_CHARS = 1000;
 
-  // The only two things this page ever puts in browser storage, and only during sign-in.
+  // The only two things this page puts in browser storage during sign-in, and removes after it.
   var VERIFIER_KEY = "bloggerbear-ask-pkce-verifier";
   var STATE_KEY = "bloggerbear-ask-pkce-state";
+  // And the one thing it keeps for the tab's life: when the assistant was last woken (a time,
+  // nothing else), so it is not woken again within WARM_COOLDOWN_MS. See warmUp.
+  var WARMED_KEY = "bloggerbear-ask-warmed-at";
+  var WARM_COOLDOWN_MS = 5 * 60 * 1000; // the API keeps to the same five minutes on its side
 
   var BRIEFING_QUESTION = "What needs my attention?";
   var ASK_TIMEOUT_MS = 40000; // API Gateway gives up at 29 s; this is only a backstop
@@ -219,6 +223,15 @@
     return rows;
   }
 
+  // Whether a wake call may be sent now: not when one went out less than WARM_COOLDOWN_MS ago.
+  // A stored time from the future (a changed clock) does not hold it back.
+  function shouldWarm(lastWarmedAt, now) {
+    var last = Number(lastWarmedAt) || 0;
+    return !(last > 0 && now >= last && now - last < WARM_COOLDOWN_MS);
+  }
+
+  function noop() {}
+
   // What kind of card a finding gets: "fix" (a command to copy), "look" (something to look at,
   // no command) or "noticed" (no suggestion at all).
   function cardKind(finding) {
@@ -318,9 +331,22 @@
     list.appendChild(dd);
   }
 
-  // One finding as a card. `onCopy(code, button)` is called when Copy is pressed, with the node
-  // that holds the command: what is copied is that node's text, so a template is copied with its
-  // placeholders as they are.
+  // What Copy copies: the command as it stands in its box now, edits included.
+  function commandText(field) {
+    return typeof field.value === "string" ? field.value : field.textContent;
+  }
+
+  // How tall the command's box starts: its own lines, within reason.
+  function commandRows(command) {
+    return Math.max(2, Math.min(String(command).split("\n").length + 1, 14));
+  }
+
+  // One finding as a card. `onCopy(field, button)` is called when Copy is pressed, with the box
+  // that holds the command. The box is a <textarea> the operator can edit before copying (delete
+  // a log group from a query's SOURCE line, fill in a template's <placeholders>): what is copied
+  // is what it holds then (commandText). It is a text box and nothing else: it is in no form,
+  // has no name, submits nothing and is never read back by this page or sent anywhere. Its text
+  // is set as text, so nothing in a command can become markup.
   function renderCard(doc, finding, onCopy) {
     var howTo = isHowTo(finding);
     var destructive = isDestructive(finding);
@@ -364,9 +390,17 @@
 
     if (kind === "fix") {
       var block = makeNode(doc, "div", "ask-command");
-      var pre = makeNode(doc, "pre");
-      var code = makeNode(doc, "code", "", suggestion.command);
-      pre.appendChild(code);
+      var code = makeNode(doc, "textarea", "ask-command-text", suggestion.command);
+      code.rows = commandRows(suggestion.command);
+      code.setAttribute("spellcheck", "false");
+      code.setAttribute("autocomplete", "off");
+      code.setAttribute("autocapitalize", "off");
+      code.setAttribute("autocorrect", "off");
+      code.setAttribute("wrap", "soft");
+      code.setAttribute(
+        "aria-label",
+        destructive ? "Command template. Edit it before you copy it" : "Command. You can edit it before you copy it"
+      );
       var copy = makeNode(doc, "button", "ask-copy", destructive ? "Copy template" : "Copy");
       copy.type = "button";
       copy.setAttribute(
@@ -376,7 +410,7 @@
       copy.addEventListener("click", function () {
         onCopy(code, copy);
       });
-      block.appendChild(pre);
+      block.appendChild(code);
       block.appendChild(copy);
       card.appendChild(block);
     }
@@ -570,13 +604,17 @@
   // Whether to start another session when the browser has ended one: only while the button is
   // still held, the page has not asked to stop, nothing went wrong ("no-speech" is a long pause,
   // which a hold listens through), the ceiling has not been reached and sessions are not ending
-  // as fast as they start.
+  // as fast as they start. Once this hold has heard words the microphone is known to work, so a
+  // session the browser cut short ("aborted", a network blip, or an end with no sign of sound)
+  // is the browser's hiccup, not the operator letting go: it is listened through as well.
   function keepListening(state) {
     return (
       !!state &&
       state.held === true &&
       !state.stopping &&
-      (state.code === "" || state.code === "no-speech") &&
+      (state.code === "" ||
+        state.code === "no-speech" ||
+        (state.heard === true && (state.code === "aborted" || state.code === "network" || state.code === "silent"))) &&
       state.elapsedMs < LISTEN_MAX_MS &&
       state.quickEnds < QUICK_ENDS_MAX
     );
@@ -644,6 +682,7 @@
           held: env.isHeld(mine.options) === true,
           stopping: mine.stopping,
           code: code,
+          heard: mine.parts.length > 0,
           elapsedMs: env.now() - mine.startedAt,
           quickEnds: mine.quickEnds,
         });
@@ -821,6 +860,7 @@
     cardHeading: cardHeading,
     tableModel: tableModel,
     renderCard: renderCard,
+    commandText: commandText,
     renderTable: renderTable,
     QUESTION_MAX_CHARS: QUESTION_MAX_CHARS,
     HISTORY_MAX_TURNS: HISTORY_MAX_TURNS,
@@ -828,6 +868,8 @@
     base64Url: base64Url,
     randomString: randomString,
     pkceChallenge: pkceChallenge,
+    shouldWarm: shouldWarm,
+    WARM_COOLDOWN_MS: WARM_COOLDOWN_MS,
     readConfig: readConfig,
     authorizeUrl: authorizeUrl,
     tokenRequestBody: tokenRequestBody,
@@ -1035,6 +1077,42 @@
     questionInput.focus();
   }
 
+  // -- waking the assistant ---------------------------------------------------------------------
+
+  // Sent once, as the operator signs in: it starts the two Lambdas a question passes through, so
+  // the first question is not the one that waits for them. The API lists its tools and stops: no
+  // model, no data, nothing against the daily limit (lambdas/ops_agent_handler.py, "The wake
+  // call"). Nothing about it is shown: not that it was sent, not what came back, not a failure.
+  // At most one every WARM_COOLDOWN_MS from this tab; the time of the last one is all that is
+  // kept (in sessionStorage, so a reload inside the window does not send another).
+  function warmUp() {
+    var last = 0;
+    try {
+      last = Number(root.sessionStorage.getItem(WARMED_KEY)) || 0;
+    } catch (err) {
+      // Storage is blocked: wake once per page load, which is still at most one per sign-in.
+    }
+    if (!accessToken || !shouldWarm(last, Date.now())) {
+      return;
+    }
+    try {
+      root.sessionStorage.setItem(WARMED_KEY, String(Date.now()));
+    } catch (err) {
+      // As above.
+    }
+    try {
+      root
+        .fetch(config.askUrl, {
+          method: "POST",
+          headers: { Authorization: "Bearer " + accessToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ warm: true }),
+        })
+        .then(noop, noop);
+    } catch (err) {
+      // Never the operator's problem.
+    }
+  }
+
   // -- sign-in ---------------------------------------------------------------------------------
 
   function signIn() {
@@ -1114,6 +1192,7 @@
         var seconds = Number(tokens.expires_in) > 0 ? Number(tokens.expires_in) : 3600;
         tokenExpiresAt = Date.now() + seconds * 1000;
         showApp();
+        warmUp();
       })
       .catch(function () {
         showGate(MESSAGES.signInFailed);
@@ -1131,15 +1210,20 @@
     var label = button.textContent;
     function selectIt() {
       // No clipboard (an old browser, or permission refused): select the command so Ctrl+C works.
-      var range = doc.createRange();
-      range.selectNodeContents(code);
-      var selection = root.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
+      if (typeof code.select === "function") {
+        code.focus();
+        code.select();
+      } else {
+        var range = doc.createRange();
+        range.selectNodeContents(code);
+        var selection = root.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
       status.textContent = "Command selected. Press Ctrl+C (or Cmd+C) to copy it.";
     }
     if (root.navigator.clipboard && root.navigator.clipboard.writeText) {
-      root.navigator.clipboard.writeText(code.textContent).then(function () {
+      root.navigator.clipboard.writeText(commandText(code)).then(function () {
         status.textContent =
           "Command copied. Run it in your own terminal" +
           (config.environment ? ", against the " + config.environment + " admin API." : ".");
@@ -1477,6 +1561,14 @@
     lastPressAt = Date.now();
   }
 
+  function holdsPointer(pointerId) {
+    try {
+      return typeof talkButton.hasPointerCapture === "function" && talkButton.hasPointerCapture(pointerId);
+    } catch (err) {
+      return false;
+    }
+  }
+
   function isTalkKey(event) {
     return event.key === " " || event.key === "Spacebar" || event.key === "Enter";
   }
@@ -1503,15 +1595,23 @@
 
     talkButton.addEventListener("pointerdown", function (event) {
       if (event.button === 0) {
+        // The button keeps the pointer until it is let go, so a hand that drifts off the button
+        // while still holding it down does not end the question: only the release does.
+        try {
+          talkButton.setPointerCapture(event.pointerId);
+        } catch (err) {
+          // Not supported here: the pointerleave below is the fallback.
+        }
         pressDown();
       }
     });
     talkButton.addEventListener("pointerup", pressUp);
     talkButton.addEventListener("pointercancel", pressCancelled);
     talkButton.addEventListener("pointerleave", function (event) {
-      // A mouse dragged off the button lets go of it; a finger lifting off a screen also
-      // "leaves", after its pointerup, and is already dealt with.
-      if (event.pointerType === "mouse") {
+      // Only where the pointer could not be kept: a mouse dragged off the button then lets go
+      // of it, as the page will not see its release. A captured pointer "leaves" only after its
+      // pointerup, which is already dealt with, as is a finger lifting off a screen.
+      if (event.pointerType === "mouse" && !holdsPointer(event.pointerId)) {
         pressUp();
       }
     });

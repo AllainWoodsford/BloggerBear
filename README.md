@@ -268,13 +268,16 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
 
 - **What it can do:** briefings (`pipeline_health`, `admin_inbox`, `content_checks`,
   `security_events`, `alarms`, `spend`), memory across sessions (`follow_up`, `dismiss`, `watch`),
-  the Admin CLI guide (`cli_help`, which now puts a suggested exact command under each help,
-  `cli_command`, `topics_overview`), and in production only `firewall_review`. Every suggested
+  the Admin CLI guide (`cli_help` and `cli_guides`, which put a suggested exact command under each
+  help and each step, with a ⚠️ double-check warning and a `topic-setup` guide that mocks up a new
+  topic; `cli_command`, `topics_overview`), and in production only `firewall_review`. Topic names
+  are matched forgivingly: "Finance and Crypto" finds Crypto & Investing, and the answer says so
+  first ("did you mean…"). Every suggested
   command comes from a fixed catalogue or the CLI reference in code, never from the model, carries a
   warning to double-check it, and nothing it can call changes the pipeline.
 - **It reads the logs** ([design](docs/enhancements/ops-assistant-log-reader.md)): `log_review`
   (Lambda errors, a topic's runs and its adapter, a time range) and `api_errors` (failed requests by
-  status and who answered) find each error's root cause in code and say whether it needs a code fix,
+  status and who answered, with every request counted by HTTP status code, the 200s too) find each error's root cause in code and say whether it needs a code fix,
   a settings change or just time, with how to check it yourself on screen. Findings are written to
   its suggestions table; it offers to watch a function or a table, and the next "what needs my
   attention?" says whether it is still happening or has calmed down. Read-only, by environment,
