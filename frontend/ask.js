@@ -318,9 +318,22 @@
     list.appendChild(dd);
   }
 
-  // One finding as a card. `onCopy(code, button)` is called when Copy is pressed, with the node
-  // that holds the command: what is copied is that node's text, so a template is copied with its
-  // placeholders as they are.
+  // What Copy copies: the command as it stands in its box now, edits included.
+  function commandText(field) {
+    return typeof field.value === "string" ? field.value : field.textContent;
+  }
+
+  // How tall the command's box starts: its own lines, within reason.
+  function commandRows(command) {
+    return Math.max(2, Math.min(String(command).split("\n").length + 1, 14));
+  }
+
+  // One finding as a card. `onCopy(field, button)` is called when Copy is pressed, with the box
+  // that holds the command. The box is a <textarea> the operator can edit before copying (delete
+  // a log group from a query's SOURCE line, fill in a template's <placeholders>): what is copied
+  // is what it holds then (commandText). It is a text box and nothing else: it is in no form,
+  // has no name, submits nothing and is never read back by this page or sent anywhere. Its text
+  // is set as text, so nothing in a command can become markup.
   function renderCard(doc, finding, onCopy) {
     var howTo = isHowTo(finding);
     var destructive = isDestructive(finding);
@@ -364,9 +377,17 @@
 
     if (kind === "fix") {
       var block = makeNode(doc, "div", "ask-command");
-      var pre = makeNode(doc, "pre");
-      var code = makeNode(doc, "code", "", suggestion.command);
-      pre.appendChild(code);
+      var code = makeNode(doc, "textarea", "ask-command-text", suggestion.command);
+      code.rows = commandRows(suggestion.command);
+      code.setAttribute("spellcheck", "false");
+      code.setAttribute("autocomplete", "off");
+      code.setAttribute("autocapitalize", "off");
+      code.setAttribute("autocorrect", "off");
+      code.setAttribute("wrap", "soft");
+      code.setAttribute(
+        "aria-label",
+        destructive ? "Command template. Edit it before you copy it" : "Command. You can edit it before you copy it"
+      );
       var copy = makeNode(doc, "button", "ask-copy", destructive ? "Copy template" : "Copy");
       copy.type = "button";
       copy.setAttribute(
@@ -376,7 +397,7 @@
       copy.addEventListener("click", function () {
         onCopy(code, copy);
       });
-      block.appendChild(pre);
+      block.appendChild(code);
       block.appendChild(copy);
       card.appendChild(block);
     }
@@ -826,6 +847,7 @@
     cardHeading: cardHeading,
     tableModel: tableModel,
     renderCard: renderCard,
+    commandText: commandText,
     renderTable: renderTable,
     QUESTION_MAX_CHARS: QUESTION_MAX_CHARS,
     HISTORY_MAX_TURNS: HISTORY_MAX_TURNS,
@@ -1136,15 +1158,20 @@
     var label = button.textContent;
     function selectIt() {
       // No clipboard (an old browser, or permission refused): select the command so Ctrl+C works.
-      var range = doc.createRange();
-      range.selectNodeContents(code);
-      var selection = root.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
+      if (typeof code.select === "function") {
+        code.focus();
+        code.select();
+      } else {
+        var range = doc.createRange();
+        range.selectNodeContents(code);
+        var selection = root.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
       status.textContent = "Command selected. Press Ctrl+C (or Cmd+C) to copy it.";
     }
     if (root.navigator.clipboard && root.navigator.clipboard.writeText) {
-      root.navigator.clipboard.writeText(code.textContent).then(function () {
+      root.navigator.clipboard.writeText(commandText(code)).then(function () {
         status.textContent =
           "Command copied. Run it in your own terminal" +
           (config.environment ? ", against the " + config.environment + " admin API." : ".");

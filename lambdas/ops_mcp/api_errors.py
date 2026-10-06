@@ -288,7 +288,7 @@ def api_errors(
         del row["_by_cause"]
     return {
         "spoken": spoken,
-        "findings": findings + _check_yourself(allowed, text, when, region),
+        "findings": findings + _check_yourself(allowed, text, when, region, now),
         "environment": env,
         "apis": [api.key for api in chosen],
         "status": status,
@@ -399,7 +399,11 @@ def _findings(api: Api, row: dict, when: logs.Window, env: str) -> list[dict]:
 
 
 def _check_yourself(
-    groups: list[str], text: dict[str, str], when: logs.Window, region: str | None
+    groups: list[str],
+    text: dict[str, str],
+    when: logs.Window,
+    region: str | None,
+    now: datetime | None = None,
 ) -> list[dict]:
     where = {"log_groups": ", ".join(groups), "from": when.start.isoformat(), "to": when.end.isoformat()}
     if len(groups) == 1:
@@ -411,6 +415,9 @@ def _check_yourself(
         "breakdown": "the errors by status, who answered and route",
         "timeline": "errors per hour",
     }
+    with_sources = {
+        name: logs.source_query(groups, text[name], when, region, now=now) for name in titles
+    }
     return [
         {
             "kind": HOW_TO,
@@ -418,9 +425,8 @@ def _check_yourself(
             "noticed": f"Check it yourself: {title}",
             "where": where,
             "suggestion": {
-                "action": "Open CloudWatch > Logs Insights, select the access log groups above, set the "
-                "time range to the one above, paste this and run it",
-                "command": text[name],
+                "action": logs.SOURCE_ACTION if with_sources[name] else logs.PLAIN_QUERY_ACTION,
+                "command": with_sources[name] or text[name],
                 "what_it_does": "Reads the access logs and changes nothing. errorType says who answered: "
                 "WAF_FILTERED the firewall, THROTTLED the rate limit, empty with a latency the Lambda.",
             },
