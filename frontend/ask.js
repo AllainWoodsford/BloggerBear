@@ -223,6 +223,15 @@
     return rows;
   }
 
+  // Whether a wake call may be sent now: not when one went out less than WARM_COOLDOWN_MS ago.
+  // A stored time from the future (a changed clock) does not hold it back.
+  function shouldWarm(lastWarmedAt, now) {
+    var last = Number(lastWarmedAt) || 0;
+    return !(last > 0 && now >= last && now - last < WARM_COOLDOWN_MS);
+  }
+
+  function noop() {}
+
   // What kind of card a finding gets: "fix" (a command to copy), "look" (something to look at,
   // no command) or "noticed" (no suggestion at all).
   function cardKind(finding) {
@@ -321,15 +330,6 @@
     dd.appendChild(doc.createTextNode(text));
     list.appendChild(dd);
   }
-
-  // Whether a wake call may be sent now: not when one went out less than WARM_COOLDOWN_MS ago.
-  // A stored time from the future (a changed clock) does not hold it back.
-  function shouldWarm(lastWarmedAt, now) {
-    var last = Number(lastWarmedAt) || 0;
-    return !(last > 0 && now >= last && now - last < WARM_COOLDOWN_MS);
-  }
-
-  function noop() {}
 
   // Whether a finding can be dismissed from its card: something a tool found (not help the
   // operator asked for), with a kind and an id shaped as the API takes them. One with no id (the
@@ -895,8 +895,6 @@
     renderCard: renderCard,
     isDismissable: isDismissable,
     actionedNote: actionedNote,
-    shouldWarm: shouldWarm,
-    WARM_COOLDOWN_MS: WARM_COOLDOWN_MS,
     renderTable: renderTable,
     QUESTION_MAX_CHARS: QUESTION_MAX_CHARS,
     HISTORY_MAX_TURNS: HISTORY_MAX_TURNS,
@@ -904,6 +902,8 @@
     base64Url: base64Url,
     randomString: randomString,
     pkceChallenge: pkceChallenge,
+    shouldWarm: shouldWarm,
+    WARM_COOLDOWN_MS: WARM_COOLDOWN_MS,
     readConfig: readConfig,
     authorizeUrl: authorizeUrl,
     tokenRequestBody: tokenRequestBody,
