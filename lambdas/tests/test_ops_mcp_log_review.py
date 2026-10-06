@@ -10,7 +10,9 @@ the logs.py access check; nothing a log says reaches `spoken`; example lines are
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -304,9 +306,54 @@ def test_a_line_that_reads_like_instructions_is_withheld_and_said():
     )
     result = review(run)
     assert result["functions"][0]["untrusted"]["examples"]["other"][0]["line"] == redact.WITHHELD
-    assert result["withheld_lines"] == 1
-    assert "read like instructions" in result["spoken"]
+    assert result["withheld_lines"] == 1 and result["withheld_in"] == {"public-api": 1}
+    assert "I held back 1 log line in public-api that read like instructions to me." in result["spoken"]
+    # It says where to look, and does not announce an attack: most such lines are a program's own.
+    assert "Most often that is a program's own wording" in result["spoken"]
+    assert "someone may be probing" in result["spoken"]
     assert "dismiss" not in result["spoken"]
+
+
+@pytest.mark.parametrize("function", log_review.ASSISTANT_FUNCTIONS)
+def test_the_assistants_own_log_is_never_reported_as_probing(function):
+    """Production told the operator "someone is probing" about the assistant's own log, which
+    talks about tool calls. Such a line stays withheld (it is still never shown or followed) and
+    is counted, but nothing is said about it."""
+    run = Run(
+        sample=[{"@timestamp": "t", "@log": at(function), "@message": "ERROR while handling tool_call 7"}],
+        totals=[{"@log": at(function), "errors": "1"}],
+    )
+
+    result = review(run)
+
+    assert result["functions"][0]["untrusted"]["examples"]["other"][0]["line"] == redact.WITHHELD
+    assert result["withheld_lines"] == 1 and result["withheld_in"] == {function: 1}
+    assert "read like instructions" not in result["spoken"] and "probing" not in result["spoken"]
+
+
+def test_the_assistants_record_of_a_turn_is_not_read_as_an_error():
+    """ "ops_agent: turn=briefing tool_calls=2 tools=api_errors,log_review" names its tools, so it
+    matched the error pattern ("error") and the instruction pattern ("tool_call") at once."""
+    record = "ops_agent: turn=briefing tool_calls=2 tools=api_errors,log_review findings=10 fixes=0 tables=2"
+    briefing = "ops_agent: briefing run tool_calls=3 findings=2 recorded=True"
+    excluded = re.compile(log_review._OWN_RECORD.strip("/"))
+
+    assert excluded.search(record) and excluded.search(briefing)
+    assert redact.looks_like_instructions(record)  # why it has to be left out of the query
+    # A real failure of the agent is still read.
+    assert not excluded.search("ops_agent: failed error=AgentError")
+    assert not excluded.search("ops_agent: question refused (too long)")
+    for query in log_review.queries().values():
+        if "filter @message like" in query and "(?i)(error|" in query:
+            assert f"@message not like {log_review._OWN_RECORD}" in query
+
+
+def test_the_agent_still_writes_the_record_the_query_leaves_out():
+    """The pattern is only right while the handler prints lines that start this way."""
+    source = (Path(__file__).resolve().parents[1] / "ops_agent_handler.py").read_text(encoding="utf-8")
+
+    assert 'f"ops_agent: turn={result[\'turn\']} tool_calls=' in source
+    assert 'f"ops_agent: briefing run tool_calls=' in source
 
 
 def test_a_quiet_window_says_so_with_how_many_runs():

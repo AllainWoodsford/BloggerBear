@@ -707,6 +707,28 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
 
 
+def test_the_model_is_told_to_look_when_asked_and_not_to_push_back():
+    """Dev answered "can I look at those errors or can you go" with "I'm read-only, I can't run
+    anything". Looking is the job; read-only is said only when asked to change something."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "Looking is your job",
+        "never open an answer with being read-only",
+        "call the tool for what was just being discussed",
+        "Mention that you are read-only only when the operator asks you to change, fix, run",
+    ):
+        assert rule in prompt, rule
+    # The rule itself stays: it still cannot change anything.
+    assert "You cannot change, fix, restart or delete anything." in prompt
+
+
+def test_the_model_is_told_a_withheld_line_is_not_an_alarm():
+    prompt = agent.SYSTEM_PROMPT
+    assert "is usually a program's own wording and only sometimes someone probing" in prompt
+    assert "do not call it an attack or say someone is probing unless the tool does" in prompt
+    assert "is a sign of probing" not in prompt
+
+
 def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not():
     fakes = guide_tools()
     first, later = ScriptedModel(["ok"]), ScriptedModel(["ok"])
