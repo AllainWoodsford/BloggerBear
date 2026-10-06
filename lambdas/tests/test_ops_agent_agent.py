@@ -707,6 +707,18 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
 
 
+def test_the_model_is_told_to_give_the_architecture_a_layer_at_a_time():
+    """The whole table on a first "how does it work?" was too much to hear or read."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "It returns the layers, not the resources",
+        "ask which one the operator wants to hear about, or everything in detail",
+        "Do not describe every layer",
+        'only when they ask for everything or all of it, call it with `layer` "everything"',
+    ):
+        assert rule in prompt, rule
+
+
 def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not():
     fakes = guide_tools()
     first, later = ScriptedModel(["ok"]), ScriptedModel(["ok"])

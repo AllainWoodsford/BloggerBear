@@ -310,10 +310,138 @@ def test_a_resource_only_in_production_says_so_in_dev(dev):
     assert "It isn't deployed in dev." in answer["spoken"]
 
 
-def test_with_nothing_it_lists_every_resource_as_a_table(dev):
+# --- the layers -----------------------------------------------------------------------------------
+
+
+def test_with_nothing_it_names_the_layers_and_asks_which_one(dev):
+    """The owner's ask: "how does the project work?" put fifty rows on screen. Now it is nine
+    layers, a line each, and a question."""
     answer = architecture.architecture()
 
+    assert [layer["key"] for layer in answer["layers"]] == list(architecture.LAYER_KEYS) == [
+        "edge",
+        "presentation",
+        "api",
+        "identity",
+        "orchestration",
+        "compute",
+        "ai",
+        "data",
+        "observability",
+    ]
+    assert answer["spoken"] == (
+        "BloggerBear is built in 9 layers: the edge, the presentation layer, the API gateways, "
+        "identity and access, orchestration, compute, the AI layer, data and storage and "
+        "observability. They're on screen with what each does. Which would you like to hear "
+        "about, or everything in detail?"
+    )
+    assert len(answer["spoken"].split()) < 60  # short enough to listen to
+    table = answer["table"]
+    assert table["title"] == "BloggerBear dev architecture: the layers"
+    assert table["columns"] == ["Layer", "What it does", "What it is made of"]
+    assert len(table["rows"]) == 9 and "components" not in answer
+    assert table["rows"][0][0] == "Edge (delivery and security)"
+    assert table["rows"][0][2] == "Amazon CloudFront, AWS WAF, AWS Shield Standard"
+
+
+def test_every_resource_belongs_to_exactly_one_layer():
+    for kind in architecture.KINDS:
+        assert sum(kind in layer.kinds for layer in architecture.LAYERS) == 1, kind
+    for component in CATALOGUE:
+        assert architecture.layer_of(component).key in architecture.LAYER_KEYS
+    for layer in architecture.LAYERS:
+        assert layer.services and all(name and what.endswith(".") for name, what in layer.services)
+        assert layer.summary.endswith(".") and len(layer.summary) < 220
+
+
+def test_a_layer_gives_its_services_then_our_resources_in_it(dev):
+    answer = architecture.architecture(layer="orchestration")
+
+    assert answer["layer"] == "orchestration"
+    rows = answer["table"]["rows"]
+    assert answer["table"]["columns"] == ["Part", "Kind", "What it's for"]
+    assert [row[:2] for row in rows[:3]] == [
+        ["Amazon EventBridge Scheduler", "Service"],
+        ["AWS Step Functions", "Service"],
+        ["Amazon SQS (dead-letter queue)", "Service"],
+    ]
+    kinds = {row[1] for row in rows[3:]}
+    assert kinds == {"EventBridge Scheduler schedule", "Step Functions state machine", "SQS queue"}
+    assert {c["kind"] for c in answer["components"]} == {"schedule", "state_machine", "queue"}
+    assert answer["spoken"].startswith("Orchestration. What makes things happen on time")
+    assert "Our 3 resources in it are on screen." in answer["spoken"]
+    assert len(answer["spoken"].split()) < 120
+
+
+def test_a_layer_with_none_of_our_named_resources_is_its_services_alone(dev):
+    answer = architecture.architecture(layer="identity")
+
+    assert answer["components"] == [] and len(answer["table"]["rows"]) == 2
+    assert "AWS IAM with GitHub OIDC and Amazon Cognito" in answer["spoken"]
+    assert "The details are on screen." in answer["spoken"]
+
+
+def test_the_compute_layer_lists_every_lambda_and_data_every_table_and_bucket(dev):
+    compute = architecture.architecture(layer="compute")
+    data = architecture.architecture(layer="data")
+
+    functions = [c for c in CATALOGUE if c.kind == "function"]
+    assert len(compute["components"]) == len(functions)
+    assert len(compute["table"]["rows"]) == 4 + len(functions)  # its four services first
+    assert {c["kind"] for c in data["components"]} == {"table", "bucket"}
+
+
+@pytest.mark.parametrize(
+    ("words", "key"),
+    [
+        ("edge", "edge"),
+        ("the Edge Layer", "edge"),
+        ("WAF", "edge"),
+        ("storage", "data"),
+        ("Data & Storage layer", "data"),
+        ("the Lambdas", "compute"),
+        ("Compute", "compute"),
+        ("observability", "observability"),
+        ("monitoring and cost", "observability"),
+        ("the research pipeline lambdas", "compute"),
+        ("API gateways", "api"),
+        ("auth", "identity"),
+        ("Bedrock", "ai"),
+        ("frontend", "presentation"),
+        ("step functions", "orchestration"),
+        ("everything", "everything"),
+        ("all of it", "everything"),
+        ("Everything, in detail", "everything"),
+    ],
+)
+def test_a_layer_is_found_from_the_operators_own_words(words, key):
+    assert architecture.resolve_layer(words) == key
+
+
+def test_everything_is_the_full_table_and_only_when_asked(dev):
+    answer = architecture.architecture(layer="everything")
+
     assert len(answer["components"]) == len(CATALOGUE)
+    assert answer["table"]["columns"] == ["Name", "Kind", "What it's for"]
+
+
+def test_a_layer_nobody_has_gets_the_list(dev):
+    answer = architecture.architecture(layer="the basement")
+
+    assert answer["spoken"].startswith("I don't know that layer. The layers are the edge,")
+    assert "table" not in answer and len(answer["layers"]) == 9
+    assert architecture.resolve_layer(None) is None and architecture.resolve_layer("  ") is None
+
+
+def test_a_name_or_a_kind_still_wins_over_a_layer(dev):
+    assert architecture.architecture("topics", layer="edge")["matches"][0]["key"] == "topics"
+    by_kind = architecture.architecture(kind="dashboard", layer="edge")
+    assert by_kind["table"]["rows"][0][0] == "bloggerbear-dev-pipeline"
+
+
+def test_every_resource_is_still_listed_as_a_table_when_everything_is_asked_for(dev):
+    answer = architecture.architecture(layer="all of it")
+
     assert answer["table"]["columns"] == ["Name", "Kind", "What it's for"]
     assert ["bloggerbear-dev-candidate-ideas", "DynamoDB table"] == answer["table"]["rows"][2][:2]
     assert architecture.architecture(kind="dashboard")["table"]["rows"][0][0] == "bloggerbear-dev-pipeline"
