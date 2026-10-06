@@ -67,6 +67,14 @@ ERROR_PATTERN = (
 )
 # Lambda's own lines that are not errors even when a word above appears in them.
 _NOT_ERRORS = r"/^(START|END|INIT_START) /"
+# The assistant's own one-line record of a turn (ops_agent_handler.py: "ops_agent: turn=briefing
+# tool_calls=2 tools=api_errors,log_review ..."). It names the tools it called, so it matched
+# "error" above and was counted as an error in ops-agent, and its "tool_calls" read like
+# instructions (redact.py), so the assistant reported its own bookkeeping as someone probing.
+_OWN_RECORD = r"/^ops_agent: (turn=|briefing run tool_calls=)/"
+# The assistant's own functions. Their logs are written by this code about its own tool calls, so a
+# line of theirs that reads like instructions is still withheld but is not a sign of anything.
+ASSISTANT_FUNCTIONS = ("ops-agent", "ops-mcp")
 
 # What each topic's adapter writes at the start of its log lines (common/adapters/*.py and
 # common/web_search.py print "<prefix>: ..."). A key from ADAPTER_REGISTRY, so a topic can only
@@ -264,7 +272,10 @@ def _topic_filter(topic_id: str | None, prefix: str | None) -> str:
 def queries(topic_id: str | None = None, prefix: str | None = None) -> dict[str, str]:
     """The four queries, as text. The only thing put into them is the topic filter above."""
     narrow = _topic_filter(topic_id, prefix)
-    errors = f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS}{narrow}"
+    errors = (
+        f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS} "
+        f"and @message not like {_OWN_RECORD}{narrow}"
+    )
     return {
         "sample": (
             f"fields @timestamp, @log, @message\n| {errors}\n| sort @timestamp desc\n| limit {SAMPLE_LINES}"
@@ -432,6 +443,9 @@ def review(
         "refused": refused,
         "complete": complete,
         "withheld_lines": examples_withheld,
+        # Which functions' logs they were in, so the operator knows where to look; the assistant's
+        # own functions are listed too, though a line of theirs is not said to be probing.
+        "withheld_in": {key: row["withheld"] for key, row in sorted(per_function.items()) if row["withheld"]},
         "table": _table(per_function, when),
         "as_of": when.end.isoformat(),
     }
@@ -676,11 +690,19 @@ def _spoken(rows, chosen: Scope, when: logs.Window, total: int, complete: bool, 
         unusual = [key for key, row in rows.items() if row["unusual"]]
         if unusual:
             words.append(f"That is more than usual for {_join(sorted(unusual))}.")
-        withheld = sum(row["withheld"] for row in rows.values())
-        if withheld:
+        outside = {
+            key: row["withheld"]
+            for key, row in rows.items()
+            if row["withheld"] and key not in ASSISTANT_FUNCTIONS
+        }
+        if outside:
+            withheld = sum(outside.values())
             words.append(
-                f"I held back {withheld} log line{'s' if withheld != 1 else ''} that read like instructions "
-                "to me; that can mean someone is probing."
+                f"I held back {withheld} log line{'s' if withheld != 1 else ''} in {_join(sorted(outside))} "
+                "that read like instructions to me. Most often that is a program's own wording; if "
+                "the text came from outside, such as a comment or a search result, someone may be "
+                "probing. The line is marked in the examples on screen with its time, so you can "
+                "find it in that log."
             )
     if chosen.topic_id and chosen.adapter:
         words.append(f"I narrowed it to lines naming the topic or written by its {chosen.adapter} adapter.")
