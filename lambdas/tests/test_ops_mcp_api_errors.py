@@ -23,6 +23,12 @@ PUBLIC = "/aws/apigateway/bloggerbear-dev-public-api-access"
 def dev(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
+    # The account id comes from STS; here it is a made-up one.
+    monkeypatch.setattr(
+        api_errors.logs,
+        "group_arn",
+        lambda name, region: f"arn:aws:logs:{region}:123456789012:log-group:{name}",
+    )
 
 
 def everything_readable(names):
@@ -222,8 +228,12 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran():
     result = call(run, api="public", status=400)
     cards = [f for f in result["findings"] if f["kind"] == "how_to"]
     ran = {job[3] for job in run.jobs}
-    assert len(cards) == 3 and all(card["suggestion"]["command"] in ran for card in cards)
-    assert [card["id"] for card in cards][0] == "api-errors-total"
+    assert len(cards) == 3 and [card["id"] for card in cards][0] == "api-errors-total"
+    source = f'SOURCE "arn:aws:logs:ap-southeast-2:123456789012:log-group:{PUBLIC}" START=-1d END=0s |\n'
+    for card in cards:
+        command = card["suggestion"]["command"]
+        # The query that ran, with the access log it ran over on a SOURCE line ahead of it.
+        assert command.startswith(source) and command[len(source) :] in ran
     assert cards[0]["where"]["open"].startswith("https://ap-southeast-2.console.aws.amazon.com/cloudwatch/")
 
 

@@ -298,6 +298,112 @@ def window(hours=None, start=None, end=None, *, now: datetime | None = None) -> 
     return Window(begin, finish, asked=True, clamped=clamped)
 
 
+# --- a query the operator can paste, with its log groups in it ---------------------------------------
+#
+# A Logs Insights query pasted into the console had no log groups: the operator had to tick up to
+# fourteen by hand. The console's query editor takes them in the query itself, as SOURCE lines
+# ahead of it, each a log group's ARN, the first carrying the time range. The owner's example,
+# copied from the console:
+#
+#   SOURCE "arn:aws:logs:<region>:<account>:log-group:/aws/apigateway/...-public-api-access" START=-1w
+#       END=0s |                                           (one line in the console; wrapped here)
+#   SOURCE "arn:aws:logs:<region>:<account>:log-group:/aws/apigateway/...-ops-mcp-access" |
+#   SOURCE "arn:aws:logs:<region>:<account>:log-group:/aws/apigateway/...-admin-api-access" |
+#   fields @timestamp, @message
+#   | sort @timestamp desc
+#   | limit 10000
+#
+# One line per log group, so deleting a line in the card's box removes that group and leaves a
+# query that still runs. It is text for the operator to read, edit and paste: nothing here runs it.
+#
+# How many log groups a suggested query names: the ones closest to what was found. Few enough to
+# read at a glance; the operator deletes one or adds another before copying.
+SOURCES_SUGGESTED = 3
+SOURCES_MAX = 10
+# A log group name as AWS allows it. Ours all are; one that is not is left out of a query, so no
+# name can carry a quote into it.
+_GROUP_NAME = re.compile(r"^[A-Za-z0-9_./#-]{1,512}$")
+_REGION_NAME = re.compile(r"^[a-z0-9-]{1,32}$")
+_GROUP_ARN = re.compile(r"arn:aws:logs:[a-z0-9-]+:\d{12}:log-group:[A-Za-z0-9_./#-]+")
+
+
+def closest_groups(groups, ranked=(), limit: int = SOURCES_SUGGESTED) -> list[str]:
+    """Up to `limit` of `groups` for the SOURCE lines: those in `ranked` first, in its order (the
+    caller's "closest to the finding", such as most errors first), then the rest in their own."""
+    limit = max(1, min(int(limit), SOURCES_MAX))
+    allowed = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
+    first = [group for group in dict.fromkeys(ranked) if group in allowed]
+    return (first + [group for group in allowed if group not in first])[:limit]
+
+
+def _ago(seconds: float) -> str:
+    """A time `seconds` before now as the console writes it: 0s, -90m, -24h, -3d, -1w. Rounded
+    outward to whole minutes by the caller, and to the largest unit that divides it."""
+    minutes = int(seconds // 60)
+    if minutes <= 0:
+        return "0s"
+    for unit, size in (("w", 7 * 24 * 60), ("d", 24 * 60), ("h", 60)):
+        if minutes % size == 0:
+            return f"-{minutes // size}{unit}"
+    return f"-{minutes}m"
+
+
+def source_range(when: Window, now: datetime | None = None) -> str:
+    """ "START=-24h END=0s" for a window, relative to now as the console's SOURCE line takes it.
+    The start is rounded back and the end forward to a whole minute, so nothing read is left out.
+    A window that is "the last N hours" ends at the moment the tool read it, so with no `now`
+    given it is written from its own end ("START=-24h END=0s", not a minute more)."""
+    now = now or (datetime.now(UTC) if when.asked else when.end)
+    back = max((now - when.start).total_seconds(), 0)
+    ahead = max((now - when.end).total_seconds(), 0)
+    start_minutes = -(-back // 60)  # rounded up: further back
+    end_minutes = ahead // 60  # rounded down: nearer now
+    return f"START={_ago(start_minutes * 60)} END={_ago(end_minutes * 60)}"
+
+
+def source_query(
+    groups,
+    query: str,
+    when: Window,
+    region: str | None,
+    *,
+    now: datetime | None = None,
+    arn: Callable[[str, str], str] | None = None,
+) -> str | None:
+    """`query` with a SOURCE line for each of `groups` ahead of it, the first with the window, or
+    None when that cannot be built (no usable group, no region, or the account could not be
+    asked for): the caller then shows the query alone, as before. The query is one of this
+    package's fixed ones and is not changed."""
+    names = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))][:SOURCES_MAX]
+    if not names or not region or not _REGION_NAME.match(region):
+        return None
+    try:
+        arns = [(arn or group_arn)(name, region) for name in names]
+    except Exception as exc:  # noqa: BLE001 - the plain query is still worth showing
+        print(f"ops_logs: no account id for the SOURCE lines ({type(exc).__name__})")
+        return None
+    if not all(_GROUP_ARN.fullmatch(each) for each in arns):
+        return None
+    lines = [f'SOURCE "{each}"' for each in arns]
+    lines[0] += f" {source_range(when, now)}"
+    return "".join(f"{line} |\n" for line in lines) + query
+
+
+SOURCE_ACTION = (
+    "Open CloudWatch > Logs Insights, paste this and run it. Its SOURCE lines name the log groups, "
+    "the ones closest to what I found, and the time range: delete a line, or add one, in the box "
+    "before you press Copy"
+)
+SOURCE_WHAT_IT_DOES = (
+    "Reads the logs and changes nothing. Logs Insights bills per GB scanned, so keep the time "
+    "range to when it happened."
+)
+PLAIN_QUERY_ACTION = (
+    "Open CloudWatch > Logs Insights, select the log groups above, set the time range to the one "
+    "above, paste this and run it"
+)
+
+
 def group_of(log_field) -> str:
     """A log group's name from Logs Insights' @log field ("<account>:<group name>")."""
     text = str(log_field or "")
