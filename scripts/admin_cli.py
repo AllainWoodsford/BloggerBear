@@ -678,6 +678,38 @@ def _cmd_sign_ins_unlock(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/sign-ins/{urllib.parse.quote(args.username, safe='')}/unlock")
 
 
+# --- musings subcommands ------------------------------------------------
+
+
+def _cmd_musings_list(args: argparse.Namespace) -> None:
+    query = {"limit": args.limit}
+    if args.blank:
+        query["blank"] = "true"
+    if args.article_id:
+        query["article_id"] = args.article_id
+    _do_request(args, "GET", f"/musings?{urllib.parse.urlencode(query)}")
+
+
+def _cmd_musings_edit(args: argparse.Namespace) -> None:
+    if not args.text.strip():
+        raise CliError("--text is empty: say what the musing should read.")
+    musing_id = urllib.parse.quote(args.musing_id, safe="")
+    _do_request(args, "PUT", f"/musings/{musing_id}", body={"text": args.text})
+
+
+def _cmd_musings_regenerate(args: argparse.Namespace) -> None:
+    if bool(args.musing_id) == bool(args.article_id):
+        raise CliError(
+            "Give one of: a musing id (rewrites that musing), or --article <article_id> "
+            "(rewrites the blank musings about that article). `musings list --blank` shows both ids."
+        )
+    if args.musing_id:
+        path = f"/musings/{urllib.parse.quote(args.musing_id, safe='')}/regenerate"
+    else:
+        path = f"/articles/{urllib.parse.quote(args.article_id, safe='')}/musings/regenerate"
+    _do_request(args, "POST", path)
+
+
 # --- models / model-config subcommands --------------------------------------
 
 
@@ -1487,6 +1519,61 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sign_ins_unlock_parser.add_argument("username", help="The user's name in the assistant's user pool")
     sign_ins_unlock_parser.set_defaults(func=_cmd_sign_ins_unlock)
+
+    musings_parser = subparsers.add_parser(
+        "musings", help="The Musings feed: list the musings, fix one's text, or have one written again"
+    )
+    musings_sub = musings_parser.add_subparsers(dest="action", required=True)
+
+    musings_list_parser = musings_sub.add_parser(
+        "list", help="List the musings, newest first, with their ids and whether each is blank"
+    )
+    musings_list_parser.add_argument(
+        "--blank",
+        action="store_true",
+        default=False,
+        help="Only the musings that went out with no text",
+    )
+    musings_list_parser.add_argument(
+        "--article", dest="article_id", help="Only the musings about this article"
+    )
+    musings_list_parser.add_argument(
+        "--limit", type=int, default=20, help="How many to show, 1 to 200 (default: 20)"
+    )
+    musings_list_parser.set_defaults(func=_cmd_musings_list)
+
+    musings_edit_parser = musings_sub.add_parser(
+        "edit",
+        help=(
+            "Replace one musing's text with your own words. Its mood, its date and the article "
+            "it links to stay as they are"
+        ),
+    )
+    musings_edit_parser.add_argument("musing_id", help="The musing's id, from `musings list`")
+    musings_edit_parser.add_argument(
+        "--text", required=True, help="What the musing should say (at most 280 characters)"
+    )
+    musings_edit_parser.set_defaults(func=_cmd_musings_edit)
+
+    musings_regenerate_parser = musings_sub.add_parser(
+        "regenerate",
+        help=(
+            "Have a musing about a published article written again, in the mood it already has "
+            "(one model call each). Give a musing id, or --article for the blank musings about "
+            "one article"
+        ),
+    )
+    musings_regenerate_parser.add_argument(
+        "musing_id",
+        nargs="?",
+        help="The musing to write again, blank or not (its id, from `musings list`)",
+    )
+    musings_regenerate_parser.add_argument(
+        "--article",
+        dest="article_id",
+        help="Write again every blank musing about this article, and leave the others alone",
+    )
+    musings_regenerate_parser.set_defaults(func=_cmd_musings_regenerate)
 
     models_parser = subparsers.add_parser("models", help="Manage the AI model registry")
     models_sub = models_parser.add_subparsers(dest="action", required=True)

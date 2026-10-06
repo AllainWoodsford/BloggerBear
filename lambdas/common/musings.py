@@ -316,6 +316,46 @@ def generate_and_store_article_musing(
     )
 
 
+MAX_MUSING_CHARS = _MAX_MUSING_CHARS
+
+# Where a regenerated musing's text came from: the model, or the plain text used in its place.
+WRITTEN_BY_MODEL = "model"
+WRITTEN_PLAIN = "plain"
+
+
+def is_blank(musing: dict) -> bool:
+    """A musing with nothing to say: the feed shows its mood and its link, then nothing."""
+    return not str(musing.get("text") or "").strip()
+
+
+def regenerate_article_musing_text(
+    musing: dict, *, title: str, topic_name: str, model_id: str
+) -> tuple[str, str]:
+    """Write an article musing's text again, in the mood it already has: (text, where it came from).
+
+    For a musing an operator asks to have rewritten (the Admin API's `musings regenerate`), most
+    often one published with no text. The mood stays the one it was published in, so the prompt
+    is the same as the first time. Unlike a publish, this never raises and never comes back
+    empty: if the model fails or answers with nothing, the plain accurate text is used and the
+    second value says so. Nothing is stored here.
+    """
+    compliant = musing.get("mood") == _ARTICLE_MUSING_MOOD_COMPLIANT
+    prompt = _ARTICLE_MUSING_PROMPT_TEMPLATE.format(
+        voice_guidance=_VOICE_GUIDANCE,
+        title=title,
+        topic_name=topic_name,
+        mood_guidance=_ARTICLE_MOOD_GUIDANCE_COMPLIANT if compliant else _ARTICLE_MOOD_GUIDANCE_REVIEWED,
+    )
+    try:
+        text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    except Exception as exc:  # noqa: BLE001 - a plain musing is still better than a blank one
+        print(f"musings: could not rewrite musing {musing.get('musing_id')}, using the plain one: {exc!r}")
+        text = ""
+    if text:
+        return text, WRITTEN_BY_MODEL
+    return _article_fallback_text(title, compliant), WRITTEN_PLAIN
+
+
 def derive_feedback_mood(*, up_votes: int, down_votes: int) -> str:
     """Derive a feedback musing's mood from the actual up/down tally.
 

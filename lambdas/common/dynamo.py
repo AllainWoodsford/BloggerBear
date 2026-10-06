@@ -1303,6 +1303,30 @@ def put_musing(
     return item
 
 
+def get_musing(musing_id: str) -> dict | None:
+    table = get_table(os.environ["MUSINGS_TABLE"])
+    return table.get_item(Key={"musing_id": musing_id}).get("Item")
+
+
+def set_musing_text(musing_id: str, text: str, *, edited_at: str) -> dict | None:
+    """Replace one musing's text and return the whole item, or None if there is no such musing.
+    Everything else about it (mood, date, the article it links to) is left as it was; `edited_at`
+    records that the text is not the one it was published with."""
+    table = get_table(os.environ["MUSINGS_TABLE"])
+    try:
+        result = table.update_item(
+            Key={"musing_id": musing_id},
+            UpdateExpression="SET #text = :text, edited_at = :edited_at",
+            ConditionExpression="attribute_exists(musing_id)",
+            ExpressionAttributeNames={"#text": "text"},
+            ExpressionAttributeValues={":text": text, ":edited_at": edited_at},
+            ReturnValues="ALL_NEW",
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return None
+    return result["Attributes"]
+
+
 def delete_musings_for_article(article_id: str) -> int:
     """Delete every Musings item written about `article_id`; return how many.
 

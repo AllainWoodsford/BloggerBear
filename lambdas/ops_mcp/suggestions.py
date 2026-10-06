@@ -86,13 +86,19 @@ CATALOGUE: dict[str, Suggestion] = {
         arguments="failed-executions list",
         what_it_does="Lists the failed daily runs and their errors. It changes nothing.",
     ),
-    # Published things that look wrong (content.py). The words after -i are fixed per kind, for
-    # the operator to edit before running: never the title, the body or the musing itself.
+    # A blank musing is fixed where it is: the article is fine, so it is not rewritten.
     "musing_no_text": Suggestion(
-        action="Rewrite the article; its musing is replaced when it is republished",
-        arguments='articles rewrite {id} -i "its musing was published with a link but no text"',
-        what_it_does=_REWRITE_PUBLISHED,
+        action="Have the article's blank musing written again",
+        arguments="musings regenerate --article {id}",
+        what_it_does=(
+            "Writes every blank musing about the article again, in the mood it was published "
+            "with (one model call each; a plain sentence if the model answers with nothing). "
+            "The article, its page and its date are not touched. `musings edit` puts your own "
+            "words on one instead."
+        ),
     ),
+    # Published things that look wrong (content.py). The words after -i are fixed per kind, for
+    # the operator to edit before running: never the title or the body itself.
     "title_markup": Suggestion(
         action="Rewrite the article so its title is plain text",
         arguments='articles rewrite {id} -i "the title has markdown around it"',

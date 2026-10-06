@@ -426,6 +426,33 @@ Each article records which gear was in the prompts that wrote it (`equipment_use
 per piece; an empty list means none). Nothing reads it yet: it is there so a later change can measure whether
 gear helps, and share out wear. It is never shown publicly.
 
+## Fixing a musing: `musings`
+
+A musing is written once, when its article is published, and nothing writes it again. So one that
+went out blank (a mood and a link, then no text) stays blank until you fix it here. None of these
+touch the article: no rewrite, no re-publish, no new date.
+
+```bash
+python scripts/admin_cli.py musings list                       # the newest 20, with their ids
+python scripts/admin_cli.py musings list --blank               # only the ones with no text
+python scripts/admin_cli.py musings list --article <article_id>
+# Have the model write it again, in the mood it was published with:
+python scripts/admin_cli.py musings regenerate --article <article_id>   # every blank one about that article
+python scripts/admin_cli.py musings regenerate <musing_id>              # that one, blank or not
+# Or put your own words on it (at most 280 characters):
+python scripts/admin_cli.py musings edit <musing_id> --text "Fresh from the den: a new one is out!"
+```
+
+- `regenerate` costs one model call per musing and works for musings about **published articles**
+  only (the title is what it is written from). Each one in the reply has `written_by`: `model`, or
+  `plain` when the model failed or answered with nothing and the plain sentence was used instead,
+  so a regenerate never leaves a musing blank. Run it again, or use `edit`, if you want better.
+- `--article` only ever touches blank musings; it answers 409 if none is blank.
+- `edit` works on any kind of musing (loot drops, feedback and rejection musings too). Those kinds
+  cannot be regenerated: what they were written from (a vote count, a piece of gear) is gone.
+- Only the text changes. The mood, the date and the link stay, and the item gets an `edited_at`.
+- The public feed is cached for a short while, so the change takes a moment to show on the site.
+
 ## The Alexa+ add-on: `alexa_addon_values.py`
 
 Putting the operator's assistant on Alexa+ is a one-time bootstrap per environment, written up in

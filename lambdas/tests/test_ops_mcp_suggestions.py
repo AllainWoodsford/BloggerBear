@@ -75,9 +75,7 @@ def test_the_kinds_with_no_command_are_the_ones_the_cli_cannot_fix():
         assert suggestions.CATALOGUE[kind].what_it_does
 
 
-@pytest.mark.parametrize(
-    "kind", ["musing_no_text", "title_markup", "body_code_fence", "title_markup_and_body_code_fence"]
-)
+@pytest.mark.parametrize("kind", ["title_markup", "body_code_fence", "title_markup_and_body_code_fence"])
 def test_a_published_article_that_looks_wrong_is_rewritten_with_fixed_words(kind, admin_cli_parser):
     command = suggestions.suggest(kind, ARTICLE_ID)["command"]
 
@@ -85,6 +83,17 @@ def test_a_published_article_that_looks_wrong_is_rewritten_with_fixed_words(kind
     words = shlex.split(suggestions.CATALOGUE[kind].arguments)[-1]
     assert vars(parsed)["instructions"] == words and "{" not in words
     assert suggestions.suggest(kind, "a1; topics delete crypto") is None
+
+
+def test_a_blank_musing_is_written_again_where_it_is_and_the_article_is_left_alone(admin_cli_parser):
+    command = suggestions.suggest("musing_no_text", ARTICLE_ID)["command"]
+
+    assert command == f"python scripts/admin_cli.py musings regenerate --article {ARTICLE_ID}"
+    parsed = vars(admin_cli_parser.parse_args(shlex.split(command[len(suggestions.ADMIN_CLI) :])))
+    # The id is the article's (what content_checks reports), never taken for a musing's.
+    assert parsed["article_id"] == ARTICLE_ID and parsed["musing_id"] is None
+    assert "rewrite" not in command
+    assert suggestions.suggest("musing_no_text", "a1; topics delete crypto") is None
 
 
 def test_the_id_is_put_into_the_command_as_it_is():

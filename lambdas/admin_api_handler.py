@@ -45,6 +45,7 @@ from common.dynamo import (
     get_model_config,
     get_moderation_item,
     get_moderation_item_by_article_id,
+    get_musing,
     get_pipeline_config,
     get_prompt_refinement,
     get_stats_history_row,
@@ -57,6 +58,7 @@ from common.dynamo import (
     list_failed_executions,
     list_models,
     list_moderation_by_status,
+    list_musings,
     list_pending_moderation,
     list_prompt_refinements,
     list_security_incidents,
@@ -70,6 +72,7 @@ from common.dynamo import (
     put_stats_history_row,
     put_topic,
     set_article_feedback_lock,
+    set_musing_text,
     set_prompt_refinement_equipment,
     set_prompt_refinement_fields,
     update_article_lineage,
@@ -92,10 +95,13 @@ from common.fresh_review import (
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.model_routing import resolve_model
 from common.musings import (
+    MAX_MUSING_CHARS,
     generate_and_store_article_musing,
     generate_and_store_loot_musing,
     generate_and_store_rejection_musing,
+    regenerate_article_musing_text,
 )
+from common.musings import is_blank as musing_is_blank
 from common.research_schedule import DEFAULT_RESEARCH_INTERVAL_HOURS, interval_error
 from common.review_report import DEFAULT_SAMPLE_SIZE, MAX_SAMPLE_SIZE, build_review_report
 from common.rewrite import (
@@ -1631,6 +1637,149 @@ def _get_equipment(event: dict) -> dict:
     )
 
 
+# --- Musings (common/musings.py) -------------------------------------------------------------------
+#
+# A musing is written once, when its article is published, and nothing wrote one again: a musing
+# that went out with no text stayed that way. These routes list them, replace one's text by hand,
+# and have an article musing written again in the mood it already has.
+
+_MUSINGS_DEFAULT_LIMIT = 20
+_MUSINGS_MAX_LIMIT = 200
+# list_musings sorts the whole (small) table and then cuts it; the filters here come before the cut.
+_ALL_MUSINGS = 100_000
+
+
+def _musing_view(musing: dict) -> dict:
+    return {
+        "musing_id": musing.get("musing_id"),
+        "kind": musing.get("kind"),
+        "mood": musing.get("mood"),
+        "created_at": musing.get("created_at"),
+        "edited_at": musing.get("edited_at"),
+        "article_id": musing.get("article_id"),
+        "topic_id": musing.get("topic_id"),
+        "text": musing.get("text"),
+        "blank": musing_is_blank(musing),
+    }
+
+
+def _list_musings_route(event: dict) -> dict:
+    """The musings, newest first. `?blank=true` keeps the ones with no text, `?article_id=` the
+    ones about one article, `?limit=` how many (20 unless said, 200 at most)."""
+    try:
+        limit = int(_query_param(event, "limit") or _MUSINGS_DEFAULT_LIMIT)
+    except ValueError:
+        limit = 0
+    if not 1 <= limit <= _MUSINGS_MAX_LIMIT:
+        return _error(400, f"'limit' must be a whole number from 1 to {_MUSINGS_MAX_LIMIT}")
+    blank = _query_param(event, "blank")
+    if blank not in (None, "true"):
+        return _error(400, "'blank' must be true if provided")
+    article_id = _query_param(event, "article_id")
+
+    matching = [
+        musing
+        for musing in list_musings(_ALL_MUSINGS)
+        if (article_id is None or musing.get("article_id") == article_id)
+        and (blank is None or musing_is_blank(musing))
+    ]
+    shown = matching[:limit]
+    return _response(
+        200,
+        {"count": len(shown), "matching": len(matching), "musings": [_musing_view(m) for m in shown]},
+    )
+
+
+def _edit_musing(event: dict) -> dict:
+    """Replace one musing's text with the operator's own. Body {"text": "..."}. Its mood, date and
+    link stay as they were."""
+    musing_id = _path_param(event, "musing_id")
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    text = body.get("text") if isinstance(body, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return _error(400, "'text' is required: what the musing should say")
+    text = text.strip()
+    if len(text) > MAX_MUSING_CHARS:
+        return _error(400, f"'text' is {len(text)} characters; a musing is at most {MAX_MUSING_CHARS}")
+
+    before = get_musing(musing_id)
+    if before is None:
+        return _error(404, f"musing '{musing_id}' not found")
+    updated = set_musing_text(musing_id, text, edited_at=datetime.now(UTC).isoformat())
+    if updated is None:
+        return _error(404, f"musing '{musing_id}' not found")
+    return _response(200, {"updated": {**_musing_view(updated), "was_blank": musing_is_blank(before)}})
+
+
+def _regenerate_musing_text(musing: dict) -> tuple[dict | None, dict | None]:
+    """Have one article musing written again and store it: (what changed, None), or (None, the
+    error response). Only a musing about a published article: its title is what the musing is
+    written from, and the other kinds are written from things that are gone by now (a vote
+    count, a piece of gear, a rejection), so their fix is `musings edit`."""
+    musing_id = musing["musing_id"]
+    if musing.get("kind") != "article":
+        return None, _error(
+            409,
+            f"musing '{musing_id}' is a {musing.get('kind')} musing: only a musing about an article "
+            "can be regenerated. Replace its text with `musings edit`",
+        )
+    article = get_article(musing.get("article_id"))
+    if article is None or article.get("status") != "published":
+        return None, _error(
+            409,
+            f"musing '{musing_id}' is about an article that is not published "
+            f"('{musing.get('article_id')}'), so there is nothing to write it from",
+        )
+    text, written_by = regenerate_article_musing_text(
+        musing,
+        title=article["title"],
+        topic_name=_topic_display_name(article["topic_id"]),
+        model_id=os.environ["BEDROCK_MODEL_ID"],
+    )
+    updated = set_musing_text(musing_id, text, edited_at=datetime.now(UTC).isoformat())
+    if updated is None:
+        return None, _error(404, f"musing '{musing_id}' not found")
+    changed = {**_musing_view(updated), "was_blank": musing_is_blank(musing), "written_by": written_by}
+    return changed, None
+
+
+def _regenerate_musing(event: dict) -> dict:
+    """Write one article musing again, whether or not it has text now."""
+    musing_id = _path_param(event, "musing_id")
+    musing = get_musing(musing_id)
+    if musing is None:
+        return _error(404, f"musing '{musing_id}' not found")
+    changed, error = _regenerate_musing_text(musing)
+    return error or _response(200, {"regenerated": [changed]})
+
+
+def _regenerate_article_musings(event: dict) -> dict:
+    """Write again every musing about one article that has no text. One that has text is left
+    alone: `musings regenerate <musing_id>` rewrites that."""
+    article_id = _path_param(event, "article_id")
+    if get_article(article_id) is None:
+        return _error(404, f"article '{article_id}' not found")
+    blank = [
+        musing
+        for musing in list_musings(_ALL_MUSINGS)
+        if musing.get("article_id") == article_id
+        and musing.get("kind") == "article"
+        and musing_is_blank(musing)
+    ]
+    if not blank:
+        return _error(409, f"no musing about article '{article_id}' is blank: there is nothing to regenerate")
+    regenerated = []
+    for musing in blank:
+        changed, error = _regenerate_musing_text(musing)
+        if error:
+            return error
+        regenerated.append(changed)
+    return _response(200, {"regenerated": regenerated})
+
+
 # --- Failed executions (DLQ consumer) --------------------------------------
 
 
@@ -1992,6 +2141,10 @@ _ROUTES = {
     "POST /equipment": _create_equipment,
     "POST /prompt-refinements/{topic_id}/{version}/announce": _announce_loot,
     "DELETE /prompt-refinements/{topic_id}/{version}": _delete_prompt_refinement,
+    "GET /musings": _list_musings_route,
+    "PUT /musings/{musing_id}": _edit_musing,
+    "POST /musings/{musing_id}/regenerate": _regenerate_musing,
+    "POST /articles/{article_id}/musings/regenerate": _regenerate_article_musings,
     "GET /failed-executions": _list_failed_executions,
     "GET /security-incidents": _list_security_incidents,
     "POST /security-incidents": _open_security_incident,
