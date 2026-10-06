@@ -31,6 +31,11 @@ class DetectParams:
     max_length_m: float = 600.0
     # length / width; a ship is several times longer than it is wide, a buoy or a cloud speck is not.
     min_elongation: float = 1.6
+    # Blobs within this many pixels of anything not measured (shore, cloud, no data, the site's own
+    # edge) are dropped. Pixels there mix water with something bright, and on the first real scene
+    # (Botany Bay, 2024-01-05) they were most of the raw detections; ships at anchor sit clear of
+    # the shore. 0 turns it off.
+    edge_buffer_px: int = 2
 
     def __post_init__(self):
         if self.block_size < 3 or self.block_size % 2 == 0:
@@ -39,6 +44,8 @@ class DetectParams:
             raise ValueError("stretch_max must be positive")
         if not 0 < self.min_length_m <= self.max_length_m:
             raise ValueError("need 0 < min_length_m <= max_length_m")
+        if self.edge_buffer_px < 0:
+            raise ValueError("edge_buffer_px can't be negative")
 
 
 def stretch(band: np.ndarray, stretch_max: float) -> np.ndarray:
@@ -52,13 +59,19 @@ def detect_objects(
     measurable: np.ndarray,
     pixel_size_m: float,
     params: DetectParams | None = None,
+    stats: dict | None = None,
 ) -> list[dict]:
     """Every object in `nir` within the `measurable` mask that passes the size and shape filters.
 
     Returns one dict per object: centroid `x`, `y` (pixels), `length_m`, `width_m`, `angle`
     (degrees, OpenCV's minAreaRect convention), `area_px`, and `box` (the rotated rectangle's four
-    corners, for drawing).
+    corners, for drawing). If `stats` is given it is filled with how many bright blobs were found
+    (`candidates`) and why the rest were dropped (`edge`, `size`, `shape`), which the triage agent
+    reads to tell a busy anchorage from a noisy scene.
     """
+    tally = {"candidates": 0, "edge": 0, "size": 0, "shape": 0}
+    if stats is not None:
+        stats.update(tally)
     params = params or DetectParams()
     if pixel_size_m <= 0:
         raise ValueError("pixel_size_m must be positive")
@@ -75,6 +88,15 @@ def detect_objects(
         image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, params.block_size, -params.offset
     )
     binary = cv2.bitwise_and(binary, measurable)
+    count, labels = cv2.connectedComponents(binary, connectivity=8)
+    tally["candidates"] = count - 1
+    if params.edge_buffer_px and count > 1:
+        size = 2 * params.edge_buffer_px + 1
+        near_edge = cv2.dilate(cv2.bitwise_not(measurable), np.ones((size, size), np.uint8))
+        touching = np.unique(labels[(near_edge > 0) & (binary > 0)])
+        touching = touching[touching > 0]
+        tally["edge"] = len(touching)
+        binary[np.isin(labels, touching)] = 0
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
     found = []
@@ -84,8 +106,10 @@ def detect_objects(
         length_px, width_px = max(w, h) + 1.0, min(w, h) + 1.0
         length_m, width_m = length_px * pixel_size_m, width_px * pixel_size_m
         if not params.min_length_m <= length_m <= params.max_length_m:
+            tally["size"] += 1
             continue
         if length_px / width_px < params.min_elongation:
+            tally["shape"] += 1
             continue
         box = cv2.boxPoints(((cx, cy), (w, h), angle))
         found.append(
@@ -100,4 +124,6 @@ def detect_objects(
             }
         )
     found.sort(key=lambda d: (d["y"], d["x"]))
+    if stats is not None:
+        stats.update(tally)
     return found
