@@ -158,3 +158,14 @@ variable "aws_account_id" {
     error_message = "aws_account_id must be empty or exactly 12 digits, with no spaces or dashes."
   }
 }
+
+variable "vision_region" {
+  type        = string
+  default     = "us-west-2"
+  description = "Where the environments' vision worker runs (their own vision_region variable, infra/modules/vision-worker): us-west-2, beside the Sentinel-2 imagery. The deploy roles may create Lambda functions and log groups named <prefix>-*-vision-* there and nowhere else outside aws_region. Not sensitive."
+
+  validation {
+    condition     = can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.vision_region))
+    error_message = "vision_region must look like an AWS region, e.g. us-west-2."
+  }
+}

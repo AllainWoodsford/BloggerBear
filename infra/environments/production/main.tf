@@ -712,6 +712,47 @@ resource "aws_iam_role_policy" "lambda_web_search" {
   policy = data.aws_iam_policy_document.lambda_web_search.json
 }
 
+# -----------------------------------------------------------------------
+# Vision worker (docs/enhancements/opencv-agentic-vision-enhancement.md): OpenCV 5 on arm64 in
+# var.vision_region, beside the Sentinel-2 imagery. Only when var.vision_enabled (off; dev goes
+# first); until then the research tick's VISION_WORKER_ARN is empty and the satellite_vision
+# adapter records every site as not measured (common/vision_client.py), never as empty.
+# -----------------------------------------------------------------------
+module "vision_worker" {
+  source = "../../modules/vision-worker"
+  count  = var.vision_enabled ? 1 : 0
+
+  unique_name_prefix = var.unique_name_prefix
+  environment_name   = "production"
+  region             = var.vision_region
+}
+
+locals {
+  vision_env_variables = {
+    VISION_WORKER_ARN = var.vision_enabled ? module.vision_worker[0].function_arn : ""
+  }
+}
+
+# The shared exec role may invoke the worker and nothing else in that Region. A separate policy,
+# like lambda_web_search, so the grant stays visibly scoped to one function.
+data "aws_iam_policy_document" "lambda_vision_worker" {
+  count = var.vision_enabled ? 1 : 0
+
+  statement {
+    sid       = "InvokeVisionWorker"
+    effect    = "Allow"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [module.vision_worker[0].function_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_vision_worker" {
+  count  = var.vision_enabled ? 1 : 0
+  name   = "${var.unique_name_prefix}-production-lambda-vision-worker"
+  role   = aws_iam_role.lambda_exec.id
+  policy = data.aws_iam_policy_document.lambda_vision_worker[0].json
+}
+
 # Used only to construct RESEARCH_TICK_FUNCTION_ARN / STATE_MACHINE_ARN
 # above without a direct resource reference (see the comment there for
 # why a direct reference would create a dependency cycle).
@@ -743,7 +784,12 @@ resource "aws_lambda_function" "research_tick" {
   source_code_hash = data.archive_file.lambdas.output_base64sha256
 
   environment {
-    variables = merge(local.lambda_env_variables, local.coingecko_env_variables, local.github_env_variables)
+    variables = merge(
+      local.lambda_env_variables,
+      local.coingecko_env_variables,
+      local.github_env_variables,
+      local.vision_env_variables,
+    )
   }
 }
 

@@ -10,5 +10,9 @@
 # numpy 2.4.4: the newest release that still supports Python 3.11 (CI's version). Its wheels need
 # glibc 2.27+, which is why the worker runs on Lambda's python3.12 runtime (Amazon Linux 2023), not
 # python3.11 (Amazon Linux 2, glibc 2.26).
+#
+# requests: the worker's HTTP range reads (vision_worker_handler.http_fetch). The same pin as
+# requirements.txt; the worker's package installs this file alone.
 opencv-python-headless==5.0.0.93
 numpy==2.4.4
+requests==2.34.2

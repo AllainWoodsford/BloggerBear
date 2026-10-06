@@ -259,3 +259,26 @@ variable "ops_alexa_redirect_uris" {
     function warm (module.ops_assistant's keep_warm).
   EOT
 }
+
+variable "vision_enabled" {
+  type        = bool
+  default     = false
+  description = <<-EOT
+    Whether to deploy the vision worker (infra/modules/vision-worker): OpenCV 5 on arm64 in
+    var.vision_region, invoked by the satellite_vision adapter. Off: dev runs it first. Before
+    turning it on, the bootstrap must have been re-applied by hand with the same vision_region
+    (its VisionWorker statements), or the apply is refused.
+    Design: docs/enhancements/opencv-agentic-vision-enhancement.md.
+  EOT
+}
+
+variable "vision_region" {
+  type        = string
+  default     = "us-west-2"
+  description = "Where the vision worker runs: us-west-2 is where the Sentinel-2 COGs are. Must be the vision_region infra/bootstrap was applied with."
+
+  validation {
+    condition     = can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.vision_region))
+    error_message = "vision_region must look like an AWS region, e.g. us-west-2."
+  }
+}
