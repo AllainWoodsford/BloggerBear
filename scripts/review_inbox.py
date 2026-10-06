@@ -18,7 +18,9 @@ Everything goes through the Admin API, exactly like every other admin_cli comman
 DynamoDB or S3: approving an article does more than flip a flag (it renders the page, publishes it,
 writes a musing), and the API is where that lives. The keys are y (approve), r (reject), z (skip),
 plus v (read the whole thing) and q (quit). Each choice is applied at once, so quitting, an error or a
-dropped connection never loses progress.
+dropped connection never loses progress. However the session ends (the last item, q, Ctrl+C, or an
+error), it closes by saying what was done: how many of the batch you got through and what you
+decided on them.
 
 A held article also has w (Re-Write): pick one of the registered models and the article is rewritten
 in the background to fix what it was held for (lambdas/common/rewrite.py), while you move on to the
@@ -737,7 +739,21 @@ class Summary:
     already_handled: int = 0
     fetched: int = 0
     quit_early: bool = False
+    interrupted: bool = False  # stopped with Ctrl+C, or by an error, rather than q
     dry_run: bool = False
+
+    @property
+    def reviewed(self) -> int:
+        """Items settled one way or another (a failed attempt is not: the item is still waiting)."""
+        return self.approved + self.rejected + self.rewritten + self.skipped + self.already_handled
+
+    @property
+    def remaining(self) -> int:
+        return max(self.fetched - self.reviewed, 0)
+
+    def headline(self) -> str:
+        items = "item" if self.fetched == 1 else "items"
+        return f"Session summary: reviewed {self.reviewed} of {self.fetched} {items}."
 
     def line(self) -> str:
         parts = f"{self.approved} approved, {self.rejected} rejected, {self.skipped} skipped"
@@ -803,50 +819,73 @@ def review(
 
     dry_note = " (dry run: nothing will be changed)" if dry_run else ""
     _emit(f"{len(batch)} item(s) to review{dry_note}.", out)
-    for number, (source, item) in enumerate(batch, start=1):
-        _emit(render_item(item, number, len(batch), now()), out)
-        while True:
-            print(REWRITE_HELP_LINE if item.can_rewrite else HELP_LINE, end="", file=out, flush=True)
-            try:
-                key = key_reader()
-            except KeyboardInterrupt:
-                key = "q"
-            print(key or "", file=out, flush=True)
-            if key == "v":
-                _emit("\n".join(_wrap(item.body or "(no text)", _width())), out)
-                continue
-            if key == "q":
-                summary.quit_early = True
+    # Whatever ends the session -- the last item, q, Ctrl+C in the middle of a request, an error
+    # nothing here expected -- it says what was achieved before it goes. Every decision counted
+    # in the summary has already been applied.
+    try:
+        for number, (source, item) in enumerate(batch, start=1):
+            _emit(render_item(item, number, len(batch), now()), out)
+            _decide(source, item, summary, store, dry_run, key_reader, out)
+            if summary.quit_early:
                 break
-            if key == "z":
-                summary.skipped += 1
-                if not dry_run:
-                    store.add(item.skip_key)
-                break
-            if key == "w" and item.can_rewrite:
-                if _rewrite(source, item, summary, store, dry_run, key_reader, out):
-                    break
-                continue
-            if key in ("y", "r"):
-                if key == "y" and item.caution and not _confirmed(key_reader, out):
-                    continue
-                if key == "y" and not dry_run and not source.prepare_approve(item, key_reader, out):
-                    continue
-                if _apply(source, item, key, summary, store, dry_run, out):
-                    break
-                # a failure: stay on this item so you can retry it, skip it, or quit
-                continue
-            _emit("  Press y, r, w, z, v or q." if item.can_rewrite else "  Press y, r, z, v or q.", out)
-        if summary.quit_early:
-            break
+    except KeyboardInterrupt:
+        summary.quit_early = summary.interrupted = True
+    except BaseException:
+        summary.quit_early = summary.interrupted = True
+        raise
+    finally:
+        _emit_summary(summary, limit, out)
+    return summary
 
+
+def _decide(source, item, summary, store, dry_run, key_reader, out) -> None:
+    """Ask what to do with one item until it is settled or the operator quits."""
+    while True:
+        print(REWRITE_HELP_LINE if item.can_rewrite else HELP_LINE, end="", file=out, flush=True)
+        try:
+            key = key_reader()
+        except KeyboardInterrupt:
+            key = "q"
+            summary.interrupted = True
+        print(key or "", file=out, flush=True)
+        if key == "v":
+            _emit("\n".join(_wrap(item.body or "(no text)", _width())), out)
+            continue
+        if key == "q":
+            summary.quit_early = True
+            return
+        if key == "z":
+            summary.skipped += 1
+            if not dry_run:
+                store.add(item.skip_key)
+            return
+        if key == "w" and item.can_rewrite:
+            if _rewrite(source, item, summary, store, dry_run, key_reader, out):
+                return
+            continue
+        if key in ("y", "r"):
+            if key == "y" and item.caution and not _confirmed(key_reader, out):
+                continue
+            if key == "y" and not dry_run and not source.prepare_approve(item, key_reader, out):
+                continue
+            if _apply(source, item, key, summary, store, dry_run, out):
+                return
+            # a failure: stay on this item so you can retry it, skip it, or quit
+            continue
+        _emit("  Press y, r, w, z, v or q." if item.can_rewrite else "  Press y, r, z, v or q.", out)
+
+
+def _emit_summary(summary: Summary, limit: int, out) -> None:
+    """What the session achieved: how far through the batch, what was decided, and how it ended."""
     _emit("", out)
-    _emit(summary.line() + ".", out)
+    _emit(summary.headline(), out)
+    _emit("  " + summary.line() + ".", out)
     if summary.quit_early:
-        _emit("You stopped early: nothing you already decided is lost.", out)
+        how = "Cancelled out of the session" if summary.interrupted else "You stopped early"
+        left = f" with {summary.remaining} left" if summary.remaining else ""
+        _emit(f"{how}{left}: nothing you already decided is lost.", out)
     elif summary.fetched >= limit:
         _emit("There may be more: run it again for the next batch.", out)
-    return summary
 
 
 def _confirmed(key_reader: Callable[[], str], out) -> bool:

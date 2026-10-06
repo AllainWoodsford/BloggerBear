@@ -313,8 +313,21 @@ you, a preview) and waits for one key, no Enter:
 - **Up to 30 a time**, oldest first, articles before prompt changes. Run it again for the next batch
   (`--limit` changes the size; `--source moderation` or `--source refinements` picks one kind).
 - **Each choice is applied at once**, through the same signed Admin API as every other command, so a quit,
-  an error or a dropped connection never loses progress. A failure is shown and you stay on that item to
-  retry, skip or quit. Something already handled elsewhere is noted and passed.
+  an error or a dropped connection never loses progress. A reject or a Re-Write is sent the moment you
+  press the key, not when the batch is finished: by the time you reach the tenth item, the rewrite of the
+  first is already running. A failure is shown and you stay on that item to retry, skip or quit.
+  Something already handled elsewhere is noted and passed.
+- **It ends by saying what was done**, however it ends (the last item, `q`, Ctrl+C even in the middle of
+  a request, or an error):
+
+  ```
+  Session summary: reviewed 2 of 14 items.
+    2 approved, 0 rejected, 0 skipped.
+  Cancelled out of the session with 12 left: nothing you already decided is lost.
+  ```
+
+  "Reviewed" counts every item you settled: approved, rejected, sent for a Re-Write, skipped, or
+  found already handled elsewhere. `q` reads "You stopped early"; Ctrl+C reads "Cancelled".
 - **Skipped items are hidden from your next runs** for 24 hours (`--skip-hours`; a small local file,
   `~/.bloggerbear/review-skips.json`, or `BLOGGERBEAR_REVIEW_STATE`; never sent anywhere), so a rerun gives
   you the next batch instead of the same ones. `--include-skipped` shows them again, `--reset-skipped`
@@ -322,6 +335,16 @@ you, a preview) and waits for one key, no Enter:
 - **Held for a reason?** If the review found something (a fabricated claim, stale figures, advice), the
   reasons and notes are on the card, and approving asks "Approve anyway? [y/N]". Rejecting never asks.
   A routine financial article (held only because it is a financial topic) does not ask.
+- **Crypto and finance figures are approximate on purpose.** Prices move between the research, the
+  draft, each review and a Re-Write, so an exact figure was "stale" by the time anything checked it and
+  every article came back flagged. The crypto adapter now declares a tolerance of 7%
+  (`figure_tolerance_percent` in `lambdas/common/adapters/crypto_feed.py`): its articles are asked to
+  write figures loosely ("up more than 30% at the time of checking", not "up 36.2%"), the fresh-data
+  review does not flag a figure within 7% of the current one (a note on the card says how many it let
+  pass), and a correction or Re-Write may state an approximate figure without being refused. A figure
+  that is further off, points the wrong way, or matches nothing in the sources is flagged as before,
+  and the article still always waits for you. Its disclaimer now also says the figures may be
+  inaccurate or out of date. Those articles end with an "At a glance" table and "Key takeaways".
 - `--dry-run` goes through the motions and changes nothing. `--mock` (or `BLOGGERBEAR_REVIEW_MOCK=1`)
   uses made-up items and its own skip file, needs no credentials, and sends nothing anywhere.
 - **Approving a prompt change asks where the bear wears it** (see the next section): `t` (or Enter) a ring
