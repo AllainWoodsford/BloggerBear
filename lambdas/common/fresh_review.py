@@ -28,6 +28,13 @@ output that isn't the expected JSON are all `unavailable` -- a distinct result, 
 **Topic-agnostic.** Where the fresh data comes from is the adapter's business
 (`Adapter.review_evidence`); nothing here knows any domain.
 
+**Figures that move.** An adapter whose numbers change by the minute (prices) declares a
+`figure_tolerance_percent` (`writing_rules`). The reviewer is then told not to flag a figure
+inside it, and because a model does not reliably follow that, code drops a flagged claim whose
+every figure is that close to the one in its own evidence (`within_tolerance`). A correction or
+a Re-Write may likewise state a figure that close to a source's, or a source's figure rounded
+down ("more than 30%" for 36.2%). With no tolerance declared every check is exact, as before.
+
 **Untrusted input.** The evidence includes text from the web (headlines, titles).
 It reaches the reviewer only inside delimited data blocks the prompt says to treat
 as data, and the reviewer's reply is parsed as a fixed JSON shape: the only way the
@@ -37,6 +44,7 @@ evidence can influence anything is through the `problem`/`severity` of a claim.
 from __future__ import annotations
 
 import json
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeout
@@ -113,6 +121,22 @@ def _defang(text: str) -> str:
     return _DELIMITER_TAG.sub(lambda m: f"< {m.group(1)}{m.group(2)}", text)
 
 
+def writing_rules(topic: dict | None) -> dict:
+    """What the topic's adapter declares about figures and shape (common/adapters/base.py):
+    `figure_tolerance` as a fraction (0.07 for 7%), `figure_guidance` and `drafting_guidance`.
+    Zero and empty for a topic whose adapter declares none, or is unknown."""
+    adapter_cls = ADAPTER_REGISTRY.get((topic or {}).get("adapter"))
+    try:
+        percent = float(getattr(adapter_cls, "figure_tolerance_percent", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        percent = 0.0
+    return {
+        "figure_tolerance": max(percent, 0.0) / 100,
+        "figure_guidance": str(getattr(adapter_cls, "figure_guidance", "") or ""),
+        "drafting_guidance": str(getattr(adapter_cls, "drafting_guidance", "") or ""),
+    }
+
+
 def build_review_prompt(
     topic_name: str,
     draft: str,
@@ -120,9 +144,20 @@ def build_review_prompt(
     evidence: str,
     as_of: str,
     title: str | None = None,
+    figure_tolerance: float = 0.0,
 ) -> str:
     """`title`, if given, is reviewed with the body: a headline states claims too, and it
-    is written by a separate call that never sees the article."""
+    is written by a separate call that never sees the article. `figure_tolerance` (a fraction)
+    is how far a figure may sit from fresh_data's before it is worth flagging."""
+    tolerance_rule = ""
+    if figure_tolerance > 0:
+        tolerance_rule = (
+            " Figures on this topic move constantly and the draft gives them approximately on "
+            f"purpose: do NOT flag a number that is within about {figure_tolerance * 100:g}% of the "
+            'fresh_data value, nor a rounded or "more than / around / at least" statement that '
+            "fresh_data still bears out. Flag a figure only when it is further off than that, or "
+            "its direction (up or down) is wrong."
+        )
     draft = f"Title: {title}\n\n{draft[:DRAFT_MAX_CHARS]}" if title else draft[:DRAFT_MAX_CHARS]
     draft, findings_text, evidence = _defang(draft), _defang(findings_text), _defang(evidence)
     return (
@@ -147,7 +182,7 @@ def build_review_prompt(
         '  "severity": "major" if the claim is central to the article\'s point, otherwise "minor".\n\n'
         "Rules: use only the material above and never invent evidence; ignore ordinary short-term "
         "movement that the draft does not present as current; do not flag opinions or clearly hedged "
-        "statements; if you are unsure, flag nothing.\n\n"
+        f"statements; if you are unsure, flag nothing.{tolerance_rule}\n\n"
         'Reply with JSON only, no prose and no code fences: {"claims": [ ... ]}. '
         'If nothing needs flagging reply {"claims": []}.'
     )
@@ -206,6 +241,53 @@ def classify(claims: list[dict]) -> str:
     return "major" if any(claim["severity"] == "major" for claim in claims) else "minor"
 
 
+# A period label ("24h", "7d", "5-day", "3-month", "1-year") is not a figure to compare.
+_WINDOW_LABEL = re.compile(r"\b\d+\s*-?\s*(?:h|d|w|y|hours?|days?|weeks?|months?|years?)\b", re.IGNORECASE)
+_UP_WORDS = re.compile(
+    r"\b(up|rose|ris(?:e|es|en|ing)|gain(?:ed|s|ing)?|increas\w*|climb\w*|higher|surg\w*|jump\w*"
+    r"|grew|grow\w*|rall\w*|positive)\b",
+    re.IGNORECASE,
+)
+_DOWN_WORDS = re.compile(
+    r"\b(down|fell|fall(?:s|en|ing)?|drop\w*|declin\w*|decreas\w*|lower|los[st]\w*|slid\w*|sank"
+    r"|slump\w*|crash\w*|negative)\b|(?<![\w.])[-\u2212]\s?\d",
+    re.IGNORECASE,
+)
+
+
+def _directions(text: str) -> set[str]:
+    found = set()
+    if _UP_WORDS.search(text):
+        found.add("up")
+    if _DOWN_WORDS.search(text):
+        found.add("down")
+    return found
+
+
+def within_tolerance(claim: dict, tolerance: float) -> bool:
+    """Whether a flagged claim is no more than a figure that has drifted inside `tolerance`
+    (a fraction): every figure the claim states is that close to one in the reviewer's own
+    evidence for it, and the two do not disagree on direction.
+
+    Cautious on purpose, since dropping a claim hides it from the person reviewing: an
+    `unsupported` claim, one with no figure on either side, one with any figure that has no
+    close match, and one where the claim says up and the evidence says down are all kept.
+    """
+    if tolerance <= 0 or claim.get("problem") == "unsupported":
+        return False
+    said, shown = str(claim.get("claim") or ""), str(claim.get("evidence") or "")
+    stated = [value for value, _ in _numbers(_WINDOW_LABEL.sub(" ", said))]
+    current = [value for value, _ in _numbers(_WINDOW_LABEL.sub(" ", shown))]
+    if not stated or not current:
+        return False
+    before, after = _directions(said), _directions(shown)
+    if before and after and not before & after:
+        return False
+    return all(
+        any(abs(value - now) <= tolerance * abs(now) for now in current if now) for value in stated
+    )
+
+
 def review_notes(record: dict | None) -> list[str]:
     """One line per finding for a human reading the moderation queue, or [] when
     there is nothing to say (no review, or a clean one)."""
@@ -217,6 +299,11 @@ def review_notes(record: dict | None) -> list[str]:
     for c in record.get("claims") or []:
         note = f"fresh-data review: {c['claim']} -- {c['problem']} ({c['severity']})"
         notes.append(f"{note}: {c['evidence']}" if c.get("evidence") else note)
+    if record.get("within_tolerance"):
+        notes.append(
+            f"fresh-data review: {record['within_tolerance']} figure(s) had moved a little since "
+            "the article was written, within this topic's tolerance, and were not flagged"
+        )
     if record.get("revised"):
         notes.append(
             "fresh-data review: the draft was corrected automatically; "
@@ -265,6 +352,8 @@ def run_review(
     Returns a record safe to store as-is (strings, ints and lists only):
       {"status": "reviewed", "outcome": clean|minor|major, "claims": [...],
        "evidence_as_of": ..., "mode": ..., "lineage_call": {...}}
+    plus "within_tolerance": n when n flagged claims were dropped as figures inside the
+    adapter's tolerance (see `within_tolerance`),
     or {"status": "unavailable", "reason": ..., "mode": ...}, or
        {"status": "skipped", "reason": ..., "mode": ...} when the topic's adapter opts out.
     `lineage_call` (popped by the caller before storing) is the reviewer's Bedrock call,
@@ -291,7 +380,10 @@ def run_review(
         }
 
     as_of = datetime.now(UTC).isoformat()
-    prompt = build_review_prompt(topic_label(topic), draft, findings_text, evidence, as_of, title=title)
+    tolerance = writing_rules(topic)["figure_tolerance"]
+    prompt = build_review_prompt(
+        topic_label(topic), draft, findings_text, evidence, as_of, title=title, figure_tolerance=tolerance
+    )
     try:
         result = invoke_model_tracked(
             prompt, model_id, fallback_model_id=fallback_model_id, max_tokens=REVIEW_MAX_TOKENS
@@ -309,8 +401,10 @@ def run_review(
     claims = parse_review(result["text"])
     if claims is None:
         return _unavailable("the reviewer's reply was not the expected JSON", mode, lineage_call)
+    flagged = len(claims)
+    claims = [claim for claim in claims if not within_tolerance(claim, tolerance)]
 
-    return {
+    record = {
         "status": "reviewed",
         "outcome": classify(claims),
         "claims": claims,
@@ -319,6 +413,9 @@ def run_review(
         "lineage_call": lineage_call,
         "evidence": evidence,
     }
+    if flagged > len(claims):
+        record["within_tolerance"] = flagged - len(claims)
+    return record
 
 
 # --- acting on a review (enforce mode) ------------------------------------------------------------
@@ -373,7 +470,9 @@ def build_revision_prompt(
     findings_text: str,
     evidence: str,
     as_of: str,
+    figure_guidance: str = "",
 ) -> str:
+    figures = f" How to write figures: {figure_guidance}" if figure_guidance else ""
     listed = json.dumps(
         [
             {"claim": c["claim"], "problem": c["problem"], "evidence": c.get("evidence", "")}
@@ -394,7 +493,7 @@ def build_revision_prompt(
         "in fresh_data or findings, or removed if they do not settle it. Change the title too if it "
         "states one of those claims. Rules: do not add any other claim, number, name or link that is "
         "not already in the draft, findings or fresh_data; do not change anything the list does not "
-        "require; keep the structure, headings, markdown, tone and length.\n\n"
+        f"require; keep the structure, headings, markdown, tone and length.{figures}\n\n"
         'Reply with JSON only, no prose and no code fences: {"title": "...", "body": "..."} where '
         "body is the complete corrected article in markdown."
     )
@@ -438,6 +537,38 @@ def _numbers(text: str) -> list[tuple[float, int]]:
     return found
 
 
+# With a tolerance in force, a figure may also be a source's figure rounded or rounded DOWN to
+# fewer significant figures ("more than 30%" for 36.2%, "around $80,000" for $81,744), as long
+# as it is not further from it than this: "more than 10%" for 19% says too little to count.
+APPROXIMATION_MAX_GAP = 0.2
+_MAX_SIGNIFICANT_FIGURES = 6
+
+
+def _is_rounding_of(value: float, source: float) -> bool:
+    """Whether `value` is `source` rounded, or rounded down, to some number of significant figures."""
+    if not source or not value:
+        return False
+    top = math.floor(math.log10(abs(source)))
+    for figures in range(1, _MAX_SIGNIFICANT_FIGURES + 1):
+        unit = 10.0 ** (top - figures + 1)
+        for rounded in (math.floor(source / unit) * unit, round(source / unit) * unit):
+            if math.isclose(value, rounded, rel_tol=1e-9, abs_tol=1e-12):
+                return True
+    return False
+
+
+def _approximates(value: float, trusted_numbers: list[float], tolerance: float) -> bool:
+    """Whether `value` is close enough to a trusted figure: inside `tolerance` of one, or one
+    rounded (down) and no further off than APPROXIMATION_MAX_GAP."""
+    for source in trusted_numbers:
+        gap = abs(value - source)
+        if gap <= tolerance * abs(source):
+            return True
+        if gap <= APPROXIMATION_MAX_GAP * abs(source) and _is_rounding_of(value, source):
+            return True
+    return False
+
+
 def _headings(text: str) -> int:
     return sum(1 for line in text.splitlines() if line.lstrip().startswith("#"))
 
@@ -451,6 +582,7 @@ def revision_violations(
     sources: list[str],
     body_length_bounds: tuple[float, float] = BODY_LENGTH_BOUNDS,
     check_headings: bool = True,
+    figure_tolerance: float = 0.0,
 ) -> list[str]:
     """Why a revision cannot be trusted, in plain words; [] if it passes every check.
 
@@ -459,6 +591,8 @@ def revision_violations(
     and the fresh evidence); the original draft counts too. `body_length_bounds` and
     `check_headings` are the shape checks: tight for this module's minor-fix revision, looser
     for an operator's Re-Write (common/rewrite.py), which may remove a whole problem section.
+    `figure_tolerance` (a fraction, from the topic's adapter) also lets a figure through that
+    approximates a trusted one (`_approximates`); at 0 a figure must be a trusted one exactly.
     """
     violations: list[str] = []
     trusted = "\n".join([original_title, original_body, *sources])
@@ -468,6 +602,8 @@ def revision_violations(
     for value, decimals in _numbers(f"{new_title}\n{new_body}"):
         # Fine if it appears in a trusted source, or is one of them rounded to its own precision.
         if any(round(source, decimals) == round(value, decimals) for source in trusted_numbers):
+            continue
+        if figure_tolerance > 0 and _approximates(value, trusted_numbers, figure_tolerance):
             continue
         unsupported.append(f"{value:g}")
     if unsupported:
@@ -521,7 +657,17 @@ def run_revision(
     Anything but `revised` means the article is held for a person; the original is untouched.
     """
     as_of = datetime.now(UTC).isoformat()
-    prompt = build_revision_prompt(topic_label(topic), title, body, claims, findings_text, evidence, as_of)
+    rules = writing_rules(topic)
+    prompt = build_revision_prompt(
+        topic_label(topic),
+        title,
+        body,
+        claims,
+        findings_text,
+        evidence,
+        as_of,
+        figure_guidance=rules["figure_guidance"],
+    )
     try:
         result = invoke_model_tracked(
             prompt, model_id, fallback_model_id=fallback_model_id, max_tokens=REVISION_MAX_TOKENS
@@ -554,7 +700,14 @@ def run_revision(
         return rejected("the revision was not the expected JSON")
     new_title, new_body = parsed
 
-    violations = revision_violations(title, body, new_title, new_body, sources=[findings_text, evidence])
+    violations = revision_violations(
+        title,
+        body,
+        new_title,
+        new_body,
+        sources=[findings_text, evidence],
+        figure_tolerance=rules["figure_tolerance"],
+    )
     if violations:
         return rejected("; ".join(violations), violations)
     return {"status": "revised", "title": new_title, "body": new_body, "lineage_call": lineage_call}

@@ -709,6 +709,22 @@ revision, or a failed call *holds* the article instead. The original body is kep
 `articles/<id>.original.md` (`body_original_s3_key`), private. An unexpected error while
 enforcing holds the article; it never lets an enforced article through unchecked.
 
+**Figures that move (added later, for the crypto feed).** A price is different at the research
+tick, the draft, each review and a Re-Write, so an exact figure was reported stale every time
+and crypto articles were always flagged. An adapter may now declare, as plain attributes
+(`common/adapters/base.py`; the pipeline reads them and knows nothing else about the domain):
+`figure_tolerance_percent` (crypto: 7), `figure_guidance` (write figures loosely: "more than
+30%", "at the time of checking") and `drafting_guidance` (end with an "At a glance" table and
+"Key takeaways"). With a tolerance: the reviewer is told not to flag a figure inside it; code
+drops a claim the model flags anyway when every figure in it is that close to the one in the
+claim's own evidence and the two agree on direction (`within_tolerance`; the count is kept on
+the record and shown as a note); and `revision_violations` also accepts a figure within the
+tolerance of a trusted one, or a trusted one rounded or rounded *down* by no more than 20%.
+An `unsupported` claim, a figure further off, and a figure that matches nothing are treated
+as before. An adapter that declares nothing gets the exact checks above. Financial topics
+still always go to a person; their disclaimer now also says the figures are approximate and
+may be out of date.
+
 **What reading the code found (these shape the scope).**
 1. *Drafts are being cut off.* The draft, ideation and title calls all use
    `invoke_model_tracked`'s default `max_tokens=1024`. The tokenized-gold article's draft

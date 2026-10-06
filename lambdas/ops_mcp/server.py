@@ -371,9 +371,9 @@ def build_server() -> MCPServer:
         """Read this environment's Lambda logs for errors and say why they happened: per function,
         each error's root cause (a timeout, out of memory, throttling, a source's rate limit or
         outage, incomplete source data, a permission, a code error), how many, whether it is more
-        than usual, and whether it needs a code fix, a settings change or just time; and how many
-        runs there were and what share succeeded (use it for "how is X doing?" and success rates
-        too, not only for errors). Puts on screen
+        than usual, and whether it needs a code fix, a settings change or just time. It gives no
+        success rate: a run completes even when a source it called was rate limited, so the errors
+        in the log are what say how a function is doing. Puts on screen
         the advice, the queries and log groups to check it yourself, and example lines (redacted).
         Pass `function` (any name for it) for one function, `topic` (its id, its name, or the operator's
         own words for it) for a deep dive
@@ -393,7 +393,8 @@ def build_server() -> MCPServer:
     ) -> dict[str, Any]:
         """Read the APIs' access logs for failed requests and say why: per API, the errors by
         status and who answered (the firewall, the rate limit, the sign-in, API Gateway itself, or
-        the Lambda), the share of requests that succeeded, each with its root cause and whether
+        the Lambda), every request counted by HTTP status code (the 200s as well as the errors:
+        use it for "are the API calls succeeding?"), each error with its root cause and whether
         it needs a code fix, a settings change,
         or nothing; the error rate; and when they started. Puts on screen the breakdown by route
         and the queries to check it yourself. Pass `api` (public, admin or assistant) for one API,

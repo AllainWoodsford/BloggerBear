@@ -53,6 +53,21 @@ class Adapter(ABC):
     # uncredited.
     sources: tuple[dict, ...] = ()
 
+    # Optional, for a source whose numbers move while an article is being written (prices). The
+    # pipeline stays topic-agnostic: it reads these three and knows nothing else about the domain.
+    #
+    # `figure_tolerance_percent`: how far a figure in an article may sit from the source's before
+    # it counts as wrong. The fresh-data reviewer is told not to flag a difference inside it, a
+    # claim it flags anyway is dropped by code (common/fresh_review.py), and a correction or
+    # Re-Write may state a figure that close to a source's. 0 (the default) keeps every check exact.
+    figure_tolerance_percent: float = 0.0
+    # `figure_guidance`: how to write such figures so they stay true ("more than 30%", not
+    # "36.2%"). Added to the drafting, correction and Re-Write prompts.
+    figure_guidance: str = ""
+    # `drafting_guidance`: anything else this source's articles should always do (their shape,
+    # how they end). Added to the drafting prompt, and to a Re-Write so it keeps that shape.
+    drafting_guidance: str = ""
+
     @abstractmethod
     def fetch_state(self, topic_config: dict) -> dict:
         """Fetch and return a normalized snapshot of the source's current state.
