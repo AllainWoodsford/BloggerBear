@@ -707,6 +707,18 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
 
 
+def test_the_model_is_told_what_to_say_about_a_finding_already_acted_on():
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "A finding with `actioned` is one the operator seems to have dealt with already",
+        "that you suggest dismissing it, and to please check first",
+        "Never present it as a new problem or as a fix to run",
+        "Every finding's card has a Dismiss button",
+        "but only when the operator tells you to",
+    ):
+        assert rule in prompt, rule
+
+
 def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not():
     fakes = guide_tools()
     first, later = ScriptedModel(["ok"]), ScriptedModel(["ok"])

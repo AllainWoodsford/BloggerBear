@@ -238,6 +238,38 @@
   overflow-wrap: anywhere;
 }
 
+/* What the assistant noticed about a finding having been dealt with already. */
+.ask-actioned {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+}
+
+/* The Dismiss button and what came of pressing it. */
+.ask-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 0;
+}
+
+.ask-dismiss {
+  padding: 6px 12px;
+}
+
+.ask-dismiss:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ask-dismiss-outcome {
+  color: var(--muted);
+}
+
+.ask-card-dismissed {
+  opacity: 0.6;
+}
+
 .ask-command {
   display: flex;
   align-items: flex-start;

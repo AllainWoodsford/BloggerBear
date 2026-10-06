@@ -107,6 +107,16 @@ SYSTEM_PROMPT = "\n".join(
         "When asked what needs attention, call follow_up and watch_list first. For each thing "
         "you were asked to watch, say what it was flagged for and whether it is still happening, "
         "getting worse, easing off or has calmed down, then the rest.",
+        # The owner's ask: a finding the operator has already acted on (an article sent for a
+        # rewrite) kept being raised as if nothing had been done. The tools mark it (`actioned`,
+        # from the pipeline's own tables); the model says so and leaves the dismissing to them.
+        "A finding with `actioned` is one the operator seems to have dealt with already, though "
+        "it still shows: say what its `actioned.noticed` says (\"it looks like you already "
+        "sent that article for a rewrite\"), that you suggest dismissing it, and to please "
+        "check first. Never present it as a new problem or as a fix to run, and do not count it "
+        "among the suggested fixes. Every finding's card has a Dismiss button; you can also "
+        "dismiss one with the dismiss tool, but only when the operator tells you to (\"leave "
+        "that one\", \"dismiss it\"), never on your own.",
         # A first question is a "briefing" turn in code (policy.turn_kind), which only sets the
         # budget. Without this rule "how do I create gear?" asked first would be answered with a
         # tour of the pipeline, and the eight calls spent before the guide was opened.
@@ -301,6 +311,23 @@ def warm(authorization: str, extra_headers: dict[str, str] | None = None) -> int
     reads no data. Returns how many tools the server listed."""
     with mcp_client(os.environ["OPS_MCP_URL"], authorization, extra_headers) as client:
         return len(list_tools(client))
+
+
+def dismiss(
+    kind: str, finding_id: str, authorization: str, extra_headers: dict[str, str] | None = None
+) -> dict:
+    """The page's Dismiss button: call the MCP server's `dismiss` tool for one finding, with the
+    caller's own token, and return what it answered. No model is involved: the operator pressed
+    a button, so there is nothing to decide. The server checks the kind and the id itself and
+    writes only the caller's own list (ops_mcp/memory.py)."""
+    with mcp_client(os.environ["OPS_MCP_URL"], authorization, extra_headers) as client:
+        result = client.call_tool_sync(
+            tool_use_id="page-dismiss", name="dismiss", arguments={"kind": kind, "id": finding_id}
+        )
+    structured = result.get("structuredContent") if isinstance(result, dict) else None
+    if result.get("status") != "success" or not isinstance(structured, dict):
+        raise AgentError("DismissFailed")
+    return structured
 
 
 def bedrock_model() -> BedrockModel:

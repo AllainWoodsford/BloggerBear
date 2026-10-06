@@ -331,10 +331,36 @@
 
   function noop() {}
 
+  // Whether a finding can be dismissed from its card: something a tool found (not help the
+  // operator asked for), with a kind and an id shaped as the API takes them. One with no id (the
+  // count of articles waiting) has nothing to set aside.
+  var FINDING_KIND = /^[a-z][a-z0-9_]{0,63}$/;
+  var FINDING_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+  function isDismissable(finding) {
+    return (
+      !!finding &&
+      !isHowTo(finding) &&
+      isText(finding.kind) &&
+      FINDING_KIND.test(finding.kind) &&
+      isText(finding.id) &&
+      FINDING_ID.test(finding.id)
+    );
+  }
+
+  // What the API said it noticed about a finding having been acted on already, as fixed words
+  // (lambdas/ops_mcp/memory.py, ACTION_SIGNS), or null.
+  function actionedNote(finding) {
+    var actioned = finding && finding.actioned;
+    if (!actioned || typeof actioned !== "object" || !isText(actioned.noticed)) {
+      return null;
+    }
+    return { noticed: actioned.noticed, advice: isText(actioned.advice) ? actioned.advice : "" };
+  }
+
   // One finding as a card. `onCopy(code, button)` is called when Copy is pressed, with the node
   // that holds the command: what is copied is that node's text, so a template is copied with its
   // placeholders as they are.
-  function renderCard(doc, finding, onCopy) {
+  function renderCard(doc, finding, onCopy, onDismiss) {
     var howTo = isHowTo(finding);
     var destructive = isDestructive(finding);
     var card = makeNode(doc, "div", "ask-card" + (howTo ? " ask-card-how-to" : "") + (destructive ? " ask-card-destructive" : ""));
@@ -397,6 +423,34 @@
       var bottom = makeNode(doc, "dl");
       appendRow(doc, bottom, "What it does", suggestion.what_it_does, false);
       card.appendChild(bottom);
+    }
+    // Already acted on, as far as the pipeline's own tables show (an article sent for a
+    // rewrite that has not replaced the old one yet): said on the card, with the advice to check
+    // and then dismiss. The assistant never dismisses anything by itself.
+    var acted = actionedNote(finding);
+    if (acted) {
+      var note = makeNode(doc, "p", "ask-actioned");
+      note.setAttribute("role", "note");
+      note.appendChild(makeNode(doc, "strong", "", "Already actioned? "));
+      note.appendChild(doc.createTextNode(acted.noticed + ". " + acted.advice));
+      card.appendChild(note);
+    }
+    // Dismiss: for a finding that has been dealt with in a way the assistant cannot see, or that
+    // the operator does not want raised again. It changes only the assistant's own list.
+    if (typeof onDismiss === "function" && isDismissable(finding)) {
+      var actions = makeNode(doc, "div", "ask-card-actions");
+      var dismiss = makeNode(doc, "button", "ask-dismiss", "Dismiss");
+      dismiss.type = "button";
+      dismiss.setAttribute("aria-label", "Dismiss this finding: do not raise it again");
+      var outcome = makeNode(doc, "span", "ask-dismiss-outcome");
+      outcome.setAttribute("role", "status");
+      outcome.setAttribute("aria-live", "polite");
+      dismiss.addEventListener("click", function () {
+        onDismiss(finding, dismiss, outcome, card);
+      });
+      actions.appendChild(dismiss);
+      actions.appendChild(outcome);
+      card.appendChild(actions);
     }
     if (isText(finding.help)) {
       // The command's own --help, as the CLI prints it: fixed-width, and scrollable (by keyboard
@@ -839,6 +893,8 @@
     cardHeading: cardHeading,
     tableModel: tableModel,
     renderCard: renderCard,
+    isDismissable: isDismissable,
+    actionedNote: actionedNote,
     shouldWarm: shouldWarm,
     WARM_COOLDOWN_MS: WARM_COOLDOWN_MS,
     renderTable: renderTable,
@@ -1210,6 +1266,53 @@
     }
   }
 
+  // The Dismiss button on a card: tell the API to stop raising this finding for this operator.
+  // No model is asked and nothing in the pipeline changes (lambdas/ops_agent_handler.py,
+  // "Dismissing a finding"). Only the finding's own kind and id are sent, as the API gave them.
+  function dismissFinding(finding, button, outcome, card) {
+    if (button.disabled) {
+      return;
+    }
+    if (!accessToken || Date.now() >= tokenExpiresAt) {
+      showGate(MESSAGES.expired);
+      return;
+    }
+    button.disabled = true;
+    outcome.textContent = "Dismissing.";
+    function failed(message) {
+      button.disabled = false;
+      outcome.textContent = message;
+    }
+    root
+      .fetch(config.askUrl, {
+        method: "POST",
+        headers: { Authorization: "Bearer " + accessToken, "Content-Type": "application/json" },
+        body: JSON.stringify({ dismiss: { kind: finding.kind, id: finding.id } }),
+      })
+      .then(function (response) {
+        if (response.status === 401) {
+          showGate(MESSAGES.expired);
+          return null;
+        }
+        if (!response.ok) {
+          failed("Could not dismiss it just now. Try again in a moment.");
+          return null;
+        }
+        return response.json().then(function (body) {
+          if (!body || body.dismissed !== true) {
+            failed("The assistant could not set that one aside.");
+            return;
+          }
+          button.textContent = "Dismissed";
+          outcome.textContent = "It will not be raised again.";
+          card.className = card.className + " ask-card-dismissed";
+        });
+      })
+      .catch(function () {
+        failed("Could not dismiss it just now. Try again in a moment.");
+      });
+  }
+
   function renderTurn(question, result) {
     var turn = make("article", "ask-turn");
     turn.appendChild(make("p", "ask-turn-question", "You asked: " + question));
@@ -1241,7 +1344,7 @@
       turn.appendChild(make("h2", "", guidance ? "How to do it" : "Findings and suggestions"));
       result.findings.forEach(function (finding) {
         if (finding && typeof finding === "object") {
-          turn.appendChild(renderCard(doc, finding, copyCommand));
+          turn.appendChild(renderCard(doc, finding, copyCommand, dismissFinding));
         }
       });
     }
