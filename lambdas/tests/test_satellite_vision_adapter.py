@@ -94,9 +94,23 @@ def topic(**config):
     }
 
 
+class FakeAgent:
+    """Stands in for common/vision_triage.triage: answers `verdict`, records what it was asked."""
+
+    def __init__(self, verdict="real", reason="boxes sit on open water, well clear of cloud"):
+        self.verdict, self.reason, self.calls = verdict, reason, []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"verdict": self.verdict, "reason": self.reason, "tool_calls": [], "model_calls": 1}
+
+
 @pytest.fixture
 def adapter():
     a = sv.SatelliteVisionAdapter()
+    a.agent = FakeAgent()
+    a.triage_agent = a.agent
+    a.choose_model = lambda topic: ("au.anthropic.claude-haiku-4-5-20251001-v1:0", None)
     a.stored = []
 
     def store(topic_id, site_id, scene_id, png):
@@ -383,7 +397,9 @@ def tick_env(monkeypatch):
         yield
 
 
-def tick_with(monkeypatch, scene_id, count, when):
+def tick_with(monkeypatch, scene_id, count, when, agent=None):
+    monkeypatch.setattr(sv.SatelliteVisionAdapter, "triage_agent", staticmethod(agent or FakeAgent()))
+    monkeypatch.setattr(sv.SatelliteVisionAdapter, "choose_model", staticmethod(lambda topic: ("m", None)))
     monkeypatch.setattr(sv.SatelliteVisionAdapter, "http_post", FakeStac([item(scene_id, when)]))
     monkeypatch.setattr(sv.SatelliteVisionAdapter, "measure", FakeWorker({scene_id: count}))
     monkeypatch.setattr(sv.SatelliteVisionAdapter, "store_image", staticmethod(lambda *a: None))
@@ -428,3 +444,63 @@ def test_without_a_running_state_the_last_findings_snapshot_is_used(tick_env, mo
     result, _ = tick_with(monkeypatch, "S1", 11, "2026-09-11T00:00:00Z")
     assert result == {"status": "no_change"}
     assert [e["count"] for e in running_state()["sites"]["botany"]["history"]] == [10, 11]
+
+
+# --- the agent's decision ------------------------------------------------------------------------
+
+
+def test_the_agent_is_asked_only_about_a_numeric_change_and_its_yes_is_material(adapter):
+    quiet = history_state(adapter, [10, 12, 11, 13])
+    assert not adapter.material_diff({"x": 1}, quiet)[0]
+    assert adapter.agent.calls == []  # rule 2: no model call without a numeric change
+
+    state = history_state(adapter, [10, 12, 11, 30])
+    changed, summary = adapter.material_diff({"x": 1}, state)
+    assert changed and "checked by the vision agent: boxes sit on open water" in summary
+    asked = adapter.agent.calls[0]
+    assert asked["site"]["id"] == "botany" and asked["site"]["polygon"] == POLY
+    assert asked["scene"]["id"] == "S3" and asked["scene"]["assets"]["nir"].endswith("S3/nir.tif")
+    assert asked["verdict"]["baseline"] == 11 and asked["max_tool_calls"] == 3
+    # The trail is kept in the state the research tick stores.
+    assert state["triage"]["botany"]["verdict"] == "real"
+    assert state["sites"]["botany"]["history"][-1]["triage"]["verdict"] == "real"
+
+
+def test_an_artefact_is_not_material_and_says_why(adapter):
+    adapter.triage_agent = FakeAgent("artefact", "the extra boxes trace a thin cloud edge")
+    state = history_state(adapter, [10, 12, 11, 30])
+    changed, summary = adapter.material_diff({"x": 1}, state)
+    assert not changed
+    assert "the agent judged it an artefact: the extra boxes trace a thin cloud edge" in summary
+    assert state["sites"]["botany"]["history"][-1]["triage"]["verdict"] == "artefact"
+
+
+def test_no_model_means_no_finding(adapter):
+    def broken(topic):
+        raise RuntimeError("model config unreadable")
+
+    adapter.choose_model = broken
+    state = history_state(adapter, [10, 12, 11, 30])
+    assert not adapter.material_diff({"x": 1}, state)[0]
+    assert "no model to triage with" in state["triage"]["botany"]["reason"]
+    assert adapter.agent.calls == []
+
+
+def test_triage_can_be_turned_off_and_is_skipped_on_the_first_tick(adapter):
+    state = history_state(adapter, [10, 12, 11, 30], triage=False)
+    assert adapter.material_diff({"x": 1}, state)[0]
+    assert adapter.agent.calls == [] and "triage" not in state
+    first = history_state(adapter, [10])
+    assert adapter.material_diff(None, first)[0] and adapter.agent.calls == []
+
+
+def test_an_artefact_tick_is_kept_as_running_state_without_a_finding(tick_env, monkeypatch):
+    for n, count in enumerate((10, 11, 12)):
+        tick_with(monkeypatch, f"S{n}", count, f"2026-09-1{n}T00:00:00Z")
+    glint = FakeAgent("artefact", "glint")
+    result, bedrock = tick_with(monkeypatch, "S3", 40, "2026-09-13T00:00:00Z", agent=glint)
+    assert result == {"status": "no_change"}
+    bedrock.assert_not_called()
+    state = running_state()
+    assert state["triage"]["botany"]["reason"] == "glint"
+    assert [e["count"] for e in state["sites"]["botany"]["history"]] == [10, 11, 12, 40]

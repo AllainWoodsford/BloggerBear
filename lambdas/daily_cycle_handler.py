@@ -299,6 +299,8 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         hold_reasons.append(TRUNCATED_DRAFT_REASON)
     if not title_is_plausible:
         hold_reasons.append(IMPLAUSIBLE_TITLE_REASON)
+    if compliance.requires_manual_review(topic):
+        hold_reasons.append(compliance.MANUAL_REVIEW_REASON)
     if hold_reasons:
         print(f"daily_cycle_handler: holding {hold_reasons} for topic_id={topic_id}")
 

@@ -3241,3 +3241,66 @@ def test_a_stored_assistant_access_nobody_understands_is_shown_as_off(aws_resour
 
     assert body["assistant_access"] == "locked"
     assert body["effective_assistant_access"] == "off"
+
+
+POLYGON = [[151.2, -33.97], [151.3, -33.97], [151.3, -34.0]]
+
+
+def test_create_topic_satellite_vision_forces_manual_review(aws_resources):
+    body = {
+        "topic_id": "anchorages",
+        "name": "Anchorages",
+        "adapter": "satellite_vision",
+        "adapter_config": {"sites": [{"id": "a", "polygon": POLYGON}]},
+        "force_manual_review": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["force_manual_review"] is True
+    # Floats in the config are stored (as Decimals) and come back as the same numbers.
+    assert created["adapter_config"]["sites"][0]["polygon"] == POLYGON
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    stored = table.get_item(Key={"topic_id": "anchorages"})
+    assert stored["Item"]["adapter_config"]["sites"][0]["polygon"][0][0] == Decimal("151.2")
+
+
+def test_update_topic_accepts_floats_in_adapter_config(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter_config": {"weights": [0.25, 1.5]}},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["adapter_config"] == {"weights": [0.25, 1.5]}
+
+
+def test_force_manual_review_can_be_set_on_any_topic_and_must_be_a_boolean(aws_resources):
+    _put_topic()
+    path = {"topic_id": "github-trending"}
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        on = admin_api_handler.handler(
+            _event("PUT /topics/{topic_id}", path_params=path, body={"force_manual_review": True}), None
+        )
+        bad = admin_api_handler.handler(
+            _event("PUT /topics/{topic_id}", path_params=path, body={"force_manual_review": "yes"}), None
+        )
+        bad_create = admin_api_handler.handler(
+            _event("POST /topics", body={"topic_id": "x", "name": "X", "force_manual_review": 1}), None
+        )
+    assert json.loads(on["body"])["force_manual_review"] is True
+    assert bad["statusCode"] == 400 and bad_create["statusCode"] == 400
+
+
+def test_update_cannot_unset_manual_review_on_a_satellite_vision_topic(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "sv", "adapter": "satellite_vision", "force_manual_review": True})
+    event = _event(
+        "PUT /topics/{topic_id}", path_params={"topic_id": "sv"}, body={"force_manual_review": False}
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True

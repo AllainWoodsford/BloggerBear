@@ -17,12 +17,20 @@ region, through common/vision_client.py. What a topic watches is configuration, 
       "history_size": 8, "min_baseline": 2,
       "relative_threshold": 0.35, "absolute_threshold": 5,
       "max_sites_per_tick": 5, "time_budget_seconds": 60,
+      "triage": true, "triage_max_tool_calls": 3,          # the agent (common/vision_triage.py)
     }
 
 **Per tick**, for each site: find the newest Sentinel-2 L2A scene over it (Earth Search STAC,
 free, no key); if it is one the site already has, do nothing; otherwise ask the worker to measure
 it and append the result to the site's history. A site that can't be searched or measured keeps
 its history and records `last_error`: not measured is never "nothing there".
+
+**The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
+triage agent (common/vision_triage.py) looks at the figure and the evidence, may re-measure the
+scene with other settings or compare the previous one, and answers "real" or "artefact". Only
+"real" is material; anything unsure is "artefact" (fail closed). Its trail is kept in the state
+(`triage`, and on the scene's history entry), so every decision can be replayed. It runs inside
+`material_diff`, after the thresholds, so rule 2 holds: no model call without a numeric change.
 
 **Material** when a site's new count differs from the median of its previous clear scenes by at
 least `absolute_threshold` *and* `relative_threshold`, the new scene's coverage is at least
@@ -55,8 +63,9 @@ from decimal import Decimal
 import boto3
 import requests
 
-from common import vision_client
+from common import vision_client, vision_triage
 from common.adapters.base import Adapter, render_review_evidence
+from common.model_routing import resolve_model
 
 STAC_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
 STAC_ITEM_URL = "https://earth-search.aws.element84.com/v1/collections/{collection}/items/{item_id}"
@@ -80,6 +89,8 @@ DEFAULTS = {
     "absolute_threshold": 5,
     "max_sites_per_tick": 5,
     "time_budget_seconds": 60,
+    "triage": True,
+    "triage_max_tool_calls": 3,
 }
 
 COPERNICUS_SOURCE = {
@@ -125,7 +136,8 @@ def parse_config(adapter_config: dict | None) -> dict:
         ids.add(site["id"])
     if config["backend"] not in ("opencv", "cool"):
         raise ConfigError("backend must be opencv or cool")
-    for key in ("history_size", "min_baseline", "max_sites_per_tick", "lookback_days"):
+    whole = ("history_size", "min_baseline", "max_sites_per_tick", "lookback_days", "triage_max_tool_calls")
+    for key in whole:
         config[key] = int(config[key])
     for key in ("coverage_floor", "relative_threshold", "absolute_threshold", "max_cloud_cover",
                 "time_budget_seconds"):  # fmt: skip
@@ -190,6 +202,11 @@ def _store_image(topic_id: str, site_id: str, scene_id: str, png: bytes) -> str:
     return key
 
 
+def _load_image(key: str) -> bytes | None:
+    response = boto3.client("s3").get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=key)
+    return response["Body"].read()
+
+
 def clear_entries(history: list[dict], floor: float) -> list[dict]:
     """The history entries a baseline may use: measured, and with coverage at the floor."""
     return [e for e in history if e.get("count") is not None and (e.get("coverage") or 0) >= floor]
@@ -200,14 +217,25 @@ class SatelliteVisionAdapter(Adapter):
     keeps_running_state = True
     sources = (COPERNICUS_SOURCE, AWS_OPEN_DATA_SOURCE)
 
-    # Injected by tests; the defaults talk to Earth Search, the worker and S3.
+    # Injected by tests; the defaults talk to Earth Search, the worker, S3 and Bedrock.
     http_post = None
     measure = staticmethod(vision_client.measure)
     store_image = staticmethod(_store_image)
+    load_image = staticmethod(_load_image)
+    triage_agent = staticmethod(vision_triage.triage)
+    choose_model = staticmethod(resolve_model)
     clock = staticmethod(time.monotonic)
+
+    # Set by fetch_state for material_diff on the same instance.
+    _topic: dict | None = None
+    _config: dict | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
         config = parse_config(topic_config.get("adapter_config"))
+        # Kept for material_diff on this same instance (the research tick makes one per tick): the
+        # triage agent needs the topic's model and the sites' polygons, and the diff is only given
+        # the two states.
+        self._topic, self._config = topic_config, config
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
         started = self.clock()
@@ -260,6 +288,8 @@ class SatelliteVisionAdapter(Adapter):
                 "build_sha256": (result.reply.get("build") or {}).get("build_sha256"),
                 "timings_ms": result.reply.get("timings_ms"),
                 "image_key": None,
+                # For the agent's look_again: the same bands, re-measured with other settings.
+                "assets": scene["assets"],
             }
             if result.image_png:
                 try:
@@ -324,6 +354,8 @@ class SatelliteVisionAdapter(Adapter):
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
+        if old_state is not None:
+            self._triage(new_state, [v for v in verdicts if v["material"]])
         noun = new_state.get("object_noun") or DEFAULTS["object_noun"]
         if old_state is None:
             lines = [f"{v['name']}: {v['count']} {noun} (coverage {v['coverage']:.0%})" for v in verdicts]
@@ -332,6 +364,47 @@ class SatelliteVisionAdapter(Adapter):
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
         return True, "; ".join(_describe(v, noun) for v in material)
+
+    def _triage(self, new_state: dict, candidates: list[dict]) -> None:
+        """Ask the agent about each numerically material site; an "artefact" (or any failure)
+        makes that site not material. Records the trail in `new_state` (it is stored after the
+        diff). Skipped, leaving the numeric verdict, when the topic turns triage off or the state
+        didn't come from this instance's fetch (the review path)."""
+        config = self._config
+        if not candidates or not config or not config["triage"] or self._topic is None:
+            return
+        try:
+            model_id, _fallback = self.choose_model(self._topic)
+        except Exception as exc:  # noqa: BLE001 - no model, no agent: fail closed
+            model_id, failure = None, f"no model to triage with ({type(exc).__name__})"
+        sites = {site["id"]: site for site in config["sites"]}
+        trails = new_state.setdefault("triage", {})
+        for verdict in candidates:
+            record = new_state["sites"][verdict["site_id"]]
+            latest = record["history"][-1]
+            if model_id is None:
+                outcome = {"verdict": "artefact", "reason": failure, "tool_calls": []}
+            else:
+                outcome = self.triage_agent(
+                    site={**sites[verdict["site_id"]], "name": record.get("name")},
+                    verdict=verdict,
+                    history=record["history"],
+                    scene={"id": latest["scene_id"], "captured_at": latest.get("captured_at"),
+                           "assets": latest.get("assets") or {}},  # fmt: skip
+                    model_id=model_id,
+                    object_noun=new_state.get("object_noun") or DEFAULTS["object_noun"],
+                    params=config["params"],
+                    backend=config["backend"],
+                    load_image=self.load_image,
+                    measure=self.measure,
+                    max_tool_calls=config["triage_max_tool_calls"],
+                )
+            trails[verdict["site_id"]] = outcome
+            latest["triage"] = {"verdict": outcome["verdict"], "reason": outcome["reason"]}
+            verdict["triage"] = latest["triage"]
+            if outcome["verdict"] != "real":
+                verdict["material"] = False
+                verdict["reason"] = f"the agent judged it an artefact: {outcome['reason']}"
 
     def source_refs(self, new_state: dict) -> list[dict]:
         refs = []
@@ -383,8 +456,11 @@ class SatelliteVisionAdapter(Adapter):
 
 def _describe(v: dict, noun: str) -> str:
     sign = "+" if v["delta"] >= 0 else ""
-    return (
+    text = (
         f"{v['name']}: {v['count']} {noun} in scene {v['scene_id']} (captured {v['captured_at']}), "
         f"against a baseline of {v['baseline']:g} from {v['baseline_scenes']} earlier clear scenes "
         f"({sign}{v['delta']:g}, {sign}{v['relative']:.0%}); coverage {v['coverage']:.0%}"
     )
+    if v.get("triage"):
+        text += f"; checked by the vision agent: {v['triage']['reason']}"
+    return text
