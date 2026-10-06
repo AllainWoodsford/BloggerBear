@@ -516,6 +516,35 @@ turned on. Design: [docs/enhancements/opencv-agentic-vision-enhancement.md](enha
 The worker reads public data over HTTPS and needs no other access. Its errors alarm is not in the
 pipeline dashboard: observability's alarms are in the home Region, and the worker is not.
 
+### The COOL backend and the benchmark
+
+COOL (OpenCV's Graviton-tuned OpenCV 5) is what the competition's COOL award scores, and it is
+measured against the stock worker above. Nothing here is in Terraform yet; these are by hand.
+
+1. **Subscribe** to *Cloud Optimized OpenCV For AWS Graviton4* (or *Graviton3*) on AWS Marketplace.
+   It has a 7-day free trial, then usage pricing: note the price, and unsubscribe when done.
+2. **Measure on Graviton4, both builds**, on a `c8g` instance launched from the COOL AMI (Ubuntu
+   24.04, COOL preinstalled), in the vision Region:
+
+   ```sh
+   git clone <this repository> && cd BloggerBear
+   python3 -m pip install requests                      # COOL's cv2 and numpy are already there
+   python3 scripts/vision_benchmark.py kernels --out cool-g4.json
+   python3 -m venv stock && stock/bin/pip install -r lambdas/requirements-vision.txt
+   stock/bin/python scripts/vision_benchmark.py kernels --out stock-g4.json
+   ```
+
+   Each report names its CPU (Neoverse V2 = Graviton4) and its OpenCV build's fingerprint. Add the
+   deployed stock worker end to end (`worker --arn <VISION_WORKER_ARN>`) and an x86 run for the
+   other rows. **Terminate the instance afterwards.**
+3. **Pin the fingerprint**: `build_sha256` from the COOL report is what a COOL worker's
+   `COOL_BUILD_SHA256` is set to; a `cool` worker whose `cv2` is anything else refuses every
+   request (`not_cool`).
+4. **The COOL worker image**: `docker/vision-cool/Dockerfile` builds the same handler on top of the
+   COOL Docker image (its URI from the subscription, pinned by digest; the file says how). Whether it
+   runs as a Lambda on Lambda's arm64 CPUs, or needs ECS on a Graviton4 instance, is the open question
+   in the design's §8; run the image's `kernels` benchmark on Lambda-class hardware before wiring it.
+
 ## Deploying to another region
 
 `ap-southeast-2` (Sydney) is the default, and what you get with nothing set. To deploy somewhere
