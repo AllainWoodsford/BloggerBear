@@ -298,6 +298,78 @@ def window(hours=None, start=None, end=None, *, now: datetime | None = None) -> 
     return Window(begin, finish, asked=True, clamped=clamped)
 
 
+# --- a query the operator can run themselves, with its log groups in it ----------------------------
+#
+# A Logs Insights query pasted into the console has no log groups: the operator had to tick up to
+# fourteen by hand. The query language's SOURCE command names them, by prefix, in the query itself.
+#
+#   CloudWatch Logs user guide, "SOURCE" (read 2026-10-06),
+#   https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-Source.html:
+#   "The SOURCE command is supported only in the AWS CLI and API, not in the CloudWatch console."
+#   "You can include as many as 5 prefixes in the list."
+#   Example: SOURCE logGroups(namePrefix: ['namePrefix1', 'namePrefix2'])
+#
+# So the card carries an `aws logs start-query` command, not a query to paste. It is text for the
+# operator to read, edit and run in their own terminal: nothing here runs it.
+SOURCE_MAX_PREFIXES = 5
+# How many log groups a suggested command names: the ones closest to what was found. Few enough to
+# read at a glance; the operator deletes one or adds another before copying.
+SOURCES_SUGGESTED = 3
+# A log group name as AWS allows it. Ours all are; one that is not is left out of a command, so
+# no name can carry a quote into it.
+_GROUP_NAME = re.compile(r"^[A-Za-z0-9_./#-]{1,512}$")
+
+
+def closest_groups(groups, ranked=(), limit: int = SOURCES_SUGGESTED) -> list[str]:
+    """Up to `limit` of `groups` for a SOURCE line: those in `ranked` first, in its order (the
+    caller's "closest to the finding", such as most errors first), then the rest in their own."""
+    limit = max(1, min(int(limit), SOURCE_MAX_PREFIXES))
+    allowed = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
+    first = [group for group in dict.fromkeys(ranked) if group in allowed]
+    return (first + [group for group in allowed if group not in first])[:limit]
+
+
+def source_line(groups) -> str:
+    """ "SOURCE logGroups(namePrefix: ['a', 'b'])" for up to SOURCE_MAX_PREFIXES group names."""
+    names = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
+    listed = ", ".join(f"'{name}'" for name in names[:SOURCE_MAX_PREFIXES])
+    return f"SOURCE logGroups(namePrefix: [{listed}])"
+
+
+def _in_double_quotes(text: str) -> str:
+    """`text` as it must be written inside a POSIX shell's double quotes to arrive unchanged."""
+    return re.sub(r'([\\"$`])', r"\\\1", text)
+
+
+def source_command(groups, query: str, when: Window, region: str | None) -> str | None:
+    """An `aws logs start-query` command that runs `query` over `groups` (named on a SOURCE line)
+    for the window, or None when there is no usable group. The query is one of this package's
+    fixed ones; it is quoted for a POSIX shell (Git Bash on Windows)."""
+    names = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
+    if not names:
+        return None
+    body = query if query.lstrip().startswith("|") else f"| {query}"
+    where = f" --region {region}" if region and re.fullmatch(r"[a-z0-9-]{1,32}", region) else ""
+    return (
+        f"aws logs start-query{where} "
+        f"--start-time {int(when.start.timestamp())} --end-time {int(when.end.timestamp())} "
+        f'--query-string "{_in_double_quotes(source_line(names))}\n{_in_double_quotes(body)}"'
+    )
+
+
+SOURCE_ACTION = (
+    "Run this in your own terminal (Git Bash on Windows). It starts the query over the log groups "
+    "on its SOURCE line, the ones closest to what I found: delete one or add another there first "
+    "if you like (five at most), then Copy. It prints a queryId; "
+    "`aws logs get-query-results --query-id <that id>` shows the lines"
+)
+SOURCE_WHAT_IT_DOES = (
+    "Reads the logs and changes nothing. Logs Insights bills per GB scanned, so keep the time "
+    "range to when it happened. The console does not accept SOURCE: there, select the log groups "
+    "above and paste the query from the line after it."
+)
+
+
 def group_of(log_field) -> str:
     """A log group's name from Logs Insights' @log field ("<account>:<group name>")."""
     text = str(log_field or "")

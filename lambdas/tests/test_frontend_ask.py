@@ -826,10 +826,21 @@ function find(made, test, found) {
 
 const cards = input.findings.map((finding) => {
   const copied = [];
-  const onCopy = (code, button) => copied.push([code.textContent, button.textContent]);
+  const onCopy = (code, button) => copied.push([ask.commandText(code), button.textContent]);
   const card = ask.renderCard(doc, finding, onCopy);
   find(card, (made) => made.tag === "button").forEach((button) => button.listeners.click());
-  return { card: plain(card), copied };
+  // Then the operator edits the box, as a browser would record it (a textarea's `value`), and
+  // presses Copy again.
+  const edited = [];
+  find(card, (made) => made.tag === "textarea").forEach((box) => {
+    box.value = "EDITED " + box.textContent;
+  });
+  find(card, (made) => made.tag === "button").forEach((button) => {
+    button.listeners.click();
+    edited.push(copied.pop()[0]);
+  });
+  const rows = find(card, (made) => made.tag === "textarea").map((box) => box.rows);
+  return { card: plain(card), copied, edited, rows };
 });
 process.stdout.write(JSON.stringify({
   cards,
@@ -939,14 +950,42 @@ def test_a_destructive_card_warns_in_words_and_copies_the_template_with_its_plac
     assert warning["attrs"]["role"] == "note"
     assert _texts(warning) == "Template, not filled in. The assistant never fills one in."
     # Shown as it is, and copied as it is: the placeholder is still a placeholder.
-    (code,) = _find(card, tag="code")
+    (code,) = _find(card, tag="textarea")
     assert code["text"] == _TEMPLATE
+    assert code["attrs"]["aria-label"] == "Command template. Edit it before you copy it"
     assert copied == [[_TEMPLATE, "Copy template"]] and "<topic_id>" in copied[0][0]
     (button,) = _find(card, tag="button")
     assert button["attrs"]["aria-label"] == "Copy the template, with its placeholders"
     # Neither a how-to command nor a template is ever read aloud.
     assert rendered["kinds"] == ["fix", "fix", "fix"]
     assert rendered["spoken"] == "Run the command on screen to see them, or the command on screen to delete."
+
+
+@needs_node
+def test_a_command_is_shown_in_a_box_the_operator_can_edit_before_copying(rendered):
+    """The owner's ask: delete a log group from a query's SOURCE line, then Copy. The box is a
+    plain text box: no form, no name, nothing to submit, and its content is set as text."""
+    for entry in rendered["cards"]:
+        card = entry["card"]
+        (box,) = _find(card, tag="textarea")
+        assert box["cls"] == "ask-command-text" and _find(card, tag="code") == []
+        assert box["attrs"]["spellcheck"] == "false" and box["attrs"]["autocomplete"] == "off"
+        assert "name" not in box["attrs"] and "form" not in box["attrs"]
+        assert _find(card, tag="form") == [] and _find(card, tag="input") == []
+        (button,) = _find(card, tag="button")
+        assert button["type"] == "button"  # never a submit
+        # Copy takes what the box holds now: the edit, not what the server sent.
+        assert entry["edited"] == ["EDITED " + box["text"]]
+        assert 2 <= entry["rows"][0] <= 14
+
+    code = _code(_read("ask.js"))
+    block = _between(code, "function renderCard(", "function renderTable(")
+    assert 'makeNode(doc, "textarea", "ask-command-text", suggestion.command)' in block
+    assert "innerHTML" not in code and ".value =" not in block  # shown as text; never written back
+    css = _read("ask.css")
+    assert ".ask-command-text {" in css and ".ask-command-text:focus-visible" in css
+    # Nothing reads the box except Copy: no listener on it, and it is not part of what is asked.
+    assert "code.addEventListener" not in block and block.count("addEventListener") == 1
 
 
 @needs_node
@@ -979,8 +1018,8 @@ def test_the_page_takes_tables_and_how_to_cards_from_the_answer_and_builds_them_
     assert "tables: Array.isArray(body.tables) ? body.tables : []" in code
     assert "renderTable(doc, table)" in code and "renderCard(doc, finding, copyCommand)" in code
     assert 'finding.kind === "how_to"' in code and "finding.destructive === true" in code
-    # What is copied is the text of the node that shows the command.
-    assert "clipboard.writeText(code.textContent)" in code
+    # What is copied is what the command's box holds when Copy is pressed, edits included.
+    assert "clipboard.writeText(commandText(code))" in code
     # Still one way to make a node, and it sets text, never markup.
     assert code.count("createElement(") == 1 and "node.textContent = String(text)" in code
     # The help and the table scroll inside their own box on a narrow screen.

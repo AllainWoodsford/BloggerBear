@@ -406,11 +406,10 @@ def _check_yourself(
             "noticed": f"Check it yourself: {title}",
             "where": where,
             "suggestion": {
-                "action": "Open CloudWatch > Logs Insights, select the access log groups above, set the "
-                "time range to the one above, paste this and run it",
-                "command": text[name],
-                "what_it_does": "Reads the access logs and changes nothing. errorType says who answered: "
-                "WAF_FILTERED the firewall, THROTTLED the rate limit, empty with a latency the Lambda.",
+                "action": logs.SOURCE_ACTION,
+                "command": logs.source_command(groups, text[name], when, region) or text[name],
+                "what_it_does": "errorType says who answered: WAF_FILTERED the firewall, THROTTLED the "
+                "rate limit, empty with a latency the Lambda. " + logs.SOURCE_WHAT_IT_DOES,
             },
         }
         for name, title in titles.items()

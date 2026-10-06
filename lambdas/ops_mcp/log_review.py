@@ -426,10 +426,11 @@ def review(
     findings = _findings(per_function, chosen, when)
     total = sum(row["errors"] for row in per_function.values())
     examples_withheld = sum(row["withheld"] for row in per_function.values())
+    ranked = _by_errors(allowed, per_function, env)
 
     return {
         "spoken": _spoken(per_function, chosen, when, total, complete, refused),
-        "findings": findings + _check_yourself(allowed, text, when, region),
+        "findings": findings + _check_yourself(allowed, text, when, region, ranked),
         "environment": env,
         "scope": {
             "functions": [c.key for c in chosen.functions],
@@ -597,12 +598,24 @@ def _findings(rows: dict[str, dict], chosen: Scope, when: logs.Window) -> list[d
     return out
 
 
+def _by_errors(groups: list[str], per_function: dict[str, dict], env: str) -> list[str]:
+    """The log groups that had errors, most first: the ones a check-it-yourself command names."""
+    counted = [(per_function.get(_function_key(group, env), {}).get("errors", 0), group) for group in groups]
+    return [group for errors, group in sorted(counted, key=lambda item: -item[0]) if errors]
+
+
 def _check_yourself(
-    groups: list[str], text: dict[str, str], when: logs.Window, region: str | None
+    groups: list[str],
+    text: dict[str, str],
+    when: logs.Window,
+    region: str | None,
+    ranked: list[str] | tuple = (),
 ) -> list[dict]:
-    """The runsheet for exactly what was read: the error lines and the per-function counts, as
-    queries to paste, over the same groups and window. Two cards, not four: the baseline and
+    """The runsheet for exactly what was read: the error lines and the per-function counts, over
+    the same window, as a command to run with its log groups on a SOURCE line (logs.py): the
+    `ranked` ones first, the closest to what was found. Two cards, not four: the baseline and
     REPORT queries are on the function's own dashboard already."""
+    sources = logs.closest_groups(groups, ranked)
     shown = ", ".join(groups[:5]) + (f" and {len(groups) - 5} more" if len(groups) > 5 else "")
     where = {
         "log_groups": shown,
@@ -625,11 +638,9 @@ def _check_yourself(
                 "noticed": f"Check it yourself: {title}",
                 "where": where,
                 "suggestion": {
-                    "action": "Open CloudWatch > Logs Insights, select the log groups above, set the "
-                    "time range to the one above, paste this and run it",
-                    "command": text[name],
-                    "what_it_does": "Reads the logs and changes nothing. Logs Insights bills per GB "
-                    "scanned, so keep the time range to when it happened.",
+                    "action": logs.SOURCE_ACTION,
+                    "command": logs.source_command(sources, text[name], when, region) or text[name],
+                    "what_it_does": logs.SOURCE_WHAT_IT_DOES,
                 },
             }
         )
