@@ -430,7 +430,7 @@ def review(
 
     return {
         "spoken": _spoken(per_function, chosen, when, total, complete, refused),
-        "findings": findings + _check_yourself(allowed, text, when, region, ranked),
+        "findings": findings + _check_yourself(allowed, text, when, region, ranked, now),
         "environment": env,
         "scope": {
             "functions": [c.key for c in chosen.functions],
@@ -610,12 +610,17 @@ def _check_yourself(
     when: logs.Window,
     region: str | None,
     ranked: list[str] | tuple = (),
+    now: datetime | None = None,
 ) -> list[dict]:
     """The runsheet for exactly what was read: the error lines and the per-function counts, over
-    the same window, as a command to run with its log groups on a SOURCE line (logs.py): the
-    `ranked` ones first, the closest to what was found. Two cards, not four: the baseline and
-    REPORT queries are on the function's own dashboard already."""
+    the same window, as a query to paste with its log groups on SOURCE lines ahead of it
+    (logs.py): the `ranked` ones first, the closest to what was found. Two cards, not four: the
+    baseline and REPORT queries are on the function's own dashboard already."""
     sources = logs.closest_groups(groups, ranked)
+    queries_with_sources = {
+        name: logs.source_query(sources, text[name], when, region, now=now)
+        for name in ("sample", "totals")
+    }
     shown = ", ".join(groups[:5]) + (f" and {len(groups) - 5} more" if len(groups) > 5 else "")
     where = {
         "log_groups": shown,
@@ -638,8 +643,8 @@ def _check_yourself(
                 "noticed": f"Check it yourself: {title}",
                 "where": where,
                 "suggestion": {
-                    "action": logs.SOURCE_ACTION,
-                    "command": logs.source_command(sources, text[name], when, region) or text[name],
+                    "action": logs.SOURCE_ACTION if queries_with_sources[name] else logs.PLAIN_QUERY_ACTION,
+                    "command": queries_with_sources[name] or text[name],
                     "what_it_does": logs.SOURCE_WHAT_IT_DOES,
                 },
             }

@@ -298,75 +298,109 @@ def window(hours=None, start=None, end=None, *, now: datetime | None = None) -> 
     return Window(begin, finish, asked=True, clamped=clamped)
 
 
-# --- a query the operator can run themselves, with its log groups in it ----------------------------
+# --- a query the operator can paste, with its log groups in it ---------------------------------------
 #
-# A Logs Insights query pasted into the console has no log groups: the operator had to tick up to
-# fourteen by hand. The query language's SOURCE command names them, by prefix, in the query itself.
+# A Logs Insights query pasted into the console had no log groups: the operator had to tick up to
+# fourteen by hand. The console's query editor takes them in the query itself, as SOURCE lines
+# ahead of it, each a log group's ARN, the first carrying the time range. The owner's example,
+# copied from the console:
 #
-#   CloudWatch Logs user guide, "SOURCE" (read 2026-10-06),
-#   https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax-Source.html:
-#   "The SOURCE command is supported only in the AWS CLI and API, not in the CloudWatch console."
-#   "You can include as many as 5 prefixes in the list."
-#   Example: SOURCE logGroups(namePrefix: ['namePrefix1', 'namePrefix2'])
+#   SOURCE "arn:aws:logs:<region>:<account>:log-group:/aws/apigateway/...-public-api-access" START=-1w
+#       END=0s |                                           (one line in the console; wrapped here)
+#   SOURCE "arn:aws:logs:<region>:<account>:log-group:/aws/apigateway/...-ops-mcp-access" |
+#   SOURCE "arn:aws:logs:<region>:<account>:log-group:/aws/apigateway/...-admin-api-access" |
+#   fields @timestamp, @message
+#   | sort @timestamp desc
+#   | limit 10000
 #
-# So the card carries an `aws logs start-query` command, not a query to paste. It is text for the
-# operator to read, edit and run in their own terminal: nothing here runs it.
-SOURCE_MAX_PREFIXES = 5
-# How many log groups a suggested command names: the ones closest to what was found. Few enough to
+# One line per log group, so deleting a line in the card's box removes that group and leaves a
+# query that still runs. It is text for the operator to read, edit and paste: nothing here runs it.
+#
+# How many log groups a suggested query names: the ones closest to what was found. Few enough to
 # read at a glance; the operator deletes one or adds another before copying.
 SOURCES_SUGGESTED = 3
-# A log group name as AWS allows it. Ours all are; one that is not is left out of a command, so
-# no name can carry a quote into it.
+SOURCES_MAX = 10
+# A log group name as AWS allows it. Ours all are; one that is not is left out of a query, so no
+# name can carry a quote into it.
 _GROUP_NAME = re.compile(r"^[A-Za-z0-9_./#-]{1,512}$")
+_REGION_NAME = re.compile(r"^[a-z0-9-]{1,32}$")
+_GROUP_ARN = re.compile(r"arn:aws:logs:[a-z0-9-]+:\d{12}:log-group:[A-Za-z0-9_./#-]+")
 
 
 def closest_groups(groups, ranked=(), limit: int = SOURCES_SUGGESTED) -> list[str]:
-    """Up to `limit` of `groups` for a SOURCE line: those in `ranked` first, in its order (the
+    """Up to `limit` of `groups` for the SOURCE lines: those in `ranked` first, in its order (the
     caller's "closest to the finding", such as most errors first), then the rest in their own."""
-    limit = max(1, min(int(limit), SOURCE_MAX_PREFIXES))
+    limit = max(1, min(int(limit), SOURCES_MAX))
     allowed = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
     first = [group for group in dict.fromkeys(ranked) if group in allowed]
     return (first + [group for group in allowed if group not in first])[:limit]
 
 
-def source_line(groups) -> str:
-    """ "SOURCE logGroups(namePrefix: ['a', 'b'])" for up to SOURCE_MAX_PREFIXES group names."""
-    names = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
-    listed = ", ".join(f"'{name}'" for name in names[:SOURCE_MAX_PREFIXES])
-    return f"SOURCE logGroups(namePrefix: [{listed}])"
+def _ago(seconds: float) -> str:
+    """A time `seconds` before now as the console writes it: 0s, -90m, -24h, -3d, -1w. Rounded
+    outward to whole minutes by the caller, and to the largest unit that divides it."""
+    minutes = int(seconds // 60)
+    if minutes <= 0:
+        return "0s"
+    for unit, size in (("w", 7 * 24 * 60), ("d", 24 * 60), ("h", 60)):
+        if minutes % size == 0:
+            return f"-{minutes // size}{unit}"
+    return f"-{minutes}m"
 
 
-def _in_double_quotes(text: str) -> str:
-    """`text` as it must be written inside a POSIX shell's double quotes to arrive unchanged."""
-    return re.sub(r'([\\"$`])', r"\\\1", text)
+def source_range(when: Window, now: datetime | None = None) -> str:
+    """ "START=-24h END=0s" for a window, relative to now as the console's SOURCE line takes it.
+    The start is rounded back and the end forward to a whole minute, so nothing read is left out.
+    A window that is "the last N hours" ends at the moment the tool read it, so with no `now`
+    given it is written from its own end ("START=-24h END=0s", not a minute more)."""
+    now = now or (datetime.now(UTC) if when.asked else when.end)
+    back = max((now - when.start).total_seconds(), 0)
+    ahead = max((now - when.end).total_seconds(), 0)
+    start_minutes = -(-back // 60)  # rounded up: further back
+    end_minutes = ahead // 60  # rounded down: nearer now
+    return f"START={_ago(start_minutes * 60)} END={_ago(end_minutes * 60)}"
 
 
-def source_command(groups, query: str, when: Window, region: str | None) -> str | None:
-    """An `aws logs start-query` command that runs `query` over `groups` (named on a SOURCE line)
-    for the window, or None when there is no usable group. The query is one of this package's
-    fixed ones; it is quoted for a POSIX shell (Git Bash on Windows)."""
-    names = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))]
-    if not names:
+def source_query(
+    groups,
+    query: str,
+    when: Window,
+    region: str | None,
+    *,
+    now: datetime | None = None,
+    arn: Callable[[str, str], str] | None = None,
+) -> str | None:
+    """`query` with a SOURCE line for each of `groups` ahead of it, the first with the window, or
+    None when that cannot be built (no usable group, no region, or the account could not be
+    asked for): the caller then shows the query alone, as before. The query is one of this
+    package's fixed ones and is not changed."""
+    names = [group for group in dict.fromkeys(groups) if _GROUP_NAME.match(str(group))][:SOURCES_MAX]
+    if not names or not region or not _REGION_NAME.match(region):
         return None
-    body = query if query.lstrip().startswith("|") else f"| {query}"
-    where = f" --region {region}" if region and re.fullmatch(r"[a-z0-9-]{1,32}", region) else ""
-    return (
-        f"aws logs start-query{where} "
-        f"--start-time {int(when.start.timestamp())} --end-time {int(when.end.timestamp())} "
-        f'--query-string "{_in_double_quotes(source_line(names))}\n{_in_double_quotes(body)}"'
-    )
+    try:
+        arns = [(arn or group_arn)(name, region) for name in names]
+    except Exception as exc:  # noqa: BLE001 - the plain query is still worth showing
+        print(f"ops_logs: no account id for the SOURCE lines ({type(exc).__name__})")
+        return None
+    if not all(_GROUP_ARN.fullmatch(each) for each in arns):
+        return None
+    lines = [f'SOURCE "{each}"' for each in arns]
+    lines[0] += f" {source_range(when, now)}"
+    return "".join(f"{line} |\n" for line in lines) + query
 
 
 SOURCE_ACTION = (
-    "Run this in your own terminal (Git Bash on Windows). It starts the query over the log groups "
-    "on its SOURCE line, the ones closest to what I found: delete one or add another there first "
-    "if you like (five at most), then Copy. It prints a queryId; "
-    "`aws logs get-query-results --query-id <that id>` shows the lines"
+    "Open CloudWatch > Logs Insights, paste this and run it. Its SOURCE lines name the log groups, "
+    "the ones closest to what I found, and the time range: delete a line, or add one, in the box "
+    "before you press Copy"
 )
 SOURCE_WHAT_IT_DOES = (
     "Reads the logs and changes nothing. Logs Insights bills per GB scanned, so keep the time "
-    "range to when it happened. The console does not accept SOURCE: there, select the log groups "
-    "above and paste the query from the line after it."
+    "range to when it happened."
+)
+PLAIN_QUERY_ACTION = (
+    "Open CloudWatch > Logs Insights, select the log groups above, set the time range to the one "
+    "above, paste this and run it"
 )
 
 

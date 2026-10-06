@@ -10,7 +10,6 @@ the logs.py access check; nothing a log says reaches `spoken`; example lines are
 
 from __future__ import annotations
 
-import shlex
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -30,6 +29,10 @@ def at(name: str) -> str:
 def dev(monkeypatch):
     monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
     monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
+    # The account id comes from STS; here it is a made-up one.
+    monkeypatch.setattr(
+        logs, "group_arn", lambda name, region: f"arn:aws:logs:{region}:123456789012:log-group:{name}"
+    )
 
 
 def everything_readable(names):
@@ -318,15 +321,17 @@ def test_a_quiet_window_says_so_with_how_many_runs():
     )
 
 
-def _unquoted(command: str) -> str:
-    """The query string of a start-query command as the shell would hand it to the CLI."""
-    (argument,) = (word for word in shlex.split(command) if word.startswith("SOURCE "))
-    return argument
+ACCOUNT = "123456789012"
 
 
-def test_a_check_it_yourself_command_names_the_three_log_groups_closest_to_the_findings():
-    """The owner's ask: the card listed fourteen log groups to tick by hand. The command names
-    the ones with the most errors, three of them, where they can be edited before copying."""
+def _arn(function: str) -> str:
+    return f"arn:aws:logs:ap-southeast-2:{ACCOUNT}:log-group:/aws/lambda/bloggerbear-dev-{function}"
+
+
+def test_a_check_it_yourself_query_names_the_three_log_groups_closest_to_the_findings():
+    """The owner's ask: the card listed fourteen log groups to tick by hand. The query now starts
+    with a SOURCE line for each of the three with the most errors, as the console writes them,
+    one to a line so one can be deleted in the box before copying."""
     run = Run(
         totals=[
             {"@log": at("daily-cycle"), "errors": "2"},
@@ -338,49 +343,79 @@ def test_a_check_it_yourself_command_names_the_three_log_groups_closest_to_the_f
 
     cards = [f for f in review(run)["findings"] if f["kind"] == "how_to"]
 
-    query = _unquoted(cards[0]["suggestion"]["command"])
-    assert query.splitlines()[0] == (
-        "SOURCE logGroups(namePrefix: ['/aws/lambda/bloggerbear-dev-research-tick', "
-        "'/aws/lambda/bloggerbear-dev-public-api', '/aws/lambda/bloggerbear-dev-daily-cycle'])"
-    )
-    assert query.splitlines()[1].startswith("| fields @timestamp")
-    # Every group that was read is still listed on the card, for the console.
+    lines = cards[0]["suggestion"]["command"].splitlines()
+    assert lines[:4] == [
+        f'SOURCE "{_arn("research-tick")}" START=-1d END=0s |',
+        f'SOURCE "{_arn("public-api")}" |',
+        f'SOURCE "{_arn("daily-cycle")}" |',
+        "fields @timestamp, @log, @message",
+    ]
+    assert "\n".join(lines[3:]) == run.jobs[0][3]  # then the query that ran, unchanged
+    assert cards[0]["suggestion"]["action"] == logs.SOURCE_ACTION
+    # Every group that was read is still listed on the card.
     assert "and " in cards[0]["where"]["log_groups"] and "more" in cards[0]["where"]["log_groups"]
 
 
-def test_with_no_errors_the_command_still_names_three_groups_and_never_more_than_five():
+def test_deleting_a_source_line_leaves_a_query_that_is_still_whole():
     cards = [f for f in review(Run())["findings"] if f["kind"] == "how_to"]
+    lines = cards[0]["suggestion"]["command"].splitlines()
 
-    first_line = _unquoted(cards[0]["suggestion"]["command"]).splitlines()[0]
-    assert first_line.count("'/aws/lambda/") == logs.SOURCES_SUGGESTED == 3
-    many = [f"/aws/lambda/fn-{n}" for n in range(9)]
-    assert logs.source_line(many).count("'/aws/lambda/") == logs.SOURCE_MAX_PREFIXES == 5
-    assert len(logs.closest_groups(many, limit=99)) == 5
+    sources = [line for line in lines if line.startswith("SOURCE ")]
+    assert len(sources) == logs.SOURCES_SUGGESTED == 3
+    assert all(line.endswith(" |") for line in sources)  # each stands alone
+    assert sum("START=" in line for line in sources) == 1 and "START=" in sources[0]
 
 
-def test_a_group_name_that_is_not_one_never_reaches_a_command():
+@pytest.mark.parametrize(
+    ("back", "ahead", "expected"),
+    [
+        (timedelta(hours=24), timedelta(0), "START=-1d END=0s"),
+        (timedelta(days=7), timedelta(0), "START=-1w END=0s"),
+        (timedelta(hours=5), timedelta(0), "START=-5h END=0s"),
+        (timedelta(hours=8), timedelta(hours=6), "START=-8h END=-6h"),
+        (timedelta(minutes=90), timedelta(0), "START=-90m END=0s"),
+        (timedelta(minutes=90, seconds=20), timedelta(minutes=30, seconds=40), "START=-91m END=-30m"),
+        (timedelta(seconds=10), timedelta(0), "START=-1m END=0s"),
+    ],
+)
+def test_the_time_range_is_written_as_the_console_writes_it(back, ahead, expected):
+    when = logs.Window(start=NOW - back, end=NOW - ahead, asked=True, clamped=False)
+
+    assert logs.source_range(when, NOW) == expected
+
+
+def test_the_last_n_hours_is_written_whole_whenever_the_card_is_built():
+    """The tool is not handed a clock in production; a moment later must not read "-1441m"."""
+    assert logs.source_range(logs.window(24, now=NOW)) == "START=-1d END=0s"
+    assert logs.source_range(logs.window(168, now=NOW)) == "START=-1w END=0s"
+    assert logs.source_range(logs.window(3, now=NOW)) == "START=-3h END=0s"
+
+
+def test_what_cannot_be_named_safely_is_left_out_and_the_plain_query_is_the_fallback(monkeypatch):
     when = logs.window(1, now=NOW)
-    odd = "/aws/lambda/x'] ) | delete"
+    odd = '/aws/lambda/x" | delete'
 
     assert logs.closest_groups([odd, "/aws/lambda/ok"]) == ["/aws/lambda/ok"]
-    assert logs.source_command([odd], "fields @message", when, "ap-southeast-2") is None
-    command = logs.source_command([odd, "/aws/lambda/ok"], "fields @message", when, "not a region!")
-    assert "delete" not in command and "--region" not in command
-    assert _unquoted(command) == "SOURCE logGroups(namePrefix: ['/aws/lambda/ok'])\n| fields @message"
+    assert logs.source_query([odd], "fields @message", when, "ap-southeast-2", now=NOW) is None
+    built = logs.source_query([odd, "/aws/lambda/ok"], "fields @message", when, "ap-southeast-2", now=NOW)
+    assert built == (
+        f'SOURCE "arn:aws:logs:ap-southeast-2:{ACCOUNT}:log-group:/aws/lambda/ok" START=-1h END=0s |\n'
+        "fields @message"
+    )
+    assert logs.source_query(["/aws/lambda/ok"], "fields @message", when, None, now=NOW) is None
+    assert logs.source_query(["/aws/lambda/ok"], "fields @message", when, "not a region!", now=NOW) is None
+    many = [f"/aws/lambda/fn-{n}" for n in range(30)]
+    assert len(logs.closest_groups(many, limit=99)) == logs.SOURCES_MAX
 
+    def no_account(name, region):
+        raise RuntimeError("sts is unreachable")
 
-def test_the_query_survives_the_shells_quoting():
-    """A backslash and a quote in the query arrive as they were written; a dollar and a backtick
-    are escaped so the shell does not expand them (shlex, unlike a shell, leaves those two
-    escapes in, so they are checked on the command itself)."""
-    when = logs.window(1, now=NOW)
-    query = 'filter @message like /\\b429\\b|"quoted"/'
-
-    command = logs.source_command(["/aws/lambda/ok"], query, when, None)
-
-    assert _unquoted(command).splitlines()[1] == f"| {query}"
-    expanding = logs.source_command(["/aws/lambda/ok"], "filter x like /$HOME|`id`/", when, None)
-    assert "/\\$HOME|\\`id\\`/" in expanding
+    monkeypatch.setattr(logs, "group_arn", no_account)
+    assert logs.source_query(["/aws/lambda/ok"], "fields @message", when, "ap-southeast-2", now=NOW) is None
+    # The card then carries the query alone, with the old instructions.
+    card = next(f for f in review(Run())["findings"] if f["kind"] == "how_to")
+    assert card["suggestion"]["command"].startswith("fields @timestamp")
+    assert card["suggestion"]["action"] == logs.PLAIN_QUERY_ACTION
 
 
 def test_a_query_that_did_not_answer_is_said():
@@ -393,16 +428,12 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran_for_the_same_window(
     run = Run()
     result = review(run, function="research-tick", start="2026-10-05T01:00:00Z", end="2026-10-05T03:00:00Z")
     cards = [f for f in result["findings"] if f["kind"] == "how_to"]
-    # Each card is a command to run, with the query that ran inside it, the log group it ran
-    # over on a SOURCE line, and the same window as epoch seconds.
-    group = "/aws/lambda/bloggerbear-dev-research-tick"
+    # Each card is the query that ran, with the log group it ran over on a SOURCE line ahead of
+    # it and the same window, as the console writes it.
     for card, job in zip(cards, run.jobs[:2], strict=True):
         command = card["suggestion"]["command"]
-        assert command.startswith(
-            "aws logs start-query --region ap-southeast-2 --start-time 1791162000 --end-time 1791169200 "
-            f"--query-string \"SOURCE logGroups(namePrefix: ['{group}'])\n| "
-        )
-        assert _unquoted(command).endswith(job[3]) and command.endswith('"')
+        assert command.startswith(f'SOURCE "{_arn("research-tick")}" START=')
+        assert command.endswith(" |\n" + job[3]) and command.count("SOURCE ") == 1
         assert card["suggestion"]["action"] == logs.SOURCE_ACTION
     assert (
         cards[0]["where"]["from"] == "2026-10-05T01:00:00+00:00"
