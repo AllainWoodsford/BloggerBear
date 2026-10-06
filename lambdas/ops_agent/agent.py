@@ -312,6 +312,15 @@ def list_tools(client: MCPClient) -> list:
             return tools
 
 
+def warm(authorization: str, extra_headers: dict[str, str] | None = None) -> int:
+    """Wake the path a question takes, and do nothing else: open the MCP session with the caller's
+    own token and list the tools. That starts the MCP server's Lambda if it was cold (this one is
+    awake by being called). No model is called and no tool is run, so it costs no tokens and
+    reads no data. Returns how many tools the server listed."""
+    with mcp_client(os.environ["OPS_MCP_URL"], authorization, extra_headers) as client:
+        return len(list_tools(client))
+
+
 def bedrock_model() -> BedrockModel:
     """The model, from the environment. Not streamed: the answer is sent whole, and Converse
     without streaming needs one IAM action (bedrock:InvokeModel) and not two."""

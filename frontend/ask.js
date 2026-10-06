@@ -28,9 +28,13 @@
   var HISTORY_MAX_TURNS = 6;
   var TURN_MAX_CHARS = 1000;
 
-  // The only two things this page ever puts in browser storage, and only during sign-in.
+  // The only two things this page puts in browser storage during sign-in, and removes after it.
   var VERIFIER_KEY = "bloggerbear-ask-pkce-verifier";
   var STATE_KEY = "bloggerbear-ask-pkce-state";
+  // And the one thing it keeps for the tab's life: when the assistant was last woken (a time,
+  // nothing else), so it is not woken again within WARM_COOLDOWN_MS. See warmUp.
+  var WARMED_KEY = "bloggerbear-ask-warmed-at";
+  var WARM_COOLDOWN_MS = 5 * 60 * 1000; // the API keeps to the same five minutes on its side
 
   var BRIEFING_QUESTION = "What needs my attention?";
   var ASK_TIMEOUT_MS = 40000; // API Gateway gives up at 29 s; this is only a backstop
@@ -218,6 +222,15 @@
     });
     return rows;
   }
+
+  // Whether a wake call may be sent now: not when one went out less than WARM_COOLDOWN_MS ago.
+  // A stored time from the future (a changed clock) does not hold it back.
+  function shouldWarm(lastWarmedAt, now) {
+    var last = Number(lastWarmedAt) || 0;
+    return !(last > 0 && now >= last && now - last < WARM_COOLDOWN_MS);
+  }
+
+  function noop() {}
 
   // What kind of card a finding gets: "fix" (a command to copy), "look" (something to look at,
   // no command) or "noticed" (no suggestion at all).
@@ -855,6 +868,8 @@
     base64Url: base64Url,
     randomString: randomString,
     pkceChallenge: pkceChallenge,
+    shouldWarm: shouldWarm,
+    WARM_COOLDOWN_MS: WARM_COOLDOWN_MS,
     readConfig: readConfig,
     authorizeUrl: authorizeUrl,
     tokenRequestBody: tokenRequestBody,
@@ -1062,6 +1077,42 @@
     questionInput.focus();
   }
 
+  // -- waking the assistant ---------------------------------------------------------------------
+
+  // Sent once, as the operator signs in: it starts the two Lambdas a question passes through, so
+  // the first question is not the one that waits for them. The API lists its tools and stops: no
+  // model, no data, nothing against the daily limit (lambdas/ops_agent_handler.py, "The wake
+  // call"). Nothing about it is shown: not that it was sent, not what came back, not a failure.
+  // At most one every WARM_COOLDOWN_MS from this tab; the time of the last one is all that is
+  // kept (in sessionStorage, so a reload inside the window does not send another).
+  function warmUp() {
+    var last = 0;
+    try {
+      last = Number(root.sessionStorage.getItem(WARMED_KEY)) || 0;
+    } catch (err) {
+      // Storage is blocked: wake once per page load, which is still at most one per sign-in.
+    }
+    if (!accessToken || !shouldWarm(last, Date.now())) {
+      return;
+    }
+    try {
+      root.sessionStorage.setItem(WARMED_KEY, String(Date.now()));
+    } catch (err) {
+      // As above.
+    }
+    try {
+      root
+        .fetch(config.askUrl, {
+          method: "POST",
+          headers: { Authorization: "Bearer " + accessToken, "Content-Type": "application/json" },
+          body: JSON.stringify({ warm: true }),
+        })
+        .then(noop, noop);
+    } catch (err) {
+      // Never the operator's problem.
+    }
+  }
+
   // -- sign-in ---------------------------------------------------------------------------------
 
   function signIn() {
@@ -1141,6 +1192,7 @@
         var seconds = Number(tokens.expires_in) > 0 ? Number(tokens.expires_in) : 3600;
         tokenExpiresAt = Date.now() + seconds * 1000;
         showApp();
+        warmUp();
       })
       .catch(function () {
         showGate(MESSAGES.signInFailed);
