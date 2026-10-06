@@ -422,6 +422,11 @@ def test_the_architecture_tools_take_what_the_operator_pasted_and_answer_for_thi
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
     kinds = tools["architecture"]["inputSchema"]["properties"]["kind"]
     assert set(json.dumps(kinds).split('"')) >= set(architecture.KINDS)
+    # The layers the tool offers are the ones the catalogue has, and "everything".
+    layers = tools["architecture"]["inputSchema"]["properties"]["layer"]
+    assert set(json.dumps(layers).split('"')) >= {*architecture.LAYER_KEYS, architecture.EVERYTHING}
+    assert tool_call(client, "architecture", {})["table"]["title"].endswith("the layers")
+    assert tool_call(client, "architecture", {"layer": "edge"})["layer"] == "edge"
 
     answer = tool_call(client, "architecture", {"name": "bloggerbear-prod-candidate-ideas"})
     assert answer["matches"][0]["name"] == "bloggerbear-dev-candidate-ideas"
