@@ -1,6 +1,6 @@
 # Enhancement: agentic vision scaffolding for the OpenCV AI Competition 2026
 
-**Status:** in progress (scaffolding; PRs 1–4 open) · **Date:** 2026-10-06 · **Deadline:**
+**Status:** scaffolding built (PRs 1–8 open, CI green); waiting on the operator steps in §9 · **Date:** 2026-10-06 · **Deadline:**
 [AWS OpenCV AI Competition 2026](https://opencv26.devpost.com), **26 October 2026, 11:45 pm PDT**.
 **Topic:** not decided. This pass builds what every candidate topic needs (the vision worker, the
 adapter, the cross-region plumbing, the COOL path and the vision-model triage) so that choosing a
@@ -200,16 +200,30 @@ merges. Ticked here as they are opened and green; "merged" is noted when it happ
   5.5 MB read, 28 ms of OpenCV. *Tuned from it:* 93 raw detections were mostly mixed pixels along
   shore and cloud edges; `edge_buffer_px` (drop blobs beside anything unmeasured) took it to 15,
   and every result now tallies why candidates were dropped, for the triage agent to read.
-- [ ] **PR 5 — `satellite_vision` adapter**: topic-agnostic sites in `adapter_config`, STAC
-  search, history in the snapshot, baseline diff with a coverage floor, attribution, registered.
-- [ ] **PR 6 — Terraform**: `vision-worker` module (aliased provider, `arm64`, `python3.12`, own
-  role, gated by `vision_enabled`), deploy-role grants, wiring tests.
-- [ ] **PR 7 — triage agent and `force_manual_review`**: Converse with image and tools, bounds,
-  fail closed, stored trail.
-- [ ] **PR 8 — COOL backend**: benchmark script, runsheet for the Marketplace subscription; then
-  the COOL compute (Lambda if the image runs there, else ECS on Graviton4).
-- [ ] **Then:** pick the topic and write its editorial goals and prompt; run it on dev; the
-  technical report, diagram and video.
+- [x] **PR 5 — `satellite_vision` adapter** (#245, CI green). Sites, `object_noun`, backend,
+  params and thresholds are all `adapter_config`. Material only when *both* thresholds are crossed
+  against the median of earlier **clear** scenes; low coverage is never material and never in the
+  baseline; a site that can't be searched or measured keeps its history (`last_error`). *Found
+  while building it:* the research tick only kept state with a Finding, so a baseline would have
+  held only reported scenes. Adapters can now opt in to `keeps_running_state` (generic, like
+  `uses_previous_state`): the tick keeps the newest state at `snapshots/<topic>/running-state.json`.
+- [x] **PR 6 — Terraform** (#246, CI green). `infra/modules/vision-worker`: arm64, python3.12,
+  in `vision_region` (us-west-2) through the provider's per-resource `region` (no aliased
+  provider), its own log-only role, and an artifacts bucket (the arm64 zip is ~51 MB, at the
+  direct-upload limit). Both environments call it with `count = var.vision_enabled` (**false**);
+  the bootstrap gains `<prefix>-*-vision-*` Lambda and log rights in the vision Region.
+- [x] **PR 7 — triage agent and `force_manual_review`** (#248, CI green). Converse with the
+  figure as an image and three tools (`look_again`, `previous_scene`, `site_history`); a tool
+  budget and `budget + 2` turns, enforced in code; anything unsure is an artefact; the trail is
+  stored; spend on Stats as `vision_triage`. `force_manual_review` holds every draft for a person
+  (the compliance review still runs) and is forced on for `satellite_vision` topics. *Bug found:*
+  the admin API returned 500 for any `adapter_config` holding a float (a polygon); fixed.
+- [x] **PR 8 — COOL benchmark and image** (#251). `scripts/vision_benchmark.py` (`kernels`,
+  `scenes`, `worker`; each report names the Graviton generation and the OpenCV build fingerprint)
+  and `docker/vision-cool/Dockerfile` (the same handler on OpenCV's COOL image, never its own cv2).
+  COOL compute in Terraform waits on question 1 in §8.
+- [ ] **Then:** the operator steps in §9; pick the topic and write its editorial goals and prompt;
+  run it on dev; the benchmark table; the technical report, diagram and video.
 
 ### What the first real scene taught
 
@@ -220,6 +234,15 @@ merges. Ticked here as they are opened and green; "merged" is noted when it happ
   vision region it should be a fraction of that, which is the case for running the worker there
   (§3). The benchmark (PR 8) will measure both.
 
+### Where the agent sits, as built
+
+The decision step runs inside the adapter's `material_diff`, after the numeric thresholds, on the
+same adapter instance that fetched (so it knows the topic's model and the sites). The research
+tick stays topic-agnostic; it stores the state after the diff, so the agent's trail is kept
+whether or not a Finding is written. A triage costs at most `budget + 2` Converse calls plus up to
+`budget` worker calls; with the defaults that fits inside the research tick's 120 s beside the
+60 s fetch budget, but a topic with many sites should lower `max_sites_per_tick`.
+
 ## 8. Open questions
 
 1. Does the COOL Docker image run on Lambda `arm64`? Decides between Lambda and ECS for the COOL
@@ -228,6 +251,22 @@ merges. Ticked here as they are opened and green; "merged" is noted when it happ
 3. COOL's price after the 7-day trial.
 4. The inter-region transfer charge for the worker's response (small) versus a same-region worker
    reading `sentinel-cogs` across regions (larger). Measure both on dev.
-5. Whether "Sentinel models" in the original brief meant the Sentinel-2 data (assumed here) or a
+5. Lambda arm64's CPU generation today. The benchmark's `worker` mode reports nothing about the
+   worker's CPU (it runs remotely); adding `cpu_identity` to the worker's reply would settle it from
+   one invoke.
+6. Whether "Sentinel models" in the original brief meant the Sentinel-2 data (assumed here) or a
    geospatial foundation model trained on it; the latter would be a third worker backend, not a new
    architecture.
+
+## 9. What the operator has to do (nothing here is automatic)
+
+1. **Review and merge** #240, then #241 → #251 in order (each is based on the one before;
+   GitHub retargets the next to `dev` as each merges). Merging deploys nothing new:
+   `vision_enabled` is false.
+2. **Re-apply `infra/bootstrap` by hand** (rule 6), with `vision_region` (default us-west-2).
+3. **Set `vision_enabled = true`** in `infra/environments/dev/terraform.tfvars` and merge.
+4. **Create a topic**: `adapter: "satellite_vision"`, `sites` in `adapter_config`, an
+   `object_noun`, and editorial goals (docs/deployment-runsheet.md, "The vision worker").
+5. **COOL**: subscribe, measure, pin the fingerprint (runsheet, "The COOL backend and the
+   benchmark"); unsubscribe after the trial if it isn't kept.
+
