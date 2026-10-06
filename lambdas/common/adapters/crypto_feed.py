@@ -559,6 +559,32 @@ class CryptoFeedAdapter(Adapter):
     # costs nothing; leaving out one that was would break its terms.
     sources = (COINGECKO_SOURCE, *WEB_SEARCH_SOURCES)
 
+    # Prices move between the research, the draft, each review and a Re-Write, so an exact figure
+    # is "stale" by the time anything checks it and every article was flagged for it. The owner's
+    # rule: within 5 to 7% is close enough, and the article should not be more exact than that in
+    # the first place. (Base class: what each of these three is used for.)
+    figure_tolerance_percent = 7.0
+    figure_guidance = (
+        "Prices and percentages move by the minute, so write every market figure as an "
+        "approximation that stays true: round it, and prefer a floor or a range to an exact value "
+        '("up more than 30% over three months", not "up 36.2%"; "around $81,000", not '
+        '"$81,584.12"; "roughly doubled", not "+104.7%"). Never round a figure up past what the '
+        'data shows. Say "at the time of checking" where the first figures appear, and do not '
+        "repeat a figure to more precision than you first gave it."
+    )
+    drafting_guidance = (
+        "Make one clear point per section and say what the numbers mean before moving on: do not "
+        "list figures without a conclusion, and do not come back to a point already made.\n"
+        "End the article with these two sections, in this order, restating only what the article "
+        "already said (no new figures, no new claims, no advice):\n"
+        '1. "## At a glance": a markdown table with one row per asset or story covered. For '
+        "market data use the columns Asset | Price (approx.) | 3-month | 1-year | What stands "
+        "out; for a news digest use Story | Source | Why it matters. Leave a cell as a dash when "
+        "the findings do not say.\n"
+        '2. "## Key takeaways": three to six bullet points, each one plain sentence giving one '
+        "finding a reader should remember."
+    )
+
     # --- fetching ---------------------------------------------------------
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:

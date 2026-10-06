@@ -158,6 +158,7 @@ def _is_plausible_reply(text: str, *, max_words: int) -> bool:
     return len(text.split()) <= max_words
 _FEEDBACK_GUIDANCE_HEADER = "Additional guidance based on reader feedback:"
 _FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
+_SOURCE_GUIDANCE_HEADER = "How articles on this topic are written (mandatory):"
 
 
 @track_lambda_duration("daily_cycle")
@@ -769,6 +770,12 @@ def _draft_article(
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
         prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
+    # What the topic's adapter says its articles must always do (how to write figures that move,
+    # how the article ends). Declared on the adapter, so nothing here knows the domain.
+    rules = fresh_review.writing_rules(topic)
+    source_guidance = "\n".join(filter(None, [rules["figure_guidance"], rules["drafting_guidance"]]))
+    if source_guidance:
+        prompt += f"\n\n{_SOURCE_GUIDANCE_HEADER}\n{source_guidance}"
     if few_shot_excerpt:
         prompt += (
             "\n\nHere is an excerpt from a well-received past article on this "
