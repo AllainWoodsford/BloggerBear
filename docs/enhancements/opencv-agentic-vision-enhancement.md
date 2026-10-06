@@ -1,6 +1,6 @@
 # Enhancement: agentic vision scaffolding for the OpenCV AI Competition 2026
 
-**Status:** in progress (scaffolding) · **Date:** 2026-10-06 · **Deadline:**
+**Status:** in progress (scaffolding; PRs 1–4 open) · **Date:** 2026-10-06 · **Deadline:**
 [AWS OpenCV AI Competition 2026](https://opencv26.devpost.com), **26 October 2026, 11:45 pm PDT**.
 **Topic:** not decided. This pass builds what every candidate topic needs (the vision worker, the
 adapter, the cross-region plumbing, the COOL path and the vision-model triage) so that choosing a
@@ -162,9 +162,11 @@ pipeline's shared zip free of an agent framework (the reason `requirements-ops-a
 | Component | Path | Notes |
 |---|---|---|
 | Vision core (pure OpenCV + numpy) | `lambdas/vision/` | masks, detection, filtering, counting, annotation, build info; no AWS |
-| Vision worker handler | `lambdas/vision_worker_handler.py` | thin: parse request, read the window, call the core, return metrics |
-| Worker dependencies | `lambdas/requirements-vision.txt` | `opencv-python-headless==5.0.0.93`, `numpy`; packaged for `arm64` separately from the shared zip |
-| Vision client | `lambdas/common/vision_client.py` | cross-region invoke, timeouts, response validation, backend choice |
+| Scene reading | `lambdas/vision/cog.py`, `geo.py`, `scene.py` | windowed GeoTIFF reads over HTTP ranges, lon/lat → UTM pixels, bands aligned to one grid; **no GDAL** (§7, PR 3) |
+| Vision worker handler | `lambdas/vision_worker_handler.py` | thin: validate, read the window, call the core, reply with metrics, figure, build and timings |
+| Worker dependencies | `lambdas/requirements-vision.txt` | `opencv-python-headless==5.0.0.93`, `numpy==2.4.4`; packaged for `arm64`, `python3.12`, separately from the shared zip |
+| Contract | `lambdas/common/vision_contract.py` | request/reply schema shared by both sides; asset URL allowlist |
+| Vision client | `lambdas/common/vision_client.py` | invokes the worker in the region its ARN names; checks the reply |
 | Adapter | `lambdas/common/adapters/satellite_vision.py` | registered as `satellite_vision`; sites, STAC search, history, diff, attribution |
 | Triage agent | `lambdas/common/vision_triage.py` | Converse with image + tools, bounded, fail closed |
 | Manual-review flag | `force_manual_review` on the Topic | holds every draft; not `is_financial` |
@@ -174,25 +176,49 @@ pipeline's shared zip free of an agent framework (the reason `requirements-ops-a
 
 ## 7. Build plan and progress
 
-Small PRs, each green on its own, merged into `dev`. Ticked here as they land.
+Small PRs, each green on its own, merged into `dev`. PRs 2 to 4 are stacked (each based on the
+one before) so each shows only its own diff; GitHub retargets each to `dev` as the one below it
+merges. Ticked here as they are opened and green; "merged" is noted when it happens.
 
-- [x] **PR 1 — this document**: review of the strategy note, architecture, regions, COOL, agent;
-  friction.md 9.4 corrected.
-- [ ] **PR 2 — vision core**: `lambdas/vision/` (water and cloud masks, adaptive detection,
-  component filtering by length and elongation, counting, coverage, annotation, build info) with
-  synthetic-image tests; `requirements-vision.txt`.
-- [ ] **PR 3 — vision worker handler and client**: request/response schema, backend field,
-  cross-region invoke with a validated response, fakes for tests.
-- [ ] **PR 4 — `satellite_vision` adapter**: topic-agnostic sites in `adapter_config`, STAC
-  search, history in the snapshot, baseline diff with coverage floor, attribution, registered.
-- [ ] **PR 5 — Terraform**: `vision-worker` module (aliased provider, `arm64`, own role, gated by
-  `vision_enabled`), deploy-role grants, wiring tests.
-- [ ] **PR 6 — triage agent and `force_manual_review`**: Converse with image and tools, bounds,
+- [x] **PR 1 — this document** (AllainWoodsford/BloggerBear#240): review of the strategy note,
+  architecture, regions, COOL, agent; friction.md 9.4 corrected.
+- [x] **PR 2 — vision core** (#241, CI green): `lambdas/vision/` masks (site polygon, SCL cloud and
+  no data, NDWI water that keeps ships inside it), adaptive Gaussian detection, `minAreaRect`
+  length/elongation filters, per-site metrics, the annotated figure, the build fingerprint;
+  `requirements-vision.txt`, added to the Trivy scans. 19 synthetic-image tests.
+- [x] **PR 3 — scene reading without GDAL** (#242, CI green). *Changed from the plan:* rasterio
+  (GDAL) + OpenCV + numpy for `arm64` is 278 MB unzipped, 254 MB stripped, over Lambda's 250 MB zip
+  limit, and a container image would put ECR and an arm64 Docker build on the baseline's critical
+  path. `vision/cog.py` reads the TIFF subset `sentinel-cogs` uses (tiled, single band, DEFLATE +
+  horizontal predictor, GeoTIFF scale/tiepoint/EPSG) with one range request for the header and
+  one per tile; `vision/geo.py` projects lon/lat to UTM with Snyder's series. **Checked on real
+  data:** Botany Bay from tile 56HLH in 3 requests (~2.7 MB); projection within 1 mm of PROJ.
+- [x] **PR 4 — worker handler, contract, client** (#244). The worker refuses the backend it isn't,
+  and a `cool` worker whose `cv2` isn't the pinned COOL build refuses everything (`not_cool`). The
+  client calls the worker in the region its ARN names and validates every reply. **End to end on
+  real data** (Botany Bay, `S2A_56HLH_20240105_0_L2A`, B08 + B03 + SCL): 2.5 s, 9 range requests,
+  5.5 MB read, 28 ms of OpenCV. *Tuned from it:* 93 raw detections were mostly mixed pixels along
+  shore and cloud edges; `edge_buffer_px` (drop blobs beside anything unmeasured) took it to 15,
+  and every result now tallies why candidates were dropped, for the triage agent to read.
+- [ ] **PR 5 — `satellite_vision` adapter**: topic-agnostic sites in `adapter_config`, STAC
+  search, history in the snapshot, baseline diff with a coverage floor, attribution, registered.
+- [ ] **PR 6 — Terraform**: `vision-worker` module (aliased provider, `arm64`, `python3.12`, own
+  role, gated by `vision_enabled`), deploy-role grants, wiring tests.
+- [ ] **PR 7 — triage agent and `force_manual_review`**: Converse with image and tools, bounds,
   fail closed, stored trail.
-- [ ] **PR 7 — COOL backend**: build-info check, benchmark script, runsheet for the Marketplace
-  subscription; then the COOL compute (Lambda if the image runs there, else ECS on Graviton4).
+- [ ] **PR 8 — COOL backend**: benchmark script, runsheet for the Marketplace subscription; then
+  the COOL compute (Lambda if the image runs there, else ECS on Graviton4).
 - [ ] **Then:** pick the topic and write its editorial goals and prompt; run it on dev; the
   technical report, diagram and video.
+
+### What the first real scene taught
+
+- Thin cloud that SCL doesn't flag still makes bright, elongated wisps: the detector can't tell
+  every one from a ship. That is by design the triage agent's call (§5), with the figure and the
+  rejection tally in front of it, and a scene under the coverage floor is never material anyway.
+- The read dominates: 2.5 s of the 2.8 s total was fetching tiles from Sydney to us-west-2. In the
+  vision region it should be a fraction of that, which is the case for running the worker there
+  (§3). The benchmark (PR 8) will measure both.
 
 ## 8. Open questions
 
