@@ -927,7 +927,11 @@ LAYERS: tuple[Layer, ...] = (
             ("Assistant Lambdas", "The assistant's agent and its MCP tool server."),
         ),
         kinds=("function",),
-        aliases=("lambda", "lambdas", "functions", "serverless", "code", "compute layer"),
+        # "The research pipeline" is what the owner calls the Lambdas that do the work.
+        aliases=(
+            "lambda", "lambdas", "functions", "serverless",
+            "code", "compute layer", "pipeline", "research",
+        ),
     ),
     Layer(
         key="ai",

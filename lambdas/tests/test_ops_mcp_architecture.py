@@ -404,6 +404,8 @@ def test_the_compute_layer_lists_every_lambda_and_data_every_table_and_bucket(de
         ("observability", "observability"),
         ("monitoring and cost", "observability"),
         ("the research pipeline lambdas", "compute"),
+        ("the Research Pipeline", "compute"),
+        ("pipeline", "compute"),
         ("API gateways", "api"),
         ("auth", "identity"),
         ("Bedrock", "ai"),
