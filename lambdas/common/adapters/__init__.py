@@ -10,3 +10,8 @@ CRYPTO_FEED_ADAPTER_KEY = "crypto_feed"
 # the generic, reusable "search the web for these queries" adapter any
 # research topic can be configured with (see common/web_search.py).
 WEB_SEARCH_ADAPTER_KEY = "web_search"
+
+# Adapter registry key for common/adapters/satellite_vision.py's SatelliteVisionAdapter -- counts
+# what the vision worker sees at fixed sites in Sentinel-2 scenes (OpenCV competition entry,
+# docs/enhancements/opencv-agentic-vision-enhancement.md).
+SATELLITE_VISION_ADAPTER_KEY = "satellite_vision"

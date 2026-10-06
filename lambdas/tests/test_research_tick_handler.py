@@ -12,6 +12,7 @@ import research_tick_handler
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
+from common.adapters.satellite_vision import SatelliteVisionAdapter
 from common.adapters.web_search import WebSearchAdapter
 
 REGION = "ap-southeast-2"
@@ -287,6 +288,7 @@ def test_adapter_registry_has_every_registered_adapter():
         "hacker_news": HackerNewsAdapter,
         "crypto_feed": CryptoFeedAdapter,
         "web_search": WebSearchAdapter,
+        "satellite_vision": SatelliteVisionAdapter,
     }
 
 
