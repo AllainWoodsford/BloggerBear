@@ -226,7 +226,7 @@ Then, in order:
    Open `https://<your domain>/ask.html`, sign in, and set up the authenticator app it asks for.
    Press **Test voice**, then **What needs my attention?**. "What's happening with the firewall?"
    as a follow-up is production's deep dive. "Any errors in the logs?" and "any API failures?" read
-   production's logs (and shared ones) and answer with root causes and success rates; if they say AWS refused, see
+   production's logs (and shared ones) and answer with root causes and the API calls by status code; if they say AWS refused, see
    [CloudWatch Logs tags](deployment-runsheet.md#cloudwatch-logs-tags-the-assistants-log-tools).
    Check `pipeline-config get` shows `assistant_access` as `open` (or absent), unless you mean to
    lock it to your addresses. Five failed sign-ins in fifteen minutes lock a user and email the
