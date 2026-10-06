@@ -67,6 +67,16 @@ for timeouts; it's still happening". A watched table (candidate ideas, findings)
 (samples.table_sample) for whether each topic's newest row is on time. The id is the catalogue's
 key for it, whatever name it was asked with.
 
+**Already acted on, but still true** (`actioned`). Some fixes take a while to show: a published
+article sent for a rewrite stays up, with its fault, until the rewrite is ready. Its check still
+says "open", so the finding kept coming back as if nothing had been done. Where the pipeline's
+own tables show the operator has acted (ACTION_SIGNS: today, a rewrite of the article that is
+running, or one that finished and is waiting in the inbox), the finding carries `actioned`: which
+sign it was, in fixed words, and the advice to check and then dismiss it. The assistant never
+dismisses anything by itself: it says what it saw and the operator presses Dismiss (the page) or
+says "leave that one" (the `dismiss` tool). Nothing here reads text anyone wrote: only an
+article id and a queue item's status.
+
 **Every row expires** 30 days after it was last mentioned (DynamoDB TTL on `expires_at`).
 """
 
@@ -88,6 +98,7 @@ from common.dynamo import (
     get_table,
     get_topic,
     list_failed_executions,
+    list_moderation_by_status,
     list_musings,
     list_pending_moderation,
 )
@@ -132,6 +143,28 @@ LOG_READS_MAX = 2
 LOG_READ_WAIT_SECONDS = 8
 
 SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"}) | LOGGED_KINDS
+
+# Kinds whose suggested fix is to send the article for a rewrite, read off the catalogue so a kind
+# that gains or loses that fix follows without being listed here.
+REWRITE_KINDS = frozenset(
+    kind for kind, entry in CATALOGUE.items() if (entry.arguments or "").startswith("articles rewrite {id}")
+)
+# Signs, in the pipeline's own tables, that the operator has already acted on a finding that is
+# still true. Each: the words for the card, and for speech (after "It looks like").
+ACTION_SIGNS = {
+    "rewrite_running": (
+        "A rewrite of this article is running now",
+        "a rewrite is already running",
+    ),
+    "rewritten": (
+        "This article has been rewritten since, and the new version is waiting in the inbox",
+        "it has already been rewritten and is waiting in the inbox",
+    ),
+}
+ACTIONED_ADVICE = (
+    "It looks like you have already acted on this. Check that it is what you meant, then press "
+    "Dismiss so it is not raised again."
+)
 
 
 # --- who is asking -------------------------------------------------------------------------------
@@ -356,6 +389,11 @@ def remember(user_id: str | None, result, *, now: datetime | None = None):
             "findings": kept,
             "findings_dismissed": len(result["findings"]) - len(kept),
         }
+        # What the operator has already acted on is said on the finding, so it is not suggested
+        # again as if nothing had happened (module docstring, "Already acted on").
+        kept, actioned = _mark_actioned(kept, _Sources(now))
+        if actioned:
+            out = {**out, "findings": kept, "actioned": actioned}
         # Said so the assistant can tell the operator its findings are written down for next time.
         return {**out, "remembered": noted} if noted else out
     except Exception as exc:  # noqa: BLE001 - the tool's answer matters more than remembering it
@@ -430,6 +468,11 @@ class _Sources:
     @property
     def musings(self):
         return self._once("musings", lambda: list_musings(content.CONTENT_MAX_MUSINGS))
+
+    @property
+    def rewriting(self):
+        """The queue items whose article is being rewritten right now."""
+        return self._once("rewriting", lambda: list_moderation_by_status("rewriting"))
 
     def hours_since_mentioned(self) -> int:
         """The window a logged kind is read over: since its row was last mentioned, from one hour
@@ -636,6 +679,40 @@ CHECKERS: dict[str, Callable[[str, _Sources], Check]] = {
 }
 
 
+def action_sign(kind: str, target_id: str, sources: _Sources) -> str | None:
+    """A key of ACTION_SIGNS if the tables show the operator has already acted on this finding,
+    else None. Today only for the kinds fixed by a rewrite (REWRITE_KINDS), whose id is the
+    article's: a rewrite of it that is running, or one that finished and waits in the inbox."""
+    if kind not in REWRITE_KINDS:
+        return None
+    if any(item.get("article_id") == target_id for item in sources.rewriting):
+        return "rewrite_running"
+    if any(item.get("article_id") == target_id and item.get("rewrite") for item in sources.pending):
+        return "rewritten"
+    return None
+
+
+def _with_action(found: dict, sign: str) -> dict:
+    """The finding with what was noticed about it having been acted on. Fixed words only."""
+    return {**found, "actioned": {"sign": sign, "noticed": ACTION_SIGNS[sign][0], "advice": ACTIONED_ADVICE}}
+
+
+def _mark_actioned(findings: list, sources: _Sources) -> tuple[list, int]:
+    """`findings` with `actioned` added to each one the tables show was acted on, and how many.
+    Reads nothing unless a finding is of a kind that has a sign. A read that fails marks none."""
+    marked, count = [], 0
+    for found in findings:
+        sign = None
+        if _has_key(found) and found["kind"] in REWRITE_KINDS and "actioned" not in found:
+            try:
+                sign = action_sign(found["kind"], found["id"], sources)
+            except Exception as exc:  # noqa: BLE001 - the finding is still right without it
+                print(f"ops_memory: could not look for a sign of action ({type(exc).__name__})")
+        marked.append(_with_action(found, sign) if sign else found)
+        count += bool(sign)
+    return marked, count
+
+
 def _unchecked(kind: str, target_id: str) -> Check:
     """Still open, as far as anyone knows: the words are fixed, the suggestion is the catalogue's."""
     return Check(OPEN, finding(kind, "Something I suggested earlier has not been checked again", target_id))
@@ -682,10 +759,13 @@ def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
             counted = {}
             if kind in LOGGED_KINDS and check.count is not None:
                 counted = {"count_now": check.count, "count_before": _stored_count(row.get("last_count"))}
+            (found,), acted = _mark_actioned([check.finding], sources)
+            if acted:
+                counted["actioned"] = found["actioned"]["sign"]
             still_open.append({**entry, "waiting": tools._age(since, now), **counted})
-            findings.append(check.finding)
+            findings.append(found)
 
-    return {
+    result = {
         "spoken": _follow_up_spoken(fixed, still_open, cleared),
         "findings": findings,
         "fixed": fixed,
@@ -693,6 +773,27 @@ def follow_up(user_id: str | None, *, now: datetime | None = None) -> dict:
         "open": still_open,
         "as_of": now.isoformat(),
     }
+    acted = sum(1 for entry in still_open if entry.get("actioned"))
+    return {**result, "actioned": acted} if acted else result
+
+
+def _actioned_spoken(still_open: list[dict]) -> str:
+    """What to say about the open suggestions the operator seems to have acted on already: what
+    was seen, the advice to dismiss, and to check first. Empty when there are none."""
+    acted = [entry for entry in still_open if entry.get("actioned")]
+    if not acted:
+        return ""
+    signs = list(dict.fromkeys(entry["actioned"] for entry in acted))
+    seen = tools._join([ACTION_SIGNS[sign][1] for sign in signs])
+    if len(acted) == 1:
+        return (
+            f"It looks like you have already acted on one of them{_about(acted)}: {seen}. I suggest "
+            "you dismiss it, but please check first; its card has a Dismiss button."
+        )
+    return (
+        f"It looks like you have already acted on {len(acted)} of them{_about(acted)}: {seen}. I "
+        "suggest you dismiss those, but please check first; each card has a Dismiss button."
+    )
 
 
 def _things(count: int) -> str:
@@ -753,6 +854,9 @@ def _follow_up_spoken(fixed: list[dict], still_open: list[dict], cleared: list[d
             f"{_things(count)} I suggested {'are' if count != 1 else 'is'} still waiting: "
             f"{tools._join(lines)}{more}. The fixes are on screen again."
         )
+        acted = _actioned_spoken(still_open)
+        if acted:
+            sentences.append(acted)
     else:
         sentences.append("Nothing else I suggested is waiting.")
     return " ".join(sentences)

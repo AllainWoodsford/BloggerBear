@@ -182,10 +182,10 @@ def test_untrusted_text_is_marked_and_a_command_is_never_run_or_fetched():
     assert 'key === "untrusted"' in code
     assert '"ask-untrusted-mark", "Unverified"' in code
     assert ".ask-untrusted-mark" in _read("ask.css")
-    # The only three requests: the token exchange, the wake call and the question, the last two
-    # to the same address.
-    assert len(re.findall(r"\.fetch\(", code)) == 3
-    assert '"/oauth2/token"' in code and code.count(".fetch(config.askUrl") == 2
+    # The only four requests: the token exchange, then the wake call, the question and a
+    # dismissal, all three to the same address.
+    assert len(re.findall(r"\.fetch\(", code)) == 4
+    assert '"/oauth2/token"' in code and code.count(".fetch(config.askUrl") == 3
 
 
 # --- storage ------------------------------------------------------------------------------------
@@ -266,6 +266,119 @@ def test_a_wake_call_is_held_back_for_five_minutes_after_the_last_one():
     assert result["never"] and result["missing"] and result["garbage"] and result["due"]
     assert not result["justNow"] and not result["almost"]
     assert result["future"]  # a clock that was changed must not stop it for ever
+
+
+_DISMISS_RUNNER = """
+const ask = require(process.argv[1]);
+const input = JSON.parse(require("fs").readFileSync(0, "utf8"));
+function node(tag) {
+  return {
+    tag, className: "", textContent: "", children: [], attrs: {}, listeners: {},
+    appendChild(child) { this.children.push(child); return child; },
+    setAttribute(name, value) { this.attrs[name] = String(value); },
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+  };
+}
+const doc = {
+  createElement: node,
+  createTextNode: (text) => ({ tag: "#text", textContent: String(text), children: [] }),
+};
+function find(made, test, found) {
+  found = found || [];
+  if (test(made)) { found.push(made); }
+  (made.children || []).forEach((child) => find(child, test, found));
+  return found;
+}
+function text(made) { return (made.textContent || "") + (made.children || []).map(text).join(""); }
+process.stdout.write(JSON.stringify(input.map((finding) => {
+  const pressed = [];
+  const card = ask.renderCard(doc, finding, () => {}, (f, button, outcome, c) => {
+    pressed.push([f.kind, f.id, button.textContent, outcome.attrs.role, c === card]);
+  });
+  const buttons = find(card, (made) => made.tag === "button" && made.className === "ask-dismiss");
+  buttons.forEach((button) => button.listeners.click());
+  const notes = find(card, (made) => made.className === "ask-actioned");
+  return {
+    dismissable: ask.isDismissable(finding),
+    buttons: buttons.map((button) => [button.textContent, button.type, button.attrs["aria-label"]]),
+    pressed,
+    note: notes.length ? text(notes[0]) : null,
+    withoutHandler: find(
+      ask.renderCard(doc, finding, () => {}), (made) => made.className === "ask-dismiss"
+    ).length,
+  };
+})));
+"""
+
+_REWRITE_FINDING = {
+    "kind": "title_markup",
+    "id": "f5e88f3a-3c7e-48be-ae8b-52a31030ae5e",
+    "noticed": "A Crypto article has markup in its title",
+    "where": {"topic": "Crypto"},
+    "suggestion": {"action": "Rewrite it", "command": "python scripts/admin_cli.py articles rewrite x -i y"},
+}
+
+
+@needs_node
+def test_a_finding_has_a_dismiss_button_and_says_when_it_looks_already_actioned():
+    """The owner's ask: a button by a finding that was dealt with in a way the assistant cannot
+    see, for any kind of finding, and a note when the assistant can see it was acted on."""
+    acted = {
+        **_REWRITE_FINDING,
+        "actioned": {
+            "sign": "rewrite_running",
+            "noticed": "A rewrite of this article is running now",
+            "advice": "It looks like you have already acted on this. Check, then press Dismiss.",
+        },
+    }
+    findings = [
+        _REWRITE_FINDING,
+        acted,
+        {"kind": "alarm_firing", "id": "bloggerbear-dev-lambda-errors", "noticed": "An alarm"},
+        {"kind": "awaiting_review", "id": None, "noticed": "2 articles are waiting"},  # nothing to key on
+        {"kind": "how_to", "id": "help-topics", "noticed": "help", "suggestion": {"command": "x"}},
+        {"kind": "title_markup", "id": "a1; topics delete crypto", "noticed": "an id that is not one"},
+        {**_REWRITE_FINDING, "actioned": {"noticed": 5}},  # not words: no note
+    ]
+    done = subprocess.run(
+        [NODE, "-e", _DISMISS_RUNNER, str(FRONTEND / "ask.js")],
+        input=json.dumps(findings),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    plain, noted, alarm, no_id, how_to, hostile, not_words = json.loads(done.stdout)
+
+    label = "Dismiss this finding: do not raise it again"
+    assert plain["buttons"] == [["Dismiss", "button", label]] and plain["note"] is None
+    assert plain["pressed"] == [["title_markup", _REWRITE_FINDING["id"], "Dismiss", "status", True]]
+    assert noted["note"] == (
+        "Already actioned? A rewrite of this article is running now. "
+        "It looks like you have already acted on this. Check, then press Dismiss."
+    )
+    assert noted["buttons"] and alarm["buttons"]  # any kind of finding, a command or not
+    for card in (no_id, how_to, hostile):
+        assert card["buttons"] == [] and card["dismissable"] is False and card["pressed"] == []
+    assert not_words["note"] is None and not_words["buttons"]
+    assert all(card["withoutHandler"] == 0 for card in (plain, noted, alarm))
+
+
+def test_dismissing_sends_only_the_findings_kind_and_id_and_asks_no_model():
+    code = _code(_read("ask.js"))
+    dismiss = _between(code, "function dismissFinding(", "function renderTurn(")
+
+    assert "body: JSON.stringify({ dismiss: { kind: finding.kind, id: finding.id } })" in dismiss
+    assert 'Authorization: "Bearer " + accessToken' in dismiss and ".fetch(config.askUrl" in dismiss
+    # Pressed twice, it is sent once; a failure gives the button back.
+    assert dismiss.index("if (button.disabled)") < dismiss.index("button.disabled = true")
+    assert "button.disabled = false" in dismiss
+    # Only on the API's own yes is the card marked, and nothing it sent is shown as markup.
+    assert "body.dismissed !== true" in dismiss and "ask-card-dismissed" in dismiss
+    assert "innerHTML" not in dismiss and "body.message" not in dismiss
+    css = _read("ask.css")
+    selectors = (".ask-dismiss {", ".ask-dismiss:focus-visible", ".ask-actioned {", ".ask-card-dismissed")
+    for selector in selectors:
+        assert selector in css, selector
 
 
 def test_the_code_and_state_leave_the_address_bar_before_the_exchange():
@@ -546,8 +659,8 @@ def test_a_quick_question_asks_its_own_label_as_a_new_conversation():
     assert quick.index("turns = [];") < quick.index("clear(conversation);") < quick.index("ask(label")
     assert 'doc.querySelectorAll(".ask-quick-question")' in code
     assert 'addEventListener("click", askQuick)' in code
-    # Still only the three requests the page ever makes (the wake call is the third).
-    assert len(re.findall(r"\.fetch\(", code)) == 3
+    # Still only the four requests the page ever makes (sign-in, wake, question, dismiss).
+    assert len(re.findall(r"\.fetch\(", code)) == 4
 
 
 def test_the_stylesheets_carry_the_prefixes_current_browsers_still_need():
@@ -1039,7 +1152,9 @@ def test_a_command_is_shown_in_a_box_the_operator_can_edit_before_copying(render
     css = _read("ask.css")
     assert ".ask-command-text {" in css and ".ask-command-text:focus-visible" in css
     # Nothing reads the box except Copy: no listener on it, and it is not part of what is asked.
-    assert "code.addEventListener" not in block and block.count("addEventListener") == 1
+    # The card's only two listeners are its buttons, Copy and Dismiss.
+    assert "code.addEventListener" not in block and block.count("addEventListener") == 2
+    assert "copy.addEventListener" in block and "dismiss.addEventListener" in block
 
 
 @needs_node
@@ -1070,7 +1185,8 @@ def test_the_page_takes_tables_and_how_to_cards_from_the_answer_and_builds_them_
     css = _read("ask.css")
 
     assert "tables: Array.isArray(body.tables) ? body.tables : []" in code
-    assert "renderTable(doc, table)" in code and "renderCard(doc, finding, copyCommand)" in code
+    assert "renderTable(doc, table)" in code
+    assert "renderCard(doc, finding, copyCommand, dismissFinding)" in code
     assert 'finding.kind === "how_to"' in code and "finding.destructive === true" in code
     # What is copied is what the command's box holds when Copy is pressed, edits included.
     assert "clipboard.writeText(commandText(code))" in code

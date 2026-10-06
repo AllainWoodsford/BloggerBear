@@ -50,6 +50,13 @@ operator. At most one in WARM_COOLDOWN_SECONDS does anything; the rest are answe
 The answer is always 200 with `{"warmed": bool, "cooldown": bool}`: a wake that fails is not the
 operator's problem, and the next question will say so if the server really is down.
 
+**Dismissing a finding.** The page's Dismiss button sends `{"dismiss": {"kind": ..., "id": ...}}`,
+a finding's own kind and id as the tools returned them. It goes through the same access switch
+and needs the same token; the MCP server's `dismiss` tool is called directly, with no model and
+nothing against the daily cap, and writes only the caller's own list of suggestions. The answer
+is `{"dismissed": bool, "message": "..."}` (the tool's own fixed words); a kind or an id that is
+not shaped like one is a 400 before anything is called.
+
 **What is refused, and how.** A body that is not what is described above is a 400 with a plain
 reason. A model or MCP failure is a 502 that says nothing about why. Like the other handlers,
 `handler` never raises.
@@ -64,6 +71,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 
 from common import dynamo
@@ -226,6 +234,41 @@ def _warm(authorization: str, extra_headers: dict[str, str]) -> dict:
     return _response(200, {"warmed": True, "cooldown": False})
 
 
+# A finding's kind (a key of the server's catalogue) and id (ops_mcp/suggestions.ID_PATTERN), as
+# they must be shaped to be passed on. The server checks them against its own lists as well.
+_FINDING_KIND = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_FINDING_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _dismissal(body: dict) -> tuple[str, str] | None:
+    """(kind, id) if the body is a dismiss request, None if it is not one at all. A body that
+    has `dismiss` but is not exactly a kind and an id raises _Invalid."""
+    if "dismiss" not in body:
+        return None
+    wanted = body["dismiss"]
+    if set(body) != {"dismiss"} or not isinstance(wanted, dict) or set(wanted) != {"kind", "id"}:
+        raise _Invalid("'dismiss' must hold exactly a finding's 'kind' and 'id', and nothing else")
+    kind, finding_id = wanted["kind"], wanted["id"]
+    if not isinstance(kind, str) or not _FINDING_KIND.match(kind):
+        raise _Invalid("'kind' must be a finding's kind")
+    if not isinstance(finding_id, str) or not _FINDING_ID.match(finding_id):
+        raise _Invalid("'id' must be a finding's id")
+    return kind, finding_id
+
+
+def _dismiss(kind: str, finding_id: str, authorization: str, extra_headers: dict[str, str]) -> dict:
+    """Set one finding aside for the caller, through the MCP server's own tool."""
+    try:
+        result = agent.dismiss(kind, finding_id, authorization, extra_headers)
+    except Exception as exc:  # noqa: BLE001 - never raise out of the handler
+        print(f"ops_agent: dismiss failed error={type(exc).__name__}")
+        return _error(502, _UNAVAILABLE)
+    done = result.get("dismissed") is True
+    print(f"ops_agent: dismiss kind={kind} done={done}")
+    message = result.get("spoken")
+    return _response(200, {"dismissed": done, "message": message if isinstance(message, str) else ""})
+
+
 def _ask(event: dict, *, admitted: bool = False) -> dict:
     """Answer the question. `admitted` says the access check passed for this event; only then
     is the caller's address vouched for to the MCP server."""
@@ -238,6 +281,9 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
         body = _body(event)
         if body == _WARM_BODY and body["warm"] is True:
             return _warm(authorization, _vouching_headers(event, admitted))
+        dismissal = _dismissal(body)
+        if dismissal is not None:
+            return _dismiss(*dismissal, authorization, _vouching_headers(event, admitted))
         question, history = _validated(body)
     except _Invalid as exc:
         return _error(400, str(exc))

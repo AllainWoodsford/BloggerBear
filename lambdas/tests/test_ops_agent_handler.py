@@ -185,6 +185,127 @@ def test_waking_opens_the_session_and_lists_the_tools_only():
     run.assert_not_called()
 
 
+# --- dismissing a finding from its card -------------------------------------------------------------
+
+FINDING = {"kind": "title_markup", "id": "f5e88f3a-3c7e-48be-ae8b-52a31030ae5e"}
+DISMISSED = {"spoken": "Done. I won't raise that one again.", "findings": [], "dismissed": True}
+
+
+def press_dismiss(wanted=None, **kwargs):
+    body = {"dismiss": FINDING if wanted is None else wanted}
+    return ops_agent_handler.handler(event(body, **kwargs), None)
+
+
+def test_a_dismissal_calls_the_servers_own_tool_and_no_model(answer, capsys):
+    with (
+        patch.object(agent, "dismiss", return_value=dict(DISMISSED)) as dismiss,
+        patch.object(ops_agent_handler.quota, "take") as take,
+    ):
+        response = press_dismiss()
+
+    assert response["statusCode"] == 200
+    assert json.loads(response["body"]) == {"dismissed": True, "message": DISMISSED["spoken"]}
+    assert dismiss.call_args.args[:3] == (FINDING["kind"], FINDING["id"], f"Bearer {TOKEN}")
+    answer.assert_not_called()
+    take.assert_not_called()
+    out = capsys.readouterr().out
+    assert out.strip() == "ops_agent: dismiss kind=title_markup done=True" and FINDING["id"] not in out
+
+
+def test_a_dismissal_the_server_would_not_take_says_so(answer):
+    refused = {"spoken": "That isn't a suggestion I can set aside.", "findings": [], "dismissed": False}
+    with patch.object(agent, "dismiss", return_value=refused):
+        body = json.loads(press_dismiss()["body"])
+
+    assert body == {"dismissed": False, "message": "That isn't a suggestion I can set aside."}
+
+
+@pytest.mark.parametrize(
+    "wanted",
+    [
+        {"kind": "title_markup"},
+        {"kind": "title_markup", "id": "a1; topics delete crypto"},
+        {"kind": "Title Markup", "id": "a1"},
+        {"kind": "title_markup", "id": "a1", "extra": 1},
+        {"kind": 5, "id": "a1"},
+        {"kind": "title_markup", "id": None},
+        "title_markup",
+        ["title_markup", "a1"],
+    ],
+)
+def test_a_dismissal_that_is_not_a_kind_and_an_id_is_a_400_and_reaches_nothing(answer, wanted):
+    with patch.object(agent, "dismiss") as dismiss:
+        response = press_dismiss(wanted)
+
+    assert response["statusCode"] == 400
+    dismiss.assert_not_called()
+    answer.assert_not_called()
+
+
+def test_a_dismissal_cannot_ride_along_with_a_question(answer):
+    with patch.object(agent, "dismiss") as dismiss:
+        response = ops_agent_handler.handler(event({"dismiss": FINDING, "question": QUESTION}), None)
+
+    assert response["statusCode"] == 400
+    dismiss.assert_not_called()
+    answer.assert_not_called()
+
+
+def test_a_dismissal_needs_the_token_and_passes_the_access_switch(pipeline_config):
+    with patch.object(agent, "dismiss") as dismiss:
+        no_token = press_dismiss(headers={"Content-Type": "application/json"})
+        pipeline_config["assistant_access"] = "off"
+        switched_off = press_dismiss()
+
+    assert no_token["statusCode"] == 401 and switched_off["statusCode"] == 403
+    dismiss.assert_not_called()
+
+
+def test_a_dismissal_that_fails_is_a_502_that_says_nothing_about_why(capsys):
+    with patch.object(agent, "dismiss", side_effect=RuntimeError(f"boom {TOKEN}")):
+        response = press_dismiss()
+
+    assert response["statusCode"] == 502
+    out = capsys.readouterr().out
+    assert out.strip() == "ops_agent: dismiss failed error=RuntimeError" and TOKEN not in out
+
+
+def test_dismissing_calls_the_dismiss_tool_with_the_kind_and_id_and_nothing_else():
+    class Session:
+        def __init__(self, result):
+            self.result, self.calls = result, []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def call_tool_sync(self, **kwargs):
+            self.calls.append(kwargs)
+            return self.result
+
+    good = Session({"status": "success", "structuredContent": dict(DISMISSED)})
+    with (
+        patch.dict("os.environ", {"OPS_MCP_URL": "https://mcp.example/mcp"}),
+        patch.object(agent, "mcp_client", return_value=good),
+        patch.object(agent, "run") as run,
+    ):
+        assert agent.dismiss("title_markup", "a1", "Bearer x") == DISMISSED
+    assert good.calls == [
+        {"tool_use_id": "page-dismiss", "name": "dismiss", "arguments": {"kind": "title_markup", "id": "a1"}}
+    ]
+    run.assert_not_called()
+
+    for bad in ({"status": "error", "structuredContent": {}}, {"status": "success", "content": []}):
+        with (
+            patch.dict("os.environ", {"OPS_MCP_URL": "https://mcp.example/mcp"}),
+            patch.object(agent, "mcp_client", return_value=Session(bad)),
+            pytest.raises(agent.AgentError),
+        ):
+            agent.dismiss("title_markup", "a1", "Bearer x")
+
+
 # --- what it accepts ------------------------------------------------------------------------------
 
 

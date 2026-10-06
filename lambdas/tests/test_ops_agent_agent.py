@@ -622,6 +622,18 @@ def test_the_model_is_told_where_security_questions_go():
     assert "security" in cli_guide.GUIDES
 
 
+def test_the_model_is_told_what_to_say_about_a_finding_already_acted_on():
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "A finding with `actioned` is one the operator seems to have dealt with already",
+        "that you suggest dismissing it, and to please check first",
+        "Never present it as a new problem or as a fix to run",
+        "Every finding's card has a Dismiss button",
+        "but only when the operator tells you to",
+    ):
+        assert rule in prompt, rule
+
+
 def test_the_model_is_told_how_to_answer_the_pages_starter_questions():
     """The page offers a few questions as ways to start (test_frontend_ask.py holds the list). Each
     is a first question, and none but "what needs my attention" is a briefing."""
