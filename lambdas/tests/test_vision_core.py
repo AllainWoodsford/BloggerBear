@@ -190,3 +190,29 @@ def test_build_info_and_fingerprint_match():
     assert not build.matches(info, None)
     assert not build.matches(info, "")
     assert not build.matches(info, "0" * 64)
+
+
+def test_blobs_beside_the_shore_are_dropped_and_tallied():
+    nir, green = scene()
+    nir[:, :60] = LAND_NIR
+    green[:, :60] = LAND_GREEN
+    # Moored 3 px (30 m) off the shore: separate from the land, but inside a 4 px buffer.
+    plant(nir, green, (65, 100), 20, 4, 90)
+    plant(nir, green, (130, 100), 20, 4, 10)  # clear of it
+    m = analyse_site(nir, green, WHOLE, PX, params=DetectParams(edge_buffer_px=4)).metrics
+    assert m["count"] == 1
+    assert m["rejected"]["edge"] == 1
+    assert m["rejected"]["candidates"] == 2
+    # With the buffer off, the moored one counts too.
+    off = analyse_site(nir, green, WHOLE, PX, params=DetectParams(edge_buffer_px=0)).metrics
+    assert off["count"] == 2
+    assert off["rejected"]["edge"] == 0
+
+
+def test_rejection_tally_names_the_filters():
+    nir, green = scene()
+    plant(nir, green, (40, 40), 6, 6, 0)  # shape
+    plant(nir, green, (100, 170), 4, 2, 0)  # size
+    m = analyse_site(nir, green, WHOLE, PX).metrics
+    assert m["rejected"]["shape"] == 1
+    assert m["rejected"]["size"] >= 1

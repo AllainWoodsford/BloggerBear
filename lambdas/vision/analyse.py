@@ -86,7 +86,8 @@ def analyse_site(
     pixel_km2 = (pixel_size_m / 1000.0) ** 2
     clear_water_km2 = measurable_px * pixel_km2
 
-    detections = detect_objects(nir, measurable, pixel_size_m, params)
+    rejected: dict = {}
+    detections = detect_objects(nir, measurable, pixel_size_m, params, stats=rejected)
     if transform is not None:
         for det in detections:
             det["map_x"], det["map_y"] = (round(v, 2) for v in pixel_to_map(transform, det["x"], det["y"]))
@@ -106,6 +107,7 @@ def analyse_site(
         "density_per_km2": round(len(detections) / clear_water_km2, 4) if clear_water_km2 else None,
         "size_histogram": size_histogram([d["length_m"] for d in detections]),
         "detections": detections,
+        "rejected": rejected,
         "quality_flags": flags,
         "params": {
             "pixel_size_m": pixel_size_m,
@@ -115,6 +117,7 @@ def analyse_site(
             "min_length_m": params.min_length_m,
             "max_length_m": params.max_length_m,
             "min_elongation": params.min_elongation,
+            "edge_buffer_px": params.edge_buffer_px,
             "max_object_px": max_object_px,
             "coverage_floor": coverage_floor,
         },
