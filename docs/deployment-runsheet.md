@@ -497,6 +497,25 @@ Then list your own personal strings (a name, a home IP, a personal address), one
 the same list in the `PII_DENYLIST` repository secret. Neither check ever prints what it found, so
 the logs stay safe to publish.
 
+### The vision worker (satellite_vision topics)
+
+Off by default (`vision_enabled = false` in both environments); nothing is created until it is
+turned on. Design: [docs/enhancements/opencv-agentic-vision-enhancement.md](enhancements/opencv-agentic-vision-enhancement.md).
+
+1. **Re-apply the bootstrap by hand** (it is never applied by CI). It adds two statements to the
+   deploy roles: Lambda functions and log groups named `<prefix>-*-vision-*` in `vision_region`
+   (default `us-west-2`, beside the Sentinel-2 imagery). If you change `vision_region`, pass the same
+   value to the bootstrap and to the environment.
+2. **Set `vision_enabled = true`** in `infra/environments/dev/terraform.tfvars` and merge. The apply
+   creates, in `vision_region`: the worker (arm64, python3.12), its role (its own log group only),
+   its log group, and a small artifacts bucket its package is uploaded through. The research tick
+   is given the worker's ARN (`VISION_WORKER_ARN`) and may invoke that one function.
+3. **Create a topic** with `adapter: "satellite_vision"` and `sites` in its `adapter_config`
+   (`common/adapters/satellite_vision.py` documents every key).
+
+The worker reads public data over HTTPS and needs no other access. Its errors alarm is not in the
+pipeline dashboard: observability's alarms are in the home Region, and the worker is not.
+
 ## Deploying to another region
 
 `ap-southeast-2` (Sydney) is the default, and what you get with nothing set. To deploy somewhere
