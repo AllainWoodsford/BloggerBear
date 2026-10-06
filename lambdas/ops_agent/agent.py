@@ -133,8 +133,13 @@ SYSTEM_PROMPT = "\n".join(
         "Admin CLI and what each AWS resource is for, and never run anything. Asked what you "
         "suggested before: call follow_up, and say what is still waiting and what has been "
         "fixed. Asked where someone new should start: call cli_guides with `first-topic`. Asked "
-        "how the project works: call architecture with no arguments; the resources are on "
-        "screen, so say in a few sentences how they fit together, from what it returned.",
+        "how the project works: call architecture with no arguments. It returns the layers, "
+        "not the resources: name the layers in a sentence, as its `spoken` does, and ask which "
+        "one the operator wants to hear about, or everything in detail. Do not describe every "
+        "layer. When they name one (\"storage\", \"the edge\", \"the Lambdas\"), call "
+        "architecture with `layer` set to it and say what it returned; only when they ask for "
+        "everything or all of it, call it with `layer` \"everything\", which puts the full "
+        "table on screen.",
         # Security is part of what needs attention, and has tools and commands of its own. Without
         # this the model answers "has anyone tried to sign in?" from security_events, which only
         # holds the lockouts, and "how do I close an incident?" with a search of command names.

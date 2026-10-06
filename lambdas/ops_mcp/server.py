@@ -309,8 +309,29 @@ def build_server() -> MCPServer:
             "firewall",
         ]
         | None = None,
+        layer: Literal[
+            "edge",
+            "presentation",
+            "api",
+            "identity",
+            "orchestration",
+            "compute",
+            "ai",
+            "data",
+            "observability",
+            "everything",
+        ]
+        | None = None,
     ) -> dict[str, Any]:
-        """What one of BloggerBear's AWS resources is for, in this environment: a DynamoDB table
+        """How BloggerBear is built, and what each of its AWS resources is for. With no arguments
+        (for "how does the project work?" or "tell me about the architecture"): the layers, one
+        line each, and the question of which to go into; do not ask for everything unless the
+        operator does. `layer` gives one layer: edge (CloudFront, WAF), presentation (the site and
+        this page), api (the API gateways), identity (IAM, Cognito), orchestration (schedules,
+        Step Functions, the dead-letter queue), compute (the Lambdas), ai (Bedrock, the MCP
+        server), data (DynamoDB, S3, Parameter Store) or observability (CloudWatch, alerts, cost);
+        `layer` "everything" is every resource in one long table, only when asked for all of it.
+        What one of BloggerBear's AWS resources is for, in this environment: a DynamoDB table
         (its keys, indexes, TTL, who writes and reads it), a Lambda, an API, a dashboard, a log
         group, an alarm's resource, a queue, a schedule or a bucket, with the log groups,
         dashboards and alarms to look at for it. Pass `name` as the operator gave it: a full name
@@ -319,7 +340,7 @@ def build_server() -> MCPServer:
         says so. `data_allowed` false means the name was for an environment that is neither, so do
         not read data for it. With only `kind`, or nothing: every resource, as a table; `kind`
         "function" lists every Lambda with what it is for and when it runs."""
-        return architecture_module.architecture(name, kind)
+        return architecture_module.architecture(name, kind, layer)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def investigate(
