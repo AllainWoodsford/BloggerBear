@@ -69,7 +69,16 @@ from common.dynamo import (
 )
 from common.model_pricing import default_model_entry
 
-BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening", "assistant")
+BEDROCK_CATEGORIES = (
+    "musings",
+    "weekly_reflection",
+    "gear_identity",
+    "comment_screening",
+    "assistant",
+    # The vision agent's triage of a measured change (common/vision_triage.py): several Converse
+    # calls per decision, with images and tools, tallied per decision by record_model_usage.
+    "vision_triage",
+)
 
 # The operator's assistant (lambdas/ops_agent): every question it answers, on the page or started
 # by Alexa+, is one agent run of several model calls. Its tokens and cost are tallied here per run
@@ -242,6 +251,37 @@ def record_assistant_run(model_id: str, input_tokens: int, output_tokens: int, m
         increment_current_stats(updates, _current_week_start())
     except Exception as exc:  # noqa: BLE001 - bookkeeping never fails the answer
         print(f"stats_tracking: could not record an assistant run: {type(exc).__name__}")
+
+
+def record_model_usage(
+    category: str, model_id: str, input_tokens: int, output_tokens: int, model_calls: int
+) -> None:
+    """Tally several model calls made as one piece of work (an agent's loop) onto this week's row
+    under `category`, one of BEDROCK_CATEGORIES. Priced like every other call; a model with no
+    price is counted as unpriced calls, never as free. Never raises, and does nothing where the
+    function has no Stats table (a local run, a test)."""
+    if category not in BEDROCK_CATEGORIES:
+        raise ValueError(f"category must be one of {BEDROCK_CATEGORIES}, got {category!r}")
+    if not os.environ.get("STATS_CURRENT_TABLE"):
+        return
+    try:
+        calls, tokens_in, tokens_out = (max(0, int(v)) for v in (model_calls, input_tokens, output_tokens))
+        if not calls and not tokens_in and not tokens_out:
+            return
+        updates: dict[str, int | Decimal] = {
+            f"{category}_calls": calls,
+            f"{category}_input_tokens": tokens_in,
+            f"{category}_output_tokens": tokens_out,
+        }
+        call = {"input_tokens": tokens_in, "output_tokens": tokens_out}
+        cost_usd = call_cost_usd(call, pricing_for(model_id))
+        if cost_usd is not None:
+            updates[f"{category}_cost_aud"] = Decimal(str(cost_usd * USD_TO_AUD_RATE))
+        else:
+            updates[f"{category}_unpriced_calls"] = calls
+        increment_current_stats(updates, _current_week_start())
+    except Exception as exc:  # noqa: BLE001 - bookkeeping never fails the work
+        print(f"stats_tracking: could not record {category} usage: {type(exc).__name__}")
 
 
 def _record(updates: dict[str, int | Decimal]) -> None:
