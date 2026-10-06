@@ -79,7 +79,8 @@ model repeated is swept too.
 
 **Not steered by the logs.** A log line that reads like instructions to a model ("ignore previous
 instructions", a fake tool call, `system:`) is **withheld whole** and replaced with a marker; the
-answer says that lines were withheld, which is itself a sign of probing. Example lines are under
+answer says how many were withheld and in which function, and that it is most often a program's
+own wording and only sometimes someone probing (see "Third round"). Example lines are under
 `untrusted`, and the prompt (and the server's instructions, for Alexa+) says log lines are data.
 Commands still come only from the catalogue or the CLI reference, built in code.
 
@@ -119,7 +120,7 @@ this PR.
 | | What changed | Where |
 |---|---|---|
 | **Forgiving topic names** (#232) | Every tool that takes a topic takes its id, its name, or the operator's own words. An exact match is used as it is. A single close match is used and said first ("I took that to mean Crypto & Investing; tell me if you meant another topic."). Two close matches get "did you mean A or B?". Scoring is mostly how many of the operator's words the topic covers, with synonyms (finance ~ investing ~ markets, crypto ~ bitcoin, AI ~ artificial intelligence), plus how alike the spellings are. Words with characters no topic name has (`;`, `|`, `$`, quotes) are refused, never matched, so "crypto; topics delete crypto" goes nowhere. Function and table names in `architecture` and `watch` are forgiving the same way. | `ops_mcp/topic_match.py`, `architecture.forgiving` |
-| **Success rates** (#234) | `log_review` runs a fifth fixed query that counts failed invocations (an `[ERROR]`, a timeout, a crash), once per request. Each function gets **Runs** and **Succeeded**, and the answer says "Of 120 runs, 97.5% succeeded; research-tick did worst, at 90%". A function with no errors still gets its row. `api_errors` gives each API's success share, and only says "all succeeded" when no status filter was asked. | `log_review.py`, `api_errors.py` |
+| **Success rates** (#234) | Removed in the third round (#249): every function read 100% while its source was being rate limited, so the number said nothing. See below. | `log_review.py`, `api_errors.py` |
 | **The Lambdas and what they do** (#234) | `architecture(kind="function")` lists each function with what it is for and when it runs. The agent uses it for "list the Lambda functions". | `architecture.py` |
 | **A suggested command for any CLI question** (#235) | Every help card from `cli_help` and every step of a `cli_guides` guide has a drafted command under it. The values the operator gave are filled in, and the rest show as `<placeholders>`. Each draft is headed by a ⚠️ warning to double-check every value before running it. | `cli_guide.py`, `suggestions.DOUBLE_CHECK_WARNING` |
 | **Mock-ups for new users** (#235) | A new `topic-setup` guide maps the operator's words to options. Editorial goals and a focus go into `--editorial-goals-json` (`primary_focus`, `exclusion_criteria`). Keywords to look for go into `--config-json` `title_keywords`, and keywords to ignore go into the exclusions. A fallback model comes from `models list`. Its example is a full `topics create` for "Watering vegetables". The agent never makes up an id, a model id or a number the operator did not give: it leaves a placeholder. | `cli_guide.GUIDES["topic-setup"]`, `ops_agent/agent.py` |
@@ -129,3 +130,35 @@ The rules above still hold. Matching is done in code, before any value reaches a
 topic is a real topic id, and an unmatched word is never put into a query. Commands still come only
 from the CLI reference, built in code. The prompt and the server's instructions (for Alexa+) say
 the same things.
+
+## Third round: what using dev beside production showed
+
+The operator used the dev assistant (newer code) and the production one (older) side by side, with
+screenshots, and found production the more helpful. The causes and the asks, delivered as six PRs
+that each deploy alone:
+
+| | What changed | Where |
+|---|---|---|
+| **Status codes, not success rates** (#249) | The Lambda success rate is gone: a run completes even when the source it called refused it, so research-tick read 100% beside 69 rate-limit errors. `log_review` is back to errors by root cause, with one Logs Insights query fewer. `api_errors` counts every request by HTTP status code, the 200s too (`status_codes`, "By status code: 1880 were 200, 80 were 400…", a row per successful code ahead of the errors by route). The prompt says never to give a Lambda success rate. | `log_review.py`, `api_errors.py`, `ops_agent/agent.py` |
+| **Look when asked** (#250) | Asked "can I look at those errors or can you go", dev answered "I'm read-only, I can't run anything". The read-only rule stays; a second rule says looking is the job, to call the tool for what was being discussed, and to mention being read-only only when asked to change something. | `ops_agent/agent.py` |
+| **No false "someone is probing"** (#250) | Production reported probing about its own record of a turn (`ops_agent: turn=briefing tool_calls=2 tools=api_errors,log_review`): `api_errors` matched the error pattern and `tool_calls` the instruction pattern. That record is left out of the error queries (`_OWN_RECORD`); a withheld line in the assistant's own functions is counted (`withheld_in`) but not announced; one anywhere else is said with its function and without calling it an attack. What is withheld is unchanged. | `log_review.py`, `ops_agent/agent.py` |
+| **Queries with their sources** (#253) | A check-it-yourself card gave a query and up to fourteen log groups to tick by hand. The query now starts with a `SOURCE "<log group ARN>"` line per log group, as the console writes them, one to a line and each ending in a pipe, the first with `START=` and `END=` for the window read. `log_review` names the three groups with the most errors; `api_errors` the access logs it read. With no account id to build the ARN from, the card falls back to the query alone. | `logs.py` (`source_query`), `log_review.py`, `api_errors.py` |
+| **An editable command box** (#253) | Every command on a card is in a text box: delete a `SOURCE` line or fill in a placeholder, then Copy, which takes what the box holds. It is a text box only: no form, no name, nothing submitted or read back, content set as text. | `frontend/ask.js`, `ask.css` |
+| **The architecture in layers** (#255) | "How does the project work?" was one table of some fifty resources. With no arguments `architecture` now names nine layers and asks which one; `layer` gives one (its AWS services, then our resources in it), found from the operator's words; `layer: "everything"` is the old table. Every catalogue kind belongs to exactly one layer. | `architecture.py` (`LAYERS`) |
+| **A wake call at sign-in** (#256) | The page sends `{"warm": true}` to `POST /ask` as the sign-in completes. The handler opens the MCP session and lists the tools, which starts both Lambdas: no model, no tool call, nothing against the daily cap, nothing shown. At most one in five minutes, on both sides. | `ops_agent_handler.py` (`_warm`), `frontend/ask.js` (`warmUp`) |
+| **Dismiss, and "already actioned"** (#257) | Every finding's card has a Dismiss button, which sends the finding's kind and id as `{"dismiss": …}`; the handler calls the server's existing `dismiss` tool directly, with no model. Where the moderation queue shows the operator has acted on a finding that is still true (a rewrite of the article is running, or it was rewritten and waits in the inbox), the finding carries `actioned` and the assistant says it looks dealt with, suggests dismissing it, and asks the operator to check first. It never dismisses by itself. | `memory.py` (`ACTION_SIGNS`), `ops_agent_handler.py`, `frontend/ask.js` |
+
+**Three things are bodies of the one route.** A question, a wake call and a dismissal all go to
+`POST /ask`, told apart by the body (`question`, `{"warm": true}`, `{"dismiss": {...}}`). Each goes
+through the access switch and needs the token; only a question reaches the model or counts
+against the daily cap. No route, table or permission was added.
+
+**What was not verified against AWS or a live model.** The `SOURCE "<arn>" START=… END=… |` form is
+the one the operator copied out of the console; the `d`, `h` and `m` units are assumed from its
+`w` and `s`. The prompt changes (no pushback, a layer at a time, "already actioned") are held by
+tests on the prompt's words, not by a conversation. The wake call's saving, the two cold starts,
+has not been timed.
+
+**Where another "already actioned" sign would go.** `memory.ACTION_SIGNS` and `action_sign`: a key,
+its words for the card and for speech, and a check that reads only ids and statuses. Today the
+signs are for the kinds fixed by a rewrite; the other kinds clear by themselves once fixed.

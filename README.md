@@ -278,11 +278,26 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
 - **It reads the logs** ([design](docs/enhancements/ops-assistant-log-reader.md)): `log_review`
   (Lambda errors, a topic's runs and its adapter, a time range) and `api_errors` (failed requests by
   status and who answered, with every request counted by HTTP status code, the 200s too) find each error's root cause in code and say whether it needs a code fix,
-  a settings change or just time, with how to check it yourself on screen. Findings are written to
+  a settings change or just time, with how to check it yourself on screen: the query, with a
+  `SOURCE` line for each of the closest log groups and the time range, in a box you can edit before
+  you copy it. It gives no Lambda success rate (a run completes even when its source was rate
+  limited, so the number said nothing). Findings are written to
   its suggestions table; it offers to watch a function or a table, and the next "what needs my
   attention?" says whether it is still happening or has calmed down. Read-only, by environment,
   project and ManagedBy tag; personal data swept out (addresses only as `123.XXX.XXX.34`); a log
-  line that reads like instructions is withheld, never obeyed.
+  line that reads like instructions is withheld, never obeyed, and reported with the function it
+  was in and without alarm (its own log, which talks about tool calls, is not reported at all).
+- **The architecture, a layer at a time:** "how does the project work?" names nine layers (edge,
+  presentation, API gateways, identity and access, orchestration, compute, AI, data and storage,
+  observability) and asks which one; a layer gives its AWS services and our resources in it;
+  "everything" is the full table.
+- **Findings you have dealt with:** every finding's card has a **Dismiss** button (no model call;
+  it changes only the assistant's own list). Where the pipeline's tables show you have already
+  acted, such as an article sent for a rewrite that has not replaced the old one yet, the finding
+  says so and the assistant suggests dismissing it, after you check. It never dismisses by itself.
+- **Woken at sign-in:** the page sends one background call as you sign in, which starts the
+  agent's and the MCP server's Lambdas so the first question does not wait for them. No model, no
+  data, nothing shown, and at most one every five minutes.
 - **Alexa+ cannot wait for the agent** (its limit is 500 ms; a briefing takes 10–25 s), so Alexa
   starts a briefing in the background (`start_briefing`, which invokes the agent as the caller)
   and reads the last one back (`latest_briefing`). Every briefing asked on the page is kept too.

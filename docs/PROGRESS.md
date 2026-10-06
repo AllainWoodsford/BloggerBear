@@ -609,6 +609,11 @@ All shipped and deployed; the design and decisions for each are in
 - [x] The operator's assistant, second round: forgiving topic names with "did you mean" (#232),
   success rates and the Lambdas listed with what they do (#234), a suggested command for any CLI
   question and a topic-setup mock-up (#235), push to talk that does not let go while held (#238)
+- [x] The operator's assistant, third round (dev against production): API calls by status code and
+  no Lambda success rate (#249), no "I'm read-only" pushback and no false "someone is probing"
+  (#250), log queries with their `SOURCE` log groups in an editable box (#253), the architecture
+  in layers (#255), a wake call at sign-in (#256), a Dismiss button and "it looks like you already
+  fixed this" (#257); docs/enhancements/ops-assistant-log-reader.md, "Third round"
 
 ## Backlog / not yet scheduled
 
