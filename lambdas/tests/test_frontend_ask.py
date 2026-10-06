@@ -182,9 +182,10 @@ def test_untrusted_text_is_marked_and_a_command_is_never_run_or_fetched():
     assert 'key === "untrusted"' in code
     assert '"ask-untrusted-mark", "Unverified"' in code
     assert ".ask-untrusted-mark" in _read("ask.css")
-    # The only two requests: the token exchange and the question.
-    assert len(re.findall(r"\.fetch\(", code)) == 2
-    assert '"/oauth2/token"' in code and ".fetch(config.askUrl" in code
+    # The only three requests: the token exchange, the wake call and the question, the last two
+    # to the same address.
+    assert len(re.findall(r"\.fetch\(", code)) == 3
+    assert '"/oauth2/token"' in code and code.count(".fetch(config.askUrl") == 2
 
 
 # --- storage ------------------------------------------------------------------------------------
@@ -203,8 +204,10 @@ def test_session_storage_holds_only_the_two_pkce_values_and_they_are_removed_on_
 
     uses = re.findall(r"sessionStorage\.(\w+)\(([^,)]*)", code)
     assert uses, "the PKCE values must survive the trip to the sign-in page"
-    assert {key for _, key in uses} == {"VERIFIER_KEY", "STATE_KEY"}
+    # The two PKCE values, and when the assistant was last woken (a time and nothing else).
+    assert {key for _, key in uses} == {"VERIFIER_KEY", "STATE_KEY", "WARMED_KEY"}
     assert {method for method, _ in uses} == {"setItem", "getItem", "removeItem"}
+    assert "sessionStorage.setItem(WARMED_KEY, String(Date.now()))" in code
     assert "sessionStorage[" not in code
     # Removed as soon as they are read, before the state is checked or the code is exchanged.
     start = code.index("function start()")
@@ -212,6 +215,57 @@ def test_session_storage_holds_only_the_two_pkce_values_and_they_are_removed_on_
     assert removed < code.index("returnedState !== expectedState", start) < code.index("/oauth2/token", start)
     # The token is a variable: nothing named like one is ever handed to storage.
     assert not re.search(r"setItem\([^)]*(token|Token)", code)
+
+
+def test_the_assistant_is_woken_once_at_sign_in_and_nothing_about_it_is_shown():
+    """The owner's ask: start the Lambdas as the operator signs in, in the background, and at
+    most once in five minutes."""
+    code = _code(_read("ask.js"))
+    start = code.index("function start()")
+
+    # Right after the page is shown with a fresh token, and nowhere else.
+    signed_in = code.index("accessToken = tokens.access_token", start)
+    assert code.index("showApp();\n        warmUp();", start) > signed_in
+    assert code.count("warmUp()") == 2  # the definition and that one call
+    wake = _between(code, "function warmUp()", "\n  }\n")
+    assert "body: JSON.stringify({ warm: true })" in wake
+    assert 'Authorization: "Bearer " + accessToken' in wake
+    assert "shouldWarm(last, Date.now())" in wake and "!accessToken" in wake
+    # The time is written before the request goes, so two quick loads send one.
+    assert wake.index("sessionStorage.setItem(WARMED_KEY") < wake.index(".fetch(config.askUrl")
+    # Nothing reaches the screen or the speaker, whatever comes back.
+    for shown in ("textContent", "status", "speak", "render", "showGate", "response"):
+        assert shown not in wake, shown
+    assert ".then(noop, noop)" in wake
+    assert "var WARM_COOLDOWN_MS = 5 * 60 * 1000;" in code
+
+
+@needs_node
+def test_a_wake_call_is_held_back_for_five_minutes_after_the_last_one():
+    script = """
+    const ask = require(process.argv[1]);
+    const now = 1_000_000_000;
+    const gap = ask.WARM_COOLDOWN_MS;
+    process.stdout.write(JSON.stringify({
+      cooldown: gap,
+      never: ask.shouldWarm(0, now),
+      missing: ask.shouldWarm(null, now),
+      garbage: ask.shouldWarm("not a time", now),
+      justNow: ask.shouldWarm(now - 1000, now),
+      almost: ask.shouldWarm(now - gap + 1, now),
+      due: ask.shouldWarm(now - gap, now),
+      future: ask.shouldWarm(now + 60000, now),
+    }));
+    """
+    done = subprocess.run(
+        [NODE, "-e", script, str(FRONTEND / "ask.js")], capture_output=True, text=True, check=True
+    )
+    result = json.loads(done.stdout)
+
+    assert result["cooldown"] == 300_000
+    assert result["never"] and result["missing"] and result["garbage"] and result["due"]
+    assert not result["justNow"] and not result["almost"]
+    assert result["future"]  # a clock that was changed must not stop it for ever
 
 
 def test_the_code_and_state_leave_the_address_bar_before_the_exchange():
@@ -492,8 +546,8 @@ def test_a_quick_question_asks_its_own_label_as_a_new_conversation():
     assert quick.index("turns = [];") < quick.index("clear(conversation);") < quick.index("ask(label")
     assert 'doc.querySelectorAll(".ask-quick-question")' in code
     assert 'addEventListener("click", askQuick)' in code
-    # Still only the two requests the page ever makes.
-    assert len(re.findall(r"\.fetch\(", code)) == 2
+    # Still only the three requests the page ever makes (the wake call is the third).
+    assert len(re.findall(r"\.fetch\(", code)) == 3
 
 
 def test_the_stylesheets_carry_the_prefixes_current_browsers_still_need():
