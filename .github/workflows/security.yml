@@ -69,9 +69,9 @@ jobs:
 
       # The whole repo, not just lambdas/: scripts/requirements.txt (the admin CLI) and the secret
       # scan of frontend/, infra/, scripts/, docs/ and .github/ were never covered. Trivy only
-      # recognises files named exactly requirements.txt, so --file-patterns adds the dev, ops-mcp
-      # and ops-agent requirements. The secret table lists only files with findings: a clean run
-      # shows just the dependency files, with "-" under Secrets.
+      # recognises files named exactly requirements.txt, so --file-patterns adds the dev, ops-mcp,
+      # ops-agent and vision requirements. The secret table lists only files with findings: a clean
+      # run shows just the dependency files, with "-" under Secrets.
       #
       # First every MEDIUM-or-worse finding, reported without failing (a MEDIUM CVE used to pass
       # unseen), then the gate on HIGH and CRITICAL.
@@ -79,14 +79,14 @@ jobs:
         run: |
           trivy fs --scanners vuln,secret --severity MEDIUM,HIGH,CRITICAL --exit-code 0 \
             --skip-dirs '**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build' \
-            --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent)\.txt' \
+            --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent|vision)\.txt' \
             .
 
       - name: Trivy vulnerability/secret scan (fail on HIGH and CRITICAL)
         run: |
           trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 \
             --skip-dirs '**/.venv,**/venv,**/.terraform,**/node_modules,**/__pycache__,frontend-dist,lambda-build' \
-            --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent)\.txt' \
+            --file-patterns 'pip:requirements-(dev|ops-mcp|ops-agent|vision)\.txt' \
             .
 
       # lambdas/ and scripts/ (the admin CLI signs AWS requests; it was never scanned). Tests are
