@@ -277,7 +277,7 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   warning to double-check it, and nothing it can call changes the pipeline.
 - **It reads the logs** ([design](docs/enhancements/ops-assistant-log-reader.md)): `log_review`
   (Lambda errors, a topic's runs and its adapter, a time range) and `api_errors` (failed requests by
-  status and who answered) give success rates per function and per API, find each error's root cause in code and say whether it needs a code fix,
+  status and who answered, with every request counted by HTTP status code, the 200s too) find each error's root cause in code and say whether it needs a code fix,
   a settings change or just time, with how to check it yourself on screen. Findings are written to
   its suggestions table; it offers to watch a function or a table, and the next "what needs my
   attention?" says whether it is still happening or has calmed down. Read-only, by environment,

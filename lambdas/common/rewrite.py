@@ -87,6 +87,13 @@ MAX_FINDINGS = 48
 FINDINGS_MAX_CHARS = 12_000
 # Compliance's fixed reason for a financial topic (common/compliance.py): routine, nothing to fix.
 _FINANCIAL_REASON = "financial topic"
+# For a topic whose adapter gives its articles a fixed ending (Adapter.drafting_guidance: a
+# summary table, takeaways). A rewrite fixes issues and keeps the length, so it is not asked to
+# add that ending to an older article, only not to leave one it finds out of step with the text.
+_CLOSING_SECTIONS_RULE = (
+    "If the draft ends with summary sections (a table, a list of takeaways), keep them and update "
+    "them so they still match the article after your changes."
+)
 # Every block the rewrite prompt uses (fresh_review._defang knows only its own three).
 _DELIMITER_TAG = re.compile(r"<(/?)(draft|findings|fresh_data|issues_to_fix|editor_note)", re.IGNORECASE)
 
@@ -118,7 +125,16 @@ def build_rewrite_prompt(
     evidence: str,
     as_of: str,
     instructions: str = "",
+    writing_guidance: str = "",
 ) -> str:
+    """`writing_guidance` is how the topic's adapter wants its articles written (how to state
+    figures that move: Adapter.figure_guidance), so a rewrite does not put back the exact
+    figures that got the article flagged. Ours, not data, and it lifts none of the rules."""
+    house_style = (
+        f"\n\nHow articles on this topic are written (within the rules above):\n{writing_guidance}"
+        if writing_guidance
+        else ""
+    )
     listed = "\n".join(f"- {issue}" for issue in issues) or "- (none: the reviews flagged nothing)"
     draft = _defang(f"Title: {title}\n\n{body}")
     # The person's note is the one thing here that is not data: it comes from the operator who
@@ -153,7 +169,7 @@ def build_rewrite_prompt(
         "investment advice as neutral information. Change the title too if it is part of an "
         "issue. Rules: do not add any claim, number, name or link that is not already in the "
         "draft, findings or fresh_data; keep everything the issues do not touch; keep the "
-        f"markdown, the tone and roughly the length{length_proviso}.\n\n"
+        f"markdown, the tone and roughly the length{length_proviso}.{house_style}\n\n"
         'Reply with JSON only, no prose and no code fences: {"title": "...", "body": "..."} where '
         "body is the complete rewritten article in markdown."
     )
@@ -231,9 +247,7 @@ def _clear_traces(article_id: str) -> dict:
 def _strip_disclaimer(body: str) -> tuple[str, bool]:
     """The body without the standing financial disclaimer (appended in code, not by a model,
     and put back the same way after the rewrite), and whether it was there."""
-    if body.endswith(compliance.FINANCIAL_DISCLAIMER):
-        return body[: -len(compliance.FINANCIAL_DISCLAIMER)], True
-    return body, False
+    return compliance.strip_financial_disclaimer(body)
 
 
 def _findings_for(article: dict) -> list[dict]:
@@ -345,8 +359,18 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         evidence = _evidence(topic, snapshot)
 
         as_of = datetime.now(UTC).isoformat()
+        rules = fresh_review.writing_rules(topic)
+        closing_rule = _CLOSING_SECTIONS_RULE if rules["drafting_guidance"] else ""
         prompt = build_rewrite_prompt(
-            topic_label(topic), original_title, body, issues, findings_text, evidence, as_of, instructions
+            topic_label(topic),
+            original_title,
+            body,
+            issues,
+            findings_text,
+            evidence,
+            as_of,
+            instructions,
+            writing_guidance="\n".join(filter(None, [rules["figure_guidance"], closing_rule])),
         )
         try:
             result = invoke_model_tracked(prompt, model_id, max_tokens=REWRITE_MAX_TOKENS)
@@ -376,6 +400,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
             sources=[findings_text, evidence],
             body_length_bounds=REWRITE_BODY_LENGTH_BOUNDS,
             check_headings=False,
+            figure_tolerance=rules["figure_tolerance"],
         )
         if violations:
             return _fail(

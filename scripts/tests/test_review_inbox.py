@@ -789,6 +789,85 @@ def test_ctrl_c_is_a_quit_not_a_crash(store):
     assert summary.quit_early is True
 
 
+# --- the session summary: what was achieved, however it ended ---------------------------
+
+
+def test_the_summary_says_how_far_through_the_batch_you_got(store):
+    summary, out = _run([ListSource(14)], store, "y", "y", "q")
+
+    assert (summary.reviewed, summary.fetched, summary.remaining) == (2, 14, 12)
+    assert "Session summary: reviewed 2 of 14 items." in out
+    assert "2 approved, 0 rejected, 0 skipped." in out
+    assert "You stopped early with 12 left: nothing you already decided is lost." in out
+
+
+def test_a_finished_batch_is_summarised_without_a_word_about_stopping(store):
+    summary, out = _run([ListSource(3)], store, "y", "r", "z")
+
+    assert "Session summary: reviewed 3 of 3 items." in out
+    assert not summary.quit_early and "stopped early" not in out and "Cancelled" not in out
+
+
+def test_one_item_is_one_item(store):
+    assert "Session summary: reviewed 1 of 1 item." in _run([ListSource(1)], store, "y")[1]
+
+
+def test_ctrl_c_at_the_prompt_still_gets_the_summary_and_says_it_was_cancelled(store):
+    pressed = iter(["y", "r"])
+
+    def reader():
+        try:
+            return next(pressed)
+        except StopIteration:
+            raise KeyboardInterrupt from None
+
+    out = io.StringIO()
+    summary = ri.review([ListSource(5)], store=store, key_reader=reader, out=out, now=lambda: NOW)
+
+    assert summary.interrupted and summary.quit_early
+    text = out.getvalue()
+    assert "Session summary: reviewed 2 of 5 items." in text
+    assert "1 approved, 1 rejected, 0 skipped." in text
+    assert "Cancelled out of the session with 3 left: nothing you already decided is lost." in text
+
+
+def test_ctrl_c_in_the_middle_of_a_request_still_gets_the_summary(store):
+    """The key was pressed and the request was on its way: not at the prompt, where Ctrl+C was
+    already read as a quit."""
+
+    class Interrupted(ListSource):
+        def reject(self, item):
+            raise KeyboardInterrupt
+
+    source = Interrupted(4)
+
+    summary, out = _run([source], store, "y", "r")
+
+    assert summary.interrupted and source.done == [("approve", "i00")]
+    assert "Session summary: reviewed 1 of 4 items." in out
+    assert "Cancelled out of the session with 3 left" in out
+
+
+def test_an_error_nobody_expected_prints_the_summary_before_it_is_raised(store):
+    class Broken(ListSource):
+        def reject(self, item):
+            raise RuntimeError("the network went away")
+
+    out = io.StringIO()
+    with pytest.raises(RuntimeError, match="the network went away"):
+        ri.review([Broken(3)], store=store, key_reader=keys("y", "r"), out=out, now=lambda: NOW)
+
+    assert "Session summary: reviewed 1 of 3 items." in out.getvalue()
+    assert "1 approved, 0 rejected, 0 skipped." in out.getvalue()
+
+
+def test_a_rewrite_and_an_item_handled_elsewhere_count_as_reviewed(store):
+    summary, out = _run([ListSource(3, already_done={"i01"})], store, "y", "y", "q")
+
+    assert summary.already_handled == 1 and "Session summary: reviewed 2 of 3 items." in out
+    assert "You stopped early with 1 left" in out
+
+
 def test_an_unknown_key_asks_again(store):
     source = ListSource(1)
 
