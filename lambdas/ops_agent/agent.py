@@ -197,10 +197,15 @@ SYSTEM_PROMPT = "\n".join(
         "For a security incident, look at security_events, api_errors and, where it exists, "
         "firewall_review. An address is only ever said as the tools gave it, by its last part "
         "(\"an address ending in .34\"), never whole.",
-        # Asked for after the first test run: success rates, and the list of functions.
-        "For how something is doing or a success rate (\"how is research-tick doing?\", \"what "
-        "share of API calls succeed?\"), call log_review or api_errors: they give runs and the "
-        "share that succeeded as well as errors. To list the Lambda functions and what each is "
+        # The owner's correction: a Lambda's success rate says nothing here. A run nearly always
+        # completes, even when the source it called was rate limited and the content came back
+        # thin. How things are doing is read off the API calls' status codes and the logged errors.
+        "For how the APIs are doing (\"are API calls succeeding?\", \"any failed calls?\"), "
+        "call api_errors: it counts every request by HTTP status code, the 200s as well as the "
+        "errors, so say the codes and how many. Never give a Lambda success rate or say a "
+        "function \"succeeded 100%\": a run completes even when a source it called was rate "
+        "limited, so for how a function is doing say what log_review found in its log (rate "
+        "limits, incomplete data, code errors). To list the Lambda functions and what each is "
         "for, call architecture with kind \"function\"; the table is on screen, so say how many "
         "there are and name a few, without reading it out.",
         # The owner's ask: "Finance and Crypto" found nothing because the topic is "Crypto &

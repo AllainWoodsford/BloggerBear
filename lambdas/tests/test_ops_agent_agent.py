@@ -719,7 +719,14 @@ def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not(
 
 
 
-def test_the_model_is_told_about_success_rates_and_listing_functions():
+def test_the_model_is_told_to_report_status_codes_and_never_a_lambda_success_rate():
+    """A run completes even when its source was rate limited, so a success rate reads 100% and
+    says nothing. The API calls' status codes, and the errors in a function's log, are the answer."""
     prompt = agent.SYSTEM_PROMPT
-    for rule in ("a success rate", "the share that succeeded", 'call architecture with kind "function"'):
+    for rule in (
+        "it counts every request by HTTP status code, the 200s as well as the errors",
+        "Never give a Lambda success rate",
+        'call architecture with kind "function"',
+    ):
         assert rule in prompt, rule
+    assert "the share that succeeded" not in prompt

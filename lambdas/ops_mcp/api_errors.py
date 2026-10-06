@@ -213,7 +213,9 @@ def queries(status: int | None) -> dict[str, str]:
             "| stats count(*) as requests by status, errorType, resourcePath, httpMethod\n"
             f"| sort requests desc\n| limit {ROUTES_SHOWN * 2}"
         ),
-        "total": "stats count(*) as requests",
+        # Every request by its status code, the 200s as well as the errors: how the API is
+        # doing is read off this, not off whether the Lambda behind it finished its run.
+        "total": "stats count(*) as requests by status\n| sort status asc",
         "timeline": f"filter {errors}\n| stats count(*) as errors by bin(1h)\n| sort bin(1h) asc",
     }
 
@@ -329,6 +331,11 @@ def _work_out(api: Api, breakdown: list[dict], total: list[dict], timeline: list
         )
         routes[route] += count
     requests = sum(logs.count(line.get("requests")) for line in total)
+    status_codes: Counter = Counter()
+    for line in total:
+        code = clean_status(line.get("status"))
+        if code is not None:
+            status_codes[code] += logs.count(line.get("requests"))
     hours = [(redact.scrub(line.get("bin(1h)"), 40), logs.count(line.get("errors"))) for line in timeline]
     # The timeline counts every error; the breakdown only its biggest groups.
     errors = max(sum(by_cause.values()), sum(count for _, count in hours))
@@ -339,7 +346,8 @@ def _work_out(api: Api, breakdown: list[dict], total: list[dict], timeline: list
         "requests": requests,
         "errors": errors,
         "error_rate": round(errors / requests, 4) if requests else None,
-        "success_rate": round(100 * (requests - errors) / requests, 1) if requests else None,
+        # Every status the API answered with and how often (200s included), then the errors alone.
+        "status_codes": {str(code): count for code, count in sorted(status_codes.items())},
         "by_status": {str(code): count for code, count in sorted(by_status.items())},
         "causes": [
             {"cause": key, "count": count, "fix_type": CAUSES[key].fix_type}
@@ -398,7 +406,11 @@ def _check_yourself(
         link = architecture.console_url("log_group", groups[0], region)
         if link:
             where["open"] = link
-    titles = {"breakdown": "the errors by status, who answered and route", "timeline": "errors per hour"}
+    titles = {
+        "total": "every request by status code",
+        "breakdown": "the errors by status, who answered and route",
+        "timeline": "errors per hour",
+    }
     return [
         {
             "kind": HOW_TO,
@@ -417,9 +429,24 @@ def _check_yourself(
     ]
 
 
+def _status_words(code: int) -> str:
+    """What a status code that is not an error means, for the table."""
+    if 200 <= code < 300:
+        return "OK"
+    if 300 <= code < 400:
+        return "redirect or not modified"
+    return "informational"
+
+
 def _table(rows: list[dict], when: logs.Window) -> dict:
+    """Per API: each status code it answered with and how often, the successful ones first as one
+    row per code, then the errors by route with their root cause."""
     table_rows = []
     for row in rows:
+        for code, count in row["status_codes"].items():
+            if int(code) < 400:
+                meaning = _status_words(int(code))
+                table_rows.append([row["api"], int(code), "", "(all routes)", count, meaning, ""])
         for route in row["routes"]:
             found = CAUSES[route["cause"]]
             table_rows.append(
@@ -434,10 +461,35 @@ def _table(rows: list[dict], when: logs.Window) -> dict:
                 ]
             )
     return {
-        "title": f"API errors, {when.words()}",
+        "title": f"API calls by status code, {when.words()}",
         "columns": ["API", "Status", "Method", "Route", "Requests", "Root cause", "Needs"],
         "rows": table_rows,
     }
+
+
+STATUS_CODES_SPOKEN = 4
+
+
+def _by_code_words(rows: list[dict]) -> str:
+    """The status codes the APIs answered with, most frequent first: "By status code: 1890 were
+    200, 80 were 400 and 15 were 502." Empty when the logs gave no codes."""
+    merged: Counter = Counter()
+    for row in rows:
+        merged.update({int(code): count for code, count in row["status_codes"].items()})
+    if not merged:
+        return ""
+    ranked = merged.most_common()
+    said = [
+        f"{count} {'were' if count != 1 else 'was'} {code}" for code, count in ranked[:STATUS_CODES_SPOKEN]
+    ]
+    rest = sum(count for _, count in ranked[STATUS_CODES_SPOKEN:])
+    if rest:
+        said.append(f"{rest} other")
+    return f"By status code: {_join(said)}."
+
+
+def _join(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _spoken(rows, chosen, status, when, totals, complete, refused, env) -> str:
@@ -446,16 +498,15 @@ def _spoken(rows, chosen, status, when, totals, complete, refused, env) -> str:
     words = []
     if totals["errors"] == 0:
         served = f" out of {totals['requests']} requests" if totals["requests"] else ""
-        if served and status is None:
-            served += ": all succeeded"
         words.append(f"In {when.words()}, {which} answered no {what}{served}.")
+        words.append(_by_code_words(rows))
     else:
         rate = ""
         if totals["requests"]:
             percent = round(100 * totals["errors"] / totals["requests"], 1)
-            rate = f" out of {totals['requests']} requests ({percent}%"
-            rate += f"; {round(100 - percent, 1)}% succeeded)" if status is None else ")"
+            rate = f" out of {totals['requests']} requests ({percent}%)"
         words.append(f"In {when.words()}, {which} answered {totals['errors']} {what}{rate}.")
+        words.append(_by_code_words(rows))
         merged: Counter = Counter()
         for row in rows:
             merged.update(row["_by_cause"])
