@@ -253,7 +253,7 @@ def build_server() -> MCPServer:
         (`editorial-goals`), getting started with a first topic (`first-topic`), setting a topic
         up fully with its focus, keywords, exclusions and models (`topic-setup`, also for "too
         many options, mock it up"), security incidents and sign-ins (`security`), reviewing and
-        publishing (`review`). Pass a guide's id, or a
+        publishing (`review`), fixing a musing that is blank or wrong (`musings`). Pass a guide's id, or a
         few words of what the operator wants to do. It puts the help of the guide's main
         commands on screen, each with a suggested command under it, so cli_help is not needed as
         well. `options` fills the suggested commands in with what the operator described (as

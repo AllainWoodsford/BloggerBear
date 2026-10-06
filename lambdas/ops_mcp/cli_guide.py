@@ -1181,6 +1181,57 @@ GUIDES: dict[str, dict] = {
             },
         ],
     },
+    "musings": {
+        "title": "Musings: fixing one that is blank or wrong",
+        "keywords": ("musing", "blank", "no text", "empty", "regenerat", "feed"),
+        "explanation": [
+            # common/musings.py: one per publish; admin_api_handler's musings routes.
+            "A musing is the short note the bear posts each time an article is published. It is "
+            "written once and nothing writes it again, so one that went out blank (a mood and a "
+            "link, then no text) stays blank until you fix it. Fixing it leaves the article alone: "
+            "no rewrite, no new publish date.",
+            # admin_api_handler._list_musings_route.
+            "musings list shows the newest musings with their ids; with the blank flag, only the "
+            "ones with no text, each with the id of its article.",
+            # admin_api_handler._regenerate_musing_text; common/musings.regenerate_article_musing_text.
+            "musings regenerate has the model write a musing again, in the mood it already has. "
+            "Give it an article and it writes every blank musing about that article; give it a "
+            "musing id and it rewrites that one, blank or not. If the model answers with nothing, "
+            "a plain accurate sentence is used and the reply says so. It works for musings about "
+            "published articles only.",
+            # admin_api_handler._edit_musing: 280 characters, as common/musings.py truncates to.
+            "musings edit replaces a musing's text with your own words, up to 280 characters. It "
+            "is the fix for any kind of musing, loot drops and feedback musings included. "
+            "The public feed is cached for a short while, so a change takes a moment to show. " + SHELL_NOTE,
+        ],
+        "commands": ["musings regenerate", "musings list", "musings edit"],
+        "steps": [
+            {
+                "say": "Find the blank ones",
+                "command": "musings list",
+                "options": {"blank": True},
+                "ask": [],
+            },
+            {
+                "say": "Write the blank musings about one article again",
+                "command": "musings regenerate",
+                "options": {},
+                "ask": ["article"],
+            },
+            {
+                "say": "Write one musing again, blank or not",
+                "command": "musings regenerate",
+                "options": {},
+                "ask": ["musing_id"],
+            },
+            {
+                "say": "Put your own words on one",
+                "command": "musings edit",
+                "options": {},
+                "ask": ["musing_id", "text"],
+            },
+        ],
+    },
 }
 
 

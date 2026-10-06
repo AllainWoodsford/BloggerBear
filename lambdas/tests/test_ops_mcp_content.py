@@ -213,9 +213,7 @@ def test_a_musing_with_a_link_but_no_text_is_found(tables, text):
     result = content.content_checks(now=NOW)
 
     assert kinds(result) == [("musing_no_text", "a1")]
-    assert result["findings"][0]["suggestion"]["command"].endswith(
-        'articles rewrite a1 -i "its musing was published with a link but no text"'
-    )
+    assert result["findings"][0]["suggestion"]["command"].endswith("musings regenerate --article a1")
     assert "A Crypto article has a musing that went out with a link but no text." in result["spoken"]
 
 

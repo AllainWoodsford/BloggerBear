@@ -139,7 +139,7 @@ SYSTEM_PROMPT = "\n".join(
         # cli_guides and cli_help put it on screen, as the CLI prints it; the model's part is to
         # point at the right command and the right option, in a sentence or two.
         "For a how-to question, show the help first: cli_guides when it is about a feature "
-        "(costs, gear, editorial goals, a first topic, reviewing), cli_help with the command "
+        "(costs, gear, editorial goals, a first topic, reviewing, musings), cli_help with the command "
         "paths when it is about a command. Then say which command it is, which option answers "
         "the question, and that its help is on screen. Never read the help aloud.",
         # The owner's ask: under the help, a suggested exact command, filled in from what they

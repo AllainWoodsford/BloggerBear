@@ -571,6 +571,8 @@ FILLER = {
     "editorial_goals_json": cli_guide.STAR_COUNT_GOAL,
     "config_json": {"queries": ["vegetable garden watering"], "title_keywords": ["water*"]},
     "fallback_model_id": "a-fallback-model-id",
+    "musing_id": "762825f7-8358-43b3-b169-25c0fc624b64",
+    "article": "f5e88f3a",
 }
 
 
@@ -589,6 +591,7 @@ def test_the_guides_are_the_ones_the_owner_asked_for():
         "security",
         "topic-setup",
         "review",
+        "musings",
     ]
     listing = cli_guide.cli_guides()
     assert [guide["id"] for guide in listing["guides"]] == list(cli_guide.GUIDES)
@@ -635,6 +638,9 @@ def test_every_command_a_guide_names_exists_and_its_main_ones_get_their_help(key
         ("someone is locked out of the assistant, how do I unlock them", "security"),
         ("how do I report an attack I noticed", "security"),
         ("first-topic", "first-topic"),
+        ("a musing went out blank, how do I fix it", "musings"),
+        ("how do I regenerate the musing for an article", "musings"),
+        ("how do I edit a musing", "musings"),
     ],
 )
 def test_a_few_words_find_the_right_guide(words, key, tables):

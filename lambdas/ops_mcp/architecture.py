@@ -281,7 +281,8 @@ CATALOGUE: tuple[Component, ...] = (
         ("musing_id",),
         details=(
             ("Written by", "every publish path (common/musings.py) and musing-feedback"),
-            ("Read by", "the public API, the assistant's content checks"),
+            ("Changed by", "the Admin API (admin_cli musings edit and musings regenerate)"),
+            ("Read by", "the public API, the assistant's content checks, admin_cli musings list"),
         ),
         aliases=("musing",),
         assistant_reads=True,
