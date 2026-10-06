@@ -143,7 +143,13 @@ def _a_bad_morning():
                     "requests": "5",
                 },
             ],
-            ("public", "total"): [{"requests": "2000"}],
+            ("public", "total"): [
+                {"status": "200", "requests": "1880"},
+                {"status": "304", "requests": "10"},
+                {"status": "400", "requests": "80"},
+                {"status": "403", "requests": "5"},
+                {"status": "502", "requests": "25"},
+            ],
             ("public", "timeline"): [
                 {"bin(1h)": "2026-10-05 01:00:00.000", "errors": "0"},
                 {"bin(1h)": "2026-10-05 02:00:00.000", "errors": "70"},
@@ -193,8 +199,8 @@ def test_firewall_blocks_point_at_the_firewall_only_in_production(monkeypatch):
 def test_spoken_is_counts_and_fixed_words():
     spoken = call(_a_bad_morning(), api="public")["spoken"]
     assert spoken.startswith(
-        "In the last 24 hours, the public API answered 110 errors out of 2000 requests "
-        "(5.5%; 94.5% succeeded)."
+        "In the last 24 hours, the public API answered 110 errors out of 2000 requests (5.5%). "
+        "By status code: 1880 were 200, 80 were 400, 25 were 502, 10 were 304 and 5 other."
     )
     assert (
         "Most were 80 4XXs the handler chose itself: that looks like the caller sending something wrong"
@@ -222,7 +228,7 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran():
     result = call(run, api="public", status=400)
     cards = [f for f in result["findings"] if f["kind"] == "how_to"]
     ran = {job[3] for job in run.jobs}
-    assert len(cards) == 2
+    assert len(cards) == 3 and [card["id"] for card in cards][0] == "api-errors-total"
     source = f'SOURCE "arn:aws:logs:ap-southeast-2:123456789012:log-group:{PUBLIC}" START=-1d END=0s |\n'
     for card in cards:
         command = card["suggestion"]["command"]
@@ -231,9 +237,40 @@ def test_check_it_yourself_cards_carry_the_queries_that_ran():
     assert cards[0]["where"]["open"].startswith("https://ap-southeast-2.console.aws.amazon.com/cloudwatch/")
 
 
-def test_success_rate_is_reported_per_api_and_not_claimed_under_a_status_filter():
-    row = call(_a_bad_morning(), api="public")["by_api"][0]
-    assert row["success_rate"] == 94.5
-    quiet = Run({("admin", "total"): [{"requests": "40"}]})
-    assert "all succeeded" in call(quiet, api="admin")["spoken"]
-    assert "all succeeded" not in call(quiet, api="admin", status=400)["spoken"]
+def test_every_request_is_counted_by_status_code_the_200s_too():
+    """How an API is doing is read off its status codes. No success rate is worked out or said."""
+    result = call(_a_bad_morning(), api="public")
+    row = result["by_api"][0]
+
+    assert row["status_codes"] == {"200": 1880, "304": 10, "400": 80, "403": 5, "502": 25}
+    assert row["by_status"] == {"400": 80, "403": 5, "502": 15}  # the errors alone, as before
+    assert "success_rate" not in row and "succeeded" not in result["spoken"]
+    assert "stats count(*) as requests by status" in api_errors.queries(None)["total"]
+
+
+def test_the_table_lists_each_status_code_then_the_errors_by_route():
+    table = call(_a_bad_morning(), api="public")["table"]
+
+    assert table["title"] == "API calls by status code, the last 24 hours"
+    assert table["columns"] == ["API", "Status", "Method", "Route", "Requests", "Root cause", "Needs"]
+    assert table["rows"][:2] == [
+        ["public", 200, "", "(all routes)", 1880, "OK", ""],
+        ["public", 304, "", "(all routes)", 10, "redirect or not modified", ""],
+    ]
+    # Then the errors, by route, with their cause: unchanged.
+    assert table["rows"][2][:5] == ["public", 400, "POST", "/articles/{article_id}/feedback", 80]
+    assert all(len(row) == len(table["columns"]) for row in table["rows"])
+
+
+def test_a_quiet_api_says_its_status_codes_and_a_status_it_cannot_read_is_left_out():
+    quiet = Run({("admin", "total"): [{"status": "200", "requests": "40"}, {"status": "-", "requests": "2"}]})
+
+    result = call(quiet, api="admin")
+
+    assert result["spoken"].startswith(
+        "In the last 24 hours, the admin API answered no errors out of 42 requests. "
+        "By status code: 40 were 200."
+    )
+    assert result["by_api"][0]["status_codes"] == {"200": 40}
+    no_codes = Run({("admin", "total"): [{"requests": "40"}]})
+    assert "By status code" not in call(no_codes, api="admin")["spoken"]

@@ -707,6 +707,28 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
 
 
+def test_the_model_is_told_to_look_when_asked_and_not_to_push_back():
+    """Dev answered "can I look at those errors or can you go" with "I'm read-only, I can't run
+    anything". Looking is the job; read-only is said only when asked to change something."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "Looking is your job",
+        "never open an answer with being read-only",
+        "call the tool for what was just being discussed",
+        "Mention that you are read-only only when the operator asks you to change, fix, run",
+    ):
+        assert rule in prompt, rule
+    # The rule itself stays: it still cannot change anything.
+    assert "You cannot change, fix, restart or delete anything." in prompt
+
+
+def test_the_model_is_told_a_withheld_line_is_not_an_alarm():
+    prompt = agent.SYSTEM_PROMPT
+    assert "is usually a program's own wording and only sometimes someone probing" in prompt
+    assert "do not call it an attack or say someone is probing unless the tool does" in prompt
+    assert "is a sign of probing" not in prompt
+
+
 def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not():
     fakes = guide_tools()
     first, later = ScriptedModel(["ok"]), ScriptedModel(["ok"])
@@ -719,7 +741,14 @@ def test_the_guide_tools_are_offered_on_every_turn_and_deep_dives_still_are_not(
 
 
 
-def test_the_model_is_told_about_success_rates_and_listing_functions():
+def test_the_model_is_told_to_report_status_codes_and_never_a_lambda_success_rate():
+    """A run completes even when its source was rate limited, so a success rate reads 100% and
+    says nothing. The API calls' status codes, and the errors in a function's log, are the answer."""
     prompt = agent.SYSTEM_PROMPT
-    for rule in ("a success rate", "the share that succeeded", 'call architecture with kind "function"'):
+    for rule in (
+        "it counts every request by HTTP status code, the 200s as well as the errors",
+        "Never give a Lambda success rate",
+        'call architecture with kind "function"',
+    ):
         assert rule in prompt, rule
+    assert "the share that succeeded" not in prompt

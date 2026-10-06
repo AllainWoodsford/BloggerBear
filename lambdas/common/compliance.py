@@ -262,11 +262,21 @@ FINANCIAL_DRAFTING_GUIDANCE = (
     "write it as informational commentary, never as advice."
 )
 
-FINANCIAL_DISCLAIMER = (
-    "\n\n---\n\n*This article is for informational purposes only and does not "
+_NOT_ADVICE = (
+    "This article is for informational purposes only and does not "
     "constitute financial or investment advice. Nothing in it should be construed as "
-    "a recommendation to buy, sell, or hold any asset.*"
+    "a recommendation to buy, sell, or hold any asset."
 )
+# The second sentence says what the first never did: the figures themselves may be off. They are
+# approximate on purpose (see Adapter.figure_guidance) and markets move after they are checked.
+FINANCIAL_DISCLAIMER = (
+    f"\n\n---\n\n*{_NOT_ADVICE} Figures are approximate and were checked only at the time of "
+    "writing: markets move quickly, and the findings here may be inaccurate or out of date. "
+    "Check current data before relying on any of it.*"
+)
+# What articles written before that sentence end with. Kept so a Re-Write of one still finds
+# and replaces its disclaimer; never appended to anything new.
+_EARLIER_FINANCIAL_DISCLAIMERS = (f"\n\n---\n\n*{_NOT_ADVICE}*",)
 
 
 def append_financial_disclaimer(draft_text: str) -> str:
@@ -276,6 +286,16 @@ def append_financial_disclaimer(draft_text: str) -> str:
     FINANCIAL_DRAFTING_GUIDANCE above.
     """
     return f"{draft_text}{FINANCIAL_DISCLAIMER}"
+
+
+def strip_financial_disclaimer(body: str) -> tuple[str, bool]:
+    """The body without the standing disclaimer it ends with (today's wording or an earlier
+    one), and whether it had one. For text about to be handed to a model and given the
+    disclaimer back afterwards, in code."""
+    for disclaimer in (FINANCIAL_DISCLAIMER, *_EARLIER_FINANCIAL_DISCLAIMERS):
+        if body.endswith(disclaimer):
+            return body[: -len(disclaimer)], True
+    return body, False
 
 
 def regex_redact(text: str) -> str:
