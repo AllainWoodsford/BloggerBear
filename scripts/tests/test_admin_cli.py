@@ -1067,3 +1067,51 @@ def test_articles_rewrite_posts_the_instructions_and_the_model_when_given():
 def test_articles_rewrite_needs_instructions():
     with pytest.raises(SystemExit):
         _run(["articles", "rewrite", "article-1"])
+
+
+# --- musings ------------------------------------------------------------------
+
+
+def test_musings_list_sends_its_filters_as_a_query():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["musings", "list"])
+        _run(["musings", "list", "--blank", "--article", "art-1", "--limit", "5"])
+    assert m.call_args_list[0].args[:3] == ("GET", "https://api.example.com", "/musings?limit=20")
+    assert m.call_args_list[1].args[2] == "/musings?limit=5&blank=true&article_id=art-1"
+
+
+def test_musings_edit_puts_the_text():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["musings", "edit", "m-1", "--text", "Fresh from the den!"])
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/musings/m-1")
+    assert m.call_args.kwargs["body"] == {"text": "Fresh from the den!"}
+
+
+def test_musings_edit_needs_text_that_says_something(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit):
+            _run(["musings", "edit", "m-1"])
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["musings", "edit", "m-1", "--text", "  "])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "--text is empty" in capsys.readouterr().err
+
+
+def test_musings_regenerate_takes_a_musing_or_an_article():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["musings", "regenerate", "m-1"])
+        _run(["musings", "regenerate", "--article", "art-1"])
+    assert m.call_args_list[0].args[:3] == ("POST", "https://api.example.com", "/musings/m-1/regenerate")
+    assert m.call_args_list[1].args[2] == "/articles/art-1/musings/regenerate"
+    assert all(call.kwargs.get("body") is None for call in m.call_args_list)
+
+
+@pytest.mark.parametrize("argv", [[], ["m-1", "--article", "art-1"]])
+def test_musings_regenerate_needs_exactly_one_of_the_two(argv, capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["musings", "regenerate", *argv])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "Give one of" in capsys.readouterr().err
