@@ -476,6 +476,24 @@ python scripts/admin_cli.py musings edit <musing_id> --text "Fresh from the den:
 - Only the text changes. The mood, the date and the link stay, and the item gets an `edited_at`.
 - The public feed is cached for a short while, so the change takes a moment to show on the site.
 
+## A week the stats rollover missed: `repair_stats_week.py`
+
+Rarely needed. If the weekly stats rollover does not run one Monday, the next one files two weeks
+of counters under the first week's date, the second week has no row in the stats history table,
+and its AWS bill is never recorded. The `<prefix>-<env>-schedule-invocations-dropped` alarm is
+what tells you a scheduled run was dropped.
+
+```bash
+python scripts/repair_stats_week.py --env production --missing-week 2026-09-28           # shows only
+python scripts/repair_stats_week.py --env production --missing-week 2026-09-28 --apply
+```
+
+It makes a placeholder row for the missing week (the next daily cost poll fills in its AWS bill)
+and notes on the week before that its counters cover both. It does not split the counters:
+nothing recorded them by day. It talks to DynamoDB directly, not the admin API, so it needs AWS
+credentials for that environment's account; pass `--prefix` and `--region` if yours are not the
+defaults. Run it within six weeks of the missing one, which is as far back as the cost poll reads.
+
 ## The Alexa+ add-on: `alexa_addon_values.py`
 
 Putting the operator's assistant on Alexa+ is a one-time bootstrap per environment, written up in
