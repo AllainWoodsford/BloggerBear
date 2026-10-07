@@ -42,6 +42,7 @@ locals {
 }
 
 data "aws_iam_policy_document" "ops_mcp_logs" {
+  # checkov:skip=CKV_AWS_356:GetQueryResults and StopQuery take no resource (they act on a query id); see the comment above
   statement {
     sid       = "QueryReadableEnvironmentLogs"
     effect    = "Allow"

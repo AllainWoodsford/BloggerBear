@@ -23,6 +23,7 @@ locals {
 }
 
 data "aws_iam_policy_document" "ops_mcp_firewall" {
+  # checkov:skip=CKV_AWS_356:GetQueryResults and StopQuery take no resource (they act on a query id)
   count = local.firewall_enabled ? 1 : 0
 
   statement {

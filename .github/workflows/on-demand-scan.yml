@@ -10,6 +10,7 @@ name: on-demand-scan
 # - secrets and personal data across the WHOLE history and every tracked file, not just what a
 #   PR adds (known, accepted history findings are fingerprinted in .gitleaksignore);
 # - every severity reported, LOW and up, before the same HIGH/CRITICAL gates;
+# - Checkov with every check it has, .checkov.yaml's repo-wide skips included, before the same gate;
 # - terraform fmt with diffs, validate for bootstrap too, and the module tests, verbose.
 #
 # Every check runs even when an earlier one fails, and the summary job lists them all; the run
@@ -101,6 +102,15 @@ jobs:
       - name: Install Bandit
         run: python3 -m pip install "bandit==1.7.10"
 
+      # Same pinned version as security.yml, in its own venv.
+      - name: Install Checkov
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/checkov-venv
+          /tmp/checkov-venv/bin/pip install --quiet "checkov==3.3.25"
+          sudo ln -sf /tmp/checkov-venv/bin/checkov /usr/local/bin/checkov
+          checkov --version
+
       - name: Trivy IaC (every severity, report only)
         run: trivy config --severity LOW,MEDIUM,HIGH,CRITICAL --exit-code 0 --skip-dirs '**/.terraform' infra/
 
@@ -108,6 +118,17 @@ jobs:
         id: trivy_iac
         continue-on-error: true
         run: trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs '**/.terraform' infra/
+
+      # Every check Checkov has, the repo-wide skips in .checkov.yaml included: --skip-check on the
+      # command line replaces the config's list (CKV_NONE matches no check). The per-resource
+      # `checkov:skip` comments still apply, and are listed as SKIPPED with their reasons.
+      - name: Checkov IaC (every check, report only)
+        run: checkov --config-file .checkov.yaml --skip-check CKV_NONE --soft-fail
+
+      - name: Checkov IaC (fail on any check .checkov.yaml does not skip)
+        id: checkov
+        continue-on-error: true
+        run: checkov --config-file .checkov.yaml
 
       # Every dependency Trivy found, vulnerable or not, then every finding of any severity.
       - name: Trivy dependencies, vulnerabilities and secrets (every severity, report only)
@@ -144,9 +165,9 @@ jobs:
         run: bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests --severity-level high --confidence-level high
 
       - name: Result
-        if: steps.trivy_iac.outcome == 'failure' || steps.trivy_fs.outcome == 'failure' || steps.bandit.outcome == 'failure'
+        if: steps.trivy_iac.outcome == 'failure' || steps.checkov.outcome == 'failure' || steps.trivy_fs.outcome == 'failure' || steps.bandit.outcome == 'failure'
         run: |
-          echo "trivy IaC: ${{ steps.trivy_iac.outcome }}, trivy fs: ${{ steps.trivy_fs.outcome }}, bandit: ${{ steps.bandit.outcome }}"
+          echo "trivy IaC: ${{ steps.trivy_iac.outcome }}, checkov: ${{ steps.checkov.outcome }}, trivy fs: ${{ steps.trivy_fs.outcome }}, bandit: ${{ steps.bandit.outcome }}"
           exit 1
 
   secrets-and-personal-data:
@@ -221,7 +242,7 @@ jobs:
             echo "| Check | Result |"
             echo "|---|---|"
             echo "| Terraform fmt, validate, tests | ${{ needs.terraform.result }} |"
-            echo "| Trivy IaC and dependencies, Bandit | ${{ needs.code-and-dependencies.result }} |"
+            echo "| Trivy IaC and dependencies, Checkov, Bandit | ${{ needs.code-and-dependencies.result }} |"
             echo "| Gitleaks, Trufflehog, personal-data denylist | ${{ needs.secrets-and-personal-data.result }} |"
             echo
             echo "Each job's log has the full report, every severity included."

@@ -239,7 +239,7 @@ approved; **musings** (BloggerBear's short reflections on articles and feedback)
    which is what credits them under every article and topic title; see "Adding an adapter" in
    `docs/project-plan.md` §6.
 6. Terraform never applies ad hoc: see the branch and release model below.
-7. Security scans (Trivy, Bandit), lint and tests must pass before any apply, dev or production,
+7. Security scans (Trivy, Checkov, Bandit), lint and tests must pass before any apply, dev or production,
    in the same workflow run. They run on pull requests too.
 
 ## The operator's assistant and Alexa+
@@ -409,8 +409,9 @@ scripts/
                                 called before each apply)
   security.yml                   trivy (config; dependencies + secrets of the
                                 whole repo, MEDIUM reported, HIGH+ fails) +
-                                bandit on lambdas/ and scripts/ (every PR;
-                                called before each apply)
+                                checkov on infra/ (.checkov.yaml) + bandit
+                                on lambdas/ and scripts/ (every PR; called
+                                before each apply)
 
 docs/
   deployment-runsheet.md        your first deploy, step by step

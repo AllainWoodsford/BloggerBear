@@ -651,6 +651,14 @@ pip install bandit==1.7.10
 bandit -r lambdas/ scripts/ --severity-level high --confidence-level high
 ```
 
+Checkov scans the Terraform, from the repository root, with what `.checkov.yaml` runs and skips
+(every skip there, and each `checkov:skip` comment on a resource, says why):
+
+```bash
+pip install checkov==3.3.25
+checkov --config-file .checkov.yaml
+```
+
 ```bash
 terraform fmt -check -recursive infra/
 cd infra/environments/dev && terraform init -backend=false && terraform validate
