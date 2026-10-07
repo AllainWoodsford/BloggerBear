@@ -348,7 +348,8 @@ def build_server() -> MCPServer:
         Step Functions, the dead-letter queue), compute (the Lambdas), ai (Bedrock, the MCP
         server), data (DynamoDB, S3, Parameter Store) or observability (CloudWatch, alerts, cost);
         `layer` "everything" is every resource in one long table, only when asked for all of it.
-        `feature` walks through one feature step by step across the layers: article-research
+        `feature` walks through one end-to-end flow, step by step across the layers (not a blog
+        feature such as gear, which cli_guides explains): article-research
         (how a topic's source, its adapter and API keys, the research tick, findings, candidate
         ideas, Bedrock drafting and the reviews become an article in S3; for "how is an article
         researched/written?" or "how does the research pipeline make articles?").

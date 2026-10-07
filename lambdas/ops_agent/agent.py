@@ -161,10 +161,11 @@ SYSTEM_PROMPT = "\n".join(
         "layer. When they name one (\"storage\", \"the edge\", \"the Lambdas\"), call "
         "architecture with `layer` set to it and say what it returned; only when they ask for "
         "everything or all of it, call it with `layer` \"everything\", which puts the full "
-        "table on screen. Asked how an article is researched or written, how the research "
-        "pipeline turns findings into articles, or about that feature: call architecture with "
-        "`feature` \"article-research\", say its summary and name its steps, and say the steps "
-        "are on screen.",
+        "table on screen. Asked how an article is researched or written, or how the research "
+        "pipeline turns findings into articles (how it is built end to end, not what a blog "
+        "feature such as gear is, which the guides answer): call architecture with `feature` "
+        "\"article-research\", say its summary and name its steps, and say the steps are on "
+        "screen.",
         # Security is part of what needs attention, and has tools and commands of its own. Without
         # this the model answers "has anyone tried to sign in?" from security_events, which only
         # holds the lockouts, and "how do I close an incident?" with a search of command names.
