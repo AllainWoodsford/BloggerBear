@@ -1207,6 +1207,68 @@ def test_the_deploy_roles_trust_whichever_repository_bootstrap_is_told():
     assert '\n  default     = "bloggerbear-terraform-state"\n' in bucket
 
 
+def test_each_deploy_role_is_refused_the_other_environment_and_never_its_own():
+    """Both deploy roles carry one Allow policy for <prefix>-*. A second, Deny-only policy keeps
+    each out of the other environment. Deny-only is the point: a Deny written against the other
+    environment's names and tags cannot take away anything a role does in its own, so no
+    permission the deploys depend on is re-derived (or lost) here."""
+    raw = (INFRA / "bootstrap" / "main.tf").read_text(encoding="utf-8")
+    code = _uncommented(raw)
+    document = code.split('data "aws_iam_policy_document" "gha_deploy_other_environment" {')[1].split(
+        'resource "aws_iam_policy" "gha_deploy_other_environment"'
+    )[0]
+
+    # One document per role, keyed by the role's environment, valued by the one it must not touch.
+    assert re.search(r'dev\s+= "production"\n\s+production\s+= "dev"', code)
+    switched = "for_each = var.separate_environment_permissions ? local.deploy_role_other_environment : {}"
+    assert switched in document
+
+    # Deny only. Not one Allow: what a role may do stays in the shared policy, untouched.
+    assert document.count('effect    = "Deny"') + document.count('effect      = "Deny"') == 3
+    assert "Allow" not in document
+    # By name: the other environment's, never a pattern that could match the role's own.
+    assert 'resources = ["arn:aws:*:*:*:*${var.unique_name_prefix}-${each.value}-*"]' in document
+    assert "${each.key}" not in document
+    # By tag, for what has no name of ours in its ARN, leaving WAF out for the shared web ACL.
+    assert 'variable = "aws:ResourceTag/Environment"' in document and "values   = [each.value]" in document
+    assert 'not_actions = ["wafv2:*"]' in document
+    # And the other environment's Terraform state.
+    assert 'resources = ["${aws_s3_bucket.terraform_state.arn}/${each.value}/*"]' in document
+
+    # Nothing shared is named: production's role keeps the shared web ACL and its logs, and so
+    # does dev's (in one account its distributions may be attached to that ACL).
+    assert "shared" not in document
+
+    # Each policy goes to its own role, and only while the switch is on.
+    for attachment, role, key in (
+        ("gha_dev_deploy_not_production", "gha_dev_deploy", "dev"),
+        ("gha_prod_deploy_not_dev", "gha_prod_deploy", "production"),
+    ):
+        opening = f'resource "aws_iam_role_policy_attachment" "{attachment}" {{'
+        block = code.split(opening)[1].split("\n}\n")[0]
+        assert "count = var.separate_environment_permissions ? 1 : 0" in block
+        assert f"role       = aws_iam_role.{role}.name" in block
+        assert f'policy_arn = aws_iam_policy.gha_deploy_other_environment["{key}"].arn' in block
+
+    # The shared Allow policy is as it was: still attached to both roles, still one document.
+    assert code.count("policy_arn = aws_iam_policy.gha_deploy.arn") == 2
+    # Neither role can edit a policy, its own included: no IAM permission names a policy.
+    allow = code.split('data "aws_iam_policy_document" "gha_deploy" {')[1].split(
+        'resource "aws_iam_policy" "gha_deploy"'
+    )[0]
+    assert ":policy/" not in allow and 'actions = ["iam:*"]' in allow
+    assert all(":role/" in line for line in allow.splitlines() if "arn:aws:iam::" in line)
+
+    # A state bucket named for an environment under the prefix would be refused to one role.
+    assert 'strcontains(var.state_bucket_name, "${var.unique_name_prefix}-${env}-")' in code
+    # The switch is on by default, and documented as the way out.
+    variable = (INFRA / "bootstrap" / "variables.tf").read_text(encoding="utf-8")
+    switch = variable.split('variable "separate_environment_permissions" {')[1].split("\n}\n")[0]
+    assert "default     = true" in switch and "separate_environment_permissions=false" in switch
+    for page in ("configuration.md", "deployment-runsheet.md", "deployment-separate-accounts.md"):
+        assert "separate_environment_permissions" in (ROOT / "docs" / page).read_text(encoding="utf-8"), page
+
+
 def test_dev_refuses_a_shared_web_acl_from_another_account():
     """CloudFront can only use a web ACL in its own account, so a two-account deployment leaves
     web_acl_arn empty. Checked at plan time, and only when both values are set."""
