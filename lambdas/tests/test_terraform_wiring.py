@@ -1331,7 +1331,11 @@ def test_the_on_demand_scan_checks_everything_and_deploys_nothing():
     # Started by hand or by a collaborator's label, never by an ordinary PR event.
     assert re.search(r"^on:\n  pull_request:\n    types: \[labeled\]\n  workflow_dispatch:\n", scan, re.M)
     jobs = scan.split("\njobs:\n")[1]
-    assert jobs.count("github.event.label.name == 'security-scan'") == 4  # every job, summary too
+    # Every job carries the condition, the summary too. Counted from the file, so a job added
+    # later (Checkov was the fifth) has to carry it as well, and does not need this number changed.
+    job_names = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.M)
+    assert len(job_names) >= 5 and "checkov" in job_names, job_names
+    assert jobs.count("github.event.label.name == 'security-scan'") == len(job_names)
 
     # No AWS access, no plan, no apply.
     for text in ("configure-aws-credentials", "id-token"):
