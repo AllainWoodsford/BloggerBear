@@ -717,7 +717,16 @@ CATALOGUE: tuple[Component, ...] = (
         purpose="Two schedules per topic, made by the Admin API when a topic is created or "
         "changed (not by Terraform): research-tick at the topic's interval, daily-cycle at its "
         "daily cadence and timezone.",
-        details=(("Where", 'EventBridge Scheduler, schedule group "default"'),),
+        details=(
+            ("Where", 'EventBridge Scheduler, schedule group "default"'),
+            (
+                "A dropped run",
+                "the alarm is for the whole group, the fixed schedules (the weekly rollover, the "
+                "cost poll) as well as the topics'; Scheduler's own metrics say which",
+            ),
+        ),
+        # A run Scheduler gave up on is silent: the function is never invoked, so it has no error.
+        alarms=(f"{PREFIX}{ENV}-schedule-invocations-dropped",),
         aliases=("schedules", "scheduler", "eventbridge"),
     ),
     Component(
