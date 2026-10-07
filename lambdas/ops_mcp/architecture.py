@@ -1557,7 +1557,7 @@ def _feature_detail(feature: Feature, env: str | None) -> dict:
             for name, label in (_part_row(part, env) for part in step.parts)
         )
         rows.append([f"{number}. {step.title}", step.what, parts])
-    titles = [step.title.split(":")[0].lower() for step in feature.steps]
+    titles = [_lower_first(step.title.split(":")[0]) for step in feature.steps]
     listed = ", ".join(titles[:-1]) + f" and {titles[-1]}"
     components = [
         {"kind": part.partition(":")[0], "key": part.partition(":")[2], "name": _part_row(part, env)[0]}
