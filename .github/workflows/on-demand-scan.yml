@@ -102,15 +102,6 @@ jobs:
       - name: Install Bandit
         run: python3 -m pip install "bandit==1.7.10"
 
-      # Same pinned version as security.yml, in its own venv.
-      - name: Install Checkov
-        run: |
-          set -euo pipefail
-          python3 -m venv /tmp/checkov-venv
-          /tmp/checkov-venv/bin/pip install --quiet "checkov==3.3.25"
-          sudo ln -sf /tmp/checkov-venv/bin/checkov /usr/local/bin/checkov
-          checkov --version
-
       - name: Trivy IaC (every severity, report only)
         run: trivy config --severity LOW,MEDIUM,HIGH,CRITICAL --exit-code 0 --skip-dirs '**/.terraform' infra/
 
@@ -118,17 +109,6 @@ jobs:
         id: trivy_iac
         continue-on-error: true
         run: trivy config --severity HIGH,CRITICAL --exit-code 1 --skip-dirs '**/.terraform' infra/
-
-      # Every check Checkov has, the repo-wide skips in .checkov.yaml included: --skip-check on the
-      # command line replaces the config's list (CKV_NONE matches no check). The per-resource
-      # `checkov:skip` comments still apply, and are listed as SKIPPED with their reasons.
-      - name: Checkov IaC (every check, report only)
-        run: checkov --config-file .checkov.yaml --skip-check CKV_NONE --soft-fail
-
-      - name: Checkov IaC (fail on any check .checkov.yaml does not skip)
-        id: checkov
-        continue-on-error: true
-        run: checkov --config-file .checkov.yaml
 
       # Every dependency Trivy found, vulnerable or not, then every finding of any severity.
       - name: Trivy dependencies, vulnerabilities and secrets (every severity, report only)
@@ -165,10 +145,38 @@ jobs:
         run: bandit -r lambdas/ scripts/ -x lambdas/tests,scripts/tests --severity-level high --confidence-level high
 
       - name: Result
-        if: steps.trivy_iac.outcome == 'failure' || steps.checkov.outcome == 'failure' || steps.trivy_fs.outcome == 'failure' || steps.bandit.outcome == 'failure'
+        if: steps.trivy_iac.outcome == 'failure' || steps.trivy_fs.outcome == 'failure' || steps.bandit.outcome == 'failure'
         run: |
-          echo "trivy IaC: ${{ steps.trivy_iac.outcome }}, checkov: ${{ steps.checkov.outcome }}, trivy fs: ${{ steps.trivy_fs.outcome }}, bandit: ${{ steps.bandit.outcome }}"
+          echo "trivy IaC: ${{ steps.trivy_iac.outcome }}, trivy fs: ${{ steps.trivy_fs.outcome }}, bandit: ${{ steps.bandit.outcome }}"
           exit 1
+
+  # Checkov, its own job and its own row in the summary. Every check it has, .checkov.yaml's
+  # repo-wide skips included (--skip-check on the command line replaces the config's list; CKV_NONE
+  # matches no check), reported without failing; then the same gate as security.yml. The
+  # per-resource `checkov:skip` comments still apply, and are listed as SKIPPED with their reasons.
+  checkov:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Same pinned version as security.yml, in its own venv.
+      - name: Install Checkov
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/checkov-venv
+          /tmp/checkov-venv/bin/pip install --quiet "checkov==3.3.25"
+          sudo ln -sf /tmp/checkov-venv/bin/checkov /usr/local/bin/checkov
+          checkov --version
+
+      - name: Checkov IaC (every check, report only)
+        run: checkov --config-file .checkov.yaml --skip-check CKV_NONE --soft-fail
+
+      - name: Checkov IaC (fail on any check .checkov.yaml does not skip)
+        run: checkov --config-file .checkov.yaml
 
   secrets-and-personal-data:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
@@ -228,7 +236,7 @@ jobs:
 
   summary:
     if: always() && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan')
-    needs: [terraform, code-and-dependencies, secrets-and-personal-data]
+    needs: [terraform, code-and-dependencies, checkov, secrets-and-personal-data]
     runs-on: ubuntu-latest
     steps:
       # The ref goes through env, never straight into the script: a branch name is user input.
@@ -242,7 +250,8 @@ jobs:
             echo "| Check | Result |"
             echo "|---|---|"
             echo "| Terraform fmt, validate, tests | ${{ needs.terraform.result }} |"
-            echo "| Trivy IaC and dependencies, Checkov, Bandit | ${{ needs.code-and-dependencies.result }} |"
+            echo "| Trivy IaC and dependencies, Bandit | ${{ needs.code-and-dependencies.result }} |"
+            echo "| Checkov (Terraform) | ${{ needs.checkov.result }} |"
             echo "| Gitleaks, Trufflehog, personal-data denylist | ${{ needs.secrets-and-personal-data.result }} |"
             echo
             echo "Each job's log has the full report, every severity included."
