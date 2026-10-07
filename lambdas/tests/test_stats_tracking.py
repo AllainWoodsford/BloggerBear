@@ -439,6 +439,62 @@ def test_public_view_shapes_one_entry_per_category():
     assert set(by_category) == {*st.BEDROCK_CATEGORIES, "articles"}
 
 
+def test_public_view_adds_the_categories_up_so_the_page_never_does():
+    """One section's whole token estimate: the table's Total row. The sum is made here."""
+    row = {
+        "musings_calls": 2,
+        "musings_input_tokens": 20,
+        "musings_output_tokens": 10,
+        "musings_cost_aud": Decimal("0.10"),
+        "assistant_calls": 3,
+        "assistant_input_tokens": 300,
+        "assistant_output_tokens": 30,
+        "assistant_cost_aud": Decimal("0.20"),
+        "articles_calls": 5,
+        "articles_input_tokens": 5000,
+        "articles_output_tokens": 500,
+        "articles_cost_aud": Decimal("1.00"),
+        "articles_unpriced_articles": 1,
+        "comment_screening_calls": 4,
+        "comment_screening_unpriced_calls": 4,
+    }
+
+    view = st.public_view(row)
+
+    assert view["ai_estimate"] == {
+        "calls": 14,
+        "input_tokens": 5320,
+        "output_tokens": 540,
+        "cost_aud": 1.30,  # exact: summed as Decimal, not as floats
+        "unpriced": 5,
+    }
+    assert view["ai_estimate"]["cost_aud"] == sum(
+        c["cost_aud"] for c in view["categories"] if c["cost_aud"] is not None
+    )
+
+
+def test_the_ai_estimate_is_a_real_zero_when_nothing_ran_and_unknown_when_nothing_was_priced():
+    assert st.public_view({})["ai_estimate"] == {
+        "calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_aud": 0.0, "unpriced": 0,
+    }  # fmt: skip
+    unpriced = st.public_view({"musings_calls": 2, "musings_unpriced_calls": 2})["ai_estimate"]
+    assert unpriced["cost_aud"] is None and unpriced["unpriced"] == 2
+
+
+def test_public_view_says_which_week_a_current_row_is_and_nothing_for_the_all_time_row():
+    assert st.public_view({"week_start": "2026-10-05"})["week_start"] == "2026-10-05"
+    assert st.public_view({"week_start": "all-time"})["week_start"] is None
+    assert st.public_view({})["week_start"] is None
+
+
+def test_one_row_in_one_section_out():
+    """Weekly Stats is the current table's row and Total Stats the history table's all-time row.
+    public_view takes one row, so neither section can borrow a figure from the other."""
+    import inspect
+
+    assert list(inspect.signature(st.public_view).parameters) == ["row"]
+
+
 def test_public_view_uses_the_articles_specific_unpriced_key():
     row = {"articles_unpriced_articles": 2, "musings_unpriced_calls": 3}
 
@@ -886,6 +942,8 @@ def test_public_view_shows_the_bill_as_three_groups_and_a_total_never_per_servic
         ],
         "total_aud": 7.5,
         "since": None,
+        "weeks": None,
+        "scope": "account",
     }
     assert "CloudWatch" not in str(bill)
 
@@ -896,6 +954,10 @@ def test_public_view_of_the_all_time_row_shows_the_total_since_the_first_week():
     bill = st.public_view(row)["aws_bill"]
 
     assert bill["total_aud"] == 3.0 and bill["since"] == "2026-09-14"
+    # How many weeks that is, and whose bill: the page says both beside the figure.
+    assert (bill["weeks"], bill["scope"]) == (None, "account")
+    counted = st.public_view({**row, st.AWS_BILL_TOTAL_WEEKS: Decimal(3)})["aws_bill"]
+    assert counted["weeks"] == 3 and isinstance(counted["weeks"], int)
 
 
 def test_public_view_has_no_bill_until_the_first_poll():
