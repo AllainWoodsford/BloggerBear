@@ -650,6 +650,8 @@ resource "aws_api_gateway_deployment" "this" {
 # what a count of failed token checks will be built on. There is no wafStatus: no web ACL is
 # attached (the design leaves the address allowlist to a setting the code reads, section 5).
 resource "aws_api_gateway_stage" "this" {
+  # checkov:skip=CKV2_AWS_29:every route but the OAuth metadata needs a Cognito token, and Alexa+ calls from Amazon's addresses; see the comment above
+  # checkov:skip=CKV2_AWS_4:execution logging is off on purpose, as on the other APIs; the access log above records every request
   rest_api_id   = aws_api_gateway_rest_api.this.id
   deployment_id = aws_api_gateway_deployment.this.id
   stage_name    = var.stage_name

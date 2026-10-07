@@ -26,6 +26,8 @@ terraform {
 # the full rationale).
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "site" {
+  # checkov:skip=CKV_AWS_21:every deploy uploads the site again from the repository, which is its history
+  # checkov:skip=CKV2_AWS_61:every object is current: a deploy replaces the site and article pages live until unpublished
   bucket        = "${var.unique_name_prefix}-${var.environment_name}-site"
   force_destroy = var.force_destroy
 }
@@ -182,6 +184,8 @@ resource "aws_cloudfront_function" "www_redirect" {
 }
 
 resource "aws_cloudfront_distribution" "site" {
+  # checkov:skip=CKV_AWS_68:the web ACL comes in as var.web_acl_id: production always attaches one, dev only when given
+  # checkov:skip=CKV_AWS_174:minimum_protocol_version is TLSv1.2_2021 with a custom domain; the default certificate (no domain yet) cannot set one
   enabled             = true
   default_root_object = "index.html"
   aliases             = var.enable_custom_domain ? concat([var.domain_name], local.www_redirect ? [local.www_name] : []) : []

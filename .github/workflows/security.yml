@@ -45,6 +45,17 @@ jobs:
           BANDIT_VERSION=1.7.10
           python3 -m pip install --upgrade pip "bandit==${BANDIT_VERSION}"
 
+      # Pinned like the rest. Checkov is a Python package with no release binary, so it is pinned by
+      # version on PyPI and installed into its own venv, away from Bandit's dependencies.
+      - name: Install Checkov
+        run: |
+          set -euo pipefail
+          CHECKOV_VERSION=3.3.25
+          python3 -m venv /tmp/checkov-venv
+          /tmp/checkov-venv/bin/pip install --quiet "checkov==${CHECKOV_VERSION}"
+          sudo ln -sf /tmp/checkov-venv/bin/checkov /usr/local/bin/checkov
+          checkov --version
+
       - name: Trivy IaC scan
         run: |
           if [ -d infra ]; then
@@ -65,6 +76,20 @@ jobs:
               infra/
           else
             echo "infra/ not present; skipping IaC scan"
+          fi
+
+      # A second IaC scanner over the same Terraform, with Checkov's rules for CloudFront, API
+      # Gateway, Lambda, S3, DynamoDB, Step Functions, EventBridge Scheduler and IAM. Everything it
+      # runs, skips and why is in .checkov.yaml (read from the repository root); a finding about one
+      # resource is accepted only by a `checkov:skip` comment on that resource, with its reason.
+      # Fails on any failed check: Checkov's severities need a Prisma Cloud key, which this
+      # deliberately has none of (skip-download in the config: nothing is sent anywhere).
+      - name: Checkov IaC scan (Terraform)
+        run: |
+          if [ -d infra ]; then
+            checkov --config-file .checkov.yaml
+          else
+            echo "infra/ not present; skipping Checkov"
           fi
 
       # The whole repo, not just lambdas/: scripts/requirements.txt (the admin CLI) and the secret

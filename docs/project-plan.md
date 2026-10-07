@@ -206,7 +206,7 @@ Full detail: `docs/specs/phase-0-foundations.md`.
 ## 9) Validation Commands
 - Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
 - Python: `ruff check .`, `pytest`
-- Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
+- Security: `trivy config infra/`, `checkov --config-file .checkov.yaml`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
 
 ## 10) Build Phases
 Phases 1–8 are built and deployed; Phase 0's code is done, with a few GitHub/AWS settings still open.

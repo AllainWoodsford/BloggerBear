@@ -68,6 +68,11 @@ data "aws_cloudfront_origin_request_policy" "all_viewer_except_host" {
 }
 
 resource "aws_cloudfront_distribution" "api" {
+  # checkov:skip=CKV_AWS_68:the web ACL comes in as var.web_acl_id (production attaches the shared CloudFront ACL); the public API's regional WAF guards the origin either way
+  # checkov:skip=CKV_AWS_174:the default *.cloudfront.net certificate cannot set a minimum TLS version; the origin itself is TLS 1.2 only
+  # checkov:skip=CKV2_AWS_42:the API is reached at its *.cloudfront.net name; only the site takes the custom domain
+  # checkov:skip=CKV_AWS_305:an API, not a site: there is no root object to serve
+  # checkov:skip=CKV2_AWS_32:JSON responses read by app.js, never rendered as a page; the site's distribution sets the security headers (CSP, HSTS)
   enabled         = true
   comment         = "${var.unique_name_prefix}-${var.environment_name} public API"
   is_ipv6_enabled = true

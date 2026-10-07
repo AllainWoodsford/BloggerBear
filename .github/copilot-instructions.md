@@ -34,7 +34,8 @@ Read `/docs/project-plan.md` before making non-trivial changes. Check
 - Python: `ruff check --fix lambdas/ scripts/` with the ruff version pinned in
   `lambdas/requirements-dev.txt` (never `--unsafe-fixes`; don't run `ruff format` repo-wide), then
   `pytest`
-- Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
+- Security: `trivy config infra/`, `checkov --config-file .checkov.yaml`, `trivy fs --scanners vuln,secret lambdas/`,
+  `bandit -r lambdas/ -ll`
 
 ## Scope control
 Use `docs/project-plan.md` §10 and `docs/PROGRESS.md` to see the active

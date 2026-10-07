@@ -1181,6 +1181,7 @@ resource "aws_iam_role_policy" "states_exec" {
 }
 
 resource "aws_sfn_state_machine" "daily_cycle" {
+  # checkov:skip=CKV_AWS_285:a failed run goes to the pipeline DLQ and FailedExecutions, and Step Functions keeps execution history itself for 90 days; CloudWatch delivery would bill per event
   name     = "${var.unique_name_prefix}-production-daily-cycle"
   role_arn = aws_iam_role.states_exec.arn
 
