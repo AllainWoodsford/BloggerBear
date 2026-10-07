@@ -82,7 +82,6 @@ from common.static_pages import equipment_snapshot
 from common.stats import build_stats
 from common.stats_tracking import (
     HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE,
-    overall_view,
     public_view,
     record_feedback_given,
     record_feedback_rejected_comment,
@@ -663,13 +662,13 @@ def _stats(event: dict) -> dict:
     aggregates only (common/stats.py plus common/stats_tracking.py), never article content or
     ids. `weekly` (StatsCurrent) and `historic` (StatsHistory's all-time running total, PR 4 of
     the Observability enhancement) sit alongside the original per-article `by_model`/`by_topic`/
-    `daily` breakdown -- both single get_item reads, no extra scan. `overall` is Total Stats' cost
-    summary from the same two rows (common/stats_tracking.py's overall_view): money and counts."""
+    `daily` breakdown -- both single get_item reads, no extra scan. Each is shaped from its own
+    row alone (public_view): `weekly` is the current table's, `historic` the history table's
+    all-time row, and nothing in the answer mixes the two."""
     stats = build_stats(list_all_articles(), list_topics(), list_models())
     current, totals = get_current_stats(), get_stats_totals()
     stats["weekly"] = public_view(current)
     stats["historic"] = {**public_view(totals), "note": HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE}
-    stats["overall"] = overall_view(totals, current)
     return _response(200, stats, cache_seconds=_STATS_CACHE_SECONDS)
 
 
