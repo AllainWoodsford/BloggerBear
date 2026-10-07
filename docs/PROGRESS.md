@@ -584,7 +584,15 @@ All shipped and deployed; the design and decisions for each are in
   AWS bill (#135)
 - [x] Stats: the assistant's spend, total infrastructure cost and a total overall cost
   that is the AWS bill alone (Bedrock counted once), with the assistant's tile in
-  the all-time and weekly sections
+  the all-time and weekly sections (superseded by the next line)
+- [x] Stats page, one source and one period per section (#268, #270, #271, and this
+  round's docs): Total Stats from the history table only, Weekly Stats from the
+  current table only, the per-article detail in an Articles section of its own. The
+  bill is four tiles that add up; the rolling-30-day and calendar-month tiles and the
+  assistant's tiles are gone
+- [x] A missed stats rollover: an alarm on dropped scheduled runs, and
+  `scripts/repair_stats_week.py`, run for both environments (#265)
+- [x] Crypto research looks up 2 to 5 altcoins a tick, not 5 to 10 (#267)
 - [x] Staggered research and authoring schedules (production and dev)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
@@ -631,7 +639,8 @@ phase above, or a new phase, whenever you're ready to schedule them.)*
   run a release
 - **Confirm the AgentCore Cost Explorer service name:** #135 assumed
   `"Amazon Bedrock AgentCore"`. Once AgentCore spend has been billed, check
-  that "Web search spend (actual)" is non-zero; if not, look the name up
+  that `agentcore_cost_aud_30d` on the stats-current row is non-zero (it is
+  no longer a tile on the Stats page); if not, look the name up
   with `aws ce get-dimension-values --dimension SERVICE`
 - **Confirm the AgentCore per-query price** ($0.007 USD assumed from the
   launch announcement) against the pricing page
@@ -641,8 +650,14 @@ phase above, or a new phase, whenever you're ready to schedule them.)*
 - **Branch protection and a production reviewer:** needs GitHub Pro, or a
   public repository
 - **WAF rule tuning** from real traffic (Phase 6)
-- **Frontend tests for the Stats page** — the new web search tiles were
-  only syntax-checked
+- **Look at the Stats page in a browser** — `test_frontend_stats.py` now runs the real
+  script under Node and reads back every section, tile and table, but nothing checks how
+  the three sections lay out at desktop and phone width
+- **A true all-time AWS bill** — the all-time figure starts at the first week that has a
+  history row. A one-off backfill from Cost Explorer would cover the weeks before it
+- **Stop carrying the rolling readings onto the history rows** — the firewall's, API
+  Gateway's and AgentCore's 30-day and monthly readings are still copied to each week's
+  row and the all-time row at rollover, though nothing reads them there now
 - **Alexa+ bootstrap (operator):** needs Alexa+ toolkit access (US, partner-gated); then
   `alexa/README.md` for dev, and separately for production. Settle whether Cognito accepts the
   RFC 8707 `resource` parameter Alexa sends (friction 10.19-10.20)

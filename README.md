@@ -317,8 +317,9 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   Cognito pool and, if linked, its own Alexa+ add-on.
 - **The access switch:** `python scripts/admin_cli.py pipeline-config set --assistant-access
   open|allowlist|off` (no deploy). Alexa+ calls from Amazon's addresses, so it needs `open`.
-- **What it costs:** every agent run's tokens and cost go onto the Stats page as "Operator
-  assistant" (and into the `spend` tool), per environment, the week they are spent; each user may
+- **What it costs:** every agent run's tokens and cost go onto the Stats page as the "Operator
+  assistant" row of each section's estimate table (and into the `spend` tool), per environment,
+  the week they are spent; each user may
   ask 100 questions a UTC day (`agent_daily_question_cap`). Its Lambda, API Gateway, DynamoDB and
   Cognito use is in the bill's Infrastructure group, from the daily Cost Explorer poll.
 
