@@ -445,6 +445,28 @@ def test_the_architecture_tools_are_not_passed_through_the_memory(client):
     mock_remember.assert_not_called()
 
 
+def test_the_instructions_carry_the_third_round_for_clients_that_read_only_them(client):
+    """What the agent's prompt was taught after dev was used beside production, said here too:
+    Alexa+ reads these and not the prompt."""
+    words = " ".join(server._INSTRUCTIONS.split())
+    for rule in (
+        "Asked to look at or check something, look: never answer with what you cannot do",
+        "Never give a Lambda success rate",
+        "say api_errors' counts by status code",
+        "is most often a program's own wording",
+        "call architecture with no arguments, name the layers it returns and ask which one",
+        '"everything" only when all of it is asked for',
+        "A finding with `actioned` looks dealt with already",
+        "call dismiss only when the operator tells you to",
+    ):
+        assert rule in words, rule
+    # And the architecture tool no longer says that nothing means every resource.
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    described = " ".join(tools["architecture"]["description"].split())
+    assert "or nothing: every resource" not in described
+    assert "With no arguments" in described and "the layers" in described
+
+
 def test_the_instructions_carry_the_owners_workflow_for_clients_that_read_only_them():
     """Alexa+ talks to this server directly and reads its instructions, not the agent's prompt: the
     read-only rule, the order of a log answer, the offers to watch and to dive in, the follow-up,
