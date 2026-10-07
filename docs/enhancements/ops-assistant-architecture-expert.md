@@ -134,6 +134,22 @@ closed, and `table_sample` says AWS refused.
 
 **Deploying it:** nothing extra. Dev deploys as usual.
 
+### Layers and features
+
+Asked with nothing named ("how does the project work?"), `architecture` names nine **layers**
+(edge, presentation, API gateways, identity, orchestration, compute, AI, data, observability) and
+asks which one; `layer` gives one. A layer answers "what is this made of?".
+
+A **feature** (`feature`) answers "how does this one thing work?": a small, logical grouping of the
+parts that do one job, told as steps in the order the work flows, across the layers. The first is
+`article-research`: topic and adapter, schedules, third-party keys in SSM, the diff-first research
+tick, findings, candidate ideas, drafting, the reviews and the article in S3, then where the agents
+are. Each step's parts are catalogue resources (`kind:key`, which the tests hold to the catalogue)
+or plain words for what is not ours. The written version is
+[docs/architecture/article-research.md](../architecture/article-research.md);
+[docs/architecture/README.md](../architecture/README.md) says how to add the next one (for
+example "prompts as assets").
+
 ## The environment rule
 
 Every answer is about the assistant's own environment, whatever name was pasted:
