@@ -310,6 +310,87 @@ def test_a_resource_only_in_production_says_so_in_dev(dev):
     assert "It isn't deployed in dev." in answer["spoken"]
 
 
+# --- the features ---------------------------------------------------------------------------------
+
+
+def test_every_feature_names_only_resources_the_catalogue_has():
+    """A step's "kind:key" part must be a catalogue resource: the catalogue is held to infra/, so a
+    feature cannot walk the operator through a resource that is not deployed."""
+    for feature in architecture.FEATURES:
+        assert feature.steps and feature.summary.endswith(".") and len(feature.summary) < 260
+        for step in feature.steps:
+            assert step.title and step.what.endswith("."), step.title
+            assert step.parts, step.title
+            for part in step.parts:
+                kind, _, key = part.partition(":")
+                if kind in architecture.KINDS:
+                    architecture.by_key(kind, key)  # raises when it is not in the catalogue
+
+
+def test_article_research_walks_from_the_source_to_the_article_in_s3(dev):
+    """The owner's ask: one place that says how the agents, the third-party keys, the adapters,
+    the Lambdas, the candidate ideas and the findings come together into articles in S3."""
+    answer = architecture.architecture(feature="article-research")
+
+    assert answer["feature"] == "article-research"
+    titles = [step["title"] for step in answer["steps"]]
+    assert titles[0] == "Topic and adapter" and titles[-1] == "Where the AI agents are"
+    assert titles.index("Findings") < titles.index("Candidate ideas") < titles.index("The article in S3")
+    assert answer["spoken"].startswith("Article research. How a topic's data source becomes")
+    assert "They're on screen." in answer["spoken"]
+    table = answer["table"]
+    assert table["title"] == (
+        "BloggerBear dev architecture: Article research (from a data source to a published article)"
+    )
+    assert table["columns"] == ["Step", "What happens", "What it uses"]
+    assert len(table["rows"]) == len(titles) and table["rows"][0][0] == "1. Topic and adapter"
+    text = " ".join(" ".join(row) for row in table["rows"])
+    for words in (
+        "bloggerbear-dev-findings (DynamoDB table)",
+        "bloggerbear-dev-candidate-ideas (DynamoDB table)",
+        "bloggerbear-dev-content (S3 bucket)",
+        "bloggerbear-dev-research-tick (Lambda function)",
+        "SSM Parameter Store",
+        "articles/<id>.md",
+        "no model is called",
+    ):
+        assert words in text, words
+    keys = {(c["kind"], c["key"]) for c in answer["components"]}
+    assert {("table", "findings"), ("bucket", "content"), ("function", "ops-agent")} <= keys
+    assert len(keys) == len(answer["components"])  # each once, though steps share some
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        "article-research",
+        "Article Research",
+        "the article research feature",
+        "how articles are written",
+        "How is an article written?",
+        "the research pipeline",
+        "candidate ideas",
+    ],
+)
+def test_a_feature_is_found_from_the_operators_own_words(words):
+    assert architecture.resolve_feature(words) == "article-research"
+
+
+def test_a_feature_nobody_has_gets_the_list(dev):
+    answer = architecture.architecture(feature="the coffee machine")
+    assert answer["spoken"] == (
+        "I don't know that feature. The features I can walk through are article research; "
+        "or ask for a layer."
+    )
+    assert "table" not in answer and answer["features"][0]["key"] == "article-research"
+    assert architecture.resolve_feature(None) is None and architecture.resolve_feature(" ") is None
+
+
+def test_a_name_or_a_kind_still_wins_over_a_feature(dev):
+    assert architecture.architecture("topics", feature="article-research")["matches"][0]["key"] == "topics"
+    assert "feature" not in architecture.architecture(kind="bucket", feature="article-research")
+
+
 # --- the layers -----------------------------------------------------------------------------------
 
 
@@ -333,9 +414,13 @@ def test_with_nothing_it_names_the_layers_and_asks_which_one(dev):
         "BloggerBear is built in 9 layers: the edge, the presentation layer, the API gateways, "
         "identity and access, orchestration, compute, the AI layer, data and storage and "
         "observability. They're on screen with what each does. Which would you like to hear "
-        "about, or everything in detail?"
+        "about, or everything in detail? I can also walk through article research, step by step "
+        "across the layers."
     )
-    assert len(answer["spoken"].split()) < 60  # short enough to listen to
+    assert len(answer["spoken"].split()) < 75  # short enough to listen to
+    assert answer["features"] == [
+        {"key": "article-research", "title": architecture.FEATURES[0].title}
+    ]
     table = answer["table"]
     assert table["title"] == "BloggerBear dev architecture: the layers"
     assert table["columns"] == ["Layer", "What it does", "What it is made of"]

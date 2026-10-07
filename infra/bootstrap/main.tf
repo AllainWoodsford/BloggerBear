@@ -51,6 +51,7 @@ provider "aws" {
 # directory); it does not affect objects within it.
 # -----------------------------------------------------------------------
 resource "aws_s3_bucket" "terraform_state" {
+  # checkov:skip=CKV2_AWS_61:every state version is the rollback history; nothing in this bucket should expire
   bucket = var.state_bucket_name
 
   lifecycle {
@@ -134,6 +135,11 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 # resources to it; remove this ignore when that lands.
 # trivy:ignore:AVD-AWS-0345
 data "aws_iam_policy_document" "gha_deploy" {
+  # checkov:skip=CKV_AWS_111:the deploy role creates and updates every resource in both environments; see the AVD-AWS-0345 comment above
+  # checkov:skip=CKV_AWS_356:resources Terraform has not created yet have no ARN to scope to; see the AVD-AWS-0345 comment above
+  # checkov:skip=CKV_AWS_108:Terraform reads back what it manages (SSM parameters, S3 objects) to plan; see the AVD-AWS-0345 comment above
+  # checkov:skip=CKV_AWS_109:Terraform owns the functions' roles and policies; trusted only from the dev branch and the production environment by OIDC
+  # checkov:skip=CKV2_AWS_40:Terraform owns the functions' roles and policies; trusted only from the dev branch and the production environment by OIDC
   # State backend: list the bucket (needed by the S3 backend/native
   # locking) and read/write the state object + its .tflock companion for
   # both environments.

@@ -104,6 +104,7 @@ resource "aws_api_gateway_resource" "well_known_document" {
 
 # Public, as metadata must be: the client reads it before it has a token.
 resource "aws_api_gateway_method" "well_known" {
+  # checkov:skip=CKV_AWS_59:OAuth metadata documents, public by RFC 8414/9728: a client reads them before it has a token
   for_each = local.well_known
 
   rest_api_id   = aws_api_gateway_rest_api.this.id

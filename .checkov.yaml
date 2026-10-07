@@ -1,0 +1,127 @@
+# Checkov: the Terraform policy scan in security.yml (every PR, and before every apply) and
+# on-demand-scan.yml. Read automatically when checkov runs from the repository root.
+#
+# What it is for here: a second IaC scanner next to Trivy, with Checkov's deeper rule set for a
+# serverless, CloudFront-fronted stack -- CloudFront (TLS, WAF, response headers, OAC), API Gateway
+# (auth, WAF, stage logging), Lambda (permissions, URLs, runtimes), S3 (public access, encryption,
+# TLS-only policies), DynamoDB, SQS/SNS, Step Functions, EventBridge Scheduler and, above all, IAM
+# (wildcard actions, privilege escalation, data exfiltration). Every Checkov check runs, apart
+# from the ones skipped below.
+#
+# How findings are accepted, and where (the same rules the trivy:ignore comments follow):
+# - A design decision that holds for EVERY resource of a type (no VPC for any Lambda, AWS-managed
+#   keys rather than customer-managed KMS keys) is skipped here, with the reason beside it.
+# - A finding about ONE resource is skipped on that resource, in the .tf file, with a comment that
+#   says why: `# checkov:skip=CKV_AWS_68:<reason>` inside the resource block. A new resource with
+#   the same problem then fails the scan; a repo-wide skip would hide it.
+# - Never skip a check here to get a pull request green. Fix the resource, or skip it on that
+#   resource with its reason, in the same pull request, where a reviewer reads it.
+#
+# on-demand-scan.yml also runs Checkov with no skips at all (report only), so everything accepted
+# here stays visible somewhere.
+
+framework:
+  - terraform
+directory:
+  - infra
+# Provider and module caches from a local `terraform init`; never committed, never ours.
+skip-path:
+  - \.terraform
+# Read only the code in this repository: no registry modules fetched, nothing sent to or fetched
+# from Prisma Cloud (no API key is configured, and none should be).
+download-external-modules: false
+skip-download: true
+compact: true
+quiet: true
+
+skip-check:
+  # --- Lambda -----------------------------------------------------------------------------------
+  # No VPC: nothing the functions reach is private (DynamoDB, S3, Bedrock, SSM are AWS APIs over
+  # TLS with IAM), and a VPC would add NAT gateways (~US$35/month each) for no isolation gained.
+  - CKV_AWS_117
+  # No code signing: the only path to a function's code is the deploy role, which GitHub assumes
+  # through OIDC after the security, lint and test jobs pass. Signing adds a Signer profile to
+  # every deploy and guards against a writer that cannot exist.
+  - CKV_AWS_272
+  # Environment variables hold table names, parameter NAMES and flags, never a secret (keys are
+  # SSM SecureStrings read at cold start), so AWS's default encryption of them is enough.
+  - CKV_AWS_173
+  # No X-Ray on Lambda, API Gateway or Step Functions: the dashboards, alarms and structured logs
+  # (and the assistant's log_review) answer what tracing would, without the per-trace cost.
+  - CKV_AWS_50
+  - CKV_AWS_73
+  - CKV_AWS_284
+  # No reserved concurrency: it is carved out of the account's limit (10 on a new account, which
+  # this project must deploy into), and API Gateway throttling and WAF rate limits cap load first.
+  - CKV_AWS_115
+  # No per-function DLQ: the API functions are invoked synchronously (a DLQ never fires), the
+  # scheduled jobs retry on the next schedule, and the daily cycle's failures go through Step
+  # Functions to the pipeline DLQ (aws_sqs_queue.pipeline_dlq) where dlq-handler records them.
+  - CKV_AWS_116
+
+  # --- Encryption with customer-managed KMS keys ------------------------------------------------
+  # Everything is encrypted at rest with AWS-managed keys (DynamoDB, S3 SSE-S3, SQS/SNS, logs,
+  # schedules). A customer-managed key costs US$1/month each plus per-request charges, and adds a
+  # key policy to every reader; nothing here is personal data (rule 1: no PII is stored), so it
+  # buys nothing. The same reasoning as the AVD-AWS-0132/0095/0096 trivy:ignore comments.
+  - CKV_AWS_119 # DynamoDB
+  - CKV_AWS_145 # S3
+  - CKV_AWS_158 # CloudWatch log groups
+  - CKV_AWS_297 # EventBridge Scheduler
+  - CKV_AWS_26 # SNS
+  - CKV_AWS_27 # SQS
+
+  # --- DynamoDB -----------------------------------------------------------------------------------
+  # Point-in-time recovery is on in production and off in dev, by var.protect_data
+  # (modules/app-data/main.tf). Checkov reads the module's dev value, so every table fails.
+  - CKV_AWS_28
+
+  # --- Logs ---------------------------------------------------------------------------------------
+  # Retention is 14 to 90 days, not a year, on purpose: logs are for fixing things, cost money per GB-month,
+  # and the less kept the less there is to leak.
+  - CKV_AWS_338
+
+  # --- API Gateway --------------------------------------------------------------------------------
+  # Caching is CloudFront's job (modules/api-cdn); an API Gateway cache is billed per hour.
+  - CKV_AWS_120
+  - CKV_AWS_225
+  # Mutual TLS client certificates: the callers are browsers and the Admin CLI (IAM SigV4), which
+  # cannot present one.
+  - CKV2_AWS_51
+  # Request validation lives in the Lambdas, which check every field (and must anyway: a model
+  # can be the source of a value).
+  - CKV2_AWS_53
+  # create_before_destroy on a REST API would create a second API (new id, new URL) on every
+  # replacement; the deployment resource already handles redeploys.
+  - CKV_AWS_237
+
+  # --- S3 -----------------------------------------------------------------------------------------
+  # Server access logging, cross-region replication and event notifications: no reader of them.
+  # CloudFront and API Gateway logs cover who asked for what, and the buckets are rebuilt from
+  # the pipeline and the repository.
+  - CKV_AWS_18
+  - CKV_AWS_144
+  - CKV2_AWS_62
+
+  # --- CloudFront ---------------------------------------------------------------------------------
+  # Standard access logs: WAF logs and API Gateway access logs already hold every request that
+  # matters, without the visitor detail a CDN log keeps.
+  - CKV_AWS_86
+  # A public blog has no country to block.
+  - CKV_AWS_374
+  # One origin each (an S3 bucket, an API): there is no second origin to fail over to.
+  - CKV_AWS_310
+
+  # --- WAF ----------------------------------------------------------------------------------------
+  # Log4j (CVE-2021-44228) rules: there is no Java anywhere in the stack (Python Lambdas, S3,
+  # managed services). The common rule set still runs on the public API.
+  - CKV_AWS_192
+  - CKV2_AWS_47
+  - CKV2_AWS_77
+
+  # --- Route 53 -----------------------------------------------------------------------------------
+  # DNSSEC and query logging on the optional hosted zone (infra/bootstrap): DNSSEC needs a KMS key
+  # and a DS record at the registrar, which a forker's registrar may not support; query logs have
+  # no reader.
+  - CKV2_AWS_38
+  - CKV2_AWS_39

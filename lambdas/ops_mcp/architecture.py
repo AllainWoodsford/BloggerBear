@@ -2,7 +2,8 @@
 what it is called in this environment, and where to look when something goes wrong with it.
 
     architecture   one resource described (a table, a function, an API, a dashboard, a log group,
-                   ...), or every resource of a kind, as a table on screen
+                   ...), or every resource of a kind, as a table on screen; the layers; or a
+                   feature (article research) step by step across them
 
 runsheets.py builds on the same catalogue for `investigate`: where to look when the assistant cannot
 look itself.
@@ -1030,6 +1031,177 @@ def resolve_layer(raw) -> str | None:
     return None
 
 
+# --- The features ---------------------------------------------------------------------------------
+#
+# The owner's ask: a layer answers "what is this made of?", not "how does this one thing work?".
+# A feature is a smaller, logical grouping that cuts across the layers: the parts that together
+# make one thing the project does, told in the order the work flows through them. The first is
+# article research (from a topic's data source to an article in S3); more can be added the same
+# way ("prompts as assets" is the next one the owner has in mind) by adding a Feature below.
+#
+# A step's `parts` are catalogue resources as "kind:key" (tests/test_ops_mcp_architecture.py
+# holds that each exists, so a feature cannot name a resource the catalogue lost) and, for what is
+# not a named resource of ours (Bedrock, an adapter, a third-party API), plain words. Every step is
+# a plain fact about this project, from the code named beside it.
+
+
+@dataclass(frozen=True)
+class Step:
+    title: str  # "Research tick: diff first"
+    what: str  # what happens, one or two sentences
+    parts: tuple[str, ...]  # "kind:key" for a catalogue resource, or a name in plain words
+
+
+@dataclass(frozen=True)
+class Feature:
+    key: str
+    title: str  # as shown: "Article research (from a data source to a published article)"
+    said: str  # as spoken in a list: "article research"
+    summary: str
+    steps: tuple[Step, ...]
+    aliases: tuple[str, ...] = ()
+
+
+FEATURES: tuple[Feature, ...] = (
+    Feature(
+        key="article-research",
+        title="Article research (from a data source to a published article)",
+        said="article research",
+        summary="How a topic's data source becomes a published article: the research tick finds "
+        "what is new, the daily cycle turns it into candidate ideas, a draft and two reviews, and "
+        "the article lands in S3.",
+        steps=(
+            # common/adapters/: base.py (the contract), registry.py, one module per source.
+            Step(
+                "Topic and adapter",
+                "A topic is a row of settings, made with the Admin CLI: which adapter reads its "
+                "source, how often to research, its model and review mode. The adapter is the only "
+                "code that knows the source: GitHub, Hacker News, CoinGecko or web search.",
+                ("table:topics", "Adapters (common/adapters/)"),
+            ),
+            # common/scheduler.py, from admin_api_handler.py on topic create, update and delete.
+            Step(
+                "Schedules",
+                "Creating a topic makes its two EventBridge schedules: a research heartbeat at its "
+                "interval, and the daily cycle at its time and timezone.",
+                ("schedule:topic-schedules", "function:admin-api"),
+            ),
+            # crypto_feed.py COINGECKO_API_KEY_PARAMETER, github_trending.py GITHUB_API_TOKEN_PARAMETER,
+            # common/web_search.py (GDELT, then AgentCore).
+            Step(
+                "Third-party sources and their keys",
+                "API keys are SecureStrings in SSM Parameter Store, named by an environment "
+                "variable Terraform sets and read at cold start, never stored in code or tables; "
+                "both are optional. News search uses GDELT, which needs no key, and falls back to "
+                "Bedrock AgentCore web search, which the function's IAM role authorises.",
+                (
+                    "SSM Parameter Store (CoinGecko key, GitHub token)",
+                    "GDELT",
+                    "Bedrock AgentCore web search",
+                ),
+            ),
+            # research_tick_handler.py: diff-first (rule 2), snapshots/{topic_id}/{captured_at}.json.
+            Step(
+                "Research tick: diff first",
+                "The adapter fetches the source now and compares it with the last snapshot in the "
+                "content bucket. Nothing new: it stops, and no model is called. Something new: it "
+                "stores the raw snapshot under snapshots/ in the content bucket.",
+                ("function:research-tick", "bucket:content"),
+            ),
+            Step(
+                "Findings",
+                "Bedrock summarises only what is new, and the summary is written as a finding with "
+                "where its snapshot is and its sources. Findings expire after 14 days, snapshots "
+                "after 21.",
+                ("table:findings", "Amazon Bedrock (Converse API)"),
+            ),
+            # daily_cycle_handler.py steps 2-4; the state machine retries, then the DLQ.
+            Step(
+                "Candidate ideas",
+                "Once a day, through the daily-cycle state machine, the daily cycle reads every "
+                "finding since the topic's last article, asks Bedrock for three candidate angles, "
+                "stores them as candidate ideas and selects one. Ideas expire after 7 days.",
+                (
+                    "state_machine:daily-cycle",
+                    "function:daily-cycle",
+                    "table:candidate-ideas",
+                ),
+            ),
+            # common/model_routing.py, gear.py, equipment.py; the few-shot excerpt.
+            Step(
+                "Drafting",
+                "Bedrock drafts the title and article with the topic's model from the model "
+                "registry, folding in the topic's approved prompt refinements (the bear's gear), a "
+                "top-voted past excerpt, and financial guidance where it applies.",
+                (
+                    "table:models",
+                    "table:model-config",
+                    "table:prompt-refinements",
+                    "Amazon Bedrock (Converse API)",
+                ),
+            ),
+            # common/fresh_review.py, common/compliance.py (rule 3 and rule 4).
+            Step(
+                "Reviews",
+                "A fresh-data review checks the draft's claims against what the source says now; "
+                "a compliance review decides publish or hold. A financial topic is always held for "
+                "a person, whatever the review says.",
+                ("Fresh-data review (common/fresh_review.py)", "Compliance review (common/compliance.py)"),
+            ),
+            # daily_cycle_handler._publish_or_moderate; common/static_pages.py; stats_tracking.py.
+            Step(
+                "The article in S3",
+                "The body is written to the content bucket as articles/<id>.md and the article's "
+                "row records its lineage, tokens and cost. Published, a static page goes to the "
+                "site bucket; held, it waits in the moderation queue for admin_cli approve.",
+                (
+                    "bucket:content",
+                    "table:articles",
+                    "bucket:site",
+                    "table:moderation-queue",
+                    "table:stats-current",
+                ),
+            ),
+            # The ops assistant: ops_agent/ (Strands) and ops_mcp/ (the MCP server), read-only.
+            Step(
+                "Where the AI agents are",
+                "Every model call above is one Bedrock request from a Lambda, not an agent. The "
+                "agent is this assistant: a Strands agent calling the MCP server's read-only tools, "
+                "which read the same topics, findings, ideas and articles, and change none of them.",
+                ("function:ops-agent", "function:ops-mcp"),
+            ),
+        ),
+        aliases=(
+            "article research", "research", "articles", "article pipeline",
+            "research pipeline", "writing pipeline", "authoring", "how articles are written",
+            "how an article is written", "how is an article written", "how are articles written",
+            "how is an article researched", "how are articles researched", "findings",
+            "candidate ideas",
+        ),
+    ),
+)
+FEATURE_KEYS = tuple(feature.key for feature in FEATURES)
+
+
+def resolve_feature(raw) -> str | None:
+    """A feature's key from the operator's words for it ("article research", "how articles are
+    written", "the research pipeline"); None when it names none."""
+    if not isinstance(raw, str):
+        return None
+    words = " ".join(re.sub(r"[^a-z0-9 ]", " ", raw.lower().replace("-", " ")).split())
+    words = " ".join(w for w in words.split() if w not in ("the", "feature", "please", "about"))
+    if not words:
+        return None
+    for feature in FEATURES:
+        names = {feature.key.replace("-", " "), feature.said, *feature.aliases}
+        if words in names:
+            return feature.key
+    for feature in FEATURES:
+        if any(alias in words for alias in (feature.said, *feature.aliases) if " " in alias):
+            return feature.key
+    return None
+
+
 # --- The environment ------------------------------------------------------------------------------
 
 
@@ -1302,17 +1474,25 @@ def _layers_overview(env: str | None) -> dict:
     in it, and the question of which to go into. Short enough to listen to."""
     said = [layer.said for layer in LAYERS]
     listed = ", ".join(said[:-1]) + f" and {said[-1]}"
+    named_features = [each.said for each in FEATURES]
+    features = (
+        ", ".join(named_features[:-1]) + f" and {named_features[-1]}"
+        if len(named_features) > 1
+        else named_features[0]
+    )
     rows = [
         [layer.title, layer.summary, ", ".join(name for name, _ in layer.services)] for layer in LAYERS
     ]
     return {
         "spoken": (
             f"BloggerBear is built in {len(LAYERS)} layers: {listed}. They're on screen with what "
-            "each does. Which would you like to hear about, or everything in detail?"
+            "each does. Which would you like to hear about, or everything in detail? I can also "
+            f"walk through {features}, step by step across the layers."
         ),
         "findings": [],
         "environment": env,
         "layers": [{"key": layer.key, "title": layer.title, "summary": layer.summary} for layer in LAYERS],
+        "features": [{"key": each.key, "title": each.title} for each in FEATURES],
         "ask": "Which layer, or everything in detail?",
         "table": {
             "title": f"BloggerBear {env or ''} architecture: the layers".replace("  ", " "),
@@ -1358,6 +1538,50 @@ def _layer_detail(layer: Layer, env: str | None) -> dict:
     }
 
 
+def _part_row(part: str, env: str | None) -> tuple[str, str]:
+    """A step's part as (name, kind): a catalogue resource by its name here, else the words."""
+    kind, _, key = part.partition(":")
+    if kind in KINDS and key:
+        component = by_key(kind, key)
+        return fill(component.name, env), KIND_LABELS[kind]
+    return part, "Service or code"
+
+
+def _feature_detail(feature: Feature, env: str | None) -> dict:
+    """One feature: what it does, then its steps in the order the work flows, each with the parts
+    it uses. Spoken: the summary and the steps' names, short enough to listen to."""
+    rows = []
+    for number, step in enumerate(feature.steps, start=1):
+        parts = "; ".join(
+            name if label == "Service or code" else f"{name} ({label})"
+            for name, label in (_part_row(part, env) for part in step.parts)
+        )
+        rows.append([f"{number}. {step.title}", step.what, parts])
+    titles = [_lower_first(step.title.split(":")[0]) for step in feature.steps]
+    listed = ", ".join(titles[:-1]) + f" and {titles[-1]}"
+    components = [
+        {"kind": part.partition(":")[0], "key": part.partition(":")[2], "name": _part_row(part, env)[0]}
+        for part in dict.fromkeys(p for step in feature.steps for p in step.parts)
+        if part.partition(":")[0] in KINDS
+    ]
+    return {
+        "spoken": (
+            f"{feature.title.split(' (')[0]}. {feature.summary} It goes in {len(feature.steps)} "
+            f"steps: {listed}. They're on screen. Ask about any part by name, or for a layer."
+        ),
+        "findings": [],
+        "environment": env,
+        "feature": feature.key,
+        "steps": [{"title": s.title, "what": s.what, "parts": list(s.parts)} for s in feature.steps],
+        "components": components,
+        "table": {
+            "title": f"BloggerBear {env or ''} architecture: {feature.title}".replace("  ", " "),
+            "columns": ["Step", "What happens", "What it uses"],
+            "rows": rows,
+        },
+    }
+
+
 def _overview(kind: str | None, env: str | None) -> dict:
     components = [c for c in CATALOGUE if kind is None or c.kind == kind]
     rows = [
@@ -1391,14 +1615,33 @@ def _overview(kind: str | None, env: str | None) -> dict:
     }
 
 
-def architecture(name: str | None = None, kind: str | None = None, layer: str | None = None) -> dict:
+def architecture(
+    name: str | None = None,
+    kind: str | None = None,
+    layer: str | None = None,
+    feature: str | None = None,
+) -> dict:
     """What a resource is for, in this environment. With `name`: the matching resources, each
     described (a name can mean several, like a function and its state machine). With only
     `kind`: every resource of that kind. With `layer`: that layer of the architecture (its
     services and our resources in it), or every resource in one table for "everything". With
-    nothing: the layers, and the question of which to go into."""
+    `feature`: one feature, step by step across the layers (article research). With nothing: the
+    layers, and the question of which to go into."""
     env = environment()
     named = isinstance(name, str) and bool(name.strip())
+    if feature is not None and not named and kind is None:
+        chosen = resolve_feature(feature)
+        if chosen is None:
+            said = [each.said for each in FEATURES]
+            return {
+                "spoken": "I don't know that feature. The features I can walk through are "
+                + (", ".join(said[:-1]) + f" and {said[-1]}" if len(said) > 1 else said[0])
+                + "; or ask for a layer.",
+                "findings": [],
+                "environment": env,
+                "features": [{"key": each.key, "title": each.title} for each in FEATURES],
+            }
+        return _feature_detail(next(each for each in FEATURES if each.key == chosen), env)
     if layer is not None and not named and kind is None:
         chosen = resolve_layer(layer)
         if chosen is None:

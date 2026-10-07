@@ -56,6 +56,7 @@ In the order you are likely to need them.
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
 | [Repository protection](docs/todo/public-repo-runsheet.md) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. |
 | [Alexa+ add-on](alexa/README.md) | Optional: putting the operator's assistant on Alexa+. |
+| [Architecture by feature](docs/architecture/README.md) | The project one feature at a time, across the layers. First: [article research](docs/architecture/article-research.md), from a data source and its API keys to an article in S3. |
 | [Project plan](docs/project-plan.md) | The design and the reasons behind it. Long; read it before a non-trivial change. |
 | [Friction log](docs/friction.md) | Problems met while building and deploying this, and what fixed them. |
 | [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md) | How to take part, and how to report a vulnerability. |
@@ -243,7 +244,7 @@ approved; **musings** (BloggerBear's short reflections on articles and feedback)
    which is what credits them under every article and topic title; see "Adding an adapter" in
    `docs/project-plan.md` §6.
 6. Terraform never applies ad hoc: see the branch and release model below.
-7. Security scans (Trivy, Bandit), lint and tests must pass before any apply, dev or production,
+7. Security scans (Trivy, Checkov, Bandit), lint and tests must pass before any apply, dev or production,
    in the same workflow run. They run on pull requests too.
 
 ## The operator's assistant and Alexa+
@@ -295,6 +296,10 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   presentation, API gateways, identity and access, orchestration, compute, AI, data and storage,
   observability) and asks which one; a layer gives its AWS services and our resources in it;
   "everything" is the full table.
+- **A feature, step by step:** "how is an article researched?" walks through
+  [article research](docs/architecture/article-research.md) across the layers, from the topic,
+  its adapter and API keys, through the research tick, findings and candidate ideas, to the
+  drafted, reviewed article in S3, with this environment's resource names on screen.
 - **Findings you have dealt with:** every finding's card has a **Dismiss** button (no model call;
   it changes only the assistant's own list). Where the pipeline's tables show you have already
   acted, such as an article sent for a rewrite that has not replaced the old one yet, the finding
@@ -413,14 +418,16 @@ scripts/
                                 called before each apply)
   security.yml                   trivy (config; dependencies + secrets of the
                                 whole repo, MEDIUM reported, HIGH+ fails) +
-                                bandit on lambdas/ and scripts/ (every PR;
-                                called before each apply)
+                                checkov on infra/ (.checkov.yaml) + bandit
+                                on lambdas/ and scripts/ (every PR; called
+                                before each apply)
 
 docs/
   setup-guide.md                your first deploy, from installing the tools
   deployment-runsheet.md        your first deploy, step by step
   deployment-separate-accounts.md  dev and production in two AWS accounts
   configuration.md              every setting and where it goes
+  architecture/                 the project by feature: article research, ...
   production-runsheet.md        production + domain, step by step
   project-plan.md               architecture, rules, data model -- source
                                 of truth for "why"
