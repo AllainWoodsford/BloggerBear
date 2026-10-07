@@ -467,6 +467,22 @@ def test_the_instructions_carry_the_third_round_for_clients_that_read_only_them(
     assert "With no arguments" in described and "the layers" in described
 
 
+def test_a_question_about_what_a_feature_is_goes_to_its_guide(client):
+    """ "What is the equipment do" was answered from the architecture tool and a guess. The
+    instructions and cli_guides' own description both send it to the guide."""
+    words = " ".join(server._INSTRUCTIONS.split())
+    assert "For what a feature of the blog is or does" in words
+    assert "a feature is not an AWS resource, and is never described from a guess" in words
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    described = " ".join(tools["cli_guides"]["description"].split())
+    assert '"what does it do" asked of a feature' in described
+    assert "gear and equipment are the same thing" in described
+
+    result = tool_call(client, "cli_guides", {"topic": "what is the equipment do"})
+    assert result["guide"]["id"] == "gear"
+    assert result["spoken"].startswith("Gear is writing guidance the bear wears.")
+
+
 def test_the_instructions_carry_the_owners_workflow_for_clients_that_read_only_them():
     """Alexa+ talks to this server directly and reads its instructions, not the agent's prompt: the
     read-only rule, the order of a log answer, the offers to watch and to dive in, the follow-up,
