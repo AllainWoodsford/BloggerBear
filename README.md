@@ -46,6 +46,7 @@ In the order you are likely to need them.
 | Doc | What it is for |
 |---|---|
 | [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, another region, local development. |
+| [Separate AWS accounts](docs/deployment-separate-accounts.md) | Dev in one account and production in another: what you do twice, both bootstrap commands, the GitHub OIDC trust for your fork, the firewall, a checklist. |
 | [Configuration](docs/configuration.md) | Every setting in one table, and where it goes: GitHub, Terraform, SSM, DynamoDB, your machine. |
 | [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
@@ -414,6 +415,7 @@ scripts/
 
 docs/
   deployment-runsheet.md        your first deploy, step by step
+  deployment-separate-accounts.md  dev and production in two AWS accounts
   configuration.md              every setting and where it goes
   production-runsheet.md        production + domain, step by step
   project-plan.md               architecture, rules, data model -- source

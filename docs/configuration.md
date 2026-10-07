@@ -75,7 +75,7 @@ Why some are secrets and some are variables:
 
 Passed with `-var` when you apply `infra/bootstrap` by hand
 ([step 1](deployment-runsheet.md#1-bootstrap-once-by-hand)). In a two-account setup, once per
-account.
+account ([separate AWS accounts](deployment-separate-accounts.md#bootstrap-once-per-account)).
 
 | Variable | What it is | Default |
 |---|---|---|

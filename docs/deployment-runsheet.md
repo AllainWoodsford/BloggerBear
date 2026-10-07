@@ -86,7 +86,8 @@ a value), and it works without the AWS CLI. It also needs the `production` envir
 - **An AWS account, or better, two.** If you have two accounts, put dev in one and production in
   the other: a quota, a bad permission change or a teardown in dev then cannot touch production.
   One account works too, and is what the original deployment uses; the names never collide.
-  [Step 3](#3-one-account-or-two) says what differs.
+  [Step 3](#3-one-account-or-two) says what differs, and
+  [separate AWS accounts](deployment-separate-accounts.md) is the guide for two.
 - Root MFA on in each account, and an admin identity (IAM or IAM Identity Center, MFA on) that you
   can use from your own machine for the one-time bootstrap. Do not use root day to day.
 - **A budget alarm on each account, before anything else is applied.** The Bedrock budget that
@@ -198,26 +199,22 @@ environment, and nothing is applied before the security scans, lint and tests pa
 
 ## 3. One account or two
 
-**Two accounts (recommended if you have them):**
+**Two accounts (recommended if you have them):** everything is the same, except that the
+account-level work is done twice. In short:
 
 - Apply bootstrap **twice**, once with each account's credentials, each with its own
-  `aws_account_id` and its own `state_bucket_name`. Keep the two state files apart, for example
-  with `terraform workspace new production` before the second apply. Pass `domain_name=""` in the
-  dev account so the hosted zone exists only in the production account.
-- Each apply creates both deploy roles. Use the dev role from the dev account and the production
-  role from the production account. The other two are never assumed; nothing is given their ARNs.
-- `AWS_DEV_ACCOUNT_ID` and `AWS_PROD_ACCOUNT_ID` differ. So do `TF_STATE_BUCKET_DEV` and
-  `TF_STATE_BUCKET_PROD`.
+  `aws_account_id` and its own `state_bucket_name` (bucket names are unique across all of AWS).
+- `AWS_DEV_ACCOUNT_ID` and `AWS_PROD_ACCOUNT_ID` differ. So do the two role ARNs, and
+  `TF_STATE_BUCKET_DEV` and `TF_STATE_BUCKET_PROD`.
 - **Leave dev's `web_acl_arn` empty.** A CloudFront distribution can only use a web ACL owned by
-  its own account; AWS WAF cannot attach one across accounts. Dev's two CloudFront distributions
-  then run without the shared ACL. Dev's APIs keep their own regional web ACLs, which dev creates
-  itself. If you set `web_acl_arn` to an ACL in another account, and `AWS_DEV_ACCOUNT_ID` is set,
-  the plan stops with a message saying so.
-- Dev's dashboard has a panel for the shared ACL's metrics. In a two-account setup it stays empty,
-  because those metrics are in the production account.
-- Account-level settings are per account: the Lambda quota, and
-  [DynamoDB's tag-based access control](#dynamodb-tag-based-access-control-abac), must be right
+  its own account, so dev's distributions run without the shared one.
+- Account-level settings (the Lambda quota,
+  [DynamoDB's tag-based access control](#dynamodb-tag-based-access-control-abac)) must be right
   in both.
+
+**[Deploying your own: separate AWS accounts](deployment-separate-accounts.md)** is the full
+guide: what you do twice, both bootstrap commands, what the GitHub OIDC trust looks like for
+your fork, what dev's firewall loses, and a checklist.
 
 **One account:**
 
@@ -230,7 +227,8 @@ environment, and nothing is applied before the security scans, lint and tests pa
   names are `<prefix>-<environment>-<resource>`.
 
 A third arrangement, one deployment account whose role assumes a role in each environment's
-account, is not built. [Enhancement: a deployment account](#enhancement-a-deployment-account-that-assumes-a-role-in-each-environments-account)
+account, is not built.
+[Enhancement: a deployment account](deployment-separate-accounts.md#enhancement-a-deployment-account-that-assumes-a-role-in-each-environments-account)
 sketches it.
 
 ## 4. First deploy: dev
@@ -553,68 +551,6 @@ Check by hand, because nothing in this repository can:
   wording to match where yours are.
 - The commands in these guides and in `scripts/QUICKSTART.md` name `ap-southeast-2`. Use your
   region in its place (`--region`, or `AWS_REGION` / `AWS_DEFAULT_REGION`).
-
-## Enhancement: a deployment account that assumes a role in each environment's account
-
-**Not built, and not tested.** This is a sketch for anyone who wants GitHub to trust one small
-"deployment" account, which then assumes a role in the dev account and another in the production
-account. It suits an AWS Organization where workload accounts must not have their own OIDC
-provider. Today's two-account setup is simpler: each account has its own OIDC provider and its own
-deploy role, and GitHub assumes each one directly.
-
-It is mostly configuration, but not only: the workflows assume exactly one role, so the second
-hop needs **one more step in each deploy workflow**. Terraform itself needs no change.
-
-1. **In the deployment account:** the GitHub OIDC provider, and a role GitHub may assume (the
-   same trust policy `infra/bootstrap` writes today). Its only permission is to assume the
-   target roles:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Action": ["sts:AssumeRole", "sts:TagSession"],
-       "Resource": [
-         "arn:aws:iam::111111111111:role/gha-<prefix>-dev-deploy",
-         "arn:aws:iam::123456789012:role/gha-<prefix>-prod-deploy"
-       ]
-     }]
-   }
-   ```
-2. **In each environment's account:** the deploy role with the permissions `infra/bootstrap`
-   gives it today, but trusting the deployment account's role instead of GitHub:
-   ```json
-   {
-     "Version": "2012-10-17",
-     "Statement": [{
-       "Effect": "Allow",
-       "Principal": { "AWS": "arn:aws:iam::000000000000:role/gha-<prefix>-hub" },
-       "Action": ["sts:AssumeRole", "sts:TagSession"]
-     }]
-   }
-   ```
-   This trust no longer sees GitHub's branch or environment claims, so the branch and release
-   rules must be enforced on the first hop, with one hub role for dev and another for production.
-3. **In the workflow,** after the existing credentials step (which now takes the hub role's ARN),
-   one more step that chains into the target role. `AWS_DEV_TARGET_ROLE_ARN` is a new secret:
-   ```yaml
-   - name: Assume the environment's deploy role
-     uses: aws-actions/configure-aws-credentials@<the commit the step above is pinned to>
-     with:
-       aws-region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
-       role-to-assume: ${{ secrets.AWS_DEV_TARGET_ROLE_ARN }}
-       role-chaining: true
-   ```
-
-What to check before relying on it:
-
-- A chained session lasts one hour at most. A first production apply takes 15 to 25 minutes, so
-  it fits, but a stuck CloudFront or certificate wait can run past it.
-- The state bucket must be readable by the target role: keep it in the environment's own account.
-- `AWS_DEV_ACCOUNT_ID` and `AWS_PROD_ACCOUNT_ID` then name the target accounts, which is what the
-  account check compares.
-- `infra/bootstrap` would need a variable for the trusted principal, so that it can write the
-  trust policy in step 2. That is the one Terraform change, and it is in bootstrap only.
 
 ## Tearing down and cost control
 
