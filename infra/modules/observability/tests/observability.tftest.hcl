@@ -185,3 +185,22 @@ run "another_name_prefix_moves_every_name" {
     error_message = "every alarm starts with <prefix>-<env>-, which is the prefix the assistant asks CloudWatch for"
   }
 }
+
+# A dropped scheduled run is silent (the function is never invoked), so it has an alarm of its own.
+run "a_dropped_scheduled_run_raises_an_alarm" {
+  command = plan
+  assert {
+    condition = (
+      aws_cloudwatch_metric_alarm.schedule_invocations_dropped.namespace == "AWS/Scheduler" &&
+      aws_cloudwatch_metric_alarm.schedule_invocations_dropped.metric_name == "InvocationDroppedCount" &&
+      aws_cloudwatch_metric_alarm.schedule_invocations_dropped.dimensions["ScheduleGroup"] == "default" &&
+      aws_cloudwatch_metric_alarm.schedule_invocations_dropped.threshold == 0 &&
+      aws_cloudwatch_metric_alarm.schedule_invocations_dropped.treat_missing_data == "notBreaching"
+    )
+    error_message = "one dropped run in the default schedule group is enough, and no data is not an alarm"
+  }
+  assert {
+    condition     = aws_cloudwatch_metric_alarm.schedule_invocations_dropped.alarm_name == "bloggerbear-test-schedule-invocations-dropped"
+    error_message = "named <prefix>-<env>-..., the prefix the deploy role and the assistant's alarms tool go by"
+  }
+}

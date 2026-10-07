@@ -422,6 +422,11 @@ def test_the_architecture_tools_take_what_the_operator_pasted_and_answer_for_thi
     tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
     kinds = tools["architecture"]["inputSchema"]["properties"]["kind"]
     assert set(json.dumps(kinds).split('"')) >= set(architecture.KINDS)
+    # The layers the tool offers are the ones the catalogue has, and "everything".
+    layers = tools["architecture"]["inputSchema"]["properties"]["layer"]
+    assert set(json.dumps(layers).split('"')) >= {*architecture.LAYER_KEYS, architecture.EVERYTHING}
+    assert tool_call(client, "architecture", {})["table"]["title"].endswith("the layers")
+    assert tool_call(client, "architecture", {"layer": "edge"})["layer"] == "edge"
 
     answer = tool_call(client, "architecture", {"name": "bloggerbear-prod-candidate-ideas"})
     assert answer["matches"][0]["name"] == "bloggerbear-dev-candidate-ideas"
@@ -438,6 +443,44 @@ def test_the_architecture_tools_are_not_passed_through_the_memory(client):
         tool_call(client, "investigate", {"symptom": "api-errors"})
 
     mock_remember.assert_not_called()
+
+
+def test_the_instructions_carry_the_third_round_for_clients_that_read_only_them(client):
+    """What the agent's prompt was taught after dev was used beside production, said here too:
+    Alexa+ reads these and not the prompt."""
+    words = " ".join(server._INSTRUCTIONS.split())
+    for rule in (
+        "Asked to look at or check something, look: never answer with what you cannot do",
+        "Never give a Lambda success rate",
+        "say api_errors' counts by status code",
+        "is most often a program's own wording",
+        "call architecture with no arguments, name the layers it returns and ask which one",
+        '"everything" only when all of it is asked for',
+        "A finding with `actioned` looks dealt with already",
+        "call dismiss only when the operator tells you to",
+    ):
+        assert rule in words, rule
+    # And the architecture tool no longer says that nothing means every resource.
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    described = " ".join(tools["architecture"]["description"].split())
+    assert "or nothing: every resource" not in described
+    assert "With no arguments" in described and "the layers" in described
+
+
+def test_a_question_about_what_a_feature_is_goes_to_its_guide(client):
+    """ "What is the equipment do" was answered from the architecture tool and a guess. The
+    instructions and cli_guides' own description both send it to the guide."""
+    words = " ".join(server._INSTRUCTIONS.split())
+    assert "For what a feature of the blog is or does" in words
+    assert "a feature is not an AWS resource, and is never described from a guess" in words
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    described = " ".join(tools["cli_guides"]["description"].split())
+    assert '"what does it do" asked of a feature' in described
+    assert "gear and equipment are the same thing" in described
+
+    result = tool_call(client, "cli_guides", {"topic": "what is the equipment do"})
+    assert result["guide"]["id"] == "gear"
+    assert result["spoken"].startswith("Gear is writing guidance the bear wears.")
 
 
 def test_the_instructions_carry_the_owners_workflow_for_clients_that_read_only_them():

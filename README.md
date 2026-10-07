@@ -37,7 +37,9 @@ fork of this repository, Terraform, the AWS CLI, Python 3.11+ and the GitHub CLI
    shows the first commands.
 
 Each step, with what to check and what can go wrong, is in the deployment runsheet
-([docs/deployment-runsheet.md](docs/deployment-runsheet.md)).
+([docs/deployment-runsheet.md](docs/deployment-runsheet.md)). New to Terraform, AWS or GitHub
+Actions? The [setup guide](docs/setup-guide.md) starts earlier, from installing the tools and
+setting up your AWS account and CLI, with a placeholder for each value you choose.
 
 ## Docs
 
@@ -45,13 +47,16 @@ In the order you are likely to need them.
 
 | Doc | What it is for |
 |---|---|
+| [Setup guide](docs/setup-guide.md) | Your first deploy, for a first-time forker: installing Terraform and the tools, an AWS account and CLI profile, the bootstrap and the GitHub OIDC roles, your GitHub settings, the first deploy and topic, and what to do when it fails. |
 | [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, another region, local development. |
+| [Separate AWS accounts](docs/deployment-separate-accounts.md) | Dev in one account and production in another: what you do twice, both bootstrap commands, the GitHub OIDC trust for your fork, the firewall, a checklist. |
 | [Configuration](docs/configuration.md) | Every setting in one table, and where it goes: GitHub, Terraform, SSM, DynamoDB, your machine. |
 | [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
 | [Repository protection](docs/todo/public-repo-runsheet.md) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. |
 | [Alexa+ add-on](alexa/README.md) | Optional: putting the operator's assistant on Alexa+. |
+| [Architecture by feature](docs/architecture/README.md) | The project one feature at a time, across the layers. First: [article research](docs/architecture/article-research.md), from a data source and its API keys to an article in S3. |
 | [Project plan](docs/project-plan.md) | The design and the reasons behind it. Long; read it before a non-trivial change. |
 | [Friction log](docs/friction.md) | Problems met while building and deploying this, and what fixed them. |
 | [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md) | How to take part, and how to report a vulnerability. |
@@ -239,7 +244,7 @@ approved; **musings** (BloggerBear's short reflections on articles and feedback)
    which is what credits them under every article and topic title; see "Adding an adapter" in
    `docs/project-plan.md` §6.
 6. Terraform never applies ad hoc: see the branch and release model below.
-7. Security scans (Trivy, Bandit), lint and tests must pass before any apply, dev or production,
+7. Security scans (Trivy, Checkov, Bandit), lint and tests must pass before any apply, dev or production,
    in the same workflow run. They run on pull requests too.
 
 ## The operator's assistant and Alexa+
@@ -278,11 +283,30 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
 - **It reads the logs** ([design](docs/enhancements/ops-assistant-log-reader.md)): `log_review`
   (Lambda errors, a topic's runs and its adapter, a time range) and `api_errors` (failed requests by
   status and who answered, with every request counted by HTTP status code, the 200s too) find each error's root cause in code and say whether it needs a code fix,
-  a settings change or just time, with how to check it yourself on screen. Findings are written to
+  a settings change or just time, with how to check it yourself on screen: the query, with a
+  `SOURCE` line for each of the closest log groups and the time range, in a box you can edit before
+  you copy it. It gives no Lambda success rate (a run completes even when its source was rate
+  limited, so the number said nothing). Findings are written to
   its suggestions table; it offers to watch a function or a table, and the next "what needs my
   attention?" says whether it is still happening or has calmed down. Read-only, by environment,
   project and ManagedBy tag; personal data swept out (addresses only as `123.XXX.XXX.34`); a log
-  line that reads like instructions is withheld, never obeyed.
+  line that reads like instructions is withheld, never obeyed, and reported with the function it
+  was in and without alarm (its own log, which talks about tool calls, is not reported at all).
+- **The architecture, a layer at a time:** "how does the project work?" names nine layers (edge,
+  presentation, API gateways, identity and access, orchestration, compute, AI, data and storage,
+  observability) and asks which one; a layer gives its AWS services and our resources in it;
+  "everything" is the full table.
+- **A feature, step by step:** "how is an article researched?" walks through
+  [article research](docs/architecture/article-research.md) across the layers, from the topic,
+  its adapter and API keys, through the research tick, findings and candidate ideas, to the
+  drafted, reviewed article in S3, with this environment's resource names on screen.
+- **Findings you have dealt with:** every finding's card has a **Dismiss** button (no model call;
+  it changes only the assistant's own list). Where the pipeline's tables show you have already
+  acted, such as an article sent for a rewrite that has not replaced the old one yet, the finding
+  says so and the assistant suggests dismissing it, after you check. It never dismisses by itself.
+- **Woken at sign-in:** the page sends one background call as you sign in, which starts the
+  agent's and the MCP server's Lambdas so the first question does not wait for them. No model, no
+  data, nothing shown, and at most one every five minutes.
 - **Alexa+ cannot wait for the agent** (its limit is 500 ms; a briefing takes 10–25 s), so Alexa
   starts a briefing in the background (`start_briefing`, which invokes the agent as the caller)
   and reads the last one back (`latest_briefing`). Every briefing asked on the page is kept too.
@@ -293,8 +317,9 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   Cognito pool and, if linked, its own Alexa+ add-on.
 - **The access switch:** `python scripts/admin_cli.py pipeline-config set --assistant-access
   open|allowlist|off` (no deploy). Alexa+ calls from Amazon's addresses, so it needs `open`.
-- **What it costs:** every agent run's tokens and cost go onto the Stats page as "Operator
-  assistant" (and into the `spend` tool), per environment, the week they are spent; each user may
+- **What it costs:** every agent run's tokens and cost go onto the Stats page as the "Operator
+  assistant" row of each section's estimate table (and into the `spend` tool), per environment,
+  the week they are spent; each user may
   ask 100 questions a UTC day (`agent_daily_question_cap`). Its Lambda, API Gateway, DynamoDB and
   Cognito use is in the bill's Infrastructure group, from the daily Cost Explorer poll.
 
@@ -394,12 +419,16 @@ scripts/
                                 called before each apply)
   security.yml                   trivy (config; dependencies + secrets of the
                                 whole repo, MEDIUM reported, HIGH+ fails) +
-                                bandit on lambdas/ and scripts/ (every PR;
-                                called before each apply)
+                                checkov on infra/ (.checkov.yaml) + bandit
+                                on lambdas/ and scripts/ (every PR; called
+                                before each apply)
 
 docs/
+  setup-guide.md                your first deploy, from installing the tools
   deployment-runsheet.md        your first deploy, step by step
+  deployment-separate-accounts.md  dev and production in two AWS accounts
   configuration.md              every setting and where it goes
+  architecture/                 the project by feature: article research, ...
   production-runsheet.md        production + domain, step by step
   project-plan.md               architecture, rules, data model -- source
                                 of truth for "why"

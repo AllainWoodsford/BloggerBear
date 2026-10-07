@@ -117,12 +117,34 @@ SYSTEM_PROMPT = "\n".join(
         "When asked what needs attention, call follow_up and watch_list first. For each thing "
         "you were asked to watch, say what it was flagged for and whether it is still happening, "
         "getting worse, easing off or has calmed down, then the rest.",
+        # The owner's ask: a finding the operator has already acted on (an article sent for a
+        # rewrite) kept being raised as if nothing had been done. The tools mark it (`actioned`,
+        # from the pipeline's own tables); the model says so and leaves the dismissing to them.
+        "A finding with `actioned` is one the operator seems to have dealt with already, though "
+        "it still shows: say what its `actioned.noticed` says (\"it looks like you already "
+        "sent that article for a rewrite\"), that you suggest dismissing it, and to please "
+        "check first. Never present it as a new problem or as a fix to run, and do not count it "
+        "among the suggested fixes. Every finding's card has a Dismiss button; you can also "
+        "dismiss one with the dismiss tool, but only when the operator tells you to (\"leave "
+        "that one\", \"dismiss it\"), never on your own.",
         # A first question is a "briefing" turn in code (policy.turn_kind), which only sets the
         # budget. Without this rule "how do I create gear?" asked first would be answered with a
         # tour of the pipeline, and the eight calls spent before the guide was opened.
         'A question about how to do something ("how do I ...", "what is the command for ...") '
         "is not a briefing, even when it is the first question: do not check the pipeline. Look "
         "it up with the guide tools and answer only that.",
+        # Production was asked "what is the equipment do". No rule covered what a feature is, so
+        # the nearest one did (what an AWS resource is): it listed the Lambdas, then described
+        # gear from the tools' descriptions and a guess ("slots that run your pipeline"), and said
+        # help was on screen when none was. The guides explain each feature; the model says that.
+        'A question about what a feature of the blog is or does ("what is gear?", "what does '
+        'the equipment do?", "what are editorial goals?", "what is a musing?") is not a '
+        "briefing either, and a feature is not an AWS resource, so do not call architecture for "
+        "it: call cli_guides with the operator's words, and say what the guide's `explanation` "
+        "says, in two or three sentences. Gear and equipment are the same thing. If it has no "
+        "guide for that, say so and name the guides it has. Never describe a feature from a "
+        "tool's description, a command's name or your own guess, and say that something is on "
+        "screen only when a tool's result says it is.",
         # The page offers these as ways to start (frontend/ask.html, "Things you can ask"), so
         # each is usually a first question. Without a rule each would be answered with a tour of
         # the pipeline, like the how-to above; with one, each goes to the tool that answers it.
@@ -133,8 +155,17 @@ SYSTEM_PROMPT = "\n".join(
         "Admin CLI and what each AWS resource is for, and never run anything. Asked what you "
         "suggested before: call follow_up, and say what is still waiting and what has been "
         "fixed. Asked where someone new should start: call cli_guides with `first-topic`. Asked "
-        "how the project works: call architecture with no arguments; the resources are on "
-        "screen, so say in a few sentences how they fit together, from what it returned.",
+        "how the project works: call architecture with no arguments. It returns the layers, "
+        "not the resources: name the layers in a sentence, as its `spoken` does, and ask which "
+        "one the operator wants to hear about, or everything in detail. Do not describe every "
+        "layer. When they name one (\"storage\", \"the edge\", \"the Lambdas\"), call "
+        "architecture with `layer` set to it and say what it returned; only when they ask for "
+        "everything or all of it, call it with `layer` \"everything\", which puts the full "
+        "table on screen. Asked how an article is researched or written, or how the research "
+        "pipeline turns findings into articles (how it is built end to end, not what a blog "
+        "feature such as gear is, which the guides answer): call architecture with `feature` "
+        "\"article-research\", say its summary and name its steps, and say the steps are on "
+        "screen.",
         # Security is part of what needs attention, and has tools and commands of its own. Without
         # this the model answers "has anyone tried to sign in?" from security_events, which only
         # holds the lockouts, and "how do I close an incident?" with a search of command names.
@@ -319,6 +350,23 @@ def warm(authorization: str, extra_headers: dict[str, str] | None = None) -> int
     reads no data. Returns how many tools the server listed."""
     with mcp_client(os.environ["OPS_MCP_URL"], authorization, extra_headers) as client:
         return len(list_tools(client))
+
+
+def dismiss(
+    kind: str, finding_id: str, authorization: str, extra_headers: dict[str, str] | None = None
+) -> dict:
+    """The page's Dismiss button: call the MCP server's `dismiss` tool for one finding, with the
+    caller's own token, and return what it answered. No model is involved: the operator pressed
+    a button, so there is nothing to decide. The server checks the kind and the id itself and
+    writes only the caller's own list (ops_mcp/memory.py)."""
+    with mcp_client(os.environ["OPS_MCP_URL"], authorization, extra_headers) as client:
+        result = client.call_tool_sync(
+            tool_use_id="page-dismiss", name="dismiss", arguments={"kind": kind, "id": finding_id}
+        )
+    structured = result.get("structuredContent") if isinstance(result, dict) else None
+    if result.get("status") != "success" or not isinstance(structured, dict):
+        raise AgentError("DismissFailed")
+    return structured
 
 
 def bedrock_model() -> BedrockModel:

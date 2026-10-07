@@ -7,7 +7,7 @@ editorial goal (common/editorial_goals.py -- drawn at random each day, but
 seeded by the UTC date, so this adapter and the daily cycle always agree on it):
 
   ALTCOIN_DEEP_DIVE / TREND_INVENTOR
-      a pool of 10 altcoins sampled from the top 200 by market cap (never
+      a pool of 5 altcoins sampled from the top 200 by market cap (never
       the anchors, stablecoins, tokenized funds, or wrapped/staked/bridged
       derivatives), each enriched from one CoinGecko history call with its
       3-month and 1-year change and a 5-day anomaly read (price spike and/or
@@ -31,9 +31,9 @@ sampled into the pool, or any headline not already reported. Price moves are not
 a trigger. With a new pool each tick, that means a Finding per tick on analysis
 days -- the research interval (common/research_schedule.py) is the dial for cost.
 
-**History is fetched for each tick's new pool.** That is up to 10 CoinGecko
-history calls per tick, and the public keyless API answers 429 well below that
-(observed live: 3 of 10 failed even with backoff), so set a CoinGecko key (below)
+**History is fetched for each tick's new pool.** That is up to 5 CoinGecko
+history calls per tick. The public keyless API answers 429 easily (observed live, when
+the pool was 10: 3 of 10 failed even with backoff), so set a CoinGecko key (below)
 for this to be dependable. A coin whose history can't be fetched is dropped and
 the tick fails only if fewer than MIN_POOL_SIZE survive (the next heartbeat
 simply draws again). The adapter still opts into `uses_previous_state`: a coin
@@ -115,8 +115,11 @@ _KEY_REJECTED_STATUS_CODES = frozenset({401, 403})
 
 ANCHOR_IDS = ("bitcoin", "ethereum")
 MARKETS_PER_PAGE = 200
-POOL_SIZE = 10
-MIN_POOL_SIZE = 5
+# The owner's ask: a tick looks up 2 to 5 altcoins, not 5 to 10. Five are drawn; the tick still
+# has something to compare if history could be fetched for only two of them. Half the CoinGecko
+# history calls per tick, and a prompt half as long.
+POOL_SIZE = 5
+MIN_POOL_SIZE = 2
 
 # Deliberately gentle: CoinGecko's unauthenticated API tolerates only a
 # handful of requests a minute, and more parallelism just earns more 429s.

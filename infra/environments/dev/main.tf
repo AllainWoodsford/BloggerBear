@@ -144,6 +144,7 @@ module "app_data" {
 # infra/ (the site bucket, the SNS alerts topic, the SQS DLQ).
 # trivy:ignore:AVD-AWS-0132
 resource "aws_s3_bucket" "content" {
+  # checkov:skip=CKV_AWS_21:dev is disposable (force_destroy); production's content bucket is versioned
   bucket        = "${var.unique_name_prefix}-dev-content"
   force_destroy = true
 }
@@ -173,6 +174,7 @@ resource "aws_s3_bucket_public_access_block" "content" {
 # still-technically-alive Finding could still be pointed at. The extra week is a safety margin over that
 # lag, not a second independent retention decision. No versioning in dev, so this delete is immediate.
 resource "aws_s3_bucket_lifecycle_configuration" "content" {
+  # checkov:skip=CKV_AWS_300:objects are small single-part PutObjects (snapshots, article bodies); there are no multipart uploads to abort
   bucket = aws_s3_bucket.content.id
 
   rule {
@@ -1084,6 +1086,7 @@ resource "aws_iam_role_policy" "states_exec" {
 }
 
 resource "aws_sfn_state_machine" "daily_cycle" {
+  # checkov:skip=CKV_AWS_285:a failed run goes to the pipeline DLQ and FailedExecutions, and Step Functions keeps execution history itself for 90 days; CloudWatch delivery would bill per event
   name     = "${var.unique_name_prefix}-dev-daily-cycle"
   role_arn = aws_iam_role.states_exec.arn
 

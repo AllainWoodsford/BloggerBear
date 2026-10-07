@@ -47,6 +47,10 @@ be on the `production` environment or on the repository.
 | `RUFF_AUTOFIX_TOKEN` | secret | repo | A fine-grained token with contents:write on this repository only, so the `ruff-autofix` workflow can push safe lint fixes to a pull request's branch. Optional: without it the workflow only reports the fixes. Not set by the setup script. | not shown |
 | `CLAUDE_CODE_OAUTH_TOKEN` | secret | repo | For the `claude-issue-worker` workflow, which only the repository owner can trigger. Optional: leave it unset and the workflow is unused. Not set by the setup script. | not shown |
 
+**Not in this table, on purpose: the CoinGecko API key and the GitHub API token.** The data
+sources' keys are not GitHub secrets and the setup script does not set them. They are kept in
+AWS, one per environment: see [SSM Parameter Store](#ssm-parameter-store) below.
+
 Why some are secrets and some are variables:
 
 - A **variable** is printed in plain text in every step's log. On a public repository those logs
@@ -75,7 +79,7 @@ Why some are secrets and some are variables:
 
 Passed with `-var` when you apply `infra/bootstrap` by hand
 ([step 1](deployment-runsheet.md#1-bootstrap-once-by-hand)). In a two-account setup, once per
-account.
+account ([separate AWS accounts](deployment-separate-accounts.md#bootstrap-once-per-account)).
 
 | Variable | What it is | Default |
 |---|---|---|
@@ -125,16 +129,50 @@ cost poll) are not variables: they are written in each environment's `main.tf`.
 
 ## SSM Parameter Store
 
-`SecureString` parameters, created by you once per environment, in that environment's account and
-region ([how](deployment-runsheet.md#api-keys-for-the-data-sources)). Terraform never creates
-them, so a key is never in Terraform state, a Lambda's environment variables or GitHub.
+The API keys for the data sources. Both are optional: without one, the adapter uses the public
+API with no key, at a lower rate limit.
 
-| Parameter | What it is | Without it |
-|---|---|---|
-| `/<prefix>/<env>/coingecko-api-key` | CoinGecko API key, for the crypto adapter. | The keyless public API. |
-| `/<prefix>/<env>/github-api-token` | A GitHub token with no permissions, for the GitHub adapter. | Unauthenticated search, at a lower rate limit. |
+Each is a `SecureString` parameter that **you create by hand, once per environment**, in that
+environment's AWS account and region. Terraform never creates them and they are not GitHub
+secrets, so a key is never in Terraform state, a Lambda's environment variables or GitHub.
+Terraform only allows the Lambdas to read these exact names.
 
-`<prefix>` is your `UNIQUE_NAME_PREFIX`: with the default, `/bloggerbear/dev/coingecko-api-key`.
+| Parameter | What it is | Where to get it | Without it |
+|---|---|---|---|
+| `/<prefix>/dev/coingecko-api-key` | CoinGecko API key, for the crypto adapter. | A free "Demo" key is enough: <https://www.coingecko.com/en/api>, then the developer dashboard. | The keyless public API, which is throttled often enough to lose some research ticks. |
+| `/<prefix>/production/coingecko-api-key` | The same, for production. | The same key will do. | The same. |
+| `/<prefix>/dev/github-api-token` | A GitHub token for the GitHub adapter, which searches public repositories. | GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens. Repository access: "Public repositories". **No permissions at all.** | Unauthenticated search: 10 requests a minute, shared with others. With a token, 30 a minute of your own. |
+| `/<prefix>/production/github-api-token` | The same, for production. | The same token will do. | The same. |
+
+`<prefix>` is your `UNIQUE_NAME_PREFIX`. With the default it is `bloggerbear`, so dev's CoinGecko
+parameter is `/bloggerbear/dev/coingecko-api-key`.
+
+**To create them**, with the AWS CLI signed in to that environment's account. Put your own prefix
+and region in:
+
+```bash
+aws ssm put-parameter --name /bloggerbear/dev/coingecko-api-key --type SecureString --overwrite   --region ap-southeast-2 --value YOUR_COINGECKO_API_KEY
+aws ssm put-parameter --name /bloggerbear/dev/github-api-token --type SecureString --overwrite   --region ap-southeast-2 --value YOUR_GITHUB_TOKEN
+
+aws ssm put-parameter --name /bloggerbear/production/coingecko-api-key --type SecureString --overwrite   --region ap-southeast-2 --value YOUR_COINGECKO_API_KEY
+aws ssm put-parameter --name /bloggerbear/production/github-api-token --type SecureString --overwrite   --region ap-southeast-2 --value YOUR_GITHUB_TOKEN
+```
+
+- **In Git Bash on Windows**, put `MSYS_NO_PATHCONV=1` in front of each command, or the name is
+  rewritten as a file path.
+- **To keep the key out of your shell's history**, use the console instead: Systems Manager →
+  Parameter Store → Create parameter, type `SecureString`, with the name above.
+- **To check they exist** (this lists names and never shows a value):
+  ```bash
+  aws ssm describe-parameters --region ap-southeast-2     --parameter-filters "Key=Name,Option=BeginsWith,Values=/bloggerbear/" --query "Parameters[].Name"
+  ```
+- **A new or changed key is picked up the next time the Lambdas start cold.** A deploy forces that.
+- **A paid (Pro) CoinGecko key** also needs `coingecko_api_plan = "pro"` in that environment's
+  `terraform.tfvars`.
+- Never put a key in a topic's `adapter_config`: that is stored in DynamoDB.
+
+The longer explanation is in the deployment runsheet:
+[API keys for the data sources](deployment-runsheet.md#api-keys-for-the-data-sources).
 
 ## DynamoDB: settings changed with no deploy
 

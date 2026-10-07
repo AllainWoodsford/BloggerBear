@@ -884,12 +884,22 @@
     return count === 1 ? "1 article" : count + " articles";
   }
 
-  // --- Weekly/Total Stats: everything from GET /stats's `weekly` and `historic` --------------
+  // --- Total Stats and Weekly Stats: GET /stats's `historic` and `weekly` ---------------------
   //
-  // Observability enhancement, PR 4. Both are the same shape (common/stats_tracking.py's
-  // public_view): a fixed set of categories the app doesn't need to discover, so a table with
-  // a label per category is enough -- no "no data yet" branch like By Model/By Topic need,
-  // since every category is always present, calls or not.
+  // The owner's rule, after the page showed three windows as if they were one ("Total overall
+  // cost $18.45" above "Firewall spend $20.41", which was a rolling 30 days):
+  //
+  //     Total Stats   only the history table's all-time row: every completed week, added up.
+  //     Weekly Stats  only the current table's row: this week so far.
+  //
+  // Both are the same shape (common/stats_tracking.py's public_view, one row in, one section
+  // out), so one function draws either, and every figure in a section covers that section's
+  // period and no other. That is why there is no rolling-30-day or calendar-month figure here
+  // any more, and why nothing in Total Stats includes the current week.
+  //
+  // A section reads top down, money first: the AWS bill (what was charged), then the token
+  // estimates by category (already inside the bill's AI charges, so never added to it), then
+  // the activity counts. Every sum is the API's; nothing here adds money up.
 
   var OBSERVABILITY_CATEGORY_LABELS = {
     articles: "Articles (all stages)",
@@ -906,17 +916,26 @@
     return rounded + (rounded === 1 ? " hr" : " hrs");
   }
 
-  function categoryRow(category) {
-    var cost = formatAud(category.cost_aud);
-    if (category.cost_aud !== null && category.unpriced > 0) {
-      cost += " (+" + category.unpriced + " unpriced)";
+  // A category nothing was spent on has no cost recorded at all. That is a real $0, and
+  // "unpriced" is kept for calls that were made and could not be priced.
+  function estimateCost(entry) {
+    if ((entry.cost_aud === null || entry.cost_aud === undefined) && Number(entry.calls || 0) === 0) {
+      return "$0";
     }
+    var cost = formatAud(entry.cost_aud);
+    if (entry.cost_aud !== null && entry.cost_aud !== undefined && entry.unpriced > 0) {
+      cost += " (+" + entry.unpriced + " unpriced)";
+    }
+    return cost;
+  }
+
+  function categoryRow(category) {
     return [
       OBSERVABILITY_CATEGORY_LABELS[category.category] || category.category,
       formatCount(category.calls),
       formatCount(category.input_tokens),
       formatCount(category.output_tokens),
-      cost,
+      estimateCost(category),
     ];
   }
 
@@ -925,145 +944,104 @@
     "July", "August", "September", "October", "November", "December",
   ];
 
-  // "2026-10" -> "October 2026"; anything else is shown as it came.
-  function monthLabel(yearMonth) {
-    var match = /^(\d{4})-(\d{2})$/.exec(yearMonth || "");
+  // "2026-10-05" -> "5 October 2026"; anything else is shown as it came.
+  function longDate(isoDate) {
+    var match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate || "");
     if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) {
-      return yearMonth || "";
+      return isoDate || "";
     }
-    return MONTH_NAMES[Number(match[2]) - 1] + " " + match[1];
+    return Number(match[3]) + " " + MONTH_NAMES[Number(match[2]) - 1] + " " + match[1];
   }
 
-  // AWS WAF, the web firewall: the largest line on the site's bill, so it gets tiles of its own
-  // (common/stats_tracking.py's public_view `waf`, from Cost Explorer, ~24h lag). Absent until the
-  // daily poll has run once. "This week" only in Weekly Stats: Total Stats carries the latest
-  // reading, and a week-so-far figure means nothing there.
-  function appendWafTiles(tiles, waf, isCurrentWeek) {
-    if (!waf) {
-      return;
-    }
-    tiles.appendChild(
-      statTile("Firewall (WAF) spend", formatAud(waf.cost_aud_30d), "last 30 days, from the AWS bill, ~24h lag")
-    );
-    if (isCurrentWeek) {
-      tiles.appendChild(statTile("Firewall spend this week", formatAud(waf.cost_aud_week_to_date), "so far, to yesterday"));
-    }
-    tiles.appendChild(
-      statTile("Firewall spend, " + monthLabel(waf.month), formatAud(waf.cost_aud_month_to_date), "so far, to yesterday")
-    );
-    tiles.appendChild(
-      statTile("Firewall spend, " + monthLabel(waf.previous_month), formatAud(waf.cost_aud_previous_month), "whole month")
-    );
-  }
-
-  // The whole AWS bill (common/stats_tracking.py's public_view `aws_bill`, from Cost Explorer):
-  // three groups and a total, never every service -- the per-service figures stay in the table.
-  // Absent until the daily poll has run once.
+  // The AWS bill (public_view's `aws_bill`, from Cost Explorer): a total and the three groups
+  // it is made of, as four tiles that add up. Never every service: those stay in the table.
   var AWS_BILL_LABELS = {
     ai: "AI (Bedrock)",
-    security: "Security (firewall)",
-    infrastructure: "Infrastructure (hosting, data, monitoring)",
+    security: "Firewall (WAF)",
+    infrastructure: "Hosting, data and monitoring",
   };
 
+  // The one period every tile of a section's bill covers, said on each tile.
+  function billPeriod(bill, isCurrentWeek) {
+    if (isCurrentWeek) {
+      return "this week so far";
+    }
+    var weeks = bill.weeks;
+    var counted =
+      weeks === null || weeks === undefined
+        ? "complete weeks"
+        : formatCount(weeks) + (weeks === 1 ? " complete week" : " complete weeks");
+    return counted + (bill.since ? " since " + longDate(bill.since) : "");
+  }
+
   function appendAwsBill(wrap, bill, isCurrentWeek) {
+    wrap.appendChild(el("h3", { text: "AWS bill", className: "section-heading" }));
+    var tiles = el("div", { className: "stats-tiles" });
     if (!bill) {
+      tiles.appendChild(
+        statTile(
+          "Total cost",
+          "No data",
+          isCurrentWeek ? "the bill has not been read yet this week" : "no complete week of the AWS bill yet"
+        )
+      );
+      wrap.appendChild(tiles);
       return;
     }
-    var rows = (bill.categories || []).map(function (category) {
-      return [AWS_BILL_LABELS[category.category] || category.category, formatAud(category.cost_aud)];
+    var period = billPeriod(bill, isCurrentWeek);
+    tiles.appendChild(statTile("Total cost", formatAud(bill.total_aud), "AUD, whole AWS bill, " + period));
+    (bill.categories || []).forEach(function (category) {
+      tiles.appendChild(
+        statTile(
+          AWS_BILL_LABELS[category.category] || category.category,
+          formatAud(category.cost_aud),
+          "AUD, part of the total, " + period
+        )
+      );
     });
-    rows.push(["Total", formatAud(bill.total_aud)]);
-    wrap.appendChild(statsTable(["AWS bill", "Cost (AUD)"], rows));
-    var when = isCurrentWeek
-      ? "This week so far, to yesterday."
-      : bill.since
-        ? "Every complete week since " + bill.since + "."
-        : "";
+    wrap.appendChild(tiles);
     wrap.appendChild(
       el("p", {
         className: "stats-note",
-        text: when + " From the AWS bill (~24h lag), before tax; dev and production together.",
+        text:
+          "What AWS charged: the three parts add up to the total. " +
+          (isCurrentWeek ? "To yesterday" : "Whole weeks only") +
+          ", about a day behind, before tax, for the whole AWS account (dev and production " +
+          "together), converted at a fixed USD to AUD rate.",
       })
     );
   }
 
-  // The operator's assistant (the "assistant" category): what its agent runs cost, estimated
-  // from tokens like every other category, in this environment. `assistant` is one entry of
-  // public_view's `categories`, or `overall.assistant` (the same shape). `period` leads the
-  // small print ("est." for a section that already says its period, "AUD, all time, est." for
-  // the Total Stats tile).
-  function assistantTile(assistant, period) {
-    var cost = assistant.cost_aud;
-    var calls = Number(assistant.calls || 0);
-    if ((cost === null || cost === undefined) && calls === 0) {
-      cost = 0; // never ran: a real $0, not "unpriced"
+  // The token estimates (public_view's `categories` and their sum, `ai_estimate`). A response
+  // cached from before `ai_estimate` existed has none: then the table has no Total row, and the
+  // page never makes one up.
+  function appendAiEstimate(wrap, data) {
+    wrap.appendChild(el("h3", { text: "AI spend by token estimate", className: "section-heading" }));
+    var rows = (data.categories || []).map(categoryRow);
+    var total = data.ai_estimate;
+    if (total) {
+      rows.push([
+        "Total",
+        formatCount(total.calls),
+        formatCount(total.input_tokens),
+        formatCount(total.output_tokens),
+        estimateCost(total),
+      ]);
     }
-    var sub = period + ", " + formatCount(calls) + (calls === 1 ? " model call" : " model calls");
-    if (cost !== null && cost !== undefined && assistant.unpriced > 0) {
-      sub += " (lower bound: " + formatCount(assistant.unpriced) + " unpriced)";
-    }
-    return statTile("Operator assistant spend", formatAud(cost), sub);
-  }
-
-  // Absent from a response older than the assistant itself: then there is no tile.
-  function appendAssistantTile(tiles, categories) {
-    (categories || []).forEach(function (category) {
-      if (category.category === "assistant") {
-        tiles.appendChild(assistantTile(category, "est."));
-      }
-    });
-  }
-
-  // Total Stats' cost summary: GET /stats's `overall` (common/stats_tracking.py's overall_view,
-  // which also holds the formula). The assistant's spend to date, then the all-time AWS bill as
-  // three tiles that add up, the total last:
-  //
-  //     Total overall cost = AI charges on the AWS bill + Total infrastructure cost
-  //
-  // Only the bill goes into the total. Every token estimate on this page (the assistant's too)
-  // is already inside the bill's AI charges, so adding one would count those dollars twice. The
-  // sum is done by the API, never here.
-  //
-  // A response cached from before `overall` existed has none: the page is then as it was.
-  function appendOverallTiles(tiles, overall) {
-    if (!overall) {
-      return;
-    }
-    if (overall.assistant) {
-      tiles.appendChild(assistantTile(overall.assistant, "AUD, all time, est."));
-    }
-    var bill = overall.aws_bill;
-    if (!bill) {
-      // No bill yet: say so. The AI estimate above is never offered as the total instead.
-      tiles.appendChild(statTile("Total infrastructure cost", "No data", "no complete week of the AWS bill yet"));
-      tiles.appendChild(statTile("Total overall cost", "No data", "no complete week of the AWS bill yet"));
-      return;
-    }
-    var period = "complete weeks" + (bill.since ? " since " + bill.since : "");
-    tiles.appendChild(
-      statTile("AI charges on the AWS bill", formatAud(bill.ai_aud), "AUD, as billed, " + period)
-    );
-    tiles.appendChild(
-      statTile(
-        "Total infrastructure cost",
-        formatAud(bill.infrastructure_aud),
-        "AUD, AWS bill other than AI, " + period
-      )
-    );
-    tiles.appendChild(
-      statTile(
-        "Total overall cost",
-        formatAud(bill.total_aud),
-        "AUD, whole AWS bill (AI + infrastructure), " + period
-      )
+    wrap.appendChild(statsTable(["Category", "Calls", "Tokens in", "Tokens out", "Est. cost (AUD)"], rows));
+    wrap.appendChild(
+      el("p", {
+        className: "stats-note",
+        text:
+          "Estimated from token counts and the registered model prices, for this environment " +
+          "only. These dollars are already inside the bill's AI figure above, so they are not " +
+          "added to it.",
+      })
     );
   }
 
-  // `apiGatewayNote` distinguishes Weekly Stats' rolling-30-day reading from Total Stats'
-  // reuse of that same reading (a snapshot, never summed across weeks -- see this section's
-  // own note in renderStats). `isCurrentWeek` is true for Weekly Stats.
-  function renderObservabilitySection(data, apiGatewayNote, isCurrentWeek) {
-    var wrap = el("div", {});
+  function appendActivity(wrap, data) {
+    wrap.appendChild(el("h3", { text: "Activity", className: "section-heading" }));
     var tiles = el("div", { className: "stats-tiles" });
     tiles.appendChild(statTile("Feedback given", formatCount(data.feedback_given)));
     tiles.appendChild(
@@ -1077,12 +1055,8 @@
     tiles.appendChild(
       statTile("Pipeline run time", formatHours(data.pipeline_hours), "self-timed, scheduled jobs only")
     );
-    if (data.api_gateway_cost_aud_30d !== null && data.api_gateway_cost_aud_30d !== undefined) {
-      tiles.appendChild(statTile("API Gateway spend", formatAud(data.api_gateway_cost_aud_30d), apiGatewayNote));
-    }
-    appendWafTiles(tiles, data.waf, isCurrentWeek);
-    // Web search (common/stats_tracking.py's public_view `web_search`): AgentCore is billed per
-    // query, not per token, so it is a tile of its own rather than a row in the tokens table.
+    // Web search (public_view's `web_search`): AgentCore is billed per query, not per token, so
+    // it is a tile of its own and not a row in the tokens table.
     if (data.web_search) {
       var fallbacks = data.web_search.gdelt_fallbacks;
       tiles.appendChild(
@@ -1093,30 +1067,22 @@
         )
       );
       tiles.appendChild(
-        statTile("Web search spend", formatAud(data.web_search.agentcore_cost_aud), "est., per-query price")
+        statTile("Web search spend", formatAud(data.web_search.agentcore_cost_aud), "AUD, est., per-query price")
       );
-      // The real charge (Cost Explorer), to check the estimate above against. Absent until the
-      // daily poll has run once.
-      var actual = data.web_search.agentcore_actual_cost_aud_30d;
-      if (actual !== null && actual !== undefined) {
-        tiles.appendChild(
-          statTile("Web search spend (actual)", formatAud(actual), "last 30 days, from the AWS bill, ~24h lag")
-        );
-      }
     }
-    appendAssistantTile(tiles, data.categories);
     wrap.appendChild(tiles);
-    wrap.appendChild(
-      statsTable(
-        ["Category", "Calls", "Tokens in", "Tokens out", "Est. cost (AUD)"],
-        (data.categories || []).map(categoryRow)
-      )
-    );
+  }
+
+  // One section, from one row. `isCurrentWeek` is true for Weekly Stats.
+  function renderStatsSection(data, isCurrentWeek) {
+    var wrap = el("div", {});
     appendAwsBill(wrap, data.aws_bill, isCurrentWeek);
+    appendAiEstimate(wrap, data);
+    appendActivity(wrap, data);
     return wrap;
   }
 
-  // Quick Links: jumps to the page's three top-level sections. A no-JS fallback the same way
+  // Quick Links: jumps to the page's four top-level sections. A no-JS fallback the same way
   // .back-to-top (index.html) is -- plain in-page anchors, nothing here depends on script.
   function renderQuickLinks() {
     // Same fix as .back-to-top's own initBackToTop, for the same reason: this app hash-routes
@@ -1131,6 +1097,7 @@
     [
       ["total-stats-heading", "Total Stats"],
       ["weekly-stats-heading", "Weekly Stats"],
+      ["articles-stats-heading", "Articles"],
       ["gear-heading", "Gear"],
     ].forEach(function (pair) {
       var targetId = pair[0];
@@ -1274,22 +1241,58 @@
     contentEl.appendChild(el("h1", { text: "Stats" }));
     contentEl.appendChild(renderQuickLinks());
 
-    // --- Total Stats: the article-level detail (always fully live, scanned off Articles) -----
-    // plus everything else Bedrock/reader-activity spends, all time (StatsHistory's running
-    // total -- Observability enhancement, PR 4).
+    // --- Total Stats: the history table's all-time row, and nothing else ----------------------
+    var historic = stats.historic || {};
     contentEl.appendChild(
       el("h2", { text: "Total Stats", className: "section-heading", attrs: { id: "total-stats-heading" } })
     );
-    contentEl.appendChild(el("p", { className: "stats-note", text: stats.cost_basis }));
+    contentEl.appendChild(
+      el("p", {
+        className: "stats-note",
+        text: "Every completed week, added up. " + (historic.note || ""),
+      })
+    );
+    contentEl.appendChild(renderStatsSection(historic, false));
+
+    // --- Weekly Stats: the current table's row, and nothing else -----------------------------
+    var weekly = stats.weekly || {};
+    contentEl.appendChild(
+      el("h2", { text: "Weekly Stats", className: "section-heading", attrs: { id: "weekly-stats-heading" } })
+    );
+    contentEl.appendChild(
+      el("p", {
+        className: "stats-note",
+        text:
+          (weekly.week_start ? "The week of Monday " + longDate(weekly.week_start) + ", so far. " : "This week so far. ") +
+          "It joins Total Stats when the week ends, and this starts again from zero.",
+      })
+    );
+    contentEl.appendChild(renderStatsSection(weekly, true));
+
+    // --- Articles: counted live from the articles themselves ---------------------------------
+    // A third source, kept apart so its totals are never read as Total Stats': every article
+    // ever drafted, this week's included, priced at today's model prices (common/stats.py).
+    contentEl.appendChild(
+      el("h2", { text: "Articles", className: "section-heading", attrs: { id: "articles-stats-heading" } })
+    );
+    contentEl.appendChild(
+      el("p", {
+        className: "stats-note",
+        text:
+          "Counted from the articles themselves: every article drafted so far, this week's " +
+          "included, at today's model prices. So these figures overlap both sections above and " +
+          "will not match either exactly. " + (stats.cost_basis || ""),
+      })
+    );
 
     var totals = stats.totals;
-    var spendSub = "AUD, all time";
+    var spendSub = "AUD, est., every article so far";
     if (totals.unpriced_calls > 0) {
       spendSub +=
         " (lower bound: " + totals.unpriced_calls + " unpriced call" + (totals.unpriced_calls === 1 ? "" : "s") + ")";
     }
     var tiles = el("div", { className: "stats-tiles" });
-    tiles.appendChild(statTile("Estimated AI spend", formatAud(totals.cost_aud), spendSub));
+    tiles.appendChild(statTile("AI spend on articles", formatAud(totals.cost_aud), spendSub));
     tiles.appendChild(
       statTile("Articles drafted", formatCount(totals.articles), formatCount(totals.published) + " published")
     );
@@ -1319,12 +1322,7 @@
         )
       );
     }
-    appendOverallTiles(tiles, stats.overall);
     contentEl.appendChild(tiles);
-    // What the last tiles are made of, and why nothing is counted twice (the API's wording).
-    if (stats.overall && stats.overall.note) {
-      contentEl.appendChild(el("p", { className: "stats-note", text: stats.overall.note }));
-    }
 
     var daily = stats.daily || [];
     var activeDays = daily.filter(function (day) {
@@ -1400,22 +1398,6 @@
         )
       );
     }
-
-    var historic = stats.historic || {};
-    contentEl.appendChild(
-      el("h3", { text: "Other AI spend and activity, all time", className: "section-heading" })
-    );
-    contentEl.appendChild(el("p", { className: "stats-note", text: historic.note || "" }));
-    contentEl.appendChild(renderObservabilitySection(historic, "latest reading, not summed across weeks", false));
-
-    // --- Weekly Stats: this week so far (StatsCurrent), resets every Monday -------------------
-    contentEl.appendChild(
-      el("h2", { text: "Weekly Stats", className: "section-heading", attrs: { id: "weekly-stats-heading" } })
-    );
-    contentEl.appendChild(
-      el("p", { className: "stats-note", text: "This week so far -- resets every Monday." })
-    );
-    contentEl.appendChild(renderObservabilitySection(stats.weekly || {}, "rolling 30 days", true));
 
     // --- Gear: moved to the bottom now that there's real financial data above it to lead with -
     var gearSection = el("section", { className: "gear", attrs: { "aria-labelledby": "gear-heading" } });

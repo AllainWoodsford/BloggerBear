@@ -181,6 +181,7 @@ resource "aws_api_gateway_deployment" "this" {
 }
 
 resource "aws_api_gateway_stage" "this" {
+  # checkov:skip=CKV2_AWS_4:execution logging is off on purpose (see aws_api_gateway_method_settings below); the access log records every request
   rest_api_id   = aws_api_gateway_rest_api.this.id
   deployment_id = aws_api_gateway_deployment.this.id
   stage_name    = var.stage_name

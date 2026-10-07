@@ -1221,6 +1221,42 @@ def test_dev_refuses_a_shared_web_acl_from_another_account():
     assert re.search(r'^web_acl_arn = ""$', _read("environments", "dev", "terraform.tfvars"), re.M)
 
 
+def test_the_separate_accounts_guide_is_linked_and_matches_the_bootstrap():
+    """Two accounts has a page of its own (docs/deployment-separate-accounts.md). The first-deploy
+    guide and the README link to it, and its OIDC examples are the trust bootstrap really writes,
+    for the reader's fork and not for the original repository."""
+    page = (ROOT / "docs" / "deployment-separate-accounts.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "(deployment-separate-accounts.md)" in guide
+    assert "(docs/deployment-separate-accounts.md)" in readme
+    # The step other pages and scripts/setup_repo.py point at is still there.
+    assert "\n## 3. One account or two\n" in guide
+    # The hub-account sketch moved with it, and the guide's link followed.
+    sketch = "## Enhancement: a deployment account that assumes a role in each environment's account"
+    assert sketch in page and sketch not in guide
+    assert "(deployment-separate-accounts.md#enhancement-a-deployment-account-" in guide
+
+    for setting in (
+        "AWS_DEV_ACCOUNT_ID", "AWS_PROD_ACCOUNT_ID", "AWS_DEV_DEPLOY_ROLE_ARN",
+        "AWS_PROD_DEPLOY_ROLE_ARN", "TF_STATE_BUCKET_DEV", "TF_STATE_BUCKET_PROD",
+    ):  # fmt: skip
+        assert f"`{setting}`" in page, setting
+
+    # The trust conditions shown are bootstrap's own, with the fork's names where it has variables.
+    bootstrap = _read("bootstrap", "main.tf")
+    owner, repo = 'split("/", var.github_repo)[0]', 'split("/", var.github_repo)[1]'
+    for claim in (":ref:refs/heads/dev", ":environment:production"):
+        assert f'"repo:${{{owner}}}@*/${{{repo}}}@*{claim}"' in bootstrap
+        assert f'"repo:your-name@*/your-fork@*{claim}"' in page
+    assert 'url            = "https://token.actions.githubusercontent.com"' in bootstrap
+    assert 'url            = "https://token.actions.githubusercontent.com"' in page
+    assert "sts:AssumeRoleWithWebIdentity" in page and "id-token: write" in page
+    # Written for a fork: the original repository and its account are named nowhere on the page.
+    assert "AllainWoodsford" not in page and "bloggerbear.com" not in page
+    assert set(re.findall(r"\b\d{12}\b", page)) == {"111111111111", "123456789012", "000000000000"}
+
+
 def test_the_fork_guide_names_every_setting_the_workflows_read():
     guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     # The settings table is its own page, which the guide and the README both link to.
@@ -1295,7 +1331,11 @@ def test_the_on_demand_scan_checks_everything_and_deploys_nothing():
     # Started by hand or by a collaborator's label, never by an ordinary PR event.
     assert re.search(r"^on:\n  pull_request:\n    types: \[labeled\]\n  workflow_dispatch:\n", scan, re.M)
     jobs = scan.split("\njobs:\n")[1]
-    assert jobs.count("github.event.label.name == 'security-scan'") == 4  # every job, summary too
+    # Every job carries the condition, the summary too. Counted from the file, so a job added
+    # later (Checkov was the fifth) has to carry it as well, and does not need this number changed.
+    job_names = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.M)
+    assert len(job_names) >= 5 and "checkov" in job_names, job_names
+    assert jobs.count("github.event.label.name == 'security-scan'") == len(job_names)
 
     # No AWS access, no plan, no apply.
     for text in ("configure-aws-credentials", "id-token"):

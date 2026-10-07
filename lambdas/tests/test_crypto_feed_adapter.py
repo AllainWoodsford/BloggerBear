@@ -260,18 +260,20 @@ def test_coins_already_analysed_today_are_left_out_while_enough_others_remain():
 
 def test_the_exclusion_lapses_rather_than_shrinking_the_pool_when_unseen_coins_run_out():
     markets = _markets(altcoins=14)
-    eligible = {c["id"] for c in select_altcoin_pool(markets, rng=random.Random(1))} | {
-        c["id"] for c in select_altcoin_pool(markets, rng=random.Random(2))
-    }
-    seen = set(list(eligible)[:8])  # only 6 of the 14 remain unseen: fewer than a pool
+    altcoins = [c["id"] for c in markets if c["id"].startswith("alt-")]
+    seen = set(altcoins[: len(altcoins) - (POOL_SIZE - 1)])  # one fewer than a pool remains unseen
 
     pool = select_altcoin_pool(markets, exclude_ids=seen, rng=random.Random(3))
 
     assert len(pool) == POOL_SIZE  # full again, repeats allowed
 
 
-def test_pool_shrinks_when_fewer_than_ten_altcoins_are_eligible():
-    assert len(select_altcoin_pool(_markets(altcoins=6))) == 6
+def test_a_tick_looks_up_two_to_five_altcoins():
+    assert (MIN_POOL_SIZE, POOL_SIZE) == (2, 5)
+
+
+def test_pool_shrinks_when_fewer_altcoins_than_a_pool_are_eligible():
+    assert len(select_altcoin_pool(_markets(altcoins=POOL_SIZE - 2))) == POOL_SIZE - 2
 
 
 # --- per-coin metrics -------------------------------------------------------
@@ -489,11 +491,11 @@ def test_a_coin_drawn_again_the_same_day_reuses_history_and_refreshes_its_price(
 
 def test_a_partly_failed_first_tick_only_refetches_the_missing_coins():
     first, _ = _fetch(DEEP_DIVE, markets=_markets(altcoins=ONE_POOL))
-    partial = {**first, "analyzed_pool": first["analyzed_pool"][:7], "analyzed_today": []}
+    partial = {**first, "analyzed_pool": first["analyzed_pool"][: POOL_SIZE - 2], "analyzed_today": []}
 
     second, mock_get = _fetch(DEEP_DIVE, markets=_markets(altcoins=ONE_POOL), previous_state=partial)
 
-    assert len(_history_calls(mock_get)) == 3
+    assert len(_history_calls(mock_get)) == 2
     assert len(second["analyzed_pool"]) == POOL_SIZE
 
 

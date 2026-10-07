@@ -119,6 +119,32 @@ resource "aws_cloudwatch_metric_alarm" "daily_cycle_executions_failed" {
   ok_actions    = [aws_sns_topic.alerts.arn]
 }
 
+# A schedule whose run was given up on. EventBridge Scheduler drops an invocation when the target
+# refuses it outright (the role may not invoke the function) or when its retries run out, and
+# nothing else notices: the function is never invoked, so it has no error and no log line.
+# Production's weekly stats rollover was dropped this way on 2026-09-28 (the scheduler's role
+# could not invoke it), and the gap was found a week later, as two weeks of numbers in one
+# StatsHistory row. Scheduler reports this metric per schedule group, not per schedule, and every
+# schedule this project makes (the fixed ones and each topic's) is in "default": the alarm says
+# that one of them was dropped, and the Scheduler console's metrics say which. Where dev and
+# production share an account they share the group too, so both environments' alarms fire.
+resource "aws_cloudwatch_metric_alarm" "schedule_invocations_dropped" {
+  alarm_name          = "${var.unique_name_prefix}-${var.environment_name}-schedule-invocations-dropped"
+  alarm_description   = "${var.unique_name_prefix}-${var.environment_name}: EventBridge Scheduler dropped at least one scheduled run in the default schedule group, so a job (research, the daily cycle, the weekly rollover or the cost poll) did not run."
+  namespace           = "AWS/Scheduler"
+  metric_name         = "InvocationDroppedCount"
+  dimensions          = { ScheduleGroup = "default" }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+}
+
 # Feedback spam. Rejected submissions are stored nowhere and count against no feedback limit (so
 # junk cannot use up the room real feedback needs), which also means nothing else notices a flood of
 # them. These read public_api_handler.py's own log line -- the reason code only, never the comment --

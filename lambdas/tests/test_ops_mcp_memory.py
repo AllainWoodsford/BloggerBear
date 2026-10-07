@@ -476,6 +476,129 @@ def test_a_kind_with_no_checker_or_a_check_that_fails_stays_open_and_is_never_de
 # --- dismiss -------------------------------------------------------------------------------------
 
 
+# --- already acted on, but still true ---------------------------------------------------------------
+
+
+def put_queue_item(tables, queue_id, *, status, article_id=ARTICLE, **more):
+    tables.Table("ModerationQueue").put_item(
+        Item={
+            "queue_id": queue_id,
+            "article_id": article_id,
+            "topic_id": "crypto",
+            "status": status,
+            "created_at": ago(minutes=5),
+            "reasons": [],
+            **more,
+        }
+    )
+
+
+def test_the_kinds_fixed_by_a_rewrite_are_read_off_the_catalogue():
+    assert memory.REWRITE_KINDS == {
+        kind
+        for kind, entry in suggestions.CATALOGUE.items()
+        if entry.arguments and entry.arguments.startswith("articles rewrite {id}")
+    }
+    assert {"draft_truncated", "title_markup", "body_code_fence"} <= memory.REWRITE_KINDS
+    assert "research_overdue" not in memory.REWRITE_KINDS
+
+
+def test_a_finding_whose_article_is_being_rewritten_says_it_looks_actioned(tables):
+    """The owner's ask: a published article sent for a rewrite stays up, with its fault, until
+    the rewrite is ready, so the same fix kept being suggested as if nothing had been done."""
+    put_topic(tables)
+    put_published(tables, title="**A Bold Title**")
+
+    before = memory.remember(ALICE, content.content_checks(now=NOW), now=NOW)
+    assert "actioned" not in before and "actioned" not in before["findings"][0]
+
+    put_queue_item(tables, "q-rw", status="rewriting", rewrite_id="rw-1", article_still_published=True)
+    after = memory.remember(ALICE, content.content_checks(now=NOW), now=NOW)
+
+    (found,) = (f for f in after["findings"] if f["kind"] == "title_markup")
+    assert after["actioned"] == 1
+    assert found["actioned"] == {
+        "sign": "rewrite_running",
+        "noticed": "A rewrite of this article is running now",
+        "advice": memory.ACTIONED_ADVICE,
+    }
+    # The finding is still there with its fix: nothing is dismissed for the operator.
+    assert found["suggestion"]["command"].startswith("python scripts/admin_cli.py articles rewrite")
+    assert [row["dismissed"] for row in rows(tables, ALICE)] == [False]
+
+
+def test_follow_up_says_it_looks_fixed_and_suggests_dismissing_but_checking_first(tables):
+    put_topic(tables)
+    put_published(tables, title="**A Bold Title**")
+    memory.remember(ALICE, content.content_checks(now=NOW), now=NOW)
+    put_queue_item(tables, "q-rw", status="rewriting", rewrite_id="rw-1")
+
+    result = memory.follow_up(ALICE, now=LATER)
+
+    assert result["actioned"] == 1 and result["open"][0]["actioned"] == "rewrite_running"
+    assert result["findings"][0]["actioned"]["sign"] == "rewrite_running"
+    assert result["spoken"].endswith(
+        "It looks like you have already acted on one of them, for Crypto: a rewrite is already "
+        "running. I suggest you dismiss it, but please check first; its card has a Dismiss button."
+    )
+    # Still open and still remembered: saying so is not dismissing.
+    assert [row["dismissed"] for row in rows(tables, ALICE)] == [False]
+
+
+def test_a_held_draft_that_was_rewritten_and_is_still_held_says_so(tables):
+    put_topic(tables)
+    put_held(tables)
+    memory.remember(ALICE, tools.admin_inbox(now=NOW), now=NOW)
+    tables.Table("ModerationQueue").update_item(
+        Key={"queue_id": "q-held-1"},
+        UpdateExpression="SET rewrite = :r",
+        ExpressionAttributeValues={":r": {"number": 1, "model_id": "m"}},
+    )
+
+    result = memory.follow_up(ALICE, now=LATER)
+
+    assert result["open"][0]["actioned"] == "rewritten"
+    assert "it has already been rewritten and is waiting in the inbox" in result["spoken"]
+
+
+def test_nothing_is_said_about_action_when_there_is_no_sign_of_any(tables):
+    put_topic(tables)
+    put_published(tables, title="**A Bold Title**")
+    put_published(tables, "other-article", title="A Plain Title")
+    memory.remember(ALICE, content.content_checks(now=NOW), now=NOW)
+    put_queue_item(tables, "q-other", status="rewriting", article_id="other-article")  # another article
+
+    result = memory.follow_up(ALICE, now=LATER)
+
+    assert "actioned" not in result and "actioned" not in result["open"][0]
+    assert "already acted" not in result["spoken"] and "actioned" not in result["findings"][0]
+
+
+def test_a_kind_with_no_sign_is_never_marked_and_reads_nothing(tables, monkeypatch):
+    def unread(status):
+        raise AssertionError("the queue was read for a kind that has no sign")
+
+    monkeypatch.setattr(memory, "list_moderation_by_status", unread)
+    found = suggestions.finding("research_overdue", "Crypto wasn't researched on time", "crypto")
+
+    marked, count = memory._mark_actioned([found, {"kind": "how_to", "id": "x"}], memory._Sources(NOW))
+
+    assert count == 0 and marked[0] is found
+
+
+def test_a_queue_that_cannot_be_read_marks_nothing_and_keeps_the_finding(tables, monkeypatch, capsys):
+    def broken(status):
+        raise RuntimeError(HOSTILE)
+
+    monkeypatch.setattr(memory, "list_moderation_by_status", broken)
+    found = suggestions.finding("title_markup", "A Crypto article has markup in its title", ARTICLE)
+
+    marked, count = memory._mark_actioned([found], memory._Sources(NOW))
+
+    assert count == 0 and marked == [found]
+    assert capsys.readouterr().out.strip() == "ops_memory: could not look for a sign of action (RuntimeError)"
+
+
 def test_a_dismissed_finding_is_not_returned_again_by_the_tool_that_found_it(tables):
     put_topic(tables)
     assert len(memory.remember(ALICE, tools.pipeline_health(now=NOW), now=NOW)["findings"]) == 2

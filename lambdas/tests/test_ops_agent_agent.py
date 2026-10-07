@@ -604,6 +604,26 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         assert rule in prompt, rule
 
 
+def test_the_model_is_told_where_a_question_about_a_feature_goes():
+    """Production answered "what is the equipment do" with a table of the Lambdas and a made-up
+    account of gear ("slots that run your pipeline"). What a feature is comes from its guide."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "A question about what a feature of the blog is or does",
+        "a feature is not an AWS resource, so do not call architecture for it",
+        "call cli_guides with the operator's words",
+        "say what the guide's `explanation` says",
+        "Gear and equipment are the same thing",
+        "Never describe a feature from a tool's description, a command's name or your own guess",
+        "say that something is on screen only when a tool's result says it is",
+    ):
+        assert rule in prompt, rule
+    # The question as it was asked finds the guide, and the guide says what gear is.
+    assert cli_guide._guide_for("thanks what is the equipment do") == "gear"
+    assert cli_guide.GUIDES["gear"]["explanation"][0].startswith("Gear is writing guidance")
+
+
 def test_the_model_is_told_where_security_questions_go():
     """Sign-ins have a tool of their own, incidents carry a command, and closing one is a guide:
     without the rule the model answers all three from security_events and a search of commands."""
@@ -620,6 +640,18 @@ def test_the_model_is_told_where_security_questions_go():
         assert rule in prompt, rule
     # The guide it names is one the server has.
     assert "security" in cli_guide.GUIDES
+
+
+def test_the_model_is_told_what_to_say_about_a_finding_already_acted_on():
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "A finding with `actioned` is one the operator seems to have dealt with already",
+        "that you suggest dismissing it, and to please check first",
+        "Never present it as a new problem or as a fix to run",
+        "Every finding's card has a Dismiss button",
+        "but only when the operator tells you to",
+    ):
+        assert rule in prompt, rule
 
 
 def test_the_model_is_told_how_to_answer_the_pages_starter_questions():
@@ -705,6 +737,18 @@ def test_the_model_is_told_to_give_a_runsheet_not_a_shrug():
     assert "8 for a first question, 3 for a later one" in prompt
     assert policy.BUDGETS == {"briefing": 8, "follow_up": 3}
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
+
+
+def test_the_model_is_told_to_give_the_architecture_a_layer_at_a_time():
+    """The whole table on a first "how does it work?" was too much to hear or read."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "It returns the layers, not the resources",
+        "ask which one the operator wants to hear about, or everything in detail",
+        "Do not describe every layer",
+        'only when they ask for everything or all of it, call it with `layer` "everything"',
+    ):
+        assert rule in prompt, rule
 
 
 def test_the_model_is_told_to_look_when_asked_and_not_to_push_back():

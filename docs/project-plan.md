@@ -206,7 +206,7 @@ Full detail: `docs/specs/phase-0-foundations.md`.
 ## 9) Validation Commands
 - Terraform: `terraform fmt -check`, `terraform validate`, `terraform plan`
 - Python: `ruff check .`, `pytest`
-- Security: `trivy config infra/`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
+- Security: `trivy config infra/`, `checkov --config-file .checkov.yaml`, `trivy fs --scanners vuln,secret lambdas/`, `bandit -r lambdas/ -ll`
 
 ## 10) Build Phases
 Phases 1–8 are built and deployed; Phase 0's code is done, with a few GitHub/AWS settings still open.
@@ -1393,12 +1393,11 @@ pipeline-run-time figure is public, the owner's call), and `api_gateway_cost_as_
 `common/stats_tracking.py` at all (owner-only troubleshooting).
 
 On the page itself (`frontend/app.js`): a Quick Links nav under the title jumps to Total Stats, Weekly
-Stats and Gear. Total Stats now contains the original per-article detail (always fully live, unwindowed)
-*plus* the historic all-time categories/feedback/loot/pipeline-hours/API-Gateway figures, explicitly
-labelled as excluding the current week. Weekly Stats is the same category/feedback/loot/pipeline-hours/
-API-Gateway shape, just from `StatsCurrent`. Gear moved to the bottom of the page, superseding the
-earlier fix/stats-gear-first order, now that there's real financial data above it to lead with. The
-"Estimated spend per day" heading and its "View as table" twin now say how many days they cover.
+Stats, Articles and Gear. The layout described here when this was built (the per-article detail
+leading Total Stats, with an "Other AI spend and activity" block under it) was replaced: see
+[The Stats page: one source and one period per section](#the-stats-page-one-source-and-one-period-per-section).
+Gear is at the bottom of the page. The "Estimated spend per day" heading and its "View as table"
+twin say how many days they cover.
 
 **PR 5 -- built:** a one-time catch-up, `POST /stats/backfill-articles` (`admin_api_handler.py`'s
 `_stats_backfill_articles`, `admin_cli stats backfill-articles [--apply]`) -- run once, after PR 4
@@ -1618,44 +1617,88 @@ in the daily-cycle Lambda) called CoinGecko keyless. Both Lambdas now share `loc
   all-time totals. The Stats page shows "Web searches (AgentCore)" and "Web search spend".
 - **Checked against the bill (#135):** the daily Cost Explorer poll reads AgentCore's actual 30-day spend
   in the same single `GetCostAndUsage` call as API Gateway's (`agentcore_cost_usd_30d`,
-  `agentcore_cost_aud_30d`; snapshots, never summed). The Stats page shows it as "Web search spend
-  (actual)", labelled as coming from the AWS bill with about a day's lag.
+  `agentcore_cost_aud_30d`; snapshots, never summed). It was a "Web search spend (actual)" tile on
+  the Stats page; it is a rolling 30 days, so it is now kept on the row for the owner and not shown
+  (see the section below). AgentCore's actual charge for a section's period is inside its bill's
+  AI figure.
 - **Open item:** the Cost Explorer service name (`"Amazon Bedrock AgentCore"`) was assumed, because no
   AgentCore spend had been billed yet. If the actual stays at $0 while the estimate grows, look up the
   real name with `aws ce get-dimension-values --dimension SERVICE` and fix `AGENTCORE_SERVICE`.
 - **Not per article:** a search belongs to a research run, not to one article, so search spend is not
   added to article lineage.
 
-### The assistant, infrastructure and the overall total on the Stats page
+### The Stats page: one source and one period per section
 
-**Status: implemented.** No new stored field: everything is read from the two rows the page already used.
+**Status: implemented.** It replaces "The assistant, infrastructure and the overall total on the Stats
+page", whose `overall` block and tiles are gone. No new stored field.
 
-- **Total Stats** ends with four more tiles, from `GET /stats`'s new `overall`
-  (`common/stats_tracking.py`'s `overall_view`):
-  - **Operator assistant spend:** the `assistant` category's token estimate, the all-time row plus the
-    current week, so all time to date, this environment's own.
-  - **AI charges on the AWS bill**, **Total infrastructure cost** (everything on the bill that is not AI:
-    the Infrastructure and Security groups, so the firewall is in it) and **Total overall cost**, from the
-    all-time row's `aws_bill_total_usd`.
-- **The formula:** total overall cost = AI charges on the bill + total infrastructure cost = the whole
-  bill, before tax. Bedrock is counted twice in this project, by tokens (every estimate on the page) and
-  by AWS (the bill's AI group); they are the same dollars, so no token estimate is ever added to the
-  total. The API does the sum, in `Decimal`; the page adds nothing up.
-- **Not all time:** the bill total is every *complete* week since `aws_bill_total_since`, and the tiles
-  say so. A true all-time figure needs a one-off backfill from Cost Explorer (which keeps about a year
-  of daily data) for the weeks before the first history row; the poll re-reads only the last six weeks,
-  and only fills weeks the rollover wrote a row for.
+**What was wrong.** Production showed "Total overall cost $18.45" above "Firewall (WAF) spend $20.41"
+and "Total infrastructure cost $12.44". The first and third were the AWS bill for complete weeks (one
+week, at the time); the second was a rolling 30 days. The firewall had four figures in Weekly Stats and
+three in Total Stats (rolling 30 days, this week, this month, last month), and Total Stats' copies were
+frozen at the last rollover, so the two sections disagreed. The operator assistant's spend was a tile at
+the top, a tile in each section and a row in each table. Total Stats' top tiles were a live count of the
+articles, this week's included, under a heading that said "excludes the current week".
+
+**The owner's rule: Weekly Stats strictly from the current table, Total Stats strictly from the history
+table.**
+
+| Section | Source | Period |
+|---|---|---|
+| **Total Stats** | `StatsHistory`'s all-time row | every completed week; never this week |
+| **Weekly Stats** | `StatsCurrent`'s row | this week so far |
+| **Articles** | counted live from the Articles table (`common/stats.py`) | every article so far, this week's included |
+
+- **One row in, one section out.** `common/stats_tracking.py`'s `public_view` takes one row and shapes one
+  section; a test holds its signature. Nothing in `GET /stats` adds the two rows together.
+- **Total Stats and Weekly Stats are the same three parts**, drawn by one function
+  (`frontend/app.js`'s `renderStatsSection`), money first:
+  1. **AWS bill:** four tiles that add up. Total cost, then AI (Bedrock), Firewall (WAF), and Hosting,
+     data and monitoring (`bill_category`'s three groups). Each tile says the section's one period:
+     "5 complete weeks since 31 August 2026", or "this week so far".
+  2. **AI spend by token estimate:** the category table, ending in a Total row. The total is the API's
+     (`ai_estimate`, summed in `Decimal`); the page adds nothing up.
+  3. **Activity:** feedback given and rejected, loot drops, pipeline run time, web searches.
+- **The same dollars, shown apart.** Bedrock is counted twice in this project, by tokens (every estimate
+  on the page) and by AWS (the bill's AI group). They are the same dollars, so no token estimate is ever
+  added to a bill total, and the note under the estimate table says so.
+- **Articles** holds the per-article tiles, the daily chart, by model and by topic. Its note says it
+  overlaps both sections above and will not match either exactly: it includes this week, covers articles
+  only, and is priced at today's model prices, where the stored counters were priced when each call was
+  made.
+- **Not shown any more:** the firewall's rolling-30-day and calendar-month figures, API Gateway's
+  30-day figure and the actual AgentCore charge over 30 days. None is a week's figure or an all-time
+  one. The cost poll still records them on the current row and the rollover still carries them to the
+  history rows, for the owner; `public_view` leaves them out, with every `_as_of`.
+- **The operator assistant** is one row in each section's table, for that section's period. It is no
+  longer a tile, and no figure reports it "to date" across both rows.
+- **Not all time, and said so:** the all-time bill is every *complete* week since `aws_bill_total_since`,
+  and each tile says how many weeks that is. A true all-time figure needs a one-off backfill from Cost
+  Explorer for the weeks before the first history row; the poll re-reads only the last six weeks, and
+  only fills weeks that have a history row.
 - **The account's, not the environment's:** dev and production share the account, so both pages show the
-  same bill, labelled "the whole AWS account (dev and production together)", as the bill table already
-  was. Until a complete week has been totalled the two cost tiles read "No data"; the token estimate is
-  never shown as the total in their place.
-- **"Other AI spend and activity"** (all time) and **Weekly Stats** each end with an **Operator assistant
-  spend** tile for their own period, from the row the category table already shows.
+  same bill, and the note says "the whole AWS account (dev and production together)". The token
+  estimates are the environment's own.
+- **A real zero:** a category with no calls reads `$0`. "unpriced" is for calls that were made and could
+  not be priced.
 - **Old answers:** CloudFront and the browser keep `GET /stats` for five minutes (`max-age=300`), so the
-  page ignores a missing `overall` and draws what it drew before.
+  page tolerates an answer from before `ai_estimate`, `week_start` and `aws_bill.weeks` existed (no
+  Total row, a plainer note) and ignores an `overall` block.
 - **Left out on purpose:** security incidents by severity (a public count that moves when an attack is
   noticed tells the sender where the thresholds are), anything from the sign-in log, and a count of the
   assistant's questions (only model calls are recorded per week; questions are counted per user per day).
+
+**A missed rollover.** Production's weekly rollover was dropped by EventBridge Scheduler on 2026-09-28
+(its role could not invoke the function; fixed since). The next one filed two weeks of counters under
+2026-09-21, and the week of 2026-09-28 had no history row, so its AWS bill was recorded nowhere.
+
+- `scripts/repair_stats_week.py` makes a placeholder row for a missed week (the daily cost poll then
+  fills in its bill) and notes on the week before that its counters cover both (`covers_through`). It
+  does not split the counters: nothing recorded them by day. It was run for both environments.
+- The `<prefix>-<env>-schedule-invocations-dropped` alarm (`infra/modules/observability`) now says when
+  Scheduler gives up on a run. A dropped run is otherwise silent: the function is never invoked.
+- The assistant's `spend` tool leaves both mended rows out of its typical week of AI spend (a double
+  week and a zero week would pull the median both ways) and still counts them in a month's total.
 
 ### Staggered schedules
 
@@ -1781,8 +1824,10 @@ billing data) in the same single `GetCostAndUsage` call, so it costs nothing ext
   of last month, this Monday) to yesterday and counts each day into every window it falls in.
 - **One site-wide figure:** dev and production can't be told apart without cost-allocation tags, and the
   CloudFront ACL is shared by both anyway, so it is reported as the site's cost.
-- **Stats page:** "Firewall (WAF) spend" tiles beside the other actual (from the bill) figures, labelled
-  with the ~24h lag: last 30 days, this week (Weekly Stats only), this month so far, and last month.
+- **Stats page:** these were four "Firewall (WAF) spend" tiles (last 30 days, this week, this month so
+  far, last month). They are no longer shown: the page now has one firewall figure per section, from
+  the bill for that section's period
+  ([why](#the-stats-page-one-source-and-one-period-per-section)). The readings are still recorded.
 - Depends on PR 1: the poll has to run before there is anything to show.
 
 #### PR 3 -- The CoinGecko key in SSM

@@ -10,6 +10,7 @@ name: on-demand-scan
 # - secrets and personal data across the WHOLE history and every tracked file, not just what a
 #   PR adds (known, accepted history findings are fingerprinted in .gitleaksignore);
 # - every severity reported, LOW and up, before the same HIGH/CRITICAL gates;
+# - Checkov with every check it has, .checkov.yaml's repo-wide skips included, before the same gate;
 # - terraform fmt with diffs, validate for bootstrap too, and the module tests, verbose.
 #
 # Every check runs even when an earlier one fails, and the summary job lists them all; the run
@@ -149,6 +150,34 @@ jobs:
           echo "trivy IaC: ${{ steps.trivy_iac.outcome }}, trivy fs: ${{ steps.trivy_fs.outcome }}, bandit: ${{ steps.bandit.outcome }}"
           exit 1
 
+  # Checkov, its own job and its own row in the summary. Every check it has, .checkov.yaml's
+  # repo-wide skips included (--skip-check on the command line replaces the config's list; CKV_NONE
+  # matches no check), reported without failing; then the same gate as security.yml. The
+  # per-resource `checkov:skip` comments still apply, and are listed as SKIPPED with their reasons.
+  checkov:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          ref: ${{ inputs.ref }}
+
+      # Same pinned version as security.yml, in its own venv.
+      - name: Install Checkov
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/checkov-venv
+          /tmp/checkov-venv/bin/pip install --quiet "checkov==3.3.25"
+          sudo ln -sf /tmp/checkov-venv/bin/checkov /usr/local/bin/checkov
+          checkov --version
+
+      - name: Checkov IaC (every check, report only)
+        run: checkov --config-file .checkov.yaml --skip-check CKV_NONE --soft-fail
+
+      - name: Checkov IaC (fail on any check .checkov.yaml does not skip)
+        run: checkov --config-file .checkov.yaml
+
   secrets-and-personal-data:
     if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan'
     runs-on: ubuntu-latest
@@ -207,7 +236,7 @@ jobs:
 
   summary:
     if: always() && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'security-scan')
-    needs: [terraform, code-and-dependencies, secrets-and-personal-data]
+    needs: [terraform, code-and-dependencies, checkov, secrets-and-personal-data]
     runs-on: ubuntu-latest
     steps:
       # The ref goes through env, never straight into the script: a branch name is user input.
@@ -222,6 +251,7 @@ jobs:
             echo "|---|---|"
             echo "| Terraform fmt, validate, tests | ${{ needs.terraform.result }} |"
             echo "| Trivy IaC and dependencies, Bandit | ${{ needs.code-and-dependencies.result }} |"
+            echo "| Checkov (Terraform) | ${{ needs.checkov.result }} |"
             echo "| Gitleaks, Trufflehog, personal-data denylist | ${{ needs.secrets-and-personal-data.result }} |"
             echo
             echo "Each job's log has the full report, every severity included."
