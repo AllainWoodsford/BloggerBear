@@ -1310,9 +1310,9 @@ def test_stats_reports_weekly_and_historic_observability_data(aws_resources):
     assert body["historic"]["feedback_given"] == 12
 
 
-def test_stats_overall_is_the_assistant_to_date_and_the_bill_counted_once(aws_resources):
-    """Total Stats' cost summary: the assistant's spend from both rows, and an overall total that
-    is the all-time bill alone, whatever the token estimates beside it add up to."""
+def test_stats_sections_each_come_from_their_own_table_and_nothing_mixes_them(aws_resources):
+    """The owner's rule: Weekly Stats strictly from the current table, Total Stats strictly from
+    the history table. The bill, the assistant and every count are each row's own."""
     dynamodb = boto3.resource("dynamodb", region_name=REGION)
     dynamodb.Table("StatsCurrent").put_item(
         Item={
@@ -1321,6 +1321,7 @@ def test_stats_overall_is_the_assistant_to_date_and_the_bill_counted_once(aws_re
             "assistant_calls": 2,
             "assistant_cost_aud": Decimal("0.06"),
             "aws_bill_week_usd": {"AWS WAF": Decimal("50")},
+            "waf_cost_aud_30d": Decimal("26.08"),
         }
     )
     dynamodb.Table("StatsHistory").put_item(
@@ -1337,36 +1338,42 @@ def test_stats_overall_is_the_assistant_to_date_and_the_bill_counted_once(aws_re
             "aws_bill_total_since": "2026-08-31",
             "aws_bill_total_weeks": 5,
             "aws_bill_as_of": "2026-10-05T03:00:00+00:00",
+            "waf_cost_aud_30d": Decimal("20.41"),
         }
     )
 
-    result = public_api_handler.handler(_event("GET /stats"), None)
+    body = json.loads(public_api_handler.handler(_event("GET /stats"), None)["body"])
 
-    overall = json.loads(result["body"])["overall"]
-    assert overall["assistant"]["calls"] == 12
-    assert overall["assistant"]["cost_aud"] == pytest.approx(0.36)
-    bill = overall["aws_bill"]
-    assert bill["ai_aud"] == pytest.approx(2 * USD_TO_AUD_RATE)
-    assert bill["infrastructure_aud"] == pytest.approx(14 * USD_TO_AUD_RATE)
-    assert bill["total_aud"] == pytest.approx(16 * USD_TO_AUD_RATE)
-    assert (bill["since"], bill["weeks"], bill["scope"]) == ("2026-08-31", 5, "account")
-    assert "dev and production together" in overall["note"]
-    # Aggregates only: no service name and no poll time leaves the API.
-    assert "Lambda" not in json.dumps(overall) and "T03:00" not in json.dumps(overall)
+    def assistant(section):
+        return next(c for c in body[section]["categories"] if c["category"] == "assistant")
+
+    assert (assistant("historic")["calls"], assistant("weekly")["calls"]) == (10, 2)
+    assert body["historic"]["ai_estimate"]["cost_aud"] == pytest.approx(40.30)
+    assert body["weekly"]["ai_estimate"]["cost_aud"] == pytest.approx(0.06)
+    total, week = body["historic"]["aws_bill"], body["weekly"]["aws_bill"]
+    assert total["total_aud"] == pytest.approx(16 * USD_TO_AUD_RATE)
+    assert (total["since"], total["weeks"], total["scope"]) == ("2026-08-31", 5, "account")
+    assert week["total_aud"] == pytest.approx(50 * USD_TO_AUD_RATE) and week["weeks"] is None
+    assert (body["weekly"]["week_start"], body["historic"]["week_start"]) == ("2026-10-05", None)
+    # No summary that adds the two rows together, and none of the rolling readings.
+    assert "overall" not in body
+    text = json.dumps({"weekly": body["weekly"], "historic": body["historic"]})
+    for hidden in ("waf", "30d", "20.41", "26.08", "Lambda", "T03:00"):
+        assert hidden not in text, hidden
 
 
-def test_stats_overall_before_anything_is_recorded_is_zeros_and_no_bill(aws_resources):
-    result = public_api_handler.handler(_event("GET /stats"), None)
+def test_stats_sections_before_anything_is_recorded_are_zeros_and_no_bill(aws_resources):
+    body = json.loads(public_api_handler.handler(_event("GET /stats"), None)["body"])
 
-    overall = json.loads(result["body"])["overall"]
-    assert overall["assistant"] == {
-        "calls": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cost_aud": 0.0,
-        "unpriced": 0,
-    }
-    assert overall["aws_bill"] is None
+    for section in ("weekly", "historic"):
+        assert body[section]["ai_estimate"] == {
+            "calls": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_aud": 0.0,
+            "unpriced": 0,
+        }
+        assert body[section]["aws_bill"] is None
 
 
 def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):

@@ -385,7 +385,15 @@ def test_the_page_still_works_against_an_answer_cached_from_before_the_new_field
     for section in ("historic", "weekly"):
         del stats[section]["ai_estimate"], stats[section]["week_start"]
         del stats[section]["aws_bill"]["weeks"], stats[section]["aws_bill"]["scope"]
-    stats["overall"] = st.overall_view(TOTALS_ROW, CURRENT_ROW)
+    # As the API used to send them (it sends none of these now):
+    stats["overall"] = {
+        "assistant": {"calls": 12, "cost_aud": 0.36, "unpriced": 0},
+        "aws_bill": {"ai_aud": 4.5, "infrastructure_aud": 94.5, "total_aud": 99.0, "since": "2026-08-31"},
+        "note": "Total overall cost is the whole AWS bill: ...",
+    }
+    stats["historic"]["waf"] = {"cost_aud_30d": 20.41, "month": "2026-10", "cost_aud_month_to_date": 3.93}
+    stats["historic"]["api_gateway_cost_aud_30d"] = 0.016
+    stats["weekly"]["web_search"]["agentcore_actual_cost_aud_30d"] = 2.18
 
     page = _render(stats)
 
@@ -395,7 +403,9 @@ def test_the_page_still_works_against_an_answer_cached_from_before_the_new_field
         "AUD, whole AWS bill, complete weeks since 31 August 2026"
     )
     assert page["Weekly Stats"][0]["text"].startswith("This week so far.")
-    assert "Total overall cost" not in _all_text(page["flow"])
+    text = _all_text(page["flow"])
+    for gone in ("Total overall cost", "$20.41", "$3.93", "$0.016", "$2.18", "$99.00", "$94.50", "$0.360"):
+        assert gone not in text, gone
 
 
 @needs_node
