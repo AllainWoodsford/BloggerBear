@@ -33,7 +33,8 @@ Two things about the account that are worth knowing before the first release:
   can throttle the pipeline. Ask for more under Service Quotas > AWS Lambda > "Concurrent executions".
 - **One account or two.** Dev and production can share an account or have one each. Two is
   recommended if you have them; the original deployment shares one.
-  [deployment-runsheet.md](deployment-runsheet.md#3-one-account-or-two) says what differs.
+  [deployment-runsheet.md](deployment-runsheet.md#3-one-account-or-two) says what differs, and
+  [deployment-separate-accounts.md](deployment-separate-accounts.md) is the guide for two.
 
 ## 1. Create the DNS zone and the budget alarm (you, locally, once)
 
@@ -269,4 +270,4 @@ Check the AWS pricing pages before relying on these numbers.
 - **No email at the domain.** If you want it later, the MX records go in the Route 53 zone.
 - **The original deployment keeps both environments in one AWS account.** Names never collide, but
   a quota or a bad permission change touches both. Two accounts are supported:
-  see [deployment-runsheet.md](deployment-runsheet.md#3-one-account-or-two).
+  see [deployment-separate-accounts.md](deployment-separate-accounts.md).

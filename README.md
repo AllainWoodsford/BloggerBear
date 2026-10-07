@@ -37,7 +37,9 @@ fork of this repository, Terraform, the AWS CLI, Python 3.11+ and the GitHub CLI
    shows the first commands.
 
 Each step, with what to check and what can go wrong, is in the deployment runsheet
-([docs/deployment-runsheet.md](docs/deployment-runsheet.md)).
+([docs/deployment-runsheet.md](docs/deployment-runsheet.md)). New to Terraform, AWS or GitHub
+Actions? The [setup guide](docs/setup-guide.md) starts earlier, from installing the tools and
+setting up your AWS account and CLI, with a placeholder for each value you choose.
 
 ## Docs
 
@@ -45,7 +47,9 @@ In the order you are likely to need them.
 
 | Doc | What it is for |
 |---|---|
+| [Setup guide](docs/setup-guide.md) | Your first deploy, for a first-time forker: installing Terraform and the tools, an AWS account and CLI profile, the bootstrap and the GitHub OIDC roles, your GitHub settings, the first deploy and topic, and what to do when it fails. |
 | [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, another region, local development. |
+| [Separate AWS accounts](docs/deployment-separate-accounts.md) | Dev in one account and production in another: what you do twice, both bootstrap commands, the GitHub OIDC trust for your fork, the firewall, a checklist. |
 | [Configuration](docs/configuration.md) | Every setting in one table, and where it goes: GitHub, Terraform, SSM, DynamoDB, your machine. |
 | [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
@@ -418,7 +422,9 @@ scripts/
                                 called before each apply)
 
 docs/
+  setup-guide.md                your first deploy, from installing the tools
   deployment-runsheet.md        your first deploy, step by step
+  deployment-separate-accounts.md  dev and production in two AWS accounts
   configuration.md              every setting and where it goes
   architecture/                 the project by feature: article research, ...
   production-runsheet.md        production + domain, step by step

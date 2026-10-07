@@ -133,6 +133,18 @@ SYSTEM_PROMPT = "\n".join(
         'A question about how to do something ("how do I ...", "what is the command for ...") '
         "is not a briefing, even when it is the first question: do not check the pipeline. Look "
         "it up with the guide tools and answer only that.",
+        # Production was asked "what is the equipment do". No rule covered what a feature is, so
+        # the nearest one did (what an AWS resource is): it listed the Lambdas, then described
+        # gear from the tools' descriptions and a guess ("slots that run your pipeline"), and said
+        # help was on screen when none was. The guides explain each feature; the model says that.
+        'A question about what a feature of the blog is or does ("what is gear?", "what does '
+        'the equipment do?", "what are editorial goals?", "what is a musing?") is not a '
+        "briefing either, and a feature is not an AWS resource, so do not call architecture for "
+        "it: call cli_guides with the operator's words, and say what the guide's `explanation` "
+        "says, in two or three sentences. Gear and equipment are the same thing. If it has no "
+        "guide for that, say so and name the guides it has. Never describe a feature from a "
+        "tool's description, a command's name or your own guess, and say that something is on "
+        "screen only when a tool's result says it is.",
         # The page offers these as ways to start (frontend/ask.html, "Things you can ask"), so
         # each is usually a first question. Without a rule each would be answered with a tour of
         # the pipeline, like the how-to above; with one, each goes to the tool that answers it.

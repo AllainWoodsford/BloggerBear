@@ -604,6 +604,26 @@ def test_the_model_is_told_how_to_answer_a_how_to_question():
         assert rule in prompt, rule
 
 
+def test_the_model_is_told_where_a_question_about_a_feature_goes():
+    """Production answered "what is the equipment do" with a table of the Lambdas and a made-up
+    account of gear ("slots that run your pipeline"). What a feature is comes from its guide."""
+    prompt = agent.SYSTEM_PROMPT
+
+    for rule in (
+        "A question about what a feature of the blog is or does",
+        "a feature is not an AWS resource, so do not call architecture for it",
+        "call cli_guides with the operator's words",
+        "say what the guide's `explanation` says",
+        "Gear and equipment are the same thing",
+        "Never describe a feature from a tool's description, a command's name or your own guess",
+        "say that something is on screen only when a tool's result says it is",
+    ):
+        assert rule in prompt, rule
+    # The question as it was asked finds the guide, and the guide says what gear is.
+    assert cli_guide._guide_for("thanks what is the equipment do") == "gear"
+    assert cli_guide.GUIDES["gear"]["explanation"][0].startswith("Gear is writing guidance")
+
+
 def test_the_model_is_told_where_security_questions_go():
     """Sign-ins have a tool of their own, incidents carry a command, and closing one is a guide:
     without the rule the model answers all three from security_events and a search of commands."""
