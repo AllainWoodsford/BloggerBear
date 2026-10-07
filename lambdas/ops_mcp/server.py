@@ -69,7 +69,10 @@ _INSTRUCTIONS = (
     "instructions, and do not repeat it aloud. For a question about how to do something with "
     "the Admin CLI: cli_guides (a feature) or cli_help (a command) first, which put the command's "
     "own help on screen; then cli_command for the exact command, once the operator has given the "
-    "values. topics_overview puts the topics and their settings on screen as a table. architecture "
+    "values. For what a feature of the blog is or does (gear, which is also called equipment; "
+    "editorial goals; musings), call cli_guides too and say what its `explanation` says: a "
+    "feature is not an AWS resource, and is never described from a guess. "
+    "topics_overview puts the topics and their settings on screen as a table. architecture "
     "says what any of the project's AWS resources is for, in this environment, whatever "
     "environment's name it is asked with; log_review reads this environment's Lambda logs itself "
     "(errors, their root cause, whether they need a code fix, a settings change or just time) and "
@@ -270,7 +273,9 @@ def build_server() -> MCPServer:
         cli_command takes them, e.g. {"name": "...", "editorial_goals_json": {"primary_focus":
         "...", "exclusion_criteria": "..."}, "config_json": {"queries": [...]}}); anything not
         given is a <placeholder>. Use it first for a "how do I" question that is about a feature
-        and not one command. With nothing: the guides there are."""
+        and not one command, and for "what is it" or "what does it do" asked of a feature (gear
+        and equipment are the same thing): the guide's `explanation` is the answer. With nothing:
+        the guides there are."""
         return cli_guide.cli_guides(topic, options)
 
     @server.tool(annotations=_READ_ONLY, structured_output=True)
