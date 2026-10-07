@@ -324,7 +324,8 @@ python scripts/admin_cli.py inbox
 (`BLOGGERBEAR_ADMIN_API_URL` is the variable's real name in the code; keep it as written.)
 
 From here the topic runs by itself on its schedules. The [admin CLI quick start](../scripts/QUICKSTART.md)
-covers the next commands; the [CLI reference](../scripts/README.md) has all of them.
+covers the next commands; the [CLI reference](../scripts/README.md) has all of them. To learn how a
+topic becomes an article, see [Article research](architecture/article-research.md).
 
 Optional, and done in AWS, never in GitHub: API keys for the data sources (a CoinGecko key, a
 GitHub token) are SSM SecureStrings named `/<your-prefix>/dev/coingecko-api-key` and

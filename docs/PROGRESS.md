@@ -614,6 +614,9 @@ All shipped and deployed; the design and decisions for each are in
   (#250), log queries with their `SOURCE` log groups in an editable box (#253), the architecture
   in layers (#255), a wake call at sign-in (#256), a Dismiss button and "it looks like you already
   fixed this" (#257); docs/enhancements/ops-assistant-log-reader.md, "Third round"
+- [x] Architecture by feature: `architecture` with `feature` walks through article research step by
+  step across the layers (adapters, keys in SSM, research tick, findings, candidate ideas,
+  drafting, reviews, the article in S3, where the agents are) (#262; docs/architecture/)
 
 ## Backlog / not yet scheduled
 
