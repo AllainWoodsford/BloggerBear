@@ -20,10 +20,12 @@ Two accounts buy you isolation that one account cannot give:
 
 - **Quotas.** The Lambda concurrency quota is per account. In one account, a busy dev can
   throttle production's pipeline.
-- **Permissions.** In one account both deploy roles carry the same policy, which allows anything
-  named `<prefix>-*`. The dev role can therefore change production's resources; what separates
-  them is only who may assume each role. In two accounts the dev role cannot reach production at
-  all.
+- **Permissions.** In one account the two deploy roles are kept apart by who may use them. The
+  dev role can only be assumed by a workflow on your `dev` branch, and the production role only
+  from the `production` environment, after your approval. No access keys exist for either. Both
+  roles have the same permissions, limited to resources named `<prefix>-*`; the permissions
+  themselves are not split by environment. Two accounts add a second boundary underneath: the
+  account. A dev deploy then has no path to production's resources, whatever it is asked to do.
 - **Teardown.** Destroying dev cannot touch production.
 - **The bill.** Each account has its own, so you can see what dev costs.
 
