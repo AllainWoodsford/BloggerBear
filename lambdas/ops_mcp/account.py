@@ -388,6 +388,17 @@ def _aws_aud(row: dict) -> float | None:
     return float(usd * Decimal(str(USD_TO_AUD_RATE)))
 
 
+def _one_week_of_counters(row: dict) -> bool:
+    """False for the two rows a missed rollover leaves behind once scripts/repair_stats_week.py
+    has mended it: the week before, whose counters cover two weeks (`covers_through`), and the
+    placeholder for the missed week, which has no counters at all (`counters_in_week`). Neither
+    is one week's AI spend, so neither is counted towards a typical week: a double week and a
+    zero week would pull the median both ways. Their sum is still right, so a month's total
+    counts both; and the placeholder's AWS bill is that week's real bill, so the bill's typical
+    week counts it."""
+    return not row.get("covers_through") and not row.get("counters_in_week")
+
+
 def _typical(values: list[float]) -> float | None:
     return round(median(values), 2) if values else None
 
@@ -423,7 +434,7 @@ def spend(period: str = "week", *, now: datetime | None = None) -> dict:
     ai = {
         "period": round(sum(_ai_aud(row) for row in in_period), 2),
         "this_week": round(_ai_aud(current), 2),
-        "typical_week": _typical([_ai_aud(row) for row in compared]),
+        "typical_week": _typical([_ai_aud(row) for row in compared if _one_week_of_counters(row)]),
     }
     # A week's bill is only whole once the poll has filled it in after the week ended; the copy the
     # rollover made stops a day short, so a typical week is taken from the whole ones alone.

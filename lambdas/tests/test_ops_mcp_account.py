@@ -667,6 +667,38 @@ def test_a_typical_week_is_the_median_of_the_last_eight(tables):
     assert result["weeks_compared"] == 8 and result["ai"]["typical_week"] == 4.5
 
 
+def test_a_mended_missed_week_does_not_pull_the_typical_week_either_way(tables):
+    """A missed rollover, once mended (scripts/repair_stats_week.py), leaves a row whose counters
+    cover two weeks and a placeholder with none. Neither is one week's AI spend. The placeholder's
+    bill is that week's real bill, and both rows still count towards a month's total."""
+    put_week(tables, "2026-08-31", ai=4, bill=10)
+    put_week(tables, "2026-09-07", ai=6, bill=20)
+    put_week(tables, "2026-09-14", ai=40, bill=12)  # two weeks of counters under one date
+    put_week(tables, "2026-09-21", ai=0, bill=30)  # the placeholder: the bill only
+    history = tables.Table("StatsHistory")
+    history.update_item(
+        Key={"week_start": "2026-09-14"},
+        UpdateExpression="SET covers_through = :day",
+        ExpressionAttributeValues={":day": "2026-09-28"},
+    )
+    history.update_item(
+        Key={"week_start": "2026-09-21"},
+        UpdateExpression="SET counters_in_week = :week",
+        ExpressionAttributeValues={":week": "2026-09-14"},
+    )
+    put_week(tables, THIS_WEEK, ai=5, current=True)
+
+    week = account.spend("week", now=NOW)
+    month = account.spend("month", now=NOW)
+
+    # The median of 4 and 6, not of 0, 4, 6 and 40.
+    assert week["ai"]["typical_week"] == 5.0
+    # The bill's typical week is every whole week's, the placeholder's included: USD 10, 12, 20, 30.
+    assert week["aws"]["typical_week"] == 24.0
+    # This week and the three before it: 5 + 0 + 40 + 6. The sum of the two mended rows is right.
+    assert month["ai"]["period"] == 51.0
+
+
 def test_with_no_history_and_no_bill_it_says_what_it_has(tables):
     result = account.spend("week", now=NOW)
 
