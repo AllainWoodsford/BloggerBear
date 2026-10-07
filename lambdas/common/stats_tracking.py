@@ -592,12 +592,48 @@ def _category_view(row: dict, category: str) -> dict:
     }
 
 
+def _ai_estimate_view(categories: list[dict]) -> dict:
+    """The categories added up: one section's whole token-estimated AI spend. The page shows it as
+    the table's Total row and never sums money itself. The cost is the sum of what was priced;
+    None when calls were made and none of them had a price (unknown, never passed off as free),
+    and a real 0 when nothing ran. `unpriced` is how many units had no price (calls, or articles
+    for the articles category), so a total that is a lower bound can say so."""
+    costs = [category["cost_aud"] for category in categories if category["cost_aud"] is not None]
+    calls = sum(category["calls"] for category in categories)
+    if costs:
+        cost_aud: float | None = float(sum((Decimal(str(cost)) for cost in costs), Decimal("0")))
+    else:
+        cost_aud = 0.0 if calls == 0 else None
+    return {
+        "calls": calls,
+        "input_tokens": sum(category["input_tokens"] for category in categories),
+        "output_tokens": sum(category["output_tokens"] for category in categories),
+        "cost_aud": cost_aud,
+        "unpriced": sum(category["unpriced"] for category in categories),
+    }
+
+
+def _week_start_view(row: dict) -> str | None:
+    """The Monday a StatsCurrent row covers ("2026-10-05"), for the page to say which week it is
+    showing. None for a row with no week (nothing recorded yet) and for the all-time row, whose
+    `week_start` is a sentinel and not a date."""
+    week_start = row.get("week_start")
+    try:
+        return date.fromisoformat(str(week_start)).isoformat()
+    except ValueError:
+        return None
+
+
 def public_view(row: dict) -> dict:
     """Shape a StatsCurrent or StatsHistory-all-time row (Decimal-valued, straight from
     common/dynamo.py) into what the public Stats page actually reads: Decimal turned into a plain
-    float (cost) or int (every count), one entry per category, the reader-activity counters, one
-    combined pipeline run-time figure in hours, and the API Gateway reading with its `_as_of`
-    timestamp left out."""
+    float (cost) or int (every count), one entry per category and their total, the
+    reader-activity counters, one combined pipeline run-time figure in hours, and the API Gateway
+    reading with its `_as_of` timestamp left out.
+
+    One row in, one section out: nothing here reads a second row, so Weekly Stats is the current
+    table's row and Total Stats is the history table's all-time row, and neither borrows from the
+    other."""
     total_lambda_ms = sum(
         int(value)
         for key, value in row.items()
@@ -609,8 +645,11 @@ def public_view(row: dict) -> dict:
     web_search_cost = row.get(WEB_SEARCH_AGENTCORE_COST_AUD)
     agentcore_actual_aud = row.get(AGENTCORE_COST_AUD_30D)
 
+    categories = [_category_view(row, category) for category in _PUBLIC_CATEGORIES]
     return {
-        "categories": [_category_view(row, category) for category in _PUBLIC_CATEGORIES],
+        "week_start": _week_start_view(row),
+        "categories": categories,
+        "ai_estimate": _ai_estimate_view(categories),
         "feedback_given": int(row.get(FEEDBACK_GIVEN, 0)),
         "feedback_rejected_comment": int(row.get(FEEDBACK_REJECTED_COMMENT, 0)),
         "loot_drops": int(row.get(LOOT_DROPS, 0)),
@@ -641,11 +680,16 @@ def public_view(row: dict) -> dict:
 def _aws_bill_view(row: dict) -> dict | None:
     """The whole AWS bill in AUD, as bill_category's three groups and a total -- never per service
     (that detail stays in the table). StatsHistory's all-time row carries the sum of every
-    complete week (`since` is the first one); StatsCurrent carries this week so far (`since` is
-    None). None until the first poll has run."""
-    services, since = row.get(AWS_BILL_TOTAL_USD), row.get(AWS_BILL_TOTAL_SINCE)
+    complete week (`since` is the first one, `weeks` how many); StatsCurrent carries this week so
+    far (`since` and `weeks` are None). The three groups add up to the total, and the page shows
+    them as tiles that do. None until the first poll has run."""
+    services, since, weeks = (
+        row.get(AWS_BILL_TOTAL_USD),
+        row.get(AWS_BILL_TOTAL_SINCE),
+        row.get(AWS_BILL_TOTAL_WEEKS),
+    )
     if services is None:
-        services, since = row.get(AWS_BILL_WEEK_USD), None
+        services, since, weeks = row.get(AWS_BILL_WEEK_USD), None, None
     if not isinstance(services, dict):
         return None
     rate = Decimal(str(USD_TO_AUD_RATE))
@@ -656,6 +700,10 @@ def _aws_bill_view(row: dict) -> dict | None:
         ],
         "total_aud": float(sum(totals.values()) * rate),
         "since": since,
+        # How many complete weeks the all-time figure adds up (None for a week so far), and whose
+        # bill it is: the whole AWS account's, never one environment's.
+        "weeks": int(weeks) if weeks is not None else None,
+        "scope": OVERALL_BILL_SCOPE,
     }
 
 
