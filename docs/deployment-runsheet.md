@@ -8,6 +8,9 @@ You set it up with GitHub secrets and variables, one local Terraform apply, and 
 You should not need to edit Terraform, except for what is listed under
 [What is still tied to the original deployment](#what-is-still-tied-to-the-original-deployment).
 Every setting, and where it goes, is in one table: [configuration.md](configuration.md).
+Doing this for the first time? [setup-guide.md](setup-guide.md) is the same journey from the very
+beginning (installing the tools, an AWS account and CLI profile), with a placeholder for every
+value you choose.
 
 Account IDs on this page are placeholders (`111111111111`, `123456789012`, `000000000000`).
 Use your own. Commands name `ap-southeast-2` (Sydney), the default region; use yours if you chose
