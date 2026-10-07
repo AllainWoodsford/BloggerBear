@@ -441,51 +441,53 @@ def _render_stats_body() -> str:
     return APP_JS[start : APP_JS.index("function loadStats()", start)]
 
 
-def test_the_stats_page_opens_with_total_stats_and_the_gear_is_now_last():
-    """Observability enhancement, PR 4: gear moved to the bottom now that Total/Weekly Stats
-    give the page real financial data to lead with instead (superseding the earlier
-    fix/stats-gear-first order)."""
+def test_the_stats_page_opens_with_total_stats_and_the_gear_is_last():
+    """Total Stats, Weekly Stats, the per-article detail, then the gear: the money leads, and each
+    section has one source (test_frontend_stats.py holds what is in each)."""
     body = _render_stats_body()
 
     order = [
         body.index('el("h1", { text: "Stats" })'),
         body.index("renderQuickLinks()"),
         body.index('text: "Total Stats"'),
+        body.index('text: "Weekly Stats"'),
+        body.index('text: "Articles"'),
         body.index("stats.cost_basis"),
         body.index('className: "stats-tiles"'),
         body.index("Estimated spend per day"),
-        body.index('text: "Weekly Stats"'),
         body.index("loadGear(gearSection)"),
     ]
-    assert order == sorted(order), "the page should read: title, quick links, Total Stats, ..., Weekly, gear"
+    assert order == sorted(order), "title, quick links, Total Stats, Weekly Stats, Articles, gear"
 
 
-def test_the_original_stats_are_all_still_there_above_weekly_stats():
+def test_the_per_article_stats_are_all_still_there_in_the_articles_section():
     body = _render_stats_body()
-    before_weekly = body[: body.index('text: "Weekly Stats"')]
+    articles = body[body.index('text: "Articles"') : body.index("loadGear(gearSection)")]
 
     for heading in ("Estimated spend per day", "By model", "By topic"):
-        assert heading in before_weekly
+        assert heading in articles
     for tile in (
-        "Estimated AI spend",
+        "AI spend on articles",
         "Articles drafted",
         "Average cost per article",
         "Tokens",
         "Research spend",
     ):
-        assert f'"{tile}"' in before_weekly
+        assert f'"{tile}"' in articles
 
 
-def test_quick_links_jump_to_the_pages_three_top_level_sections():
+def test_quick_links_jump_to_the_pages_top_level_sections():
     # The links themselves live in renderQuickLinks, a helper defined above renderStats --
     # checked against the whole file, unlike the ids below, which renderStats sets itself.
     assert '"total-stats-heading", "Total Stats"' in APP_JS
     assert '"weekly-stats-heading", "Weekly Stats"' in APP_JS
+    assert '"articles-stats-heading", "Articles"' in APP_JS
     assert '"gear-heading", "Gear"' in APP_JS
 
     body = _render_stats_body()
     assert 'id: "total-stats-heading"' in body
     assert 'id: "weekly-stats-heading"' in body
+    assert 'id: "articles-stats-heading"' in body
 
 
 def test_quick_links_intercept_the_click_instead_of_hash_routing_to_page_not_found():
@@ -507,11 +509,11 @@ def test_total_stats_says_it_excludes_the_current_week():
     assert "historic.note" in body
 
 
-def test_weekly_and_total_stats_both_render_the_observability_section():
+def test_weekly_and_total_stats_are_drawn_by_the_same_function_each_from_its_own_row():
     body = _render_stats_body()
 
-    assert "renderObservabilitySection(historic," in body
-    assert "renderObservabilitySection(stats.weekly" in body
+    assert "renderStatsSection(historic, false)" in body
+    assert "renderStatsSection(weekly, true)" in body
 
 
 def test_the_estimated_spend_per_day_heading_says_how_many_days():
