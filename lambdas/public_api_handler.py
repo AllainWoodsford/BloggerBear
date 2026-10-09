@@ -153,6 +153,35 @@ def _query_param(event: dict, name: str) -> str | None:
     return (event.get("queryStringParameters") or {}).get(name)
 
 
+def _page_param(event: dict) -> int | None:
+    """The 1-based `?page=` of a paginated listing: 1 when absent, None (a 400) when it is not a
+    whole number of at least 1."""
+    raw = _query_param(event, "page")
+    if raw is None or raw == "":
+        return 1
+    try:
+        page = int(raw)
+    except ValueError:
+        return None
+    return page if page >= 1 else None
+
+
+def _paginate(items: list, page: int, page_size: int) -> tuple[list, dict]:
+    """One page of `items` (already in display order), and the fields that say where it sits:
+    `page`, `page_size`, `total` and `total_pages` (at least 1, so an empty listing is "page 1 of
+    1"). A page past the end is an empty slice, not an error -- the frontend says so and links back
+    to page 1."""
+    total = len(items)
+    total_pages = max(1, -(-total // page_size))
+    start = (page - 1) * page_size
+    return items[start : start + page_size], {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
+
+
 def _get_published_article(article_id: str) -> dict | None:
     """Fetch an Articles item, returning None unless it exists AND is published."""
     article = get_article(article_id)
@@ -635,8 +664,18 @@ def _submit_feedback(event: dict) -> dict:
 # --- Musings --------------------------------------------------------------
 
 
+# Musings per page of GET /musings (the Musings page shows one page at a time, newest first).
+MUSINGS_PAGE_SIZE = 15
+
+
 def _list_musings(event: dict) -> dict:
-    items = list_musings()
+    """Musings, newest first, MUSINGS_PAGE_SIZE at a time: `?page=` (1-based, default 1) picks which.
+    Every musing is reachable on some page; the response says which page it is and how many there
+    are (see _paginate)."""
+    page = _page_param(event)
+    if page is None:
+        return _error(400, "'page' must be a whole number of at least 1")
+    items, paging = _paginate(list_musings(limit=None), page, MUSINGS_PAGE_SIZE)
     musings = [
         {
             "musing_id": m.get("musing_id"),
@@ -651,7 +690,7 @@ def _list_musings(event: dict) -> dict:
         }
         for m in items
     ]
-    return _response(200, {"musings": musings}, cache_seconds=_LISTING_CACHE_SECONDS)
+    return _response(200, {"musings": musings, **paging}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 # --- Stats ------------------------------------------------------------------
