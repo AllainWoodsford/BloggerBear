@@ -281,7 +281,7 @@ out of sync.
 (`bloggerbear.com`), and `www.` is served and redirected to the bare domain. What is left is manual and in order:
 create the Route 53 zone (in `infra/bootstrap`), point GoDaddy's nameservers at it, put the zone ID in
 `infra/environments/production/terraform.tfvars`, and release. **The step-by-step, with checks, is
-[docs/production-runsheet.md](docs/production-runsheet.md)**; `python scripts/domain_check.py` shows where the
+[docs/production-runsheet.md](production-runsheet.md)**; `python scripts/domain_check.py` shows where the
 domain stands at any time. The design notes below still describe why it is shaped this way.
 
 **Problem**: the production site is only ever reachable at its
@@ -550,6 +550,8 @@ adapter.
   crypto adapter only). The pool is an unseeded draw each tick, skipping coins
   already analysed that UTC day, so each tick has new information to report.
   A newly sampled coin counts as new. Only the day's *goal* stays date-seeded.
+  The pool is 5 altcoins, and a tick goes ahead when at least 2 of their
+  histories arrive (`POOL_SIZE`, `MIN_POOL_SIZE`; 10 and 5 before #267).
   Cost of this: history is fetched for each tick's pool (set
   `COINGECKO_API_KEY`), and analysis days now produce a Finding per tick -- the
   research interval above is the dial.
