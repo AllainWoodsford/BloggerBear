@@ -596,6 +596,8 @@ All shipped and deployed; the design and decisions for each are in
 - [x] A missed stats rollover: an alarm on dropped scheduled runs, and
   `scripts/repair_stats_week.py`, run for both environments (#265)
 - [x] Crypto research looks up 2 to 5 altcoins a tick, not 5 to 10 (#267)
+- [x] Each deploy role is refused the other environment's resources, by a Deny-only
+  policy beside the shared one (bootstrap; needs a hand apply)
 - [x] Staggered research and authoring schedules (production and dev)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the

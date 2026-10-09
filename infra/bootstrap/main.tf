@@ -792,6 +792,130 @@ resource "aws_iam_role_policy_attachment" "gha_prod_deploy" {
 }
 
 # -----------------------------------------------------------------------
+# Each deploy role is kept out of the other environment
+#
+# Both roles carry the one policy above, which allows resources named <prefix>-*. Nothing in it
+# tells dev from production, so until this existed the only thing between a dev deploy and
+# production's tables was which role a workflow was allowed to assume.
+#
+# This adds a second policy to each role, and it only ever says "no": the dev role is refused
+# anything of production's, and the production role anything of dev's. It is written as explicit
+# Deny statements on top of the shared Allow, not as two narrower Allow policies, on purpose:
+#
+# - A Deny can only match the OTHER environment's resources (by their names, or by the
+#   Environment tag every Terraform-made resource carries). So what each role may do in its own
+#   environment is exactly what it was before, statement for statement. Every permission in the
+#   policy above was found by a failed apply; none of them is re-derived here, and none can be
+#   lost by a mistake here.
+# - Anything this does not recognise stays as it was: allowed. The failure mode is "not
+#   separated", never "the deploy is refused".
+#
+# What is shared, and so deliberately left reachable by both roles:
+#
+# - The CloudFront web ACL, <prefix>-shared, its log group and its log policy. Production
+#   creates and owns them. They are not named for an environment, so the name rule does not
+#   match them, and the tag rule leaves all of WAF out (NotAction), because in one account dev's
+#   distributions may be attached to that ACL (dev's web_acl_arn). The regional web ACLs ARE
+#   named for their environment and are covered by the name rule.
+# - This bootstrap's own resources (the state bucket, the hosted zone, the OIDC provider),
+#   tagged Environment = "shared". In the state bucket each role is refused the other's key.
+#
+# What this is not: a wall against someone who can push to the dev branch. The dev role may
+# still write its own Lambda roles' policies, and a role it writes can be given more than it has
+# itself. This stops a deploy that is wrong (a bad variable, the wrong directory, a careless
+# destroy) from reaching the other environment. Two AWS accounts are the wall
+# (docs/deployment-separate-accounts.md).
+#
+# var.separate_environment_permissions = false detaches both, if a deploy is ever refused by one
+# of these and you need it through before finding out why.
+# -----------------------------------------------------------------------
+locals {
+  # The environment each deploy role must not touch.
+  deploy_role_other_environment = {
+    dev        = "production"
+    production = "dev"
+  }
+}
+
+data "aws_iam_policy_document" "gha_deploy_other_environment" {
+  for_each = var.separate_environment_permissions ? local.deploy_role_other_environment : {}
+
+  # Every ARN with the other environment's name in it: tables, functions, roles, queues, topics,
+  # alarms, dashboards, schedules, state machines, log groups, buckets and their objects. One
+  # pattern, because the name sits after a different separator in each service's ARN (":", "/",
+  # "table/", "log-group:/aws/lambda/"). An action that cannot be limited to a resource is asked
+  # for with the resource "*", which this does not match, so it is unaffected.
+  statement {
+    sid       = "NotTheOtherEnvironmentByName"
+    effect    = "Deny"
+    actions   = ["*"]
+    resources = ["arn:aws:*:*:*:*${var.unique_name_prefix}-${each.value}-*"]
+  }
+
+  # What has no name of ours in its ARN (a CloudFront distribution, a REST API, a user pool, a
+  # certificate) is told apart by the Environment tag instead: every resource an environment's
+  # Terraform makes carries it (the provider's default_tags). Where a service does not offer the
+  # tag to IAM, the condition is simply not met and nothing is denied. WAF is left out: see the
+  # shared web ACL, above.
+  statement {
+    sid         = "NotTheOtherEnvironmentByTag"
+    effect      = "Deny"
+    not_actions = ["wafv2:*"]
+    resources   = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = [each.value]
+    }
+  }
+
+  # The other environment's Terraform state, which lists everything it has made.
+  statement {
+    sid       = "NotTheOtherEnvironmentsState"
+    effect    = "Deny"
+    actions   = ["s3:*"]
+    resources = ["${aws_s3_bucket.terraform_state.arn}/${each.value}/*"]
+  }
+}
+
+resource "aws_iam_policy" "gha_deploy_other_environment" {
+  for_each = data.aws_iam_policy_document.gha_deploy_other_environment
+
+  # dev's is "<prefix>-gha-dev-deploy-not-production". Like the policy above, neither role is
+  # allowed to change it: they hold no IAM permission on any policy.
+  name        = "${var.unique_name_prefix}-gha-${each.key}-deploy-not-${local.deploy_role_other_environment[each.key]}"
+  description = "Refuses the ${each.key} deploy role anything of the other environment. Deny only: what the role may do is in ${var.unique_name_prefix}-gha-deploy."
+  policy      = each.value.json
+
+  lifecycle {
+    # The name rule would also match the state bucket if the bucket were named for an
+    # environment under the prefix, and the role that was denied it could not deploy at all.
+    precondition {
+      condition = alltrue([
+        for env in ["dev", "production"] :
+        !strcontains(var.state_bucket_name, "${var.unique_name_prefix}-${env}-")
+      ])
+      error_message = "state_bucket_name contains \"<prefix>-dev-\" or \"<prefix>-production-\", which the deploy roles' separation would refuse to one of them. Name the bucket differently (for example <prefix>-terraform-state, or <prefix>-terraform-state-dev), or pass separate_environment_permissions=false."
+    }
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "gha_dev_deploy_not_production" {
+  count = var.separate_environment_permissions ? 1 : 0
+
+  role       = aws_iam_role.gha_dev_deploy.name
+  policy_arn = aws_iam_policy.gha_deploy_other_environment["dev"].arn
+}
+
+resource "aws_iam_role_policy_attachment" "gha_prod_deploy_not_dev" {
+  count = var.separate_environment_permissions ? 1 : 0
+
+  role       = aws_iam_role.gha_prod_deploy.name
+  policy_arn = aws_iam_policy.gha_deploy_other_environment["production"].arn
+}
+
+# -----------------------------------------------------------------------
 # The site's DNS zone (optional; see var.domain_name). Applied once, by hand, like the rest of this
 # file. After the first apply, copy `hosted_zone_name_servers` into your registrar's custom nameserver
 # settings, and put `hosted_zone_id` into infra/environments/production/terraform.tfvars.
