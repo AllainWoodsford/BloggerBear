@@ -2,8 +2,10 @@
  * BloggerBear public frontend -- plain static single-page app, no build step,
  * no framework, no npm. Hash-based client-side routing:
  *   #/                 -> home / topic list
- *   #/topic/{id}       -> published article list for a topic
+ *   #/topic/{id}       -> published article list for a topic (?page=N, 10 a page)
  *   #/article/{id}     -> full article view
+ *   #/musings          -> BloggerBear's musings (?page=N, 15 a page)
+ *   #/stats            -> the Stats page
  *   #/terms            -> redirects to /terms.html (a static page)
  *   #/privacy          -> redirects to /privacy.html (a static page)
  *
@@ -625,7 +627,9 @@
     return line.firstChild ? line : null;
   }
 
-  function renderArticleList(topicId, articles, activity, attribution) {
+  // `paging` is the API's page/total_pages for this listing (see renderPagination). The pipeline
+  // box is about what comes next, so it is shown on the first page only.
+  function renderArticleList(topicId, articles, activity, attribution, paging) {
     clearChildren(contentEl);
     var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
     contentEl.appendChild(el("h1", { text: heading }));
@@ -637,6 +641,12 @@
     var pipelineItems = pipelineItemsFor(activity);
     if (pipelineItems.length > 0) {
       contentEl.appendChild(renderPipelineSection(pipelineItems));
+    }
+
+    var page = (paging && paging.page) || 1;
+    if (articles.length === 0 && page > 1) {
+      renderPastTheEnd(page, topicHref(topicId), "See the newest articles");
+      return;
     }
 
     if (articles.length === 0) {
@@ -665,24 +675,40 @@
       list.appendChild(item);
     });
     contentEl.appendChild(list);
+
+    var pagination = renderPagination(paging, topicHref(topicId), "articles");
+    if (pagination) {
+      contentEl.appendChild(pagination);
+    }
   }
 
-  function loadTopicArticles(topicId) {
+  function topicHref(topicId) {
+    return "#/topic/" + encodeURIComponent(topicId);
+  }
+
+  // ARTICLES_PAGE_SIZE (10) at a time, newest first; `page` is 1-based.
+  function loadTopicArticles(topicId, page) {
     showMessage("Loading articles...");
-    fetchJson(apiUrl("/articles?topic_id=" + encodeURIComponent(topicId)))
+    fetchJson(apiUrl(pagedApiPath("/articles?topic_id=" + encodeURIComponent(topicId), page)))
       .then(function (data) {
         var articles = data.articles || [];
-        // Always fetch activity now, not just when articles is empty --
+        var paging = { page: Number(data.page) || page, total_pages: data.total_pages };
+        function render(activity) {
+          renderArticleList(topicId, articles, activity, data.attribution, paging);
+        }
+        if (page > 1) {
+          render(null);
+          return;
+        }
+        // Always fetch activity on the first page, not just when articles is empty --
         // "Articles in the Pipeline" can appear alongside already-
         // published articles too (e.g. 3 published + 1 pending review is
         // a perfectly normal state), unlike the old researching-only
         // placeholder which only ever mattered on an empty list.
         fetchJson(apiUrl("/topics/" + encodeURIComponent(topicId) + "/activity"))
-          .then(function (activity) {
-            renderArticleList(topicId, articles, activity, data.attribution);
-          })
+          .then(render)
           .catch(function () {
-            renderArticleList(topicId, articles, null, data.attribution);
+            render(null);
           });
       })
       .catch(function () {
@@ -694,8 +720,8 @@
   //
   // A long listing comes from the API one page at a time (`?page=`, 1-based), with `page` and
   // `total_pages` beside it (public_api_handler.py's _paginate). The page is part of the route
-  // ("#/musings?page=2"), so a page can be linked to and Back goes back a page. Page 1 is always
-  // the bare route, so there is one URL for the newest items.
+  // ("#/musings?page=2", "#/topic/crypto?page=3"), so a page can be linked to and Back goes back
+  // a page. Page 1 is always the bare route, so there is one URL for the newest items.
 
   // The ?page= of a route's query string ("page=2&x=y"); 1 when it's absent or not a whole number
   // of at least 1, so a mistyped link still lands somewhere sensible.
@@ -2354,7 +2380,7 @@
     }
     var topicMatch = path.match(/^\/topic\/([^/]+)$/);
     if (topicMatch) {
-      return { name: "topic", topicId: decodeURIComponent(topicMatch[1]) };
+      return { name: "topic", topicId: decodeURIComponent(topicMatch[1]), page: pageFromQuery(query) };
     }
     var articleMatch = path.match(/^\/article\/([^/]+)$/);
     if (articleMatch) {
@@ -2380,7 +2406,7 @@
     if (current.name === "home") {
       loadHome();
     } else if (current.name === "topic") {
-      loadTopicArticles(current.topicId);
+      loadTopicArticles(current.topicId, current.page);
     } else if (current.name === "article") {
       loadArticle(current.articleId);
     } else if (current.name === "legal") {
