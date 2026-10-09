@@ -295,7 +295,9 @@ def test_both_pages_use_the_one_helper_with_the_apis_attribution():
     source = APP_JS.read_text(encoding="utf-8")
     assert "sourceAttribution(article.attribution)" in source
     assert "sourceAttribution(attribution)" in source
-    assert source.count("data.attribution") == 2  # with and without the activity call succeeding
+    # One render for the topic page, used with and without the activity call succeeding and on
+    # older pages (which don't make it).
+    assert source.count("data.attribution") == 1
 
 
 def test_the_credit_line_is_italic_and_no_smaller_than_coingeckos_minimum():

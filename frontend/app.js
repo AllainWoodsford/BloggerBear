@@ -675,8 +675,11 @@
       .then(function (data) {
         var articles = data.articles || [];
         var paging = { page: Number(data.page) || page, total_pages: data.total_pages };
+        function render(activity) {
+          renderArticleList(topicId, articles, activity, data.attribution, paging);
+        }
         if (page > 1) {
-          renderArticleList(topicId, articles, null, data.attribution, paging);
+          render(null);
           return;
         }
         // Always fetch activity on the first page, not just when articles is empty --
@@ -685,11 +688,9 @@
         // a perfectly normal state), unlike the old researching-only
         // placeholder which only ever mattered on an empty list.
         fetchJson(apiUrl("/topics/" + encodeURIComponent(topicId) + "/activity"))
-          .then(function (activity) {
-            renderArticleList(topicId, articles, activity, data.attribution, paging);
-          })
+          .then(render)
           .catch(function () {
-            renderArticleList(topicId, articles, null, data.attribution, paging);
+            render(null);
           });
       })
       .catch(function () {
@@ -701,8 +702,8 @@
   //
   // A long listing comes from the API one page at a time (`?page=`, 1-based), with `page` and
   // `total_pages` beside it (public_api_handler.py's _paginate). The page is part of the route
-  // ("#/musings?page=2", "#/topic/crypto?page=3"), so a page can be linked to and Back goes back a page. Page 1 is always
-  // the bare route, so there is one URL for the newest items.
+  // ("#/musings?page=2", "#/topic/crypto?page=3"), so a page can be linked to and Back goes back
+  // a page. Page 1 is always the bare route, so there is one URL for the newest items.
 
   // The ?page= of a route's query string ("page=2&x=y"); 1 when it's absent or not a whole number
   // of at least 1, so a mistyped link still lands somewhere sensible.
