@@ -107,6 +107,7 @@ def test_a_middle_page_links_both_ways_and_page_one_is_the_bare_route():
     assert hrefs["next"] == "#/musings?page=3"
     (current,) = _find(nav, "pagination-current")
     assert current["attributes"]["aria-current"] == "page"
+    assert current["attributes"]["aria-label"] == "Page 2"  # not "current page" twice
     assert current["textContent"] == "2"
 
 
