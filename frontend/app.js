@@ -776,7 +776,8 @@
           el("span", {
             className: "pagination-current",
             text: String(n),
-            attrs: { "aria-current": "page", "aria-label": "Page " + n + ", current page" },
+            // aria-current already says "current page"; the label only adds the word "Page".
+            attrs: { "aria-current": "page", "aria-label": "Page " + n },
           })
         );
       } else {
