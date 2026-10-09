@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from table_schemas import create_table
 
 import public_api_handler
 from common.costing import USD_TO_AUD_RATE
+from common.stats import build_stats
 
 REGION = "ap-southeast-2"
 
@@ -472,6 +474,26 @@ def test_topic_activity_counts_only_pending_items_for_this_topic(aws_resources):
     other_event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "other-topic"})
     other_result = public_api_handler.handler(other_event, None)
     assert json.loads(other_result["body"])["pending_review_count"] == 1
+
+
+def test_topic_activity_names_only_the_three_newest_pending_articles_but_counts_them_all(aws_resources):
+    for n in range(5):
+        created_at = f"2026-09-1{n}T00:00:00+00:00"
+        _put_article(
+            f"article-{n}",
+            status="pending_moderation",
+            published_at=None,
+            title=f"Pending {n}",
+            created_at=created_at,
+        )
+        _put_moderation_item(f"queue-{n}", article_id=f"article-{n}", created_at=created_at)
+
+    body = _activity()
+    assert body["pending_review_count"] == 5
+    assert body["pipeline_items"] == [
+        {"status": "pending_review", "label": "Pending review", "title": f"Pending {n}"} for n in (4, 3, 2)
+    ]
+    assert public_api_handler.PIPELINE_PENDING_LIMIT == 3
 
 
 def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resources):
@@ -1224,7 +1246,13 @@ def test_the_token_holds_nothing_about_who_asked(aws_resources):
 def test_list_musings_empty(aws_resources):
     result = public_api_handler.handler(_event("GET /musings"), None)
     assert result["statusCode"] == 200
-    assert json.loads(result["body"]) == {"musings": []}
+    assert json.loads(result["body"]) == {
+        "musings": [],
+        "page": 1,
+        "page_size": 15,
+        "total": 0,
+        "total_pages": 1,
+    }
 
 
 def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
@@ -1261,6 +1289,58 @@ def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
         "mood": "proud",
         "created_at": "2026-09-12T00:00:00+00:00",
     }
+
+
+def _musings_page(page=None):
+    query = None if page is None else {"page": page}
+    return public_api_handler.handler(_event("GET /musings", query_params=query), None)
+
+
+def _put_numbered_musings(count):
+    """`count` musings, m00 the oldest; created a minute apart so newest-first is m<count-1> down."""
+    for n in range(count):
+        _put_musing(f"m{n:02d}", kind="article", created_at=f"2026-09-12T00:{n:02d}:00+00:00")
+
+
+def test_list_musings_returns_fifteen_per_page_newest_first(aws_resources):
+    _put_numbered_musings(40)
+
+    first = json.loads(_musings_page()["body"])
+    assert public_api_handler.MUSINGS_PAGE_SIZE == 15
+    assert [m["musing_id"] for m in first["musings"]] == [f"m{n:02d}" for n in range(39, 24, -1)]
+    assert (first["page"], first["page_size"], first["total"], first["total_pages"]) == (1, 15, 40, 3)
+
+    second = json.loads(_musings_page("2")["body"])
+    assert [m["musing_id"] for m in second["musings"]] == [f"m{n:02d}" for n in range(24, 9, -1)]
+
+    last = json.loads(_musings_page("3")["body"])
+    assert [m["musing_id"] for m in last["musings"]] == [f"m{n:02d}" for n in range(9, -1, -1)]
+    assert last["page"] == 3
+
+
+def test_list_musings_reaches_every_musing_not_just_the_newest_fifty(aws_resources):
+    _put_numbered_musings(55)
+
+    seen = []
+    for page in range(1, 5):
+        seen += [m["musing_id"] for m in json.loads(_musings_page(str(page))["body"])["musings"]]
+    assert sorted(seen) == [f"m{n:02d}" for n in range(55)]
+
+
+def test_list_musings_page_past_the_end_is_empty_not_an_error(aws_resources):
+    _put_numbered_musings(3)
+
+    result = _musings_page("9")
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["musings"] == []
+    assert (body["page"], body["total"], body["total_pages"]) == (9, 3, 1)
+
+
+@pytest.mark.parametrize("page", ["0", "-1", "two", "1.5", " "])
+def test_list_musings_rejects_a_page_that_is_not_a_positive_whole_number(aws_resources, page):
+    result = _musings_page(page)
+    assert result["statusCode"] == 400
 
 
 # --- Stats ---------------------------------------------------------------
@@ -1376,6 +1456,46 @@ def test_stats_sections_before_anything_is_recorded_are_zeros_and_no_bill(aws_re
         assert body[section]["aws_bill"] is None
 
 
+def test_stats_serves_the_stored_articles_figures_without_scanning_the_articles(aws_resources):
+    """Built after a publishing run (common/stats_tracking.py's refresh_articles_snapshot), read
+    here as one row. The 30-day table is moved to today's window on the way out."""
+    built_on = datetime.now(UTC).date() - timedelta(days=3)
+    stored = build_stats(
+        [
+            {
+                "topic_id": "github-trending",
+                "status": "published",
+                "created_at": f"{built_on.isoformat()}T03:00:00+00:00",
+                "lineage": {"calls": [{"model_id": "m", "input_tokens": 1000, "output_tokens": 500}]},
+            }
+        ],
+        [],
+        [],
+        today=built_on,
+    )
+    boto3.resource("dynamodb", region_name=REGION).Table("StatsHistory").put_item(
+        Item={
+            "week_start": "articles-snapshot",
+            "payload": json.dumps(stored),
+            "started_at": stored["generated_at"],
+        }
+    )
+
+    with patch("public_api_handler.list_all_articles", side_effect=AssertionError("scanned")):
+        result = public_api_handler.handler(_event("GET /stats"), None)
+
+    assert result["statusCode"] == 200
+    assert result["headers"]["Cache-Control"] == "public, max-age=300"
+    body = json.loads(result["body"])
+    assert body["totals"]["articles"] == 1
+    assert body["generated_at"] == stored["generated_at"]
+    assert len(body["daily"]) == 30
+    assert body["daily"][-1]["date"] == datetime.now(UTC).date().isoformat()
+    assert body["daily"][-1]["articles"] == 0
+    assert (body["daily"][-4]["date"], body["daily"][-4]["articles"]) == (built_on.isoformat(), 1)
+    assert body["weekly"]["feedback_given"] == 0 and "note" in body["historic"]
+
+
 def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):
     _put_topic()
     boto3.resource("dynamodb", region_name=REGION).Table("Models").put_item(
@@ -1477,6 +1597,48 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
         assert article["has_research"] is False
         assert article["model_labels"] is None
         assert article["published_by"] is None
+
+
+def _articles_page(page=None, topic_id="github-trending"):
+    query = {"topic_id": topic_id, **({} if page is None else {"page": page})}
+    return public_api_handler.handler(_event("GET /articles", query_params=query), None)
+
+
+def _put_numbered_articles(count):
+    """`count` published articles, a00 the oldest, a day apart."""
+    for n in range(count):
+        _put_article(f"a{n:02d}", published_at=f"2026-08-{n + 1:02d}T00:00:00+00:00", title=f"T{n}")
+
+
+def test_list_articles_returns_the_newest_ten_then_pages_the_rest(aws_resources):
+    _put_numbered_articles(23)
+
+    first = json.loads(_articles_page()["body"])
+    assert public_api_handler.ARTICLES_PAGE_SIZE == 10
+    assert [a["article_id"] for a in first["articles"]] == [f"a{n:02d}" for n in range(22, 12, -1)]
+    assert (first["page"], first["page_size"], first["total"], first["total_pages"]) == (1, 10, 23, 3)
+    assert first["topic_id"] == "github-trending" and "attribution" in first
+
+    second = json.loads(_articles_page("2")["body"])
+    assert [a["article_id"] for a in second["articles"]] == [f"a{n:02d}" for n in range(12, 2, -1)]
+
+    last = json.loads(_articles_page("3")["body"])
+    assert [a["article_id"] for a in last["articles"]] == ["a02", "a01", "a00"]
+
+
+def test_list_articles_page_past_the_end_is_empty_not_an_error(aws_resources):
+    _put_numbered_articles(4)
+
+    result = _articles_page("5")
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["articles"] == []
+    assert (body["page"], body["total"], body["total_pages"]) == (5, 4, 1)
+
+
+@pytest.mark.parametrize("page", ["0", "-3", "first", "2.0"])
+def test_list_articles_rejects_a_page_that_is_not_a_positive_whole_number(aws_resources, page):
+    assert _articles_page(page)["statusCode"] == 400
 
 
 def test_list_articles_projects_lineage_summary_when_present(aws_resources):

@@ -778,8 +778,9 @@ def list_all_articles() -> list[dict]:
     a raw Decimal) -- callers only ever surface aggregates, never items.
 
     Deliberately still a Scan after Scaling PR A: it wants every article in
-    every status, which no index narrows. Its one public caller (the Stats
-    page) is better served by caching its response than by an index.
+    every status, which no index narrows. The Stats page no longer runs it
+    per view: common/stats_tracking.py's refresh_articles_snapshot runs it
+    after a publishing run and stores the result for the page to read.
     """
     table = get_table(os.environ["ARTICLES_TABLE"])
     items = _paginated_scan(table)
@@ -1339,8 +1340,8 @@ def delete_musings_for_article(article_id: str) -> int:
     return len(doomed)
 
 
-def list_musings(limit: int = 50) -> list[dict]:
-    """Return up to `limit` Musings items, most recent first.
+def list_musings(limit: int | None = 50) -> list[dict]:
+    """Return up to `limit` Musings items (every one if `limit` is None), most recent first.
 
     Scan-all (small table, same pattern as list_all_moderation_items) then
     sort/truncate in Python -- there's no sort key to query against here,
@@ -1349,7 +1350,7 @@ def list_musings(limit: int = 50) -> list[dict]:
     table = get_table(os.environ["MUSINGS_TABLE"])
     items = _paginated_scan(table)
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return items[:limit]
+    return items if limit is None else items[:limit]
 
 
 # --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1 of 5) --
@@ -1967,6 +1968,41 @@ def get_stats_totals() -> dict:
     table = get_table(os.environ["STATS_HISTORY_TABLE"])
     response = table.get_item(Key={"week_start": _STATS_ALL_TIME_KEY})
     return response.get("Item") or {"week_start": _STATS_ALL_TIME_KEY}
+
+
+# The Stats page's Articles section (common/stats.py's build_stats), built after a publishing run
+# instead of on every page view: one more sentinel row here, like the all-time row above. Owned by
+# common/stats_tracking.py's refresh_articles_snapshot. The figures are kept as one JSON string,
+# exactly what the public API sends, so nothing is turned into Decimal and back.
+_STATS_ARTICLES_SNAPSHOT_KEY = "articles-snapshot"
+
+
+def put_articles_stats_snapshot(payload_json: str, started_at: str) -> bool:
+    """Store the Articles section's figures. `started_at` is when the build began, before it read
+    any article: a build that began earlier than the one already stored is refused (returns
+    False, writes nothing), so two runs finishing together can't leave the older reading on top."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    try:
+        table.put_item(
+            Item={
+                "week_start": _STATS_ARTICLES_SNAPSHOT_KEY,
+                "payload": payload_json,
+                "started_at": started_at,
+            },
+            ConditionExpression="attribute_not_exists(started_at) OR started_at < :started",
+            ExpressionAttributeValues={":started": started_at},
+        )
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False
+    return True
+
+
+def get_articles_stats_snapshot() -> str | None:
+    """The stored Articles figures as the JSON string they were written as, or None if no
+    publishing run has built them yet (a fresh deploy)."""
+    table = get_table(os.environ["STATS_HISTORY_TABLE"])
+    item = table.get_item(Key={"week_start": _STATS_ARTICLES_SNAPSHOT_KEY}).get("Item")
+    return item.get("payload") if item else None
 
 
 def set_current_stats_fields(fields: dict, week_start: str) -> None:

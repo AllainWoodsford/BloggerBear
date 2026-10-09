@@ -60,6 +60,18 @@ def _research_bucket() -> dict:
     return {"calls": 0, "unpriced_calls": 0, **_zero_bucket()}
 
 
+def rewindow_daily(
+    daily: list[dict], *, today: date | None = None, window_days: int = DEFAULT_DAILY_WINDOW_DAYS
+) -> list[dict]:
+    """`daily` as build_stats made it on an earlier day, moved to the window ending `today`: the
+    days still inside it are kept, and the days since are zeros. That is exact, not a guess: the
+    figures are rebuilt whenever an article is written, so a day after the last build has none."""
+    today = today or datetime.now(UTC).date()
+    stored = {row.get("date"): row for row in daily}
+    days = [(today - timedelta(days=offset)).isoformat() for offset in range(window_days - 1, -1, -1)]
+    return [stored.get(day) or {"date": day, "articles": 0, **_zero_bucket()} for day in days]
+
+
 def build_stats(
     articles: list[dict],
     topics: list[dict],

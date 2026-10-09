@@ -522,3 +522,36 @@ def test_the_prompt_numbers_the_topics_and_asks_for_the_line_format():
 
     assert "OVERVIEW:" in prompt and "1: <" in prompt
     assert "no headings" in prompt
+
+
+# --- The Stats page's Articles figures are rebuilt after a digest is written -------------------
+
+
+def test_a_written_digest_rebuilds_the_stats_pages_article_figures(s3_bucket, _no_existing_digest):
+    with patch("trending_digest_handler.refresh_articles_snapshot") as refresh:
+        result, _, _, _ = _run_digest(compliant=True)
+
+    assert result["status"] == "published"
+    refresh.assert_called_once_with()
+
+
+def test_a_run_that_wrote_no_digest_leaves_the_article_figures_alone(s3_bucket):
+    with (
+        patch("trending_digest_handler.refresh_articles_snapshot") as refresh,
+        patch("trending_digest_handler.list_topics", return_value=[]),
+    ):
+        result = trending_digest_handler.handler({}, None)
+
+    assert result == {"status": "no_recent_findings"}
+    refresh.assert_not_called()
+
+
+def test_a_digest_run_that_ended_in_an_error_leaves_the_article_figures_alone(s3_bucket):
+    with (
+        patch("trending_digest_handler.refresh_articles_snapshot") as refresh,
+        patch("trending_digest_handler.list_topics", side_effect=RuntimeError("boom")),
+    ):
+        result = trending_digest_handler.handler({}, None)
+
+    assert result == {"status": "error", "error": "boom"}
+    refresh.assert_not_called()

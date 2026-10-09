@@ -1017,3 +1017,65 @@ def test_the_assistant_is_a_category_of_its_own_row_and_is_never_summed_across_r
     assert (assistant(totals)["calls"], assistant(totals)["cost_aud"]) == (10, 0.30)
     assert (assistant(current)["calls"], assistant(current)["cost_aud"]) == (2, 0.06)
     assert not hasattr(st, "overall_view")
+
+
+# --- The Stats page's Articles figures, built after a publishing run ---------------------------
+
+_SNAPSHOT_ARTICLE = {
+    "article_id": "a1",
+    "topic_id": "github-trending",
+    "status": "published",
+    "created_at": "2026-10-08T03:00:00+00:00",
+    "lineage": {"calls": [{"model_id": "model-a", "input_tokens": 1000, "output_tokens": 500}]},
+}
+
+
+def _refresh(articles):
+    with (
+        patch("common.stats_tracking.list_all_articles", return_value=articles),
+        patch("common.stats_tracking.list_topics", return_value=[]),
+        patch("common.stats_tracking.list_models", return_value=[]),
+    ):
+        st.refresh_articles_snapshot()
+
+
+def test_refresh_stores_what_build_stats_made_as_the_json_the_page_is_sent(bill_tables):
+    import common.dynamo as dynamo
+
+    assert dynamo.get_articles_stats_snapshot() is None
+
+    _refresh([_SNAPSHOT_ARTICLE])
+
+    stored = json.loads(dynamo.get_articles_stats_snapshot())
+    assert stored["totals"]["articles"] == 1 and stored["totals"]["input_tokens"] == 1000
+    assert len(stored["daily"]) == 30
+    # Not a week: the weekly readers of this table never see it.
+    assert dynamo.list_stats_history_weeks() == []
+
+
+def test_a_later_refresh_replaces_the_earlier_one(bill_tables):
+    import common.dynamo as dynamo
+
+    _refresh([])
+    _refresh([_SNAPSHOT_ARTICLE])
+
+    assert json.loads(dynamo.get_articles_stats_snapshot())["totals"]["articles"] == 1
+
+
+def test_a_build_that_began_earlier_never_overwrites_a_later_one(bill_tables):
+    import common.dynamo as dynamo
+
+    assert dynamo.put_articles_stats_snapshot('{"n": 2}', "2026-10-09T02:00:05+00:00") is True
+    assert dynamo.put_articles_stats_snapshot('{"n": 1}', "2026-10-09T02:00:00+00:00") is False
+
+    assert dynamo.get_articles_stats_snapshot() == '{"n": 2}'
+
+
+def test_refresh_fails_open_and_does_nothing_without_a_stats_table(bill_tables, monkeypatch):
+    with patch("common.stats_tracking.list_all_articles", side_effect=RuntimeError("dynamo is down")):
+        st.refresh_articles_snapshot()  # logged and swallowed
+
+    monkeypatch.delenv("STATS_HISTORY_TABLE")
+    with patch("common.stats_tracking.list_all_articles") as scan:
+        st.refresh_articles_snapshot()
+    scan.assert_not_called()

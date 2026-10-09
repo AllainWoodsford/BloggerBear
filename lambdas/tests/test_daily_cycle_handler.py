@@ -2493,3 +2493,50 @@ def test_a_plausible_title_never_triggers_a_hold(s3_bucket):
 
     assert result["status"] == "published"
     mock_put_moderation.assert_not_called()
+
+
+# --- The Stats page's Articles figures are rebuilt after a run that wrote an article -----------
+
+
+def test_a_run_that_wrote_an_article_rebuilds_the_stats_pages_article_figures(s3_bucket):
+    with patch("daily_cycle_handler.refresh_articles_snapshot") as refresh:
+        published, _, _, _, _ = _run_with_review(compliant=True)
+        held, _, _, _, _ = _run_with_review(compliant=False)
+
+    assert (published["status"], held["status"]) == ("published", "pending_moderation")
+    assert refresh.call_count == 2
+
+
+def test_a_run_that_wrote_nothing_leaves_the_article_figures_alone(s3_bucket):
+    with (
+        patch("daily_cycle_handler.refresh_articles_snapshot") as refresh,
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=[]),
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "github-trending"}, None)
+
+    assert result["status"] == "no_findings"
+    refresh.assert_not_called()
+
+
+def test_a_run_that_ended_in_an_error_leaves_the_article_figures_alone(s3_bucket):
+    with (
+        patch("daily_cycle_handler.refresh_articles_snapshot") as refresh,
+        patch("daily_cycle_handler.get_topic", return_value=None),
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "unknown"}, None)
+
+    assert result["status"] == "error"
+    refresh.assert_not_called()
+
+
+@pytest.mark.parametrize("status, rebuilt", [("rewritten", True), ("failed", False), ("skipped", False)])
+def test_only_a_finished_rewrite_rebuilds_the_article_figures(status, rebuilt):
+    with (
+        patch("daily_cycle_handler.refresh_articles_snapshot") as refresh,
+        patch("daily_cycle_handler.run_rewrite", return_value={"status": status}),
+    ):
+        result = daily_cycle_handler.handler({"action": "rewrite", "queue_id": "q", "rewrite_id": "r"}, None)
+
+    assert result == {"status": status}
+    assert refresh.called is rebuilt

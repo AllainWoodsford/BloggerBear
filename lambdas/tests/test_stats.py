@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from common.costing import USD_TO_AUD_RATE
-from common.stats import build_stats
+from common.stats import build_stats, rewindow_daily
 
 TODAY = date(2026, 9, 20)
 
@@ -194,3 +194,41 @@ def test_bad_created_at_does_not_crash():
 
     assert stats["totals"]["input_tokens"] == 1000
     assert sum(day["articles"] for day in stats["daily"]) == 0
+
+
+# --- The 30-day table, read on a later day than it was built -----------------------------------
+
+
+def _built_daily():
+    return _build([_article("github-trending", [_call("model-a", 1000, 500)])])["daily"]
+
+
+def test_rewindow_on_the_day_it_was_built_changes_nothing():
+    daily = _built_daily()
+
+    assert rewindow_daily(daily, today=TODAY) == daily
+
+
+def test_rewindow_on_a_later_day_slides_the_window_and_fills_the_new_days_with_zeros():
+    daily = _built_daily()
+
+    moved = rewindow_daily(daily, today=TODAY + timedelta(days=2))
+
+    assert len(moved) == 30
+    assert [row["date"] for row in moved[-3:]] == ["2026-09-20", "2026-09-21", "2026-09-22"]
+    assert moved[-3] == daily[-1] and moved[-3]["articles"] == 1
+    assert moved[-1] == {
+        "date": "2026-09-22",
+        "articles": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_aud": 0.0,
+    }
+    assert moved[0]["date"] == daily[2]["date"]
+
+
+def test_rewindow_long_after_the_last_build_is_all_zeros():
+    moved = rewindow_daily(_built_daily(), today=TODAY + timedelta(days=45))
+
+    assert len(moved) == 30
+    assert all(row["articles"] == 0 and row["cost_aud"] == 0.0 for row in moved)

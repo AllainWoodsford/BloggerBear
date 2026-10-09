@@ -124,7 +124,12 @@ from common.static_pages import (
     remove_article_page,
     render_and_publish_article_page,
 )
-from common.stats_tracking import ARTICLES_BACKFILL_MARKER, plan_articles_backfill, to_stats_updates
+from common.stats_tracking import (
+    ARTICLES_BACKFILL_MARKER,
+    plan_articles_backfill,
+    refresh_articles_snapshot,
+    to_stats_updates,
+)
 
 _DEFAULT_RESEARCH_CADENCE = "rate(1 hour)"
 # New topics get their daily article at 9 AM Sydney time (the scheduler reads the
@@ -669,6 +674,7 @@ def _publish_article(event: dict) -> dict:
     if moderation_item is not None and moderation_item.get("status") in ("pending", "rewriting"):
         update_moderation_status(moderation_item["queue_id"], "approved")
 
+    refresh_articles_snapshot()
     return _response(200, {"published": article_id})
 
 
@@ -704,6 +710,7 @@ def _unpublish_article(event: dict) -> dict:
     if moderation_item is not None and moderation_item.get("status") != "rejected":
         update_moderation_status(moderation_item["queue_id"], "rejected")
 
+    refresh_articles_snapshot()
     return _response(200, {"unpublished": article_id, **_clear_article_traces(article_id)})
 
 
@@ -745,6 +752,8 @@ def _lineage_backfill(event: dict) -> dict:
     if apply:
         for item in changed:
             update_article_lineage(item["article_id"], item["lineage"])
+        if changed:
+            refresh_articles_snapshot()
 
     return _response(
         200,
@@ -1154,6 +1163,7 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     update_moderation_status(queue_id, new_status)
     if article_status == "rejected":
         _post_rejection_musing(item.get("topic_id") or (get_article(article_id) or {}).get("topic_id"))
+    refresh_articles_snapshot()
 
     action_key = "approved" if new_status == "approved" else "rejected"
     return _response(200, {action_key: queue_id, "article_id": article_id})

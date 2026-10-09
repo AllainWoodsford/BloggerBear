@@ -59,6 +59,7 @@ from common.comment_screening import (
 from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
+    get_articles_stats_snapshot,
     get_current_stats,
     get_latest_finding,
     get_stats_totals,
@@ -79,7 +80,7 @@ from common.dynamo import (
 from common.fact_check import fact_check_label
 from common.source_refs import dedupe_source_refs
 from common.static_pages import equipment_snapshot
-from common.stats import build_stats
+from common.stats import build_stats, rewindow_daily
 from common.stats_tracking import (
     HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE,
     public_view,
@@ -88,6 +89,9 @@ from common.stats_tracking import (
 )
 
 _RSS_ITEM_LIMIT = 50
+# How many pending-review articles GET /topics/{topic_id}/activity names in `pipeline_items`. The
+# topic page shows at most this many under "Articles in the Pipeline", then a plain "...more" line.
+PIPELINE_PENDING_LIMIT = 3
 _RSS_DESCRIPTION_MAX_CHARS = 300
 
 _s3_client = None
@@ -148,6 +152,35 @@ def _path_param(event: dict, name: str) -> str | None:
 
 def _query_param(event: dict, name: str) -> str | None:
     return (event.get("queryStringParameters") or {}).get(name)
+
+
+def _page_param(event: dict) -> int | None:
+    """The 1-based `?page=` of a paginated listing: 1 when absent, None (a 400) when it is not a
+    whole number of at least 1."""
+    raw = _query_param(event, "page")
+    if raw is None or raw == "":
+        return 1
+    try:
+        page = int(raw)
+    except ValueError:
+        return None
+    return page if page >= 1 else None
+
+
+def _paginate(items: list, page: int, page_size: int) -> tuple[list, dict]:
+    """One page of `items` (already in display order), and the fields that say where it sits:
+    `page`, `page_size`, `total` and `total_pages` (at least 1, so an empty listing is "page 1 of
+    1"). A page past the end is an empty slice, not an error -- the frontend says so and links back
+    to page 1."""
+    total = len(items)
+    total_pages = max(1, -(-total // page_size))
+    start = (page - 1) * page_size
+    return items[start : start + page_size], {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 def _get_published_article(article_id: str) -> dict | None:
@@ -244,7 +277,8 @@ def _topic_activity(event: dict) -> dict:
 
     Returns the coarse-grained `researching`/`pending_review_count` fields
     the frontend already uses, plus a small `pipeline_items` list for the
-    pipeline box's right-hand titles. Pending-review items expose only an
+    pipeline box's right-hand titles: the newest PIPELINE_PENDING_LIMIT
+    pending-review articles, then the researching item. Pending-review items expose only an
     article title already stored in DynamoDB; researching exposes only the
     latest source title/url already visible once an article is eventually
     published. No bodies, moderation reasons, queue ids, or finding
@@ -260,7 +294,9 @@ def _topic_activity(event: dict) -> dict:
     pending_review_count = len(pending_items)
 
     pending_items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    for pending_item in pending_items:
+    # Only the newest few are named (one article read each); `pending_review_count` stays the full
+    # count, so the frontend can say there are more without being sent them.
+    for pending_item in pending_items[:PIPELINE_PENDING_LIMIT]:
         article = get_article(pending_item.get("article_id")) or {}
         pipeline_items.append(
             {
@@ -316,13 +352,24 @@ def _article_attribution(article: dict) -> list[dict]:
     return sources_for_article(article, get_topic=get_topic, list_topics=list_topics)
 
 
+# Articles per page of GET /articles?topic_id= (a topic page shows one page at a time, newest first).
+ARTICLES_PAGE_SIZE = 10
+
+
 def _list_articles(event: dict) -> dict:
+    """A topic's published articles, newest first, ARTICLES_PAGE_SIZE at a time: `?page=` (1-based,
+    default 1) picks which, and the response says which page it is and how many there are (see
+    _paginate)."""
     topic_id = _query_param(event, "topic_id")
     if not topic_id:
         return _error(400, "'topic_id' query parameter is required")
+    page = _page_param(event)
+    if page is None:
+        return _error(400, "'page' must be a whole number of at least 1")
 
     articles = list_published_articles(topic_id)
     articles.sort(key=lambda a: a.get("published_at") or "", reverse=True)
+    articles, paging = _paginate(articles, page, ARTICLES_PAGE_SIZE)
     summaries = [
         {
             "article_id": a["article_id"],
@@ -353,7 +400,12 @@ def _list_articles(event: dict) -> dict:
     return _response(
         200,
         # `attribution`: the topic's source credit, for the line under the topic page's title.
-        {"topic_id": topic_id, "articles": summaries, "attribution": _topic_attribution(topic_id)},
+        {
+            "topic_id": topic_id,
+            "articles": summaries,
+            **paging,
+            "attribution": _topic_attribution(topic_id),
+        },
         cache_seconds=_LISTING_CACHE_SECONDS,
     )
 
@@ -629,8 +681,18 @@ def _submit_feedback(event: dict) -> dict:
 # --- Musings --------------------------------------------------------------
 
 
+# Musings per page of GET /musings (the Musings page shows one page at a time, newest first).
+MUSINGS_PAGE_SIZE = 15
+
+
 def _list_musings(event: dict) -> dict:
-    items = list_musings()
+    """Musings, newest first, MUSINGS_PAGE_SIZE at a time: `?page=` (1-based, default 1) picks which.
+    Every musing is reachable on some page; the response says which page it is and how many there
+    are (see _paginate)."""
+    page = _page_param(event)
+    if page is None:
+        return _error(400, "'page' must be a whole number of at least 1")
+    items, paging = _paginate(list_musings(limit=None), page, MUSINGS_PAGE_SIZE)
     musings = [
         {
             "musing_id": m.get("musing_id"),
@@ -645,16 +707,28 @@ def _list_musings(event: dict) -> dict:
         }
         for m in items
     ]
-    return _response(200, {"musings": musings}, cache_seconds=_LISTING_CACHE_SECONDS)
+    return _response(200, {"musings": musings, **paging}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 # --- Stats ------------------------------------------------------------------
 
-# Every hit scans the Articles/Topics/Models tables (fine at this project's
-# scale, same as the RSS feed) -- a short public cache keeps a popular page
-# from turning into a scan per view. The numbers move on the scale of
-# articles-per-day, so five minutes of staleness is invisible.
+# Three single-row reads. The Articles figures are built after each publishing run
+# (common/stats_tracking.py's refresh_articles_snapshot), not here, so a view no longer scans
+# the Articles/Topics/Models tables. The weekly counters move by the call, and five minutes of
+# staleness in them is invisible.
 _STATS_CACHE_SECONDS = 300
+
+
+def _articles_stats() -> dict:
+    """The Articles section as the last publishing run built it, with its 30-day table moved to
+    today's window. Built here, the old way, only when nothing has stored one yet (a fresh
+    deploy, before the first run)."""
+    snapshot = get_articles_stats_snapshot()
+    if snapshot is None:
+        return build_stats(list_all_articles(), list_topics(), list_models())
+    stats = json.loads(snapshot)
+    stats["daily"] = rewindow_daily(stats.get("daily") or [])
+    return stats
 
 
 def _stats(event: dict) -> dict:
@@ -662,10 +736,10 @@ def _stats(event: dict) -> dict:
     aggregates only (common/stats.py plus common/stats_tracking.py), never article content or
     ids. `weekly` (StatsCurrent) and `historic` (StatsHistory's all-time running total, PR 4 of
     the Observability enhancement) sit alongside the original per-article `by_model`/`by_topic`/
-    `daily` breakdown -- both single get_item reads, no extra scan. Each is shaped from its own
-    row alone (public_view): `weekly` is the current table's, `historic` the history table's
-    all-time row, and nothing in the answer mixes the two."""
-    stats = build_stats(list_all_articles(), list_topics(), list_models())
+    `daily` breakdown (_articles_stats above) -- both single get_item reads, no extra scan. Each
+    is shaped from its own row alone (public_view): `weekly` is the current table's, `historic`
+    the history table's all-time row, and nothing in the answer mixes the two."""
+    stats = _articles_stats()
     current, totals = get_current_stats(), get_stats_totals()
     stats["weekly"] = public_view(current)
     stats["historic"] = {**public_view(totals), "note": HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE}

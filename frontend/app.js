@@ -2,8 +2,10 @@
  * BloggerBear public frontend -- plain static single-page app, no build step,
  * no framework, no npm. Hash-based client-side routing:
  *   #/                 -> home / topic list
- *   #/topic/{id}       -> published article list for a topic
+ *   #/topic/{id}       -> published article list for a topic (?page=N, 10 a page)
  *   #/article/{id}     -> full article view
+ *   #/musings          -> BloggerBear's musings (?page=N, 15 a page)
+ *   #/stats            -> the Stats page
  *   #/terms            -> redirects to /terms.html (a static page)
  *   #/privacy          -> redirects to /privacy.html (a static page)
  *
@@ -480,28 +482,42 @@
   //
   var PENDING_REVIEW_LABEL = "Pending review";
   var RESEARCHING_LABEL = "Researching";
+  // At most this many articles awaiting review are listed; any beyond them become one plain
+  // "...more" line (text, not a control). Matches public_api_handler.py's PIPELINE_PENDING_LIMIT,
+  // which already sends no more than this -- capped here too so an older API can't flood the box.
+  var PIPELINE_PENDING_LIMIT = 3;
+  var PIPELINE_MORE_TEXT = "...more";
 
   function pipelineItemsFor(activity) {
+    var pending = [];
+    var others = [];
     if (activity && Array.isArray(activity.pipeline_items) && activity.pipeline_items.length > 0) {
-      return activity.pipeline_items.map(function (item) {
-        return {
-          label: item.label || (item.status === "pending_review" ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
+      activity.pipeline_items.forEach(function (item) {
+        var isPending = item.status === "pending_review";
+        (isPending ? pending : others).push({
+          label: item.label || (isPending ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
           title: item.title || "",
           // Only the researching item has one: when its source was last checked.
           checkedAt: item.checked_at || "",
-        };
+        });
       });
+    } else {
+      var count = Number(activity && activity.pending_review_count) || 0;
+      for (var i = 0; i < Math.min(count, PIPELINE_PENDING_LIMIT); i++) {
+        pending.push({ label: PENDING_REVIEW_LABEL, title: "" });
+      }
+      if (activity && activity.researching) {
+        others.push({ label: RESEARCHING_LABEL, title: "" });
+      }
     }
 
-    var items = [];
-    var pendingCount = Number(activity && activity.pending_review_count) || 0;
-    for (var i = 0; i < pendingCount; i++) {
-      items.push({ label: PENDING_REVIEW_LABEL, title: "" });
+    // The API names only the newest few, so the full count is what says whether there are more.
+    var pendingTotal = Math.max(Number(activity && activity.pending_review_count) || 0, pending.length);
+    var items = pending.slice(0, PIPELINE_PENDING_LIMIT);
+    if (pendingTotal > items.length) {
+      items.push({ more: true });
     }
-    if (activity && activity.researching) {
-      items.push({ label: RESEARCHING_LABEL, title: "" });
-    }
-    return items;
+    return items.concat(others);
   }
 
   // "checked 38 min ago" for an ISO timestamp, "" if it can't be read. A time slightly in the
@@ -540,6 +556,10 @@
 
     var list = el("ul", { className: "pipeline-list" });
     items.forEach(function (item) {
+      if (item.more) {
+        list.appendChild(el("li", { className: "pipeline-more", text: PIPELINE_MORE_TEXT }));
+        return;
+      }
       var row = el("li");
       row.appendChild(el("span", { className: "pipeline-status", text: item.label }));
       if (item.title) {
@@ -607,7 +627,9 @@
     return line.firstChild ? line : null;
   }
 
-  function renderArticleList(topicId, articles, activity, attribution) {
+  // `paging` is the API's page/total_pages for this listing (see renderPagination). The pipeline
+  // box is about what comes next, so it is shown on the first page only.
+  function renderArticleList(topicId, articles, activity, attribution, paging) {
     clearChildren(contentEl);
     var heading = topicId === DIGEST_TOPIC_ID ? "Trending Everywhere" : topicId;
     contentEl.appendChild(el("h1", { text: heading }));
@@ -619,6 +641,12 @@
     var pipelineItems = pipelineItemsFor(activity);
     if (pipelineItems.length > 0) {
       contentEl.appendChild(renderPipelineSection(pipelineItems));
+    }
+
+    var page = (paging && paging.page) || 1;
+    if (articles.length === 0 && page > 1) {
+      renderPastTheEnd(page, topicHref(topicId), "See the newest articles");
+      return;
     }
 
     if (articles.length === 0) {
@@ -647,29 +675,157 @@
       list.appendChild(item);
     });
     contentEl.appendChild(list);
+
+    var pagination = renderPagination(paging, topicHref(topicId), "articles");
+    if (pagination) {
+      contentEl.appendChild(pagination);
+    }
   }
 
-  function loadTopicArticles(topicId) {
+  function topicHref(topicId) {
+    return "#/topic/" + encodeURIComponent(topicId);
+  }
+
+  // ARTICLES_PAGE_SIZE (10) at a time, newest first; `page` is 1-based.
+  function loadTopicArticles(topicId, page) {
     showMessage("Loading articles...");
-    fetchJson(apiUrl("/articles?topic_id=" + encodeURIComponent(topicId)))
+    fetchJson(apiUrl(pagedApiPath("/articles?topic_id=" + encodeURIComponent(topicId), page)))
       .then(function (data) {
         var articles = data.articles || [];
-        // Always fetch activity now, not just when articles is empty --
+        var paging = { page: Number(data.page) || page, total_pages: data.total_pages };
+        function render(activity) {
+          renderArticleList(topicId, articles, activity, data.attribution, paging);
+        }
+        if (page > 1) {
+          render(null);
+          return;
+        }
+        // Always fetch activity on the first page, not just when articles is empty --
         // "Articles in the Pipeline" can appear alongside already-
         // published articles too (e.g. 3 published + 1 pending review is
         // a perfectly normal state), unlike the old researching-only
         // placeholder which only ever mattered on an empty list.
         fetchJson(apiUrl("/topics/" + encodeURIComponent(topicId) + "/activity"))
-          .then(function (activity) {
-            renderArticleList(topicId, articles, activity, data.attribution);
-          })
+          .then(render)
           .catch(function () {
-            renderArticleList(topicId, articles, null, data.attribution);
+            render(null);
           });
       })
       .catch(function () {
         showMessage("Could not load articles right now.");
       });
+  }
+
+  // --- Pagination -----------------------------------------------------
+  //
+  // A long listing comes from the API one page at a time (`?page=`, 1-based), with `page` and
+  // `total_pages` beside it (public_api_handler.py's _paginate). The page is part of the route
+  // ("#/musings?page=2", "#/topic/crypto?page=3"), so a page can be linked to and Back goes back
+  // a page. Page 1 is always the bare route, so there is one URL for the newest items.
+
+  // The ?page= of a route's query string ("page=2&x=y"); 1 when it's absent or not a whole number
+  // of at least 1, so a mistyped link still lands somewhere sensible.
+  function pageFromQuery(query) {
+    var match = /(?:^|&)page=(\d+)(?:&|$)/.exec(query || "");
+    var page = match ? parseInt(match[1], 10) : 1;
+    return page >= 1 ? page : 1;
+  }
+
+  function pagedHref(baseHref, page) {
+    return page > 1 ? baseHref + "?page=" + page : baseHref;
+  }
+
+  // The API path for one page of a listing. Page 1 is the path as it was before there were pages
+  // (the API's default), so it shares a cache entry with every link already out there.
+  function pagedApiPath(path, page) {
+    return page > 1 ? path + (path.indexOf("?") === -1 ? "?" : "&") + "page=" + page : path;
+  }
+
+  // Which page numbers to offer: the first, the last, and the current one with a neighbour either
+  // side; null marks a gap ("..."). 1 2 3 4 5 / 1 ... 4 5 6 ... 12 / 1 2 3 ... 12.
+  function pageWindow(current, total) {
+    var pages = [];
+    for (var n = 1; n <= total; n++) {
+      if (n === 1 || n === total || Math.abs(n - current) <= 1) {
+        pages.push(n);
+      } else if (pages[pages.length - 1] !== null) {
+        pages.push(null);
+      }
+    }
+    // A gap standing in for a single page reads worse than the page itself.
+    return pages.map(function (n, i) {
+      return n === null && pages[i + 1] - pages[i - 1] === 2 ? pages[i - 1] + 1 : n;
+    });
+  }
+
+  // The nav under a paged listing: "Newer" / page numbers / "Older" (newest first, so "Newer" is
+  // back towards page 1). On a phone the numbers give way to "Page 2 of 5" (styles.css). Returns
+  // null when everything fits on one page. `noun` names the items, for screen readers.
+  function renderPagination(paging, baseHref, noun) {
+    var total = Number(paging && paging.total_pages) || 1;
+    var current = Number(paging && paging.page) || 1;
+    if (total <= 1 || current > total) {
+      return null;
+    }
+    var nav = el("nav", { className: "pagination", attrs: { "aria-label": "Pages of " + noun } });
+
+    function stepLink(page, arrow, word, rel) {
+      var link = el("a", {
+        className: "pagination-step pagination-" + rel,
+        href: pagedHref(baseHref, page),
+        attrs: { rel: rel, "aria-label": word + " " + noun },
+      });
+      var arrowEl = el("span", { text: arrow, attrs: { "aria-hidden": "true" } });
+      var wordEl = el("span", { text: word });
+      link.appendChild(rel === "prev" ? arrowEl : wordEl);
+      link.appendChild(rel === "prev" ? wordEl : arrowEl);
+      return link;
+    }
+
+    nav.appendChild(current > 1 ? stepLink(current - 1, "\u2190", "Newer", "prev") : el("span"));
+
+    var pages = el("ol", { className: "pagination-pages" });
+    pageWindow(current, total).forEach(function (n) {
+      var item = el("li");
+      if (n === null) {
+        item.className = "pagination-gap";
+        item.appendChild(el("span", { text: "\u2026", attrs: { "aria-hidden": "true" } }));
+      } else if (n === current) {
+        item.appendChild(
+          el("span", {
+            className: "pagination-current",
+            text: String(n),
+            // aria-current already says "current page"; the label only adds the word "Page".
+            attrs: { "aria-current": "page", "aria-label": "Page " + n },
+          })
+        );
+      } else {
+        item.appendChild(
+          el("a", { text: String(n), href: pagedHref(baseHref, n), attrs: { "aria-label": "Page " + n } })
+        );
+      }
+      pages.appendChild(item);
+    });
+    nav.appendChild(pages);
+    nav.appendChild(el("span", { className: "pagination-status", text: "Page " + current + " of " + total }));
+
+    nav.appendChild(current < total ? stepLink(current + 1, "\u2192", "Older", "next") : el("span"));
+
+    // A new page of results should start at the top, not where this nav was.
+    nav.addEventListener("click", function (event) {
+      if (event.target && event.target.closest && event.target.closest("a")) {
+        window.scrollTo(0, 0);
+      }
+    });
+    return nav;
+  }
+
+  // What a page past the end says (a stale link, or items removed since): which page, and a link
+  // back to the first.
+  function renderPastTheEnd(page, baseHref, backText) {
+    var note = el("p", { text: "There's no page " + page + " any more. " });
+    note.appendChild(el("a", { text: backText, href: baseHref }));
+    contentEl.appendChild(note);
   }
 
   // --- Musings --------------------------------------------------------
@@ -697,12 +853,16 @@
     return card;
   }
 
-  function renderMusings(musings) {
+  function renderMusings(musings, paging) {
     clearChildren(contentEl);
     contentEl.appendChild(el("h1", { text: "Musings" }));
 
     if (musings.length === 0) {
-      contentEl.appendChild(el("p", { text: "No musings yet -- check back after the next article." }));
+      if (paging && paging.page > 1) {
+        renderPastTheEnd(paging.page, "#/musings", "See the newest musings");
+      } else {
+        contentEl.appendChild(el("p", { text: "No musings yet -- check back after the next article." }));
+      }
       return;
     }
 
@@ -753,13 +913,19 @@
       list.appendChild(item);
     });
     contentEl.appendChild(list);
+
+    var pagination = renderPagination(paging, "#/musings", "musings");
+    if (pagination) {
+      contentEl.appendChild(pagination);
+    }
   }
 
-  function loadMusings() {
+  // MUSINGS_PAGE_SIZE (15) at a time, newest first; `page` is 1-based.
+  function loadMusings(page) {
     showMessage("Loading musings...");
-    fetchJson(apiUrl("/musings"))
+    fetchJson(apiUrl(pagedApiPath("/musings", page)))
       .then(function (data) {
-        renderMusings(data.musings || []);
+        renderMusings(data.musings || [], { page: Number(data.page) || page, total_pages: data.total_pages });
       })
       .catch(function () {
         showMessage("Could not load musings right now.");
@@ -2203,14 +2369,18 @@
   // --- Routing --------------------------------------------------------
 
   function parseRoute(hash) {
-    // hash looks like "#/topic/foo" or "#/article/bar" or "#/" or "".
+    // hash looks like "#/topic/foo" or "#/article/bar" or "#/" or "", and a paged listing's can
+    // end in a query string ("#/musings?page=2" -- see renderPagination).
     var path = hash.replace(/^#/, "");
+    var queryAt = path.indexOf("?");
+    var query = queryAt === -1 ? "" : path.slice(queryAt + 1);
+    path = queryAt === -1 ? path : path.slice(0, queryAt);
     if (path === "" || path === "/") {
       return { name: "home" };
     }
     var topicMatch = path.match(/^\/topic\/([^/]+)$/);
     if (topicMatch) {
-      return { name: "topic", topicId: decodeURIComponent(topicMatch[1]) };
+      return { name: "topic", topicId: decodeURIComponent(topicMatch[1]), page: pageFromQuery(query) };
     }
     var articleMatch = path.match(/^\/article\/([^/]+)$/);
     if (articleMatch) {
@@ -2223,7 +2393,7 @@
       return { name: "legal", pageKey: "privacy" };
     }
     if (path === "/musings") {
-      return { name: "musings" };
+      return { name: "musings", page: pageFromQuery(query) };
     }
     if (path === "/stats") {
       return { name: "stats" };
@@ -2236,14 +2406,14 @@
     if (current.name === "home") {
       loadHome();
     } else if (current.name === "topic") {
-      loadTopicArticles(current.topicId);
+      loadTopicArticles(current.topicId, current.page);
     } else if (current.name === "article") {
       loadArticle(current.articleId);
     } else if (current.name === "legal") {
       redirectToLegalPage(current.pageKey);
       return;
     } else if (current.name === "musings") {
-      loadMusings();
+      loadMusings(current.page);
     } else if (current.name === "stats") {
       loadStats();
     } else {
