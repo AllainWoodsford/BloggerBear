@@ -44,8 +44,8 @@ resource "aws_cloudfront_cache_policy" "api" {
     enable_accept_encoding_gzip   = true
     enable_accept_encoding_brotli = true
 
-    # GET /articles?topic_id=... is the one route that reads a query string; all of them are in the
-    # key so a new one can never be served another's answer.
+    # GET /articles?topic_id=...&page=... and GET /musings?page=... read query strings; all of them
+    # are in the key so a new one can never be served another's answer.
     query_strings_config {
       query_string_behavior = "all"
     }

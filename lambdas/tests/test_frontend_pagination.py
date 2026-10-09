@@ -1,7 +1,8 @@
 """Paged listings in the single-page frontend (frontend/app.js's renderPagination): the Musings
-page shows one page of the API's results (15 at a time, public_api_handler.py's MUSINGS_PAGE_SIZE)
-with a nav under it -- "Newer", page numbers, "Older" -- and the page is part of the route
-("#/musings?page=2"), so it can be linked to.
+page (15 at a time, public_api_handler.py's MUSINGS_PAGE_SIZE) and a topic's articles (10 at a
+time, ARTICLES_PAGE_SIZE) show one page of the API's results with a nav under it -- "Newer", page
+numbers, "Older" -- and the page is part of the route ("#/musings?page=2",
+"#/topic/crypto?page=2"), so it can be linked to.
 
 Runs the real app.js under Node with the stand-in DOM from test_frontend_attribution.py, against a
 fake API that only answers the exact paths listed, so a test also pins which URL the page fetched.
@@ -178,3 +179,105 @@ def test_no_musings_at_all_still_says_so():
     )
 
     assert "No musings yet" in " ".join(_flat(child) for child in children)
+
+
+# --- A topic's articles: the newest 10, then pages ------------------------------------------------
+
+
+def _articles(count, start=0):
+    return [
+        {"article_id": f"a{n}", "title": f"Article {n}", "published_at": "2026-09-12T00:00:00+00:00"}
+        for n in range(start, start + count)
+    ]
+
+
+def _topic_page(hash_, page, total_pages, count=10, activity=None):
+    path = "/articles?topic_id=crypto" + ("" if page == 1 else f"&page={page}")
+    responses = {
+        "/topics": {"topics": []},
+        path: {
+            "topic_id": "crypto",
+            "articles": _articles(count, (page - 1) * 10),
+            "page": page,
+            "page_size": 10,
+            "total": (total_pages - 1) * 10 + count,
+            "total_pages": total_pages,
+            "attribution": [],
+        },
+    }
+    if activity is not None:
+        responses["/topics/crypto/activity"] = activity
+    return _render(hash_, responses)
+
+
+def _article_titles(children):
+    (listing,) = (child for child in children if child.get("className") == "article-list")
+    return [item["children"][0]["textContent"] for item in listing["children"]]
+
+
+PENDING = {
+    "pending_review_count": 1,
+    "pipeline_items": [{"status": "pending_review", "label": "Pending review", "title": "Soon"}],
+}
+
+
+@needs_node
+def test_a_topic_shows_its_newest_ten_articles_and_a_way_to_older_ones():
+    children = _topic_page("#/topic/crypto", 1, 3, activity=PENDING)
+
+    assert _article_titles(children) == [f"Article {n}" for n in range(10)]
+    nav = _nav(children)
+    assert nav["attributes"]["aria-label"] == "Pages of articles"
+    hrefs = {link["attributes"].get("rel"): link["attributes"]["href"] for link in _links(nav)}
+    assert hrefs["next"] == "#/topic/crypto?page=2" and "prev" not in hrefs
+    assert _numbers(nav) == ["1", "2", "3"]
+    # The pipeline box is on the first page, above the list.
+    classes = [child.get("className") for child in children]
+    assert classes.index("pipeline-box") < classes.index("article-list") < classes.index("pagination")
+
+
+@needs_node
+def test_an_older_page_of_a_topic_links_back_and_leaves_the_pipeline_box_off():
+    # No activity response in the fake API: an older page must not fetch it at all.
+    children = _topic_page("#/topic/crypto?page=2", 2, 3)
+
+    assert _article_titles(children) == [f"Article {n}" for n in range(10, 20)]
+    assert not any(child.get("className") == "pipeline-box" for child in children)
+    hrefs = {link["attributes"].get("rel"): link["attributes"]["href"] for link in _links(_nav(children))}
+    assert hrefs["prev"] == "#/topic/crypto"
+    assert hrefs["next"] == "#/topic/crypto?page=3"
+
+
+@needs_node
+def test_a_topic_with_ten_or_fewer_articles_has_no_pager():
+    children = _topic_page("#/topic/crypto", 1, 1, count=10, activity={})
+
+    assert len(_article_titles(children)) == 10
+    assert _nav(children) is None
+
+
+@needs_node
+def test_a_topic_page_past_the_end_says_so_and_links_to_the_newest():
+    children = _topic_page("#/topic/crypto?page=7", 7, 2, count=0)
+
+    text = " ".join(_flat(child) for child in children)
+    assert "There's no page 7 any more." in text
+    assert [link["attributes"]["href"] for link in _links(children[-1])] == ["#/topic/crypto"]
+
+
+@needs_node
+def test_a_topic_id_that_needs_escaping_keeps_it_in_the_pager_links():
+    responses = {
+        "/topics": {"topics": []},
+        "/articles?topic_id=a%20b%2Fc": {
+            "topic_id": "a b/c",
+            "articles": _articles(10),
+            "page": 1,
+            "total_pages": 2,
+            "attribution": [],
+        },
+        "/topics/a%20b%2Fc/activity": {},
+    }
+    nav = _nav(_render("#/topic/a%20b%2Fc", responses))
+
+    assert {link["attributes"]["href"] for link in _links(nav)} == {"#/topic/a%20b%2Fc?page=2"}

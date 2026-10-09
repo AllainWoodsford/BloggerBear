@@ -345,13 +345,24 @@ def _article_attribution(article: dict) -> list[dict]:
     return sources_for_article(article, get_topic=get_topic, list_topics=list_topics)
 
 
+# Articles per page of GET /articles?topic_id= (a topic page shows one page at a time, newest first).
+ARTICLES_PAGE_SIZE = 10
+
+
 def _list_articles(event: dict) -> dict:
+    """A topic's published articles, newest first, ARTICLES_PAGE_SIZE at a time: `?page=` (1-based,
+    default 1) picks which, and the response says which page it is and how many there are (see
+    _paginate)."""
     topic_id = _query_param(event, "topic_id")
     if not topic_id:
         return _error(400, "'topic_id' query parameter is required")
+    page = _page_param(event)
+    if page is None:
+        return _error(400, "'page' must be a whole number of at least 1")
 
     articles = list_published_articles(topic_id)
     articles.sort(key=lambda a: a.get("published_at") or "", reverse=True)
+    articles, paging = _paginate(articles, page, ARTICLES_PAGE_SIZE)
     summaries = [
         {
             "article_id": a["article_id"],
@@ -382,7 +393,12 @@ def _list_articles(event: dict) -> dict:
     return _response(
         200,
         # `attribution`: the topic's source credit, for the line under the topic page's title.
-        {"topic_id": topic_id, "articles": summaries, "attribution": _topic_attribution(topic_id)},
+        {
+            "topic_id": topic_id,
+            "articles": summaries,
+            **paging,
+            "attribution": _topic_attribution(topic_id),
+        },
         cache_seconds=_LISTING_CACHE_SECONDS,
     )
 

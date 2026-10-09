@@ -1537,6 +1537,48 @@ def test_list_articles_only_published_and_sorted_newest_first(aws_resources):
         assert article["published_by"] is None
 
 
+def _articles_page(page=None, topic_id="github-trending"):
+    query = {"topic_id": topic_id, **({} if page is None else {"page": page})}
+    return public_api_handler.handler(_event("GET /articles", query_params=query), None)
+
+
+def _put_numbered_articles(count):
+    """`count` published articles, a00 the oldest, a day apart."""
+    for n in range(count):
+        _put_article(f"a{n:02d}", published_at=f"2026-08-{n + 1:02d}T00:00:00+00:00", title=f"T{n}")
+
+
+def test_list_articles_returns_the_newest_ten_then_pages_the_rest(aws_resources):
+    _put_numbered_articles(23)
+
+    first = json.loads(_articles_page()["body"])
+    assert public_api_handler.ARTICLES_PAGE_SIZE == 10
+    assert [a["article_id"] for a in first["articles"]] == [f"a{n:02d}" for n in range(22, 12, -1)]
+    assert (first["page"], first["page_size"], first["total"], first["total_pages"]) == (1, 10, 23, 3)
+    assert first["topic_id"] == "github-trending" and "attribution" in first
+
+    second = json.loads(_articles_page("2")["body"])
+    assert [a["article_id"] for a in second["articles"]] == [f"a{n:02d}" for n in range(12, 2, -1)]
+
+    last = json.loads(_articles_page("3")["body"])
+    assert [a["article_id"] for a in last["articles"]] == ["a02", "a01", "a00"]
+
+
+def test_list_articles_page_past_the_end_is_empty_not_an_error(aws_resources):
+    _put_numbered_articles(4)
+
+    result = _articles_page("5")
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["articles"] == []
+    assert (body["page"], body["total"], body["total_pages"]) == (5, 4, 1)
+
+
+@pytest.mark.parametrize("page", ["0", "-3", "first", "2.0"])
+def test_list_articles_rejects_a_page_that_is_not_a_positive_whole_number(aws_resources, page):
+    assert _articles_page(page)["statusCode"] == 400
+
+
 def test_list_articles_projects_lineage_summary_when_present(aws_resources):
     lineage = {
         "calls": [
