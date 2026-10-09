@@ -1340,8 +1340,8 @@ def delete_musings_for_article(article_id: str) -> int:
     return len(doomed)
 
 
-def list_musings(limit: int = 50) -> list[dict]:
-    """Return up to `limit` Musings items, most recent first.
+def list_musings(limit: int | None = 50) -> list[dict]:
+    """Return up to `limit` Musings items (every one if `limit` is None), most recent first.
 
     Scan-all (small table, same pattern as list_all_moderation_items) then
     sort/truncate in Python -- there's no sort key to query against here,
@@ -1350,7 +1350,7 @@ def list_musings(limit: int = 50) -> list[dict]:
     table = get_table(os.environ["MUSINGS_TABLE"])
     items = _paginated_scan(table)
     items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return items[:limit]
+    return items if limit is None else items[:limit]
 
 
 # --- Models / ModelConfig (AI lineage/cost-tracking enhancement, PR 1 of 5) --

@@ -89,6 +89,9 @@ from common.stats_tracking import (
 )
 
 _RSS_ITEM_LIMIT = 50
+# How many pending-review articles GET /topics/{topic_id}/activity names in `pipeline_items`. The
+# topic page shows at most this many under "Articles in the Pipeline", then a plain "...more" line.
+PIPELINE_PENDING_LIMIT = 3
 _RSS_DESCRIPTION_MAX_CHARS = 300
 
 _s3_client = None
@@ -149,6 +152,35 @@ def _path_param(event: dict, name: str) -> str | None:
 
 def _query_param(event: dict, name: str) -> str | None:
     return (event.get("queryStringParameters") or {}).get(name)
+
+
+def _page_param(event: dict) -> int | None:
+    """The 1-based `?page=` of a paginated listing: 1 when absent, None (a 400) when it is not a
+    whole number of at least 1."""
+    raw = _query_param(event, "page")
+    if raw is None or raw == "":
+        return 1
+    try:
+        page = int(raw)
+    except ValueError:
+        return None
+    return page if page >= 1 else None
+
+
+def _paginate(items: list, page: int, page_size: int) -> tuple[list, dict]:
+    """One page of `items` (already in display order), and the fields that say where it sits:
+    `page`, `page_size`, `total` and `total_pages` (at least 1, so an empty listing is "page 1 of
+    1"). A page past the end is an empty slice, not an error -- the frontend says so and links back
+    to page 1."""
+    total = len(items)
+    total_pages = max(1, -(-total // page_size))
+    start = (page - 1) * page_size
+    return items[start : start + page_size], {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+    }
 
 
 def _get_published_article(article_id: str) -> dict | None:
@@ -245,7 +277,8 @@ def _topic_activity(event: dict) -> dict:
 
     Returns the coarse-grained `researching`/`pending_review_count` fields
     the frontend already uses, plus a small `pipeline_items` list for the
-    pipeline box's right-hand titles. Pending-review items expose only an
+    pipeline box's right-hand titles: the newest PIPELINE_PENDING_LIMIT
+    pending-review articles, then the researching item. Pending-review items expose only an
     article title already stored in DynamoDB; researching exposes only the
     latest source title/url already visible once an article is eventually
     published. No bodies, moderation reasons, queue ids, or finding
@@ -261,7 +294,9 @@ def _topic_activity(event: dict) -> dict:
     pending_review_count = len(pending_items)
 
     pending_items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    for pending_item in pending_items:
+    # Only the newest few are named (one article read each); `pending_review_count` stays the full
+    # count, so the frontend can say there are more without being sent them.
+    for pending_item in pending_items[:PIPELINE_PENDING_LIMIT]:
         article = get_article(pending_item.get("article_id")) or {}
         pipeline_items.append(
             {
@@ -630,8 +665,18 @@ def _submit_feedback(event: dict) -> dict:
 # --- Musings --------------------------------------------------------------
 
 
+# Musings per page of GET /musings (the Musings page shows one page at a time, newest first).
+MUSINGS_PAGE_SIZE = 15
+
+
 def _list_musings(event: dict) -> dict:
-    items = list_musings()
+    """Musings, newest first, MUSINGS_PAGE_SIZE at a time: `?page=` (1-based, default 1) picks which.
+    Every musing is reachable on some page; the response says which page it is and how many there
+    are (see _paginate)."""
+    page = _page_param(event)
+    if page is None:
+        return _error(400, "'page' must be a whole number of at least 1")
+    items, paging = _paginate(list_musings(limit=None), page, MUSINGS_PAGE_SIZE)
     musings = [
         {
             "musing_id": m.get("musing_id"),
@@ -646,7 +691,7 @@ def _list_musings(event: dict) -> dict:
         }
         for m in items
     ]
-    return _response(200, {"musings": musings}, cache_seconds=_LISTING_CACHE_SECONDS)
+    return _response(200, {"musings": musings, **paging}, cache_seconds=_LISTING_CACHE_SECONDS)
 
 
 # --- Stats ------------------------------------------------------------------
