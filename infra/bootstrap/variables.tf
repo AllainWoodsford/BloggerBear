@@ -158,3 +158,23 @@ variable "aws_account_id" {
     error_message = "aws_account_id must be empty or exactly 12 digits, with no spaces or dashes."
   }
 }
+
+variable "separate_environment_permissions" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Whether each deploy role is refused the other environment's resources: the dev role anything
+    of production's, the production role anything of dev's (main.tf, "Each deploy role is kept out
+    of the other environment"). On by default.
+
+    It adds a Deny-only policy to each role and changes nothing either role may do in its own
+    environment, so it should never be what stops a deploy. If a deploy is ever refused with an
+    "explicit deny" naming <prefix>-gha-dev-deploy-not-production or
+    <prefix>-gha-production-deploy-not-dev, apply bootstrap again with
+    -var="separate_environment_permissions=false" to detach both, get the deploy through, and
+    then find out what it was reaching for.
+
+    The shared CloudFront web ACL (<prefix>-shared) stays reachable by both roles either way.
+  EOT
+}
+

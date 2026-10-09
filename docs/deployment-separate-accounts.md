@@ -20,12 +20,15 @@ Two accounts buy you isolation that one account cannot give:
 
 - **Quotas.** The Lambda concurrency quota is per account. In one account, a busy dev can
   throttle production's pipeline.
-- **Permissions.** In one account the two deploy roles are kept apart by who may use them. The
-  dev role can only be assumed by a workflow on your `dev` branch, and the production role only
-  from the `production` environment, after your approval. No access keys exist for either. Both
-  roles have the same permissions, limited to resources named `<prefix>-*`; the permissions
-  themselves are not split by environment. Two accounts add a second boundary underneath: the
-  account. A dev deploy then has no path to production's resources, whatever it is asked to do.
+- **Permissions.** In one account the two deploy roles are kept apart twice over. First, by who
+  may use them: the dev role can only be assumed by a workflow on your `dev` branch, and the
+  production role only from the `production` environment, after your approval. No access keys
+  exist for either. Second, by what they may touch: each role carries a policy that refuses it
+  the other environment's resources, by name and by tag
+  ([how](#in-one-account-each-role-is-refused-the-other-environment)). That stops a deploy that
+  is wrong from reaching the other environment. It is not a wall against someone who can change
+  what the dev branch deploys. Two accounts are: a dev deploy then has no path to production's
+  resources, whatever it is asked to do.
 - **Teardown.** Destroying dev cannot touch production.
 - **The bill.** Each account has its own, so you can see what dev costs.
 
@@ -255,6 +258,55 @@ history for `AssumeRoleWithWebIdentity`: the failed event shows the `sub` GitHub
 The usual causes are `github_repo` left at its default, the wrong `sub` form, the role ARN of
 one account stored under the other's secret, and a release published from outside the
 `production` environment.
+
+## In one account, each role is refused the other environment
+
+This is what one account does in place of an account boundary. With two accounts it is still
+applied, and has nothing to refuse.
+
+Both deploy roles carry the same policy, which allows what a deploy needs on resources named
+`<prefix>-*`. Bootstrap adds a second policy to each, and it only ever says no:
+
+| Role | Its second policy | Refuses |
+|---|---|---|
+| `gha-<prefix>-dev-deploy` | `<prefix>-gha-dev-deploy-not-production` | anything of production's |
+| `gha-<prefix>-prod-deploy` | `<prefix>-gha-production-deploy-not-dev` | anything of dev's |
+
+"Anything of the other environment's" is decided three ways:
+
+- **By name:** any resource whose name starts `<prefix>-production-` (or `<prefix>-dev-`):
+  tables, functions, roles, queues, alarms, dashboards, schedules, log groups, buckets.
+- **By tag:** any resource tagged `Environment = production` (or `dev`). This is for what has
+  no name of yours in its address: CloudFront distributions, REST APIs, user pools,
+  certificates. Every resource Terraform makes carries the tag.
+- **Its Terraform state:** the other environment's key in the state bucket.
+
+**Why it is written as "refuse" and not as two narrower "allow" policies.** A refusal that names
+only the other environment cannot take away anything a role does in its own. So the permissions
+your deploys depend on are exactly what they were, and adding this cannot be what breaks a
+deploy. If something is not recognised it stays allowed: the worst case is "not separated",
+never "refused".
+
+**What both roles can still reach, on purpose:**
+
+- The shared CloudFront web ACL (`<prefix>-shared`), its log group and its log policy.
+  Production creates and owns them, so the production role must manage them. The dev role is not
+  refused them either, because in one account dev's distributions may be attached to that ACL.
+- Bootstrap's own resources: the state bucket (each role only its own key), the hosted zone and
+  the OIDC provider.
+
+**What it does not do.** The dev role can still write the policies of dev's own Lambda roles,
+and a role it writes could be given more than the dev role has. So this protects against a
+mistake (a wrong variable, the wrong directory, a careless destroy), not against someone who
+can change what the dev branch deploys. That is what two accounts are for.
+
+**If a deploy is ever refused by it,** the error says "explicit deny" and names one of the two
+policies above. To get the deploy through first and investigate after, apply bootstrap again
+with `-var="separate_environment_permissions=false"`, which detaches both.
+
+**Do not name the state bucket for an environment under your prefix** (`<prefix>-dev-...` or
+`<prefix>-production-...`): the name rule would refuse it to one of the roles. Bootstrap stops
+with a message if you do. `<prefix>-terraform-state-dev` is fine.
 
 ## The firewall
 
