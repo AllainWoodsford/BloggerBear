@@ -3,7 +3,7 @@
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
 plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
 of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it, and what of the
-Alexa+ add-on could not be tested (2026-10-05).
+Alexa+ add-on could not be tested (2026-10-05), and PRs #260–#280 (2026-10-07 to 2026-10-09).
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -27,6 +27,7 @@ AWS platform friction gets its own section.
 | Multi-account and OIDC | 2 | role-chaining trust is easy to get subtly wrong |
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
+| Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
 
 ---
 
@@ -712,6 +713,90 @@ down. Each looks the same to the operator. **Fix:** the button captures the poin
 that has already heard words listens through a session the browser cut short. **Lesson:** when the
 complaint is about timing, list every event that can end the thing, not just the obvious one.
 
+## 11. Stats, scans and listings (2026-10-07 to 2026-10-09)
+
+From the twenty PRs #260–#280, prefixed with their PR like the end of section 10.
+
+**#264, #266, #267, #277, #278 · Tests that restated a number from the code.** #264 gave the
+on-demand scan a fifth job, and a test still had `4` written in it. `lint-test` then failed on
+`dev` itself, and it gates `apply-dev`, so dev did not deploy again until #266, and every open PR
+went red with it. #267 halved the crypto coin pool, and three tests had the old sizes as literals.
+The frontend had the same shape: one test cut `app.js` at the exact text `function loadMusings()`,
+another counted `data.attribution` appearing exactly twice, and both broke on correct changes in
+#277 and #278. **Fix:** the scan test reads the job names from the workflow, the crypto tests
+follow the constants, the musings test anchors on `function loadMusings(`, and the attribution
+test expects the one shared render. **Lesson:** a number or a snippet
+copied from the code into a test is a second copy, and it drifts. Derive it from the source, or
+test the behaviour. A test that can fail on `dev` with no PR involved blocks every deploy, so a red
+`dev` is the first thing to fix.
+
+**#265 · 1.9's lesson was written down, not built.** On 28 September Scheduler dropped the weekly
+Stats rollover: its role could not invoke the function (fixed in `6622a80`, in production from 3
+October). Entry 1.9 already said "alarm on Scheduler's failed-invocation metric", but no such alarm
+existed, so nothing noticed. Two weeks of counters were filed under 21 September, and that week's
+AWS bill was recorded nowhere. **Fix:** an alarm on `InvocationDroppedCount`, and
+`scripts/repair_stats_week.py` (a dry run unless `--apply`) to add the missing week and mark the
+one that holds both. **AWS friction:** Scheduler reports drops per schedule group, not per
+schedule, and every schedule here is in `default`. With dev and production in one account, both
+environments' alarms fire for either one's drop; the Scheduler console says which. **Lesson:** a
+lesson in this log is a to-do until a PR carries it.
+
+**#268–#272 · Three time windows on one page.** Production's Stats page showed "Total overall cost
+$18.45" (the AWS bill, one complete week) above "Firewall (WAF) spend $20.41" (a rolling 30 days)
+and "Total infrastructure cost $12.44". Total Stats' firewall figures were copies frozen at the last
+rollover, so they disagreed with Weekly Stats' ($20.41 against $24.35). Each number was right;
+side by side they read as one window and did not add up. **Fix:** four stacked PRs (additive API
+fields, the new page, removing what the page no longer read, then docs): Weekly Stats only from
+the current table, Total Stats only from the history table, and each section's bill as four tiles
+that add up. The removal deployed after the page, and the page accepts both shapes, because the
+five-minute cache can hand it an older answer. **Lesson:** put each figure's window next to it, and
+don't set two figures side by side unless they can be added.
+
+**#261, #264 · A check you could not see.** Checkov went in as a step inside the `security` job, so
+a PR only ever showed `security`, and a Checkov failure meant opening that job's log. **Fix:** its
+own job, so its own check. Rulesets that list required checks need `checkov` added by hand: the
+agent does not change protection rules (PROGRESS.md now says so under Known issues). Its first run
+also needed about 30 repository-wide skips (no Lambda VPC, AWS-managed keys, and so on), each with
+its reason, and left three real findings for later (PROGRESS.md backlog). **Lesson:** one check,
+one status line.
+
+**#273, #274 · An honest doc about a gap, and a fix IAM's simulator could not fully check.** In one
+account both deploy roles carry the same policy, scoped to `<prefix>-*`, so nothing in the
+permissions tells dev from production. #273 reworded the docs to lead with what does keep them
+apart; #274 (open; bootstrap is applied by hand) adds a Deny-only policy to each role for the other
+environment's resources. **AWS friction:** `aws iam simulate-custom-policy` answers "implicit deny"
+for API Gateway REST API resources even under the existing policy that real deploys succeed with,
+so it cannot evaluate them; the other 114 cases were simulated. Deny-only was chosen because every
+Allow in the shared policy was found by a failed apply (1.2): a Deny that names only the other
+environment can fail as "not separated", never as "the deploy is refused". **Lesson:** when
+permissions were found by trial, tighten them by refusing the other side, not by re-deriving the
+allow list.
+
+**#260–#280 · The local suite ran in pieces.** Almost every PR in this stretch reports "the half the
+local venv can run": the venv had no `mcp` or `strands`, so two tests failed and the assistant's
+files were run separately. A final sweep's `scripts/` suite failed to collect for want of
+`rcssmin`. `lambdas/requirements-dev.txt` already includes both assistant requirement files, and
+the runsheet says to install it with `scripts/requirements.txt`, but the cloud sessions' SessionStart
+hook installs only the pinned ruff. CI was the only full run. **Lesson:** the hook that pins ruff
+could install the test requirements too. Until it does, a collection error or a "needs `mcp`"
+failure is the environment, and a PR should say so before anyone reads it as a regression (3.6).
+
+**#269 · A setting that is not where people look.** The CoinGecko key and the GitHub token are SSM
+parameters, deliberately not GitHub secrets, but `configuration.md`'s GitHub table did not say so,
+and its SSM part was two lines and a link. Looking under "GitHub secrets and variables", you found
+neither. **Fix:** a note under that table pointing to SSM, and an SSM section that stands on its
+own: names, where to get each key, the commands. **Lesson:** where a setting deliberately is not,
+say so in the place people look for it.
+
+**#276–#278 · Stacked PRs, and deploy runs that read as failures.** The topic-page pager (#278)
+reused #277's, so it was stacked on it, and a follow-up fix on #277 had to be merged into #278
+again. After the three merged within minutes, the dev deploy runs for #276, #277 and #278 all show
+"cancelled": each was superseded by the next merge's run, which deployed all of them. Separately, a
+scratch merge commit made under a throwaway git identity, for a local combined test, briefly sat
+under #278's branch; it was caught and redone before the push. **Lesson:** after a quick run of
+merges, check the newest deploy run, not each one; and scratch commits belong in a scratch branch
+that is never pushed.
+
 ---
 
 ## Patterns worth keeping
@@ -726,3 +811,7 @@ complaint is about timing, list every event that can end the thing, not just the
 5. **Docs describe settings, so check the settings.**
 6. **Prefer boring.** Blocking CSS, static legal pages, one account: each simpler option worked
    better than the clever one it replaced.
+7. **Count from the source.** A test, doc or page that restates a number the code already holds
+   is a second copy that drifts (#266, #267, #268–#272).
+8. **A lesson is a to-do until a PR carries it.** 1.9 named the missing alarm; it took a lost week
+   of Stats to build it (#265).
