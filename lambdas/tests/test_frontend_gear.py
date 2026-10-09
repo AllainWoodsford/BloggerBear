@@ -529,7 +529,7 @@ def test_the_estimated_spend_per_day_heading_says_how_many_days():
 
 def _musings_section_of_app() -> str:
     start = APP_JS.index("// --- Musings ---")
-    return APP_JS[start : APP_JS.index("function loadMusings()", start)]
+    return APP_JS[start : APP_JS.index("function loadMusings(", start)]
 
 
 def test_a_loot_drop_is_drawn_as_a_card_from_the_gear_the_musing_carries():

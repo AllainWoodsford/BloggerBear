@@ -1224,7 +1224,13 @@ def test_the_token_holds_nothing_about_who_asked(aws_resources):
 def test_list_musings_empty(aws_resources):
     result = public_api_handler.handler(_event("GET /musings"), None)
     assert result["statusCode"] == 200
-    assert json.loads(result["body"]) == {"musings": []}
+    assert json.loads(result["body"]) == {
+        "musings": [],
+        "page": 1,
+        "page_size": 15,
+        "total": 0,
+        "total_pages": 1,
+    }
 
 
 def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
@@ -1261,6 +1267,58 @@ def test_list_musings_sorted_newest_first_with_full_shape(aws_resources):
         "mood": "proud",
         "created_at": "2026-09-12T00:00:00+00:00",
     }
+
+
+def _musings_page(page=None):
+    query = None if page is None else {"page": page}
+    return public_api_handler.handler(_event("GET /musings", query_params=query), None)
+
+
+def _put_numbered_musings(count):
+    """`count` musings, m00 the oldest; created a minute apart so newest-first is m<count-1> down."""
+    for n in range(count):
+        _put_musing(f"m{n:02d}", kind="article", created_at=f"2026-09-12T00:{n:02d}:00+00:00")
+
+
+def test_list_musings_returns_fifteen_per_page_newest_first(aws_resources):
+    _put_numbered_musings(40)
+
+    first = json.loads(_musings_page()["body"])
+    assert public_api_handler.MUSINGS_PAGE_SIZE == 15
+    assert [m["musing_id"] for m in first["musings"]] == [f"m{n:02d}" for n in range(39, 24, -1)]
+    assert (first["page"], first["page_size"], first["total"], first["total_pages"]) == (1, 15, 40, 3)
+
+    second = json.loads(_musings_page("2")["body"])
+    assert [m["musing_id"] for m in second["musings"]] == [f"m{n:02d}" for n in range(24, 9, -1)]
+
+    last = json.loads(_musings_page("3")["body"])
+    assert [m["musing_id"] for m in last["musings"]] == [f"m{n:02d}" for n in range(9, -1, -1)]
+    assert last["page"] == 3
+
+
+def test_list_musings_reaches_every_musing_not_just_the_newest_fifty(aws_resources):
+    _put_numbered_musings(55)
+
+    seen = []
+    for page in range(1, 5):
+        seen += [m["musing_id"] for m in json.loads(_musings_page(str(page))["body"])["musings"]]
+    assert sorted(seen) == [f"m{n:02d}" for n in range(55)]
+
+
+def test_list_musings_page_past_the_end_is_empty_not_an_error(aws_resources):
+    _put_numbered_musings(3)
+
+    result = _musings_page("9")
+    assert result["statusCode"] == 200
+    body = json.loads(result["body"])
+    assert body["musings"] == []
+    assert (body["page"], body["total"], body["total_pages"]) == (9, 3, 1)
+
+
+@pytest.mark.parametrize("page", ["0", "-1", "two", "1.5", " "])
+def test_list_musings_rejects_a_page_that_is_not_a_positive_whole_number(aws_resources, page):
+    result = _musings_page(page)
+    assert result["statusCode"] == 400
 
 
 # --- Stats ---------------------------------------------------------------

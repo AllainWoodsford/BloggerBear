@@ -672,6 +672,117 @@
       });
   }
 
+  // --- Pagination -----------------------------------------------------
+  //
+  // A long listing comes from the API one page at a time (`?page=`, 1-based), with `page` and
+  // `total_pages` beside it (public_api_handler.py's _paginate). The page is part of the route
+  // ("#/musings?page=2"), so a page can be linked to and Back goes back a page. Page 1 is always
+  // the bare route, so there is one URL for the newest items.
+
+  // The ?page= of a route's query string ("page=2&x=y"); 1 when it's absent or not a whole number
+  // of at least 1, so a mistyped link still lands somewhere sensible.
+  function pageFromQuery(query) {
+    var match = /(?:^|&)page=(\d+)(?:&|$)/.exec(query || "");
+    var page = match ? parseInt(match[1], 10) : 1;
+    return page >= 1 ? page : 1;
+  }
+
+  function pagedHref(baseHref, page) {
+    return page > 1 ? baseHref + "?page=" + page : baseHref;
+  }
+
+  // The API path for one page of a listing. Page 1 is the path as it was before there were pages
+  // (the API's default), so it shares a cache entry with every link already out there.
+  function pagedApiPath(path, page) {
+    return page > 1 ? path + (path.indexOf("?") === -1 ? "?" : "&") + "page=" + page : path;
+  }
+
+  // Which page numbers to offer: the first, the last, and the current one with a neighbour either
+  // side; null marks a gap ("..."). 1 2 3 4 5 / 1 ... 4 5 6 ... 12 / 1 2 3 ... 12.
+  function pageWindow(current, total) {
+    var pages = [];
+    for (var n = 1; n <= total; n++) {
+      if (n === 1 || n === total || Math.abs(n - current) <= 1) {
+        pages.push(n);
+      } else if (pages[pages.length - 1] !== null) {
+        pages.push(null);
+      }
+    }
+    // A gap standing in for a single page reads worse than the page itself.
+    return pages.map(function (n, i) {
+      return n === null && pages[i + 1] - pages[i - 1] === 2 ? pages[i - 1] + 1 : n;
+    });
+  }
+
+  // The nav under a paged listing: "Newer" / page numbers / "Older" (newest first, so "Newer" is
+  // back towards page 1). On a phone the numbers give way to "Page 2 of 5" (styles.css). Returns
+  // null when everything fits on one page. `noun` names the items, for screen readers.
+  function renderPagination(paging, baseHref, noun) {
+    var total = Number(paging && paging.total_pages) || 1;
+    var current = Number(paging && paging.page) || 1;
+    if (total <= 1 || current > total) {
+      return null;
+    }
+    var nav = el("nav", { className: "pagination", attrs: { "aria-label": "Pages of " + noun } });
+
+    function stepLink(page, arrow, word, rel) {
+      var link = el("a", {
+        className: "pagination-step pagination-" + rel,
+        href: pagedHref(baseHref, page),
+        attrs: { rel: rel, "aria-label": word + " " + noun },
+      });
+      var arrowEl = el("span", { text: arrow, attrs: { "aria-hidden": "true" } });
+      var wordEl = el("span", { text: word });
+      link.appendChild(rel === "prev" ? arrowEl : wordEl);
+      link.appendChild(rel === "prev" ? wordEl : arrowEl);
+      return link;
+    }
+
+    nav.appendChild(current > 1 ? stepLink(current - 1, "\u2190", "Newer", "prev") : el("span"));
+
+    var pages = el("ol", { className: "pagination-pages" });
+    pageWindow(current, total).forEach(function (n) {
+      var item = el("li");
+      if (n === null) {
+        item.className = "pagination-gap";
+        item.appendChild(el("span", { text: "\u2026", attrs: { "aria-hidden": "true" } }));
+      } else if (n === current) {
+        item.appendChild(
+          el("span", {
+            className: "pagination-current",
+            text: String(n),
+            attrs: { "aria-current": "page", "aria-label": "Page " + n + ", current page" },
+          })
+        );
+      } else {
+        item.appendChild(
+          el("a", { text: String(n), href: pagedHref(baseHref, n), attrs: { "aria-label": "Page " + n } })
+        );
+      }
+      pages.appendChild(item);
+    });
+    nav.appendChild(pages);
+    nav.appendChild(el("span", { className: "pagination-status", text: "Page " + current + " of " + total }));
+
+    nav.appendChild(current < total ? stepLink(current + 1, "\u2192", "Older", "next") : el("span"));
+
+    // A new page of results should start at the top, not where this nav was.
+    nav.addEventListener("click", function (event) {
+      if (event.target && event.target.closest && event.target.closest("a")) {
+        window.scrollTo(0, 0);
+      }
+    });
+    return nav;
+  }
+
+  // What a page past the end says (a stale link, or items removed since): which page, and a link
+  // back to the first.
+  function renderPastTheEnd(page, baseHref, backText) {
+    var note = el("p", { text: "There's no page " + page + " any more. " });
+    note.appendChild(el("a", { text: backText, href: baseHref }));
+    contentEl.appendChild(note);
+  }
+
   // --- Musings --------------------------------------------------------
 
   // A loot drop's card: the gear the musing announces, shown as the musing itself recorded it (a snapshot,
@@ -697,12 +808,16 @@
     return card;
   }
 
-  function renderMusings(musings) {
+  function renderMusings(musings, paging) {
     clearChildren(contentEl);
     contentEl.appendChild(el("h1", { text: "Musings" }));
 
     if (musings.length === 0) {
-      contentEl.appendChild(el("p", { text: "No musings yet -- check back after the next article." }));
+      if (paging && paging.page > 1) {
+        renderPastTheEnd(paging.page, "#/musings", "See the newest musings");
+      } else {
+        contentEl.appendChild(el("p", { text: "No musings yet -- check back after the next article." }));
+      }
       return;
     }
 
@@ -753,13 +868,19 @@
       list.appendChild(item);
     });
     contentEl.appendChild(list);
+
+    var pagination = renderPagination(paging, "#/musings", "musings");
+    if (pagination) {
+      contentEl.appendChild(pagination);
+    }
   }
 
-  function loadMusings() {
+  // MUSINGS_PAGE_SIZE (15) at a time, newest first; `page` is 1-based.
+  function loadMusings(page) {
     showMessage("Loading musings...");
-    fetchJson(apiUrl("/musings"))
+    fetchJson(apiUrl(pagedApiPath("/musings", page)))
       .then(function (data) {
-        renderMusings(data.musings || []);
+        renderMusings(data.musings || [], { page: Number(data.page) || page, total_pages: data.total_pages });
       })
       .catch(function () {
         showMessage("Could not load musings right now.");
@@ -2203,8 +2324,12 @@
   // --- Routing --------------------------------------------------------
 
   function parseRoute(hash) {
-    // hash looks like "#/topic/foo" or "#/article/bar" or "#/" or "".
+    // hash looks like "#/topic/foo" or "#/article/bar" or "#/" or "", and a paged listing's can
+    // end in a query string ("#/musings?page=2" -- see renderPagination).
     var path = hash.replace(/^#/, "");
+    var queryAt = path.indexOf("?");
+    var query = queryAt === -1 ? "" : path.slice(queryAt + 1);
+    path = queryAt === -1 ? path : path.slice(0, queryAt);
     if (path === "" || path === "/") {
       return { name: "home" };
     }
@@ -2223,7 +2348,7 @@
       return { name: "legal", pageKey: "privacy" };
     }
     if (path === "/musings") {
-      return { name: "musings" };
+      return { name: "musings", page: pageFromQuery(query) };
     }
     if (path === "/stats") {
       return { name: "stats" };
@@ -2243,7 +2368,7 @@
       redirectToLegalPage(current.pageKey);
       return;
     } else if (current.name === "musings") {
-      loadMusings();
+      loadMusings(current.page);
     } else if (current.name === "stats") {
       loadStats();
     } else {
