@@ -1989,3 +1989,49 @@ on 7 days of hourly points.
 2. Then merge. The first apply creates the distribution, which takes a few minutes. `config.js` switches
    the site to it, and an open page picks the change up on its next load (`config.js` is `no-cache`).
 3. The `random` provider is new (lock files updated).
+
+### Paged listings and a shorter pipeline box
+
+**Status: built** (#276, #277, #278).
+
+**Problem:** the Musings page loaded every musing the API returned (the newest 50; anything older could
+not be reached at all), a topic page listed every article it had ever published, and "Articles in the
+Pipeline" listed every article waiting for review, each one an article read on the API.
+
+**The API pages, the frontend follows.** `GET /musings` and `GET /articles?topic_id=` take `?page=N`
+(1-based, default 1) and return one page, newest first, with `page`, `page_size`, `total` and
+`total_pages` beside it (`public_api_handler.py`'s `_page_param` and `_paginate`):
+
+| Listing | Page size | Constant |
+|---|---|---|
+| Musings | 15 | `MUSINGS_PAGE_SIZE` |
+| A topic's articles | 10 | `ARTICLES_PAGE_SIZE` |
+
+- A page past the end is an empty page with a 200, not an error; a `page` that is not a whole number of
+  at least 1 is a 400.
+- Page 1 is the bare path (`/musings`, `/articles?topic_id=x`), so it keeps the cache entry it always
+  had. Each page is its own CloudFront entry (the query string is in the cache key; see Scaling C), cached
+  60 s like the rest of the listings.
+- Both still read the whole table or topic and cut the page in Python, as before. Fine at this scale; a
+  cursor (DynamoDB's `LastEvaluatedKey`) would be the next step if a listing ever grew past a few thousand.
+
+**On the site** the page is in the route: `#/musings?page=2`, `#/topic/crypto?page=3`. Page 1 is the
+bare route, so there is one URL for the newest items, and a page can be linked to or reached with Back.
+`app.js`'s `renderPagination` draws the same nav under both listings:
+
+- **Wide screens:** `← Newer` · `1 … 4 [5] 6 … 12` · `Older →`. The first and last pages, and the
+  current one with a neighbour either side; a gap that would hide one page shows the page instead.
+- **Phones:** the numbers give way to "Page 5 of 12", and the two steps are 44px tap targets.
+- **Accessibility:** a `<nav>` labelled "Pages of musings" / "Pages of articles", `rel="prev"`/`"next"`
+  on the steps, `aria-current="page"` on the current number. Following a page link scrolls to the top.
+- **A page past the end** (a stale link) says "There's no page N any more." and links to the newest.
+- **"Articles in the Pipeline" is on a topic's first page only:** it is about what comes next. Older
+  pages don't fetch `/activity` at all.
+
+**The pipeline box lists at most three pending articles.** `GET /topics/{topic_id}/activity` names
+only the newest `PIPELINE_PENDING_LIMIT` (3) in `pipeline_items`, so it reads at most three articles;
+`pending_review_count` is still the full count. When the count is higher, the box shows one muted
+"...more" line under the three: plain text in an `<li>`, not a link or a button, because there is
+nothing for a reader to open (pending articles have not cleared review). The Researching row stays
+below it. The frontend caps at three as well, so an older API response cannot flood the box.
+

@@ -1,7 +1,7 @@
 ---
 doc: progress-tracker
 schema_version: 1
-last_updated: 2026-09-27
+last_updated: 2026-10-09
 source_of_truth: docs/project-plan.md
 phases:
   - id: phase-0
@@ -622,6 +622,9 @@ All shipped and deployed; the design and decisions for each are in
   (#250), log queries with their `SOURCE` log groups in an editable box (#253), the architecture
   in layers (#255), a wake call at sign-in (#256), a Dismiss button and "it looks like you already
   fixed this" (#257); docs/enhancements/ops-assistant-log-reader.md, "Third round"
+- [x] Shorter listings: Musings 15 a page and a topic's articles 10 a page, with a pager
+  (`?page=N` on the API and the route); "Articles in the Pipeline" lists at most 3 pending
+  articles, then a plain "...more" (#276, #277, #278; project-plan §11, "Paged listings")
 - [x] Architecture by feature: `architecture` with `feature` walks through article research step by
   step across the layers (adapters, keys in SSM, research tick, findings, candidate ideas,
   drafting, reviews, the article in S3, where the agents are) (#262; docs/architecture/)
