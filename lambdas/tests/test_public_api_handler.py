@@ -474,6 +474,26 @@ def test_topic_activity_counts_only_pending_items_for_this_topic(aws_resources):
     assert json.loads(other_result["body"])["pending_review_count"] == 1
 
 
+def test_topic_activity_names_only_the_three_newest_pending_articles_but_counts_them_all(aws_resources):
+    for n in range(5):
+        created_at = f"2026-09-1{n}T00:00:00+00:00"
+        _put_article(
+            f"article-{n}",
+            status="pending_moderation",
+            published_at=None,
+            title=f"Pending {n}",
+            created_at=created_at,
+        )
+        _put_moderation_item(f"queue-{n}", article_id=f"article-{n}", created_at=created_at)
+
+    body = _activity()
+    assert body["pending_review_count"] == 5
+    assert body["pipeline_items"] == [
+        {"status": "pending_review", "label": "Pending review", "title": f"Pending {n}"} for n in (4, 3, 2)
+    ]
+    assert public_api_handler.PIPELINE_PENDING_LIMIT == 3
+
+
 def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resources):
     _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
     _put_moderation_item(
