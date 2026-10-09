@@ -73,7 +73,7 @@ from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
-from common.stats_tracking import record_article_lineage
+from common.stats_tracking import record_article_lineage, refresh_articles_snapshot
 
 DIGEST_LOOKBACK_HOURS = 48
 
@@ -105,7 +105,11 @@ _DIGEST_FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 @track_lambda_duration("trending_digest")
 def handler(event, context) -> dict:
     try:
-        return _run_trending_digest()
+        result = _run_trending_digest()
+        # A digest was written: rebuild the Stats page's Articles figures.
+        if result.get("status") in ("published", "pending_moderation"):
+            refresh_articles_snapshot()
+        return result
     except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
         print(f"trending_digest_handler: unhandled exception: {exc!r}")
         return {"status": "error", "error": str(exc)}
