@@ -88,6 +88,9 @@ from common.stats_tracking import (
 )
 
 _RSS_ITEM_LIMIT = 50
+# How many pending-review articles GET /topics/{topic_id}/activity names in `pipeline_items`. The
+# topic page shows at most this many under "Articles in the Pipeline", then a plain "...more" line.
+PIPELINE_PENDING_LIMIT = 3
 _RSS_DESCRIPTION_MAX_CHARS = 300
 
 _s3_client = None
@@ -244,7 +247,8 @@ def _topic_activity(event: dict) -> dict:
 
     Returns the coarse-grained `researching`/`pending_review_count` fields
     the frontend already uses, plus a small `pipeline_items` list for the
-    pipeline box's right-hand titles. Pending-review items expose only an
+    pipeline box's right-hand titles: the newest PIPELINE_PENDING_LIMIT
+    pending-review articles, then the researching item. Pending-review items expose only an
     article title already stored in DynamoDB; researching exposes only the
     latest source title/url already visible once an article is eventually
     published. No bodies, moderation reasons, queue ids, or finding
@@ -260,7 +264,9 @@ def _topic_activity(event: dict) -> dict:
     pending_review_count = len(pending_items)
 
     pending_items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    for pending_item in pending_items:
+    # Only the newest few are named (one article read each); `pending_review_count` stays the full
+    # count, so the frontend can say there are more without being sent them.
+    for pending_item in pending_items[:PIPELINE_PENDING_LIMIT]:
         article = get_article(pending_item.get("article_id")) or {}
         pipeline_items.append(
             {

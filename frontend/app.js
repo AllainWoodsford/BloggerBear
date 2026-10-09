@@ -480,28 +480,42 @@
   //
   var PENDING_REVIEW_LABEL = "Pending review";
   var RESEARCHING_LABEL = "Researching";
+  // At most this many articles awaiting review are listed; any beyond them become one plain
+  // "...more" line (text, not a control). Matches public_api_handler.py's PIPELINE_PENDING_LIMIT,
+  // which already sends no more than this -- capped here too so an older API can't flood the box.
+  var PIPELINE_PENDING_LIMIT = 3;
+  var PIPELINE_MORE_TEXT = "...more";
 
   function pipelineItemsFor(activity) {
+    var pending = [];
+    var others = [];
     if (activity && Array.isArray(activity.pipeline_items) && activity.pipeline_items.length > 0) {
-      return activity.pipeline_items.map(function (item) {
-        return {
-          label: item.label || (item.status === "pending_review" ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
+      activity.pipeline_items.forEach(function (item) {
+        var isPending = item.status === "pending_review";
+        (isPending ? pending : others).push({
+          label: item.label || (isPending ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
           title: item.title || "",
           // Only the researching item has one: when its source was last checked.
           checkedAt: item.checked_at || "",
-        };
+        });
       });
+    } else {
+      var count = Number(activity && activity.pending_review_count) || 0;
+      for (var i = 0; i < Math.min(count, PIPELINE_PENDING_LIMIT); i++) {
+        pending.push({ label: PENDING_REVIEW_LABEL, title: "" });
+      }
+      if (activity && activity.researching) {
+        others.push({ label: RESEARCHING_LABEL, title: "" });
+      }
     }
 
-    var items = [];
-    var pendingCount = Number(activity && activity.pending_review_count) || 0;
-    for (var i = 0; i < pendingCount; i++) {
-      items.push({ label: PENDING_REVIEW_LABEL, title: "" });
+    // The API names only the newest few, so the full count is what says whether there are more.
+    var pendingTotal = Math.max(Number(activity && activity.pending_review_count) || 0, pending.length);
+    var items = pending.slice(0, PIPELINE_PENDING_LIMIT);
+    if (pendingTotal > items.length) {
+      items.push({ more: true });
     }
-    if (activity && activity.researching) {
-      items.push({ label: RESEARCHING_LABEL, title: "" });
-    }
-    return items;
+    return items.concat(others);
   }
 
   // "checked 38 min ago" for an ISO timestamp, "" if it can't be read. A time slightly in the
@@ -540,6 +554,10 @@
 
     var list = el("ul", { className: "pipeline-list" });
     items.forEach(function (item) {
+      if (item.more) {
+        list.appendChild(el("li", { className: "pipeline-more", text: PIPELINE_MORE_TEXT }));
+        return;
+      }
       var row = el("li");
       row.appendChild(el("span", { className: "pipeline-status", text: item.label }));
       if (item.title) {

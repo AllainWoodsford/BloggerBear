@@ -574,6 +574,11 @@ a {
     margin-left: 0;
     padding-left: 1.9rem;
   }
+
+  /* In line with the stacked titles rather than the statuses. */
+  .pipeline-list li.pipeline-more {
+    padding-left: 1.9rem;
+  }
 }
 
 /* Paw prints instead of default bullet dots -- a ::before pseudo-element
@@ -581,6 +586,18 @@ a {
 .pipeline-list li::before {
   content: "\1F43E";
   margin-right: 8px;
+}
+
+/* "...more" under the first few pending articles: plain muted text, no paw, lined up with the
+   statuses above it. Not a link or a button -- there is nothing to open. */
+.pipeline-list li.pipeline-more {
+  display: block;
+  padding-left: 2.6rem;
+  color: var(--muted);
+}
+
+.pipeline-list li.pipeline-more::before {
+  content: none;
 }
 
 /* Decorative CSS-only spinner: a rotating ring, no image asset, no
