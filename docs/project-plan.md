@@ -1647,7 +1647,7 @@ table.**
 |---|---|---|
 | **Total Stats** | `StatsHistory`'s all-time row | every completed week; never this week |
 | **Weekly Stats** | `StatsCurrent`'s row | this week so far |
-| **Articles** | counted live from the Articles table (`common/stats.py`) | every article so far, this week's included |
+| **Articles** | counted from the Articles table (`common/stats.py`) after each publishing run | every article so far, this week's included |
 
 - **One row in, one section out.** `common/stats_tracking.py`'s `public_view` takes one row and shapes one
   section; a test holds its signature. Nothing in `GET /stats` adds the two rows together.
@@ -1666,6 +1666,17 @@ table.**
   overlaps both sections above and will not match either exactly: it includes this week, covers articles
   only, and is priced at today's model prices, where the stored counters were priced when each call was
   made.
+- **Articles is built after a publishing run, not per view.** `GET /stats` used to scan every article,
+  topic and model on each request that missed the five-minute cache. Now
+  `common/stats_tracking.py`'s `refresh_articles_snapshot` runs `build_stats` and stores the result as
+  one more sentinel row in `StatsHistory` (`week_start = "articles-snapshot"`), and the page reads that
+  row. It runs after a daily cycle, a rewrite or a digest that wrote an article, and after the admin
+  routes that publish, unpublish, approve or reject one or backfill lineage. It does not run after a
+  run that ended in an error, or when a published article is taken down to be rewritten: those show
+  from the next rebuild. A write is refused if a
+  build that started later is already stored. The 30-day table is moved to today's window when it is
+  read, so a day with no article still shows as a zero. A changed model price or topic name shows from
+  the next rebuild. With no row yet (a fresh deploy) the route builds the figures itself, as before.
 - **Not shown any more:** the firewall's rolling-30-day and calendar-month figures, API Gateway's
   30-day figure and the actual AgentCore charge over 30 days. None is a week's figure or an all-time
   one. The cost poll still records them on the current row and the rollover still carries them to the

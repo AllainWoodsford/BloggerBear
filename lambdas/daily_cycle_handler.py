@@ -82,7 +82,7 @@ from common.relevance import (
 from common.rewrite import run_rewrite
 from common.source_refs import dedupe_source_refs
 from common.static_pages import render_and_publish_article_page
-from common.stats_tracking import record_article_lineage
+from common.stats_tracking import record_article_lineage, refresh_articles_snapshot
 
 # An article is written from everything the research loop found since the last
 # daily run, not from the few newest findings: the window is the day the run
@@ -161,8 +161,20 @@ _FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
 _SOURCE_GUIDANCE_HEADER = "How articles on this topic are written (mandatory):"
 
 
+# Outcomes that wrote an article or rewrote one: the Stats page's Articles figures are rebuilt
+# after these and no others.
+_ARTICLE_WRITTEN_STATUSES = ("published", "pending_moderation", "rewritten")
+
+
 @track_lambda_duration("daily_cycle")
 def handler(event: dict, context) -> dict:
+    result = _handle(event)
+    if result.get("status") in _ARTICLE_WRITTEN_STATUSES:
+        refresh_articles_snapshot()
+    return result
+
+
+def _handle(event: dict) -> dict:
     # A Re-Write of a held article (common/rewrite.py), invoked asynchronously by the Admin
     # API's POST /moderation-queue/{queue_id}/rewrite. It runs here rather than in a Lambda of
     # its own because it needs exactly this one's timeout, permissions and CoinGecko key.

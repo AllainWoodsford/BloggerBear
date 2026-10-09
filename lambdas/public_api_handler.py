@@ -59,6 +59,7 @@ from common.comment_screening import (
 from common.digest import DIGEST_TOPIC_ID
 from common.dynamo import (
     get_article,
+    get_articles_stats_snapshot,
     get_current_stats,
     get_latest_finding,
     get_stats_totals,
@@ -79,7 +80,7 @@ from common.dynamo import (
 from common.fact_check import fact_check_label
 from common.source_refs import dedupe_source_refs
 from common.static_pages import equipment_snapshot
-from common.stats import build_stats
+from common.stats import build_stats, rewindow_daily
 from common.stats_tracking import (
     HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE,
     public_view,
@@ -650,11 +651,23 @@ def _list_musings(event: dict) -> dict:
 
 # --- Stats ------------------------------------------------------------------
 
-# Every hit scans the Articles/Topics/Models tables (fine at this project's
-# scale, same as the RSS feed) -- a short public cache keeps a popular page
-# from turning into a scan per view. The numbers move on the scale of
-# articles-per-day, so five minutes of staleness is invisible.
+# Three single-row reads. The Articles figures are built after each publishing run
+# (common/stats_tracking.py's refresh_articles_snapshot), not here, so a view no longer scans
+# the Articles/Topics/Models tables. The weekly counters move by the call, and five minutes of
+# staleness in them is invisible.
 _STATS_CACHE_SECONDS = 300
+
+
+def _articles_stats() -> dict:
+    """The Articles section as the last publishing run built it, with its 30-day table moved to
+    today's window. Built here, the old way, only when nothing has stored one yet (a fresh
+    deploy, before the first run)."""
+    snapshot = get_articles_stats_snapshot()
+    if snapshot is None:
+        return build_stats(list_all_articles(), list_topics(), list_models())
+    stats = json.loads(snapshot)
+    stats["daily"] = rewindow_daily(stats.get("daily") or [])
+    return stats
 
 
 def _stats(event: dict) -> dict:
@@ -662,10 +675,10 @@ def _stats(event: dict) -> dict:
     aggregates only (common/stats.py plus common/stats_tracking.py), never article content or
     ids. `weekly` (StatsCurrent) and `historic` (StatsHistory's all-time running total, PR 4 of
     the Observability enhancement) sit alongside the original per-article `by_model`/`by_topic`/
-    `daily` breakdown -- both single get_item reads, no extra scan. Each is shaped from its own
-    row alone (public_view): `weekly` is the current table's, `historic` the history table's
-    all-time row, and nothing in the answer mixes the two."""
-    stats = build_stats(list_all_articles(), list_topics(), list_models())
+    `daily` breakdown (_articles_stats above) -- both single get_item reads, no extra scan. Each
+    is shaped from its own row alone (public_view): `weekly` is the current table's, `historic`
+    the history table's all-time row, and nothing in the answer mixes the two."""
+    stats = _articles_stats()
     current, totals = get_current_stats(), get_stats_totals()
     stats["weekly"] = public_view(current)
     stats["historic"] = {**public_view(totals), "note": HISTORIC_EXCLUDES_CURRENT_WEEK_NOTE}

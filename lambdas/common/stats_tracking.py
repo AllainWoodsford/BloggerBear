@@ -53,6 +53,7 @@ a single get_item, never a scan-and-sum over every week that has ever existed.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -62,12 +63,17 @@ from common.cost_explorer import BILL_CATEGORIES, bill_category
 from common.costing import USD_TO_AUD_RATE, call_cost_usd, pricing_for
 from common.dynamo import (
     increment_current_stats,
+    list_all_articles,
+    list_models,
     list_stats_history_weeks,
+    list_topics,
+    put_articles_stats_snapshot,
     set_current_stats_fields,
     set_stats_history_week_fields,
     set_stats_totals_fields,
 )
 from common.model_pricing import default_model_entry
+from common.stats import build_stats
 
 BEDROCK_CATEGORIES = ("musings", "weekly_reflection", "gear_identity", "comment_screening", "assistant")
 
@@ -501,6 +507,28 @@ def plan_articles_backfill(articles: list[dict]) -> dict:
         for key, value in tally.items():
             totals[key] = totals.get(key, 0) + value
     return {"examined": len(articles), "included": included, "totals": totals}
+
+
+def refresh_articles_snapshot() -> None:
+    """Rebuild the Stats page's Articles section (common/stats.py's build_stats: totals, by model,
+    by topic and the 30-day table) and store it for the public API to read (common/dynamo.py's
+    put_articles_stats_snapshot). Called after anything that changes what that section shows: a
+    daily cycle, a rewrite or a digest that wrote an article, and the admin routes that publish,
+    reject or re-price one. The page then reads one row; it used to scan every article per view.
+
+    A model's price or a topic's name changed in between shows from the next call.
+
+    Fails open like every other recorder here, and does nothing where the function has no Stats
+    table (a local run, a test)."""
+    if not os.environ.get("STATS_HISTORY_TABLE"):
+        return
+    try:
+        # Taken before the scan: see put_articles_stats_snapshot.
+        started_at = datetime.now(UTC).isoformat()
+        stats = build_stats(list_all_articles(), list_topics(), list_models())
+        put_articles_stats_snapshot(json.dumps(stats), started_at)
+    except Exception as exc:  # noqa: BLE001 - bookkeeping must never break a publish
+        print(f"stats_tracking: could not refresh the articles snapshot: {exc!r}")
 
 
 # StatsHistory's reserved marker for "the one-time articles backfill has already run" -- a

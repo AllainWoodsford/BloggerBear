@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from table_schemas import create_table
 
 import public_api_handler
 from common.costing import USD_TO_AUD_RATE
+from common.stats import build_stats
 
 REGION = "ap-southeast-2"
 
@@ -1374,6 +1376,46 @@ def test_stats_sections_before_anything_is_recorded_are_zeros_and_no_bill(aws_re
             "unpriced": 0,
         }
         assert body[section]["aws_bill"] is None
+
+
+def test_stats_serves_the_stored_articles_figures_without_scanning_the_articles(aws_resources):
+    """Built after a publishing run (common/stats_tracking.py's refresh_articles_snapshot), read
+    here as one row. The 30-day table is moved to today's window on the way out."""
+    built_on = datetime.now(UTC).date() - timedelta(days=3)
+    stored = build_stats(
+        [
+            {
+                "topic_id": "github-trending",
+                "status": "published",
+                "created_at": f"{built_on.isoformat()}T03:00:00+00:00",
+                "lineage": {"calls": [{"model_id": "m", "input_tokens": 1000, "output_tokens": 500}]},
+            }
+        ],
+        [],
+        [],
+        today=built_on,
+    )
+    boto3.resource("dynamodb", region_name=REGION).Table("StatsHistory").put_item(
+        Item={
+            "week_start": "articles-snapshot",
+            "payload": json.dumps(stored),
+            "started_at": stored["generated_at"],
+        }
+    )
+
+    with patch("public_api_handler.list_all_articles", side_effect=AssertionError("scanned")):
+        result = public_api_handler.handler(_event("GET /stats"), None)
+
+    assert result["statusCode"] == 200
+    assert result["headers"]["Cache-Control"] == "public, max-age=300"
+    body = json.loads(result["body"])
+    assert body["totals"]["articles"] == 1
+    assert body["generated_at"] == stored["generated_at"]
+    assert len(body["daily"]) == 30
+    assert body["daily"][-1]["date"] == datetime.now(UTC).date().isoformat()
+    assert body["daily"][-1]["articles"] == 0
+    assert (body["daily"][-4]["date"], body["daily"][-4]["articles"]) == (built_on.isoformat(), 1)
+    assert body["weekly"]["feedback_given"] == 0 and "note" in body["historic"]
 
 
 def test_stats_aggregates_across_all_statuses_and_is_cacheable(aws_resources):

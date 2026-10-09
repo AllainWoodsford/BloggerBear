@@ -590,6 +590,8 @@ All shipped and deployed; the design and decisions for each are in
   current table only, the per-article detail in an Articles section of its own. The
   bill is four tiles that add up; the rolling-30-day and calendar-month tiles and the
   assistant's tiles are gone
+- [x] Stats page's Articles section (the 30-day table, by model, by topic) is built after
+  each publishing run and stored, not scanned from the Articles table on every view
 - [x] A missed stats rollover: an alarm on dropped scheduled runs, and
   `scripts/repair_stats_week.py`, run for both environments (#265)
 - [x] Crypto research looks up 2 to 5 altcoins a tick, not 5 to 10 (#267)

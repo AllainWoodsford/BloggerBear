@@ -1262,6 +1262,37 @@ def test_unpublish_takes_a_published_article_down(aws_resources):
     assert queue_item["status"] == "rejected"
 
 
+def test_changing_an_articles_status_rebuilds_the_stats_pages_article_figures(aws_resources):
+    """Publish, unpublish, approve and reject each change "N published" on the Stats page, which
+    is otherwise only rebuilt by the next publishing run (common/stats_tracking.py)."""
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+    with patch("admin_api_handler.refresh_articles_snapshot") as refresh:
+        _unpublish()
+        assert refresh.call_count == 1
+
+        with (
+            patch("admin_api_handler.read_article_body", return_value="# Body"),
+            patch("admin_api_handler.render_and_publish_article_page"),
+            patch("admin_api_handler.generate_and_store_article_musing"),
+        ):
+            event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+            assert admin_api_handler.handler(event, None)["statusCode"] == 200
+        assert refresh.call_count == 2
+
+        _put_article("article-2")
+        _put_moderation_item()
+        boto3.resource("dynamodb", region_name=REGION).Table("ModerationQueue").update_item(
+            Key={"queue_id": "queue-1"},
+            UpdateExpression="SET article_id = :a",
+            ExpressionAttributeValues={":a": "article-2"},
+        )
+        with patch("admin_api_handler._post_rejection_musing"):
+            event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
+            assert admin_api_handler.handler(event, None)["statusCode"] == 200
+        assert refresh.call_count == 3
+
+
 def test_unpublish_reports_when_the_cache_could_not_be_invalidated(aws_resources):
     _put_article(status="published")
 
