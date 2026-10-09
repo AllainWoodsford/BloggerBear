@@ -58,7 +58,7 @@ Full rationale, architecture, and constraints for everything below live in
 `docs/project-plan.md` — treat that as the source of truth; this file only
 tracks *what's built vs. not*.
 
-## Current status (2026-09-27)
+## Current status (2026-10-09)
 
 - **Live:** production at bloggerbear.com with four topics (GitHub Trending,
   crypto, tech market news, World of Warcraft) plus the daily Trending
@@ -104,8 +104,9 @@ governs how every phase from here on ships:
 
 - [x] Rename default branch `master` → `dev`; create `prod` from its tip —
   `dev` is the default branch and `prod` exists
-- [ ] Branch protection on `dev` and `prod`: PR required, `terraform` +
-  `security` checks required, no direct pushes — **blocked:** GitHub offers
+- [ ] Branch protection on `dev` and `prod`: PR required, `terraform`,
+  `security` and `checkov` checks required (Checkov is its own check since
+  #264), no direct pushes — **blocked:** GitHub offers
   branch protection and rulesets on a private repository only with GitHub
   Pro (the API answers "Upgrade to GitHub Pro", checked 2026-09-27). Until
   then, the PR-only rule is a convention, not something GitHub enforces
@@ -667,5 +668,13 @@ phase above, or a new phase, whenever you're ready to schedule them.)*
   `alexa/README.md` for dev, and separately for production. Settle whether Cognito accepts the
   RFC 8707 `resource` parameter Alexa sends (friction 10.19-10.20)
 - **A real-microphone check of the voice** on dev and production, in Chrome and Edge (Test voice)
+- **Three Checkov findings skipped with reasons in #261, worth fixing:** the public API's
+  CloudFront distribution has no response headers policy (`CKV2_AWS_32`; the site's has one),
+  the daily-cycle state machine has no CloudWatch execution logging (`CKV_AWS_285`), and
+  dev's content bucket is not versioned (`CKV_AWS_21`; production's is)
+- **Decide whether the deploy roles should also trust the plain OIDC subject:** bootstrap's
+  trust policies match only GitHub's immutable form (`repo:<owner>@<id>/<repo>@<id>:...`), so a
+  fork whose tokens carry `repo:<owner>/<repo>:...` is refused (#263; the setup guide's
+  troubleshooting shows how to tell)
 - **Consider `adapter_config.provider = "agentcore"` for wow-forever:** the
   fallback triggers only when GDELT fails, not when it answers with nothing

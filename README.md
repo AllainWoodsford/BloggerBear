@@ -398,6 +398,11 @@ scripts/
   minify_frontend.py         builds frontend-dist/ for deploy
   domain_check.py            read-only: is the custom domain wired up yet?
   alexa_addon_values.py      the values the Alexa+ bootstrap needs
+  gear_create.py             `equipment create` / `delete`: gear written by hand
+  repair_stats_week.py       mends Stats history after a missed weekly rollover
+  generate_cli_reference.py  rewrites the CLI reference the assistant reads
+  pii_denylist_check.py      CI: refuses a change that adds the owner's own
+                              personal strings
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
 
