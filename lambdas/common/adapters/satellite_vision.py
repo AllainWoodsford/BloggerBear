@@ -18,7 +18,8 @@ region, through common/vision_client.py. What a topic watches is configuration, 
       "relative_threshold": 0.35, "absolute_threshold": 5,
       "max_sites_per_tick": 5, "time_budget_seconds": 60,
       "triage": true, "triage_max_tool_calls": 3,          # the agent (common/vision_triage.py)
-    }
+      "triage_deadline_seconds": 85,                       # the agent answers by then, from the
+    }                                                      # tick's start (the tick itself has 120 s)
 
 **Per tick**, for each site: find the newest Sentinel-2 L2A scene over it (Earth Search STAC,
 free, no key); if it is one the site already has, do nothing; otherwise ask the worker to measure
@@ -91,6 +92,10 @@ DEFAULTS = {
     "time_budget_seconds": 60,
     "triage": True,
     "triage_max_tool_calls": 3,
+    # Seconds after the tick started by which the agent must have answered. The research tick's Lambda
+    # has 120 s: the measuring loop keeps to time_budget_seconds, the agent to this, and what is left
+    # is for the summary call and the stores. The agent treats running out of time as an artefact.
+    "triage_deadline_seconds": 85,
 }
 
 COPERNICUS_SOURCE = {
@@ -140,7 +145,7 @@ def parse_config(adapter_config: dict | None) -> dict:
     for key in whole:
         config[key] = int(config[key])
     for key in ("coverage_floor", "relative_threshold", "absolute_threshold", "max_cloud_cover",
-                "time_budget_seconds"):  # fmt: skip
+                "time_budget_seconds", "triage_deadline_seconds"):  # fmt: skip
         config[key] = float(config[key])
     if config["history_size"] < 2 or config["min_baseline"] < 1:
         raise ConfigError("history_size must be at least 2 and min_baseline at least 1")
@@ -229,6 +234,7 @@ class SatelliteVisionAdapter(Adapter):
     # Set by fetch_state for material_diff on the same instance.
     _topic: dict | None = None
     _config: dict | None = None
+    _started: float | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
         config = parse_config(topic_config.get("adapter_config"))
@@ -239,6 +245,7 @@ class SatelliteVisionAdapter(Adapter):
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
         started = self.clock()
+        self._started = started
         previous_sites = (previous_state or {}).get("sites") or {}
         sites, measured = {}, []
 
@@ -379,6 +386,9 @@ class SatelliteVisionAdapter(Adapter):
             model_id, failure = None, f"no model to triage with ({type(exc).__name__})"
         sites = {site["id"]: site for site in config["sites"]}
         trails = new_state.setdefault("triage", {})
+        # One deadline for every site's decision: the tick's start plus the topic's allowance.
+        started = self._started if self._started is not None else self.clock()
+        deadline = started + config["triage_deadline_seconds"]
         for verdict in candidates:
             record = new_state["sites"][verdict["site_id"]]
             latest = record["history"][-1]
@@ -398,6 +408,8 @@ class SatelliteVisionAdapter(Adapter):
                     load_image=self.load_image,
                     measure=self.measure,
                     max_tool_calls=config["triage_max_tool_calls"],
+                    deadline=deadline,
+                    clock=self.clock,
                 )
             trails[verdict["site_id"]] = outcome
             latest["triage"] = {"verdict": outcome["verdict"], "reason": outcome["reason"]}

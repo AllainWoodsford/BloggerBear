@@ -173,6 +173,27 @@ def test_a_request_past_the_budget_is_refused_and_the_model_still_answers():
     assert [c["ok"] for c in out["tool_calls"]] == [True, False]
 
 
+def test_out_of_time_is_an_artefact_before_any_model_call(recorded):
+    script = Script(text('{"verdict": "real", "reason": "x"}'))
+    out = run(script, deadline=100.0, clock=lambda: 95.0)  # 5 s left: not enough for a turn
+    assert (out["verdict"], out["reason"]) == ("artefact", "no time left to decide")
+    assert script.requests == [] and out["model_calls"] == 0 and recorded == []
+
+
+def test_look_again_is_refused_when_the_worker_might_not_answer_in_time():
+    worker = Worker(count=12)
+    script = Script(
+        tool("look_again", {"offset": 40}), text('{"verdict": "artefact", "reason": "no re-check"}')
+    )
+    # 20 s left: enough to answer, not enough to wait on the worker.
+    out = run(script, worker=worker, deadline=100.0, clock=lambda: 80.0)
+    assert worker.calls == []
+    result = script.requests[1]["messages"][-1]["content"][0]["toolResult"]
+    assert result["status"] == "error" and "No time left" in result["content"][0]["text"]
+    assert out["verdict"] == "artefact"
+    assert out["tool_calls"] == [{"name": "look_again", "input": {"offset": 40}, "ok": False}]
+
+
 @pytest.mark.parametrize(
     ("answer", "reason"),
     [

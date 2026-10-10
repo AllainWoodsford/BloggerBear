@@ -53,6 +53,11 @@ PARAM_LIMITS = {
 }
 
 WHOLE_NUMBER_PARAMS = ("block_size", "edge_buffer_px")
+# vision.detect.DetectParams' default length band, repeated here because this module may not import
+# the OpenCV side (a test in test_vision_worker.py holds the two together). A request that sets only
+# one of the pair is checked against the other's default, so the worker never builds a DetectParams
+# it would reject: that was an "internal" error where it should have been "bad_request".
+DEFAULT_LENGTH_M = (60.0, 600.0)
 
 MAX_POLYGON_VERTICES = 64
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -118,6 +123,8 @@ def validate_request(
             params = {**params, key: int(params[key])}
     if params.get("block_size", 3) % 2 == 0:
         raise ContractError("param 'block_size' must be odd")
+    if params.get("min_length_m", DEFAULT_LENGTH_M[0]) > params.get("max_length_m", DEFAULT_LENGTH_M[1]):
+        raise ContractError("param 'min_length_m' must not exceed 'max_length_m'")
 
     coverage_floor = request.get("coverage_floor", 0.7)
     if not _is_number(coverage_floor) or not 0 <= coverage_floor <= 1:

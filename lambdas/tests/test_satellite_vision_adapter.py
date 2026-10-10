@@ -461,6 +461,9 @@ def test_the_agent_is_asked_only_about_a_numeric_change_and_its_yes_is_material(
     assert asked["site"]["id"] == "botany" and asked["site"]["polygon"] == POLY
     assert asked["scene"]["id"] == "S3" and asked["scene"]["assets"]["nir"].endswith("S3/nir.tif")
     assert asked["verdict"]["baseline"] == 11 and asked["max_tool_calls"] == 3
+    # The agent is given the tick's clock and a deadline counted from when fetching began (here the
+    # state was built by hand, so from the diff), so it can never push the tick past 120 s.
+    assert asked["clock"] is adapter.clock and asked["deadline"] == pytest.approx(adapter.clock() + 85, abs=5)
     # The trail is kept in the state the research tick stores.
     assert state["triage"]["botany"]["verdict"] == "real"
     assert state["sites"]["botany"]["history"][-1]["triage"]["verdict"] == "real"

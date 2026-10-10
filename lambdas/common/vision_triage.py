@@ -13,7 +13,10 @@ it answers, which is what makes this a loop rather than a single classification:
 
 **Bounded in code, not in the prompt.** At most `max_tool_calls` tool calls (a request past the
 budget is answered "budget used, answer now"), and at most `max_tool_calls + 2` model turns: one
-per tool call, one to be told the budget is used, and the answer. The
+per tool call, one to be told the budget is used, and the answer. A `deadline` (a `clock()` value,
+given by the adapter from the research tick's own budget) is kept too: no model turn starts with
+less than MIN_SECONDS_TO_ANSWER left, and `look_again` is refused with less than
+MIN_SECONDS_TO_LOOK_AGAIN, since the worker may take up to its own timeout to answer. The
 answer must be a JSON object {"verdict": "real" | "artefact", "reason": "..."}; anything else, a
 Bedrock error, a turn limit or a tool failure the model can't get past is "artefact" with the
 reason why. **Fail closed:** an unsure agent never makes a Finding. Every call's tokens are tallied
@@ -27,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 
 from common import stats_tracking, vision_client
@@ -37,6 +41,10 @@ CATEGORY = "vision_triage"
 VERDICTS = ("real", "artefact")
 MAX_TOKENS = 700
 MAX_REASON_CHARS = 300
+# Seconds that must remain before the deadline for one more model turn, and for a re-measurement
+# (a worker call: usually seconds, but up to the worker's own 60 s timeout).
+MIN_SECONDS_TO_ANSWER = 10.0
+MIN_SECONDS_TO_LOOK_AGAIN = 30.0
 
 SYSTEM_PROMPT = (
     "You check changes measured by an automated satellite image-analysis pipeline before they are "
@@ -128,11 +136,15 @@ def triage(
     converse: Callable[..., dict] | None = None,
     measure: Callable[..., vision_client.VisionResult] | None = None,
     max_tool_calls: int = 3,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict:
     """Decide one site's change. `site` is {"id", "name", "polygon"}; `verdict` is the adapter's
     numeric verdict for it; `history` the site's entries, newest last; `scene` the newest scene's
-    {"id", "captured_at", "assets"}. Returns {"verdict", "reason", "tool_calls", "model_id",
-    "input_tokens", "output_tokens", "model_calls"}. Never raises."""
+    {"id", "captured_at", "assets"}. `deadline`, if given, is the `clock()` value by which the caller
+    needs the answer; running out of time is an artefact like any other doubt. Returns {"verdict",
+    "reason", "tool_calls", "model_id", "input_tokens", "output_tokens", "model_calls"}. Never
+    raises."""
     converse = converse or _converse
     measure = measure or vision_client.measure
     load_image = load_image or (lambda key: None)
@@ -163,6 +175,8 @@ def triage(
 
     used = 0
     for _turn in range(max_tool_calls + 2):
+        if deadline is not None and deadline - clock() < MIN_SECONDS_TO_ANSWER:
+            return finish("artefact", "no time left to decide")
         try:
             response = converse(
                 modelId=model_id,
@@ -192,7 +206,7 @@ def triage(
                 used += 1
                 body, status = _run_tool(
                     use, site=site, history=history, scene=scene, params=params or {}, backend=backend,
-                    load_image=load_image, measure=measure,
+                    load_image=load_image, measure=measure, deadline=deadline, clock=clock,
                 )  # fmt: skip
             trail["tool_calls"].append(
                 {"name": use.get("name"), "input": use.get("input") or {}, "ok": status == "success"}
@@ -204,7 +218,9 @@ def triage(
     return finish("artefact", "no verdict within the turn limit")
 
 
-def _run_tool(use, *, site, history, scene, params, backend, load_image, measure) -> tuple[list[dict], str]:
+def _run_tool(
+    use, *, site, history, scene, params, backend, load_image, measure, deadline=None, clock=time.monotonic
+) -> tuple[list[dict], str]:
     name, given = use.get("name"), use.get("input") or {}
     try:
         if name == "site_history":
@@ -225,6 +241,8 @@ def _run_tool(use, *, site, history, scene, params, backend, load_image, measure
         if name == "look_again":
             if not isinstance(given, dict):
                 return [{"text": "look_again takes an object of settings."}], "error"
+            if deadline is not None and deadline - clock() < MIN_SECONDS_TO_LOOK_AGAIN:
+                return [{"text": "No time left to re-measure. Answer now with what you have."}], "error"
             result = measure(
                 {"id": site["id"], "polygon": site["polygon"]},
                 scene,

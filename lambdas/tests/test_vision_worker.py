@@ -156,6 +156,8 @@ def test_no_image_when_not_asked(files):
         {"params": {"mystery": 1}},
         {"params": {"edge_buffer_px": 1.5}},
         {"params": {"offset": float("nan")}},
+        {"params": {"min_length_m": 700}},  # above the default max_length_m
+        {"params": {"min_length_m": 300, "max_length_m": 200}},
         {"coverage_floor": 2},
         {"scene": {"id": "s", "assets": {"nir": NIR_URL}}},
         {"scene": {"id": "s", "assets": {"nir": NIR_URL, "green": "https://example.com/B03.tif"}}},
@@ -167,6 +169,13 @@ def test_bad_requests_are_refused_before_any_read(files, bad):
     reply = worker.lambda_handler(request(**bad), None, fetch=fetch_from(files["blobs"], log))
     assert reply == {"version": 1, "ok": False, "error": "bad_request", "detail": reply["detail"]}
     assert log == []
+
+
+def test_the_contracts_default_length_band_is_the_detectors():
+    """The contract checks a lone min or max against the other's default, so that default must be the
+    detector's own; the contract can't import it (no OpenCV in the pipeline zip)."""
+    defaults = worker.DetectParams()
+    assert contract.DEFAULT_LENGTH_M == (defaults.min_length_m, defaults.max_length_m)
 
 
 def test_asset_hosts_can_be_configured(files, monkeypatch):
