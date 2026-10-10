@@ -237,6 +237,26 @@ Then, in order:
    bootstrap: [alexa/README.md](../alexa/README.md). Putting Alexa's redirect URLs in
    `ops_alexa_redirect_uris` also keeps the MCP function warm (about 8,600 invocations a month).
 
+## Vision (optional)
+
+The vision worker and its topics
+([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional)) are off in
+production by default. **Leave it off unless the dev run was satisfactory:** a vision topic that
+ran on dev for a few ticks, with a held article whose figure and numbers you read and approved,
+and no `last_error` repeating in its running state. Then, in order:
+
+1. Re-apply the bootstrap by hand with `vision_region` (in the production account, if you have
+   two), checking the plan touches only the deploy roles' policies.
+2. Set the `VISION_ENABLED` variable to `true` on the `production` environment (or on the
+   repository, which also covers dev) and publish a release. The worker lands in `vision_region`;
+   nothing else in production changes.
+3. Create the topic in production with the same `adapter_config` that worked on dev, and trigger
+   its first tick by hand.
+
+`force_manual_review` is forced on every vision topic: **every vision article waits for a
+person** in the review inbox, whatever the compliance review said. Take it down again by
+removing the variable and releasing; topics keep their state.
+
 ## Rolling back
 
 - **Point the domain back**: at the registrar, restore its default name servers (GoDaddy, for

@@ -16,7 +16,8 @@ Settings live in six places:
 | [Your own machine](#your-own-machine) | Where the admin CLI points | Environment variables |
 
 Two more are set in a console and nowhere else: [AWS account settings](#aws-account-settings) and
-[GitHub repository settings](#github-repository-settings).
+[GitHub repository settings](#github-repository-settings). The optional vision work spans
+several of these, so its settings are gathered in [Vision and rail access](#vision-and-rail-access).
 
 Account IDs here are AWS's documentation placeholders. `<env>` is `dev` or `production`.
 `<prefix>` is your name prefix, the [`UNIQUE_NAME_PREFIX`](#github-secrets-and-variables) setting:
@@ -235,3 +236,102 @@ commands).
 | A ruleset on `dev` and `prod`: pull requests only, no force-push, no deletion | Needs a public repository or a paid plan. |
 | Actions' default `GITHUB_TOKEN` read-only; fork pull requests wait for approval | So a workflow from a stranger's pull request cannot write or deploy. |
 | Secret scanning, push protection, Dependabot alerts, private vulnerability reporting | Public repositories only, or a paid plan. |
+
+## Vision and rail access
+
+The vision work (the `satellite_vision` and `rail_access` topics, the vision worker and the
+triage agent; [the pipeline page](architecture/blogger-vision.md)) is off by default. Its
+settings sit in several of the tables above; this section gathers them.
+
+### The switch
+
+One setting turns it on: the [`VISION_ENABLED`](#github-secrets-and-variables) repository
+variable, `true` to deploy the worker and anything else (or unset) to leave it off, or to take
+it down again on the next apply. CI passes it to Terraform as `vision_enabled`
+(`TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED || 'false' }}` in both apply workflows); the
+variable defaults to `false` in both roots and is never set in `terraform.tfvars`. Set it on the
+`production` environment to turn it on there alone. The bootstrap must have been re-applied with
+`vision_region` first, or the apply is refused:
+[the runsheet's steps](deployment-runsheet.md#vision-optional).
+
+### Terraform variables
+
+| Variable | Where | Default | What it is |
+|---|---|---|---|
+| `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN and the right to invoke it. Off, none of it exists. |
+| `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too; the reads then cross instead. |
+| `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create Lambda functions and log groups named `<prefix>-*-vision-*`, and nowhere else outside `aws_region`. |
+| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. The timeout stays under the client's 90 s read timeout, so the caller sees the worker's own error, not its own. |
+
+### The worker's environment variables
+
+Set on `<prefix>-<env>-vision-worker` by Terraform (`lambdas/vision_worker_handler.py`
+documents them):
+
+| Variable | Set on | Meaning |
+|---|---|---|
+| `VISION_BACKEND` | the worker | `opencv` (stock `opencv-python-headless`) or `cool` (OpenCV's COOL build): what this deployment is. A request for the other backend is refused (`backend_mismatch`), so a result never claims a build it did not run on. The module sets `opencv`. |
+| `COOL_BUILD_SHA256` | a COOL worker only | The fingerprint of the pinned COOL build (`lambdas/vision/build.py`). A `cool` worker whose `cv2` does not match refuses every request (`not_cool`). |
+| `VISION_ALLOWED_URL_PREFIXES` | the worker, and the research tick | Optional, comma-separated: the URL prefixes an asset may be read from. Unset, the public `sentinel-cogs` bucket. The research tick's client checks the same list before it sends a request. |
+
+### The research tick's environment variables
+
+| Variable | Set on | Meaning |
+|---|---|---|
+| `VISION_WORKER_ARN` | the research tick | The stock worker's ARN. Terraform sets it when `vision_enabled` is true and leaves it empty otherwise, which the client reads as "not configured": the adapter records `last_error` on each site and measures nothing. |
+| `VISION_COOL_WORKER_ARN` | the research tick | The COOL worker's, once one exists; optional. A topic whose `backend` is `cool` needs it. |
+
+### A `satellite_vision` topic
+
+Every key is in `adapter_config`, documented in the adapter's docstring
+(`lambdas/common/adapters/satellite_vision.py`). `force_manual_review` is forced on and cannot
+be unset.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sites` | required | 1 to 10 of `{"id", "name", "polygon": [[lon, lat], ...]}`, polygons of 3 to 64 points. Names are used in articles exactly as given. |
+| `object_noun` | `"objects"` | What articles call what is counted, e.g. `"large vessels"`. |
+| `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
+| `params` | `{}` | Detector overrides: `stretch_max`, `block_size` (odd), `offset`, `min_length_m`, `max_length_m`, `min_elongation`, `edge_buffer_px`, within the contract's bounds. |
+| `max_cloud_cover` | 60 | Scene-level cloud filter in the search, %. |
+| `lookback_days` | 10 | How far back to search for a scene. |
+| `coverage_floor` | 0.7 | Below it a count is never material and never part of a baseline. |
+| `history_size` | 8 | Scenes kept per site. |
+| `min_baseline` | 2 | Earlier clear scenes needed before a change can be material. |
+| `relative_threshold`, `absolute_threshold` | 0.35, 5 | Both must be crossed against the baseline median. |
+| `max_sites_per_tick` | 5 | Bound on worker calls per tick. |
+| `time_budget_seconds` | 60 | Stop measuring new sites after this (the research tick has 120 s). |
+| `triage` | true | Run the agent on a numeric change. |
+| `triage_max_tool_calls` | 3 | The agent's tool budget; it gets that plus two model turns. |
+| `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered; out of time is "artefact". |
+
+### A `rail_access` topic (as specified; the adapter lands in PR E)
+
+The keys and defaults of
+[the specification](enhancements/rail-access-monitor.md#4-specifications-one-per-pull-request),
+PR E. `force_manual_review` is forced on, as above. Each site must sit inside one Sentinel-2
+tile; the specification's §2 has four city boxes.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sites` | required | As above: 1 to 10 city polygons, each inside one Sentinel-2 tile. |
+| `backend` | `"opencv"` | Or `"cool"`. |
+| `params` | `{}` | Rail parameter overrides: `ndbi_threshold` 0.0, `ndvi_max` 0.3, `heat_sigma_m` 500, `snap_m` 300, `hub_count` 5, `intermodal_near_m` 300, `intermodal_far_m` 500, `min_desert_km2` 0.5, `visibility_ndvi_max` 0.35, `max_orbital_km` 5, within the vision core's bounds. |
+| `reach_m` | 1000 | Walking reach of a station, straight-line metres. |
+| `osm_ttl_days` | 30 | How long the cached OpenStreetMap network is used before Overpass is asked again. |
+| `max_cloud_cover` | 40 | Scene-level cloud filter in the search, %. |
+| `lookback_days` | 20 | How far back to search for a scene. |
+| `coverage_floor` | 0.6 | Below it a scene is never material and never part of a baseline. |
+| `history_size` | 6 | Scenes kept per site. |
+| `min_baseline` | 1 | Earlier clear scenes needed before a change can be material. |
+| `served_share_threshold` | 0.02 | A change in the served share of at least this is material. |
+| `desert_relative_threshold` | 0.10 | A change in the desert area of at least this share of the baseline median is material. A changed station count is material on its own. |
+| `max_sites_per_tick` | 1 | One city per tick: the network fetch, the worker and the agent share the tick's 120 s. |
+| `time_budget_seconds` | 70 | The measuring budget (80 at most). |
+| `triage`, `triage_max_tool_calls`, `triage_deadline_seconds` | true, 3, 85 | As above. |
+| `web_context` | true | Give the agent the news search tool (GDELT) for the city's rail stations and lines. |
+
+### No keys
+
+Earth Search STAC, the Sentinel-2 COGs in the `sentinel-cogs` bucket, the Overpass API and
+GDELT need no key, secret or parameter: nothing is added to the tables above for them.

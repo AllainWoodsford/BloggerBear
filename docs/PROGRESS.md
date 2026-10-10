@@ -633,6 +633,32 @@ All shipped and deployed; the design and decisions for each are in
 - [x] Architecture by feature: `architecture` with `feature` walks through article research step by
   step across the layers (adapters, keys in SSM, research tick, findings, candidate ideas,
   drafting, reviews, the article in S3, where the agents are) (#262; docs/architecture/)
+- [x] Agentic vision, for the OpenCV AI Competition 2026 (#240–#254, merged onto `dev` as the
+  integration branch of #285 with the review's fixes): the vision core in `lambdas/vision/`, the
+  GeoTIFF reader and UTM without GDAL, the stateless OpenCV 5 worker on arm64 in us-west-2 with
+  its contract and cross-region client, the `satellite_vision` adapter with running state, the
+  bounded triage agent with a deadline, `force_manual_review`, the COOL benchmark and image
+  recipe; nothing deployed until switched on (docs/enhancements/vision.md,
+  docs/enhancements/rail-access-monitor.md §1)
+- [x] The vision worker is opt-in through the `VISION_ENABLED` repository variable, fed to both
+  apply workflows as `vision_enabled`; the setup script lists it as deliberately not asked (#286)
+- [x] The OpenStreetMap Overpass client for rail networks: two allow-listed endpoints, one
+  fallback hop, decimation to the 20 m grid, caps, a streamed body under a size cap, coded
+  errors, cache rules (#287)
+- [x] Figures from Findings to articles: `Adapter.figures`, the list on the Finding and the
+  article, one server-side copy per PNG to `articles/figures/<article>/<n>.png`, the `<figure>`
+  on the static page and in the SPA, removed on take-down (#288)
+- [ ] The rail access vision core: built-up heat, station reach and deserts, the rail network
+  graph from OpenStreetMap ways, flags and simulated links, the figure; COG overviews and the
+  UTM inverse (#289, in review)
+- [ ] Worker tasks: `rail_access` beside `ships` in the contract, the handler, the scene reader's
+  overview reads and the benchmark kernels (rail PR D)
+- [ ] The `rail_access` adapter, the shared `vision_sites` module and task-aware triage with
+  `web_context` (rail PR E)
+- [ ] Documentation: the vision pipeline page (docs/architecture/blogger-vision.md), the README
+  section and data-source rows, the configuration and deployment sections, the submission draft
+  (rail PR F1, this PR); vision.md for two tasks, the city topic templates and the friction
+  entries (rail PR F, after E)
 
 ## Backlog / not yet scheduled
 
