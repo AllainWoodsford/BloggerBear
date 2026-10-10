@@ -215,14 +215,16 @@ def _failed_status(article: dict | None, item: dict | None = None) -> str:
     return REWRITE_FAILED_STATUS if live else "pending"
 
 
-def _take_down(article_id: str) -> str | None:
+def _take_down(article: dict) -> str | None:
     """Take a published article off the site now that its rewrite is ready: status first (the
     public API stops serving it, and a failure here leaves it published and whole), then its
-    page. Returns a note for the reviewer if the page could not be removed, else None. Safe to
+    page and the copies of its figures (as many as the article stores; common/figures.py).
+    Returns a note for the reviewer if the page could not be removed, else None. Safe to
     repeat."""
+    article_id = article["article_id"]
     update_article_status(article_id, "pending_moderation")
     try:
-        remove_article_page(article_id)
+        remove_article_page(article_id, figure_count=len(article.get("figures") or []))
     except Exception as exc:  # noqa: BLE001 - the rewrite still goes to the inbox, with this said
         print(f"rewrite: could not remove the page of {article_id}: {exc!r}")
         return (
@@ -449,7 +451,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
     try:
         page_note = None
         if was_live:
-            page_note = _take_down(article["article_id"])
+            page_note = _take_down(article)
             taken_down = True
         _save(
             item=item,
@@ -472,7 +474,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
             # It failed before anything was written, so the article is still published and whole.
             # Try once more; if it still cannot come down, it must not go to the inbox.
             try:
-                _take_down(article["article_id"])
+                _take_down(article)
                 taken_down = True
             except Exception as down_exc:  # noqa: BLE001
                 print(f"rewrite: could not take {article['article_id']} down: {down_exc!r}")

@@ -38,6 +38,7 @@ import markdown
 
 from .attribution import clean_sources
 from .dynamo import get_prompt_refinement, get_topic
+from .figures import PUBLIC_FIGURE_PREFIX, clean_figures, figure_key
 from .gear import public_view as _gear_public_view
 from .source_refs import dedupe_source_refs
 
@@ -64,19 +65,37 @@ def article_page_key(article_id: str) -> str:
     return f"articles/{article_id}.html"
 
 
-def remove_article_page(article_id: str) -> str:
+def remove_article_figures(article_id: str, count: int) -> None:
+    """Delete the copies of an article's figures from the site bucket: the keys for positions
+    1..`count` (common/figures.py's figure_key), `count` being how many the article stores. The
+    keys are counted rather than listed because the Lambda role may put and delete under
+    `articles/` but never list the bucket. Best effort per key, and it never raises: a copy that
+    is not there is not an error (S3 answers 204), and one that cannot be deleted is said and
+    skipped so the page itself still comes down. Safe to repeat."""
+    s3 = _get_s3_client()
+    for index in range(1, int(count or 0) + 1):
+        key = figure_key(article_id, index)
+        try:
+            s3.delete_object(Bucket=os.environ["SITE_BUCKET"], Key=key)
+        except Exception as exc:  # noqa: BLE001 - best effort, see docstring
+            print(f"static_pages: could not remove the figure {key}: {exc!r}")
+
+
+def remove_article_page(article_id: str, figure_count: int = 0) -> str:
     """Delete an article's static page from the site bucket and return its key.
 
-    Deleting a page that isn't there is not an error (S3 answers 204), so this
-    is safe to repeat.
+    `figure_count` is how many figures the article stores (common/figures.py); their copies on
+    the site come down after the page, best effort (remove_article_figures). Deleting a page
+    that isn't there is not an error (S3 answers 204), so this is safe to repeat.
     """
     key = article_page_key(article_id)
     _get_s3_client().delete_object(Bucket=os.environ["SITE_BUCKET"], Key=key)
+    remove_article_figures(article_id, figure_count)
     return key
 
 
 def invalidate_article_page(article_id: str) -> bool:
-    """Ask CloudFront to drop its cached copy of an article's page.
+    """Ask CloudFront to drop its cached copy of an article's page, and of its figures.
 
     Best effort, and it never raises: by the time this is called the page is
     already gone from the origin, so a failure only means viewers may keep a
@@ -86,11 +105,14 @@ def invalidate_article_page(article_id: str) -> bool:
     distribution_id = os.environ.get("CLOUDFRONT_DISTRIBUTION_ID")
     if not distribution_id:
         return False
+    # The figures are cached for a day (publish_figures), unlike the page, which revalidates on
+    # every load: a wildcard covers however many the article had.
+    paths = [f"/{article_page_key(article_id)}", f"/{PUBLIC_FIGURE_PREFIX}{article_id}/*"]
     try:
         _get_cloudfront_client().create_invalidation(
             DistributionId=distribution_id,
             InvalidationBatch={
-                "Paths": {"Quantity": 1, "Items": [f"/{article_page_key(article_id)}"]},
+                "Paths": {"Quantity": len(paths), "Items": paths},
                 "CallerReference": f"unpublish-{article_id}-{time.time_ns()}",
             },
         )
@@ -237,6 +259,69 @@ def render_attribution_html(attribution: list[dict] | None) -> str:
     if not credits:
         return ""
     return f'<p class="source-attribution" data-role="source-attribution">{" &#183; ".join(credits)}</p>'
+
+
+# The site serves an article's figures from the site bucket (CloudFront caches an object for a
+# day, the page itself revalidates on every load: see render_and_publish_article_page). A figure
+# never changes once the article is written, so a day is right; a take-down invalidates them.
+_FIGURE_CACHE_CONTROL = "public, max-age=86400"
+
+
+def publish_figures(article_id: str, figures: list[dict] | None) -> list[dict]:
+    """Copy an article's figures (common/figures.py: [{"key", "caption", "alt"}], each key a PNG
+    in the content bucket) into the site bucket under articles/figures/<article_id>/<n>.png, `n`
+    the figure's position in the list from 1, and return the copies as the page shows them:
+    [{"src", "caption", "alt"}], `src` the site path.
+
+    One S3 CopyObject per figure, server side (the Lambda role may read the content bucket and
+    write under `articles/` in the site bucket; nothing passes through this function). The copy
+    is stored as image/png with its own cache header, whatever the source object said
+    (MetadataDirective REPLACE). A copy that fails -- the source is gone, a permission -- is said
+    and skipped: the article still publishes, without that figure, and a re-render copies again.
+    The positions of the others are kept, so the stored list, the copies and a later take-down
+    (remove_article_figures) always agree on which key is which.
+    """
+    cleaned = clean_figures(figures)
+    if not cleaned:
+        return []
+    s3 = _get_s3_client()
+    content_bucket = os.environ["CONTENT_BUCKET"]
+    site_bucket = os.environ["SITE_BUCKET"]
+    published: list[dict] = []
+    for index, figure in enumerate(cleaned, start=1):
+        key = figure_key(article_id, index)
+        try:
+            s3.copy_object(
+                Bucket=site_bucket,
+                Key=key,
+                CopySource={"Bucket": content_bucket, "Key": figure["key"]},
+                ContentType="image/png",
+                MetadataDirective="REPLACE",
+                CacheControl=_FIGURE_CACHE_CONTROL,
+            )
+        except Exception as exc:  # noqa: BLE001 - the article publishes without this figure
+            print(f"static_pages: could not copy the figure {figure['key']} to {key}: {exc!r}")
+            continue
+        published.append({"src": "/" + key, "caption": figure["caption"], "alt": figure["alt"]})
+    return published
+
+
+def render_figures_html(figures: list[dict] | None) -> str:
+    """The figures as they sit between the credit line and the body: one
+    <figure class="article-figure"> per entry of publish_figures' answer, the image lazily
+    loaded with its alt text, the caption under it. Every value is escaped here, and the CSP
+    forbids inline styles, so there is no `style=` anywhere in it. "" when there are none: a
+    page without figures has no empty block to explain."""
+    blocks = []
+    for figure in figures or []:
+        blocks.append(
+            '<figure class="article-figure">'
+            f'<img src="{escape(figure["src"], quote=True)}" alt="{escape(figure["alt"], quote=True)}"'
+            ' loading="lazy" />'
+            f"<figcaption>{escape(figure['caption'])}</figcaption>"
+            "</figure>"
+        )
+    return "".join(blocks)
 
 
 def _render_lineage_footer_html(
@@ -459,6 +544,7 @@ def render_and_publish_article_page(
     fact_check: str | None = None,
     equipment_used: list[dict] | None = None,
     attribution: list[dict] | None = None,
+    figures: list[dict] | None = None,
 ) -> str:
     """Render `article_id` as a static HTML page and upload it to the site
     bucket. Returns the S3 key it was written to.
@@ -466,6 +552,10 @@ def render_and_publish_article_page(
     `attribution` is the article's source credit (common/attribution.py: what was stored on the
     article when it was drafted, or its topic's adapter's sources for an older one). It is
     shown in italics just under the title block; see render_attribution_html.
+
+    `figures` are the article's stored figures (common/figures.py). Their PNGs are copied into
+    the site bucket here, on every render (publish_figures: a re-render after a take-down puts
+    them back), and the page shows the copies between the credit line and the body.
 
     The body is converted from markdown to HTML server-side and trusted
     as-is -- it's Bedrock-authored content that has already passed
@@ -501,6 +591,7 @@ def render_and_publish_article_page(
     published_label = escape(published_at) if published_at else "unpublished"
     lineage_summary_line_html = _render_lineage_summary_line_html(lineage, published_by)
     attribution_html = render_attribution_html(attribution)
+    figures_html = render_figures_html(publish_figures(article_id, figures))
     lineage_footer_html = _render_lineage_footer_html(lineage, published_by, fact_check)
     equipment_footer_html = _render_equipment_footer_html(equipment_snapshot(equipment_used))
     footers_html = f'<div class="article-footers">{lineage_footer_html}{equipment_footer_html}</div>'
@@ -535,6 +626,7 @@ def render_and_publish_article_page(
 </p>
 <p class="lineage-summary">{lineage_summary_line_html}</p>
 {attribution_html}
+{figures_html}
 <div class="article-body">{body_html}</div>
 {source_refs_html}
 {footers_html}

@@ -601,3 +601,42 @@ def test_a_complete_summary_says_nothing_about_being_cut_off(aws_resources, monk
     _run_one_tick(monkeypatch, _tracked("all of it"))
 
     assert "cut off" not in capsys.readouterr().out
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+class _DrawingAdapter(GitHubTrendingAdapter):
+    """An adapter that draws: one good figure, and one whose key reaches outside the bucket."""
+
+    def figures(self, new_state):
+        return [
+            {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described", "extra": 1},
+            {"key": "../outside.png", "caption": "Bad", "alt": "bad"},
+        ]
+
+
+def _the_finding():
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    return finding
+
+
+def test_an_adapters_figures_are_stored_on_the_finding_well_formed_ones_only(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _DrawingAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    assert _the_finding()["figures"] == [
+        {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described"}
+    ]
+
+
+def test_an_adapter_draws_nothing_unless_it_says_so_and_its_finding_has_no_figures_field(
+    aws_resources, monkeypatch
+):
+    assert GitHubTrendingAdapter().figures({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "figures" not in _the_finding()

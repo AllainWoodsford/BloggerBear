@@ -141,6 +141,16 @@ class Adapter(ABC):
         """
         raise NotImplementedError
 
+    def figures(self, new_state: dict) -> list[dict]:
+        """The pictures this observation drew, for the article written from it (common/figures.py):
+        one {"key", "caption", "alt"} dict per figure, `key` a PNG this adapter already stored in
+        the content bucket, `caption` the sentence shown under it, `alt` what a screen reader
+        says instead of it. The research tick keeps them on the Finding; the daily cycle puts the
+        newest few on the article, and the page copies the PNGs into the site bucket. Plain data,
+        never HTML: every page escapes it. The default, for a source that draws nothing, is none.
+        """
+        return []
+
     def build_summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict
     ) -> str | None:

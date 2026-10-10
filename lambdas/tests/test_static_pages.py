@@ -361,7 +361,7 @@ def test_remove_article_page_is_safe_to_repeat(s3):
     static_pages.remove_article_page("a1")  # already gone: not an error
 
 
-def test_invalidate_article_page_asks_cloudfront_to_drop_that_path(monkeypatch):
+def test_invalidate_article_page_asks_cloudfront_to_drop_the_page_and_its_figures(monkeypatch):
     from unittest.mock import MagicMock
 
     client = MagicMock()
@@ -372,7 +372,11 @@ def test_invalidate_article_page_asks_cloudfront_to_drop_that_path(monkeypatch):
 
     kwargs = client.create_invalidation.call_args.kwargs
     assert kwargs["DistributionId"] == "E123"
-    assert kwargs["InvalidationBatch"]["Paths"] == {"Quantity": 1, "Items": ["/articles/a1.html"]}
+    # The figures are cached for a day (unlike the page): a wildcard covers however many it had.
+    assert kwargs["InvalidationBatch"]["Paths"] == {
+        "Quantity": 2,
+        "Items": ["/articles/a1.html", "/articles/figures/a1/*"],
+    }
     assert kwargs["InvalidationBatch"]["CallerReference"].startswith("unpublish-a1-")
 
 
@@ -591,3 +595,159 @@ def test_static_page_loads_verify_js_before_the_widgets_that_use_it(s3):
     page, _ = _feedback_section(s3, "hp3")
 
     assert page.index('src="/verify.js"') < page.index('src="/article-widgets.js"')
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16  # enough of a PNG to tell the copy apart from the page
+CREDIT = [{"text": "Data from X", "label": "X", "url": "https://x.example/"}]
+
+
+def _store_png(s3, key, body=PNG):
+    # Stored as a worker would, without a content type worth keeping: the copy must not inherit it.
+    s3.put_object(Bucket=ENV["CONTENT_BUCKET"], Key=key, Body=body, ContentType="application/octet-stream")
+
+
+def _page_with_figures(s3, figures, article_id="a1", attribution=None):
+    static_pages.render_and_publish_article_page(
+        article_id=article_id,
+        title="A Title",
+        body_markdown="Body text.",
+        topic_name="A Topic",
+        published_at="2026-09-20T00:00:00+00:00",
+        attribution=attribution,
+        figures=figures,
+    )
+    return s3.get_object(Bucket=ENV["SITE_BUCKET"], Key=f"articles/{article_id}.html")["Body"].read().decode()
+
+
+def _site_keys(s3, prefix=""):
+    listing = s3.list_objects_v2(Bucket=ENV["SITE_BUCKET"], Prefix=prefix)
+    return sorted(o["Key"] for o in listing.get("Contents", []))
+
+
+def _figure(key, caption=None, alt=None):
+    return {"key": key, "caption": caption or f"Caption for {key}", "alt": alt or f"Alt for {key}"}
+
+
+def test_a_figure_is_copied_onto_the_site_as_a_png_and_shown_between_the_credit_and_the_body(s3):
+    _store_png(s3, "vision/t/s/scene.png")
+    figure = _figure("vision/t/s/scene.png", caption='Botany Bay <b>"2026"</b> & co', alt='Ships & "boats"')
+
+    html = _page_with_figures(s3, [figure], attribution=CREDIT)
+
+    copy = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/figures/a1/1.png")
+    assert copy["ContentType"] == "image/png"  # whatever the source object said
+    assert copy["CacheControl"] == "public, max-age=86400"
+    assert copy["Body"].read() == PNG
+    block = re.search(r'<figure class="article-figure">.*?</figure>', html, re.S).group(0)
+    assert block == (
+        '<figure class="article-figure">'
+        '<img src="/articles/figures/a1/1.png" alt="Ships &amp; &quot;boats&quot;" loading="lazy" />'
+        "<figcaption>Botany Bay &lt;b&gt;&quot;2026&quot;&lt;/b&gt; &amp; co</figcaption>"
+        "</figure>"
+    )
+    assert "style=" not in html  # the CSP forbids inline styles
+    order = [html.index(marker) for marker in ("source-attribution", "article-figure", "article-body")]
+    assert order == sorted(order)  # credit line, then the figure, then the body
+
+
+def test_several_figures_are_numbered_by_their_position(s3):
+    for n in "abc":
+        _store_png(s3, f"vision/{n}.png", PNG + n.encode())
+
+    html = _page_with_figures(s3, [_figure(f"vision/{n}.png") for n in "abc"])
+
+    assert _site_keys(s3, "articles/figures/") == [f"articles/figures/a1/{i}.png" for i in (1, 2, 3)]
+    third = s3.get_object(Bucket=ENV["SITE_BUCKET"], Key="articles/figures/a1/3.png")["Body"].read()
+    assert third == PNG + b"c"
+    assert re.findall(r'<img src="([^"]+)"', html) == [f"/articles/figures/a1/{i}.png" for i in (1, 2, 3)]
+
+
+def test_a_figure_whose_source_is_missing_is_skipped_and_said_and_the_others_keep_their_places(s3, capsys):
+    _store_png(s3, "vision/second.png")
+
+    html = _page_with_figures(s3, [_figure("vision/gone.png", caption="Gone"), _figure("vision/second.png")])
+
+    assert _site_keys(s3, "articles/figures/") == ["articles/figures/a1/2.png"]  # still the second
+    assert re.findall(r'<img src="([^"]+)"', html) == ["/articles/figures/a1/2.png"]
+    assert "Gone" not in html and "Caption for vision/second.png" in html
+    assert "could not copy the figure vision/gone.png" in capsys.readouterr().out
+
+
+def test_publish_figures_answers_with_what_it_copied_as_the_page_shows_it(s3):
+    _store_png(s3, "vision/a.png")
+
+    published = static_pages.publish_figures(
+        "a1", [_figure("vision/a.png", "A", "a"), _figure("../bad.png", "x", "x")]
+    )
+
+    assert published == [{"src": "/articles/figures/a1/1.png", "caption": "A", "alt": "a"}]
+    assert static_pages.publish_figures("a1", None) == []
+    assert static_pages.publish_figures("a1", []) == []
+
+
+@pytest.mark.parametrize("figures", [None, []])
+def test_no_figures_means_no_figure_block_and_nothing_copied(s3, figures):
+    html = _page_with_figures(s3, figures)
+
+    assert "<figure" not in html and "article-figure" not in html
+    assert _site_keys(s3, "articles/figures/") == []
+
+
+def test_removing_a_page_removes_as_many_figures_as_it_is_told_and_no_others(s3):
+    for n in "ab":
+        _store_png(s3, f"vision/{n}.png")
+    figures = [_figure(f"vision/{n}.png") for n in "ab"]
+    _page_with_figures(s3, figures, article_id="a1")
+    _page_with_figures(s3, figures, article_id="a2")
+
+    key = static_pages.remove_article_page("a1", figure_count=2)
+
+    assert key == "articles/a1.html"
+    assert _site_keys(s3) == ["articles/a2.html", "articles/figures/a2/1.png", "articles/figures/a2/2.png"]
+
+
+def test_removing_a_page_without_a_count_leaves_figures_it_was_not_told_about(s3):
+    """The role cannot list the bucket: the count is the only way a take-down knows the keys."""
+    _store_png(s3, "vision/a.png")
+    _page_with_figures(s3, [_figure("vision/a.png")])
+
+    static_pages.remove_article_page("a1")
+
+    assert _site_keys(s3) == ["articles/figures/a1/1.png"]
+
+
+def test_removing_figures_is_best_effort_per_key_and_never_raises(s3, monkeypatch, capsys):
+    from unittest.mock import MagicMock
+
+    for n in "ab":
+        _store_png(s3, f"vision/{n}.png")
+    _page_with_figures(s3, [_figure(f"vision/{n}.png") for n in "ab"])
+    real = static_pages._get_s3_client()
+    client = MagicMock(wraps=real)
+
+    def delete(Bucket, Key):
+        if Key.endswith("/1.png"):
+            raise RuntimeError("AccessDenied")
+        return real.delete_object(Bucket=Bucket, Key=Key)
+
+    client.delete_object.side_effect = delete
+    monkeypatch.setattr(static_pages, "_get_s3_client", lambda: client)
+
+    assert static_pages.remove_article_page("a1", figure_count=2) == "articles/a1.html"
+
+    assert _site_keys(s3) == ["articles/figures/a1/1.png"]  # the page and the other figure are gone
+    assert "could not remove the figure articles/figures/a1/1.png" in capsys.readouterr().out
+
+
+def test_removing_no_figures_touches_nothing_and_a_missing_figure_is_not_an_error(s3, monkeypatch):
+    from unittest.mock import MagicMock
+
+    static_pages.remove_article_figures("a1", 2)  # nothing there: S3 answers 204
+
+    client = MagicMock()
+    monkeypatch.setattr(static_pages, "_get_s3_client", lambda: client)
+    static_pages.remove_article_figures("a1", 0)
+    static_pages.remove_article_figures("a1", None)
+    client.delete_object.assert_not_called()

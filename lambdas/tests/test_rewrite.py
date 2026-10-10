@@ -460,7 +460,7 @@ def test_a_published_article_comes_down_only_when_its_rewrite_is_ready(aws):
     assert seen == {"status": "published", "body": BODY}  # untouched while the rewrite ran
     assert result["status"] == "rewritten" and result["unpublished"] is True
     assert result["musings_removed"] == 1 and result["cache_invalidated"] is True
-    mocks["remove"].assert_called_once_with("a1")
+    mocks["remove"].assert_called_once_with("a1", figure_count=0)
     mocks["musings"].assert_called_once_with("a1")
     assert _article_status() == "pending_moderation"
     assert "You should buy it now" not in _s3_text("articles/a1.md")
@@ -564,3 +564,25 @@ def test_a_rewrite_event_missing_its_ids_is_an_error():
     result = daily_cycle_handler.handler({"action": "rewrite", "queue_id": "q1"}, None)
 
     assert result["status"] == "error"
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+def test_taking_a_published_article_down_removes_as_many_figures_as_it_stores(aws):
+    _seed(reasons=[rewrite.SENT_BACK_REASON])
+    _publish_seeded_article()
+    figures = [{"key": f"vision/{n}.png", "caption": n, "alt": n} for n in ("a", "b")]
+    _table("Articles").update_item(
+        Key={"article_id": "a1"},
+        UpdateExpression="SET figures = :f",
+        ExpressionAttributeValues={":f": figures},
+    )
+
+    result, mocks = _run_live()
+
+    assert result["status"] == "rewritten" and result["unpublished"] is True
+    mocks["remove"].assert_called_once_with("a1", figure_count=2)
+    mocks["invalidate"].assert_called_once_with("a1")  # covers /articles/figures/a1/* too
+    # The stored list is untouched: approving the rewrite renders the page with them again.
+    assert _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["figures"] == figures
