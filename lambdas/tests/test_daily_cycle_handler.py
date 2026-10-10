@@ -2540,3 +2540,20 @@ def test_only_a_finished_rewrite_rebuilds_the_article_figures(status, rebuilt):
 
     assert result == {"status": status}
     assert refresh.called is rebuilt
+
+
+# --- force_manual_review: a person sees every article of such a topic -----------------------------
+
+
+def test_a_force_manual_review_topic_is_held_even_when_compliant(s3_bucket):
+    topic = {**NON_FINANCIAL_TOPIC, "force_manual_review": True}
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(topic=topic, compliant=True)
+    assert result["status"] == "pending_moderation"
+    reasons = mock_put_moderation.call_args.kwargs["reasons"]
+    assert daily_cycle_handler.compliance.MANUAL_REVIEW_REASON in reasons
+    assert mock_put_article.call_args.kwargs["status"] == "pending_moderation"
+
+
+def test_without_the_flag_a_compliant_article_still_publishes(s3_bucket):
+    result, _, _, _, _ = _run_with_review(compliant=True)
+    assert result["status"] == "published"

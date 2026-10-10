@@ -43,6 +43,14 @@ class Adapter(ABC):
     # that leave this False keep the plain `fetch_state(topic_config)`.
     uses_previous_state: bool = False
 
+    # Opt-in: an adapter whose state is a running record of every observation (a baseline built
+    # from all of them, not only those that were reported) sets this True, usually with
+    # `uses_previous_state`. The research tick then also stores the state after a tick that
+    # found nothing material, at one fixed key per topic, and hands back the newest state as
+    # `previous_state` and as `old_state` to `material_diff`. Without it, a no-change tick's
+    # state is dropped and the next tick sees the last *reported* snapshot.
+    keeps_running_state: bool = False
+
     # Required: where this adapter's data comes from, as the credit shown to readers (see
     # common/attribution.py). One {"text", "label", "url"} dict per source: `text` is the whole
     # sentence, `label` is the part of it that becomes the link, `url` is an https address.

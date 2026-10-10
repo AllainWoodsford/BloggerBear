@@ -1,0 +1,17 @@
+{
+  "about": "The pinned scenes scripts/vision_benchmark.py measures. Each is a real Sentinel-2 L2A scene on AWS Open Data (sentinel-cogs, us-west-2) and a site inside it. Add scenes; never change one, or old reports stop being comparable.",
+  "scenes": [
+    {
+      "name": "botany-bay-2024-01-05",
+      "site_id": "botany-bay",
+      "polygon": [[151.20, -33.97], [151.26, -33.97], [151.26, -34.02], [151.20, -34.02]],
+      "scene_id": "S2A_56HLH_20240105_0_L2A",
+      "captured_at": "2024-01-05",
+      "assets": {
+        "nir": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/B08.tif",
+        "green": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/B03.tif",
+        "scl": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/1/S2A_56HLH_20240105_0_L2A/SCL.tif"
+      }
+    }
+  ]
+}

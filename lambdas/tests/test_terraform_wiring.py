@@ -3258,7 +3258,7 @@ def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environm
             block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
             assert "default" not in re.sub(r"description\s*=.*", "", block), module
             naming.append(module)
-    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site"]
+    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker"]
     for env in ("dev", "production"):
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         for module in naming:

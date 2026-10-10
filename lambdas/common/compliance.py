@@ -243,6 +243,18 @@ def is_financial_topic(topic: dict) -> bool:
     return topic.get("is_financial", False)
 
 
+# Every draft of a topic with `force_manual_review` is held for a person, whatever the compliance
+# review says. Unlike `is_financial` it changes nothing about the drafting or the review (no
+# financial guidance, no disclaimer, and the review still runs, so the moderator sees its verdict);
+# it only takes away automatic publishing. admin_api_handler.py sets it on every satellite_vision
+# topic (docs/risks/opencv-bushfire-watch-01.md item 9: no imagery article without a human).
+MANUAL_REVIEW_REASON = "this topic's articles are always reviewed by a person before publishing"
+
+
+def requires_manual_review(topic: dict) -> bool:
+    return topic.get("force_manual_review") is True
+
+
 # --- Financial-topic drafting guidance (Phase 7) -----------------------
 #
 # review_draft above already guarantees every financial draft goes to

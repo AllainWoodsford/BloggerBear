@@ -27,7 +27,7 @@ from decimal import Decimal
 import boto3
 
 from common import equipment, feedback_limits, gear, security_events, sign_ins
-from common.adapters import CRYPTO_FEED_ADAPTER_KEY
+from common.adapters import CRYPTO_FEED_ADAPTER_KEY, SATELLITE_VISION_ADAPTER_KEY
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
@@ -159,6 +159,19 @@ def _json_number(value):
     raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
 
 
+def _dynamo_numbers(value):
+    """`value` with every float turned into a Decimal, all the way down: DynamoDB refuses floats,
+    and an adapter_config can hold them (a satellite_vision site's lon/lat polygon). Through str,
+    so 151.2 is stored as 151.2, not as its binary expansion."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: _dynamo_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_dynamo_numbers(item) for item in value]
+    return value
+
+
 def _response(status_code: int, payload: dict) -> dict:
     return {
         "statusCode": status_code,
@@ -234,6 +247,7 @@ def _create_topic(event: dict) -> dict:
     adapter_config = body.get("adapter_config", {})
     if not isinstance(adapter_config, dict):
         return _error(400, "'adapter_config' must be an object if provided")
+    adapter_config = _dynamo_numbers(adapter_config)
 
     editorial_goals_error = validate_editorial_goals(body.get("editorial_goals"))
     if editorial_goals_error:
@@ -249,6 +263,14 @@ def _create_topic(event: dict) -> dict:
     # common/adapters/crypto_feed.py's module docstring.
     if adapter == CRYPTO_FEED_ADAPTER_KEY:
         is_financial = True
+
+    force_manual_review = body.get("force_manual_review", False)
+    if not isinstance(force_manual_review, bool):
+        return _error(400, "'force_manual_review' must be a boolean if provided")
+    # The same kind of guarantee for imagery: a satellite_vision article is always seen by a
+    # person before it is published (common/compliance.py's requires_manual_review).
+    if adapter == SATELLITE_VISION_ADAPTER_KEY:
+        force_manual_review = True
 
     research_cadence = body.get("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = body.get("daily_cadence", _DEFAULT_DAILY_CADENCE)
@@ -306,6 +328,8 @@ def _create_topic(event: dict) -> dict:
         "adapter": adapter,
         "adapter_config": adapter_config,
         "is_financial": is_financial,
+        # Stored only when set: every other topic keeps the shape it had.
+        **({"force_manual_review": True} if force_manual_review else {}),
         "research_cadence": research_cadence,
         "daily_cadence": daily_cadence,
         "daily_timezone": daily_timezone,
@@ -355,6 +379,7 @@ def _update_topic(event: dict) -> dict:
         "adapter_config",
         "editorial_goals",
         "is_financial",
+        "force_manual_review",
         "research_cadence",
         "research_interval_hours",
         "review_mode",
@@ -373,6 +398,8 @@ def _update_topic(event: dict) -> dict:
         return _error(400, "'adapter' must be a non-empty string")
     if "adapter_config" in body and not isinstance(updated["adapter_config"], dict):
         return _error(400, "'adapter_config' must be an object")
+    if "adapter_config" in body:
+        updated["adapter_config"] = _dynamo_numbers(updated["adapter_config"])
     if "editorial_goals" in body:
         editorial_goals_error = validate_editorial_goals(body["editorial_goals"])
         if editorial_goals_error:
@@ -387,6 +414,10 @@ def _update_topic(event: dict) -> dict:
     # is_financial (or is trying to unset it).
     if updated["adapter"] == CRYPTO_FEED_ADAPTER_KEY:
         updated["is_financial"] = True
+    if "force_manual_review" in body and not isinstance(updated["force_manual_review"], bool):
+        return _error(400, "'force_manual_review' must be a boolean")
+    if updated["adapter"] == SATELLITE_VISION_ADAPTER_KEY:
+        updated["force_manual_review"] = True
     if "research_cadence" in body and (
         not isinstance(updated["research_cadence"], str) or not updated["research_cadence"]
     ):

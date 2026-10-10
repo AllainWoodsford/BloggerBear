@@ -1074,6 +1074,7 @@
     gear_identity: "Gear naming",
     comment_screening: "Comment screening",
     assistant: "Operator assistant",
+    vision_triage: "Vision triage",
   };
 
   function formatHours(value) {
