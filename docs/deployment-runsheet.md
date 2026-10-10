@@ -499,28 +499,46 @@ Then list your own personal strings (a name, a home IP, a personal address), one
 the same list in the `PII_DENYLIST` repository secret. Neither check ever prints what it found, so
 the logs stay safe to publish.
 
-### The vision worker (satellite_vision topics)
+### Vision (optional)
 
-Off by default (`vision_enabled = false` in both environments); nothing is created until it is
-turned on. Design: [docs/enhancements/opencv-agentic-vision-enhancement.md](enhancements/opencv-agentic-vision-enhancement.md).
+The vision worker, for the `satellite_vision` and `rail_access` topics
+([how it all fits](architecture/blogger-vision.md); the design is
+[enhancements/vision.md](enhancements/vision.md)). **Off by default**, in both environments:
+nothing of it is created until you turn it on, and you turn it on per environment with a GitHub
+variable, not with a tfvars edit. Every setting it uses is in
+[configuration.md](configuration.md#vision-and-rail-access).
 
-1. **Re-apply the bootstrap by hand** (it is never applied by CI). It adds two statements to the
-   deploy roles: Lambda functions and log groups named `<prefix>-*-vision-*` in `vision_region`
-   (default `us-west-2`, beside the Sentinel-2 imagery). If you change `vision_region`, pass the same
-   value to the bootstrap and to the environment.
+1. **Re-apply the bootstrap by hand, first** (it is never applied by CI). It adds two statements
+   to the deploy roles: Lambda functions and log groups named `<prefix>-*-vision-*` in
+   `vision_region` (default `us-west-2`, beside the Sentinel-2 imagery). Pass the same other
+   variables as your first apply, and check the plan touches only the roles' policies. If you
+   change `vision_region`, pass the same value to the bootstrap and to the environment. Until
+   this is done, an apply with the worker turned on is refused.
 2. **Set the `VISION_ENABLED` repository variable to `true`** (GitHub → Settings → Secrets and
    variables → Actions → Variables; [configuration.md](configuration.md)) and run a deploy (merge
    anything to `dev`, or `workflow_dispatch` the Terraform workflow). Nothing in `terraform.tfvars`
-   changes. Unset it, or set it to anything else, and the next apply removes the worker again;
-   topics keep their state. The apply
-   creates, in `vision_region`: the worker (arm64, python3.12), its role (its own log group only),
-   its log group, and a small artifacts bucket its package is uploaded through. The research tick
-   is given the worker's ARN (`VISION_WORKER_ARN`) and may invoke that one function.
-3. **Create a topic** with `adapter: "satellite_vision"` and `sites` in its `adapter_config`
-   (`common/adapters/satellite_vision.py` documents every key).
+   changes. The apply creates, in `vision_region`: the worker (arm64, python3.12), its role (its
+   own log group only), its log group, and a small artifacts bucket its package is uploaded
+   through. In the home region it gives the research tick the worker's ARN (`VISION_WORKER_ARN`)
+   and the right to invoke that one function. The variable is read by both apply workflows; a
+   value on the `production` environment turns it on for production alone.
+3. **Create a topic.** A `satellite_vision` topic needs `adapter: "satellite_vision"` and
+   `sites` in its `adapter_config` (one to ten lon/lat polygons with an `id` and a `name`), and
+   usually an `object_noun`; everything else has a default
+   (`common/adapters/satellite_vision.py` documents every key). A `rail_access` topic (once its
+   adapter has merged) needs `sites` whose polygons each sit inside one Sentinel-2 tile, and
+   takes `reach_m`. Both get `force_manual_review` whether you ask or not: every article waits
+   for `admin_cli approve`. Trigger the first tick by hand
+   (`topics trigger <id> --pipeline research_tick`); the first observation of each site is always
+   reported, so a Finding, then a held article, is what success looks like.
+4. **To turn it off again:** set the variable to anything but `true`, or remove it, and run a
+   deploy. The next apply removes the worker, its bucket, its log group and the invoke right;
+   topics keep their state and their history, and record `last_error` on each site until the
+   worker is back. Disable or delete the topics if you do not want those errors.
 
-The worker reads public data over HTTPS and needs no other access. Its errors alarm is not in the
-pipeline dashboard: observability's alarms are in the home Region, and the worker is not.
+The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` bucket, nothing
+else) and needs no key and no other access. Its errors alarm is not in the pipeline dashboard:
+observability's alarms are in the home Region, and the worker is not.
 
 ### The COOL backend and the benchmark
 

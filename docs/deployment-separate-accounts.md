@@ -52,6 +52,7 @@ What they cost you:
 | DynamoDB's tag-based access control | An account setting, per region: [check it in both](deployment-runsheet.md#dynamodb-tag-based-access-control-abac). |
 | Access to the model in Bedrock | Run the `converse` test from [Before you start](deployment-runsheet.md#before-you-start) with each account's credentials. |
 | The CoinGecko and GitHub API keys in SSM, if you use them | Each environment reads its own parameter, in its own account. |
+| The bootstrap's `vision_region`, if you turn the vision worker on | The deploy roles' rights in that region are per account: [Vision (optional)](#vision-optional). |
 
 Only one of these exists once: **the Route 53 hosted zone**, in the production account. Dev has
 no custom domain.
@@ -339,6 +340,25 @@ attach it to distributions in the account that owns it.
   firewall review reads the shared ACL's logs, which are in its account already.
 - Alert emails are separate settings (`ALERT_EMAIL_DEV`, `ALERT_EMAIL_PROD`), and each needs its
   subscription confirmed.
+
+## Vision (optional)
+
+The vision worker ([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional))
+is off by default and nothing of it exists until you turn it on. With two accounts:
+
+- **The bootstrap, in each account you turn it on in.** The deploy roles' rights to create the
+  worker (`<prefix>-*-vision-*` Lambda functions and log groups in `vision_region`, `us-west-2`
+  by default) are part of each account's bootstrap. Re-apply it in the dev account before
+  turning the worker on for dev, and in the production account before production; select the
+  account's workspace first (`terraform workspace select dev`). Pass the same `vision_region` to
+  both if you change it.
+- **The variable, per environment.** `VISION_ENABLED` on the repository turns the worker on for
+  dev (and for production, unless the `production` environment has its own value). Set it on
+  the `production` environment alone to turn it on only there. Removing it, or setting anything
+  but `true`, takes the worker down on the next apply; topics keep their state.
+
+The worker in each account reads the same public imagery and holds no state; dev's and
+production's never meet.
 
 ## Checklist before the first deploy
 
