@@ -215,15 +215,18 @@ reach_px)`; `desert_clusters(desert, min_px, top=10)` via `connectedComponentsWi
 `{"x", "y", "area_px", "bbox"}`); `catchment_activity(heat, labels, dist_px, reach_px,
 station_labels)` = mean heat of each station's Voronoi cell clipped at reach (`np.bincount`);
 `served_stats(built, dist_px, reach_px, pixel_km2) -> {built_up_km2, served_km2, desert_km2,
-served_share}` (0 when nothing is built up); `intermodal_counts(stations_xy_m, pois_xy_m,
+served_share}` (0 when nothing is built up); catchment activity is the mean over the cell's *usable*
+pixels, with `catchment_coverage` (their share) reported per station, so a station under cloud is
+said to be unmeasured rather than read as quiet; `intermodal_counts(stations_xy_m, pois_xy_m,
 poi_kinds, near_m, far_m) -> list[dict]` in chunked numpy (`bus_stop_near`, `bus_station_near`,
 `ferry_terminal_far`, `park_ride_far`).
 
-`network.py` (the one module that imports networkx): `rasterise_ways(shape, ways_px, thickness=1)`
+`network.py` (networkx is imported here and in `rail_analyse.py`, nowhere else): `rasterise_ways(shape, ways_px, thickness=1)`
 with `cv2.polylines(..., LINE_8)`; `thin(mask, max_iterations=32)`: sequential thinning with
-`cv2.morphologyEx(img, MORPH_HITMISS, k)` over the two Golay L kernels
-(`[[0,0,0],[-1,1,-1],[1,1,1]]`, `[[-1,0,0],[1,1,0],[-1,1,-1]]`) and their three rotations, each
-hit removed before the next kernel (that order is what keeps connectivity), on the bounding box
+`cv2.morphologyEx(img, MORPH_HITMISS, k)` over the two Golay L kernels in OpenCV's convention
+(1 = foreground, -1 = background, 0 = don't care: `[[-1,-1,-1],[0,1,0],[1,1,1]]` and
+`[[0,-1,-1],[1,1,-1],[0,1,0]]`) and their three rotations, each hit removed before the next kernel
+(that order is what keeps connectivity), on the bounding box
 of the nonzero pixels padded by one, until a pass removes nothing; `neighbour_count(skel01)` with
 `cv2.filter2D` and the 3×3 ring kernel; `junctions_and_ends(skel01)` (count ≥ 3, count == 1);
 `snap_stations(skel01, stations_px, snap_px) -> list[(x, y) | None]` via
@@ -234,8 +237,12 @@ snapped_px, pixel_size_m, visible01, tunnel_mask) -> (nx.Graph, info)`: node clu
 station pixel is that station, id `s:<osm id>`; two stations in one cluster keep the first and
 record `merged`; others `j<n>` / `e<n>` at the centroid); segments =
 `connectedComponents(skel ∧ ¬dilate(nodes, 3×3))`; adjacency by the eight shifts between segment
-and node labels (two nodes → an edge; one → a loop, warned; more → pairwise, warned); `length_m`
-from `cv2.arcLength(contour, True) / 2 + pixel_size_m`; `corridor_visibility` = mean of a 3×3
+and node labels (two nodes → an edge; one → a loop, warned; more → pairwise, warned); the skeleton
+pixels the dilated zones swallow between two node clusters two or three pixels apart are
+"bridges": labelled on their own, and every pair of nodes a bridge touches gets an edge too, so
+close stations and junctions never split the graph; a repeated station id keeps the first and
+warns, and no edge joins a node to itself; `length_m` from `cv2.arcLength(contour, True) / 2 +
+3 · pixel_size_m` (the three pixels are what the node zones cut from each end); `corridor_visibility` = mean of a 3×3
 `cv2.blur` of `visible01` over the segment, `None` where over half the segment is tunnel; edge
 attributes `length_m, pixels, corridor_visibility, tunnel`; node attributes `kind, x, y, station`;
 `info = {"warnings", "unsnapped", "components"}`. `station_adjacency(G)`: stations reachable through
@@ -254,21 +261,25 @@ mask → built-up → coverage (visible site pixels / site pixels) → heat (`si
 pixel_size_m`) → project the network → station raster → distances → served stats, desert mask and
 clusters (`min_px = min_desert_km2 / pixel_km2`; centroids to lon/lat; nearest station from the
 labels) → catchment activity → rasterise ways (tunnels into a second mask) → thin → snap → graph →
-`graph_metrics(G, activity, hub_count)` (degree; betweenness with `weight="length_m"`, normalised;
+`graph_metrics(G, activity, hub_count)` (degree; betweenness with `weight="length_m"`, normalised,
+exact up to 800 nodes and sampled (`k=200, seed=0`) above, with the quality flag `graph_too_large`;
 hubs = the top `hub_count` by betweenness among stations with activity at or above the median;
 interchanges = degree ≥ 3; `d_hub_m` by `nx.multi_source_dijkstra` from the hubs, `None` when
 unreachable; `isolation_weight = (d_hub_m / 1000) / max(activity, 0.05)`) → `intermodal_counts` →
-`flag_stations` (`isolated_high_demand`: activity ≥ p75 ∧ degree ≤ 2 ∧ W ≥ p75;
-`single_point_of_failure`: top betweenness ≥ 2 × second; `ghost_line`: a chain of ≥ 3 consecutive
-stations, each activity ≤ p25) → `suggest` (`orbital_link`: pairs with both `d_hub` ≥ p75,
+`flag_stations` (the quartile flags only when the values spread, p75 > p25: `isolated_high_demand`:
+activity ≥ p75 ∧ degree ≤ 2 ∧ W ≥ p75; `single_point_of_failure`: top betweenness ≥ 2 × second, with
+`ratio` null when the second is 0 (a hub with only leaves), which the adapter formats as such;
+`ghost_line`: a chain of ≥ 3 consecutive stations, each activity ≤ p25) → `suggest` (`orbital_link`: pairs with both `d_hub` ≥ p75,
 straight-line ≤ `max_orbital_km`, not adjacent; up to 12 candidates by `W_a·W_b`; each simulated on a
-copy with an edge of 1.2 × the straight line; report `delta_top_hub_betweenness` and
-`delta_mean_d_hub_m`; keep the top 3 by `d_hub` reduction, ties by id; `feeder_corridor`: the three
+copy with an edge of 1.2 × the straight line; ranked by `delta_mean_d_hub_m` from Dijkstra alone,
+the top 3 kept (a candidate that reduces nothing is dropped, so fewer may be reported) and only
+those get `delta_top_hub_betweenness`, so betweenness runs four times, not thirteen; `feeder_corridor`: the three
 highest-W stations to their nearest hub). Quality flags: `empty_site`, `low_coverage`, `no_network`,
 `few_stations_snapped` (under half), `graph_fragmented` (components > max(3, stations / 10)).
 
-Metrics (exact keys; floats to 4 dp, coordinates to 5 dp; `stations` ≤ 2000, `edges` ≤ 5000,
-`deserts` top 10):
+Metrics (exact keys; floats to 4 dp, coordinates to 5 dp; `stations` ≤ 2000, `edges` ≤ 5000 kept
+by betweenness with a `truncated` count, `deserts` top 10; a network element whose coordinates
+are not finite or not on Earth is skipped with a warning, never a crash):
 ```json
 {"task": "rail_access", "coverage": 0.93, "built_up_km2": 412.3, "served_km2": 301.0, "desert_km2": 111.3,
  "served_share": 0.73, "station_count": 178, "snapped_station_count": 171, "node_count": 240,
@@ -285,6 +296,7 @@ Metrics (exact keys; floats to 4 dp, coordinates to 5 dp; `stations` ≤ 2000, `
                "degree": 3, "betweenness": 0.31, "activity": 0.72, "d_hub_m": 0.0, "isolation_weight": 0.0,
                "intermodal": {"bus_stop_near": 4, "bus_station_near": 1, "ferry_terminal_far": 0, "park_ride_far": 0}}],
  "deserts": [{"lon": 150.98, "lat": -33.9, "area_km2": 6.2, "nearest_station": "s:n44", "nearest_station_m": 2300.0}],
+ (both null when no station lies inside the window; never an infinity: the reply must satisfy json.dumps(allow_nan=False))
  "edges": [{"from": "s:n1", "to": "j3", "length_m": 1840.0, "betweenness": 0.1, "corridor_visibility": 0.62, "tunnel": false}],
  "quality_flags": [], "warnings": [],
  "network": {"ways": 410, "stations": 178, "pois": 900, "points": 23000, "fetched_at": "..."},
@@ -293,8 +305,9 @@ Metrics (exact keys; floats to 4 dp, coordinates to 5 dp; `stations` ≤ 2000, `
 
 `rail_annotate.py`: `annotate_rail(analysis, red, year, max_side=1024) -> bytes`: `detect.stretch(red,
 3000)` to BGR, `cv2.applyColorMap(heat·255, COLORMAP_INFERNO)` blended with `addWeighted(0.45,
-0.55)` where usable, `annotate.UNMEASURED_TINT` elsewhere, `resize(INTER_AREA)` to the cap, desert
-outlines from `findContours` + `drawContours`, edges as `cv2.line` with thickness
+0.55)` where usable, `annotate.UNMEASURED_TINT` elsewhere, `resize(INTER_AREA)` to the cap, outlines
+of the deserts the metrics report (those of at least `min_desert_km2`) from `findContours` +
+`drawContours`, edges as `cv2.line` with thickness
 `1 + round(3·betweenness/max)`, stations as circles of radius `2 + round(4·activity)`, hubs with
 `drawMarker(MARKER_DIAMOND)`, and the caption lines `"Processed imagery - BloggerBear"`,
 `"Contains modified Copernicus Sentinel data {year}"`, `"Map data (c) OpenStreetMap contributors"`
