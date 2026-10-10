@@ -5,9 +5,10 @@ The order is the data's: site mask, built-up mask and coverage, the heat map, th
 projected into the scene's pixels, distances to stations (served area, deserts, catchments),
 the ways rasterised, thinned and read back as a graph, then the graph measures (betweenness,
 hubs, distance to the nearest hub, an isolation weight), the station flags and the simulated
-links. Everything in `metrics` is JSON-able, rounded, and carries the parameters it was made
-with. What was not measured is said: coverage, snapped stations, graph components and the
-quality flags, never a quiet zero.
+links. Everything in `metrics` is JSON-able (no NaN or infinity), rounded, and carries the
+parameters it was made with. What was not measured is said: coverage, each station's catchment
+coverage, snapped stations, graph components, truncated lists and the quality flags, never a
+quiet zero. networkx is imported here and in network.py, both worker-only.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from dataclasses import dataclass
 import networkx as nx
 import numpy as np
 
-from vision import access, geo, masks, network, urban
+from vision import access, geo, masks, urban
+from vision import network as rail_network
 
 # Bounds of every parameter, the contract's rail limits (common/vision_contract.py holds a copy).
 PARAM_LIMITS = {
@@ -40,6 +42,11 @@ PARAM_LIMITS = {
 WHOLE_NUMBER_PARAMS = ("hub_count",)
 # Caps on the lists in the metrics, so a reply stays a few hundred KB for the largest city.
 MAX_STATIONS, MAX_EDGES, MAX_DESERTS = 2000, 5000, 10
+# Betweenness is exact up to this many nodes (every shortest path, O(nodes x edges)); above it
+# the paths from BETWEENNESS_SAMPLES source nodes stand in for all of them, with a fixed seed so
+# two runs agree, and the metrics say so with the quality flag graph_too_large.
+MAX_EXACT_GRAPH_NODES = 800
+BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 200, 0
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.
 MIN_ACTIVITY = 0.05
@@ -47,6 +54,8 @@ MIN_ACTIVITY = 0.05
 ORBITAL_DETOUR = 1.2
 # How many candidate pairs are simulated, and how many of each kind of suggestion are kept.
 MAX_ORBITAL_CANDIDATES, TOP_SUGGESTIONS = 12, 3
+# Where a lon/lat may be for the network to use it: on Earth, and inside the UTM band.
+LON_RANGE, LAT_RANGE = (-180.0, 180.0), (-80.0, 84.0)
 
 
 @dataclass(frozen=True)
@@ -99,42 +108,57 @@ class RailAnalysis:
     layers: dict
 
 
-def project_network(
-    network_data: dict, epsg: int, transform: Sequence[float], shape: tuple[int, int]
-) -> dict:
+def project_network(network: dict, epsg: int, transform: Sequence[float], shape: tuple[int, int]) -> dict:
     """The network's lon/lat geometry in the scene: `ways_px` and `tunnels_px` (float (n, 2)
     pixel arrays, surface and tunnel ways apart), `stations` (the station dicts with `x`, `y`
     pixel coordinates, `easting`, `northing` and `inside` the image), `stations_px` (an (x, y)
-    per station, None outside the image), `stations_xy_m`, `pois_xy_m` and `poi_kinds`.
-    Pixel coordinates are of pixel centres, so rounding them gives the pixel index."""
+    per station, None outside the image), `stations_xy_m`, `pois_xy_m`, `poi_kinds` and
+    `warnings`. Pixel coordinates are of pixel centres, so rounding them gives the pixel index.
+    A vertex, station or point of interest whose coordinates are not finite or not on Earth is
+    skipped and counted in a warning, never a crash."""
     zone, south = geo.utm_zone_from_epsg(epsg)
     h, w = shape
+    skipped = {"way vertices": 0, "stations": 0, "points of interest": 0}
 
-    def project(points):
-        out = np.zeros((len(points), 4), np.float64)
-        for i, (lon, lat) in enumerate(points):
-            e, n = geo.lonlat_to_utm(float(lon), float(lat), zone, south)
+    def project(points, what):
+        rows = []
+        for point in points:
+            lon, lat = _lonlat_of(point)
+            if lon is None:
+                skipped[what] += 1
+                continue
+            e, n = geo.lonlat_to_utm(lon, lat, zone, south)
             col, row = geo.map_to_pixel(transform, e, n)
-            out[i] = (col - 0.5, row - 0.5, e, n)
-        return out
+            rows.append((col - 0.5, row - 0.5, e, n))
+        return np.asarray(rows, np.float64).reshape(-1, 4)
 
     ways_px, tunnels_px = [], []
-    for way in network_data.get("ways", ()):
-        points = project(way.get("points", ()))[:, :2]
+    for way in network.get("ways", ()):
+        points = project(way.get("points", ()), "way vertices")[:, :2]
         if len(points) < 2:
             continue
         (tunnels_px if way.get("tunnel") else ways_px).append(points)
 
     stations, stations_px, stations_xy = [], [], []
-    for station in network_data.get("stations", ()):
-        (x, y, e, n), = project([(station["lon"], station["lat"])])
+    for station in network.get("stations", ()):
+        projected = project([(station.get("lon"), station.get("lat"))], "stations")
+        if not len(projected):
+            continue
+        x, y, e, n = projected[0]
         inside = 0 <= round(x) < w and 0 <= round(y) < h
         stations.append({**station, "x": x, "y": y, "easting": e, "northing": n, "inside": inside})
         stations_px.append((x, y) if inside else None)
         stations_xy.append((e, n))
 
-    pois = network_data.get("pois", ())
-    pois_xy = project([(poi["lon"], poi["lat"]) for poi in pois])[:, 2:] if pois else np.zeros((0, 2))
+    pois_xy, poi_kinds = [], []
+    for poi in network.get("pois", ()):
+        projected = project([(poi.get("lon"), poi.get("lat"))], "points of interest")
+        if not len(projected):
+            continue
+        pois_xy.append(projected[0, 2:])
+        poi_kinds.append(str(poi.get("kind", "")))
+
+    warnings = [f"{n} {what} with coordinates not on Earth skipped" for what, n in skipped.items() if n]
     return {
         "ways_px": ways_px,
         "tunnels_px": tunnels_px,
@@ -142,8 +166,22 @@ def project_network(
         "stations_px": stations_px,
         "stations_xy_m": np.asarray(stations_xy, np.float64).reshape(-1, 2),
         "pois_xy_m": np.asarray(pois_xy, np.float64).reshape(-1, 2),
-        "poi_kinds": [str(poi.get("kind", "")) for poi in pois],
+        "poi_kinds": poi_kinds,
+        "warnings": warnings,
     }
+
+
+def _lonlat_of(point) -> tuple[float, float] | tuple[None, None]:
+    """(lon, lat) as finite floats inside the usable ranges, or (None, None)."""
+    try:
+        lon, lat = float(point[0]), float(point[1])
+    except (TypeError, ValueError, IndexError):
+        return None, None
+    if not (math.isfinite(lon) and math.isfinite(lat)):
+        return None, None
+    if not (LON_RANGE[0] <= lon <= LON_RANGE[1] and LAT_RANGE[0] <= lat <= LAT_RANGE[1]):
+        return None, None
+    return lon, lat
 
 
 def analyse_rail_access(
@@ -152,14 +190,14 @@ def analyse_rail_access(
     pixel_size_m: float,
     transform: Sequence[float],
     epsg: int,
-    network_data: dict,
+    network: dict,
     params: RailParams | None = None,
     coverage_floor: float = 0.6,
 ) -> RailAnalysis:
     """Measure one city. `bands` holds `red`, `nir`, `swir16` and `scl` on one grid of
     `pixel_size_m` pixels with the north-up `transform` in UTM `epsg`; `polygon_px` outlines
-    the site; `network_data` is the OpenStreetMap network (ways with lon/lat points and a
-    `tunnel` flag, stations, points of interest)."""
+    the site; `network` is the OpenStreetMap network (ways with lon/lat points and a `tunnel`
+    flag, stations, points of interest)."""
     params = params or RailParams()
     if pixel_size_m <= 0:
         raise ValueError("pixel_size_m must be positive")
@@ -187,7 +225,7 @@ def analyse_rail_access(
     lap("masks")
 
     # Stations: distances, served area, deserts, catchments.
-    projected = project_network(network_data, epsg, transform, shape)
+    projected = project_network(network, epsg, transform, shape)
     stations, stations_px = projected["stations"], projected["stations_px"]
     reach_px = params.reach_m / pixel_size_m
     pixel_km2 = (pixel_size_m / 1000.0) ** 2
@@ -198,44 +236,48 @@ def analyse_rail_access(
     clusters = access.desert_clusters(desert, params.min_desert_km2 / pixel_km2, top=MAX_DESERTS)
     first_station_of_label = {}
     for index, label in enumerate(station_labels):
-        first_station_of_label.setdefault(label, index)
+        if label > 0:  # label 0 is a station outside the window, which is nobody's nearest
+            first_station_of_label.setdefault(label, index)
     deserts = []
     for cluster in clusters:
         col, row = int(round(cluster["x"])), int(round(cluster["y"]))
         col, row = min(max(col, 0), shape[1] - 1), min(max(row, 0), shape[0] - 1)
         lon, lat = geo.pixel_to_lonlat(transform, epsg, col, row)
         nearest = first_station_of_label.get(int(labels[row, col]))
-        found = nearest is not None
+        found = nearest is not None and math.isfinite(float(dist_px[row, col]))
         deserts.append(
             {
                 "lon": round(lon, 5),
                 "lat": round(lat, 5),
                 "area_km2": round(cluster["area_px"] * pixel_km2, 4),
-                "nearest_station": network.station_node_id(stations[nearest]) if found else None,
+                "nearest_station": rail_network.station_node_id(stations[nearest]) if found else None,
                 "nearest_station_m": round(float(dist_px[row, col]) * pixel_size_m, 1) if found else None,
             }
         )
-    activity = access.catchment_activity(heat, labels, dist_px, reach_px, station_labels)
+    activity, catchment_coverage = access.catchment_activity(
+        heat, labels, dist_px, reach_px, station_labels, usable=usable
+    )
     lap("access")
 
     # The network as a graph.
-    surface = network.rasterise_ways(shape, projected["ways_px"])
-    tunnel = network.rasterise_ways(shape, projected["tunnels_px"])
-    skeleton = network.thin(np.maximum(surface, tunnel))
-    snapped = network.snap_stations(skeleton, stations_px, params.snap_m / pixel_size_m)
+    surface = rail_network.rasterise_ways(shape, projected["ways_px"])
+    tunnel = rail_network.rasterise_ways(shape, projected["tunnels_px"])
+    skeleton = rail_network.thin(np.maximum(surface, tunnel))
+    snapped = rail_network.snap_stations(skeleton, stations_px, params.snap_m / pixel_size_m)
     visible = (
         (urban.ndvi(red, nir) < params.visibility_ndvi_max) & (water == 0) & (unusable == 0)
     ).astype(np.uint8)
-    graph, info = network.build_graph(skeleton, stations, snapped, pixel_size_m, visible, tunnel)
+    graph, info = rail_network.build_graph(skeleton, stations, snapped, pixel_size_m, visible, tunnel)
+    snapped = info["snapped"]
     lap("graph")
 
     # Graph measures, per-station rows, flags and suggestions.
-    node_of_station = {network.station_node_id(s): network.station_node_id(s) for s in stations}
+    node_of_station = {rail_network.station_node_id(s): rail_network.station_node_id(s) for s in stations}
     for kept, dropped in info["merged"]:
         node_of_station[dropped] = kept
-    activity_by_node = {}
+    activity_by_node: dict[str, float | None] = {}
     for station, value in zip(stations, activity, strict=True):
-        activity_by_node.setdefault(node_of_station[network.station_node_id(station)], value)
+        activity_by_node.setdefault(node_of_station[rail_network.station_node_id(station)], value)
     measures = graph_metrics(graph, activity_by_node, params.hub_count)
     intermodal = access.intermodal_counts(
         projected["stations_xy_m"], projected["pois_xy_m"], projected["poi_kinds"],
@@ -243,7 +285,7 @@ def analyse_rail_access(
     )  # fmt: skip
     rows = []
     for index, station in enumerate(stations):
-        sid = network.station_node_id(station)
+        sid = rail_network.station_node_id(station)
         node = node_of_station[sid]
         d_hub = measures["d_hub_m"].get(node)
         rows.append(
@@ -256,13 +298,14 @@ def analyse_rail_access(
                 "snapped": snapped[index] is not None,
                 "degree": int(measures["degree"].get(node, 0)),
                 "betweenness": round(measures["betweenness"].get(node, 0.0), 4),
-                "activity": round(activity[index], 4),
+                "activity": None if activity[index] is None else round(activity[index], 4),
+                "catchment_coverage": round(catchment_coverage[index], 4),
                 "d_hub_m": None if d_hub is None else round(d_hub, 1),
                 "isolation_weight": _isolation_weight(d_hub, activity[index]),
                 "intermodal": intermodal[index],
             }
         )
-    adjacency = network.station_adjacency(graph)
+    adjacency = rail_network.station_adjacency(graph)
     flags = flag_stations(rows, adjacency)
     suggestions = suggest(graph, rows, measures, adjacency, pixel_size_m, params.max_orbital_km)
     edges = []
@@ -278,6 +321,11 @@ def analyse_rail_access(
                 "tunnel": data["tunnel"],
             }
         )
+    truncated = max(0, len(edges) - MAX_EDGES)
+    if truncated:
+        # The edges most paths run through are kept, a station's edges first among equals.
+        edges.sort(key=lambda e: (-e["betweenness"], not _is_station(graph, e), e["from"], e["to"]))
+        edges = edges[:MAX_EDGES]
     edges.sort(key=lambda e: (e["from"], e["to"]))
     lap("metrics")
 
@@ -293,6 +341,8 @@ def analyse_rail_access(
         quality_flags.append("few_stations_snapped")
     if info["components"] > max(3, len(stations) / 10):
         quality_flags.append("graph_fragmented")
+    if measures["approximate"]:
+        quality_flags.append("graph_too_large")
 
     metrics = {
         "task": "rail_access",
@@ -312,15 +362,16 @@ def analyse_rail_access(
         "suggestions": suggestions,
         "stations": rows[:MAX_STATIONS],
         "deserts": deserts,
-        "edges": edges[:MAX_EDGES],
+        "edges": edges,
+        "truncated": truncated,
         "quality_flags": quality_flags,
-        "warnings": info["warnings"],
+        "warnings": projected["warnings"] + info["warnings"],
         "network": {
-            "ways": len(network_data.get("ways", ())),
+            "ways": len(network.get("ways", ())),
             "stations": len(stations),
             "pois": len(projected["poi_kinds"]),
-            "points": sum(len(way.get("points", ())) for way in network_data.get("ways", ())),
-            "fetched_at": network_data.get("fetched_at"),
+            "points": sum(len(way.get("points", ())) for way in network.get("ways", ())),
+            "fetched_at": network.get("fetched_at"),
         },
         "params": {
             "pixel_size_m": pixel_size_m,
@@ -344,25 +395,44 @@ def analyse_rail_access(
     return RailAnalysis(metrics=metrics, layers=layers)
 
 
-def graph_metrics(graph: nx.Graph, activity: dict[str, float], hub_count: int) -> dict:
-    """Degree and betweenness (normalised, weighted by `length_m`) per node, the edge
-    betweenness per sorted pair, the `hubs` (the top `hub_count` station nodes by betweenness
-    among those with activity at or above the stations' median), the `interchanges` (station
-    nodes of degree three or more), `d_hub_m` (the shortest path to any hub, None when there is
-    no path) and `hub_of` (which hub that is) per node."""
+def _is_station(graph: nx.Graph, edge: dict) -> bool:
+    return any(graph.nodes[n].get("kind") == "station" for n in (edge["from"], edge["to"]) if n in graph)
+
+
+def betweenness(graph: nx.Graph) -> tuple[dict, dict, bool]:
+    """(node betweenness, edge betweenness keyed by sorted pair, approximate), normalised and
+    weighted by `length_m`: exact up to `MAX_EXACT_GRAPH_NODES` nodes, from
+    `BETWEENNESS_SAMPLES` seeded source nodes above that."""
+    if not graph:
+        return {}, {}, False
+    n = graph.number_of_nodes()
+    approximate = n > MAX_EXACT_GRAPH_NODES
+    sample = {"k": min(BETWEENNESS_SAMPLES, n), "seed": BETWEENNESS_SEED} if approximate else {}
+    nodes = nx.betweenness_centrality(graph, weight="length_m", normalized=True, **sample)
+    per_edge = nx.edge_betweenness_centrality(graph, weight="length_m", normalized=True, **sample)
+    edges = {tuple(sorted(edge)): value for edge, value in per_edge.items()}
+    return nodes, edges, approximate
+
+
+def graph_metrics(graph: nx.Graph, activity: dict[str, float | None], hub_count: int) -> dict:
+    """Degree and betweenness per node, the edge betweenness per sorted pair, whether the
+    betweenness is `approximate` (sampled, over `MAX_EXACT_GRAPH_NODES` nodes), the `hubs`
+    (the top `hub_count` station nodes by betweenness among those with activity at or above the
+    measured stations' median; by betweenness alone when no activity was measured), the
+    `interchanges` (station nodes of degree three or more), `d_hub_m` (the shortest path to any
+    hub, None when there is no path) and `hub_of` (which hub that is) per node."""
     degree = dict(graph.degree())
-    betweenness, edge_betweenness = {}, {}
-    if graph:
-        betweenness = nx.betweenness_centrality(graph, weight="length_m", normalized=True)
-        for edge, value in nx.edge_betweenness_centrality(graph, weight="length_m", normalized=True).items():
-            edge_betweenness[tuple(sorted(edge))] = value
+    node_betweenness, edge_betweenness, approximate = betweenness(graph)
     station_nodes = sorted(n for n, d in graph.nodes(data=True) if d.get("kind") == "station")
     hubs: list[str] = []
     if station_nodes:
-        levels = [activity.get(n, 0.0) for n in station_nodes]
-        median = float(np.median(levels))
-        busy = [n for n in station_nodes if activity.get(n, 0.0) >= median]
-        hubs = sorted(busy, key=lambda n: (-betweenness.get(n, 0.0), n))[: int(hub_count)]
+        measured = {n: activity[n] for n in station_nodes if activity.get(n) is not None}
+        if measured:
+            median = float(np.median(list(measured.values())))
+            busy = [n for n in station_nodes if n in measured and measured[n] >= median]
+        else:
+            busy = station_nodes
+        hubs = sorted(busy, key=lambda n: (-node_betweenness.get(n, 0.0), n))[: int(hub_count)]
     d_hub_m: dict[str, float | None] = dict.fromkeys(graph.nodes, None)
     hub_of: dict[str, str | None] = dict.fromkeys(graph.nodes, None)
     if hubs:
@@ -372,8 +442,9 @@ def graph_metrics(graph: nx.Graph, activity: dict[str, float], hub_count: int) -
             hub_of[node] = paths[node][0]
     return {
         "degree": degree,
-        "betweenness": betweenness,
+        "betweenness": node_betweenness,
         "edge_betweenness": edge_betweenness,
+        "approximate": approximate,
         "hubs": hubs,
         "interchanges": [n for n in station_nodes if degree.get(n, 0) >= 3],
         "d_hub_m": d_hub_m,
@@ -391,19 +462,19 @@ def flag_stations(rows: Sequence[dict], adjacency: dict[str, list[str]]) -> list
       each with activity in the bottom quarter.
 
     A quarter only exists where the values spread: when every station has the same activity or
-    the same weight, nothing stands out and nothing is flagged.
+    the same weight, nothing stands out and nothing is flagged. A station whose activity was not
+    measured (None) is in no quarter.
     """
     flags: list[dict] = []
+    measured = [row for row in rows if row["activity"] is not None]
     if not rows:
         return flags
-    activity = np.array([row["activity"] for row in rows], dtype=np.float64)
-    weights = np.array([row["isolation_weight"] for row in rows if row["isolation_weight"] is not None])
-    p25_activity, p75_activity = (float(v) for v in np.percentile(activity, (25, 75)))
-    p25_weight, p75_weight = 0.0, 0.0
-    if len(weights):
-        p25_weight, p75_weight = (float(v) for v in np.percentile(weights, (25, 75)))
+    activity = np.array([row["activity"] for row in measured], dtype=np.float64)
+    weights = np.array([row["isolation_weight"] for row in measured if row["isolation_weight"] is not None])
+    p25_activity, p75_activity = _quartiles(activity)
+    p25_weight, p75_weight = _quartiles(weights)
     spread_activity, spread_weight = p75_activity > p25_activity, p75_weight > p25_weight
-    for row in rows:
+    for row in measured:
         w = row["isolation_weight"]
         if w is None or not spread_activity or not spread_weight:
             continue
@@ -432,7 +503,7 @@ def flag_stations(rows: Sequence[dict], adjacency: dict[str, list[str]]) -> list
         )
 
     names = {row["id"]: row["name"] for row in rows}
-    quiet = {row["id"] for row in rows if row["activity"] <= p25_activity and row["id"] in adjacency}
+    quiet = {row["id"] for row in measured if row["activity"] <= p25_activity and row["id"] in adjacency}
     if not spread_activity:
         quiet = set()
     seen: set[str] = set()
@@ -444,6 +515,14 @@ def flag_stations(rows: Sequence[dict], adjacency: dict[str, list[str]]) -> list
         if len(chain) >= 3:
             flags.append({"type": "ghost_line", "stations": chain, "names": [names[s] for s in chain]})
     return flags
+
+
+def _quartiles(values: np.ndarray) -> tuple[float, float]:
+    """(p25, p75) of `values`; (0, 0) of nothing, which spreads nothing."""
+    if not len(values):
+        return 0.0, 0.0
+    low, high = np.percentile(values, (25, 75))
+    return float(low), float(high)
 
 
 def _walk_chain(start: str, members: set[str], adjacency: dict[str, list[str]]) -> list[str]:
@@ -483,9 +562,10 @@ def suggest(
     - `orbital_link`: among pairs of stations both in the top quarter of distance to a hub,
       within `max_orbital_km` of each other in a straight line and not already next along a
       line, the `MAX_ORBITAL_CANDIDATES` with the largest product of isolation weights are each
-      tried on a copy of the graph with an edge `ORBITAL_DETOUR` times the straight line; the
-      top `TOP_SUGGESTIONS` by the fall in the mean distance to a hub are kept, with the change
-      in the top hub's betweenness;
+      tried on a copy of the graph with an edge `ORBITAL_DETOUR` times the straight line and
+      ranked by the fall in the mean distance to a hub (Dijkstra alone); a link that brings
+      nobody closer is dropped; the top `TOP_SUGGESTIONS` are kept and only they get the change
+      in the top hub's betweenness, so betweenness runs a few times, not a dozen;
     - `feeder_corridor`: the `TOP_SUGGESTIONS` stations with the largest isolation weight, each
       to its nearest hub.
     """
@@ -494,10 +574,10 @@ def suggest(
     if not hubs:
         return suggestions
     by_id = {row["id"]: row for row in rows}
-    in_graph = [row for row in rows if row["id"] in graph and row["d_hub_m"] is not None]
-    if in_graph:
-        p75 = float(np.percentile([row["d_hub_m"] for row in in_graph], 75))
-        remote = sorted((row for row in in_graph if row["d_hub_m"] >= p75), key=lambda row: row["id"])
+    remote_rows = [row for row in rows if row["id"] in graph and row["isolation_weight"] is not None]
+    if remote_rows:
+        p75 = float(np.percentile([row["d_hub_m"] for row in remote_rows], 75))
+        remote = sorted((row for row in remote_rows if row["d_hub_m"] >= p75), key=lambda row: row["id"])
         candidates = []
         for i, a in enumerate(remote):
             for b in remote[i + 1 :]:
@@ -511,16 +591,21 @@ def suggest(
         candidates.sort()
         reachable = [n for n, d in measures["d_hub_m"].items() if d is not None and n in by_id]
         before_mean = float(np.mean([measures["d_hub_m"][n] for n in reachable])) if reachable else 0.0
-        before_top = max(measures["betweenness"].get(h, 0.0) for h in hubs)
         tried = []
         for _, a_id, b_id, straight_m in candidates[:MAX_ORBITAL_CANDIDATES]:
             trial = graph.copy()
             trial.add_edge(a_id, b_id, length_m=round(straight_m * ORBITAL_DETOUR, 1))
             distances, _ = nx.multi_source_dijkstra(trial, set(hubs), weight="length_m")
             after_mean = float(np.mean([distances[n] for n in reachable])) if reachable else 0.0
-            betweenness = nx.betweenness_centrality(trial, weight="length_m", normalized=True)
-            after_top = max(betweenness.get(h, 0.0) for h in hubs)
-            tried.append(
+            delta = round(after_mean - before_mean, 1)
+            if delta < 0:  # a link that brings nobody closer to a hub is not a suggestion
+                tried.append((delta, a_id, b_id, straight_m, trial))
+        tried.sort(key=lambda t: t[:3])
+        before_top = max(measures["betweenness"].get(h, 0.0) for h in hubs)
+        for delta, a_id, b_id, straight_m, trial in tried[:TOP_SUGGESTIONS]:
+            node_betweenness, _, _ = betweenness(trial)
+            after_top = max(node_betweenness.get(h, 0.0) for h in hubs)
+            suggestions.append(
                 {
                     "type": "orbital_link",
                     "from": a_id,
@@ -529,13 +614,9 @@ def suggest(
                     "to_name": by_id[b_id]["name"],
                     "straight_km": round(straight_m / 1000.0, 4),
                     "delta_top_hub_betweenness": round(after_top - before_top, 4),
-                    "delta_mean_d_hub_m": round(after_mean - before_mean, 1),
+                    "delta_mean_d_hub_m": delta,
                 }
             )
-        # A link that brings nobody closer to a hub is not a suggestion.
-        tried = [s for s in tried if s["delta_mean_d_hub_m"] < 0]
-        tried.sort(key=lambda s: (s["delta_mean_d_hub_m"], s["from"], s["to"]))
-        suggestions.extend(tried[:TOP_SUGGESTIONS])
 
     isolated = [row for row in rows if row["isolation_weight"] and row["id"] in graph]
     isolated.sort(key=lambda row: (-row["isolation_weight"], row["id"]))
@@ -556,8 +637,9 @@ def suggest(
     return suggestions
 
 
-def _isolation_weight(d_hub_m: float | None, activity: float) -> float | None:
-    if d_hub_m is None:
+def _isolation_weight(d_hub_m: float | None, activity: float | None) -> float | None:
+    """(d_hub / 1 km) / max(activity, MIN_ACTIVITY); None when either was not measured."""
+    if d_hub_m is None or activity is None:
         return None
     return round((d_hub_m / 1000.0) / max(activity, MIN_ACTIVITY), 4)
 

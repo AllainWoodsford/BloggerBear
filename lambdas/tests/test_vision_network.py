@@ -97,10 +97,10 @@ def test_graph_of_a_cross_with_a_branch():
     stations = [{"id": "nA", "name": "A"}, {"id": "nB", "name": "B"}]
     snapped = network.snap_stations(skel, [(10, 60), (110, 30)], snap_px=3)
     graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
-    assert info == {"warnings": [], "unsnapped": [], "merged": [], "components": 1}
+    assert info == {"warnings": [], "unsnapped": [], "merged": [], "snapped": snapped, "components": 1}
     kinds = Counter(data["kind"] for _, data in graph.nodes(data=True))
     assert kinds == {"station": 2, "junction": 2, "end": 3}
-    assert graph.number_of_edges() == 6
+    assert graph.number_of_edges() == 6 and nx.number_of_selfloops(graph) == 0
     assert graph.nodes["s:nA"] == {"kind": "station", "x": 10.0, "y": 60.0, "station": "nA"}
     centre = next(n for n, d in graph.nodes(data=True) if d["kind"] == "junction" and abs(d["x"] - 60) < 2)
     assert abs(graph.nodes[centre]["y"] - 60) < 2
@@ -157,8 +157,50 @@ def test_a_run_touching_one_node_is_a_loop_and_left_out():
     stations = [{"id": "ring", "name": "Ring"}]
     snapped = network.snap_stations(skel, [(60, 30)], snap_px=3)
     graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
-    assert "s:ring" in graph and graph.number_of_edges() == 0
+    assert "s:ring" in graph and graph.number_of_edges() == 0 and nx.number_of_selfloops(graph) == 0
     assert any("loop" in w for w in info["warnings"])
+
+
+def test_nodes_two_or_three_pixels_apart_are_bridged():
+    skel = skeleton_of([[(10, 60), (110, 60)]])
+    stations = [{"id": sid, "name": sid.upper()} for sid in "abcd"]
+    snapped = network.snap_stations(skel, [(50, 60), (52, 60), (70, 60), (73, 60)], snap_px=2)
+    assert snapped == [(50, 60), (52, 60), (70, 60), (73, 60)]
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
+    assert info["components"] == 1 and info["merged"] == [] and info["warnings"] == []
+    # A and B (2 px apart) and C and D (3 px apart) leave no run between them; the bridge is the edge.
+    assert graph.edges["s:a", "s:b"]["length_m"] == 2 * PX and graph.edges["s:a", "s:b"]["pixels"] == 1
+    assert graph.edges["s:c", "s:d"]["length_m"] == 3 * PX and graph.edges["s:c", "s:d"]["pixels"] == 2
+    assert graph.edges["s:a", "s:b"]["corridor_visibility"] == 1.0 and not graph.edges["s:a", "s:b"]["tunnel"]
+    assert graph.has_edge("s:b", "s:c") and graph.number_of_edges() == 5
+    assert nx.number_of_selfloops(graph) == 0
+
+
+def test_a_short_stub_does_not_make_a_second_component():
+    skel = skeleton_of([[(10, 60), (110, 60)], [(60, 60), (60, 57)]])
+    stations = [{"id": "w", "name": "W"}]
+    snapped = network.snap_stations(skel, [(10, 60)], snap_px=2)
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
+    assert info["components"] == 1
+    ends = [n for n, d in graph.nodes(data=True) if d["kind"] == "end"]
+    assert len(ends) == 2 and all(graph.degree(n) == 1 for n in ends)
+    (junction,) = (n for n, d in graph.nodes(data=True) if d["kind"] == "junction")
+    (stub,) = (n for n in ends if abs(graph.nodes[n]["x"] - 60) < 1)
+    # The stub's first pixel is diagonally adjacent to the line too, so it is part of the junction
+    # cluster; the one pixel left between the clusters is a bridge, one pixel plus the step.
+    expected = {"length_m": 2 * PX, "pixels": 1, "corridor_visibility": 1.0, "tunnel": False}
+    assert graph.edges[junction, stub] == expected
+
+
+def test_a_repeated_station_id_keeps_the_first_entry():
+    skel = skeleton_of([[(10, 60), (110, 60)]])
+    stations = [{"id": "dup", "name": "First"}, {"id": "dup", "name": "Second"}, {"id": "x", "name": "X"}]
+    snapped = network.snap_stations(skel, [(30, 60), (80, 60), (100, 60)], snap_px=2)
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
+    assert info["snapped"] == [(30, 60), None, (100, 60)] and info["unsnapped"] == ["s:dup"]
+    assert any("s:dup is repeated" in w for w in info["warnings"])
+    assert graph.nodes["s:dup"]["x"] == 30.0 and graph.number_of_nodes() == 4
+    assert network.station_node_id({"id": "n" + "9" * 40}) == "s:n" + "9" * 31
 
 
 def test_station_adjacency_runs_through_junctions_and_stops_at_stations():

@@ -99,21 +99,29 @@ def catchment_activity(
     dist_px: np.ndarray,
     reach_px: float,
     station_labels: Sequence[int],
-) -> list[float]:
-    """The mean heat of each station's catchment: its Voronoi cell, clipped to `reach_px`.
-    A station with no cell (outside the image, or sharing a pixel with none) reads 0."""
+    usable: np.ndarray | None = None,
+) -> tuple[list[float | None], list[float]]:
+    """(activity, catchment_coverage) per station. A station's catchment is its Voronoi cell
+    clipped to `reach_px`; its activity is the mean heat over the catchment's usable pixels
+    (every pixel when `usable` is None) and its coverage the usable share of the catchment.
+    A catchment with no usable pixel, or no pixel at all (a station outside the image), has
+    coverage 0 and activity None: unmeasured, which is not the same as quiet."""
     within = dist_px <= reach_px
-    cells = labels[within].ravel()
+    measured = within if usable is None else within & (usable > 0)
     size = int(labels.max()) + 1 if labels.size else 1
-    total = np.bincount(cells, weights=heat[within].ravel(), minlength=size)
-    count = np.bincount(cells, minlength=size)
-    out = []
+    cell_px = np.bincount(labels[within].ravel(), minlength=size)
+    used_px = np.bincount(labels[measured].ravel(), minlength=size)
+    total = np.bincount(labels[measured].ravel(), weights=heat[measured].ravel(), minlength=size)
+    activity: list[float | None] = []
+    coverage: list[float] = []
     for label in station_labels:
-        if label <= 0 or label >= size or count[label] == 0:
-            out.append(0.0)
+        if label <= 0 or label >= size or used_px[label] == 0:
+            activity.append(None)
+            coverage.append(0.0)
         else:
-            out.append(float(total[label] / count[label]))
-    return out
+            activity.append(float(total[label] / used_px[label]))
+            coverage.append(float(used_px[label] / cell_px[label]))
+    return activity, coverage
 
 
 def served_stats(built: np.ndarray, dist_px: np.ndarray, reach_px: float, pixel_km2: float) -> dict:

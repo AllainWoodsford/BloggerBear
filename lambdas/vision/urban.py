@@ -19,6 +19,11 @@ from vision import masks
 SCL_WATER = 6
 # A 3x3 opening removes the single-pixel speckle an index threshold leaves on roofs' edges.
 _OPEN_KERNEL = np.ones((3, 3), np.uint8)
+# A blur wider than this runs on a grid reduced by REDUCTION and is resized back: a 150 px sigma
+# (3 km at 20 m) on a 3000 x 3000 image is a 900-tap kernel and about 15 s, and nothing a 3 km
+# blur shows needs 20 m detail; on the reduced grid it is under a second.
+LARGE_SIGMA_PX = 40.0
+REDUCTION = 4
 
 
 def ndvi(red: np.ndarray, nir: np.ndarray) -> np.ndarray:
@@ -71,7 +76,13 @@ def heat_map(built: np.ndarray, sigma_px: float, usable: np.ndarray | None = Non
     if sigma_px <= 0:
         raise ValueError("sigma_px must be positive")
     share = (built > 0).astype(np.float32)
-    heat = cv2.GaussianBlur(share, (0, 0), sigma_px, borderType=cv2.BORDER_REPLICATE)
+    if sigma_px > LARGE_SIGMA_PX:
+        h, w = share.shape
+        small = cv2.resize(share, (-(-w // REDUCTION), -(-h // REDUCTION)), interpolation=cv2.INTER_AREA)
+        small = cv2.GaussianBlur(small, (0, 0), sigma_px / REDUCTION, borderType=cv2.BORDER_REPLICATE)
+        heat = cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
+    else:
+        heat = cv2.GaussianBlur(share, (0, 0), sigma_px, borderType=cv2.BORDER_REPLICATE)
     heat = np.clip(heat, 0.0, 1.0)
     if usable is not None:
         heat[usable == 0] = 0.0

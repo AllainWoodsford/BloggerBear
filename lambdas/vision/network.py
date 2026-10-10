@@ -8,8 +8,8 @@ learned segmentation of the tracks could replace the rasterised ways later and n
 would change.
 
 Thinning is sequential hit-or-miss thinning with the Golay L elements (Serra's), done with core
-OpenCV's `MORPH_HITMISS`: the headless wheel has no `ximgproc`. Only this module imports
-networkx, and only the worker installs it.
+OpenCV's `MORPH_HITMISS`: the headless wheel has no `ximgproc`. networkx is imported here and in
+rail_analyse.py, both worker-only modules; the adapters never import either.
 """
 
 from __future__ import annotations
@@ -33,10 +33,13 @@ THINNING_KERNELS = tuple(
 # The 3x3 ring: a pixel's eight neighbours.
 _RING = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], np.float32)
 _SQUARE = np.ones((3, 3), np.uint8)
-# (dy, dx) of the eight neighbours, for reading which node a segment's pixels touch.
+# (dy, dx) of the eight neighbours, for reading which node a run's pixels touch.
 _SHIFTS = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 # More warnings than this say nothing new; the count of the rest is kept.
 MAX_WARNINGS = 50
+# An OSM id is a letter and up to 19 digits; anything longer is not one, and node ids must stay
+# bounded wherever they travel (metrics, history, prompts).
+MAX_ID_CHARS = 32
 
 
 def rasterise_ways(
@@ -124,7 +127,8 @@ def snap_stations(
 
 
 def station_node_id(station: dict) -> str:
-    return f"s:{station['id']}"
+    """The graph node id of a station: `s:` and its OSM id, bounded to `MAX_ID_CHARS`."""
+    return f"s:{str(station['id'])[:MAX_ID_CHARS]}"
 
 
 def build_graph(
@@ -139,36 +143,52 @@ def build_graph(
 
     Nodes are the connected clusters of junction pixels, end pixels and the pixels stations
     snapped to: a cluster holding a station is that station (id `s:<osm id>`; a second station
-    in the same cluster is merged into the first and recorded); the others are `j<n>` (holding
-    a junction pixel) or `e<n>`, at the cluster's centroid. Node attributes: `kind` (station,
-    junction, end), `x`, `y`, `station` (the OSM id or None). Edges are the skeleton runs left
-    once the clusters and their 3x3 neighbourhoods are cut out, joined to the nodes they touch,
-    with `length_m`, `pixels`, `corridor_visibility` (the mean of a 3x3 mean of `visible01`
-    over the run; None where over half the run is in `tunnel_mask`) and `tunnel`.
+    in the same cluster is merged into the first and recorded; a repeated station id keeps its
+    first entry and leaves the others unsnapped); the others are `j<n>` (holding a junction
+    pixel) or `e<n>`, at the cluster's centroid. Node attributes: `kind` (station, junction,
+    end), `x`, `y`, `station` (the OSM id or None).
+
+    Edges are the skeleton runs left once the clusters and their 3x3 neighbourhoods are cut
+    out, joined to the nodes they touch. The skeleton pixels those neighbourhoods swallow are
+    "bridges": where a bridge touches two different nodes (clusters two or three pixels apart,
+    which leave no run between them) it is an edge too, so close stations and junctions never
+    split the graph. Edge attributes: `length_m`, `pixels`, `corridor_visibility` (the mean of
+    a 3x3 mean of `visible01` over the pixels; None where over half of them are in
+    `tunnel_mask`) and `tunnel`. No edge joins a node to itself.
 
     `info` has `warnings`, `unsnapped` (station ids without a skeleton pixel within reach),
-    `merged` ([kept id, merged id] pairs) and `components` of the graph.
+    `merged` ([kept id, merged id] pairs), `snapped` (the per-station pixels actually used,
+    None for the unsnapped) and `components` of the graph.
     """
     if pixel_size_m <= 0:
         raise ValueError("pixel_size_m must be positive")
-    h, w = skel01.shape
     warnings: list[str] = []
+    # One node per station id: a repeated id keeps its first entry, the others are unsnapped.
+    snapped: list[tuple[int, int] | None] = list(snapped_px)
+    seen_ids: set[str] = set()
+    for index, station in enumerate(stations):
+        sid = station_node_id(station)
+        if sid in seen_ids and snapped[index] is not None:
+            warnings.append(f"{sid} is repeated: the later entry is left unsnapped")
+            snapped[index] = None
+        seen_ids.add(sid)
+
     junctions, ends = junctions_and_ends(skel01)
     seeds = cv2.bitwise_or(junctions, ends)
-    for snapped in snapped_px:
-        if snapped is not None:
-            seeds[snapped[1], snapped[0]] = 1
+    for pixel in snapped:
+        if pixel is not None:
+            seeds[pixel[1], pixel[0]] = 1
     count, node_labels, _, centroids = cv2.connectedComponentsWithStats(seeds, connectivity=8)
 
     graph = nx.Graph()
     station_of_label: dict[int, int] = {}
     merged: list[list[str]] = []
     unsnapped: list[str] = []
-    for index, (station, snapped) in enumerate(zip(stations, snapped_px, strict=True)):
-        if snapped is None:
+    for index, (station, pixel) in enumerate(zip(stations, snapped, strict=True)):
+        if pixel is None:
             unsnapped.append(station_node_id(station))
             continue
-        label = int(node_labels[snapped[1], snapped[0]])
+        label = int(node_labels[pixel[1], pixel[0]])
         if label in station_of_label:
             kept = stations[station_of_label[label]]
             merged.append([station_node_id(kept), station_node_id(station)])
@@ -181,7 +201,7 @@ def build_graph(
     for label in range(1, count):
         if label in station_of_label:
             station = stations[station_of_label[label]]
-            x, y = snapped_px[station_of_label[label]]
+            x, y = snapped[station_of_label[label]]
             node = station_node_id(station)
             graph.add_node(node, kind="station", x=float(x), y=float(y), station=station["id"])
         else:
@@ -198,49 +218,33 @@ def build_graph(
     # The runs between nodes: the skeleton minus every node cluster and its 3x3 neighbourhood,
     # so the branches of a junction do not touch each other diagonally once it is removed.
     node_zone = cv2.dilate(node_labels.astype(np.float32), _SQUARE).astype(np.int32)
-    run_src = ((skel01 > 0) & (node_zone == 0)).astype(np.uint8)
+    on = skel01 > 0
+    run_src = (on & (node_zone == 0)).astype(np.uint8)
     run_count, run_labels, run_stats, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
-
-    # Which node zones each run touches, through the eight neighbour shifts.
-    touches: dict[int, set[int]] = {}
-    for dy, dx in _SHIFTS:
-        runs = run_labels[max(0, -dy) : h - max(0, dy), max(0, -dx) : w - max(0, dx)]
-        zones = node_zone[max(0, dy) : h - max(0, -dy), max(0, dx) : w - max(0, -dx)]
-        both = (runs > 0) & (zones > 0)
-        if not both.any():
-            continue
-        pairs = np.unique(np.stack([runs[both], zones[both]], axis=1), axis=0)
-        for run, zone in pairs.tolist():
-            touches.setdefault(int(run), set()).add(int(zone))
-
-    flat_runs = run_labels.ravel()
-    run_pixels = np.bincount(flat_runs, minlength=run_count)
-    tunnel_pixels = np.bincount(flat_runs, weights=(tunnel_mask > 0).ravel(), minlength=run_count)
-    visible_sum = np.bincount(flat_runs, weights=cv2.blur(visible01.astype(np.float32), (3, 3)).ravel(),
-                              minlength=run_count)  # fmt: skip
-    for run in range(1, run_count):
-        nodes = sorted(node_of_label[label] for label in touches.get(run, ()) if label in node_of_label)
+    visible_blur = cv2.blur(visible01.astype(np.float32), (3, 3))
+    run_stats_px = _pixel_stats(run_labels, run_count, tunnel_mask, visible_blur)
+    for run, zones in _touching(run_labels, node_zone, run_count).items():
+        nodes = sorted(node_of_label[label] for label in zones if label in node_of_label)
         if len(nodes) < 2:
             warnings.append(f"run {run} touches {len(nodes)} node(s): a loop or a fragment, left out")
             continue
         if len(nodes) > 2:
             warnings.append(f"run {run} touches {len(nodes)} nodes: joined pairwise")
-        pixels = int(run_pixels[run])
-        in_tunnel = tunnel_pixels[run] > pixels / 2
-        attributes = {
-            "length_m": round(_run_length_px(run_labels, run_stats[run], run) * pixel_size_m, 1),
-            "pixels": pixels,
-            "corridor_visibility": None if in_tunnel else round(float(visible_sum[run] / pixels), 4),
-            "tunnel": bool(in_tunnel),
-        }
-        for i, u in enumerate(nodes):
-            for v in nodes[i + 1 :]:
-                if graph.has_edge(u, v):
-                    if attributes["length_m"] < graph.edges[u, v]["length_m"]:
-                        graph.edges[u, v].update(attributes)
-                    warnings.append(f"two runs join {u} and {v}: the shorter is kept")
-                    continue
-                graph.add_edge(u, v, **attributes)
+        length_px = _run_length_px(run_labels, run_stats[run], run)
+        _join(graph, nodes, _attributes(run_stats_px, run, length_px, pixel_size_m), warnings)
+
+    # The bridges: skeleton pixels inside a node's neighbourhood that are not node pixels. One
+    # that touches two nodes is the whole path between them (the clusters are two or three
+    # pixels apart), and its length is its pixels plus the step onto the far node.
+    bridge_src = (on & (node_zone > 0) & (node_labels == 0)).astype(np.uint8)
+    bridge_count, bridge_labels = cv2.connectedComponents(bridge_src, connectivity=8)
+    bridge_stats_px = _pixel_stats(bridge_labels, bridge_count, tunnel_mask, visible_blur)
+    for bridge, touched in _touching(bridge_labels, node_labels, bridge_count).items():
+        nodes = sorted(node_of_label[label] for label in touched if label in node_of_label)
+        if len(nodes) < 2:
+            continue
+        length_px = float(bridge_stats_px[0][bridge]) + 1.0
+        _join(graph, nodes, _attributes(bridge_stats_px, bridge, length_px, pixel_size_m), None)
 
     if len(warnings) > MAX_WARNINGS:
         rest = len(warnings) - MAX_WARNINGS
@@ -249,6 +253,7 @@ def build_graph(
         "warnings": warnings,
         "unsnapped": unsnapped,
         "merged": merged,
+        "snapped": snapped,
         "components": nx.number_connected_components(graph),
     }
     return graph, info
@@ -274,6 +279,61 @@ def station_adjacency(graph: nx.Graph) -> dict[str, list[str]]:
                     todo.append(neighbour)
         out[node] = sorted(found)
     return out
+
+
+def _touching(labels: np.ndarray, others: np.ndarray, count: int) -> dict[int, set[int]]:
+    """For every label of `labels` (1..count-1), the labels of `others` that one of its pixels
+    is eight-adjacent to."""
+    h, w = labels.shape
+    touches: dict[int, set[int]] = {label: set() for label in range(1, count)}
+    for dy, dx in _SHIFTS:
+        mine = labels[max(0, -dy) : h - max(0, dy), max(0, -dx) : w - max(0, dx)]
+        theirs = others[max(0, dy) : h - max(0, -dy), max(0, dx) : w - max(0, -dx)]
+        both = (mine > 0) & (theirs > 0)
+        if not both.any():
+            continue
+        pairs = np.unique(np.stack([mine[both], theirs[both]], axis=1), axis=0)
+        for label, other in pairs.tolist():
+            touches[int(label)].add(int(other))
+    return touches
+
+
+def _pixel_stats(labels: np.ndarray, count: int, tunnel_mask: np.ndarray, visible_blur: np.ndarray):
+    """Per label: its pixel count, how many are in the tunnel mask, and the sum of the blurred
+    visibility over them."""
+    flat = labels.ravel()
+    pixels = np.bincount(flat, minlength=count)
+    tunnel = np.bincount(flat, weights=(tunnel_mask > 0).ravel(), minlength=count)
+    visible = np.bincount(flat, weights=visible_blur.ravel(), minlength=count)
+    return pixels, tunnel, visible
+
+
+def _attributes(stats, label: int, length_px: float, pixel_size_m: float) -> dict:
+    pixels, tunnel, visible = (int(stats[0][label]), float(stats[1][label]), float(stats[2][label]))
+    in_tunnel = tunnel > pixels / 2
+    return {
+        "length_m": round(length_px * pixel_size_m, 1),
+        "pixels": pixels,
+        "corridor_visibility": None if in_tunnel else round(visible / pixels, 4),
+        "tunnel": bool(in_tunnel),
+    }
+
+
+def _join(graph: nx.Graph, nodes: list[str], attributes: dict, warnings: list[str] | None) -> None:
+    """An edge between every pair of `nodes`, never from a node to itself. Where an edge exists
+    the shorter is kept, and said so when `warnings` is given (a run beside another run); a
+    bridge beside an existing edge is the expected case and stays quiet."""
+    for i, u in enumerate(nodes):
+        for v in nodes[i + 1 :]:
+            if u == v:
+                continue
+            if graph.has_edge(u, v):
+                if warnings is not None:
+                    if attributes["length_m"] < graph.edges[u, v]["length_m"]:
+                        graph.edges[u, v].update(attributes)
+                    warnings.append(f"two runs join {u} and {v}: the shorter is kept")
+                continue
+            graph.add_edge(u, v, **attributes)
 
 
 def _run_length_px(run_labels: np.ndarray, stats: np.ndarray, run: int) -> float:

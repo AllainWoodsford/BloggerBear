@@ -82,7 +82,7 @@ def annotate_rail(analysis: RailAnalysis, red: np.ndarray, year: str | int, max_
         if position is None:
             continue
         centre = at(position[0], position[1])
-        radius = 2 + round(4 * station["activity"])
+        radius = 2 + round(4 * (station["activity"] or 0.0))  # unmeasured (None) draws as the smallest
         cv2.circle(image, centre, radius, STATION_COLOUR, 1, cv2.LINE_AA)
         if station["id"] in hubs:
             cv2.drawMarker(image, centre, HUB_COLOUR, cv2.MARKER_DIAMOND, HUB_MARKER_SIZE, 2)

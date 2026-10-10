@@ -11,6 +11,7 @@ answers are known.
 from __future__ import annotations
 
 import json
+import time
 
 import cv2
 import networkx as nx
@@ -159,7 +160,7 @@ def test_no_station_means_everything_is_out_of_reach():
     dist, labels = access.distance_to_stations(np.zeros((10, 10), np.uint8))
     assert np.isinf(dist).all() and not labels.any()
     assert access.label_of_station(labels, [(1, 1), (50, 50), None]) == [0, 0, 0]
-    assert access.catchment_activity(np.ones((10, 10), np.float32), labels, dist, 5, [0]) == [0.0]
+    assert access.catchment_activity(np.ones((10, 10), np.float32), labels, dist, 5, [0]) == ([None], [0.0])
 
 
 def test_desert_clusters_are_built_up_beyond_reach_with_lonlat_centroids(analysis):
@@ -192,12 +193,24 @@ def test_catchment_activity_is_the_mean_heat_of_a_clipped_voronoi_cell():
     stations = [(2, 10), (17, 10)]
     dist, labels = access.distance_to_stations(access.station_raster(heat.shape, stations))
     station_labels = access.label_of_station(labels, stations)
-    assert access.catchment_activity(heat, labels, dist, 4, station_labels) == pytest.approx([0.4, 0.8])
+
+    def activity(reach, usable=None):
+        return access.catchment_activity(heat, labels, dist, reach, station_labels, usable=usable)
+
+    assert activity(4) == (pytest.approx([0.4, 0.8]), [1.0, 1.0])
     # With a wide reach the cells meet in the middle; the left one is all 0.4, the right all 0.8.
-    assert access.catchment_activity(heat, labels, dist, 100, station_labels) == pytest.approx([0.4, 0.8])
+    assert activity(100) == (pytest.approx([0.4, 0.8]), [1.0, 1.0])
     heat[:, 8:10] = 1.0  # the far edge of the left cell: 6 px from its station, beyond a reach of 4
-    assert access.catchment_activity(heat, labels, dist, 4, station_labels)[0] == pytest.approx(0.4)
-    assert access.catchment_activity(heat, labels, dist, 100, station_labels)[0] == pytest.approx(0.52)
+    assert activity(4)[0][0] == pytest.approx(0.4)
+    assert activity(100)[0][0] == pytest.approx(0.52)
+    # Cloud over the right cell: unmeasured, not quiet. Over the left cell's far edge: a partial
+    # catchment, averaged over what was seen, with its coverage said.
+    usable = np.full(heat.shape, 255, np.uint8)
+    usable[:, 10:] = 0
+    usable[:, 8:10] = 0
+    activities, coverage = activity(100, usable)
+    assert activities == [pytest.approx(0.4), None]
+    assert coverage == [pytest.approx(0.8), 0.0]
 
 
 def test_intermodal_counts_at_both_radii():
@@ -244,9 +257,13 @@ def test_betweenness_hubs_and_d_hub_on_a_star():
     graph.add_node("s:X", kind="station", x=9.0, y=9.0, station="X")
     assert graph_metrics(graph, activity, hub_count=1)["d_hub_m"]["s:X"] is None
     assert graph_metrics(nx.Graph(), {}, 5) == {
-        "degree": {}, "betweenness": {}, "edge_betweenness": {}, "hubs": [], "interchanges": [],
-        "d_hub_m": {}, "hub_of": {},
+        "degree": {}, "betweenness": {}, "edge_betweenness": {}, "approximate": False, "hubs": [],
+        "interchanges": [], "d_hub_m": {}, "hub_of": {},
     }  # fmt: skip
+    # An unmeasured station (activity None) is never a hub; with nothing measured, betweenness alone picks.
+    assert graph_metrics(graph, {**activity, "s:H": None}, hub_count=1)["hubs"] == ["s:A"]
+    assert graph_metrics(graph, dict.fromkeys(graph.nodes), hub_count=1)["hubs"] == ["s:H"]
+    assert not graph_metrics(graph, activity, hub_count=1)["approximate"]
 
 
 def row(sid, activity, degree, betweenness, d_hub_m):
@@ -347,15 +364,21 @@ def test_feeder_corridors_target_the_nearest_hub():
 METRIC_KEYS = {
     "task", "coverage", "built_up_km2", "served_km2", "desert_km2", "served_share", "station_count",
     "snapped_station_count", "node_count", "edge_count", "components", "hubs", "interchanges", "flags",
-    "suggestions", "stations", "deserts", "edges", "quality_flags", "warnings", "network", "params",
+    "suggestions", "stations", "deserts", "edges", "truncated", "quality_flags", "warnings", "network",
+    "params",
+}  # fmt: skip
+STATION_KEYS = {
+    "id", "name", "kind", "lon", "lat", "snapped", "degree", "betweenness", "activity", "catchment_coverage",
+    "d_hub_m", "isolation_weight", "intermodal",
 }  # fmt: skip
 FLAG_TYPES = {"isolated_high_demand", "single_point_of_failure", "ghost_line"}
 
 
 def test_the_analysis_is_json_and_echoes_its_params(analysis):
     metrics = analysis.metrics
-    assert json.loads(json.dumps(metrics)) == metrics
+    assert json.loads(json.dumps(metrics, allow_nan=False)) == metrics
     assert set(metrics) == METRIC_KEYS
+    assert all(set(station) == STATION_KEYS for station in metrics["stations"])
     assert metrics["task"] == "rail_access"
     assert metrics["params"] == {"pixel_size_m": PX, "coverage_floor": 0.6, **RailParams().__dict__}
     assert metrics["network"] == {"ways": 4, "stations": 7, "pois": 6, "points": 8, "fetched_at": FETCHED_AT}
@@ -366,7 +389,7 @@ def test_the_analysis_is_json_and_echoes_its_params(analysis):
 def test_the_analysis_measures_the_city(analysis):
     m = analysis.metrics
     assert m["coverage"] == pytest.approx(1 - 50 * 80 / SIZE**2, abs=1e-4)
-    assert m["quality_flags"] == [] and m["warnings"] == []
+    assert m["quality_flags"] == [] and m["warnings"] == [] and m["truncated"] == 0
     assert m["station_count"] == m["snapped_station_count"] == 7
     assert m["components"] == 1 and m["edge_count"] == 7 and m["node_count"] == 8
     assert 0 < m["served_share"] < 1
@@ -377,6 +400,8 @@ def test_the_analysis_measures_the_city(analysis):
     central = by_id["s:n2"]
     assert central["degree"] == 4 and central["activity"] > 0.9 and central["d_hub_m"] == 0.0
     assert central["intermodal"] == {**NO_INTERMODAL, "bus_stop_near": 2}
+    assert central["catchment_coverage"] == 1.0
+    assert 0.9 < by_id["s:n6"]["catchment_coverage"] < 1.0  # the cloud clips Branch End's catchment
     midwest = by_id["s:n7"]
     assert midwest["snapped"] and midwest["intermodal"] == {**NO_INTERMODAL, "bus_station_near": 1}
     assert by_id["s:n3"]["intermodal"] == {**NO_INTERMODAL, "ferry_terminal_far": 1}
@@ -436,12 +461,132 @@ def test_unsnapped_stations_and_fragments_are_flagged():
     m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
     assert "few_stations_snapped" in m["quality_flags"] and m["snapped_station_count"] == 0
     assert all(not s["snapped"] and s["degree"] == 0 and s["d_hub_m"] is None for s in m["stations"])
+    assert all(s["isolation_weight"] is None and s["activity"] is not None for s in m["stations"])
     net["ways"] = [
         {"id": f"w{i}", "points": [lonlat(20 + 40 * i, 20), lonlat(20 + 40 * i, 60)], "tunnel": False}
         for i in range(5)
     ]
     m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
     assert "graph_fragmented" in m["quality_flags"] and m["components"] == 5
+
+
+def test_stations_outside_the_window_leave_deserts_without_a_nearest_station():
+    net = grid_network()
+    for station in net["stations"]:
+        station["lon"], station["lat"] = 152.0, -34.0  # 70 km east of the window
+    m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
+    assert m["deserts"]
+    assert all(d["nearest_station"] is None and d["nearest_station_m"] is None for d in m["deserts"])
+    assert m["served_share"] == 0.0 and m["station_count"] == 7 and m["snapped_station_count"] == 0
+    assert all(s["activity"] is None and s["catchment_coverage"] == 0.0 for s in m["stations"])
+    assert json.loads(json.dumps(m, allow_nan=False)) == m
+
+
+def test_a_station_under_cloud_is_unmeasured_not_quiet():
+    bands = city()
+    bands["scl"][145:256, 145:256] = 9  # cloud over Central and its whole catchment (reach 50 px)
+    m = analyse_rail_access(bands, WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
+    by_id = {s["id"]: s for s in m["stations"]}
+    assert by_id["s:n2"]["activity"] is None and by_id["s:n2"]["catchment_coverage"] == 0.0
+    assert by_id["s:n2"]["isolation_weight"] is None and by_id["s:n2"]["snapped"]
+    assert "s:n2" not in m["hubs"]  # unmeasured, so not among the busier half
+    assert 0.0 < by_id["s:n7"]["catchment_coverage"] < 1.0 and by_id["s:n7"]["activity"] is not None
+    assert not [f for f in m["flags"] if f["type"] == "ghost_line" and "s:n2" in f["stations"]]
+    assert json.loads(json.dumps(m, allow_nan=False)) == m
+
+
+def test_network_elements_off_the_earth_are_skipped_with_a_warning():
+    net = grid_network()
+    net["ways"][0]["points"].insert(1, [float("nan"), -33.9])
+    net["ways"].append({"id": "w9", "points": [[200.0, 0.0], [1e400, 0.0]], "tunnel": False})
+    net["stations"].append({"id": "n8", "name": "Pole", "lon": 151.0, "lat": 95.0})
+    net["stations"].append({"id": "n9", "name": "Text", "lon": "x", "lat": -33.9})
+    net["pois"].append({"id": "p9", "kind": "bus_stop", "lon": 200.0, "lat": -33.9})
+    projected = project_network(net, EPSG, TRANSFORM, (SIZE, SIZE))
+    assert projected["warnings"] == [
+        "3 way vertices with coordinates not on Earth skipped",
+        "2 stations with coordinates not on Earth skipped",
+        "1 points of interest with coordinates not on Earth skipped",
+    ]
+    assert (len(projected["ways_px"]), len(projected["stations"]), len(projected["poi_kinds"])) == (3, 7, 6)
+    m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
+    assert m["warnings"][:3] == projected["warnings"] and m["station_count"] == 7
+    assert m["network"] == {"ways": 5, "stations": 7, "pois": 6, "points": 11, "fetched_at": FETCHED_AT}
+
+
+def test_edges_over_the_cap_are_dropped_by_betweenness_and_counted(monkeypatch):
+    full = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
+    monkeypatch.setattr("vision.rail_analyse.MAX_EDGES", 3)
+    capped = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
+    assert capped["truncated"] == 4 and capped["edge_count"] == 7 and len(capped["edges"]) == 3
+
+    def station_touching(edge):
+        return edge["from"].startswith("s:") or edge["to"].startswith("s:")
+
+    def rank(edge):
+        return -edge["betweenness"], not station_touching(edge), edge["from"], edge["to"]
+
+    kept = sorted(full["edges"], key=rank)[:3]
+    assert capped["edges"] == sorted(kept, key=lambda e: (e["from"], e["to"]))
+
+
+def big_graph(side=30, stations=40):
+    """A `side` x `side` grid of junctions, the first `stations` of them stations: over the
+    exact-betweenness bound."""
+    grid = nx.grid_2d_graph(side, side)
+    graph = nx.Graph()
+    for index, (i, j) in enumerate(sorted(grid.nodes)):
+        if index < stations:
+            graph.add_node(f"s:{index}", kind="station", x=float(i * 10), y=float(j * 10), station=str(index))
+        else:
+            graph.add_node(f"j{index}", kind="junction", x=float(i * 10), y=float(j * 10), station=None)
+    names = {node: (f"s:{k}" if k < stations else f"j{k}") for k, node in enumerate(sorted(grid.nodes))}
+    for u, v in grid.edges:
+        graph.add_edge(names[u], names[v], length_m=200.0)
+    return graph
+
+
+def test_a_large_graph_uses_sampled_betweenness_and_says_so():
+    graph = big_graph()
+    activity = {f"s:{k}": 0.5 for k in range(40)}
+    started = time.perf_counter()
+    measures = graph_metrics(graph, activity, hub_count=3)
+    assert time.perf_counter() - started < 15.0  # about 2 s here; exact betweenness would be ten times that
+    assert measures["approximate"] and len(measures["hubs"]) == 3
+    assert measures == graph_metrics(graph, activity, hub_count=3)  # the seed makes the sample repeat
+    assert all(d is not None for d in measures["d_hub_m"].values())
+
+
+def test_a_city_sized_network_completes_in_seconds_with_the_flag():
+    # 38 lines each way, 10 px apart: about 1,440 junctions, 60 of them stations.
+    steps = [10 + 10 * i for i in range(38)]
+    lines = [{"id": f"h{y}", "points": [lonlat(10, y), lonlat(390, y)], "tunnel": False} for y in steps]
+    lines += [{"id": f"v{x}", "points": [lonlat(x, 10), lonlat(x, 390)], "tunnel": False} for x in steps]
+    stations = []
+    for k in range(60):
+        lon, lat = lonlat(steps[3 * k % 38], steps[7 * k % 38])
+        stations.append({"id": f"n{k}", "name": f"S{k}", "kind": "station", "lon": lon, "lat": lat})
+    net = {"ways": lines, "stations": stations, "pois": [], "fetched_at": FETCHED_AT}
+    started = time.perf_counter()
+    m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
+    assert time.perf_counter() - started < 15.0  # about 3 s here
+    assert m["node_count"] > 1200 and "graph_too_large" in m["quality_flags"]
+    assert m["components"] == 1 and m["truncated"] == 0 and m["hubs"]
+    assert json.loads(json.dumps(m, allow_nan=False)) == m
+
+
+def test_a_wide_heat_blur_runs_on_a_reduced_grid_and_matches():
+    bands = city()
+    built, _, _ = urban.built_up_mask(bands["red"], bands["nir"], bands["swir16"], bands["scl"])
+    share = (built > 0).astype(np.float32)
+    for sigma in (50.0, 150.0):
+        exact = cv2.GaussianBlur(share, (0, 0), sigma, borderType=cv2.BORDER_REPLICATE)
+        fast = urban.heat_map(built, sigma)
+        assert np.abs(fast - exact).max() < 0.01
+        assert fast.shape == share.shape and fast.dtype == np.float32
+    started = time.perf_counter()
+    urban.heat_map(np.zeros((3000, 3000), np.uint8), 150.0)
+    assert time.perf_counter() - started < 3.0
 
 
 @pytest.mark.parametrize(

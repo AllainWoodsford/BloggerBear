@@ -152,6 +152,11 @@ def test_mask_and_unreadable_directories_are_skipped():
     assert info.levels == () and info.width == 70
     out, _ = cog.read_window("u", (0, 0, 70, 50), fetcher(broken))
     np.testing.assert_array_equal(out, image())
+    # An overview without tile byte counts, and one whose width is 0, are not tiled images.
+    for tag, value in ((325, None), (256, 0)):
+        malformed = _patch_overview_tag(write_tiff(image(), overviews=(2,)), tag, value)
+        info, _ = cog.read_info("u", fetcher(malformed))
+        assert info.levels == () and info.width == 70
 
 
 def test_a_file_without_overviews_has_no_levels():
@@ -169,16 +174,23 @@ def test_the_directories_cost_no_extra_request():
 
 
 def _set_overview_compression(blob: bytes, compression: int) -> bytes:
-    """Rewrite the Compression tag of the second directory of a classic little-endian file."""
+    return _patch_overview_tag(blob, 259, compression)
+
+
+def _patch_overview_tag(blob: bytes, tag: int, value: int | None) -> bytes:
+    """In the second directory of a classic little-endian file, set a SHORT tag's inline value,
+    or with None renumber the tag to 65000 so the reader no longer finds it."""
     first = struct.unpack("<I", blob[4:8])[0]
     (n,) = struct.unpack("<H", blob[first : first + 2])
     second = struct.unpack("<I", blob[first + 2 + 12 * n : first + 6 + 12 * n])[0]
     (n,) = struct.unpack("<H", blob[second : second + 2])
     for i in range(n):
         entry = second + 2 + 12 * i
-        if struct.unpack("<H", blob[entry : entry + 2])[0] == 259:
-            return blob[: entry + 8] + struct.pack("<H", compression) + blob[entry + 10 :]
-    raise AssertionError("no Compression tag in the overview")
+        if struct.unpack("<H", blob[entry : entry + 2])[0] == tag:
+            if value is None:
+                return blob[:entry] + struct.pack("<H", 65000) + blob[entry + 2 :]
+            return blob[: entry + 8] + struct.pack("<H", value) + blob[entry + 10 :]
+    raise AssertionError(f"no tag {tag} in the overview")
 
 
 # --- geo -----------------------------------------------------------------------------------------

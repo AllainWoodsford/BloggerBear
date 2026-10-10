@@ -138,12 +138,12 @@ def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
             tags, next_ifd = _parse_ifd(src, next_ifd, order, big)
         except (CogError, struct.error):
             break  # a directory that can't be parsed ends the chain; the base image is still good
-        kind = tags.get(_TAG_SUBFILE_TYPE, (0,))[0]
-        if not kind & _SUBFILE_REDUCED or kind & _SUBFILE_MASK:
-            continue
         try:
+            kind = int(tags.get(_TAG_SUBFILE_TYPE, (0,))[0])
+            if not kind & _SUBFILE_REDUCED or kind & _SUBFILE_MASK:
+                continue
             levels.append(_info_from_tags(tags, order, base))
-        except CogError:
+        except (CogError, KeyError, TypeError, ValueError):
             continue  # an overview in a form this reader can't decode is left out, never fatal
     levels.sort(key=lambda level: level.pixel_size)
     return dataclasses.replace(base, levels=tuple(levels)), src
@@ -192,7 +192,7 @@ def _info_from_tags(tags: dict[int, tuple], order: str, base: CogInfo | None = N
         value = tags.get(tag)
         return value[0] if value else default
 
-    if _TAG_TILE_W not in tags or _TAG_TILE_OFFSETS not in tags:
+    if any(tag not in tags for tag in (_TAG_TILE_W, _TAG_TILE_H, _TAG_TILE_OFFSETS, _TAG_TILE_COUNTS)):
         raise CogError("not tiled")
     if one(_TAG_SAMPLES, 1) != 1:
         raise CogError("only single-band files are supported")
