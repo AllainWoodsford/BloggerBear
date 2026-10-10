@@ -1,0 +1,14 @@
+# The vision worker's own dependencies (vision/ and vision_worker_handler.py). Kept out of
+# requirements.txt for the same reason as requirements-ops-mcp.txt: that file is the one zip every
+# pipeline Lambda shares, and none of them need OpenCV. The worker is packaged on its own, for arm64
+# (docs/enhancements/opencv-agentic-vision-enhancement.md §4).
+#
+# opencv-python-headless 5.0.0.93: stock OpenCV 5, with manylinux2014 aarch64 and x86_64 wheels.
+# This is the baseline backend; the COOL backend swaps this cv2 for OpenCV's Graviton build and
+# runs the same code.
+#
+# numpy 2.4.4: the newest release that still supports Python 3.11 (CI's version). Its wheels need
+# glibc 2.27+, which is why the worker runs on Lambda's python3.12 runtime (Amazon Linux 2023), not
+# python3.11 (Amazon Linux 2, glibc 2.26).
+opencv-python-headless==5.0.0.93
+numpy==2.4.4
