@@ -645,6 +645,24 @@ tests plus `order_sites`. About 1,250 lines in all.
 
 ### Wave 4
 
+#### PR G — the deployment switch (`-g-deploy-switch`, independent)
+
+Title: "Deploy: the vision worker is opt-in through a repository variable". Deploying the vision
+work (worker, bucket, invoke grant) stays optional and off by default. The Terraform variable
+`vision_enabled` (dev and production roots, default `false`) is fed from a GitHub repository
+variable: `TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED || 'false' }}` in the `apply-dev` job's
+`env` of `.github/workflows/terraform.yml` and in the production release workflow's `env`, beside
+the other `TF_VAR_*` lines with the same comment style. `docs/configuration.md` gains the row in
+the GitHub variables table (`VISION_ENABLED` · variable · repo · "Set to `true` to deploy the
+vision worker; the bootstrap must have been re-applied with `vision_region` first; unset or
+anything else means off" · `true`) and a short "Vision" subsection under the environment
+Terraform variables (`vision_enabled`, `vision_region`), and `docs/deployment-runsheet.md`'s vision
+section says the switch is the variable, not a tfvars edit. `test_terraform_wiring.py` already
+requires every `vars.X` a workflow reads to be named in `configuration.md`; add one test that both
+apply workflows pass `TF_VAR_vision_enabled` from `vars.VISION_ENABLED` with a `false` default.
+Nothing else changes: the research tick already reads an empty `VISION_WORKER_ARN` as "not
+configured" and the adapters report `last_error` rather than fail.
+
 #### PR F — documentation and the city templates (`-f-docs`, after E)
 
 Title: "Docs: Rail Access Monitor — vision.md for two tasks, city topics, progress, friction,
@@ -664,7 +682,20 @@ checked with `vision/geo.py` as in §2); `scripts/rail_topics.example.json` (the
 the 120 s tick against Overpass, worker and agent; merging the stack onto a moved dev);
 `docs/architecture/article-research.md` and the README's data-sources table (OpenStreetMap);
 `docs/configuration.md` (one sentence: no new secret or variable; Overpass and Earth Search need no
-key); and `docs/hackathon/opencv-2026-submission.md` (new: pitch, problem, what it does under the
+key); `docs/configuration.md` also gains a "Vision and rail access" section (the switch from PR G, the
+worker's environment variables, the `rail_access` topic keys and what needs no key); `README.md` gains
+a section "Vision: satellite imagery and the Rail Access Monitor" (what it is, the two tasks, the
+opt-in deployment, links to the docs) and the OpenStreetMap row in its data-sources table;
+`docs/architecture/blogger-vision.md` (new, linked from `docs/architecture/README.md`'s index) is the
+architecture-by-feature page: the vision pipeline end to end (sources → adapter → worker → agent →
+person → page) and a plain explainer of the rail concepts (built-up heat as a proxy, walking reach
+and transit deserts, the station graph, hubs, betweenness and isolation weight, what the flags and
+suggestions mean and do not mean); the deployment sheets (`deployment-runsheet.md`,
+`deployment-separate-accounts.md`, `production-runsheet.md`) each gain a short "Vision (optional)"
+section: off by default, turned on per environment with the repository variable, the bootstrap
+step first, how to turn it off again (the variable back to false removes the worker on the next
+apply; topics keep their state); `docs/friction.md` §12 keeps growing as things go (it exists on the
+integration branch; add the entries of PRs A–F); and `docs/hackathon/opencv-2026-submission.md` (new: pitch, problem, what it does under the
 rubric's headings, the two special awards, the loop perception → diff → agent → person, an
 architecture diagram, measurement placeholders, licences, limitations — proxies, no ridership,
 grade-separated crossings read as junctions, SCL as the only water mask — reproduction steps and a
