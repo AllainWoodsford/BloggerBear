@@ -384,8 +384,10 @@ Title: "Figures: adapters attach PNGs to Findings; articles show them on the sta
 the SPA". New: `lambdas/common/figures.py`, `lambdas/tests/test_figures.py`,
 `lambdas/tests/test_frontend_figures.py`. Modified: `common/adapters/base.py`, `common/dynamo.py`,
 `research_tick_handler.py`, `daily_cycle_handler.py`, `common/static_pages.py`, `common/rewrite.py`,
-`admin_api_handler.py`, `public_api_handler.py`, `trending_digest_handler.py` (it re-renders pages
-too), `frontend/app.js`, `frontend/styles.css`, and their tests.
+`admin_api_handler.py`, `public_api_handler.py`, `frontend/app.js`, `frontend/styles.css`, and their
+tests. (`trending_digest_handler.py` is left alone: its one render is a fresh digest with no article
+dict and no findings; a held digest that is approved is re-rendered by the admin API, which passes
+figures.)
 
 ```python
 # common/adapters/base.py
@@ -414,8 +416,7 @@ The page gets, between the attribution and the body, one
 per figure, every value escaped, no `style=` (the CSP forbids inline styles; a test asserts it).
 The daily cycle's `_publish_or_moderate` collects `figures_for_findings(findings)` and passes them to
 `put_article` and the renderer; the research tick stores `adapter.figures(new_state)` on the Finding;
-the admin API's `_render_published_page`, the trending digest's re-render and the rewrite path pass
-`article.get("figures")`; unpublish and take-down call `remove_article_page(article_id,
+the admin API's `_render_published_page` and the rewrite path pass `article.get("figures")`; unpublish and take-down call `remove_article_page(article_id,
 figure_count=len(article.get("figures") or []))`; the admin `_get_article` returns `figures`; the
 public article detail returns `public_figures(...)` (always present, possibly empty). The SPA's
 article view appends, after the credit line, a `figure.article-figure` with the image

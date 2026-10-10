@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 8 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
+| Vision and rail (OpenCV 2026) | 9 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
 
 ---
 
@@ -866,6 +866,19 @@ every variable a workflow reads and refuses a new one until the fork setup scrip
 lists it as deliberately not asked. **Fix:** `VISION_ENABLED` in `NOT_ASKED` with its reason.
 **Lesson:** the rule in the agents' brief, "the full suite before pushing", applies to the
 orchestrator too, and most of all to small changes that look too small to need it. (#286)
+
+**12.9 Green suites, then a review that refutes itself.** Each wave-1 PR arrived with its own
+tests and the full suite green. A second pass, four reviewers (spec, correctness, wiring,
+security) whose every finding was then handed to a refuter and a reproducer, still found what the
+tests had not: a `requests` error that is neither a timeout nor a refused connection escaping the
+OSM client uncaught, so a connection cut mid-body would have crashed the research tick instead of
+keeping the cached network; redirects followed off the endpoint allowlist; a 20 MB cap checked
+only after the whole body was in memory; a figure caption that a bidi override could reverse on
+the page; a key pattern ending in `$`, which lets a trailing newline through. The refuters
+refuted six of the findings as "the spec did not ask for it", while the reproducers reproduced
+every one of those six. **Fix:** the four confirmed findings and the five cheap disputed ones,
+pushed to the PRs before merging. **Lesson:** "not in the spec" is a fact about the spec; when the
+mechanism reproduces, fix it and amend the spec. (#287, #288)
 
 ## Patterns worth keeping
 
