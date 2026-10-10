@@ -409,7 +409,10 @@ docs/enhancements/supply-chain-tracker-enhancement.md).
 10 m resolution (a container is 2.4 m wide); ships are.
 
 **9.4 OpenCV 5 on Graviton is unconfirmed.** Whether an `opencv-python-headless` 5.x wheel exists for
-Linux aarch64 is still the first thing to settle.
+Linux aarch64 is still the first thing to settle. **Settled 2026-10-06:** `opencv-python-headless==5.0.0.93`
+ships Linux aarch64 wheels. That is stock OpenCV on Graviton, which is not COOL, the Graviton-tuned build
+the COOL award asks for
+([docs/enhancements/opencv-agentic-vision-enhancement.md](enhancements/opencv-agentic-vision-enhancement.md) §4).
 
 ## 10. Alexa+ and MCP (2026-10-04)
 
