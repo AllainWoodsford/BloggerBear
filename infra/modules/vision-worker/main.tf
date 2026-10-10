@@ -106,6 +106,7 @@ data "archive_file" "package" {
 }
 
 resource "aws_s3_bucket" "artifacts" {
+  # checkov:skip=CKV_AWS_21:each package is written once under its own MD5 key and expires after 14 days; the repository and Terraform rebuild it, so there is no history to keep
   region        = var.region
   bucket        = local.artifacts_bucket
   force_destroy = true
@@ -158,6 +159,20 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 
     expiration {
       days = 14
+    }
+  }
+
+  # An apply interrupted mid-upload would otherwise leave the parts of a ~50 MB zip behind, billed, with
+  # no object to show for them. Checkov (CKV_AWS_300) wants this on a rule that covers the whole bucket,
+  # hence the empty filter rather than the prefix above.
+  rule {
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
