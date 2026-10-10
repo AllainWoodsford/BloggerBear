@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 7 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
+| Vision and rail (OpenCV 2026) | 8 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
 
 ---
 
@@ -858,6 +858,14 @@ inside the repository needs an exclude before the first commit after it. (#285)
 **12.7 The session hook installs ruff, not the tests' needs, and the container's Python is 3.13.**
 CI runs 3.11. **Fix:** a 3.11 venv with `requirements-dev.txt` (and Checkov in another), used for
 every PR's checks. **Lesson:** match CI's interpreter before trusting a local green run. (#285)
+
+**12.8 A five-line workflow change, three tests that police it, and only two run locally.** The
+deployment switch (a `VISION_ENABLED` variable read by both apply workflows) was pushed after the
+wiring tests passed; CI then failed in `scripts/tests/test_setup_repo.py`, whose table test knows
+every variable a workflow reads and refuses a new one until the fork setup script asks for it or
+lists it as deliberately not asked. **Fix:** `VISION_ENABLED` in `NOT_ASKED` with its reason.
+**Lesson:** the rule in the agents' brief, "the full suite before pushing", applies to the
+orchestrator too, and most of all to small changes that look too small to need it. (#286)
 
 ## Patterns worth keeping
 
