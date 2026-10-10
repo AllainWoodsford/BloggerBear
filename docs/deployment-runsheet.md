@@ -508,7 +508,11 @@ turned on. Design: [docs/enhancements/opencv-agentic-vision-enhancement.md](enha
    deploy roles: Lambda functions and log groups named `<prefix>-*-vision-*` in `vision_region`
    (default `us-west-2`, beside the Sentinel-2 imagery). If you change `vision_region`, pass the same
    value to the bootstrap and to the environment.
-2. **Set `vision_enabled = true`** in `infra/environments/dev/terraform.tfvars` and merge. The apply
+2. **Set the `VISION_ENABLED` repository variable to `true`** (GitHub → Settings → Secrets and
+   variables → Actions → Variables; [configuration.md](configuration.md)) and run a deploy (merge
+   anything to `dev`, or `workflow_dispatch` the Terraform workflow). Nothing in `terraform.tfvars`
+   changes. Unset it, or set it to anything else, and the next apply removes the worker again;
+   topics keep their state. The apply
    creates, in `vision_region`: the worker (arm64, python3.12), its role (its own log group only),
    its log group, and a small artifacts bucket its package is uploaded through. The research tick
    is given the worker's ARN (`VISION_WORKER_ARN`) and may invoke that one function.
