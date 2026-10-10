@@ -47,6 +47,7 @@ from common.dynamo import (
     set_topic_last_research_at,
 )
 from common.editorial_resolver import resolve_editorial_goals
+from common.figures import MAX_FIGURES_PER_FINDING, clean_figures
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
@@ -76,6 +77,29 @@ def _get_s3_client():
 
 def _snapshot_key(topic_id: str, captured_at: str) -> str:
     return f"snapshots/{topic_id}/{captured_at}.json"
+
+
+def _running_state_key(topic_id: str) -> str:
+    """Where an adapter with `keeps_running_state` has its newest state, material or not. One
+    object per topic, overwritten each tick; under snapshots/ so it expires with them if the topic
+    stops running (the bucket's lifecycle rule), after which the last Finding's snapshot is used."""
+    return f"snapshots/{topic_id}/running-state.json"
+
+
+def _load_running_state(bucket: str, topic_id: str) -> dict | None:
+    try:
+        return _load_prior_state(bucket, _running_state_key(topic_id))
+    except _get_s3_client().exceptions.NoSuchKey:
+        return None
+
+
+def _store_state(bucket: str, key: str, snapshot: dict) -> None:
+    _get_s3_client().put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=json.dumps(snapshot).encode("utf-8"),
+        ContentType="application/json",
+    )
 
 
 def _load_prior_state(bucket: str, s3_key: str) -> dict:
@@ -214,10 +238,11 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # the diff needs it) so an adapter that opts in via `uses_previous_state`
     # can reuse what it already fetched earlier in the day instead of
     # re-requesting slow-changing data on every hourly tick.
-    prior_finding = get_latest_finding(topic_id)
-    old_state = None
-    if prior_finding is not None:
-        old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"])
+    old_state = _load_running_state(bucket, topic_id) if adapter.keeps_running_state else None
+    if old_state is None:
+        prior_finding = get_latest_finding(topic_id)
+        if prior_finding is not None:
+            old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"])
 
     if adapter.uses_previous_state:
         new_state = adapter.fetch_state(topic, previous_state=old_state)
@@ -231,6 +256,12 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
 
     changed, diff_summary = adapter.material_diff(old_state, new_state)
     if not changed:
+        if adapter.keeps_running_state:
+            running = dict(new_state)
+            seen = _merge_seen(adapter, old_state, new_state, datetime.now(UTC).date())
+            if seen:
+                running[SEEN_KEY] = seen
+            _store_state(bucket, _running_state_key(topic_id), running)
         return {"status": "no_change"}
 
     # The same precedence as the daily cycle (rotation candidates -> the topic's
@@ -272,16 +303,16 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     if seen:
         snapshot[SEEN_KEY] = seen
 
-    s3 = _get_s3_client()
-    s3.put_object(
-        Bucket=bucket,
-        Key=snapshot_key,
-        Body=json.dumps(snapshot).encode("utf-8"),
-        ContentType="application/json",
-    )
+    _store_state(bucket, snapshot_key, snapshot)
+    if adapter.keeps_running_state:
+        _store_state(bucket, _running_state_key(topic_id), snapshot)
 
     expires_at = int((datetime.now(UTC) + timedelta(days=FINDING_TTL_DAYS)).timestamp())
     refs = adapter.source_refs(new_state)
+    # What the adapter drew for this observation, checked here so only well-formed entries
+    # (a PNG key in the content bucket, a caption, alt text) ever reach a Finding; stored
+    # only when there are any (common/figures.py).
+    figures = clean_figures(adapter.figures(new_state))[:MAX_FIGURES_PER_FINDING]
 
     put_finding(
         topic_id=topic_id,
@@ -291,6 +322,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
         raw_snapshot_s3_key=snapshot_key,
         source_refs=refs,
         research_call=research_call,
+        figures=figures,
     )
 
     return {"status": "material_change", "summary": summary}

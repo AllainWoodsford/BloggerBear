@@ -736,6 +736,9 @@ ADAPTERS = {
     "hacker_news": "reads Hacker News's top stories",
     # common/adapters/crypto_feed.py; admin_api_handler._create_topic forces is_financial for it.
     "crypto_feed": "reads crypto market data; always treated as financial",
+    # common/adapters/satellite_vision.py: counts what the vision worker sees at the sites in its
+    # config, in each new Sentinel-2 scene.
+    "satellite_vision": "counts objects at fixed sites in new satellite scenes (needs sites in its config)",
 }
 
 # The owner's worked example for an editorial goal. `exclusion_criteria` because the validator

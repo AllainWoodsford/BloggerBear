@@ -3,7 +3,9 @@
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
 plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
 of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it, and what of the
-Alexa+ add-on could not be tested (2026-10-05), and PRs #260–#280 (2026-10-07 to 2026-10-09).
+Alexa+ add-on could not be tested (2026-10-05), and PRs #260–#280 (2026-10-07 to 2026-10-09),
+and the vision review and Rail Access Monitor build for the OpenCV AI Competition (2026-10-10 on,
+PR #285 and its sub-PRs).
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -28,6 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
+| Vision and rail (OpenCV 2026) | 9 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
 
 ---
 
@@ -409,7 +412,10 @@ docs/enhancements/supply-chain-tracker-enhancement.md).
 10 m resolution (a container is 2.4 m wide); ships are.
 
 **9.4 OpenCV 5 on Graviton is unconfirmed.** Whether an `opencv-python-headless` 5.x wheel exists for
-Linux aarch64 is still the first thing to settle.
+Linux aarch64 is still the first thing to settle. **Settled 2026-10-06:** `opencv-python-headless==5.0.0.93`
+ships Linux aarch64 wheels. That is stock OpenCV on Graviton, which is not COOL, the Graviton-tuned build
+the COOL award asks for
+([docs/enhancements/opencv-agentic-vision-enhancement.md](enhancements/opencv-agentic-vision-enhancement.md) §4).
 
 ## 10. Alexa+ and MCP (2026-10-04)
 
@@ -798,6 +804,81 @@ merges, check the newest deploy run, not each one; and scratch commits belong in
 that is never pushed.
 
 ---
+
+## 12. Vision and the Rail Access Monitor (2026-10-10 on)
+
+The OpenCV AI Competition 2026 work: the review of the vision stack (#240–#254), its merge onto
+`dev` as the integration branch of #285, and the rail task built on it
+([rail-access-monitor.md](enhancements/rail-access-monitor.md)). Entries are added as the work
+goes, newest last.
+
+**12.1 A stacked PR's green CI was not dev's CI.** Every PR of the stack passed its checks, each
+against the branch below it. `dev` had meanwhile gained a Checkov job (#266), and on the merged
+tree the vision worker's artifacts bucket failed it twice (`CKV_AWS_21` versioning, `CKV_AWS_300`
+abort incomplete uploads). **Fix:** versioning skipped with the reason (packages are keyed by MD5
+and expire after 14 days), incomplete uploads aborted after 7 days, and Checkov 3.3.25 installed
+locally to reproduce, which showed the check wants that rule unfiltered: a prefixed rule does not
+count, hence a second bucket-wide rule. **Lesson:** after merging `dev` into a stack, run the
+checks `dev` runs now, not the ones the stack ran then. (#285)
+
+**12.2 `cv2.ximgproc` is not in the headless wheel.** The usual `cv2.ximgproc.thinning` lives in
+opencv-contrib, which the pinned `opencv-python-headless` does not carry, and COOL's module list
+is not published. **Fix:** thinning with core OpenCV, `cv2.morphologyEx` and `MORPH_HITMISS` over
+the Golay L kernels. **Lesson:** check the pinned wheel's module list before designing around a
+function; "it's in OpenCV" can mean "it's in contrib". (#285)
+
+**12.3 The build container reaches the data but not its catalogue.** `sentinel-cogs` (the
+imagery) and PyPI answer; Earth Search (the STAC catalogue), Overpass (OpenStreetMap), GDELT,
+Devpost and opencv.org do not. So the rubric came from search snippets and is to be re-checked
+against Devpost by hand; tests use fakes for every service, as they already did; and a real-scene
+check can only read known COG URLs. **Lesson:** list what the container can reach before
+planning what the agents will verify there. (#285)
+
+**12.4 Three append/append conflicts, and a careless first resolution.** `dev` had moved 86
+commits since the stack branched; three files had both sides appending at the end. A generic
+"keep both halves" resolution duplicated six lines of one test file, which ruff caught as F821
+before any test ran. **Fix:** each file resolved as dev's version plus the stack's appended hunk,
+by script, then ruff and the full suite. **Lesson:** CLAUDE.md's "re-run ruff after merging dev"
+is for this; and a conflict in a test file is still a conflict in code. (#285)
+
+**12.5 Figures that no reader could see.** The review found the stack's figure (the worker's PNG)
+stored in the private content bucket and read only by the triage agent: no Finding or article
+field, no renderer, no copy into the site bucket. A vision entry whose map never reaches a page
+would fail its own point. **Fix:** a generic figures path, Finding → article → site bucket → page,
+as its own PR (C). **Lesson:** trace an artefact from where it is made to where a person sees it
+before calling a pipeline complete. (#285)
+
+**12.6 Parallel agents need their own checkouts, and the main one must not sweep.** Three
+implementation agents working in one working tree would have fought over the checkout, so each got
+a git worktree under `.claude/worktrees/`. The stop hook then reported those directories as
+untracked files to commit. **Fix:** `.git/info/exclude` lists the directory locally, and the main
+checkout stages files by name, never `git add -A`. **Lesson:** anything that creates directories
+inside the repository needs an exclude before the first commit after it. (#285)
+
+**12.7 The session hook installs ruff, not the tests' needs, and the container's Python is 3.13.**
+CI runs 3.11. **Fix:** a 3.11 venv with `requirements-dev.txt` (and Checkov in another), used for
+every PR's checks. **Lesson:** match CI's interpreter before trusting a local green run. (#285)
+
+**12.8 A five-line workflow change, three tests that police it, and only two run locally.** The
+deployment switch (a `VISION_ENABLED` variable read by both apply workflows) was pushed after the
+wiring tests passed; CI then failed in `scripts/tests/test_setup_repo.py`, whose table test knows
+every variable a workflow reads and refuses a new one until the fork setup script asks for it or
+lists it as deliberately not asked. **Fix:** `VISION_ENABLED` in `NOT_ASKED` with its reason.
+**Lesson:** the rule in the agents' brief, "the full suite before pushing", applies to the
+orchestrator too, and most of all to small changes that look too small to need it. (#286)
+
+**12.9 Green suites, then a review that refutes itself.** Each wave-1 PR arrived with its own
+tests and the full suite green. A second pass, four reviewers (spec, correctness, wiring,
+security) whose every finding was then handed to a refuter and a reproducer, still found what the
+tests had not: a `requests` error that is neither a timeout nor a refused connection escaping the
+OSM client uncaught, so a connection cut mid-body would have crashed the research tick instead of
+keeping the cached network; redirects followed off the endpoint allowlist; a 20 MB cap checked
+only after the whole body was in memory; a figure caption that a bidi override could reverse on
+the page; a key pattern ending in `$`, which lets a trailing newline through. The refuters
+refuted six of the findings as "the spec did not ask for it", while the reproducers reproduced
+every one of those six. **Fix:** the four confirmed findings and the five cheap disputed ones,
+pushed to the PRs before merging. **Lesson:** "not in the spec" is a fact about the spec; when the
+mechanism reproduces, fix it and amend the spec. (#287, #288)
 
 ## Patterns worth keeping
 

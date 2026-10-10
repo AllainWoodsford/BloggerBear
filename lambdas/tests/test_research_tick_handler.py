@@ -12,6 +12,7 @@ import research_tick_handler
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
+from common.adapters.satellite_vision import SatelliteVisionAdapter
 from common.adapters.web_search import WebSearchAdapter
 
 REGION = "ap-southeast-2"
@@ -287,6 +288,7 @@ def test_adapter_registry_has_every_registered_adapter():
         "hacker_news": HackerNewsAdapter,
         "crypto_feed": CryptoFeedAdapter,
         "web_search": WebSearchAdapter,
+        "satellite_vision": SatelliteVisionAdapter,
     }
 
 
@@ -599,3 +601,63 @@ def test_a_complete_summary_says_nothing_about_being_cut_off(aws_resources, monk
     _run_one_tick(monkeypatch, _tracked("all of it"))
 
     assert "cut off" not in capsys.readouterr().out
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+class _DrawingAdapter(GitHubTrendingAdapter):
+    """An adapter that draws: one good figure, and one whose key reaches outside the bucket."""
+
+    def figures(self, new_state):
+        return [
+            {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described", "extra": 1},
+            {"key": "../outside.png", "caption": "Bad", "alt": "bad"},
+        ]
+
+
+class _ProlificAdapter(GitHubTrendingAdapter):
+    """An adapter that draws more figures than a Finding may carry."""
+
+    def figures(self, new_state):
+        return [
+            {"key": f"vision/t/s/scene-{n}.png", "caption": f"Map {n}", "alt": f"Map {n}"} for n in range(14)
+        ]
+
+
+def _the_finding():
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    return finding
+
+
+def test_an_adapters_figures_are_stored_on_the_finding_well_formed_ones_only(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _DrawingAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    assert _the_finding()["figures"] == [
+        {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described"}
+    ]
+
+
+def test_a_finding_carries_at_most_the_figure_cap(aws_resources, monkeypatch):
+    """A Findings item is capped at 400 KB; an adapter that draws without limit is cut at the cap,
+    the first ones kept (common/figures.py MAX_FIGURES_PER_FINDING)."""
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _ProlificAdapter)
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    stored = _the_finding()["figures"]
+    assert len(stored) == research_tick_handler.MAX_FIGURES_PER_FINDING == 10
+    assert [f["key"] for f in stored][:2] == ["vision/t/s/scene-0.png", "vision/t/s/scene-1.png"]
+
+
+def test_an_adapter_draws_nothing_unless_it_says_so_and_its_finding_has_no_figures_field(
+    aws_resources, monkeypatch
+):
+    assert GitHubTrendingAdapter().figures({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "figures" not in _the_finding()

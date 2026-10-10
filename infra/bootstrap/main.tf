@@ -371,6 +371,30 @@ data "aws_iam_policy_document" "gha_deploy" {
     ]
   }
 
+  # The vision worker (infra/modules/vision-worker): an arm64 Lambda in var.vision_region, beside
+  # the Sentinel-2 imagery, and its log group. LambdaFunctions and LambdaLogGroups above are
+  # scoped to var.aws_region, so these add the vision Region only, and only for names with
+  # "-vision-" in them: <prefix>-<env>-vision-worker and its /aws/lambda/ log group. Its role
+  # falls under LambdaExecRole (<prefix>-*-lambda-exec), and its artifacts bucket under
+  # SiteBuckets (s3:*), so neither needs adding. Applied by hand like the rest of this file,
+  # before an environment sets vision_enabled = true.
+  statement {
+    sid       = "VisionWorkerFunctions"
+    effect    = "Allow"
+    actions   = ["lambda:*"]
+    resources = ["arn:aws:lambda:${var.vision_region}:*:function:${var.unique_name_prefix}-*-vision-*"]
+  }
+
+  statement {
+    sid     = "VisionWorkerLogGroups"
+    effect  = "Allow"
+    actions = ["logs:*"]
+    resources = [
+      "arn:aws:logs:${var.vision_region}:*:log-group:/aws/lambda/${var.unique_name_prefix}-*-vision-*",
+      "arn:aws:logs:${var.vision_region}:*:log-group:/aws/lambda/${var.unique_name_prefix}-*-vision-*:*",
+    ]
+  }
+
   # The AgentCore web search gateway and its Web Search Tool target
   # (infra/modules/web-search). bedrock-agentcore:* because creating a
   # gateway also creates its workload identity and the exact set of

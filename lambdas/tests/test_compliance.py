@@ -436,3 +436,10 @@ def test_source_aware_review_records_its_lineage_call():
 
     assert result["lineage_call"]["stage"] == "compliance_review"
     assert result["lineage_call"]["model_id"] == "model-id"
+
+
+def test_requires_manual_review_only_when_the_flag_is_true():
+    assert compliance.requires_manual_review({"force_manual_review": True})
+    not_set = ({}, {"force_manual_review": False}, {"force_manual_review": "true"}, {"is_financial": True})
+    for topic in not_set:
+        assert not compliance.requires_manual_review(topic)

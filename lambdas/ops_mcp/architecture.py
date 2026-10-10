@@ -524,6 +524,18 @@ CATALOGUE: tuple[Component, ...] = (
         alarmed=False,
         aliases=("agent", "assistant"),
     ),
+    _lambda(
+        "vision-worker",
+        "Measures one site in one Sentinel-2 scene with OpenCV 5 (arm64) for the satellite_vision "
+        "adapter, and returns counts and a figure. Stores nothing.",
+        "on each call from the research tick of a satellite_vision topic, across Regions",
+        alarmed=False,
+        details=(
+            ("Region", "the vision Region (us-west-2, beside the imagery), not the stack's"),
+            ("Exists", "only when the environment sets vision_enabled"),
+        ),
+        aliases=("vision", "opencv"),
+    ),
     # --- API Gateway ---------------------------------------------------------------------------
     Component(
         kind="api",

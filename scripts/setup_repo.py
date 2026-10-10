@@ -208,6 +208,10 @@ NOT_ASKED = {
     # Only ruff-autofix.yml reads it, and it is optional: without it that workflow reports the
     # fixes in its job summary and pushes nothing. No deploy needs it.
     "RUFF_AUTOFIX_TOKEN",
+    # The switch that deploys the vision worker (docs/configuration.md). Off unless someone sets it
+    # to "true" by hand, after the bootstrap step the runsheet describes; a first deploy never
+    # wants it, so this script does not ask.
+    "VISION_ENABLED",
 }
 
 # Secrets the workflows still read as `secrets.X || vars.X`, left over from when they were

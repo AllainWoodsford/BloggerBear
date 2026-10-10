@@ -43,6 +43,14 @@ class Adapter(ABC):
     # that leave this False keep the plain `fetch_state(topic_config)`.
     uses_previous_state: bool = False
 
+    # Opt-in: an adapter whose state is a running record of every observation (a baseline built
+    # from all of them, not only those that were reported) sets this True, usually with
+    # `uses_previous_state`. The research tick then also stores the state after a tick that
+    # found nothing material, at one fixed key per topic, and hands back the newest state as
+    # `previous_state` and as `old_state` to `material_diff`. Without it, a no-change tick's
+    # state is dropped and the next tick sees the last *reported* snapshot.
+    keeps_running_state: bool = False
+
     # Required: where this adapter's data comes from, as the credit shown to readers (see
     # common/attribution.py). One {"text", "label", "url"} dict per source: `text` is the whole
     # sentence, `label` is the part of it that becomes the link, `url` is an https address.
@@ -132,6 +140,16 @@ class Adapter(ABC):
         referenced by `new_state`, for citation in the resulting Finding.
         """
         raise NotImplementedError
+
+    def figures(self, new_state: dict) -> list[dict]:
+        """The pictures this observation drew, for the article written from it (common/figures.py):
+        one {"key", "caption", "alt"} dict per figure, `key` a PNG this adapter already stored in
+        the content bucket, `caption` the sentence shown under it, `alt` what a screen reader
+        says instead of it. The research tick keeps them on the Finding; the daily cycle puts the
+        newest few on the article, and the page copies the PNGs into the site bucket. Plain data,
+        never HTML: every page escapes it. The default, for a source that draws nothing, is none.
+        """
+        return []
 
     def build_summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict

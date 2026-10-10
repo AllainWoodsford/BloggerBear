@@ -112,6 +112,10 @@ jobs:
     # the credentials step below gets the region it always got. TF_STATE_REGION is only for the
     # state bucket (see the init step): its own TF_STATE_REGION variable if the bucket is not in
     # the home region, else AWS_REGION, else empty, which leaves the backend block's region alone.
+    # TF_VAR_vision_enabled: whether the vision worker (infra/modules/vision-worker, the OpenCV
+    # work) is deployed at all. A plain VISION_ENABLED variable, because it is a switch and not a
+    # secret; unset or anything but `true`, Terraform gets `false`, which is also its own default,
+    # so a deployment that never set it never creates the worker (docs/configuration.md).
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_DEV }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_DEV || vars.ALERT_EMAIL_DEV }}
@@ -120,6 +124,7 @@ jobs:
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET_DEV }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION || 'ap-southeast-2' }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION || vars.AWS_REGION }}
+      TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED || 'false' }}
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332

@@ -1,0 +1,10 @@
+# The COOL worker image's own additions (docker/vision-cool/Dockerfile). Deliberately NOT
+# opencv-python-headless or numpy: the COOL image brings OpenCV's Graviton build of cv2 and the
+# numpy it was built against, and installing either here would shadow them, and the worker would
+# then refuse every request as not_cool (vision/build.py's fingerprint check).
+#
+# requests: the worker's range reads, the same pin as requirements.txt.
+# awslambdaric: the Lambda runtime interface client, so the image can run as a container-image
+# Lambda (the COOL image is not an AWS Lambda base image). Unused when the image runs elsewhere.
+requests==2.34.2
+awslambdaric==4.1.0

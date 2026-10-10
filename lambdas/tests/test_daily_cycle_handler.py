@@ -2540,3 +2540,87 @@ def test_only_a_finished_rewrite_rebuilds_the_article_figures(status, rebuilt):
 
     assert result == {"status": status}
     assert refresh.called is rebuilt
+
+
+# --- force_manual_review: a person sees every article of such a topic -----------------------------
+
+
+def test_a_force_manual_review_topic_is_held_even_when_compliant(s3_bucket):
+    topic = {**NON_FINANCIAL_TOPIC, "force_manual_review": True}
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(topic=topic, compliant=True)
+    assert result["status"] == "pending_moderation"
+    reasons = mock_put_moderation.call_args.kwargs["reasons"]
+    assert daily_cycle_handler.compliance.MANUAL_REVIEW_REASON in reasons
+    assert mock_put_article.call_args.kwargs["status"] == "pending_moderation"
+
+
+def test_without_the_flag_a_compliant_article_still_publishes(s3_bucket):
+    result, _, _, _, _ = _run_with_review(compliant=True)
+    assert result["status"] == "published"
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+def _finding_with_figures(captured_at, *keys):
+    return {
+        "topic_id": "github-trending",
+        "captured_at": captured_at,
+        "summary": "Something was seen.",
+        "source_refs": [],
+        "figures": [{"key": key, "caption": f"Caption for {key}", "alt": f"Alt for {key}"} for key in keys],
+    }
+
+
+def _publish_or_moderate_with(findings, compliant=True):
+    """_publish_or_moderate for `findings`; returns (put_article's mock, the page renderer's mock)."""
+    with (
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page") as mock_render,
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+    ):
+        daily_cycle_handler._publish_or_moderate(
+            topic_id="github-trending",
+            topic_name="GitHub Trending",
+            title="A Title",
+            draft_text="Body.",
+            findings=findings,
+            review={"compliant": compliant, "reasons": [] if compliant else ["held"]},
+            model_id="anthropic.claude-test-model",
+            lineage=_DUMMY_LINEAGE,
+        )
+    return mock_put_article, mock_render
+
+
+def test_the_findings_figures_reach_the_article_and_its_page_newest_first_each_once_and_capped(s3_bucket):
+    findings = [  # newest first, as list_recent_findings returns them
+        _finding_with_figures("2026-09-13T03:00:00+00:00", "vision/c.png", "vision/b.png"),
+        _finding_with_figures("2026-09-13T02:00:00+00:00", "vision/b.png", "vision/a.png"),
+        _finding_with_figures("2026-09-13T01:00:00+00:00", "vision/z.png"),
+    ]
+
+    mock_put_article, mock_render = _publish_or_moderate_with(findings)
+
+    expected = [
+        {"key": key, "caption": f"Caption for {key}", "alt": f"Alt for {key}"}
+        for key in ("vision/c.png", "vision/b.png", "vision/a.png")  # z: over the cap of three
+    ]
+    assert mock_put_article.call_args.kwargs["figures"] == expected
+    assert mock_render.call_args.kwargs["figures"] == expected
+
+
+def test_a_held_article_keeps_its_figures_for_the_page_a_person_may_later_approve(s3_bucket):
+    findings = [_finding_with_figures("2026-09-13T03:00:00+00:00", "vision/a.png")]
+
+    mock_put_article, mock_render = _publish_or_moderate_with(findings, compliant=False)
+
+    assert mock_put_article.call_args.kwargs["figures"] == findings[0]["figures"]
+    mock_render.assert_not_called()  # nothing is copied onto the site until it is published
+
+
+def test_findings_without_figures_give_the_article_none(s3_bucket):
+    mock_put_article, mock_render = _publish_or_moderate_with([{"summary": "plain", "source_refs": []}])
+
+    assert mock_put_article.call_args.kwargs["figures"] == []
+    assert mock_render.call_args.kwargs["figures"] == []
