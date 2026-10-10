@@ -657,7 +657,7 @@ All shipped and deployed; the design and decisions for each are in
   `web_context` (rail PR E)
 - [ ] Documentation: the vision pipeline page (docs/architecture/blogger-vision.md), the README
   section and data-source rows, the configuration and deployment sections, the submission draft
-  (rail PR F1, this PR); vision.md for two tasks, the city topic templates and the friction
+  (#290, rail PR F1); vision.md for two tasks, the city topic templates and the friction
   entries (rail PR F, after E)
 
 ## Backlog / not yet scheduled
