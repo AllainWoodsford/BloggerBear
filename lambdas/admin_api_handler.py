@@ -86,6 +86,7 @@ from common.editorial_resolver import (
     validate_editorial_goals,
 )
 from common.fact_check import fact_check_label
+from common.figures import clean_figures
 from common.fresh_review import (
     on_unavailable_error,
     resolve_on_unavailable,
@@ -624,6 +625,9 @@ def _render_published_page(article: dict, *, published_at: str) -> None:
         # that was stored, its topic's adapter's sources as declared today (the digest: every
         # topic's). See common/attribution.py.
         attribution=sources_for_article(article, get_topic=get_topic, list_topics=list_topics),
+        # The figures stored when it was drafted (common/figures.py): copied onto the site again
+        # on every render, so an article that was taken down and approved gets them back.
+        figures=article.get("figures"),
     )
     generate_and_store_article_musing(
         article_id=article["article_id"],
@@ -668,6 +672,9 @@ def _get_article(event: dict) -> dict:
         ],
         "models_used": lineage.get("models_used") or [],
         "cost_aud": float(total_cost) if isinstance(total_cost, int | float) else None,
+        # The pictures the page shows, with their content-bucket keys (common/figures.py): a
+        # reviewer can see what a reader will, and where it came from. Empty for most articles.
+        "figures": clean_figures(article.get("figures")),
     }
     if body_error:
         payload["body_error"] = body_error
@@ -734,7 +741,7 @@ def _unpublish_article(event: dict) -> dict:
             "use the moderation reject route for one still awaiting review",
         )
 
-    remove_article_page(article_id)
+    remove_article_page(article_id, figure_count=len(article.get("figures") or []))
     update_article_status(article_id, "rejected")
 
     moderation_item = get_moderation_item_by_article_id(article_id)
@@ -1086,7 +1093,7 @@ def _rewrite_article(event: dict) -> dict:
     if status == "published":
         # Forced. Off the site first (page, then status), so a failure part-way leaves it down,
         # not half-up.
-        remove_article_page(article_id)
+        remove_article_page(article_id, figure_count=len(article.get("figures") or []))
         update_article_status(article_id, "pending_moderation")
         extra = {"unpublished": True, **_clear_article_traces(article_id)}
     elif status == "rejected":

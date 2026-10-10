@@ -1979,6 +1979,53 @@
 
   // --- Article detail -----------------------------------------------------
 
+  // The pictures an article shows under its credit line: the API's `figures`, [{src, caption,
+  // alt}] (lambdas/common/figures.py), `src` the site path of a copy the pipeline made under
+  // /articles/figures/. Built from elements and text only, so nothing in it is parsed as markup;
+  // a figure whose src is not a plain path under that prefix (another origin, a "..", a data
+  // URL) is left out rather than loaded -- the page only ever shows what the pipeline put
+  // there. Returns the <figure> elements, in order, none when there is nothing to show.
+  var FIGURE_PATH_PREFIX = "/articles/figures/";
+
+  function articleFigures(figures) {
+    var built = [];
+    (figures || []).forEach(function (figure) {
+      if (!figure || typeof figure.src !== "string") {
+        return;
+      }
+      // Checked after percent-decoding, since a browser resolves "%2e%2e" as "..".
+      var path;
+      try {
+        path = decodeURIComponent(figure.src);
+      } catch (e) {
+        return;
+      }
+      if (
+        path.indexOf(FIGURE_PATH_PREFIX) !== 0 ||
+        path.indexOf("..") !== -1 ||
+        path.indexOf("//") !== -1 ||
+        path.indexOf("\\") !== -1
+      ) {
+        return;
+      }
+      var block = el("figure", { className: "article-figure" });
+      block.appendChild(
+        el("img", {
+          attrs: {
+            src: figure.src,
+            alt: typeof figure.alt === "string" ? figure.alt : "",
+            loading: "lazy",
+          },
+        })
+      );
+      if (typeof figure.caption === "string" && figure.caption !== "") {
+        block.appendChild(el("figcaption", { text: figure.caption }));
+      }
+      built.push(block);
+    });
+    return built;
+  }
+
   function renderArticle(article) {
     clearChildren(contentEl);
 
@@ -1994,6 +2041,9 @@
     if (articleCredit) {
       contentEl.appendChild(articleCredit);
     }
+    articleFigures(article.figures).forEach(function (figure) {
+      contentEl.appendChild(figure);
+    });
 
     var body = el("div", { className: "article-body" });
     renderMarkdownInto(body, article.body);

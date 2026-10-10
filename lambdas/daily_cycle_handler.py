@@ -71,6 +71,7 @@ from common.editorial_resolver import (
     resolve_editorial_goals,
 )
 from common.fact_check import fact_check_label
+from common.figures import figures_for_findings
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
@@ -946,6 +947,9 @@ def _publish_or_moderate(
     for finding in findings:
         source_refs.extend(finding.get("source_refs") or [])
     source_refs = dedupe_source_refs(source_refs)
+    # The pictures those findings came with (common/figures.py): the newest few, each once,
+    # stored on the article and copied onto its page when it is published.
+    figures = figures_for_findings(findings)
 
     compliant = review["compliant"] and not hold_reasons
     reasons = hold_reasons + list(review["reasons"])
@@ -965,6 +969,7 @@ def _publish_or_moderate(
         **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
         **({"equipment_used": equipment_used} if equipment_used is not None else {}),
         **({"attribution": attribution} if attribution is not None else {}),
+        figures=figures,
     )
 
     if compliant:
@@ -985,6 +990,7 @@ def _publish_or_moderate(
             fact_check=fact_check_label(fresh_review_record, "ai_only"),
             equipment_used=equipment_used,
             attribution=attribution,
+            figures=figures,
         )
         generate_and_store_article_musing(
             article_id=article_id,
