@@ -49,6 +49,7 @@ def test_a_well_formed_figure_is_kept_as_exactly_its_three_fields():
         "vision/sydney/scene.PNG",
         "vision/sydney/scene.png.exe",
         "vision/sydney/scene png.png",  # whitespace
+        "vision/sydney/scene.png\n",  # a trailing newline, which `$` alone would let through
         "vision/sydney/scène.png",  # outside the plain character set
         "vision/sydney/sc%2ene.png",
         "a" * 201 + ".png",  # too long
@@ -71,6 +72,17 @@ def test_a_caption_is_trimmed_and_capped():
     assert clean_figure(_figure(caption="  Trimmed.  "))["caption"] == "Trimmed."
     assert clean_figure(_figure(caption="c" * MAX_CAPTION_CHARS)) is not None
     assert clean_figure(_figure(caption="c" * (MAX_CAPTION_CHARS + 1))) is None
+
+
+def test_captions_and_alt_text_come_out_as_one_plain_line():
+    """Controls, bidi overrides and zero-width characters are stripped and whitespace runs collapsed,
+    whatever an adapter or a tampered item handed over: a U+202E in a name would otherwise reverse
+    the visible caption on the page."""
+    figure = clean_figure(
+        _figure(caption="Map of \u202eMelbourne\u202c\x00 line\r\nbreak\x1b[31m  wide", alt="a\x00b\u200e\tc")
+    )
+    assert figure["caption"] == "Map of Melbourne line break [31m wide"
+    assert figure["alt"] == "a b c"
 
 
 @pytest.mark.parametrize("caption", ["", "   ", None, 7, ["a caption"]])

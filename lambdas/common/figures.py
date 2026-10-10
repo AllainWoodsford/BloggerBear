@@ -30,9 +30,25 @@ FIGURE_FIELDS = ("key", "caption", "alt")
 # "..", plain path characters only, capped, and the PNG extension (CopyObject writes the type the
 # caller states, so the extension is the one promise that the bytes are an image).
 _KEY = re.compile(r"^(?!/)(?!.*\.\.)[A-Za-z0-9_./-]{1,200}\.png$")
+# What a caption or alt text may not carry into a page, an attribute or an API body, whatever an
+# adapter or a tampered item hands over. C0 and C1 controls (NUL, CR, LF, ESC) and the line and
+# paragraph separators become a space, so a line break still separates words; zero-width and
+# bidi-override characters (U+202E would reverse the visible caption) are removed outright, so a
+# word they sat inside stays one word. Whitespace is then collapsed: one plain line.
+_CONTROLS = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+# How many figures one Finding may carry: more than an article shows, so a tick that measured
+# several sites keeps a figure for each, but bounded, since a Findings item is capped at 400 KB.
+MAX_FIGURES_PER_FINDING = 10
 
 # Where a published article's figures live in the site bucket (and so under the site's origin).
 PUBLIC_FIGURE_PREFIX = "articles/figures/"
+
+
+def plain_text(value: str) -> str:
+    """`value` as one line of plain text: controls to spaces, invisible characters out, whitespace
+    runs collapsed."""
+    return " ".join(_INVISIBLE.sub("", _CONTROLS.sub(" ", value)).split())
 
 
 def clean_figure(figure) -> dict | None:
@@ -43,12 +59,12 @@ def clean_figure(figure) -> dict | None:
     if not isinstance(figure, dict):
         return None
     key = figure.get("key")
-    if not isinstance(key, str) or not _KEY.match(key):
+    if not isinstance(key, str) or not _KEY.fullmatch(key):
         return None
     caption = figure.get("caption")
     if not isinstance(caption, str):
         return None
-    caption = caption.strip()
+    caption = plain_text(caption)
     if not caption or len(caption) > MAX_CAPTION_CHARS:
         return None
     alt = figure.get("alt")
@@ -56,7 +72,7 @@ def clean_figure(figure) -> dict | None:
         alt = caption[:MAX_ALT_CHARS]
     if not isinstance(alt, str):
         return None
-    alt = alt.strip()
+    alt = plain_text(alt)
     if len(alt) > MAX_ALT_CHARS:
         return None
     return {"key": key, "caption": caption, "alt": alt}

@@ -616,6 +616,15 @@ class _DrawingAdapter(GitHubTrendingAdapter):
         ]
 
 
+class _ProlificAdapter(GitHubTrendingAdapter):
+    """An adapter that draws more figures than a Finding may carry."""
+
+    def figures(self, new_state):
+        return [
+            {"key": f"vision/t/s/scene-{n}.png", "caption": f"Map {n}", "alt": f"Map {n}"} for n in range(14)
+        ]
+
+
 def _the_finding():
     (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
     return finding
@@ -630,6 +639,18 @@ def test_an_adapters_figures_are_stored_on_the_finding_well_formed_ones_only(aws
     assert _the_finding()["figures"] == [
         {"key": "vision/t/s/scene.png", "caption": "A map", "alt": "The map, described"}
     ]
+
+
+def test_a_finding_carries_at_most_the_figure_cap(aws_resources, monkeypatch):
+    """A Findings item is capped at 400 KB; an adapter that draws without limit is cut at the cap,
+    the first ones kept (common/figures.py MAX_FIGURES_PER_FINDING)."""
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _ProlificAdapter)
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    stored = _the_finding()["figures"]
+    assert len(stored) == research_tick_handler.MAX_FIGURES_PER_FINDING == 10
+    assert [f["key"] for f in stored][:2] == ["vision/t/s/scene-0.png", "vision/t/s/scene-1.png"]
 
 
 def test_an_adapter_draws_nothing_unless_it_says_so_and_its_finding_has_no_figures_field(

@@ -47,7 +47,7 @@ from common.dynamo import (
     set_topic_last_research_at,
 )
 from common.editorial_resolver import resolve_editorial_goals
-from common.figures import clean_figures
+from common.figures import MAX_FIGURES_PER_FINDING, clean_figures
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
@@ -312,7 +312,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # What the adapter drew for this observation, checked here so only well-formed entries
     # (a PNG key in the content bucket, a caption, alt text) ever reach a Finding; stored
     # only when there are any (common/figures.py).
-    figures = clean_figures(adapter.figures(new_state))
+    figures = clean_figures(adapter.figures(new_state))[:MAX_FIGURES_PER_FINDING]
 
     put_finding(
         topic_id=topic_id,

@@ -102,6 +102,10 @@ def test_no_figures_means_no_figure_elements(figures):
         "articles/figures/a1/1.png",  # relative: it would resolve against the current page
         "/articles/figures/../../x.png",  # back out of the prefix
         "/articles/figures/a1/../../../x.png",
+        "/articles/figures/%2e%2e/x.png",  # the same, percent-encoded: a browser decodes it
+        "/articles/figures/a1/.%2e/x.png",
+        "/articles/figures//evil.example/x.png",
+        "/articles/figures/a1/%ZZ.png",  # not decodable at all
         "data:image/png;base64,AAAA",
         "javascript:alert(1)",
         "",

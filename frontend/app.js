@@ -1993,7 +1993,19 @@
       if (!figure || typeof figure.src !== "string") {
         return;
       }
-      if (figure.src.indexOf(FIGURE_PATH_PREFIX) !== 0 || figure.src.indexOf("..") !== -1) {
+      // Checked after percent-decoding, since a browser resolves "%2e%2e" as "..".
+      var path;
+      try {
+        path = decodeURIComponent(figure.src);
+      } catch (e) {
+        return;
+      }
+      if (
+        path.indexOf(FIGURE_PATH_PREFIX) !== 0 ||
+        path.indexOf("..") !== -1 ||
+        path.indexOf("//") !== -1 ||
+        path.indexOf("\\") !== -1
+      ) {
         return;
       }
       var block = el("figure", { className: "article-figure" });
