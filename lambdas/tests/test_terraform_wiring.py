@@ -1319,6 +1319,22 @@ def test_the_separate_accounts_guide_is_linked_and_matches_the_bootstrap():
     assert set(re.findall(r"\b\d{12}\b", page)) == {"111111111111", "123456789012", "000000000000"}
 
 
+def test_the_vision_worker_is_deployed_only_when_the_repository_variable_says_so():
+    """vision_enabled defaults to false in both roots, and CI passes it from the VISION_ENABLED variable
+    with false as the fallback, so merging the vision work deploys nothing until someone sets it."""
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED || 'false' }}" in text, name
+    for env in ("dev", "production"):
+        variables = (ROOT / "infra" / "environments" / env / "variables.tf").read_text(encoding="utf-8")
+        off = r'variable "vision_enabled" \{\s*\n\s*type\s*=\s*bool\s*\n\s*default\s*=\s*false'
+        assert re.search(off, variables), env
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `VISION_ENABLED` \| variable \| repo \|", table, re.M)
+    guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
+    assert "`VISION_ENABLED` repository variable" in guide
+
+
 def test_the_fork_guide_names_every_setting_the_workflows_read():
     guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     # The settings table is its own page, which the guide and the README both link to.
