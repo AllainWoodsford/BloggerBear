@@ -25,6 +25,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
@@ -38,6 +40,14 @@ OVERPASS_ENDPOINTS = (
 # answers with a 504 or a "timed out" remark before the client gives up on the read.
 TIMEOUT_SECONDS = 25.0
 _CONNECT_TIMEOUT_SECONDS = 5.0
+# A hop that would get less read time than this before the caller's deadline is not made.
+_MIN_HOP_SECONDS = 2.0
+# The body is read in chunks of this size, so the cap is enforced while it arrives, not after.
+_CHUNK_BYTES = 64 * 1024
+# As many vertices as the worker contract allows a site polygon; the ring is repeated in the query.
+MAX_POLYGON_VERTICES = 64
+# The largest id OpenStreetMap could hand out for a long while; anything else is not an element.
+_MAX_ELEMENT_ID = 2**53
 # A whole city's rail data is a few MB; anything larger is not what was asked for.
 MAX_RESPONSE_BYTES = 20 * 1024 * 1024
 
@@ -86,9 +96,12 @@ _STATIONS = ("station", "halt")
 _POI_AMENITIES = ("bus_station", "ferry_terminal")
 _TUNNEL_VALUES = ("yes", "building_passage")
 _ELEMENT_PREFIX = {"node": "n", "way": "w", "relation": "r"}
-# C0 and C1 controls, zero-width and bidi formatting characters: none belongs in a name that is
-# rendered in a caption or a prompt.
-_UNPRINTABLE = re.compile(r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028-\u202e\u2060-\u2064\ufeff]")
+# Characters that do not belong in a name rendered in a caption or a prompt, by Unicode category:
+# controls (Cc), formatting characters (Cf: zero-width, bidi overrides and isolates, the TAG block),
+# surrogates, private use, unassigned, and the line and paragraph separators. The two joiners are
+# formatting characters too, but Persian, Arabic and Indic names are spelt with them, so they stay.
+_DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+_KEPT_JOINERS = frozenset("\u200c\u200d")
 
 
 class OsmError(RuntimeError):
@@ -99,6 +112,7 @@ class OsmError(RuntimeError):
     only repeat."""
 
     def __init__(self, code: str, detail: str = "", transient: bool = False):
+        detail = detail[:300]  # a server's own words, bounded before they reach a log or a state
         super().__init__(f"{code}: {detail}" if detail else code)
         self.code, self.detail, self.transient = code, detail, transient
 
@@ -110,13 +124,18 @@ def _coord(value) -> str:
 
 
 def _ring(polygon) -> list[tuple[float, float]]:
-    """The polygon as (lon, lat) floats, closed; ValueError if it is not a polygon."""
+    """The polygon as (lon, lat) floats, closed; ValueError if it is not a polygon: fewer than 3 or
+    more than MAX_POLYGON_VERTICES points, or a coordinate that is not finite or not on Earth (a
+    swapped lon/lat pair fails the latitude range), so nothing odd is ever formatted into a query."""
     try:
         points = [(float(lon), float(lat)) for lon, lat in polygon]
     except (TypeError, ValueError) as exc:
         raise ValueError("polygon must be [[lon, lat], ...]") from exc
-    if len(points) < 3:
-        raise ValueError("polygon needs at least 3 points")
+    if not 3 <= len(points) <= MAX_POLYGON_VERTICES + 1:
+        raise ValueError(f"polygon needs 3 to {MAX_POLYGON_VERTICES} points")
+    for lon, lat in points:
+        if not (math.isfinite(lon) and math.isfinite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90):
+            raise ValueError("polygon points must be finite [lon, lat] within -180..180 and -90..90")
     return points if points[0] == points[-1] else [*points, points[0]]
 
 
@@ -148,7 +167,10 @@ def clean_name(raw) -> str | None:
     collapsed, at most MAX_NAME_CHARS; None when nothing is left (or it was not a string)."""
     if not isinstance(raw, str):
         return None
-    text = re.sub(r"\s+", " ", _UNPRINTABLE.sub("", raw)).strip()
+    text = re.sub(r"\s+", " ", raw)
+    text = "".join(
+        ch for ch in text if ch in _KEPT_JOINERS or unicodedata.category(ch) not in _DROPPED_CATEGORIES
+    ).strip()
     if len(text) > MAX_NAME_CHARS:
         text = text[:MAX_NAME_CHARS].rstrip()
     return text or None
@@ -156,7 +178,8 @@ def clean_name(raw) -> str | None:
 
 def _position(element: dict) -> tuple[float, float] | None:
     """(lon, lat) of a node, or of a way's centre (`out center`); None when there is neither."""
-    point = element if element.get("type") == "node" else element.get("center") or {}
+    center = element.get("center")
+    point = element if element.get("type") == "node" else (center if isinstance(center, dict) else {})
     lon, lat = point.get("lon"), point.get("lat")
     if not _is_number(lon) or not _is_number(lat):
         return None
@@ -189,8 +212,14 @@ def parse_elements(elements) -> dict:
     for element in elements if isinstance(elements, list) else []:
         if not isinstance(element, dict):
             continue
-        prefix = _ELEMENT_PREFIX.get(element.get("type"))
-        if prefix is None or not isinstance(element.get("id"), int):
+        kind_of_element, element_number = element.get("type"), element.get("id")
+        prefix = _ELEMENT_PREFIX.get(kind_of_element) if isinstance(kind_of_element, str) else None
+        if (
+            prefix is None
+            or not isinstance(element_number, int)
+            or isinstance(element_number, bool)
+            or not 0 < element_number < _MAX_ELEMENT_ID
+        ):
             continue
         element_id = f"{prefix}{element['id']}"
         if element_id in seen:
@@ -316,14 +345,26 @@ def is_stale(network, now: datetime, ttl_days) -> bool:
 
 
 def _request(post, endpoint: str, query: str, timeout: float) -> list:
-    """One POST to `endpoint`; the reply's `elements`, or the OsmError it amounts to."""
+    """One POST to `endpoint`; the reply's `elements`, or the OsmError it amounts to. Redirects are
+    not followed (the allowlist is about the host actually read), and the body is streamed so the
+    size cap holds while it arrives. Any other failure of the request library is a connection
+    failure worth the mirror: a connection cut mid-body is one of them."""
     try:
-        response = post(endpoint, data={"data": query}, timeout=(_CONNECT_TIMEOUT_SECONDS, timeout))
+        response = post(
+            endpoint,
+            data={"data": query},
+            timeout=(_CONNECT_TIMEOUT_SECONDS, timeout),
+            allow_redirects=False,
+            stream=True,
+        )
     except requests.Timeout as exc:
         raise OsmError("timeout", f"{type(exc).__name__} from {endpoint}", transient=True) from exc
-    except requests.ConnectionError as exc:
+    except requests.RequestException as exc:
         raise OsmError("http", f"{type(exc).__name__} from {endpoint}", transient=True) from exc
     status = response.status_code
+    if 300 <= status < 400:
+        _close(response)
+        raise OsmError("http", f"HTTP {status} redirect from {endpoint} not followed")
     if status == 429:
         raise OsmError("rate_limited", f"HTTP {status} from {endpoint}", transient=True)
     if status == 504:
@@ -339,12 +380,10 @@ def _read_elements(response, endpoint: str) -> list:
     """The `elements` of a 2xx reply. The adapter must never take a partial network for a whole
     one, so a "runtime error" remark (Overpass answers 200 with what it had when the query timed
     out) is a failure too, and a timed-out one is worth the mirror."""
-    body = response.content
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise OsmError("too_large", f"{len(body)} bytes from {endpoint}")
+    body = _read_body(response, endpoint)
     try:
         payload = json.loads(body)
-    except ValueError as exc:
+    except (ValueError, RecursionError) as exc:
         raise OsmError("bad_response", f"not JSON from {endpoint}") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("elements"), list):
         raise OsmError("bad_response", f"no elements from {endpoint}")
@@ -356,6 +395,34 @@ def _read_elements(response, endpoint: str) -> list:
     return payload["elements"]
 
 
+def _read_body(response, endpoint: str) -> bytes:
+    """The reply's bytes, refused as `too_large` as soon as they pass MAX_RESPONSE_BYTES: from the
+    Content-Length when there is one, else while the chunks arrive, so an oversized body is never
+    held whole. A connection cut while reading is a transient failure."""
+    declared = (getattr(response, "headers", None) or {}).get("Content-Length")
+    if isinstance(declared, str) and declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
+        _close(response)
+        raise OsmError("too_large", f"{declared} bytes declared by {endpoint}")
+    chunks, total = [], 0
+    try:
+        for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
+            total += len(chunk)
+            if total > MAX_RESPONSE_BYTES:
+                raise OsmError("too_large", f"over {MAX_RESPONSE_BYTES} bytes from {endpoint}")
+            chunks.append(chunk)
+    except requests.RequestException as exc:
+        raise OsmError("http", f"{type(exc).__name__} reading from {endpoint}", transient=True) from exc
+    finally:
+        _close(response)
+    return b"".join(chunks)
+
+
+def _close(response) -> None:
+    close = getattr(response, "close", None)
+    if callable(close):
+        close()
+
+
 def fetch_network(
     polygon,
     *,
@@ -363,6 +430,8 @@ def fetch_network(
     endpoints=OVERPASS_ENDPOINTS,
     timeout: float = TIMEOUT_SECONDS,
     now: datetime | None = None,
+    deadline: float | None = None,
+    clock=time.monotonic,
 ) -> dict:
     """The rail network inside `polygon` ([[lon, lat], ...]) from Overpass, decimated and capped:
 
@@ -374,9 +443,14 @@ def fetch_network(
          "counts": {"ways", "stations", "pois", "points"}, "truncated": bool}
 
     One POST per endpoint, in order, each with a 5 s connect and `timeout` read limit; on a 429,
-    a 5xx, a timeout or a connection error the next endpoint is tried, once. A 4xx, an oversized
-    body or a body that is not the JSON asked for is raised at once: the mirror would repeat it.
-    When every endpoint fails the last failure is raised as `OsmError`. `http_post` stands in for
+    a 5xx, a timeout or a connection error the next endpoint is tried, once. A 4xx, a redirect, an
+    oversized body or a body that is not the JSON asked for is raised at once: the mirror would
+    repeat it. When every endpoint fails the last failure is raised as `OsmError`.
+
+    Without a `deadline` the worst case is two hops of connect plus `timeout` plus the transfer.
+    With one (a `clock()` value, `time.monotonic` by default), each hop gets at most the time left
+    before it, less the connect allowance, and a hop that would get under _MIN_HOP_SECONDS is not
+    made: the failure so far is raised, or "timeout" if there was none. `http_post` stands in for
     `requests.post` in tests; `endpoints` must be allow-listed (OVERPASS_ENDPOINTS)."""
     if not endpoints:
         raise ValueError("no endpoints")
@@ -388,8 +462,13 @@ def fetch_network(
     fetched_at = (now or datetime.now(UTC)).isoformat()
     failure: OsmError | None = None
     for endpoint in endpoints:
+        hop_timeout = timeout
+        if deadline is not None:
+            hop_timeout = min(timeout, deadline - clock() - _CONNECT_TIMEOUT_SECONDS)
+            if hop_timeout < _MIN_HOP_SECONDS:
+                raise failure or OsmError("timeout", "no time left before the deadline")
         try:
-            elements = _request(post, endpoint, query, timeout)
+            elements = _request(post, endpoint, query, hop_timeout)
             break
         except OsmError as exc:
             failure = exc

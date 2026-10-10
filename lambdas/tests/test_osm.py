@@ -7,7 +7,6 @@ payload, the fallback between the two endpoints, and the error codes the adapter
 
 from __future__ import annotations
 
-import importlib
 import json
 import math
 import subprocess
@@ -72,8 +71,21 @@ def elements():
 
 
 class _Reply:
-    def __init__(self, body: bytes, status: int = 200):
-        self.status_code, self.content = status, body
+    """What requests.post answers with stream=True: a status, headers, and a body read in chunks."""
+
+    def __init__(self, body: bytes, status: int = 200, headers: dict | None = None, chunks=None):
+        self.status_code, self.content, self.headers = status, body, headers or {}
+        self.chunks, self.closed = chunks, False
+
+    def iter_content(self, chunk_size: int):
+        if self.chunks is not None:
+            yield from self.chunks
+            return
+        for start in range(0, len(self.content), chunk_size):
+            yield self.content[start : start + chunk_size]
+
+    def close(self):
+        self.closed = True
 
 
 def reply(items=None, status=200, remark=None):
@@ -88,10 +100,11 @@ class FakeOverpass:
     what was asked."""
 
     def __init__(self, *outcomes):
-        self.outcomes, self.calls = list(outcomes), []
+        self.outcomes, self.calls, self.kwargs = list(outcomes), [], []
 
-    def __call__(self, url, data, timeout):
+    def __call__(self, url, data, timeout, **kwargs):
         self.calls.append((url, data, timeout))
+        self.kwargs.append(kwargs)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -106,12 +119,9 @@ def fetch(*outcomes, **kwargs):
 # --- the module's footprint ------------------------------------------------------------------
 
 
-def test_importing_the_module_brings_in_no_numpy_opencv_networkx_or_boto(monkeypatch):
-    # In this process: with those modules made unimportable, a reload must still succeed...
-    for name in ("numpy", "cv2", "networkx", "boto3", "botocore"):
-        monkeypatch.setitem(sys.modules, name, None)
-    importlib.reload(osm)
-    # ...and in a fresh interpreter none of them enters sys.modules on import.
+def test_importing_the_module_brings_in_no_numpy_opencv_networkx_or_boto():
+    # In a fresh interpreter none of them enters sys.modules on import. (Not an in-process reload:
+    # that would leave this process with two OsmError classes for the rest of the session.)
     lambdas_dir = Path(osm.__file__).resolve().parents[1]
     code = (
         "import sys; sys.path.insert(0, sys.argv[1]); import common.osm; "
@@ -174,7 +184,18 @@ def test_coordinates_are_written_to_a_metre_without_trailing_zeros():
 
 
 @pytest.mark.parametrize(
-    "polygon", [[], [[151.2, -33.9], [151.3, -33.9]], [[151.2, "x"], [1, 2], [3, 4]], "poly"]
+    "polygon",
+    [
+        [],
+        [[151.2, -33.9], [151.3, -33.9]],
+        [[151.2, "x"], [1, 2], [3, 4]],
+        "poly",
+        [[151.2, float("nan")], [151.3, -33.9], [151.3, -34.0]],
+        [[float("inf"), -33.9], [151.3, -33.9], [151.3, -34.0]],
+        [[151.2, -33.9], [151.3, -33.9], [151.3, 95.0]],  # off the planet
+        [[-33.9, 151.2], [-33.9, 151.3], [-34.0, 151.3]],  # lon and lat swapped
+        [[151.2 + n / 1000, -33.9] for n in range(66)],  # more vertices than a site may have
+    ],
 )
 def test_a_polygon_that_is_not_one_is_refused_before_any_request(polygon):
     with pytest.raises(ValueError):
@@ -455,8 +476,10 @@ def test_fetch_uses_the_given_timeout_and_the_clock_when_no_time_is_given():
         requests.ConnectTimeout("connect timed out"),
         requests.ConnectionError("refused"),
         reply([], remark="runtime error: Query timed out in \"query\" at line 1 after 26 seconds."),
+        requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead(1234 bytes read)"),
     ],
-    ids=["429", "500", "503", "504", "read-timeout", "connect-timeout", "connection", "timed-out-remark"],
+    ids=["429", "500", "503", "504", "read-timeout", "connect-timeout", "connection", "timed-out-remark",
+         "cut-mid-body"],  # fmt: skip
 )
 def test_a_busy_or_unreachable_primary_is_followed_by_one_try_on_the_mirror(first):
     network, fake = fetch(first, reply())
@@ -582,3 +605,93 @@ def test_staleness_reads_naive_timestamps_as_utc():
     assert osm.is_stale(naive, NOW, 30) is False
     assert osm.is_stale(naive, NOW.replace(tzinfo=None), 30) is False
     assert osm.is_stale(naive, NOW + timedelta(days=30), 30) is True
+
+
+# --- what the review added: redirects, streaming, the deadline, odd shapes ----------------------
+
+
+def test_every_request_refuses_redirects_and_streams_the_body():
+    _, fake = fetch(reply())
+    assert fake.kwargs == [{"allow_redirects": False, "stream": True}]
+
+
+def test_a_redirect_is_refused_and_no_second_host_is_asked():
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(reply(status=302), reply())
+    assert caught.value.code == "http" and "redirect" in caught.value.detail
+    # The fake recorded one call: the mirror would only be redirected too.
+
+
+def test_an_oversized_body_is_refused_from_its_content_length_before_reading():
+    never_read = _Reply(b"{}", headers={"Content-Length": str(osm.MAX_RESPONSE_BYTES + 1)}, chunks=[])
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(never_read)
+    assert caught.value.code == "too_large" and never_read.closed
+
+
+def test_a_body_that_grows_past_the_cap_is_refused_while_it_arrives():
+    handed_over = []
+
+    def endless():
+        while True:
+            chunk = b"x" * osm._CHUNK_BYTES
+            handed_over.append(chunk)
+            yield chunk
+
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(_Reply(b"", chunks=endless()))
+    assert caught.value.code == "too_large"
+    # Read up to the cap and one chunk more, never the whole stream.
+    assert len(handed_over) <= osm.MAX_RESPONSE_BYTES // osm._CHUNK_BYTES + 1
+
+
+def test_a_connection_cut_while_reading_is_tried_on_the_mirror():
+    def cut():
+        yield b'{"elements": '
+        raise requests.exceptions.ChunkedEncodingError("Connection broken")
+
+    network, fake = fetch(_Reply(b"", chunks=cut()), reply())
+    assert [call[0] for call in fake.calls] == [PRIMARY, MIRROR]
+    assert network["endpoint"] == MIRROR
+
+
+def test_the_deadline_bounds_each_hop_and_skips_a_hop_with_no_time():
+    # 40 s left: the first hop keeps the default; after it, 12 s left gives the mirror 12 - 5 = 7 s.
+    ticks = iter([100.0, 128.0])
+    _, fake = fetch(reply(status=503), reply(), deadline=140.0, clock=lambda: next(ticks))
+    assert [call[2] for call in fake.calls] == [(5.0, 25.0), (5.0, 7.0)]
+
+    # With under the minimum left for the mirror, the first failure is what is raised.
+    ticks = iter([100.0, 134.0])
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(reply(status=503), reply(), deadline=140.0, clock=lambda: next(ticks))
+    assert caught.value.code == "http" and "503" in caught.value.detail
+
+    # And with no time at all before the first hop, it is a timeout, with nothing asked.
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(reply(), deadline=100.0, clock=lambda: 99.0)
+    assert caught.value.code == "timeout"
+
+
+def test_malformed_element_shapes_are_skipped_and_unparseable_bodies_are_coded():
+    odd = [
+        {"type": "node", "id": 1, "lat": -33.9, "lon": 151.2, "tags": {"railway": "station"}},  # the good one
+        {"type": "way", "id": 2, "tags": {"railway": "station"}, "center": "not a dict"},
+        {"type": 5, "id": 3, "lat": -33.9, "lon": 151.2, "tags": {"railway": "station"}},
+        {"type": "node", "id": True, "lat": -33.9, "lon": 151.2, "tags": {"railway": "station"}},
+        {"type": "node", "id": -4, "lat": -33.9, "lon": 151.2, "tags": {"railway": "station"}},
+        {"type": "node", "id": 2**60, "lat": -33.9, "lon": 151.2, "tags": {"railway": "station"}},
+    ]
+    assert [s["id"] for s in osm.parse_elements(odd)["stations"]] == ["n1"]
+
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(_Reply(b"[" * 200_000))  # nested past the parser's recursion limit
+    assert caught.value.code == "bad_response"
+
+
+def test_clean_name_drops_formatting_characters_by_category_but_keeps_the_joiners():
+    # Bidi isolates, a TAG character, a lone surrogate and a private-use character all go.
+    assert osm.clean_name("A\u2066B\u2069\U000e0041 C\ud800\ue000") == "AB C"
+    # The zero-width joiner and non-joiner spell Persian, Arabic and Indic names: they stay.
+    assert osm.clean_name("\u0646\u200c\u0647") == "\u0646\u200c\u0647"
+    assert osm.clean_name("\u0915\u200d\u0937") == "\u0915\u200d\u0937"
