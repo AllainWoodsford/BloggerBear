@@ -8,7 +8,9 @@ GDAL does this in general, but GDAL (via rasterio) and OpenCV together are over 
 zip limit. This reads the subset of TIFF that COGs use and nothing more:
 
 - classic TIFF and BigTIFF, either byte order;
-- tiled, one sample per pixel, the first image (full resolution; overviews are ignored);
+- tiled, one sample per pixel, the first image (full resolution) and its reduced-resolution
+  overviews (`CogInfo.levels`), so a city can be read at 20 m from a 10 m band in a fraction of
+  the bytes; mask images in the chain are skipped;
 - no compression, DEFLATE (8 or 32946) or LZW is refused, with horizontal predictor (2) undone;
 - 8/16/32-bit unsigned or signed integers and 32/64-bit floats;
 - georeferencing from ModelPixelScale + ModelTiepoint, and the EPSG code from the GeoKey
@@ -22,6 +24,7 @@ built in memory and the worker can use any HTTP client.
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 import zlib
 from collections.abc import Callable
@@ -32,7 +35,11 @@ import numpy as np
 Fetch = Callable[[str, int, int], bytes]
 
 HEADER_BYTES = 65536
+# How far down the directory chain to look for overviews: a COG has one per halving of the full
+# resolution down to one tile, so a 10980 px Sentinel-2 band with 1024 px tiles has four.
+MAX_IFDS = 8
 
+_TAG_SUBFILE_TYPE = 254
 _TAG_WIDTH, _TAG_HEIGHT = 256, 257
 _TAG_BITS, _TAG_COMPRESSION = 258, 259
 _TAG_SAMPLES = 277
@@ -44,6 +51,8 @@ _TAG_PIXEL_SCALE, _TAG_TIEPOINT = 33550, 33922
 _TAG_GEOKEYS = 34735
 _TAG_NODATA = 42113
 _GEOKEY_PROJECTED_CS = 3072
+# NewSubfileType bits: 1 marks a reduced-resolution image (an overview), 4 a transparency mask.
+_SUBFILE_REDUCED, _SUBFILE_MASK = 1, 4
 
 # TIFF field type -> (struct code, size)
 _TYPES = {
@@ -73,10 +82,17 @@ class CogInfo:
     transform: tuple[float, float, float, float, float, float]
     epsg: int | None
     nodata: float | None
+    # The file's overviews, finest first and coarsest last, each a `CogInfo` that `read_window`
+    # takes with a window in that level's own pixels. Empty on a level and on a file without any.
+    levels: tuple[CogInfo, ...] = ()
 
     @property
     def tiles_across(self) -> int:
         return -(-self.width // self.tile_width)
+
+    @property
+    def pixel_size(self) -> float:
+        return abs(self.transform[1])
 
 
 class _Source:
@@ -96,7 +112,7 @@ class _Source:
 
 
 def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
-    """Parse the first image's directory."""
+    """Parse the first image's directory, and the overviews chained after it."""
     src = _Source(url, fetch)
     head = src.head
     if len(head) < 16:
@@ -112,10 +128,34 @@ def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
     else:
         raise CogError("not a TIFF")
 
+    tags, next_ifd = _parse_ifd(src, ifd, order, big)
+    base = _info_from_tags(tags, order)
+    levels: list[CogInfo] = []
+    seen = {ifd}
+    while next_ifd and next_ifd not in seen and len(seen) < MAX_IFDS:
+        seen.add(next_ifd)
+        try:
+            tags, next_ifd = _parse_ifd(src, next_ifd, order, big)
+        except (CogError, struct.error):
+            break  # a directory that can't be parsed ends the chain; the base image is still good
+        kind = tags.get(_TAG_SUBFILE_TYPE, (0,))[0]
+        if not kind & _SUBFILE_REDUCED or kind & _SUBFILE_MASK:
+            continue
+        try:
+            levels.append(_info_from_tags(tags, order, base))
+        except CogError:
+            continue  # an overview in a form this reader can't decode is left out, never fatal
+    levels.sort(key=lambda level: level.pixel_size)
+    return dataclasses.replace(base, levels=tuple(levels)), src
+
+
+def _parse_ifd(src: _Source, offset: int, order: str, big: bool) -> tuple[dict[int, tuple], int]:
+    """The tags of the image file directory at `offset` and the offset of the next directory in
+    the chain (0 after the last)."""
     count_fmt, count_size = ("Q", 8) if big else ("H", 2)
     entry_size, inline = (20, 8) if big else (12, 4)
-    (n,) = struct.unpack(order + count_fmt, src.read(ifd, count_size))
-    raw = src.read(ifd + count_size, n * entry_size)
+    (n,) = struct.unpack(order + count_fmt, src.read(offset, count_size))
+    raw = src.read(offset + count_size, n * entry_size)
     tags: dict[int, tuple] = {}
     for i in range(n):
         entry = raw[i * entry_size : (i + 1) * entry_size]
@@ -129,14 +169,24 @@ def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
         if nbytes <= inline:
             data = value_field[:nbytes]
         else:
-            offset = struct.unpack(order + ("Q" if big else "I"), value_field)[0]
-            data = src.read(offset, nbytes)
+            value_offset = struct.unpack(order + ("Q" if big else "I"), value_field)[0]
+            data = src.read(value_offset, nbytes)
         if ftype == 2:
             tags[tag] = (data.rstrip(b"\x00").decode("ascii", "replace"),)
         elif len(code) == 1:
             tags[tag] = struct.unpack(order + code * count, data)
         else:
             tags[tag] = _rationals(order, code, data)
+    next_fmt, next_size = ("Q", 8) if big else ("I", 4)
+    after_entries = offset + count_size + n * entry_size
+    (next_offset,) = struct.unpack(order + next_fmt, src.read(after_entries, next_size))
+    return tags, next_offset
+
+
+def _info_from_tags(tags: dict[int, tuple], order: str, base: CogInfo | None = None) -> CogInfo:
+    """A `CogInfo` from one directory's tags. With `base` the directory is one of its overviews:
+    the georeferencing is the base's, scaled by the ratio of the widths, and the EPSG code and
+    nodata are the base's too (overviews carry neither)."""
 
     def one(tag, default=None):
         value = tags.get(tag)
@@ -155,23 +205,32 @@ def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
     dtype = _DTYPES.get((one(_TAG_SAMPLE_FORMAT, 1), one(_TAG_BITS, 8)))
     if dtype is None:
         raise CogError("sample type is not supported")
+    width, height = one(_TAG_WIDTH), one(_TAG_HEIGHT)
+    if not width or not height:
+        raise CogError("no image size")
 
-    scale, tie = tags.get(_TAG_PIXEL_SCALE), tags.get(_TAG_TIEPOINT)
-    if not scale or not tie or len(tie) < 6:
-        raise CogError("no georeferencing")
-    sx, sy = scale[0], scale[1]
-    i, j, x, y = tie[0], tie[1], tie[3], tie[4]
-    transform = (x - i * sx, sx, 0.0, y + j * sy, 0.0, -sy)
+    if base is None:
+        scale, tie = tags.get(_TAG_PIXEL_SCALE), tags.get(_TAG_TIEPOINT)
+        if not scale or not tie or len(tie) < 6:
+            raise CogError("no georeferencing")
+        sx, sy = scale[0], scale[1]
+        i, j, x, y = tie[0], tie[1], tie[3], tie[4]
+        transform = (x - i * sx, sx, 0.0, y + j * sy, 0.0, -sy)
+        nodata_text = one(_TAG_NODATA)
+        try:
+            nodata = float(nodata_text) if nodata_text not in (None, "") else None
+        except ValueError:
+            nodata = None
+        epsg = _epsg(tags.get(_TAG_GEOKEYS))
+    else:
+        factor = base.width / width
+        c, a, _, f, _, e = base.transform
+        transform = (c, a * factor, 0.0, f, 0.0, e * factor)
+        nodata, epsg = base.nodata, base.epsg
 
-    nodata_text = one(_TAG_NODATA)
-    try:
-        nodata = float(nodata_text) if nodata_text not in (None, "") else None
-    except ValueError:
-        nodata = None
-
-    info = CogInfo(
-        width=one(_TAG_WIDTH),
-        height=one(_TAG_HEIGHT),
+    return CogInfo(
+        width=width,
+        height=height,
         tile_width=one(_TAG_TILE_W),
         tile_height=one(_TAG_TILE_H),
         dtype=np.dtype(order + dtype),
@@ -180,10 +239,21 @@ def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
         tile_offsets=tuple(tags[_TAG_TILE_OFFSETS]),
         tile_counts=tuple(tags[_TAG_TILE_COUNTS]),
         transform=transform,
-        epsg=_epsg(tags.get(_TAG_GEOKEYS)),
+        epsg=epsg,
         nodata=nodata,
     )
-    return info, src
+
+
+def level_for_pixel_size(info: CogInfo, pixel_size_m: float, tolerance: float = 0.01) -> CogInfo | None:
+    """The base image or the overview whose pixel is `pixel_size_m`, to within `tolerance` as a
+    fraction of it (a 10980 px band's third overview is 1373 px, 79.97 m rather than 80); the
+    finest such level, or None when the file has no level at that size."""
+    if pixel_size_m <= 0:
+        raise ValueError("pixel_size_m must be positive")
+    for level in (info, *info.levels):
+        if abs(level.pixel_size - pixel_size_m) <= tolerance * pixel_size_m:
+            return level
+    return None
 
 
 def read_window(

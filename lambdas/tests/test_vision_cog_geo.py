@@ -10,9 +10,11 @@ zones 17N, 36N and 56S: under a millimetre apart.
 
 from __future__ import annotations
 
+import struct
+
 import numpy as np
 import pytest
-from vision_fakes import fetcher, write_tiff
+from vision_fakes import block_mean, fetcher, write_tiff
 
 from vision import cog, geo
 
@@ -104,6 +106,81 @@ def _corrupt_first_tile(blob: bytes) -> bytes:
     return blob[:start] + b"\xff" * info.tile_counts[0] + blob[start + info.tile_counts[0] :]
 
 
+# --- overviews -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("big", [False, True])
+@pytest.mark.parametrize("order", ["<", ">"])
+def test_overviews_are_levels_with_scaled_transforms(big, order):
+    img = image()
+    blob = write_tiff(img, overviews=(2, 4), big=big, order=order)
+    info, src = cog.read_info("u", fetcher(blob))
+    assert (info.width, info.height, info.levels[0].levels) == (70, 50, ())
+    # ceil(70 / 2) x ceil(50 / 2), then ceil(70 / 4) x ceil(50 / 4): the pixel grows by the real ratio.
+    assert [(level.width, level.height) for level in info.levels] == [(35, 25), (18, 13)]
+    assert info.levels[0].transform == (300000.0, 20.0, 0.0, 6300040.0, 0.0, -20.0)
+    assert info.levels[1].transform[1] == pytest.approx(70 / 18 * 10)
+    assert info.levels[1].pixel_size == -info.levels[1].transform[5]
+    for level in info.levels:
+        assert (level.epsg, level.nodata, level.compression, level.predictor) == (32756, 0.0, 8, 2)
+        assert level.dtype == info.dtype
+    # A window from an overview is the block mean of the full image, read in that level's pixels.
+    out, _ = cog.read_window("u", (3, 2, 35, 25), fetcher(blob), (info.levels[0], src))
+    np.testing.assert_array_equal(out, block_mean(img, 2)[2:25, 3:35])
+    out, _ = cog.read_window("u", (0, 0, 18, 13), fetcher(blob), (info.levels[1], src))
+    np.testing.assert_array_equal(out, block_mean(img, 4))
+
+
+def test_level_for_pixel_size_picks_the_base_the_level_or_none():
+    info, _ = cog.read_info("u", fetcher(write_tiff(image(), overviews=(2, 4))))
+    assert cog.level_for_pixel_size(info, 10.0) is info
+    assert cog.level_for_pixel_size(info, 20.0) is info.levels[0]
+    assert cog.level_for_pixel_size(info, 20.1) is info.levels[0]  # within 1 %
+    assert cog.level_for_pixel_size(info, 30.0) is None
+    assert cog.level_for_pixel_size(info, 40.0) is None  # 70 / 18 = 3.9 px, not 4: 38.9 m
+    assert cog.level_for_pixel_size(info, 40.0, tolerance=0.05) is info.levels[1]
+    with pytest.raises(ValueError):
+        cog.level_for_pixel_size(info, 0)
+
+
+def test_mask_and_unreadable_directories_are_skipped():
+    blob = write_tiff(image(), overviews=(2,), mask_ifd=True)
+    info, _ = cog.read_info("u", fetcher(blob))
+    assert [level.width for level in info.levels] == [35]
+    broken = _set_overview_compression(write_tiff(image(), overviews=(2,)), 5)
+    info, _ = cog.read_info("u", fetcher(broken))
+    assert info.levels == () and info.width == 70
+    out, _ = cog.read_window("u", (0, 0, 70, 50), fetcher(broken))
+    np.testing.assert_array_equal(out, image())
+
+
+def test_a_file_without_overviews_has_no_levels():
+    info, _ = cog.read_info("u", fetcher(write_tiff(image())))
+    assert info.levels == ()
+    assert cog.level_for_pixel_size(info, 20.0) is None
+
+
+def test_the_directories_cost_no_extra_request():
+    blob = write_tiff(image(64, 64), tile=16, gap=cog.HEADER_BYTES, overviews=(2, 4), mask_ifd=True)
+    log = []
+    info, src = cog.read_info("u", fetcher(blob, log))
+    cog.read_window("u", (0, 0, 16, 16), fetcher(blob, log), (info.levels[0], src))
+    assert len(log) == 2  # the header block holds every directory; then one overview tile
+
+
+def _set_overview_compression(blob: bytes, compression: int) -> bytes:
+    """Rewrite the Compression tag of the second directory of a classic little-endian file."""
+    first = struct.unpack("<I", blob[4:8])[0]
+    (n,) = struct.unpack("<H", blob[first : first + 2])
+    second = struct.unpack("<I", blob[first + 2 + 12 * n : first + 6 + 12 * n])[0]
+    (n,) = struct.unpack("<H", blob[second : second + 2])
+    for i in range(n):
+        entry = second + 2 + 12 * i
+        if struct.unpack("<H", blob[entry : entry + 2])[0] == 259:
+            return blob[: entry + 8] + struct.pack("<H", compression) + blob[entry + 10 :]
+    raise AssertionError("no Compression tag in the overview")
+
+
 # --- geo -----------------------------------------------------------------------------------------
 
 
@@ -147,3 +224,36 @@ def test_rotated_transforms_are_refused():
 def test_latitude_outside_utm_is_refused():
     with pytest.raises(ValueError):
         geo.lonlat_to_utm(0, 85, 31, False)
+
+
+@pytest.mark.parametrize(
+    ("lon", "lat", "zone", "south"),
+    [
+        (151.2153, -33.8568, 56, True),
+        (32.55, 29.9, 36, False),
+        (-79.9, 9.0, 17, False),
+        (150.86, -34.16, 56, True),  # the Sydney box's south-west corner
+    ],
+)
+def test_utm_round_trips_to_lonlat(lon, lat, zone, south):
+    easting, northing = geo.lonlat_to_utm(lon, lat, zone, south)
+    back = geo.utm_to_lonlat(easting, northing, zone, south)
+    assert back[0] == pytest.approx(lon, abs=1e-7)
+    assert back[1] == pytest.approx(lat, abs=1e-7)
+
+
+def test_utm_to_lonlat_matches_proj():
+    # The inverse of the PROJ fixture above, within a centimetre's worth of degrees.
+    lon, lat = geo.utm_to_lonlat(334900.570, 6252288.753, 56, True)
+    assert (lon, lat) == (pytest.approx(151.2153, abs=1e-6), pytest.approx(-33.8568, abs=1e-6))
+
+
+def test_pixel_to_lonlat_is_the_pixel_centre():
+    transform = (300000.0, 10.0, 0.0, 6300040.0, 0.0, -10.0)
+    lon, lat = geo.pixel_to_lonlat(transform, 32756, 3370, 6032)
+    back = geo.lonlat_polygon_to_pixels([[lon, lat]], 32756, transform)[0]
+    assert back == pytest.approx([3370.5, 6032.5], abs=1e-4)  # a millimetre, in 10 m pixels
+    with pytest.raises(ValueError):
+        geo.pixel_to_lonlat((0, 1, 0.5, 0, 0, -1), 32756, 0, 0)
+    with pytest.raises(ValueError):
+        geo.pixel_to_lonlat(transform, 3857, 0, 0)

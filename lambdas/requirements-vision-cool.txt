@@ -6,5 +6,8 @@
 # requests: the worker's range reads, the same pin as requirements.txt.
 # awslambdaric: the Lambda runtime interface client, so the image can run as a container-image
 # Lambda (the COOL image is not an AWS Lambda base image). Unused when the image runs elsewhere.
+# networkx: the rail access task's graph measures, the same pin as requirements-vision.txt; pure
+# Python, so it shadows nothing the COOL image brings.
 requests==2.34.2
 awslambdaric==4.1.0
+networkx==3.4.2
