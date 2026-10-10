@@ -13,6 +13,11 @@
 #
 # requests: the worker's HTTP range reads (vision_worker_handler.http_fetch). The same pin as
 # requirements.txt; the worker's package installs this file alone.
+#
+# networkx 3.4.2: the rail access task's graph measures (vision/network.py and rail_analyse.py:
+# betweenness, shortest paths to hubs, simulated links). Pure Python, one py3-none-any wheel for
+# 3.11, 3.12 and 3.13 alike, and in the worker only: the adapters never import it.
 opencv-python-headless==5.0.0.93
 numpy==2.4.4
 requests==2.34.2
+networkx==3.4.2

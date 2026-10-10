@@ -3,7 +3,8 @@
 A contrast-stretched NIR crop, the parts of the site that could not be measured shaded, and each
 detection's rotated box. A "Processed imagery" caption is burned into the image itself, so the
 figure can't pass as raw satellite imagery wherever it ends up (the risks doc's item 1); the full
-attribution sentence is the page's job, not the image's.
+attribution sentence is the page's job, not the image's. `burn_caption` and `encode_png` are
+shared with the rail access figure (rail_annotate.py).
 """
 
 from __future__ import annotations
@@ -49,12 +50,30 @@ def annotate(
         box = np.round(np.asarray(det["box"], dtype=np.float64) * scale).astype(np.int32)
         cv2.drawContours(image, [box], 0, BOX_COLOUR, thickness)
 
-    if caption:
-        font, font_scale = cv2.FONT_HERSHEY_SIMPLEX, max(0.35, image.shape[1] / 1600.0)
-        (tw, th), base = cv2.getTextSize(caption, font, font_scale, 1)
-        cv2.rectangle(image, (0, 0), (tw + 8, th + base + 8), (0, 0, 0), thickness=-1)
-        cv2.putText(image, caption, (4, th + 4), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+    burn_caption(image, [caption])
+    return encode_png(image)
 
+
+def burn_caption(image: np.ndarray, lines: Sequence[str]) -> np.ndarray:
+    """Burn `lines` of white text on a black bar into the top-left corner of `image` (BGR, in
+    place), one under the other; empty lines are skipped. The font scales with the image width
+    so the words stay legible after the figure is scaled down."""
+    lines = [line for line in lines if line]
+    if not lines:
+        return image
+    font, font_scale = cv2.FONT_HERSHEY_SIMPLEX, max(0.35, image.shape[1] / 1600.0)
+    sizes = [cv2.getTextSize(line, font, font_scale, 1) for line in lines]
+    width = max(tw for (tw, _), _ in sizes) + 8
+    height = sum(th + base + 4 for (_, th), base in sizes) + 4
+    cv2.rectangle(image, (0, 0), (width, height), (0, 0, 0), thickness=-1)
+    y = 4
+    for line, ((_, th), base) in zip(lines, sizes, strict=True):
+        cv2.putText(image, line, (4, y + th), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        y += th + base + 4
+    return image
+
+
+def encode_png(image: np.ndarray) -> bytes:
     ok, png = cv2.imencode(".png", image)
     if not ok:
         raise RuntimeError("PNG encoding failed")
