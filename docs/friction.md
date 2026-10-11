@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 10 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
+| Vision and rail (OpenCV 2026) | 11 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
 
 ---
 
@@ -889,6 +889,14 @@ model call on nothing. **Fix:** the workflows pass exactly `true` or `false`; th
 measures something is the first observation. **Lesson:** a sentence a document cannot state
 plainly is often a behaviour that is wrong; review the docs against the code, not only the code
 against the spec. (#290, the integration branch)
+
+**12.11 A usage limit mid-run, twice.** The session's usage limit ran out while three agents were
+working: one had its suite green and died before pushing; a review workflow lost four of its
+finders and reported "zero findings", which was no finding at all. **Fix:** the agents' worktrees
+had kept their commits, so the push was one command when the limit reset; the workflow was resumed
+(its completed agents replayed from cache) and then did find five defects. **Lesson:** a workflow
+result with failed agents is not a clean result; read the failures before trusting an empty list.
+And have agents commit before the long suite, so a cut-off costs a push, not the work. (#289, #290)
 
 ## Patterns worth keeping
 
