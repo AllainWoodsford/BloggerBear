@@ -293,11 +293,13 @@ are not finite or not on Earth is skipped with a warning, never a crash):
                  {"type": "feeder_corridor", "station": "s:n9", "name": "...", "hub": "s:n1", "hub_name": "Central",
                   "length_m": 5200.0}],
  "stations": [{"id": "s:n123", "name": "...", "kind": "station", "lon": 151.2, "lat": -33.87, "snapped": true,
-               "degree": 3, "betweenness": 0.31, "activity": 0.72, "d_hub_m": 0.0, "isolation_weight": 0.0,
+               "degree": 3, "betweenness": 0.31, "activity": 0.72, "catchment_coverage": 0.98, "d_hub_m": 0.0,
+               "isolation_weight": 0.0,
                "intermodal": {"bus_stop_near": 4, "bus_station_near": 1, "ferry_terminal_far": 0, "park_ride_far": 0}}],
  "deserts": [{"lon": 150.98, "lat": -33.9, "area_km2": 6.2, "nearest_station": "s:n44", "nearest_station_m": 2300.0}],
  (both null when no station lies inside the window; never an infinity: the reply must satisfy json.dumps(allow_nan=False))
  "edges": [{"from": "s:n1", "to": "j3", "length_m": 1840.0, "betweenness": 0.1, "corridor_visibility": 0.62, "tunnel": false}],
+ "truncated": 0,
  "quality_flags": [], "warnings": [],
  "network": {"ways": 410, "stations": 178, "pois": 900, "points": 23000, "fetched_at": "..."},
  "params": {"pixel_size_m": 20.0, "coverage_floor": 0.6, "...every RailParams field": "..."}}
