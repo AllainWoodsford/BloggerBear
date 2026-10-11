@@ -143,7 +143,7 @@ DOCKERFILE = (ROOT / "docker" / "vision-cool" / "Dockerfile").read_text(encoding
 def test_the_cool_image_never_installs_its_own_opencv_or_numpy():
     requirements = (ROOT / "lambdas" / "requirements-vision-cool.txt").read_text(encoding="utf-8")
     pins = dict(re.findall(r"^([a-z0-9-]+)==(\S+)$", requirements, re.M))
-    assert set(pins) == {"requests", "awslambdaric"}
+    assert set(pins) == {"requests", "awslambdaric", "networkx"}
     shared = (ROOT / "lambdas" / "requirements.txt").read_text(encoding="utf-8")
     assert f"requests=={pins['requests']}" in shared
     runs = re.findall(r"^RUN (.+)$", DOCKERFILE, re.M)

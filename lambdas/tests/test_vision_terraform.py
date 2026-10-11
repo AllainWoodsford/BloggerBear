@@ -118,9 +118,13 @@ def test_the_requirements_pin_what_the_worker_needs():
     requirements = (ROOT / "lambdas" / "requirements-vision.txt").read_text(encoding="utf-8")
     pins = dict(re.findall(r"^([a-z0-9-]+)==(\S+)$", requirements, re.M))
     assert pins["opencv-python-headless"].startswith("5.")
-    assert set(pins) == {"opencv-python-headless", "numpy", "requests"}
+    assert set(pins) == {"opencv-python-headless", "numpy", "requests", "networkx"}
     shared = (ROOT / "lambdas" / "requirements.txt").read_text(encoding="utf-8")
     assert f"requests=={pins['requests']}" in shared  # one requests release across packages
+    # The graph library is the worker's alone, and the COOL image pins the same release.
+    assert "networkx" not in shared
+    cool = (ROOT / "lambdas" / "requirements-vision-cool.txt").read_text(encoding="utf-8")
+    assert f"networkx=={pins['networkx']}" in cool
 
 
 def test_the_role_can_write_its_logs_and_nothing_else():

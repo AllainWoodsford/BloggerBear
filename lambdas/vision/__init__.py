@@ -11,8 +11,17 @@ COOL (the `cool` backend), and tests run it on synthetic images.
 - analyse.py the whole pass for one site: masks, detect, count, coverage, density
 - annotate.py the figure: detections drawn on a contrast-stretched crop, as PNG bytes
 - build.py   which OpenCV build did the work (so a "cool" result can be proved to be COOL)
-- cog.py     a window of a tiled GeoTIFF over HTTP range requests (the only part that reads)
-- geo.py     lon/lat polygons to a UTM scene's pixels
+- cog.py     a window of a tiled GeoTIFF, or of one of its overviews, over HTTP range requests
+             (the only part that reads)
+- geo.py     lon/lat polygons to a UTM scene's pixels, and pixels back to lon/lat
+
+The rail access task (docs/enhancements/rail-access-monitor.md) adds, on the same footing:
+
+- urban.py        where the city is built up (NDBI, NDVI, SCL) and the heat map of it
+- access.py       distance to stations: served area, transit deserts, catchments, intermodal points
+- network.py      OpenStreetMap rail ways rasterised, thinned and read back as a graph (networkx)
+- rail_analyse.py the whole pass for one city: heat, reach, graph measures, flags, suggestions
+- rail_annotate.py the figure: heat over the scene, deserts, lines, stations and hubs
 
 Imported only by the vision worker (and its tests): the shared pipeline zip has no OpenCV.
 """
