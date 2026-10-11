@@ -39,7 +39,7 @@ be on the `production` environment or on the repository.
 | `TF_STATE_BUCKET_PROD` | secret | `production` | The state bucket production uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
 | `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. Read [Deploying to another region](deployment-runsheet.md#deploying-to-another-region) before setting it. | `eu-west-1` |
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
-| `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/vision.md)). Optional: unset, or anything but `true`, means off, and nothing of it is created. The bootstrap must have been re-applied with `vision_region` first. Set on the `production` environment to turn it on there alone. | `true` |
+| `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/vision.md)). Read as a switch: exactly `true` turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the `production` environment to turn it on there alone. | `true` |
 | `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
@@ -246,13 +246,13 @@ settings sit in several of the tables above; this section gathers them.
 ### The switch
 
 One setting turns it on: the [`VISION_ENABLED`](#github-secrets-and-variables) repository
-variable, `true` to deploy the worker and anything else (or unset) to leave it off, or to take
-it down again on the next apply. CI passes it to Terraform as `vision_enabled`
-(`TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED || 'false' }}` in both apply workflows); the
-variable defaults to `false` in both roots and is never set in `terraform.tfvars`. Set it on the
-`production` environment to turn it on there alone. The bootstrap must have been re-applied with
-`vision_region` first, or the apply is refused:
-[the runsheet's steps](deployment-runsheet.md#vision-optional).
+variable, read as a switch. Exactly `true` turns the worker on; any other value, or unset, is
+read as off, and takes a deployed worker down on the next apply. CI passes it to Terraform as
+`vision_enabled` (`TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}`
+in both apply workflows); the variable defaults to `false` in both roots and is never set in
+`terraform.tfvars`. Set it on the `production` environment to turn it on there alone. The
+bootstrap must have been re-applied with `vision_region` first: that is what gives the deploy
+role the right to create the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
 
 ### Terraform variables
 
@@ -265,8 +265,9 @@ variable defaults to `false` in both roots and is never set in `terraform.tfvars
 
 ### The worker's environment variables
 
-Set on `<prefix>-<env>-vision-worker` by Terraform (`lambdas/vision_worker_handler.py`
-documents them):
+Read by `lambdas/vision_worker_handler.py` on `<prefix>-<env>-vision-worker`, whose docstring
+documents them. Terraform sets only `VISION_BACKEND`; the other two are set by hand (or by a
+future COOL module):
 
 | Variable | Set on | Meaning |
 |---|---|---|
@@ -289,7 +290,7 @@ be unset.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sites` | required | 1 to 10 of `{"id", "name", "polygon": [[lon, lat], ...]}`, polygons of 3 to 64 points. Names are used in articles exactly as given. |
+| `sites` | required | 1 to 10 of `{"id", "polygon": [[lon, lat], ...]}`, polygons of 3 to 64 points, each with an optional `"name"` (the id when absent). Names are used in articles exactly as given. |
 | `object_noun` | `"objects"` | What articles call what is counted, e.g. `"large vessels"`. |
 | `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
 | `params` | `{}` | Detector overrides: `stretch_max`, `block_size` (odd), `offset`, `min_length_m`, `max_length_m`, `min_elongation`, `edge_buffer_px`, within the contract's bounds. |

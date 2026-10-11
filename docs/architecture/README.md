@@ -5,10 +5,11 @@ the APIs, compute, AI, data, and so on. A layer tells you what something is made
 tell you how one thing the project does actually works, because that thing crosses several layers.
 
 The pages here describe the project by **feature** instead. A feature is a small, logical grouping
-of the parts that together do one job, in the order the work flows through them. Each page has a
-matching entry in the operator's assistant: ask it about the feature, and it walks through the same
-steps with this environment's resource names on screen (`architecture` with `feature`, in
-`lambdas/ops_mcp/architecture.py`).
+of the parts that together do one job, in the order the work flows through them. Each page has,
+or will have, a matching entry in the operator's assistant: ask it about the feature, and it
+walks through the same steps with this environment's resource names on screen (`architecture`
+with `feature`, in `lambdas/ops_mcp/architecture.py`). The vision page is the exception until
+the assistant gains its `Feature`, with the rail adapter or the docs PR after it.
 
 | Feature | What it covers |
 |---|---|

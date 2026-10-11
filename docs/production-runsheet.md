@@ -249,7 +249,8 @@ and no `last_error` repeating in its running state. Then, in order:
    two), checking the plan touches only the deploy roles' policies.
 2. Set the `VISION_ENABLED` variable to `true` on the `production` environment (or on the
    repository, which also covers dev) and publish a release. The worker lands in `vision_region`;
-   nothing else in production changes.
+   in the home region the research tick gets the worker's ARN (`VISION_WORKER_ARN`) and the
+   pipeline's role one policy to invoke it; nothing else in production changes.
 3. Create the topic in production with the same `adapter_config` that worked on dev, and trigger
    its first tick by hand.
 

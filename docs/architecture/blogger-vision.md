@@ -62,8 +62,8 @@ a person approves → the article page, with the figure at articles/figures/<art
 | 3 | **The research tick: diff first, with running state** | The tick is the same Lambda every topic uses. The adapter visits its sites inside a **time budget** (`time_budget_seconds`, well under the tick's 120 s), skips a scene it has already measured, and appends each new measurement to the site's history. The adapter sets `keeps_running_state`, so the tick keeps the newest state after every tick, not only when it writes a Finding: a baseline includes every scene measured, and a scene is never measured twice. `material_diff` then compares the new scene with the median of the site's earlier clear scenes. | `lambdas/research_tick_handler.py`; `snapshots/<topic_id>/running-state.json` in the `<prefix>-<env>-content` bucket |
 | 4 | **The stateless worker** | One cross-region `lambda:InvokeFunction`. The worker validates the request against the **contract** (version 1; every asset URL must start with an allowed prefix, the `sentinel-cogs` bucket by default; parameter bounds; a polygon of 3 to 64 points), reads only the tiles under the site with HTTP range requests (no GDAL: a small reader for the TIFF subset Sentinel-2 uses), measures with OpenCV, draws the figure, and replies with the metrics, the PNG, the **build record** and per-stage timings. Every failure is a code (`bad_request`, `backend_mismatch`, `not_cool`, `site_outside_scene`, `window_too_large`, `unreadable_scene`, `internal`). **Two backends** share the handler: `VISION_BACKEND` says which one a deployment is, a request for the other is refused, and a `cool` worker whose OpenCV build does not match the pinned `COOL_BUILD_SHA256` fingerprint refuses everything, so a result can never claim a build it did not run on. | `lambdas/vision_worker_handler.py`; `lambdas/vision/`; `lambdas/common/vision_contract.py`; `lambdas/common/vision_client.py`; `infra/modules/vision-worker/` (`<prefix>-<env>-vision-worker`, arm64, python3.12, 2048 MB, 60 s, in `vision_region`) |
 | 5 | **The bounded triage agent** | A numeric change is only a candidate. Before it becomes a Finding, the agent is given the metrics, the baseline, the detector's rejection tally and the figure as an image, and may call `look_again` (re-measure the same scene with other settings: active perception), `previous_scene` and `site_history`; the rail profile adds `web_context` (specified). The bounds are in code, not in the prompt: at most `triage_max_tool_calls` tool calls and that plus two model turns, and a **deadline** (`triage_deadline_seconds`, 85 s from the tick's start) under which no model turn starts with under 10 s left and `look_again` is refused with under 30 s. The answer must be `{"verdict": "real" or "artefact", "reason"}`; a malformed answer, a model error, the turn limit or running out of time is **artefact**. It fails closed: an unsure agent never makes a Finding. The trail is stored in the state and the spend lands on the Stats page as `vision_triage`. | `lambdas/common/vision_triage.py`, called from the adapter's `material_diff` |
-| 6 | **The person** | The daily cycle drafts and reviews the article as for any topic, then holds it: `force_manual_review` adds "this topic's articles are always reviewed by a person before publishing" to the hold reasons, whatever the compliance review said. The article waits in the review inbox until `admin_cli approve`. | `lambdas/daily_cycle_handler.py`; `moderation-queue`; `scripts/review_inbox.py` |
-| 7 | **The page: the figures path** | An adapter that draws something returns `[{"key", "caption", "alt"}]` from `figures()`; the tick stores the list on the Finding; the daily cycle gathers the figures of the findings an article was written from (newest first, de-duplicated, at most three); publishing copies each PNG from the private content bucket to the site bucket as `articles/figures/<article_id>/<n>.png` (one server-side copy, stored as `image/png`), and the static page and the SPA show each as a `<figure>` with its caption. Unpublishing and take-down remove the copies; invalidation covers the prefix. On the integration branch the path is generic and the ship adapter does not yet attach its figure (the base adapter's default is an empty list); the rail adapter attaches one per measured site (specified). | `lambdas/common/figures.py`; `publish_figures` in `lambdas/common/static_pages.py`; `frontend/app.js`; the site bucket under `articles/` |
+| 6 | **The person** | The daily cycle drafts and reviews the article as for any topic, then holds it: `force_manual_review` adds "this topic's articles are always reviewed by a person before publishing" to the hold reasons, whatever the compliance review said. The article waits in the review inbox until `admin_cli approve`. | `lambdas/daily_cycle_handler.py`; `moderation-queue`; `scripts/admin_cli.py` (`inbox`, `approve`) |
+| 7 | **The page: the figures path** | An adapter that draws something returns `[{"key", "caption", "alt"}]` from `figures()`; the tick stores the list on the Finding; the daily cycle gathers the figures of the findings an article was written from (newest first, de-duplicated, at most three); publishing copies each PNG from the private content bucket to the site bucket as `articles/figures/<article_id>/<n>.png` (one server-side copy, stored as `image/png`), and the static page and the SPA show each as a `<figure>` with its caption, under the credit line and above the body. Unpublishing and take-down remove the copies; invalidation covers the prefix. On the integration branch the path is generic and the ship adapter does not yet attach its figure (the base adapter's default is an empty list); the rail adapter attaches one per measured site (specified). | `lambdas/common/figures.py`; `publish_figures` in `lambdas/common/static_pages.py`; `frontend/app.js`; the site bucket under `articles/` |
 
 ### Where state lives
 
@@ -81,10 +81,12 @@ group and the bucket its package is uploaded through, and nothing of ours to mig
 
 ### What is deployed
 
-**With `VISION_ENABLED` unset or anything but `true`: nothing.** Both environments call the
-module with `count = var.vision_enabled ? 1 : 0`; the research tick's `VISION_WORKER_ARN` is
-empty, which the client reads as "not configured", and the invoke policy does not exist. A
-vision topic created anyway runs, records `last_error` on every site, and writes no Finding.
+**With `VISION_ENABLED` unset or anything but `true`: nothing.** The variable is read as a
+switch: exactly `true` turns the worker on; any other value, or unset, is read as off. Both
+environments call the module with `count = var.vision_enabled ? 1 : 0`; the research tick's
+`VISION_WORKER_ARN` is empty, which the client reads as "not configured", and the invoke policy
+does not exist. A vision topic created anyway runs, records `last_error` on every site, and
+writes no Finding; its first Finding comes with the first scene it measures.
 
 **With it `true`:** in `vision_region` (us-west-2 by default), the worker, its role (its own log
 group and nothing else), its log group and the artifacts bucket; in the home region, one policy
@@ -182,7 +184,7 @@ junction.
 - **Betweenness** is the share of all shortest paths (by track length) between pairs of nodes
   that pass through a node. A station every cross-city journey must pass through has a high
   betweenness; a station at the end of a branch has none. On a graph of more than 800 nodes it
-  is sampled rather than exact, and the metrics say so (specified).
+  is sampled rather than exact, and a `graph_too_large` quality flag says so (#289).
 - **Hubs** are the top five stations by betweenness among those whose catchment activity is at
   or above the median: busy *and* central. The figure marks them.
 
@@ -224,8 +226,8 @@ Both are **simulations on the graph**, deterministic for a given scene and map:
   1.2 times the straight line long. The three that most reduce the mean distance to a hub are
   reported, with that reduction and the change in the top hub's betweenness. A link that brings
   nobody closer is not suggested.
-- **Feeder corridor:** the three stations with the largest isolation weight, each with the path
-  to its nearest hub along the existing track and that path's length.
+- **Feeder corridor:** the three stations with the largest isolation weight, each with its
+  nearest hub and the distance to it along the existing track.
 
 **What none of this means.** There is no ridership or patronage, no timetable or service
 frequency, no journey time, no cost, no land, no engineering: a suggestion is an edge added to a
@@ -250,13 +252,14 @@ rail task) is measured and stored but is never material and never part of a base
 figure tints everything unmeasured so a cloud never looks like an empty suburb. The scene search
 itself takes only scenes under a cloud-cover cap, and only those whose footprint holds the whole
 site, which is why a city must sit inside one Sentinel-2 tile. The quality flags
-(`empty_site`, `low_coverage`, `no_network`, `few_stations_snapped`, `graph_fragmented`) travel
-with every reply and into the history.
+(`empty_site`, `low_coverage`, `no_network`, `few_stations_snapped`, `graph_fragmented`,
+`graph_too_large`) travel with every reply and into the history.
 
 ### What is diffed, and what the agent checks
 
 The adapter (specified) diffs the served share, the desert area and the station count against
-the site's baseline; the first observation is always reported. The agent sees the figure and may
+the site's baseline; the first scene measured is always reported. The agent sees the figure and
+may
 `look_again` with other parameters, compare the `previous_scene`, read the `site_history`, or
 ask `web_context` whether a station or line recently opened or closed. It is told what an
 artefact looks like here: cloud, haze or seasonal vegetation shifting the built-up mask, a
@@ -266,9 +269,9 @@ scene edge, a map edit, a tagging change.
 
 | Data | Licence | The credit, and where it appears |
 |---|---|---|
-| Sentinel-2 imagery | Free, full and open under the Copernicus Sentinel data legal notice | "Contains modified Copernicus Sentinel data {year}": burned into every figure, in the page caption, under each article and on the About page |
+| Sentinel-2 imagery | Free, full and open under the Copernicus Sentinel data legal notice | "Contains modified Copernicus Sentinel data": under each vision article and on the About page today (the adapter's `sources`). The ship figure carries a "Processed imagery" notice; the rail figure (#289, in review) burns the sentence in with the year, and its page caption repeats it once the rail adapter (PR E) attaches figures. |
 | The AWS copy of it | The Registry of Open Data on AWS asks to be cited as the source | "Sentinel-2 Cloud-Optimized GeoTIFFs accessed from the Registry of Open Data on AWS": under each article and on the About page |
-| OpenStreetMap | Open Database Licence (ODbL), which asks for the credit wherever the data is shown | "Map data © OpenStreetMap contributors": burned into every rail figure (as `(c)`, since the Hershey fonts have no ©), in the page caption with the ©, and under each rail article and on the About page with the rail adapter |
+| OpenStreetMap | Open Database Licence (ODbL), which asks for the credit wherever the data is shown | "Map data © OpenStreetMap contributors": burned into the rail figure as `(c)` (the Hershey fonts have no ©; #289, in review); in the page caption with the ©, under each rail article and on the About page with the rail adapter (PR E). |
 
 Nothing here identifies a person, a vehicle or a company, and the only data kept is a few
 hundred kilobytes of numbers and one map per scene. The README's

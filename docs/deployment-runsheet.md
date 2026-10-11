@@ -520,25 +520,29 @@ variable, not with a tfvars edit. Every setting it uses is in
    changes. The apply creates, in `vision_region`: the worker (arm64, python3.12), its role (its
    own log group only), its log group, and a small artifacts bucket its package is uploaded
    through. In the home region it gives the research tick the worker's ARN (`VISION_WORKER_ARN`)
-   and the right to invoke that one function. The variable is read by both apply workflows; a
+   and the right to invoke that one function. Both apply workflows read the variable as a
+   switch: exactly `true` turns the worker on, and any other value, or unset, is read as off; a
    value on the `production` environment turns it on for production alone.
 3. **Create a topic.** A `satellite_vision` topic needs `adapter: "satellite_vision"` and
-   `sites` in its `adapter_config` (one to ten lon/lat polygons with an `id` and a `name`), and
-   usually an `object_noun`; everything else has a default
+   `sites` in its `adapter_config` (one to ten lon/lat polygons, each with an `id` and
+   optionally a `name`), and usually an `object_noun`; everything else has a default
    (`common/adapters/satellite_vision.py` documents every key). A `rail_access` topic (once its
    adapter has merged) needs `sites` whose polygons each sit inside one Sentinel-2 tile, and
    takes `reach_m`. Both get `force_manual_review` whether you ask or not: every article waits
    for `admin_cli approve`. Trigger the first tick by hand
-   (`topics trigger <id> --pipeline research_tick`); the first observation of each site is always
-   reported, so a Finding, then a held article, is what success looks like.
-4. **To turn it off again:** set the variable to anything but `true`, or remove it, and run a
-   deploy. The next apply removes the worker, its bucket, its log group and the invoke right;
+   (`topics trigger <id> --pipeline research_tick`); the first tick that measures something is
+   always reported, so a Finding, then a held article, is what success looks like. A tick that
+   measures nothing (the worker off, every site in `last_error`) writes no Finding.
+4. **To turn it off again:** set the variable to any value but `true`, or remove it (either is
+   read as off), and run a deploy. The next apply removes the worker, its bucket, its log group
+   and the invoke right;
    topics keep their state and their history, and record `last_error` on each site until the
    worker is back. Disable or delete the topics if you do not want those errors.
 
 The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` bucket, nothing
-else) and needs no key and no other access. Its errors alarm is not in the pipeline dashboard:
-observability's alarms are in the home Region, and the worker is not.
+else) and needs no key and no other access. It has no alarm of its own: observability's alarms
+are in the home Region, and the worker is not; read its log group,
+`/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`.
 
 ### The COOL backend and the benchmark
 

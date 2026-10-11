@@ -560,7 +560,8 @@ Called out separately because it cuts across every phase, not just one:
 ## Enhancements since Phase 8
 
 All shipped and deployed; the design and decisions for each are in
-`docs/project-plan.md` §11.
+`docs/project-plan.md` §11. The vision entries at the end are on the integration branch
+(#285) until it merges into `dev`.
 
 - [x] Static article publishing — every publish path renders a static page
 - [x] Custom domain (bloggerbear.com) via Route 53 + ACM
@@ -633,12 +634,12 @@ All shipped and deployed; the design and decisions for each are in
 - [x] Architecture by feature: `architecture` with `feature` walks through article research step by
   step across the layers (adapters, keys in SSM, research tick, findings, candidate ideas,
   drafting, reviews, the article in S3, where the agents are) (#262; docs/architecture/)
-- [x] Agentic vision, for the OpenCV AI Competition 2026 (#240–#254, merged onto `dev` as the
-  integration branch of #285 with the review's fixes): the vision core in `lambdas/vision/`, the
-  GeoTIFF reader and UTM without GDAL, the stateless OpenCV 5 worker on arm64 in us-west-2 with
-  its contract and cross-region client, the `satellite_vision` adapter with running state, the
-  bounded triage agent with a deadline, `force_manual_review`, the COOL benchmark and image
-  recipe; nothing deployed until switched on (docs/enhancements/vision.md,
+- [x] Agentic vision, for the OpenCV AI Competition 2026 (#240–#254, merged into the integration
+  branch, #285, its pull request to `dev`, with the review's fixes): the vision core in
+  `lambdas/vision/`, the GeoTIFF reader and UTM without GDAL, the stateless OpenCV 5 worker on
+  arm64 in us-west-2 with its contract and cross-region client, the `satellite_vision` adapter
+  with running state, the bounded triage agent with a deadline, `force_manual_review`, the COOL
+  benchmark and image recipe; nothing deployed until switched on (docs/enhancements/vision.md,
   docs/enhancements/rail-access-monitor.md §1)
 - [x] The vision worker is opt-in through the `VISION_ENABLED` repository variable, fed to both
   apply workflows as `vision_enabled`; the setup script lists it as deliberately not asked (#286)

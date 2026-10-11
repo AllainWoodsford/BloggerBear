@@ -87,10 +87,11 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
 
 ### User experience
 
-- The figure is on the page: the heat map over the scene, deserts outlined, lines drawn thicker
-  the more paths run through them, stations larger the busier their catchment, hubs marked,
-  unmeasured areas tinted, the credits burned in. The static page and the single-page app show
-  it under the article with its caption.
+- The map on the page: the heat map over the scene, deserts outlined, lines drawn thicker the
+  more paths run through them, stations larger the busier their catchment, hubs marked,
+  unmeasured areas tinted, the credits burned in (the rail figure is #289, in review). The static
+  page and the single-page app show figures under the credit line, above the article text, with
+  their captions; the rail adapter (PR E) attaches the rail figure to its Findings.
 - The article is two to four plain sentences with the station and line names exactly as
   mapped, the served share, the area beyond reach, the capture date, and what was not measured.
 - Adding a city is adding a topic with the admin CLI; the operator's assistant reports what
@@ -210,9 +211,9 @@ reply or a benchmark report, never typed from memory.
 
 | Data | Licence and credit |
 |---|---|
-| Sentinel-2 | Copernicus Sentinel data, free, full and open; "Contains modified Copernicus Sentinel data {year}" on every figure and page |
+| Sentinel-2 | Copernicus Sentinel data, free, full and open; "Contains modified Copernicus Sentinel data" under each vision article and on the About page; the rail figure (#289, in review) burns it in with the year, and its page caption repeats it with the rail adapter (PR E) |
 | The AWS copy | Registry of Open Data on AWS; "Sentinel-2 Cloud-Optimized GeoTIFFs accessed from the Registry of Open Data on AWS" |
-| OpenStreetMap | ODbL; "Map data © OpenStreetMap contributors" burned into every rail figure, in its caption and under each rail article *(the adapter's credit is specified)* |
+| OpenStreetMap | ODbL; "Map data © OpenStreetMap contributors" burned into the rail figure (#289, in review); in its caption and under each rail article with the rail adapter *(PR E, specified)* |
 | GDELT | Free with a citation and a link, as the project already gives |
 | COOL | AWS Marketplace subscription (a trial, then usage pricing); a manual benchmark run, not Terraform |
 | This repository | Apache License 2.0 |
@@ -259,13 +260,15 @@ kept is numbers and one map per scene.
    `object_noun: "large vessels"` for the ship task that is on the branch. `force_manual_review`
    is set for you.
 3. **Force a tick.** `python scripts/admin_cli.py topics trigger <id> --pipeline research_tick`.
-   The first observation is always material: a Finding with its figure appears, and the running
-   state at `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and
-   timings and the agent's trail (from the second clear scene on).
+   The first scene measured is always material: a Finding appears (the ships Finding carries no
+   figure; a figure on the Finding comes with the rail adapter, PR E; today the ship PNG sits in
+   the content bucket under `vision/<topic>/<site>/<scene>.png`), and the running state at
+   `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and timings and
+   the agent's trail (from the second clear scene on).
 4. **Run the daily cycle** (`--pipeline daily_cycle`) and open the inbox
-   (`python scripts/review_inbox.py inbox`): the article is held for you with its figure.
-   `approve` publishes it; the page shows the map at `articles/figures/<article>/1.png` with the
-   credits.
+   (`python scripts/admin_cli.py inbox`): the article is held for you.
+   `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; with the
+   rail adapter the page shows the map at `articles/figures/<article>/1.png` with the credits.
 5. **The benchmark.** `python scripts/vision_benchmark.py kernels --out stock-x86.json` on any
    machine with `requirements-vision.txt`; the same on a `c8g` from the COOL AMI and in a stock
    venv beside it; `worker --arn <VISION_WORKER_ARN>` for the deployed worker.
