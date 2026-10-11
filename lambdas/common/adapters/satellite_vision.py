@@ -35,8 +35,11 @@ scene with other settings or compare the previous one, and answers "real" or "ar
 
 **Material** when a site's new count differs from the median of its previous clear scenes by at
 least `absolute_threshold` *and* `relative_threshold`, the new scene's coverage is at least
-`coverage_floor`, and there are at least `min_baseline` earlier clear scenes. The very first tick
-is always material (the adapter contract). Rule 2 holds: every Bedrock call comes after this.
+`coverage_floor`, and there are at least `min_baseline` earlier clear scenes. The first tick that
+measures anything is material (the adapter contract's first observation); a tick before that,
+with nothing measured (no scene in the lookback, the worker unreachable), is not: a Finding with
+nothing in it would still cost a model call and make an empty article. Rule 2 holds: every
+Bedrock call comes after this.
 
 **State between ticks.** The baseline must include every scene measured, not only those that were
 reported, so this adapter sets `keeps_running_state`: the research tick keeps its state after a
@@ -361,12 +364,15 @@ class SatelliteVisionAdapter(Adapter):
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
-        if old_state is not None:
+        first = not _anything_measured(old_state)
+        if not first:
             self._triage(new_state, [v for v in verdicts if v["material"]])
         noun = new_state.get("object_noun") or DEFAULTS["object_noun"]
-        if old_state is None:
+        if first:
+            if not verdicts:
+                return False, "nothing measured yet: " + (_errors(new_state) or "no scene to measure")
             lines = [f"{v['name']}: {v['count']} {noun} (coverage {v['coverage']:.0%})" for v in verdicts]
-            return True, "First observation. " + ("; ".join(lines) if lines else "No scene measured yet.")
+            return True, "First observation. " + "; ".join(lines)
         material = [v for v in verdicts if v["material"]]
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
@@ -464,6 +470,21 @@ class SatelliteVisionAdapter(Adapter):
             "no cause, prediction, price, market or trading view; do not say any area is safe, clear "
             "or unaffected; do not invent place names or numbers that are not given above."
         )
+
+
+def _anything_measured(state: dict | None) -> bool:
+    """Whether any site in `state` has a measured scene in its history."""
+    return any((record or {}).get("history") for record in ((state or {}).get("sites") or {}).values())
+
+
+def _errors(state: dict) -> str:
+    """Each site's last error, for the no-change summary of a tick that measured nothing."""
+    parts = []
+    for site_id, record in (state.get("sites") or {}).items():
+        error = (record or {}).get("last_error")
+        if error:
+            parts.append(f"{record.get('name') or site_id}: {error.get('code')}")
+    return "; ".join(parts)
 
 
 def _describe(v: dict, noun: str) -> str:

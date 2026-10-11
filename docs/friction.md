@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 9 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
+| Vision and rail (OpenCV 2026) | 10 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
 
 ---
 
@@ -879,6 +879,16 @@ refuted six of the findings as "the spec did not ask for it", while the reproduc
 every one of those six. **Fix:** the four confirmed findings and the five cheap disputed ones,
 pushed to the PRs before merging. **Lesson:** "not in the spec" is a fact about the spec; when the
 mechanism reproduces, fix it and amend the spec. (#287, #288)
+
+**12.10 The documentation review found two defects in the code.** Writing down how the switch
+behaves ("anything but `true` leaves it off") made a reviewer check it: the workflows handed the
+variable to a Terraform `bool` as it stood, so `off` would have failed the apply. And writing down
+"a topic created before the worker is on writes no Finding" was false: the ship adapter treated
+any first tick as material, so an empty one made a "No scene measured yet" Finding and spent a
+model call on nothing. **Fix:** the workflows pass exactly `true` or `false`; the first tick that
+measures something is the first observation. **Lesson:** a sentence a document cannot state
+plainly is often a behaviour that is wrong; review the docs against the code, not only the code
+against the spec. (#290, the integration branch)
 
 ## Patterns worth keeping
 
