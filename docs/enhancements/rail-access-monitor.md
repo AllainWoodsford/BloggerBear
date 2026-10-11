@@ -241,8 +241,10 @@ and node labels (two nodes → an edge; one → a loop, warned; more → pairwis
 pixels the dilated zones swallow between two node clusters two or three pixels apart are
 "bridges": labelled on their own, and every pair of nodes a bridge touches gets an edge too, so
 close stations and junctions never split the graph; a repeated station id keeps the first and
-warns, and no edge joins a node to itself; `length_m` from `cv2.arcLength(contour, True) / 2 +
-3 · pixel_size_m` (the three pixels are what the node zones cut from each end); `corridor_visibility` = mean of a 3×3
+warns, and no edge joins a node to itself; `length_m` is the step count from one node's pixel to the other's, times the pixel size: a run's
+pixels (`arcLength / 2 + 1`) plus the pixel cut from each end plus one, a bridge's pixels plus one;
+above `MAX_GRAPH_NODES` (20,000) betweenness, hubs and suggestions are skipped and `graph_too_large`
+is flagged; `corridor_visibility` = mean of a 3×3
 `cv2.blur` of `visible01` over the segment, `None` where over half the segment is tunnel; edge
 attributes `length_m, pixels, corridor_visibility, tunnel`; node attributes `kind, x, y, station`;
 `info = {"warnings", "unsnapped", "components"}`. `station_adjacency(G)`: stations reachable through
