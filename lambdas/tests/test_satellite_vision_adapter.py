@@ -276,6 +276,40 @@ def history_state(adapter, counts, coverage=None, **config):
     return state
 
 
+# What an earlier tick that measured something leaves behind, as far as material_diff cares: the
+# running state has a site with a measured scene in its history. (A dict with no such history would
+# read as "nothing measured yet", and the tick would be treated as the first observation.)
+EARLIER = {
+    "sites": {
+        "botany": {
+            "name": "Botany Bay anchorage",
+            "history": [{"scene_id": "S-1", "count": 9, "coverage": 0.9}],
+        }
+    }
+}
+
+
+def test_a_first_tick_that_measured_nothing_is_not_material(adapter):
+    """No scene, or no worker: a Finding with nothing in it would cost a model call and make an
+    empty article, so there is none until something is measured; the first measurement is then the
+    first observation, whether or not an empty tick came before it."""
+    empty = run(adapter, FakeStac([]), FakeWorker({}))
+    changed, summary = adapter.material_diff(None, empty)
+    assert not changed and summary.startswith("nothing measured yet")
+    assert adapter.agent.calls == []
+
+    failing = run(adapter, FakeStac([item("S0", "2026-09-10T00:00:00Z")]),
+                  FakeWorker({}, error=vision_client.VisionError("invoke", "no worker")))  # fmt: skip
+    changed, summary = adapter.material_diff(empty, failing)
+    assert not changed and "Botany Bay anchorage: invoke" in summary
+
+    worker = FakeWorker({"S1": 7})
+    measured = run(adapter, FakeStac([item("S1", "2026-09-11T00:00:00Z")]), worker, previous=failing)
+    changed, summary = adapter.material_diff(failing, measured)
+    assert changed and summary.startswith("First observation") and "7 objects" in summary
+    assert adapter.agent.calls == []  # the first observation is reported, not triaged
+
+
 def test_the_first_tick_is_material(adapter):
     state = history_state(adapter, [10])
     changed, summary = adapter.material_diff(None, state)
@@ -284,20 +318,20 @@ def test_the_first_tick_is_material(adapter):
 
 def test_no_material_change_while_the_baseline_builds(adapter):
     state = history_state(adapter, [10, 40])
-    changed, summary = adapter.material_diff({"x": 1}, state)
+    changed, summary = adapter.material_diff(EARLIER, state)
     assert not changed and "baseline still building" in summary
 
 
 def test_a_change_within_the_usual_range_is_not_material(adapter):
     state = history_state(adapter, [10, 12, 11, 15])
-    changed, summary = adapter.material_diff({"x": 1}, state)
+    changed, summary = adapter.material_diff(EARLIER, state)
     assert not changed and "usual range" in summary
 
 
 @pytest.mark.parametrize(("last", "sign"), [(30, "+"), (2, "-")])
 def test_a_big_change_either_way_is_material(adapter, last, sign):
     state = history_state(adapter, [10, 12, 11, last], object_noun="large vessels")
-    changed, summary = adapter.material_diff({"x": 1}, state)
+    changed, summary = adapter.material_diff(EARLIER, state)
     assert changed
     assert f"{last} large vessels" in summary and "baseline of 11" in summary and f"({sign}" in summary
     assert "Botany Bay anchorage" in summary
@@ -305,24 +339,24 @@ def test_a_big_change_either_way_is_material(adapter, last, sign):
 
 def test_both_thresholds_must_be_crossed(adapter):
     # +5 vessels on a baseline of 100 is 5%: big in number, small in proportion.
-    assert not adapter.material_diff({"x": 1}, history_state(adapter, [100, 100, 105]))[0]
+    assert not adapter.material_diff(EARLIER, history_state(adapter, [100, 100, 105]))[0]
     # +3 on a baseline of 2 is 150%: big in proportion, small in number.
-    assert not adapter.material_diff({"x": 1}, history_state(adapter, [2, 2, 5]))[0]
+    assert not adapter.material_diff(EARLIER, history_state(adapter, [2, 2, 5]))[0]
 
 
 def test_low_coverage_is_never_material_and_never_baseline(adapter):
     cloudy_now = history_state(adapter, [10, 11, 0], coverage={2: 0.3})
-    changed, summary = adapter.material_diff({"x": 1}, cloudy_now)
+    changed, summary = adapter.material_diff(EARLIER, cloudy_now)
     assert not changed and "coverage below the floor" in summary
     # Two cloudy scenes earlier don't count toward the baseline.
     cloudy_before = history_state(adapter, [0, 0, 10, 40], coverage={0: 0.2, 1: 0.2})
-    changed, summary = adapter.material_diff({"x": 1}, cloudy_before)
+    changed, summary = adapter.material_diff(EARLIER, cloudy_before)
     assert not changed and "baseline still building" in summary
 
 
 def test_thresholds_come_from_the_topic(adapter):
     state = history_state(adapter, [10, 12, 11, 14], absolute_threshold=2, relative_threshold=0.2)
-    assert adapter.material_diff({"x": 1}, state)[0]
+    assert adapter.material_diff(EARLIER, state)[0]
 
 
 # --- what else the pipeline asks of it -----------------------------------------------------------
@@ -451,11 +485,11 @@ def test_without_a_running_state_the_last_findings_snapshot_is_used(tick_env, mo
 
 def test_the_agent_is_asked_only_about_a_numeric_change_and_its_yes_is_material(adapter):
     quiet = history_state(adapter, [10, 12, 11, 13])
-    assert not adapter.material_diff({"x": 1}, quiet)[0]
+    assert not adapter.material_diff(EARLIER, quiet)[0]
     assert adapter.agent.calls == []  # rule 2: no model call without a numeric change
 
     state = history_state(adapter, [10, 12, 11, 30])
-    changed, summary = adapter.material_diff({"x": 1}, state)
+    changed, summary = adapter.material_diff(EARLIER, state)
     assert changed and "checked by the vision agent: boxes sit on open water" in summary
     asked = adapter.agent.calls[0]
     assert asked["site"]["id"] == "botany" and asked["site"]["polygon"] == POLY
@@ -472,7 +506,7 @@ def test_the_agent_is_asked_only_about_a_numeric_change_and_its_yes_is_material(
 def test_an_artefact_is_not_material_and_says_why(adapter):
     adapter.triage_agent = FakeAgent("artefact", "the extra boxes trace a thin cloud edge")
     state = history_state(adapter, [10, 12, 11, 30])
-    changed, summary = adapter.material_diff({"x": 1}, state)
+    changed, summary = adapter.material_diff(EARLIER, state)
     assert not changed
     assert "the agent judged it an artefact: the extra boxes trace a thin cloud edge" in summary
     assert state["sites"]["botany"]["history"][-1]["triage"]["verdict"] == "artefact"
@@ -484,14 +518,14 @@ def test_no_model_means_no_finding(adapter):
 
     adapter.choose_model = broken
     state = history_state(adapter, [10, 12, 11, 30])
-    assert not adapter.material_diff({"x": 1}, state)[0]
+    assert not adapter.material_diff(EARLIER, state)[0]
     assert "no model to triage with" in state["triage"]["botany"]["reason"]
     assert adapter.agent.calls == []
 
 
 def test_triage_can_be_turned_off_and_is_skipped_on_the_first_tick(adapter):
     state = history_state(adapter, [10, 12, 11, 30], triage=False)
-    assert adapter.material_diff({"x": 1}, state)[0]
+    assert adapter.material_diff(EARLIER, state)[0]
     assert adapter.agent.calls == [] and "triage" not in state
     first = history_state(adapter, [10])
     assert adapter.material_diff(None, first)[0] and adapter.agent.calls == []
