@@ -139,11 +139,11 @@ def read_info(url: str, fetch: Fetch) -> tuple[CogInfo, _Source]:
         except (CogError, struct.error):
             break  # a directory that can't be parsed ends the chain; the base image is still good
         try:
-            kind = int(tags.get(_TAG_SUBFILE_TYPE, (0,))[0])
+            kind = int(next(iter(tags.get(_TAG_SUBFILE_TYPE, ())), 0))  # a count-0 tag parses as ()
             if not kind & _SUBFILE_REDUCED or kind & _SUBFILE_MASK:
                 continue
             levels.append(_info_from_tags(tags, order, base))
-        except (CogError, KeyError, TypeError, ValueError):
+        except (CogError, KeyError, IndexError, TypeError, ValueError):
             continue  # an overview in a form this reader can't decode is left out, never fatal
     levels.sort(key=lambda level: level.pixel_size)
     return dataclasses.replace(base, levels=tuple(levels)), src

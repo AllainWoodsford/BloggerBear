@@ -47,6 +47,10 @@ MAX_STATIONS, MAX_EDGES, MAX_DESERTS = 2000, 5000, 10
 # two runs agree, and the metrics say so with the quality flag graph_too_large.
 MAX_EXACT_GRAPH_NODES = 800
 BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 200, 0
+# Above this many nodes (a pathological skeleton: a city has a few hundred) even the sampled
+# betweenness, the hubs and the suggestions are skipped: the counts are reported, the hubs are
+# empty and the flag says so, rather than running 200 Dijkstra passes several times over.
+MAX_GRAPH_NODES = 20_000
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.
 MIN_ACTIVITY = 0.05
@@ -115,7 +119,8 @@ def project_network(network: dict, epsg: int, transform: Sequence[float], shape:
     per station, None outside the image), `stations_xy_m`, `pois_xy_m`, `poi_kinds` and
     `warnings`. Pixel coordinates are of pixel centres, so rounding them gives the pixel index.
     A vertex, station or point of interest whose coordinates are not finite or not on Earth is
-    skipped and counted in a warning, never a crash."""
+    skipped and counted in a warning, never a crash; a repeated station id keeps one entry (the
+    first inside the window, else the first) and is counted in a warning too."""
     zone, south = geo.utm_zone_from_epsg(epsg)
     h, w = shape
     skipped = {"way vertices": 0, "stations": 0, "points of interest": 0}
@@ -140,13 +145,24 @@ def project_network(network: dict, epsg: int, transform: Sequence[float], shape:
         (tunnels_px if way.get("tunnel") else ways_px).append(points)
 
     stations, stations_px, stations_xy = [], [], []
+    index_of_id: dict[str, int] = {}
+    repeated = 0
     for station in network.get("stations", ()):
         projected = project([(station.get("lon"), station.get("lat"))], "stations")
         if not len(projected):
             continue
         x, y, e, n = projected[0]
         inside = 0 <= round(x) < w and 0 <= round(y) < h
-        stations.append({**station, "x": x, "y": y, "easting": e, "northing": n, "inside": inside})
+        entry = {**station, "x": x, "y": y, "easting": e, "northing": n, "inside": inside}
+        sid = rail_network.station_node_id(station)
+        if sid in index_of_id:
+            repeated += 1
+            kept = index_of_id[sid]
+            if inside and not stations[kept]["inside"]:  # the first entry inside the window wins
+                stations[kept], stations_px[kept], stations_xy[kept] = entry, (x, y), (e, n)
+            continue
+        index_of_id[sid] = len(stations)
+        stations.append(entry)
         stations_px.append((x, y) if inside else None)
         stations_xy.append((e, n))
 
@@ -159,6 +175,8 @@ def project_network(network: dict, epsg: int, transform: Sequence[float], shape:
         poi_kinds.append(str(poi.get("kind", "")))
 
     warnings = [f"{n} {what} with coordinates not on Earth skipped" for what, n in skipped.items() if n]
+    if repeated:
+        warnings.append(f"{repeated} repeated station ids dropped: one entry kept for each")
     return {
         "ways_px": ways_px,
         "tunnels_px": tunnels_px,
@@ -175,7 +193,7 @@ def _lonlat_of(point) -> tuple[float, float] | tuple[None, None]:
     """(lon, lat) as finite floats inside the usable ranges, or (None, None)."""
     try:
         lon, lat = float(point[0]), float(point[1])
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, LookupError):  # a short, non-numeric or dict-shaped point
         return None, None
     if not (math.isfinite(lon) and math.isfinite(lat)):
         return None, None
@@ -366,10 +384,11 @@ def analyse_rail_access(
         "truncated": truncated,
         "quality_flags": quality_flags,
         "warnings": projected["warnings"] + info["warnings"],
+        # What was received, skipped entries included: the warnings name those.
         "network": {
             "ways": len(network.get("ways", ())),
-            "stations": len(stations),
-            "pois": len(projected["poi_kinds"]),
+            "stations": len(network.get("stations", ())),
+            "pois": len(network.get("pois", ())),
             "points": sum(len(way.get("points", ())) for way in network.get("ways", ())),
             "fetched_at": network.get("fetched_at"),
         },
@@ -399,40 +418,55 @@ def _is_station(graph: nx.Graph, edge: dict) -> bool:
     return any(graph.nodes[n].get("kind") == "station" for n in (edge["from"], edge["to"]) if n in graph)
 
 
+def _betweenness_sample(graph: nx.Graph) -> dict:
+    """networkx's sampling arguments for `graph`: none up to `MAX_EXACT_GRAPH_NODES` nodes,
+    `BETWEENNESS_SAMPLES` seeded source nodes above."""
+    n = graph.number_of_nodes()
+    return {"k": min(BETWEENNESS_SAMPLES, n), "seed": BETWEENNESS_SEED} if n > MAX_EXACT_GRAPH_NODES else {}
+
+
+def node_betweenness(graph: nx.Graph) -> dict[str, float]:
+    """Normalised betweenness per node, weighted by `length_m`; empty for an empty graph and
+    for one over `MAX_GRAPH_NODES`."""
+    if not graph or graph.number_of_nodes() > MAX_GRAPH_NODES:
+        return {}
+    return nx.betweenness_centrality(graph, weight="length_m", normalized=True, **_betweenness_sample(graph))
+
+
 def betweenness(graph: nx.Graph) -> tuple[dict, dict, bool]:
-    """(node betweenness, edge betweenness keyed by sorted pair, approximate), normalised and
-    weighted by `length_m`: exact up to `MAX_EXACT_GRAPH_NODES` nodes, from
-    `BETWEENNESS_SAMPLES` seeded source nodes above that."""
+    """(node betweenness, edge betweenness keyed by sorted pair, approximate): exact up to
+    `MAX_EXACT_GRAPH_NODES` nodes, sampled above, and both empty over `MAX_GRAPH_NODES`."""
     if not graph:
         return {}, {}, False
-    n = graph.number_of_nodes()
-    approximate = n > MAX_EXACT_GRAPH_NODES
-    sample = {"k": min(BETWEENNESS_SAMPLES, n), "seed": BETWEENNESS_SEED} if approximate else {}
-    nodes = nx.betweenness_centrality(graph, weight="length_m", normalized=True, **sample)
+    approximate = graph.number_of_nodes() > MAX_EXACT_GRAPH_NODES
+    if graph.number_of_nodes() > MAX_GRAPH_NODES:
+        return {}, {}, True
+    sample = _betweenness_sample(graph)
     per_edge = nx.edge_betweenness_centrality(graph, weight="length_m", normalized=True, **sample)
     edges = {tuple(sorted(edge)): value for edge, value in per_edge.items()}
-    return nodes, edges, approximate
+    return node_betweenness(graph), edges, approximate
 
 
 def graph_metrics(graph: nx.Graph, activity: dict[str, float | None], hub_count: int) -> dict:
     """Degree and betweenness per node, the edge betweenness per sorted pair, whether the
-    betweenness is `approximate` (sampled, over `MAX_EXACT_GRAPH_NODES` nodes), the `hubs`
-    (the top `hub_count` station nodes by betweenness among those with activity at or above the
-    measured stations' median; by betweenness alone when no activity was measured), the
-    `interchanges` (station nodes of degree three or more), `d_hub_m` (the shortest path to any
-    hub, None when there is no path) and `hub_of` (which hub that is) per node."""
+    betweenness is `approximate` (sampled, over `MAX_EXACT_GRAPH_NODES` nodes; skipped, with
+    no hubs, over `MAX_GRAPH_NODES`), the `hubs` (the top `hub_count` station nodes by
+    betweenness among those with activity at or above the measured stations' median; by
+    betweenness alone when no activity was measured), the `interchanges` (station nodes of
+    degree three or more), `d_hub_m` (the shortest path to any hub, None when there is no
+    path) and `hub_of` (which hub that is) per node."""
     degree = dict(graph.degree())
-    node_betweenness, edge_betweenness, approximate = betweenness(graph)
+    node_betweenness_, edge_betweenness, approximate = betweenness(graph)
     station_nodes = sorted(n for n, d in graph.nodes(data=True) if d.get("kind") == "station")
     hubs: list[str] = []
-    if station_nodes:
+    if station_nodes and graph.number_of_nodes() <= MAX_GRAPH_NODES:
         measured = {n: activity[n] for n in station_nodes if activity.get(n) is not None}
         if measured:
             median = float(np.median(list(measured.values())))
             busy = [n for n in station_nodes if n in measured and measured[n] >= median]
         else:
             busy = station_nodes
-        hubs = sorted(busy, key=lambda n: (-node_betweenness.get(n, 0.0), n))[: int(hub_count)]
+        hubs = sorted(busy, key=lambda n: (-node_betweenness_.get(n, 0.0), n))[: int(hub_count)]
     d_hub_m: dict[str, float | None] = dict.fromkeys(graph.nodes, None)
     hub_of: dict[str, str | None] = dict.fromkeys(graph.nodes, None)
     if hubs:
@@ -442,7 +476,7 @@ def graph_metrics(graph: nx.Graph, activity: dict[str, float | None], hub_count:
             hub_of[node] = paths[node][0]
     return {
         "degree": degree,
-        "betweenness": node_betweenness,
+        "betweenness": node_betweenness_,
         "edge_betweenness": edge_betweenness,
         "approximate": approximate,
         "hubs": hubs,
@@ -603,8 +637,8 @@ def suggest(
         tried.sort(key=lambda t: t[:3])
         before_top = max(measures["betweenness"].get(h, 0.0) for h in hubs)
         for delta, a_id, b_id, straight_m, trial in tried[:TOP_SUGGESTIONS]:
-            node_betweenness, _, _ = betweenness(trial)
-            after_top = max(node_betweenness.get(h, 0.0) for h in hubs)
+            trial_betweenness = node_betweenness(trial)  # nodes only: the edges' are never read
+            after_top = max(trial_betweenness.get(h, 0.0) for h in hubs)
             suggestions.append(
                 {
                     "type": "orbital_link",

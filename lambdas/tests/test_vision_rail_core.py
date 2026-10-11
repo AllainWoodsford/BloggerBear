@@ -498,20 +498,53 @@ def test_a_station_under_cloud_is_unmeasured_not_quiet():
 def test_network_elements_off_the_earth_are_skipped_with_a_warning():
     net = grid_network()
     net["ways"][0]["points"].insert(1, [float("nan"), -33.9])
+    net["ways"][0]["points"].insert(1, {"lon": 151.0, "lat": -33.9})  # a dict where a pair should be
     net["ways"].append({"id": "w9", "points": [[200.0, 0.0], [1e400, 0.0]], "tunnel": False})
     net["stations"].append({"id": "n8", "name": "Pole", "lon": 151.0, "lat": 95.0})
     net["stations"].append({"id": "n9", "name": "Text", "lon": "x", "lat": -33.9})
     net["pois"].append({"id": "p9", "kind": "bus_stop", "lon": 200.0, "lat": -33.9})
     projected = project_network(net, EPSG, TRANSFORM, (SIZE, SIZE))
     assert projected["warnings"] == [
-        "3 way vertices with coordinates not on Earth skipped",
+        "4 way vertices with coordinates not on Earth skipped",
         "2 stations with coordinates not on Earth skipped",
         "1 points of interest with coordinates not on Earth skipped",
     ]
     assert (len(projected["ways_px"]), len(projected["stations"]), len(projected["poi_kinds"])) == (3, 7, 6)
     m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
     assert m["warnings"][:3] == projected["warnings"] and m["station_count"] == 7
-    assert m["network"] == {"ways": 5, "stations": 7, "pois": 6, "points": 11, "fetched_at": FETCHED_AT}
+    # The network block counts what was received; the warnings say what was skipped.
+    assert m["network"] == {"ways": 5, "stations": 9, "pois": 7, "points": 12, "fetched_at": FETCHED_AT}
+
+
+def test_a_repeated_station_id_keeps_one_entry():
+    net = grid_network()
+    outside = {"id": "n2", "name": "Central (dup)", "kind": "station", "lon": 152.0, "lat": -34.0}
+    twin = {**net["stations"][6], "id": "n7", "name": "Midwest (dup)"}
+    net["stations"] = [outside, *net["stations"], twin]  # a twin outside first, a twin inside last
+    projected = project_network(net, EPSG, TRANSFORM, (SIZE, SIZE))
+    assert projected["warnings"] == ["2 repeated station ids dropped: one entry kept for each"]
+    kept = {s["id"]: s for s in projected["stations"]}
+    assert len(projected["stations"]) == 7 and kept["n2"]["name"] == "Central" and kept["n2"]["inside"]
+    assert kept["n7"]["name"] == "Midwest"  # the first of two entries inside wins
+    m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
+    assert m["station_count"] == 7 and len({s["id"] for s in m["stations"]}) == 7
+    assert m["snapped_station_count"] == 7 and m["network"]["stations"] == 9
+    assert m["warnings"] == projected["warnings"]
+
+
+def test_a_pathological_graph_skips_the_graph_measures_and_says_so(monkeypatch):
+    monkeypatch.setattr("vision.rail_analyse.MAX_GRAPH_NODES", 5)
+    graph, activity = spokes()
+    measures = graph_metrics(graph, activity, hub_count=2)
+    assert measures["approximate"] and measures["hubs"] == [] and measures["betweenness"] == {}
+    assert measures["edge_betweenness"] == {} and set(measures["d_hub_m"].values()) == {None}
+    assert measures["degree"]["s:H"] == 3 and measures["interchanges"] == ["s:H"]
+    m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
+    assert "graph_too_large" in m["quality_flags"] and m["hubs"] == [] and m["suggestions"] == []
+    assert m["node_count"] == 8 and m["edge_count"] == 7 and m["interchanges"] == ["s:n2"]
+    assert all(e["betweenness"] == 0.0 for e in m["edges"])
+    assert all(s["d_hub_m"] is None and s["betweenness"] == 0.0 for s in m["stations"])
+    assert json.loads(json.dumps(m, allow_nan=False)) == m
 
 
 def test_edges_over_the_cap_are_dropped_by_betweenness_and_counted(monkeypatch):

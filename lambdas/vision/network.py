@@ -150,11 +150,17 @@ def build_graph(
 
     Edges are the skeleton runs left once the clusters and their 3x3 neighbourhoods are cut
     out, joined to the nodes they touch. The skeleton pixels those neighbourhoods swallow are
-    "bridges": where a bridge touches two different nodes (clusters two or three pixels apart,
-    which leave no run between them) it is an edge too, so close stations and junctions never
-    split the graph. Edge attributes: `length_m`, `pixels`, `corridor_visibility` (the mean of
-    a 3x3 mean of `visible01` over the pixels; None where over half of them are in
-    `tunnel_mask`) and `tunnel`. No edge joins a node to itself.
+    "bridges": a bridge touching one node is that node's doorstep, through which a run reaches
+    it (so only skeleton pixels carry adjacency, and a parallel line two pixels away is never
+    joined); a bridge touching two nodes (clusters two or three pixels apart, which leave no
+    run between them) is an edge itself. Where two paths join the same nodes the shorter is
+    kept. No edge joins a node to itself.
+
+    `length_m` is the number of steps along the skeleton from one node's pixel to the other's,
+    times the pixel size: a bridge's pixels plus one, or a run's own pixels (half its closed
+    contour, plus one) plus the pixel cut from each end plus one. Edge attributes: `length_m`,
+    `pixels`, `corridor_visibility` (the mean of a 3x3 mean of `visible01` over the pixels;
+    None where over half of them are in `tunnel_mask`) and `tunnel`.
 
     `info` has `warnings`, `unsnapped` (station ids without a skeleton pixel within reach),
     `merged` ([kept id, merged id] pairs), `snapped` (the per-station pixels actually used,
@@ -216,34 +222,46 @@ def build_graph(
         node_of_label[label] = node
 
     # The runs between nodes: the skeleton minus every node cluster and its 3x3 neighbourhood,
-    # so the branches of a junction do not touch each other diagonally once it is removed.
+    # so the branches of a junction do not touch each other diagonally once it is removed. The
+    # skeleton pixels inside a neighbourhood but not in a cluster are the bridges.
     node_zone = cv2.dilate(node_labels.astype(np.float32), _SQUARE).astype(np.int32)
     on = skel01 > 0
     run_src = (on & (node_zone == 0)).astype(np.uint8)
     run_count, run_labels, run_stats, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
+    bridge_src = (on & (node_zone > 0) & (node_labels == 0)).astype(np.uint8)
+    bridge_count, bridge_labels = cv2.connectedComponents(bridge_src, connectivity=8)
+    bridge_touches = _touching(bridge_labels, node_labels, bridge_count)
+
+    # Which node each skeleton pixel speaks for: a node pixel its own, a bridge pixel the one
+    # node it touches (a bridge between several nodes falls back to the neighbourhood's label).
+    # Only these pixels carry adjacency, never the empty pixels of a neighbourhood.
+    node_of_bridge = np.zeros(bridge_count, np.int32)
+    for bridge, touched in bridge_touches.items():
+        node_of_bridge[bridge] = next(iter(touched)) if len(touched) == 1 else -1
+    carrier = node_labels.copy()
+    mapped = node_of_bridge[bridge_labels]
+    carrier[mapped > 0] = mapped[mapped > 0]
+    carrier[mapped < 0] = node_zone[mapped < 0]
+
     visible_blur = cv2.blur(visible01.astype(np.float32), (3, 3))
     run_stats_px = _pixel_stats(run_labels, run_count, tunnel_mask, visible_blur)
-    for run, zones in _touching(run_labels, node_zone, run_count).items():
-        nodes = sorted(node_of_label[label] for label in zones if label in node_of_label)
+    for run, touched in _touching(run_labels, carrier, run_count).items():
+        nodes = sorted(node_of_label[label] for label in touched if label in node_of_label)
         if len(nodes) < 2:
             warnings.append(f"run {run} touches {len(nodes)} node(s): a loop or a fragment, left out")
             continue
         if len(nodes) > 2:
             warnings.append(f"run {run} touches {len(nodes)} nodes: joined pairwise")
-        length_px = _run_length_px(run_labels, run_stats[run], run)
+        # The run's pixels, the pixel cut from each end, and the step onto the far node.
+        length_px = _run_pixels(run_labels, run_stats[run], run) + 3.0
         _join(graph, nodes, _attributes(run_stats_px, run, length_px, pixel_size_m), warnings)
 
-    # The bridges: skeleton pixels inside a node's neighbourhood that are not node pixels. One
-    # that touches two nodes is the whole path between them (the clusters are two or three
-    # pixels apart), and its length is its pixels plus the step onto the far node.
-    bridge_src = (on & (node_zone > 0) & (node_labels == 0)).astype(np.uint8)
-    bridge_count, bridge_labels = cv2.connectedComponents(bridge_src, connectivity=8)
     bridge_stats_px = _pixel_stats(bridge_labels, bridge_count, tunnel_mask, visible_blur)
-    for bridge, touched in _touching(bridge_labels, node_labels, bridge_count).items():
+    for bridge, touched in bridge_touches.items():
         nodes = sorted(node_of_label[label] for label in touched if label in node_of_label)
         if len(nodes) < 2:
             continue
-        length_px = float(bridge_stats_px[0][bridge]) + 1.0
+        length_px = float(bridge_stats_px[0][bridge]) + 1.0  # its pixels, and the step onto the far node
         _join(graph, nodes, _attributes(bridge_stats_px, bridge, length_px, pixel_size_m), None)
 
     if len(warnings) > MAX_WARNINGS:
@@ -251,7 +269,7 @@ def build_graph(
         warnings = warnings[:MAX_WARNINGS] + [f"... and {rest} more"]
     info = {
         "warnings": warnings,
-        "unsnapped": unsnapped,
+        "unsnapped": list(dict.fromkeys(unsnapped)),
         "merged": merged,
         "snapped": snapped,
         "components": nx.number_connected_components(graph),
@@ -321,30 +339,29 @@ def _attributes(stats, label: int, length_px: float, pixel_size_m: float) -> dic
 
 def _join(graph: nx.Graph, nodes: list[str], attributes: dict, warnings: list[str] | None) -> None:
     """An edge between every pair of `nodes`, never from a node to itself. Where an edge exists
-    the shorter is kept, and said so when `warnings` is given (a run beside another run); a
-    bridge beside an existing edge is the expected case and stays quiet."""
+    already the shorter of the two is kept, and said so when `warnings` is given (a run beside
+    another run); a bridge beside a run is the expected case and stays quiet."""
     for i, u in enumerate(nodes):
         for v in nodes[i + 1 :]:
             if u == v:
                 continue
             if graph.has_edge(u, v):
+                if attributes["length_m"] < graph.edges[u, v]["length_m"]:
+                    graph.edges[u, v].update(attributes)
                 if warnings is not None:
-                    if attributes["length_m"] < graph.edges[u, v]["length_m"]:
-                        graph.edges[u, v].update(attributes)
                     warnings.append(f"two runs join {u} and {v}: the shorter is kept")
                 continue
             graph.add_edge(u, v, **attributes)
 
 
-def _run_length_px(run_labels: np.ndarray, stats: np.ndarray, run: int) -> float:
-    """A run's length in pixels: half the closed contour around its pixels (the way there and
-    back along a one-pixel line), plus one for the run's own last pixel and the pixel removed
-    at each end to cut it from its nodes."""
+def _run_pixels(run_labels: np.ndarray, stats: np.ndarray, run: int) -> float:
+    """A run's extent in pixels along its length: half the closed contour around its pixels
+    (the way there and back along a one-pixel line) plus one for the last pixel."""
     x, y, w, h = (int(v) for v in stats[:4])
     crop = (run_labels[y : y + h, x : x + w] == run).astype(np.uint8)
     contours, _ = cv2.findContours(crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     arc = max((cv2.arcLength(c, True) for c in contours), default=0.0)
-    return arc / 2.0 + 3.0
+    return arc / 2.0 + 1.0
 
 
 def _r2(value) -> float:

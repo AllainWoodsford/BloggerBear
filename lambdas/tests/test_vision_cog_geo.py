@@ -157,6 +157,12 @@ def test_mask_and_unreadable_directories_are_skipped():
         malformed = _patch_overview_tag(write_tiff(image(), overviews=(2,)), tag, value)
         info, _ = cog.read_info("u", fetcher(malformed))
         assert info.levels == () and info.width == 70
+    # A NewSubfileType entry with a count of 0 parses as an empty tuple: not a level, not a crash.
+    malformed = _zero_overview_tag_count(write_tiff(image(), overviews=(2,)), 254)
+    info, _ = cog.read_info("u", fetcher(malformed))
+    assert info.levels == () and info.width == 70
+    out, _ = cog.read_window("u", (0, 0, 70, 50), fetcher(malformed))
+    np.testing.assert_array_equal(out, image())
 
 
 def test_a_file_without_overviews_has_no_levels():
@@ -180,6 +186,20 @@ def _set_overview_compression(blob: bytes, compression: int) -> bytes:
 def _patch_overview_tag(blob: bytes, tag: int, value: int | None) -> bytes:
     """In the second directory of a classic little-endian file, set a SHORT tag's inline value,
     or with None renumber the tag to 65000 so the reader no longer finds it."""
+    entry = _overview_entry(blob, tag)
+    if value is None:
+        return blob[:entry] + struct.pack("<H", 65000) + blob[entry + 2 :]
+    return blob[: entry + 8] + struct.pack("<H", value) + blob[entry + 10 :]
+
+
+def _zero_overview_tag_count(blob: bytes, tag: int) -> bytes:
+    """Set a tag's value count to 0 in the second directory (tag, type, count, value)."""
+    entry = _overview_entry(blob, tag)
+    return blob[: entry + 4] + struct.pack("<I", 0) + blob[entry + 8 :]
+
+
+def _overview_entry(blob: bytes, tag: int) -> int:
+    """The offset of `tag`'s entry in the second directory of a classic little-endian file."""
     first = struct.unpack("<I", blob[4:8])[0]
     (n,) = struct.unpack("<H", blob[first : first + 2])
     second = struct.unpack("<I", blob[first + 2 + 12 * n : first + 6 + 12 * n])[0]
@@ -187,9 +207,7 @@ def _patch_overview_tag(blob: bytes, tag: int, value: int | None) -> bytes:
     for i in range(n):
         entry = second + 2 + 12 * i
         if struct.unpack("<H", blob[entry : entry + 2])[0] == tag:
-            if value is None:
-                return blob[:entry] + struct.pack("<H", 65000) + blob[entry + 2 :]
-            return blob[: entry + 8] + struct.pack("<H", value) + blob[entry + 10 :]
+            return entry
     raise AssertionError(f"no tag {tag} in the overview")
 
 

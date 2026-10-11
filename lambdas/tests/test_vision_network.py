@@ -161,19 +161,54 @@ def test_a_run_touching_one_node_is_a_loop_and_left_out():
     assert any("loop" in w for w in info["warnings"])
 
 
-def test_nodes_two_or_three_pixels_apart_are_bridged():
+def test_nodes_two_or_three_pixels_apart_are_bridged_and_lengths_count_steps():
     skel = skeleton_of([[(10, 60), (110, 60)]])
-    stations = [{"id": sid, "name": sid.upper()} for sid in "abcd"]
-    snapped = network.snap_stations(skel, [(50, 60), (52, 60), (70, 60), (73, 60)], snap_px=2)
-    assert snapped == [(50, 60), (52, 60), (70, 60), (73, 60)]
+    stations = [{"id": sid, "name": sid.upper()} for sid in "abcdef"]
+    columns = [50, 52, 70, 73, 90, 94]
+    snapped = network.snap_stations(skel, [(x, 60) for x in columns], snap_px=2)
+    assert snapped == [(x, 60) for x in columns]
     graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
     assert info["components"] == 1 and info["merged"] == [] and info["warnings"] == []
-    # A and B (2 px apart) and C and D (3 px apart) leave no run between them; the bridge is the edge.
+    # A and B (2 px apart) and C and D (3 px apart) leave no run between them; the bridge is the
+    # edge. E and F (4 px apart) leave a one-pixel run. Every length is the step count between
+    # the two nodes' pixels, whichever way the path was found.
     assert graph.edges["s:a", "s:b"]["length_m"] == 2 * PX and graph.edges["s:a", "s:b"]["pixels"] == 1
     assert graph.edges["s:c", "s:d"]["length_m"] == 3 * PX and graph.edges["s:c", "s:d"]["pixels"] == 2
+    assert graph.edges["s:e", "s:f"]["length_m"] == 4 * PX and graph.edges["s:e", "s:f"]["pixels"] == 1
+    assert graph.edges["s:b", "s:c"]["length_m"] == 18 * PX
+    assert graph.edges["s:d", "s:e"]["length_m"] == 17 * PX
+    west = next(n for n in graph.neighbors("s:a") if n != "s:b")  # the line's western end, 40 px away
+    assert graph.edges["s:a", west]["length_m"] == 40 * PX
     assert graph.edges["s:a", "s:b"]["corridor_visibility"] == 1.0 and not graph.edges["s:a", "s:b"]["tunnel"]
-    assert graph.has_edge("s:b", "s:c") and graph.number_of_edges() == 5
-    assert nx.number_of_selfloops(graph) == 0
+    assert graph.number_of_edges() == 7 and nx.number_of_selfloops(graph) == 0
+
+
+def test_a_bridge_beside_a_long_run_replaces_it_when_shorter():
+    mask = zeros()
+    cv2.rectangle(mask, (20, 20), (100, 100), 255, 1)
+    skel = network.thin(mask)
+    stations = [{"id": "a", "name": "A"}, {"id": "b", "name": "B"}]
+    snapped = network.snap_stations(skel, [(50, 20), (52, 20)], snap_px=2)
+    assert snapped == [(50, 20), (52, 20)]
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
+    # The ring joins A and B the long way round; the one pixel between them is the short way.
+    assert graph.number_of_edges() == 1 and graph.edges["s:a", "s:b"]["length_m"] == 2 * PX
+    assert info["components"] == 1
+
+
+def test_parallel_lines_two_pixels_apart_are_not_joined():
+    skel = skeleton_of([[(10, 60), (110, 60)], [(10, 62), (110, 62)]])
+    stations = [{"id": "s", "name": "S"}]
+    snapped = network.snap_stations(skel, [(50, 60)], snap_px=1)
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
+    assert graph.number_of_edges() == 3 and info["components"] == 2 and info["warnings"] == []
+    assert graph.degree("s:s") == 2
+    # A siding ending two pixels from a through line is not joined to it either.
+    skel = skeleton_of([[(10, 60), (110, 60)], [(50, 62), (50, 90)]])
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
+    assert info["components"] == 2 and info["warnings"] == []
+    line = nx.node_connected_component(graph, "s:s")
+    assert all(abs(graph.nodes[n]["y"] - 60) < 1 for n in line) and len(line) == 3
 
 
 def test_a_short_stub_does_not_make_a_second_component():
