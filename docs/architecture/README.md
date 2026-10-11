@@ -5,14 +5,16 @@ the APIs, compute, AI, data, and so on. A layer tells you what something is made
 tell you how one thing the project does actually works, because that thing crosses several layers.
 
 The pages here describe the project by **feature** instead. A feature is a small, logical grouping
-of the parts that together do one job, in the order the work flows through them. Each page has a
-matching entry in the operator's assistant: ask it about the feature, and it walks through the same
-steps with this environment's resource names on screen (`architecture` with `feature`, in
-`lambdas/ops_mcp/architecture.py`).
+of the parts that together do one job, in the order the work flows through them. Each page has,
+or will have, a matching entry in the operator's assistant: ask it about the feature, and it
+walks through the same steps with this environment's resource names on screen (`architecture`
+with `feature`, in `lambdas/ops_mcp/architecture.py`). The vision page is the exception until
+the assistant gains its `Feature`, with the rail adapter or the docs PR after it.
 
 | Feature | What it covers |
 |---|---|
 | [Article research](article-research.md) | How a topic's data source becomes a published article: adapters, third-party API keys, the research tick, findings, candidate ideas, Bedrock drafting, the reviews, and the article in S3. Also where the AI agents fit. |
+| [Vision: satellite imagery and the Rail Access Monitor](blogger-vision.md) | How a topic that watches satellite imagery becomes an article with a map on it: Sentinel-2, OpenStreetMap and GDELT, the diff-first adapter, the stateless OpenCV worker in us-west-2, the bounded triage agent, the person who approves, and the figure on the page. Then the rail concepts in plain words: built-up density, walking reach, transit deserts, the station graph, hubs, the flags and the suggestions, and what they do not mean. No assistant entry yet. |
 
 ## Adding a feature
 
