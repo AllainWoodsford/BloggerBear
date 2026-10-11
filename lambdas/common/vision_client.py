@@ -10,6 +10,11 @@ Lambda's own. Configuration, from the environment (set by Terraform when `vision
 A reply is checked against common/vision_contract.py before anything uses it. Every failure, from
 the invoke, the worker or a malformed reply, raises `VisionError`; the adapter treats that site as
 not measured this time, never as "nothing there".
+
+`measure` names the task (`ships` by default; `rail_access` sends the OpenStreetMap network with
+the request) and may shorten the read timeout: the triage agent's `look_again` runs inside the
+research tick's own deadline, so it waits less for a re-measurement than the adapter does for the
+first one. One boto3 client is kept per (region, read timeout).
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ _ENV_BY_BACKEND = {"opencv": "VISION_WORKER_ARN", "cool": "VISION_COOL_WORKER_AR
 # A worker call reads a few tiles and runs for seconds. No automatic retries: the next tick tries
 # again, and a retry here would double a slow call's cost inside the research tick's own timeout.
 _CLIENT_CONFIG = Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1, "mode": "standard"})
-_clients: dict[str, object] = {}
+_clients: dict[tuple[str, float | None], object] = {}
 
 
 class VisionError(RuntimeError):
@@ -73,10 +78,16 @@ def region_of(arn: str) -> str:
     return parts[3]
 
 
-def _client(region: str):
-    if region not in _clients:
-        _clients[region] = boto3.client("lambda", region_name=region, config=_CLIENT_CONFIG)
-    return _clients[region]
+def _client(region: str, read_timeout: float | None = None):
+    """The Lambda client for `region`, with `_CLIENT_CONFIG`'s read timeout or `read_timeout`
+    seconds instead; one per (region, read timeout), made on first use."""
+    key = (region, read_timeout)
+    if key not in _clients:
+        config = _CLIENT_CONFIG
+        if read_timeout is not None:
+            config = config.merge(Config(read_timeout=read_timeout))
+        _clients[key] = boto3.client("lambda", region_name=region, config=config)
+    return _clients[key]
 
 
 def measure(
@@ -87,15 +98,20 @@ def measure(
     coverage_floor: float = 0.7,
     image: bool = True,
     client=None,
+    task: str = contract.DEFAULT_TASK,
+    network: dict | None = None,
+    read_timeout: float | None = None,
 ) -> VisionResult:
     """Ask the worker for `backend` to measure `site` ({"id", "polygon"}) in `scene` ({"id",
-    "captured_at", "assets"}). The request is validated here first, so a bad site config fails in
-    the home region without a cross-region call."""
+    "captured_at", "assets"}) for `task`, sending `network` along when the task takes one. The
+    request is validated here first, so a bad site config or network fails in the home region
+    without a cross-region call. `read_timeout` (seconds) shortens how long the invoke waits."""
     arn = worker_arn(backend)
     if not arn:
         raise VisionError("invoke", f"no worker is configured for backend {backend!r}")
     request = {
         "version": contract.VERSION,
+        "task": task,
         "backend": backend,
         "site": site,
         "scene": scene,
@@ -103,12 +119,14 @@ def measure(
         "coverage_floor": coverage_floor,
         "image": image,
     }
+    if network is not None:
+        request["network"] = network
     try:
         request = contract.validate_request(request, allowed_prefixes=_allowed_prefixes())
     except contract.ContractError as exc:
         raise VisionError("bad_request", str(exc)) from exc
 
-    lambda_client = client or _client(region_of(arn))
+    lambda_client = client or _client(region_of(arn), read_timeout)
     try:
         response = lambda_client.invoke(
             FunctionName=arn, InvocationType="RequestResponse", Payload=json.dumps(request).encode("utf-8")
@@ -128,6 +146,8 @@ def measure(
     answered = (reply["backend"], reply.get("site_id"), reply.get("scene_id"))
     if answered != (backend, site.get("id"), scene.get("id")):
         raise VisionError("reply", "the reply is for a different backend, site or scene")
+    if reply.get("task", contract.DEFAULT_TASK) != task:
+        raise VisionError("reply", "the reply is for a different task")
     return VisionResult(reply=reply, image_png=_decode_image(reply.get("image_png_b64")))
 
 
