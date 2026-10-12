@@ -338,6 +338,23 @@ def test_the_first_tick_is_material(adapter):
     assert changed and summary.startswith("First observation") and "10 objects" in summary
 
 
+def test_the_first_observation_is_the_first_clear_scene(adapter):
+    """A first scene below the coverage floor (0.7 here) is kept but reports nothing: a count over
+    a third of the site is not an observation. The next clear scene is the first observation."""
+    cloudy = history_state(adapter, [3], coverage={0: 0.31})
+    changed, summary = adapter.material_diff(None, cloudy)
+    assert not changed
+    assert summary == (
+        "nothing measured clearly yet: Botany Bay anchorage: coverage 31 % is below the 70 % floor"
+    )
+    assert cloudy["sites"]["botany"]["history"][-1]["coverage"] == 0.31  # kept, not lost
+    stac = FakeStac([item("S1", "2026-09-11T00:00:00Z")])
+    clear = run(adapter, stac, FakeWorker({"S1": 12}), previous=cloudy)
+    changed, summary = adapter.material_diff(cloudy, clear)
+    assert changed and summary == "First observation. Botany Bay anchorage: 12 objects (coverage 95%)"
+    assert adapter.agent.calls == []
+
+
 def test_no_material_change_while_the_baseline_builds(adapter):
     state = history_state(adapter, [10, 40])
     changed, summary = adapter.material_diff(EARLIER, state)
@@ -512,7 +529,8 @@ def test_the_agent_is_asked_only_about_a_numeric_change_and_its_yes_is_material(
 
     state = history_state(adapter, [10, 12, 11, 30])
     changed, summary = adapter.material_diff(EARLIER, state)
-    assert changed and "checked by the vision agent: boxes sit on open water" in summary
+    # The agent's reason is quoted as its note, not given as a measurement.
+    assert changed and 'the vision agent\'s note (not a measurement): "boxes sit on open water' in summary
     asked = adapter.agent.calls[0]
     assert asked["site"]["id"] == "botany" and asked["site"]["polygon"] == POLY
     assert asked["scene"]["id"] == "S3" and asked["scene"]["assets"]["nir"].endswith("S3/nir.tif")
@@ -530,7 +548,10 @@ def test_an_artefact_is_not_material_and_says_why(adapter):
     state = history_state(adapter, [10, 12, 11, 30])
     changed, summary = adapter.material_diff(EARLIER, state)
     assert not changed
-    assert "the agent judged it an artefact: the extra boxes trace a thin cloud edge" in summary
+    assert (
+        'the agent judged it an artefact; the vision agent\'s note (not a measurement): "the extra boxes '
+        'trace a thin cloud edge"' in summary
+    )
     assert state["sites"]["botany"]["history"][-1]["triage"]["verdict"] == "artefact"
 
 

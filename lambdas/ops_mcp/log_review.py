@@ -84,6 +84,8 @@ ADAPTER_PREFIXES = {
     "github_trending": "github_trending:",
     "hacker_news": "hacker_news:",
     "web_search": "web_search:",
+    "satellite_vision": "satellite_vision:",
+    "rail_access": "rail_access:",
 }
 # The functions that run per topic.
 TOPIC_FUNCTIONS = ("research-tick", "daily-cycle")

@@ -47,12 +47,14 @@ def item(scene_id, when, bbox=WIDE, assets=RAIL_ASSETS, cloud=12.0):
 
 
 def network(fetched_at="2026-10-01T03:00:00+00:00", polygon=SYDNEY):
-    """What common/osm.fetch_network returns: the network with its bookkeeping."""
+    """What common/osm.fetch_network returns: the network with its bookkeeping (and, as the
+    adapter caches it, the `site_key` of the polygon it was fetched for)."""
     return {
         "source": "overpass",
         "endpoint": osm.OVERPASS_ENDPOINTS[0],
         "fetched_at": fetched_at,
         "query_url": osm.query_url(polygon),
+        "site_key": vision_sites.site_key(polygon),
         "ways": [{"id": "w1", "points": [[151.2, -33.9], [151.21, -33.9]], "tunnel": False, "name": "Main"}],
         "stations": [{"id": "n1", "name": "Central", "lon": 151.2, "lat": -33.9, "kind": "station"}],
         "pois": [{"id": "n2", "lon": 151.201, "lat": -33.9, "kind": "bus_stop"}],
@@ -204,6 +206,8 @@ class FakeSearch:
 
 
 SITES = [{"id": "sydney", "name": "Sydney", "polygon": SYDNEY}]
+# How a summary quotes the agent's reason (common/vision_triage.quoted_note).
+NOTE = "the vision agent's note (not a measurement): "
 
 
 def topic(sites=None, **config):
@@ -292,6 +296,40 @@ def test_the_adapters_import_without_numpy_opencv_or_networkx():
         {"sites": SITES, "params": 3},
         {"sites": SITES, "backend": "gpu"},
         {"sites": SITES, "min_baseline": 0},
+        # Not finite, or past a bound (docs/enhancements/rail-access-monitor.md §5 risk 1).
+        {"sites": SITES, "time_budget_seconds": "nan"},
+        {"sites": SITES, "time_budget_seconds": "-inf"},
+        {"sites": SITES, "time_budget_seconds": 0},
+        {"sites": SITES, "triage_deadline_seconds": "nan"},
+        {"sites": SITES, "triage_deadline_seconds": 1e9},
+        {"sites": SITES, "triage_deadline_seconds": 91},
+        {"sites": SITES, "triage_max_tool_calls": 6},
+        {"sites": SITES, "history_size": 21},
+        {"sites": SITES, "history_size": "inf"},
+        {"sites": SITES, "min_baseline": 6},  # the history keeps 6: at most 5 earlier scenes
+        {"sites": SITES, "max_sites_per_tick": 0},
+        {"sites": SITES, "max_sites_per_tick": 11},
+        {"sites": SITES, "coverage_floor": 1.5},
+        {"sites": SITES, "coverage_floor": "nan"},
+        {"sites": SITES, "served_share_threshold": -0.01},
+        {"sites": SITES, "desert_relative_threshold": "inf"},
+        {"sites": SITES, "reach_m": "nan"},
+        {"sites": SITES, "osm_ttl_days": 1e9},
+        {"sites": SITES, "osm_ttl_days": "inf"},
+        {"sites": SITES, "osm_ttl_days": "nan"},
+        {"sites": SITES, "osm_ttl_days": 366},
+        {"sites": SITES, "triage": "false"},
+        {"sites": SITES, "web_context": "false"},
+        {"sites": SITES, "web_context": 0},
+        {"sites": SITES, "triage_max_tool_calls": True},
+        {"sites": [{"id": "sydney", "name": ["Sydney"], "polygon": SYDNEY}]},
+        {"sites": [{"id": "sydney", "name": " \n ", "polygon": SYDNEY}]},
+        {"sites": [{"id": "sydney", "name": "S" * 81, "polygon": SYDNEY}]},
+        {"sites": [{"id": "syd:ney", "polygon": SYDNEY}]},
+        {"sites": [{"id": "..", "polygon": SYDNEY}]},
+        {"sites": [{"id": "a..b", "polygon": SYDNEY}]},
+        {"sites": [{"id": "s" * 65, "polygon": SYDNEY}]},
+        {"sites": [{"id": 7, "polygon": SYDNEY}]},
     ],
 )
 def test_bad_config_is_refused(config):
@@ -316,6 +354,26 @@ def test_defaults_are_the_specified_ones_and_decimals_become_plain_numbers():
     assert ra.worker_params(stored) == {"reach_m": 800.0, "hub_count": 4}
     # An explicit reach in params wins over the topic's key, as specified.
     assert ra.worker_params({"reach_m": 1000.0, "params": {"reach_m": 500}}) == {"reach_m": 500}
+
+
+def test_names_are_one_plain_line_and_the_bounds_are_inclusive():
+    config = ra.parse_config(
+        {"sites": [{"id": "Syd_ney-1", "name": "  Greater\nSydney\u202e ", "polygon": SYDNEY}],
+         "time_budget_seconds": 80, "triage_deadline_seconds": 90, "triage_max_tool_calls": 0,
+         "history_size": 20, "min_baseline": 19, "max_sites_per_tick": 10, "coverage_floor": 1,
+         "osm_ttl_days": 365, "served_share_threshold": 0, "web_context": False}  # fmt: skip
+    )
+    assert config["sites"][0]["name"] == "Greater Sydney" and config["web_context"] is False
+    assert ra.parse_config({"sites": [{"id": "s", "polygon": SYDNEY}]})["sites"][0] == {"id": "s",
+                                                                                     "polygon": SYDNEY}
+
+
+def test_an_unusable_ttl_reads_as_stale_rather_than_breaking_the_tick():
+    # parse_config refuses these; a state or a caller that still has one gets a refresh, not a crash.
+    now = datetime.now(UTC)
+    for ttl in (1e9, float("inf"), float("nan"), "soon"):
+        assert ra._is_stale(network(now.isoformat()), now, ttl) is True
+    assert ra._is_stale(network(now.isoformat()), now, 30) is False
 
 
 # --- fetching ------------------------------------------------------------------------------------
@@ -372,51 +430,98 @@ def test_the_search_asks_for_the_rail_bands_within_the_rail_defaults(adapter):
     assert end - start == timedelta(days=20)
 
 
-def test_a_fresh_network_is_reused_and_refetched_after_the_ttl(adapter):
+def aged(state, days, site="sydney"):
+    """`state` with the site's cached network fetched `days` ago."""
+    copy = json.loads(json.dumps(state))
+    copy["sites"][site]["network"]["fetched_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    return copy
+
+
+def test_a_fresh_network_is_reused_and_a_stale_one_refreshed_when_there_is_nothing_new(adapter):
     overpass = FakeOverpass(network())
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
     second = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=first)
     assert len(overpass.calls) == 1
     assert second["sites"]["sydney"]["network"] == first["sites"]["sydney"]["network"]
     assert second["sites"]["sydney"]["history"][-1]["network_fetched_at"] == first["fetched_at"]
+    assert second["sites"]["sydney"]["history"][-1]["network_stale"] is False
 
-    aged = json.loads(json.dumps(second))
-    aged["sites"]["sydney"]["network"]["fetched_at"] = (datetime.now(UTC) - timedelta(days=31)).isoformat()
-    third = run(adapter, scene(3), FakeRailWorker({"S3": metrics()}), overpass, previous=aged)
+    # Past the TTL with a new scene: the scene comes first, measured against the cached network.
+    old = aged(second, 31)
+    third = run(adapter, scene(3), FakeRailWorker({"S3": metrics()}), overpass, previous=old)
+    assert len(overpass.calls) == 1 and third["measured"] == [{"site_id": "sydney", "scene_id": "S3"}]
+    entry = third["sites"]["sydney"]["history"][-1]
+    assert entry["network_stale"] is True
+    assert entry["network_fetched_at"] == old["sites"]["sydney"]["network"]["fetched_at"]
+    # Nothing new on the next tick: that tick's time refreshes the network.
+    fourth = run(adapter, scene(3), FakeRailWorker({}), overpass, previous=third)
+    assert len(overpass.calls) == 2 and fourth["measured"] == []
+    assert fourth["sites"]["sydney"]["network"]["fetched_at"] == fourth["fetched_at"]
+    assert fourth["sites"]["sydney"]["last_attempt_at"] == fourth["fetched_at"]  # worked on: stamped
+    assert not {"network_error", "last_error"} & set(fourth["sites"]["sydney"])
+    # A fresh network and nothing new: nothing to do.
+    run(adapter, scene(3), FakeRailWorker({}), overpass, previous=fourth)
     assert len(overpass.calls) == 2
-    assert third["sites"]["sydney"]["network"]["fetched_at"] == third["fetched_at"]
-    # A shorter TTL asks sooner.
-    recent = json.loads(json.dumps(third))
-    recent["sites"]["sydney"]["network"]["fetched_at"] = (datetime.now(UTC) - timedelta(days=8)).isoformat()
-    run(adapter, scene(4), FakeRailWorker({"S4": metrics()}), overpass, previous=recent, osm_ttl_days=7)
+    # A shorter TTL refreshes sooner.
+    run(adapter, scene(3), FakeRailWorker({}), overpass, previous=aged(fourth, 8), osm_ttl_days=7)
     assert len(overpass.calls) == 3
 
 
-def test_an_overpass_failure_keeps_the_cached_network_and_records_it(adapter):
-    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
-    aged = json.loads(json.dumps(first))
-    old = (datetime.now(UTC) - timedelta(days=31)).isoformat()
-    aged["sites"]["sydney"]["network"]["fetched_at"] = old
+def test_a_failed_refresh_keeps_the_cached_network_and_waits_before_it_tries_again(adapter):
+    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    old = first["sites"]["sydney"]["network"]["fetched_at"]
 
     failing = FakeOverpass(osm.OsmError("rate_limited", "HTTP 429 from overpass-api.de", transient=True))
-    worker = FakeRailWorker({"S2": metrics()})
-    state = run(adapter, scene(2), worker, failing, previous=aged)
+    state = run(adapter, scene(1), FakeRailWorker({}), failing, previous=first)
     record = state["sites"]["sydney"]
-    assert len(failing.calls) == 1
-    assert record["network"] == aged["sites"]["sydney"]["network"]  # kept
+    assert len(failing.calls) == 1 and state["measured"] == []
+    assert record["network"] == first["sites"]["sydney"]["network"]  # kept
     assert record["network_error"]["code"] == "rate_limited"
     assert "HTTP 429" in record["network_error"]["detail"]
     assert record["network_error"]["at"] == state["fetched_at"]
-    # Measured with the cached network: stale is better than nothing, and the entry says how old.
-    assert state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}] and "last_error" not in record
-    assert worker.calls[0]["network"]["fetched_at"] == old
-    assert record["history"][-1]["network_fetched_at"] == old
+    assert "last_error" not in record  # the site itself is fine: nothing new, a cached network
 
-    # A later fetch that works clears the record of the failure.
-    worker = FakeRailWorker({"S3": metrics()})
-    recovered = run(adapter, scene(3), worker, FakeOverpass(network()), previous=state)
+    # Within NETWORK_RETRY_HOURS it is not asked again ...
+    assert ra.NETWORK_RETRY_HOURS == 6
+    again = run(adapter, scene(1), FakeRailWorker({}), failing, previous=state)
+    assert len(failing.calls) == 1 and again["sites"]["sydney"]["network_error"] == record["network_error"]
+    # ... and a new scene meanwhile is measured with the cached network, stale as it is.
+    worker = FakeRailWorker({"S2": metrics()})
+    measured = run(adapter, scene(2), worker, failing, previous=again)
+    assert len(failing.calls) == 1 and measured["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert worker.calls[0]["network"]["fetched_at"] == old
+    assert measured["sites"]["sydney"]["history"][-1]["network_fetched_at"] == old
+    assert measured["sites"]["sydney"]["history"][-1]["network_stale"] is True
+
+    # Once the wait is over it is tried again, and a fetch that works clears the failure.
+    later = json.loads(json.dumps(measured))
+    seven_hours_ago = (datetime.now(UTC) - timedelta(hours=7)).isoformat()
+    later["sites"]["sydney"]["network_error"]["at"] = seven_hours_ago
+    recovered = run(adapter, scene(2), FakeRailWorker({}), FakeOverpass(network()), previous=later)
     assert "network_error" not in recovered["sites"]["sydney"]
     assert recovered["sites"]["sydney"]["network"]["fetched_at"] == recovered["fetched_at"]
+
+
+def test_a_slow_failing_overpass_never_stops_a_city_with_a_cached_network(adapter):
+    """The review's case: Overpass answers 504 after 25-30 s every time, the cached network is 31
+    days old, and a new scene is out. The scene is measured first, with the cached network; the
+    refresh is tried on a tick with nothing new, fails slowly, and the next scene is measured too."""
+    clock = Clock()
+    adapter.clock = clock
+    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    slow = FakeOverpass(osm.OsmError("http", "HTTP 504 from overpass-api.de", transient=True), 29.0, clock)
+
+    worker = FakeRailWorker({"S2": metrics(), "S3": metrics()}, takes=20.0, clock=clock)
+    state = run(adapter, scene(2), worker, slow, previous=first)
+    assert state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}] and slow.calls == []
+    assert state["sites"]["sydney"]["history"][-1]["network_stale"] is True
+
+    quiet = run(adapter, scene(2), worker, slow, previous=state)
+    assert len(slow.calls) == 1 and quiet["sites"]["sydney"]["network_error"]["code"] == "http"
+    assert quiet["sites"]["sydney"]["network"] == first["sites"]["sydney"]["network"]
+
+    third = run(adapter, scene(3), worker, slow, previous=quiet)
+    assert third["measured"] == [{"site_id": "sydney", "scene_id": "S3"}] and len(slow.calls) == 1
 
 
 def test_no_network_means_no_measurement_and_a_last_error(adapter):
@@ -424,17 +529,45 @@ def test_no_network_means_no_measurement_and_a_last_error(adapter):
     worker, stac = FakeRailWorker({"S1": metrics()}), scene(1)
     state = run(adapter, stac, worker, failing)
     record = state["sites"]["sydney"]
-    assert worker.calls == [] and stac.bodies == [] and state["measured"] == []
+    assert worker.calls == [] and len(stac.bodies) == 1 and state["measured"] == []  # the scene first
     assert record["last_error"]["code"] == "osm" and "no answer" in record["last_error"]["detail"]
     assert record["network_error"]["code"] == "timeout" and "network" not in record
     assert record["last_attempt_at"] == state["fetched_at"]  # tried, so the next tick may try others first
     changed, summary = adapter.material_diff(None, state)
     assert not changed and summary == "nothing measured yet: Sydney: osm"
+    # With no network the fetch is tried every tick (the retry wait is for refreshing a cached one).
+    run(adapter, scene(1), worker, failing, previous=state)
+    assert len(failing.calls) == 2
 
     broken = FakeOverpass(ValueError("polygon must be [[lon, lat], ...]"))
     state = run(adapter, scene(1), worker, broken)
     assert state["sites"]["sydney"]["network_error"]["code"] == "fetch"
     assert "ValueError" in state["sites"]["sydney"]["network_error"]["detail"]
+
+
+def test_a_changed_polygon_gets_its_own_network(adapter):
+    """The cached network is the old polygon's: it is not used for the new one, even fresh, so the
+    new area is never measured against the old area's stations and the source link is the new
+    bbox's. If the new one cannot be fetched, the site waits, and the old network is dropped."""
+    overpass = FakeOverpass(network())
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
+    assert first["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(SYDNEY)
+    wider = [[150.5, -34.3], [151.7, -34.3], [151.7, -33.4], [150.5, -33.4]]
+    sites = [{"id": "sydney", "name": "Sydney", "polygon": wider}]
+
+    failing = FakeOverpass(osm.OsmError("timeout", "no answer", transient=True))
+    waiting = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), failing, previous=first, sites=sites)
+    assert waiting["measured"] == [] and [c["polygon"] for c in failing.calls] == [wider]
+    assert waiting["sites"]["sydney"]["last_error"]["code"] == "osm"
+    assert "network" not in waiting["sites"]["sydney"]  # the old polygon's is dropped, never used
+
+    fresh = FakeOverpass(network(polygon=wider))
+    state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), fresh, previous=first, sites=sites)
+    assert [c["polygon"] for c in fresh.calls] == [wider] and len(overpass.calls) == 1
+    assert state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert state["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(wider)
+    assert state["sites"]["sydney"]["history"][-1]["site_key"] == vision_sites.site_key(wider)
+    assert adapter.source_refs(state)[1]["url"] == osm.query_url(wider) != osm.query_url(SYDNEY)
 
 
 def test_search_and_worker_failures_keep_the_history_and_say_why(adapter):
@@ -477,6 +610,7 @@ def test_measuring_is_deferred_when_the_budget_is_nearly_spent(adapter):
     assert worker.calls == [] and state["measured"] == []
     assert record["last_error"] == {"at": state["fetched_at"], "code": "time_budget", "detail": "next tick"}
     assert record["network"]["counts"]["stations"] == 1  # the network was still fetched and kept
+    assert "last_attempt_at" not in record  # deferred, not worked on to an outcome
 
     # The next tick has the network and measures at once.
     second = run(adapter, scene(1), worker, overpass, previous=state)
@@ -500,12 +634,17 @@ def test_the_network_is_not_fetched_under_the_reserve_and_a_stale_one_serves(ada
     state = run(adapter, scene(1), worker, overpass, previous=previous, sites=sites, max_sites_per_tick=2)
 
     assert [m["site_id"] for m in state["measured"]] == ["sydney"]
-    assert [c["polygon"] for c in overpass.calls] == [SYDNEY]  # 20 s left: no second fetch
+    assert [c["polygon"] for c in overpass.calls] == [SYDNEY]  # a new scene: no refresh first
     melbourne = state["sites"]["melbourne"]
     assert melbourne["network"]["fetched_at"] == old and "network_error" not in melbourne
     assert melbourne["last_error"]["code"] == "time_budget"
-    assert melbourne["last_attempt_at"] == state["fetched_at"]
+    # Deferred for the budget is not an attempt: Melbourne goes first next tick.
+    assert "last_attempt_at" not in melbourne
     assert len(worker.calls) == 1
+    clock.now = 0.0
+    second = run(adapter, scene(1), worker, overpass, previous=state, sites=sites)
+    assert [m["site_id"] for m in second["measured"]] == ["melbourne"]
+    assert second["sites"]["melbourne"]["history"][-1]["network_stale"] is True
 
 
 def test_a_site_past_the_budget_is_not_attempted_at_all(adapter):
@@ -518,6 +657,35 @@ def test_a_site_past_the_budget_is_not_attempted_at_all(adapter):
     melbourne = state["sites"]["melbourne"]
     assert melbourne["last_error"]["code"] == "time_budget" and "last_attempt_at" not in melbourne
     assert len(stac.bodies) == 1 and "network" not in melbourne
+
+
+def test_a_site_that_fails_slowly_every_tick_does_not_starve_the_next(adapter):
+    """The first site in the config has no network and Overpass fails it after 29 s, every tick.
+    The second site is fetched in the time left but cannot be measured (under 45 s): deferred, it
+    is not stamped, so the next tick takes it first and measures it."""
+    clock = Clock()
+    adapter.clock = clock
+    sites = [{"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}, *SITES]
+
+    def fetch(polygon, **kwargs):
+        if polygon == MELBOURNE:
+            clock.advance(29.0)
+            raise osm.OsmError("timeout", "no answer from either endpoint", transient=True)
+        return FakeOverpass(network())(polygon, **kwargs)
+
+    worker = FakeRailWorker({"S1": metrics()})
+    first = run(adapter, scene(1), worker, fetch, sites=sites)
+    assert first["measured"] == [] and first["sites"]["melbourne"]["last_error"]["code"] == "osm"
+    assert first["sites"]["melbourne"]["last_attempt_at"] == first["fetched_at"]
+    sydney = first["sites"]["sydney"]
+    assert sydney["last_error"]["code"] == "time_budget" and "last_attempt_at" not in sydney
+    assert sydney["network"]["counts"]["stations"] == 1  # fetched in the 41 s left, kept
+
+    clock.now = 0.0
+    second = run(adapter, scene(1), worker, fetch, previous=first, sites=sites)
+    assert second["measured"] == [{"site_id": "sydney", "scene_id": "S1"}] and len(worker.calls) == 1
+    # Sydney was stamped this time; Melbourne's older stamp puts it first on the tick after.
+    assert [s["id"] for s in vision_sites.order_sites(sites, second["sites"])] == ["melbourne", "sydney"]
 
 
 def test_sites_rotate_one_per_tick_the_unvisited_first(adapter):
@@ -549,7 +717,7 @@ def test_history_entries_keep_the_metrics_and_cap_the_station_list(adapter):
         "scene_id", "captured_at", "scene_cloud_cover", "coverage", "built_up_km2", "served_km2",
         "desert_km2", "served_share", "station_count", "edge_count", "hubs", "flags", "suggestions",
         "deserts", "stations", "quality_flags", "backend", "build_sha256", "timings_ms", "image_key",
-        "assets", "network_fetched_at", "params",
+        "assets", "network_fetched_at", "network_stale", "site_key", "params",
     }  # fmt: skip
     assert entry["scene_cloud_cover"] == 12.0 and entry["built_up_km2"] == 412.3
     assert entry["edge_count"] == 262
@@ -557,6 +725,7 @@ def test_history_entries_keep_the_metrics_and_cap_the_station_list(adapter):
     assert set(entry["stations"][0]) == set(ra.STATION_FIELDS) and entry["stations"][0]["name"] == "Station 0"
     assert entry["hubs"] == ["s:n0"] and entry["flags"][0]["type"] == "single_point_of_failure"
     assert entry["deserts"][0]["nearest_station"] == "s:n0" and entry["params"]["reach_m"] == 1000.0
+    assert entry["network_stale"] is False and entry["site_key"] == vision_sites.site_key(SYDNEY)
     assert entry["build_sha256"] == "ab" * 32 and entry["timings_ms"]["graph"] == 100.0
     assert entry["assets"]["red"].endswith("S1/red.tif") and entry["backend"] == "opencv"
     assert "edges" not in entry and "warnings" not in entry
@@ -618,6 +787,23 @@ def test_the_first_tick_is_material_with_a_plain_summary(adapter):
     assert "240 km² beyond 800 m of a station" in adapter.material_diff(None, state)[1]
 
 
+def test_the_first_observation_is_the_first_clear_scene(adapter):
+    """A first scene below the coverage floor is kept but reports nothing (a served share over a
+    third of a city is not an observation); the next clear scene is the first observation."""
+    cloudy = history_state(adapter, [(0.45, 300.0, 178, 0.31)])
+    assert cloudy["sites"]["sydney"]["history"][-1]["coverage"] == 0.31
+    changed, summary = adapter.material_diff(None, cloudy)
+    assert not changed
+    assert summary == "nothing measured clearly yet: Sydney: coverage 31 % is below the 60 % floor"
+    clear = run(adapter, scene(5, day=20), FakeRailWorker({"S5": metrics()}), previous=cloudy)
+    changed, summary = adapter.material_diff(cloudy, clear)
+    assert changed and summary.startswith("First observation. Sydney: served share 73 %")
+    assert adapter.agent.calls == []
+    # After that, a cloudy scene is just below the floor, as before.
+    again = run(adapter, scene(6, day=21), FakeRailWorker({"S6": metrics(coverage=0.3)}), previous=clear)
+    assert adapter.material_diff(clear, again) == (False, "Sydney: coverage below the floor")
+
+
 def test_a_first_tick_that_measured_nothing_is_not_material(adapter):
     empty = run(adapter, FakeStac([]), FakeRailWorker({}))
     changed, summary = adapter.material_diff(None, empty)
@@ -648,10 +834,65 @@ def test_the_served_share_desert_and_station_count_rules(adapter, latest, reason
     assert changed, summary
     assert summary.startswith("Sydney: served share") and "in scene S2 (captured 2026-10-12" in summary
     assert "against a baseline of 73 % from 2 earlier clear scenes" in summary
-    assert f"; {reason}; checked by the vision agent: the new line is in the news" in summary
+    assert f'; {reason}; {NOTE}"the new line is in the news' in summary
     asked = adapter.agent.calls[0]["verdict"]
     assert asked["reason"] == reason and asked["baseline"]["station_count"] == 178
     assert asked["baseline"]["served_share"] == 0.7325 and asked["baseline"]["desert_km2"] == 111.65
+
+
+@pytest.mark.parametrize(
+    ("series", "reason"),
+    [
+        ([(0.28, 111.3, 178), (0.30, 111.3, 178)], "served share moved"),  # 0.30 - 0.28 is 0.0199999...
+        ([(0.73, 100.5, 178), (0.73, 110.55, 178)], "desert area moved"),  # 10 % of 100.5 km², 10.049999...
+    ],
+)
+def test_a_move_of_exactly_the_threshold_is_material(adapter, series, reason):
+    state = history_state(adapter, series)
+    changed, summary = adapter.material_diff(EARLIER, state)
+    assert changed and f"; {reason};" in summary
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"reach_m": 800},
+        {"params": {"hub_count": 4}},
+        {"sites": [{"id": "sydney", "name": "Sydney", "polygon": [[150.8, -34.2], *SYDNEY[1:]]}]},
+    ],
+)
+def test_an_edited_reach_params_or_polygon_starts_a_new_baseline(adapter, edit):
+    """The reach goes from 1000 to 800 m (or a parameter or the polygon changes): the next scene's
+    served share and desert area move sharply, but against scenes measured another way, so it is
+    not material; it is the first of a new baseline."""
+    state = history_state(adapter, [(0.73, 111.3, 178), (0.735, 112.0, 178)])
+    edited = run(adapter, scene(7, day=20), FakeRailWorker({"S7": metrics(0.62, 160.0, 180)}), previous=state,
+                 **edit)  # fmt: skip
+    changed, summary = adapter.material_diff(state, edited)
+    assert (changed, summary) == (False, "Sydney: baseline still building")
+    assert adapter.agent.calls == []
+    (verdict,) = adapter.assess(edited)
+    assert verdict["params_changed"] is True and verdict["baseline_scenes"] == 0
+    # The next scene measured the new way has a baseline of one, and moves nothing.
+    after = run(adapter, scene(8, day=21), FakeRailWorker({"S8": metrics(0.62, 160.0, 180)}), previous=edited,
+                **edit)  # fmt: skip
+    assert adapter.material_diff(edited, after) == (False, "Sydney: within the usual range")
+    (verdict,) = adapter.assess(after)
+    assert verdict["params_changed"] is False and verdict["baseline_scenes"] == 1
+
+
+def test_the_agent_is_told_the_reach_and_whether_the_scene_before_was_measured_another_way(adapter):
+    """1000 m, 1000 m, then one scene at 800 m, then 1000 m again with a moved share: the baseline
+    is the two earlier 1000 m scenes, and the brief says the scene just before differs."""
+    state = history_state(adapter, [(0.73, 111.3, 178), (0.735, 112.0, 178)])
+    state = run(adapter, scene(7, day=20), FakeRailWorker({"S7": metrics(0.62, 160.0, 178)}), previous=state,
+                reach_m=800)  # fmt: skip
+    state = run(adapter, scene(8, day=21), FakeRailWorker({"S8": metrics(0.70, 111.3, 178)}), previous=state)
+    changed, summary = adapter.material_diff(EARLIER, state)
+    assert changed and "from 2 earlier clear scenes" in summary
+    asked = adapter.agent.calls[0]["verdict"]
+    assert asked["reach_m"] == 1000.0 and asked["params_changed"] is True
+    assert asked["baseline"]["station_count"] == 178
 
 
 @pytest.mark.parametrize("latest", [(0.745, 118.0, 178), (0.715, 105.0, 178), (0.7325, 111.65, 178)])
@@ -705,7 +946,7 @@ def test_thresholds_come_from_the_topic(adapter):
 def test_triage_gets_the_rail_task_the_network_and_a_deadline(adapter):
     state = history_state(adapter, [(0.73, 111.3, 178), (0.70, 111.3, 178)], params={"hub_count": 4})
     changed, summary = adapter.material_diff(EARLIER, state)
-    assert changed and "checked by the vision agent" in summary
+    assert changed and "the vision agent's note (not a measurement)" in summary
     (asked,) = adapter.agent.calls
     assert asked["task"] == "rail_access" and asked["read_timeout"] == 58.0
     assert set(asked["network"]) == {"ways", "stations", "pois", "fetched_at"}
@@ -735,7 +976,8 @@ def test_an_artefact_is_not_material_and_triage_can_be_turned_off(adapter):
     adapter.triage_agent = FakeAgent("artefact", "a cloud bank over the western suburbs")
     state = history_state(adapter, [(0.73, 111.3, 178), (0.70, 111.3, 178)])
     changed, summary = adapter.material_diff(EARLIER, state)
-    assert not changed and "the agent judged it an artefact: a cloud bank" in summary
+    assert not changed
+    assert f'the agent judged it an artefact; {NOTE}"a cloud bank' in summary
     assert state["sites"]["sydney"]["history"][-1]["triage"]["verdict"] == "artefact"
 
     adapter.triage_agent = adapter.agent
@@ -761,34 +1003,42 @@ def test_figures_name_the_scene_year_and_osm(adapter):
     state = history_state(adapter, [(0.73, 111.3, 178)])
     (figure,) = adapter.figures(state)
     assert figure["key"] == "vision/rail/sydney/S0.png"
+    # It names the figure's symbols: the heat, the outlines, the network, the flags and the links.
     assert figure["caption"] == (
-        "Rail access heat map of Sydney from the Sentinel-2 scene captured 2026-10-10: built-up density "
-        "(warm colours), areas more than 1000 m from a station (outlined), rail lines and stations from "
-        "OpenStreetMap. Processed imagery; contains modified Copernicus Sentinel data 2026; map data © "
-        "OpenStreetMap contributors."
+        "Rail access in Sydney, Sentinel-2 2026-10-10: built-up density (warm colours), areas beyond 1 km "
+        "of a station (outlined), OpenStreetMap rail lines and stations, flagged stations (red rings) and "
+        "simulated links (dashed). Processed imagery; contains modified Copernicus Sentinel data 2026; map "
+        "data © OpenStreetMap contributors."
     )
     assert figure["alt"] == (
-        "Processed satellite map of Sydney showing rail lines, stations and built-up areas beyond walking "
-        "reach of a station"
+        "Processed satellite map of Sydney showing rail lines, stations, flagged stations, simulated links "
+        "and built-up areas beyond walking reach of a station"
     )
     assert clean_figures([figure]) == [figure]  # within common/figures.py's limits, nothing changed
     # The reach the scene was measured with, not the default.
     state = history_state(adapter, [(0.73, 111.3, 178)], reach_m=800)
-    assert "areas more than 800 m from a station" in adapter.figures(state)[0]["caption"]
+    assert "areas beyond 800 m of a station" in adapter.figures(state)[0]["caption"]
     # Nothing for a tick that measured nothing.
     assert adapter.figures({"measured": [], "sites": state["sites"]}) == []
 
 
 def test_a_long_site_name_is_cut_so_the_figure_is_kept(adapter):
-    name = ("Greater Sydney metropolitan area with the Illawarra and the Blue Mountains " * 3).strip()
-    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), sites=[{"id": "sydney", "name": name,
-                                                                               "polygon": SYDNEY}])
+    # The longest name a config may give (80 characters): the caption fits, the alt text is cut.
+    name = "Greater Sydney metropolitan area with the Illawarra, the Blue Mountains and more"
+    assert len(name) == vision_sites.MAX_SITE_NAME_CHARS
+    sites = [{"id": "sydney", "name": name, "polygon": SYDNEY}]
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), sites=sites, reach_m=800)
     (figure,) = adapter.figures(state)
     assert len(figure["caption"]) <= MAX_CAPTION_CHARS and len(figure["alt"]) <= MAX_ALT_CHARS
-    assert figure["caption"].startswith("Rail access heat map of Greater Sydney metropolitan area")
+    assert figure["caption"].startswith("Rail access in Greater Sydney metropolitan area")
     assert "…" in figure["caption"] and figure["caption"].endswith("map data © OpenStreetMap contributors.")
     assert "…" in figure["alt"] and figure["alt"].endswith("beyond walking reach of a station")
     assert clean_figures([figure]) == [figure]
+    # A longer one (a state written before names were capped) is cut the same way.
+    state["sites"]["sydney"]["name"] = name * 4
+    (figure,) = adapter.figures(state)
+    assert len(figure["caption"]) == MAX_CAPTION_CHARS and clean_figures([figure]) == [figure]
+    assert "(red rings) and simulated links (dashed)" in figure["caption"]
 
 
 def test_source_refs_link_the_scene_and_the_overpass_query(adapter):
@@ -944,7 +1194,7 @@ def test_the_running_state_round_trips_through_the_research_tick(tick_env, monke
     assert result["status"] == "material_change"
     prompt = bedrock.call_args[0][0]
     assert "served share 70 % in scene S2" in prompt and "180 stations against 178" in prompt
-    assert "served share moved, station count changed; checked by the vision agent" in prompt
+    assert "served share moved, station count changed; the vision agent's note (not a measurement)" in prompt
     assert [e["scene_id"] for e in running_state()["sites"]["sydney"]["history"]] == ["S0", "S1", "S2"]
     assert len(boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]) == 2
 

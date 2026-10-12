@@ -39,10 +39,11 @@ scene with other settings or compare the previous one, and answers "real" or "ar
 
 **Material** when a site's new count differs from the median of its previous clear scenes by at
 least `absolute_threshold` *and* `relative_threshold`, the new scene's coverage is at least
-`coverage_floor`, and there are at least `min_baseline` earlier clear scenes. The first tick that
-measures anything is material (the adapter contract's first observation); a tick before that,
-with nothing measured (no scene in the lookback, the worker unreachable), is not: a Finding with
-nothing in it would still cost a model call and make an empty article. Rule 2 holds: every
+`coverage_floor`, and there are at least `min_baseline` earlier clear scenes. The first tick with
+a scene at or above the coverage floor is material (the adapter contract's first observation); a
+tick before that, with nothing measured (no scene in the lookback, the worker unreachable) or only
+scenes below the floor, is not: a Finding with nothing in it, or a count made over a third of the site,
+would still cost a model call and make an empty or misleading article. Rule 2 holds: every
 Bedrock call comes after this.
 
 **State between ticks.** The baseline must include every scene measured, not only those that were
@@ -282,16 +283,16 @@ class SatelliteVisionAdapter(Adapter):
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
-        first = not vision_sites.anything_measured(old_state)
-        if not first:
-            self._triage(new_state, [v for v in verdicts if v["material"]])
+        floor = {**DEFAULTS, **(new_state.get("thresholds") or {})}["coverage_floor"]
+        first = vision_sites.first_observation(old_state, new_state, verdicts, floor)
         noun = new_state.get("object_noun") or DEFAULTS["object_noun"]
-        if first:
-            if not verdicts:
-                errors = vision_sites.site_errors(new_state) or "no scene to measure"
-                return False, f"nothing measured yet: {errors}"
-            lines = [f"{v['name']}: {v['count']} {noun} (coverage {v['coverage']:.0%})" for v in verdicts]
+        if first is not None:
+            clear, not_yet = first
+            if not clear:
+                return False, not_yet
+            lines = [f"{v['name']}: {v['count']} {noun} (coverage {v['coverage']:.0%})" for v in clear]
             return True, "First observation. " + "; ".join(lines)
+        self._triage(new_state, [v for v in verdicts if v["material"]])
         material = [v for v in verdicts if v["material"]]
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
@@ -341,7 +342,8 @@ class SatelliteVisionAdapter(Adapter):
             verdict["triage"] = latest["triage"]
             if outcome["verdict"] != "real":
                 verdict["material"] = False
-                verdict["reason"] = f"the agent judged it an artefact: {outcome['reason']}"
+                note = vision_triage.quoted_note(outcome["reason"])
+                verdict["reason"] = f"the agent judged it an artefact; {note}"
 
     def source_refs(self, new_state: dict) -> list[dict]:
         return vision_sites.stac_refs(new_state.get("measured") or [], new_state.get("fetched_at"))
@@ -390,5 +392,5 @@ def _describe(v: dict, noun: str) -> str:
         f"({sign}{v['delta']:g}, {sign}{v['relative']:.0%}); coverage {v['coverage']:.0%}"
     )
     if v.get("triage"):
-        text += f"; checked by the vision agent: {v['triage']['reason']}"
+        text += f"; {vision_triage.quoted_note(v['triage']['reason'])}"
     return text
