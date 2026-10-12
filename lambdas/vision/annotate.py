@@ -3,8 +3,9 @@
 A contrast-stretched NIR crop, the parts of the site that could not be measured shaded, and each
 detection's rotated box. A "Processed imagery" caption is burned into the image itself, so the
 figure can't pass as raw satellite imagery wherever it ends up (the risks doc's item 1); the full
-attribution sentence is the page's job, not the image's. `burn_caption` and `encode_png` are
-shared with the rail access figure (rail_annotate.py).
+attribution sentence is the page's job, not the image's. `burn_caption`, its font and bar
+measures (which the rail figure's legend lines up under) and `encode_png` are shared with the
+rail access figure (rail_annotate.py).
 """
 
 from __future__ import annotations
@@ -19,6 +20,10 @@ from vision.detect import stretch
 BOX_COLOUR = (0, 215, 255)  # BGR amber
 UNMEASURED_TINT = (90, 60, 40)  # BGR slate, blended over what wasn't measured
 DEFAULT_CAPTION = "Processed imagery - BloggerBear"
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+CAPTION_PAD = 4  # px between the caption's text and its bar's edges, and between its lines
+# The caption's smallest Hershey scale: below it the letters of the simplex font run together.
+CAPTION_MIN_SCALE = 0.35
 
 
 def annotate(
@@ -61,16 +66,40 @@ def burn_caption(image: np.ndarray, lines: Sequence[str]) -> np.ndarray:
     lines = [line for line in lines if line]
     if not lines:
         return image
-    font, font_scale = cv2.FONT_HERSHEY_SIMPLEX, max(0.35, image.shape[1] / 1600.0)
-    sizes = [cv2.getTextSize(line, font, font_scale, 1) for line in lines]
-    width = max(tw for (tw, _), _ in sizes) + 8
-    height = sum(th + base + 4 for (_, th), base in sizes) + 4
+    font_scale = caption_font_scale(image)
+    sizes = _text_sizes(lines, font_scale)
+    width, height = _bar_size(sizes)
     cv2.rectangle(image, (0, 0), (width, height), (0, 0, 0), thickness=-1)
-    y = 4
+    y = CAPTION_PAD
     for line, ((_, th), base) in zip(lines, sizes, strict=True):
-        cv2.putText(image, line, (4, y + th), font, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
-        y += th + base + 4
+        cv2.putText(image, line, (CAPTION_PAD, y + th), FONT, font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+        y += th + base + CAPTION_PAD
     return image
+
+
+def caption_font_scale(image: np.ndarray) -> float:
+    """The Hershey scale the caption is set in: it grows with the image width so the words stay
+    legible after the figure is scaled down."""
+    return max(CAPTION_MIN_SCALE, image.shape[1] / 1600.0)
+
+
+def caption_bar_size(image: np.ndarray, lines: Sequence[str]) -> tuple[int, int]:
+    """(width, height) in px of the bar `burn_caption` draws on `image` for `lines`; (0, 0) when
+    there is nothing to burn. The bar's last row is `height`: cv2.rectangle fills both corners."""
+    lines = [line for line in lines if line]
+    if not lines:
+        return 0, 0
+    return _bar_size(_text_sizes(lines, caption_font_scale(image)))
+
+
+def _text_sizes(lines: Sequence[str], font_scale: float) -> list:
+    return [cv2.getTextSize(line, FONT, font_scale, 1) for line in lines]
+
+
+def _bar_size(sizes: Sequence) -> tuple[int, int]:
+    width = max(tw for (tw, _), _ in sizes) + 2 * CAPTION_PAD
+    height = sum(th + base + CAPTION_PAD for (_, th), base in sizes) + CAPTION_PAD
+    return width, height
 
 
 def encode_png(image: np.ndarray) -> bytes:

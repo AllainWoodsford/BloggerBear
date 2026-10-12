@@ -5,7 +5,8 @@ The scene is a synthetic 400 x 400 city at 20 m in UTM zone 56S: a vegetated bac
 built district, a lake (SCL 6) inside it and a cloud (SCL 9) outside it. The network is drawn in
 pixels and turned into lon/lat with `geo.utm_to_lonlat`, so every test also round-trips the
 projection. The graph measures, flags and suggestions are tested on hand-built graphs whose
-answers are known.
+answers are known. The figure is tested by decoding the PNG and sampling pixels, on the city's
+own analysis and on copies of its metrics with flags and suggestions injected.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ import networkx as nx
 import numpy as np
 import pytest
 
+from common.vision_client import MAX_IMAGE_BYTES
 from vision import access, geo, urban
 from vision.rail_analyse import (
     PARAM_LIMITS,
+    RailAnalysis,
     RailParams,
     analyse_rail_access,
     flag_stations,
@@ -28,7 +31,14 @@ from vision.rail_analyse import (
     project_network,
     suggest,
 )
-from vision.rail_annotate import annotate_rail
+from vision.rail_annotate import (
+    DESERT_COLOUR,
+    FLAG_COLOUR,
+    SUGGESTION_COLOUR,
+    _dashed_line,
+    annotate_rail,
+    burn_legend,
+)
 
 SIZE, PX = 400, 20.0
 TRANSFORM, EPSG = (300000.0, 20.0, 0.0, 6300000.0, 0.0, -20.0), 32756
@@ -668,3 +678,222 @@ def test_the_figure_is_a_png_within_the_cap_with_a_caption_bar(analysis):
     assert cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR).shape == (SIZE, SIZE, 3)
     with pytest.raises(ValueError):
         annotate_rail(analysis, city()["red"][:-1], 2024)
+
+
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def figure(analysis, max_side=1024, layers=None, **metrics):
+    """The figure of `analysis` decoded to BGR, with `metrics` entries replacing its metrics' (and
+    `layers` entries its layers'); the fixture is never changed. The PNG must fit the pipeline's
+    image cap and render the same twice."""
+    variant = RailAnalysis(
+        metrics={**analysis.metrics, **metrics}, layers={**analysis.layers, **(layers or {})}
+    )
+    png = annotate_rail(variant, city()["red"], "2024", max_side=max_side)
+    assert png[:8] == PNG_SIGNATURE and len(png) <= MAX_IMAGE_BYTES
+    assert annotate_rail(variant, city()["red"], "2024", max_side=max_side) == png
+    return cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+
+
+def near(pixel, colour, tolerance=40):
+    return all(abs(int(p) - c) <= tolerance for p, c in zip(pixel, colour, strict=True))
+
+
+def white(pixel, floor=200):
+    return min(int(v) for v in pixel) >= floor
+
+
+def test_a_flagged_station_gets_a_red_outer_ring(analysis):
+    # The city flags Central (a hub, drawn at radius 6) as its single point of failure: a red ring
+    # of radius 10, outside the hub marker and over the lines that meet there.
+    image = figure(analysis)
+    assert near(image[200, 210], FLAG_COLOUR) and near(image[190, 200], FLAG_COLOUR)
+    # West (radius 2) is not flagged, so there is nothing red at radius 6 above it ...
+    assert not near(image[194, 40], FLAG_COLOUR)
+    # ... until a flag names it.
+    flag = {"type": "isolated_high_demand", "station": "s:n1", "name": "West", "activity": 0.0336,
+            "degree": 1, "isolation_weight": 32.0}  # fmt: skip
+    image = figure(analysis, flags=[*analysis.metrics["flags"], flag])
+    assert near(image[194, 40], FLAG_COLOUR)
+    assert near(image[200, 210], FLAG_COLOUR)  # Central keeps its own
+
+
+def test_the_top_quarter_of_isolation_weight_gets_a_thicker_ring(analysis):
+    # East (weight 62.8) is in the top quarter and West (32.0) is not. Both are drawn at radius 6
+    # here, so the ring's inner pixel is clear of the lines that meet them: a thick ring fills it,
+    # a thin ring leaves only its anti-aliased fringe.
+    stations = analysis.metrics["stations"]
+    busy = [{**s, "activity": 1.0} if s["id"] in ("s:n1", "s:n3") else s for s in stations]
+    image = figure(analysis, stations=busy)
+    assert white(image[194, 360], 180) and white(image[195, 360])
+    assert white(image[194, 40], 180) and not white(image[195, 40], 120)
+    # When every weight is the same there is no top quarter, and every ring is thin.
+    alike = [{**s, "isolation_weight": 1.0} for s in busy]
+    image = figure(analysis, stations=alike)
+    assert white(image[194, 360], 180) and not white(image[195, 360], 120)
+
+
+def green_pixels(image, rows, cols):
+    region = image[rows, cols].astype(int)
+    return int(((region[..., 1] > 180) & (region[..., 0] < 140) & (region[..., 2] < 140)).sum())
+
+
+def test_suggested_links_are_dashed_in_green_and_a_feeder_corridor_is_thinner(analysis):
+    # Branch End (340, 120) to East (360, 200): over dark ground, away from both hub markers.
+    link = {"type": "orbital_link", "from": "s:n6", "to": "s:n3", "from_name": "Branch End",
+            "to_name": "East", "straight_km": 1.65, "delta_top_hub_betweenness": -0.1,
+            "delta_mean_d_hub_m": -100.0}  # fmt: skip
+    image = figure(analysis, suggestions=[link])
+    along = np.linspace(0.15, 0.85, 60)
+    on = [near(image[round(120 + 80 * t), round(340 + 20 * t)], SUGGESTION_COLOUR, 60) for t in along]
+    assert 15 <= sum(on) <= 50  # dashes, and gaps between them
+    feeder = {"type": "feeder_corridor", "station": "s:n6", "name": "Branch End", "hub": "s:n3",
+              "hub_name": "East", "length_m": 1650.0}  # fmt: skip
+    thin = figure(analysis, suggestions=[feeder])
+    rows, cols = slice(135, 185), slice(330, 370)
+    assert green_pixels(image, rows, cols) > green_pixels(thin, rows, cols) > 0
+    assert green_pixels(figure(analysis, suggestions=[]), rows, cols) == 0
+
+
+def test_a_ghost_line_is_a_red_polyline_through_its_stations(analysis):
+    # West, Midwest (3 px off its line) and Central in order; a station without a position is
+    # left out and the line still runs through the others.
+    ghost = {"type": "ghost_line", "stations": ["s:n1", "s:far", "s:n7", "s:n2"],
+             "names": ["West", "Far", "Midwest", "Central"]}  # fmt: skip
+    image = figure(analysis, flags=[ghost])
+    for x in (80, 160):  # the midpoints of the two legs, at y 201.5
+        assert any(near(image[y, x], FLAG_COLOUR) for y in (201, 202))
+    plain = figure(analysis, flags=[])
+    assert not any(near(plain[y, x], FLAG_COLOUR) for y in (201, 202) for x in (80, 160))
+
+
+def test_odd_flags_and_suggestions_draw_nothing_and_the_figure_still_renders(analysis):
+    far = {**analysis.metrics["stations"][0], "id": "s:far", "name": "Far", "activity": None,
+           "isolation_weight": None}  # fmt: skip
+    stations = [*analysis.metrics["stations"], far]
+    layers = {"stations_px": [*analysis.layers["stations_px"], None]}
+    flags = [
+        {"type": "isolated_high_demand", "station": "s:far"},  # no position
+        {"type": "ghost_line", "stations": ["s:far", "s:n1"]},  # one point left
+        {"type": "single_point_of_failure", "station": "s:unknown"},
+    ]
+    suggestions = [
+        {"type": "orbital_link", "from": "s:nowhere", "to": "s:n3"},
+        {"type": "feeder_corridor", "station": "s:n3", "hub": "s:nowhere"},
+        {"type": "mystery"},
+    ]
+    odd = figure(analysis, layers=layers, stations=stations, flags=flags, suggestions=suggestions)
+    plain = figure(analysis, flags=[], suggestions=[])
+    assert odd.shape == plain.shape == (SIZE, SIZE, 3)
+    assert np.array_equal(odd, plain)
+    assert figure(analysis, max_side=256, flags=[], suggestions=[]).shape == (256, 256, 3)
+
+
+def black_boxes(image, column=2):
+    """The runs of black rows down `column` of the figure as (first, last) pairs: the caption bar,
+    then the legend box, each padded so the column sits left of any glyph."""
+    black = (image[:, column] == 0).all(axis=1)
+    rows = np.flatnonzero(black)
+    breaks = np.flatnonzero(np.diff(rows) > 1)
+    firsts = [rows[0], *rows[breaks + 1]]
+    lasts = [*rows[breaks], rows[-1]]
+    return list(zip(firsts, lasts, strict=True))
+
+
+def test_the_legend_sits_under_the_caption_bar_within_a_quarter_of_the_height(analysis):
+    # The city's figure is 400 px: the legend, at the caption's scale, one row under its bar.
+    image = figure(analysis)
+    caption, legend = black_boxes(image)[:2]
+    assert caption[0] == 0 and legend[0] == caption[1] + 2  # one row of the image between them
+    height = legend[1] - legend[0] + 1
+    assert 40 <= height <= SIZE // 4
+    width = next(x for x in range(SIZE) if (image[legend[1], x] != 0).any())
+    assert 150 <= width <= 0.75 * SIZE
+    box = image[legend[0] : legend[1] + 1, :width].astype(int)
+    for colour in (FLAG_COLOUR, SUGGESTION_COLOUR, DESERT_COLOUR, (255, 255, 255)):
+        assert (np.abs(box - colour).max(axis=2) <= 60).any(), colour  # every symbol is drawn
+    # A thumbnail has no room for a legible legend, so it has none: only the caption bar is black.
+    assert len(black_boxes(figure(analysis, max_side=256))) == 1
+
+
+def legend_box(side):
+    """(height, width) in px of the legend burned on a plain grey `side` px square; (0, 0) for none."""
+    canvas = np.full((side, side, 3), 128, np.uint8)
+    burn_legend(canvas)
+    rows = np.flatnonzero((canvas[:, 2] == 0).all(axis=1))
+    if not len(rows):
+        return 0, 0
+    return len(rows), next(x for x in range(side) if (canvas[rows[-1], x] != 0).any())
+
+
+def test_the_legend_scales_with_the_figure_and_keeps_to_its_share():
+    boxes = {side: legend_box(side) for side in (256, 400, 1024, 3000)}
+    assert boxes[256] == (0, 0)
+    for side in (400, 1024, 3000):
+        height, width = boxes[side]
+        assert 0 < height <= side / 4 and 0 < width <= 0.75 * side
+    assert boxes[400][0] < boxes[1024][0] < boxes[3000][0]
+    assert boxes[400][1] < boxes[1024][1] < boxes[3000][1]
+
+
+def test_the_dashed_line_leaves_gaps():
+    for thickness, lit in ((2, (3, 7)), (1, (4, 7))):
+        canvas = np.zeros((5, 60), np.uint8)
+        _dashed_line(canvas, (2, 2), (57, 2), 255, thickness)
+        on = canvas[2] >= 128
+        assert on[5] and not on[10]  # the first dash's middle, the first gap's middle
+        assert lit[0] <= on[:10].sum() <= lit[1]  # about 6 of every 10 px, caps and all
+        assert 25 <= on.sum() <= 42
+        assert canvas[0].max() < 128 and canvas[4].max() < 128  # an anti-aliased fringe at most
+    canvas = np.zeros((5, 5), np.uint8)
+    _dashed_line(canvas, (2, 2), (2, 2), 255, 2)
+    assert not canvas.any()
+
+
+def test_a_city_sized_figure_with_every_flag_and_suggestion_stays_under_the_cap(analysis):
+    """2,000 stations (the metrics' cap), 400 flags and 10 suggestions on a 1024 px grid, the
+    scene textured: the PNG must fit the pipeline's image cap at the worker's max_side."""
+    side, count = 1024, 2000
+    rng = np.random.default_rng(0)
+
+    def grow(layer, interpolation):
+        return cv2.resize(layer, (side, side), interpolation=interpolation)
+
+    red = grow(city()["red"], cv2.INTER_NEAREST).astype(np.float64) + rng.normal(0, 100, (side, side))
+    red = red.clip(0, 65535).astype(np.uint16)
+    xs, ys = rng.uniform(0, side - 1, count), rng.uniform(0, side - 1, count)
+    graph, stations, edges = nx.Graph(), [], []
+    for i in range(count):
+        graph.add_node(f"s:{i}", kind="station", x=float(xs[i]), y=float(ys[i]), station=str(i))
+        stations.append({"id": f"s:{i}", "name": f"S{i}", "activity": float(rng.uniform(0, 1)),
+                         "isolation_weight": float(rng.uniform(0, 100))})  # fmt: skip
+        if i:
+            graph.add_edge(f"s:{i - 1}", f"s:{i}", length_m=100.0)
+            edges.append({"from": f"s:{i - 1}", "to": f"s:{i}", "betweenness": float(rng.uniform(0, 1))})
+    flags = [{"type": "isolated_high_demand", "station": f"s:{i}"} for i in range(200)]
+    flags += [{"type": "single_point_of_failure", "station": f"s:{i}"} for i in range(200, 390)]
+    flags += [
+        {"type": "ghost_line", "stations": [f"s:{j}" for j in range(k, k + 5)]} for k in range(400, 450, 5)
+    ]
+    suggestions = [{"type": "orbital_link", "from": f"s:{i}", "to": f"s:{i + 1000}"} for i in range(5)]
+    suggestions += [
+        {"type": "feeder_corridor", "station": f"s:{i}", "hub": f"s:{i + 500}"} for i in range(5, 10)
+    ]
+    assert (len(stations), len(flags), len(suggestions)) == (2000, 400, 10)
+    layers = {
+        **analysis.layers,
+        "heat": grow(analysis.layers["heat"], cv2.INTER_LINEAR),
+        "usable": grow(analysis.layers["usable"], cv2.INTER_NEAREST),
+        "desert": grow(analysis.layers["desert"], cv2.INTER_NEAREST),
+        "graph": graph,
+        "stations_px": list(zip(xs, ys, strict=True)),
+        "hubs": [f"s:{i}" for i in range(10)],
+    }
+    metrics = {**analysis.metrics, "stations": stations, "edges": edges, "flags": flags}
+    metrics["suggestions"] = suggestions
+    started = time.perf_counter()
+    png = annotate_rail(RailAnalysis(metrics=metrics, layers=layers), red, 2024)
+    assert time.perf_counter() - started < 10.0  # well under a second here
+    assert len(png) <= MAX_IMAGE_BYTES
+    assert cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR).shape == (side, side, 3)
