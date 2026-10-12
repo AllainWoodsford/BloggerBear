@@ -547,6 +547,7 @@ def test_a_pathological_graph_skips_the_graph_measures_and_says_so(monkeypatch):
 def test_a_skeleton_over_the_cap_is_never_made_a_graph_and_says_so(monkeypatch):
     full = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
     assert full["node_count"] == 8 and "graph_too_large" not in full["quality_flags"]
+    assert "betweenness_sampled" not in full["quality_flags"]  # eight nodes: exact
     monkeypatch.setattr("vision.rail_analyse.MAX_GRAPH_NODES", 5)
     analysis = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network())
     m = analysis.metrics
@@ -687,7 +688,8 @@ def test_a_city_sized_network_completes_in_seconds_with_the_flag():
     started = time.perf_counter()
     m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, net).metrics
     assert time.perf_counter() - started < 15.0  # about 3 s here
-    assert m["node_count"] > 1200 and "graph_too_large" in m["quality_flags"]
+    assert m["node_count"] > 1200 and "betweenness_sampled" in m["quality_flags"]
+    assert "graph_too_large" not in m["quality_flags"]  # the graph was built; only betweenness sampled
     assert m["components"] == 1 and m["truncated"] == 0 and m["hubs"]
     assert json.loads(json.dumps(m, allow_nan=False)) == m
 

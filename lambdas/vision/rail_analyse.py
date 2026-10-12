@@ -47,7 +47,7 @@ MAX_STATIONS, MAX_EDGES, MAX_DESERTS = 2000, 5000, 10
 # simulated links). BETWEENNESS_WORK bounds sources x (nodes + edges) per call: a graph with
 # nodes x (nodes + edges) within it is exact; a larger one samples WORK // (nodes + edges) seeded
 # source nodes (at least MIN_BETWEENNESS_SAMPLES, at most BETWEENNESS_SAMPLES; the fixed seed makes
-# two runs agree), and the metrics say so with the quality flag graph_too_large. Measured on a
+# two runs agree), and the metrics say so with the quality flag betweenness_sampled. Measured on a
 # 4-core Intel Xeon at 2.1 GHz (networkx 3.4.2): one source costs 1.6 to 1.9 us per (nodes +
 # edges); with the old fixed 200 sources the five calls took 22.6 s on a grid of n=4,692 m=9,247
 # and 53.9 s on n=10,000 m=19,800. With 600,000 they take 6.3 s on n=4,761 m=9,384 (k=42), 6.3 s
@@ -373,8 +373,15 @@ def analyse_rail_access(
         quality_flags.append("few_stations_snapped")
     if info["components"] > max(3, len(stations) / 10):
         quality_flags.append("graph_fragmented")
-    if measures["approximate"] or info["too_large"]:
+    # Two different things: no graph at all (over MAX_GRAPH_NODES, a pathological skeleton) and a
+    # graph whose betweenness was sampled (over BETWEENNESS_WORK, which most real cities are).
+    graph_skipped = info["too_large"] or (
+        measures["approximate"] and not measures["betweenness"] and graph.number_of_nodes() > 0
+    )
+    if graph_skipped:
         quality_flags.append("graph_too_large")
+    elif measures["approximate"]:
+        quality_flags.append("betweenness_sampled")
 
     metrics = {
         "task": "rail_access",
