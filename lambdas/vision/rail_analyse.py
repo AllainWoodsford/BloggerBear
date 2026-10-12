@@ -451,12 +451,15 @@ def _betweenness_sample(graph: nx.Graph) -> dict:
     return {"k": k, "seed": BETWEENNESS_SEED}
 
 
-def node_betweenness(graph: nx.Graph) -> dict[str, float]:
+def node_betweenness(graph: nx.Graph, sample: dict | None = None) -> dict[str, float]:
     """Normalised betweenness per node, weighted by `length_m`, within the work budget; empty for
-    an empty graph and for one over `MAX_GRAPH_NODES`."""
+    an empty graph and for one over `MAX_GRAPH_NODES`. `sample` overrides the graph's own sampling
+    arguments: a simulated link is measured with the base graph's, so the before and after values
+    come from the same estimator (one more edge can move a graph across the budget's boundary)."""
     if not graph or graph.number_of_nodes() > MAX_GRAPH_NODES:
         return {}
-    return nx.betweenness_centrality(graph, weight="length_m", normalized=True, **_betweenness_sample(graph))
+    arguments = _betweenness_sample(graph) if sample is None else sample
+    return nx.betweenness_centrality(graph, weight="length_m", normalized=True, **arguments)
 
 
 def betweenness(graph: nx.Graph) -> tuple[dict, dict, bool]:
@@ -662,8 +665,10 @@ def suggest(
                 tried.append((delta, a_id, b_id, straight_m, trial))
         tried.sort(key=lambda t: t[:3])
         before_top = max(measures["betweenness"].get(h, 0.0) for h in hubs)
+        base_sample = _betweenness_sample(graph)  # the estimator before_top came from
         for delta, a_id, b_id, straight_m, trial in tried[:TOP_SUGGESTIONS]:
-            trial_betweenness = node_betweenness(trial)  # nodes only: the edges' are never read
+            # Nodes only (the edges' are never read), sampled exactly as the base graph was.
+            trial_betweenness = node_betweenness(trial, sample=base_sample)
             after_top = max(trial_betweenness.get(h, 0.0) for h in hubs)
             suggestions.append(
                 {
