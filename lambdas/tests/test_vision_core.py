@@ -313,6 +313,37 @@ def test_read_site_reduces_a_band_without_overviews_by_area_unless_it_is_categor
     assert np.abs(cheaper.bands["fine"].astype(np.int64) - site.bands["fine"].astype(np.int64)).max() <= 1
 
 
+
+def test_the_area_reduction_keeps_whole_blocks_when_the_covering_window_is_odd():
+    """A target grid 5 m off the 10 m band's makes an odd covering window (21 x 21 fine pixels for
+    10 x 10 target ones): the partial block at the edge is dropped, so every value is an exact
+    2 x 2 block mean, and the residual quarter-pixel shift is nearest neighbour onto the grid."""
+    fine = fine_band()
+    blobs = {"fine": write_tiff(fine, tile=16, gap=cog.HEADER_BYTES)}
+    target = (ORIGIN[0] + 5.0, 20.0, 0.0, ORIGIN[1] - 5.0, 0.0, -20.0)
+    data, nodata, level = scene_reader._read_aligned("fine", fetch_blobs(blobs), target, (10, 10))
+    assert data.shape == (10, 10) and data.dtype == np.uint16 and level == 0
+    means = block_mean(fine, 2)[:10, :10].astype(np.int64)
+    # Nearest neighbour picks each target pixel's block; every value is one block's mean (to the
+    # rounding of a half), never a mean across a partial block.
+    assert np.abs(data.astype(np.int64) - means).max() <= 1
+
+
+def test_the_area_reduction_keeps_a_column_narrower_than_one_block():
+    """A window clipped to the band's last column is one fine pixel wide, narrower than a 2 x 2
+    block: it is kept at its own 10 m size (not stretched to 20 m), and the half of the target
+    pixel past the image's edge is the fill."""
+    fine = fine_band()
+    blobs = {"fine": write_tiff(fine, tile=16, nodata="0", gap=cog.HEADER_BYTES)}
+    target = (ORIGIN[0] + 1270.0, 20.0, 0.0, ORIGIN[1], 0.0, -20.0)
+    data, nodata, _ = scene_reader._read_aligned("fine", fetch_blobs(blobs), target, (2, 1))
+    assert data.shape == (2, 1) and nodata == 0
+    # The column is reduced down only (two rows into one), so each value is the mean of a pair of
+    # the last column's pixels, to the rounding of a half; or the fill past the edge.
+    pairs = fine[:4, 127].astype(np.float64).reshape(2, 2).mean(axis=1)
+    for value in data.ravel().tolist():
+        assert value == 0 or min(abs(value - p) for p in pairs) <= 1
+
 def test_read_site_warps_a_band_whose_grid_is_shifted_or_coarser():
     fine = fine_band()
     gap = cog.HEADER_BYTES
