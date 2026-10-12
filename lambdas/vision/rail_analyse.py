@@ -42,15 +42,27 @@ PARAM_LIMITS = {
 WHOLE_NUMBER_PARAMS = ("hub_count",)
 # Caps on the lists in the metrics, so a reply stays a few hundred KB for the largest city.
 MAX_STATIONS, MAX_EDGES, MAX_DESERTS = 2000, 5000, 10
-# Betweenness is exact up to this many nodes (every shortest path, O(nodes x edges)); above it
-# the paths from BETWEENNESS_SAMPLES source nodes stand in for all of them, with a fixed seed so
-# two runs agree, and the metrics say so with the quality flag graph_too_large.
-MAX_EXACT_GRAPH_NODES = 800
-BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 200, 0
-# Above this many nodes (a pathological skeleton: a city has a few hundred) even the sampled
-# betweenness, the hubs and the suggestions are skipped: the counts are reported, the hubs are
-# empty and the flag says so, rather than running 200 Dijkstra passes several times over.
-MAX_GRAPH_NODES = 20_000
+# Betweenness costs one Dijkstra pass per source node, each about (nodes + edges) steps, and a
+# pass makes up to five calls (edge and node betweenness, then node betweenness on up to three
+# simulated links). BETWEENNESS_WORK bounds sources x (nodes + edges) per call: a graph with
+# nodes x (nodes + edges) within it is exact; a larger one samples WORK // (nodes + edges) seeded
+# source nodes (at least MIN_BETWEENNESS_SAMPLES, at most BETWEENNESS_SAMPLES; the fixed seed makes
+# two runs agree), and the metrics say so with the quality flag betweenness_sampled. Measured on a
+# 4-core Intel Xeon at 2.1 GHz (networkx 3.4.2): one source costs 1.6 to 1.9 us per (nodes +
+# edges); with the old fixed 200 sources the five calls took 22.6 s on a grid of n=4,692 m=9,247
+# and 53.9 s on n=10,000 m=19,800. With 600,000 they take 6.3 s on n=4,761 m=9,384 (k=42), 6.3 s
+# on n=10,000 m=19,800 (k=20) and 7.2 s on 50 joined lines of n=10,000 m=10,048 (k=29).
+BETWEENNESS_WORK = 600_000
+MIN_BETWEENNESS_SAMPLES, BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 20, 200, 0
+# A skeleton with more node clusters, or more runs between them, than this (a pathological network:
+# a city has a few hundred to a few thousand nodes) is not made a graph at all (network.build_graph's
+# max_nodes, checked on the labelled pixels before any networkx object exists): the stations are
+# reported without degree, betweenness or hub distance, the hubs, flags and suggestions are empty and
+# the quality flag graph_too_large says so. At the cap, on the CPU above, building the graph takes
+# 0.5 s (a 500 px mesh of 9,996 nodes) and the measures, flags and suggestions about 9 s. Before
+# the check (the cap was 20,000 and only skipped the measures), a 2,632-point mesh of crossing ways
+# on a 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in build_graph, 55 s for the pass.
+MAX_GRAPH_NODES = 10_000
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.
 MIN_ACTIVITY = 0.05
@@ -285,7 +297,9 @@ def analyse_rail_access(
     visible = (
         (urban.ndvi(red, nir) < params.visibility_ndvi_max) & (water == 0) & (unusable == 0)
     ).astype(np.uint8)
-    graph, info = rail_network.build_graph(skeleton, stations, snapped, pixel_size_m, visible, tunnel)
+    graph, info = rail_network.build_graph(
+        skeleton, stations, snapped, pixel_size_m, visible, tunnel, max_nodes=MAX_GRAPH_NODES
+    )
     snapped = info["snapped"]
     lap("graph")
 
@@ -359,8 +373,15 @@ def analyse_rail_access(
         quality_flags.append("few_stations_snapped")
     if info["components"] > max(3, len(stations) / 10):
         quality_flags.append("graph_fragmented")
-    if measures["approximate"]:
+    # Two different things: no graph at all (over MAX_GRAPH_NODES, a pathological skeleton) and a
+    # graph whose betweenness was sampled (over BETWEENNESS_WORK, which most real cities are).
+    graph_skipped = info["too_large"] or (
+        measures["approximate"] and not measures["betweenness"] and graph.number_of_nodes() > 0
+    )
+    if graph_skipped:
         quality_flags.append("graph_too_large")
+    elif measures["approximate"]:
+        quality_flags.append("betweenness_sampled")
 
     metrics = {
         "task": "rail_access",
@@ -419,38 +440,46 @@ def _is_station(graph: nx.Graph, edge: dict) -> bool:
 
 
 def _betweenness_sample(graph: nx.Graph) -> dict:
-    """networkx's sampling arguments for `graph`: none up to `MAX_EXACT_GRAPH_NODES` nodes,
-    `BETWEENNESS_SAMPLES` seeded source nodes above."""
+    """networkx's sampling arguments for `graph`: none when every source fits in
+    `BETWEENNESS_WORK` (exact), else `BETWEENNESS_WORK // (nodes + edges)` seeded source nodes,
+    clamped to [`MIN_BETWEENNESS_SAMPLES`, `BETWEENNESS_SAMPLES`]."""
     n = graph.number_of_nodes()
-    return {"k": min(BETWEENNESS_SAMPLES, n), "seed": BETWEENNESS_SEED} if n > MAX_EXACT_GRAPH_NODES else {}
+    size = n + graph.number_of_edges()
+    if n * size <= BETWEENNESS_WORK:
+        return {}
+    k = min(max(BETWEENNESS_WORK // size, MIN_BETWEENNESS_SAMPLES), BETWEENNESS_SAMPLES, n)
+    return {"k": k, "seed": BETWEENNESS_SEED}
 
 
-def node_betweenness(graph: nx.Graph) -> dict[str, float]:
-    """Normalised betweenness per node, weighted by `length_m`; empty for an empty graph and
-    for one over `MAX_GRAPH_NODES`."""
+def node_betweenness(graph: nx.Graph, sample: dict | None = None) -> dict[str, float]:
+    """Normalised betweenness per node, weighted by `length_m`, within the work budget; empty for
+    an empty graph and for one over `MAX_GRAPH_NODES`. `sample` overrides the graph's own sampling
+    arguments: a simulated link is measured with the base graph's, so the before and after values
+    come from the same estimator (one more edge can move a graph across the budget's boundary)."""
     if not graph or graph.number_of_nodes() > MAX_GRAPH_NODES:
         return {}
-    return nx.betweenness_centrality(graph, weight="length_m", normalized=True, **_betweenness_sample(graph))
+    arguments = _betweenness_sample(graph) if sample is None else sample
+    return nx.betweenness_centrality(graph, weight="length_m", normalized=True, **arguments)
 
 
 def betweenness(graph: nx.Graph) -> tuple[dict, dict, bool]:
-    """(node betweenness, edge betweenness keyed by sorted pair, approximate): exact up to
-    `MAX_EXACT_GRAPH_NODES` nodes, sampled above, and both empty over `MAX_GRAPH_NODES`."""
+    """(node betweenness, edge betweenness keyed by sorted pair, approximate): exact while every
+    source fits in `BETWEENNESS_WORK`, sampled above (approximate), and both empty over
+    `MAX_GRAPH_NODES` (approximate too)."""
     if not graph:
         return {}, {}, False
-    approximate = graph.number_of_nodes() > MAX_EXACT_GRAPH_NODES
     if graph.number_of_nodes() > MAX_GRAPH_NODES:
         return {}, {}, True
     sample = _betweenness_sample(graph)
     per_edge = nx.edge_betweenness_centrality(graph, weight="length_m", normalized=True, **sample)
     edges = {tuple(sorted(edge)): value for edge, value in per_edge.items()}
-    return node_betweenness(graph), edges, approximate
+    return node_betweenness(graph), edges, bool(sample)
 
 
 def graph_metrics(graph: nx.Graph, activity: dict[str, float | None], hub_count: int) -> dict:
     """Degree and betweenness per node, the edge betweenness per sorted pair, whether the
-    betweenness is `approximate` (sampled, over `MAX_EXACT_GRAPH_NODES` nodes; skipped, with
-    no hubs, over `MAX_GRAPH_NODES`), the `hubs` (the top `hub_count` station nodes by
+    betweenness is `approximate` (sampled, over `BETWEENNESS_WORK`; skipped, with no hubs, over
+    `MAX_GRAPH_NODES`), the `hubs` (the top `hub_count` station nodes by
     betweenness among those with activity at or above the measured stations' median; by
     betweenness alone when no activity was measured), the `interchanges` (station nodes of
     degree three or more), `d_hub_m` (the shortest path to any hub, None when there is no
@@ -636,8 +665,10 @@ def suggest(
                 tried.append((delta, a_id, b_id, straight_m, trial))
         tried.sort(key=lambda t: t[:3])
         before_top = max(measures["betweenness"].get(h, 0.0) for h in hubs)
+        base_sample = _betweenness_sample(graph)  # the estimator before_top came from
         for delta, a_id, b_id, straight_m, trial in tried[:TOP_SUGGESTIONS]:
-            trial_betweenness = node_betweenness(trial)  # nodes only: the edges' are never read
+            # Nodes only (the edges' are never read), sampled exactly as the base graph was.
+            trial_betweenness = node_betweenness(trial, sample=base_sample)
             after_top = max(trial_betweenness.get(h, 0.0) for h in hubs)
             suggestions.append(
                 {
