@@ -72,7 +72,7 @@ import statistics
 import time
 from datetime import UTC, datetime
 
-from common import osm, vision_client, vision_sites, vision_triage
+from common import osm, rail_notes, vision_client, vision_sites, vision_triage
 from common import vision_contract as contract
 from common.adapters.base import Adapter, render_review_evidence
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS
@@ -364,11 +364,12 @@ class RailAccessAdapter(Adapter):
             if not verdicts:
                 errors = vision_sites.site_errors(new_state) or "no scene to measure"
                 return False, f"nothing measured yet: {errors}"
-            return True, "First observation. " + "; ".join(_first_line(v) for v in verdicts)
+            summary = "First observation. " + "; ".join(_first_line(v) for v in verdicts)
+            return True, _with_planner_notes(summary, verdicts, new_state)
         material = [v for v in verdicts if v["material"]]
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
-        return True, "; ".join(_describe(v) for v in material)
+        return True, _with_planner_notes("; ".join(_describe(v) for v in material), material, new_state)
 
     def _triage(self, new_state: dict, candidates: list[dict]) -> None:
         """Ask the agent about each numerically material site; an "artefact" (or any failure)
@@ -512,11 +513,11 @@ class RailAccessAdapter(Adapter):
                     "flag_count": len(last.get("flags") or []),
                     "previous_served_shares": [e.get("served_share") for e in history[:-1]],
                 }
-        return render_review_evidence({"task": TASK, "sites": latest})
+        return render_review_evidence({"task": TASK, "sites": latest, **_evidence_notes(latest_state)})
 
     def build_summary_prompt(self, topic: dict, diff_summary: str, new_state: dict) -> str | None:
         name = topic.get("name") or topic.get("topic_id") or "this topic"
-        return (
+        prompt = (
             "You are summarising a change measured in satellite imagery and OpenStreetMap data for "
             f'the topic "{name}".\n\n'
             f"What was measured: {diff_summary}\n\n"
@@ -529,6 +530,20 @@ class RailAccessAdapter(Adapter):
             "political, planning or investment view; do not say any area is well or badly served in "
             "absolute terms; do not invent place names or numbers that are not given above."
         )
+        return _with_notes_rule(prompt, diff_summary)
+
+    def planner_notes(self, new_state: dict) -> list[dict]:
+        """The rule-based flags and simulations (common/rail_notes.py) of each scene measured this
+        tick, each with its site's id, for the Finding: at most rail_notes.MAX_NOTES in all. A
+        scene the agent judged an artefact is left out (its measurements are what it doubted)."""
+        notes = []
+        for m in new_state.get("measured") or []:
+            latest = _latest_entry(new_state, m["site_id"])
+            doubted = (latest.get("triage") or {}).get("verdict", "real") != "real"
+            if latest.get("scene_id") != m["scene_id"] or doubted:
+                continue
+            notes += [{"site_id": m["site_id"], **note} for note in rail_notes.planner_notes(latest)]
+        return notes[: rail_notes.MAX_NOTES]
 
 
 def _error(now: datetime, code: str, detail: str) -> dict:
@@ -645,3 +660,61 @@ def _describe(v: dict) -> str:
     if v.get("triage"):
         text += f"; checked by the vision agent: {v['triage']['reason']}"
     return text
+
+
+# --- planner notes (common/rail_notes.py) ----------------------------------------------------------
+
+# What the summary prompt gains when the diff summary carries planner notes, placed before its
+# final rule so that rule still closes the prompt.
+NOTES_PARAGRAPH = (
+    "The rule-based flags and simulations listed above, if any, are part of what was measured: end the "
+    "summary with at most three of them, each in one sentence keeping its numbers, names and the words "
+    "'flags' or 'simulation'. Never call them recommendations, never add a cost, a timetable, a cause or "
+    "an opinion on whether they should be built."
+)
+_FINAL_RULE = "Give no cause, forecast,"
+
+
+def _latest_entry(state: dict, site_id: str) -> dict:
+    history = ((state.get("sites") or {}).get(site_id) or {}).get("history") or []
+    return history[-1] if history else {}
+
+
+def _with_planner_notes(summary: str, verdicts: list[dict], new_state: dict) -> str:
+    """`summary`, then the rule-based flags and simulations of each site it reports, so the summary
+    prompt can pass them on; unchanged when no site has any."""
+    parts = []
+    for v in verdicts:
+        notes = rail_notes.format_notes(rail_notes.planner_notes(_latest_entry(new_state, v["site_id"])))
+        if notes:
+            parts.append(f"{v['name']}: {notes}")
+    if not parts:
+        return summary
+    return f"{summary}{' ' if summary.endswith('.') else '. '}{' '.join(parts)}"
+
+
+def _evidence_notes(latest_state: dict) -> dict:
+    """{"planner_notes": {site id: [note texts]}} for the sites whose latest entry has any, else {}.
+    Beside the sites rather than in them, so it comes after every site's numbers and a long list
+    is what the evidence cap cuts, never a measurement."""
+    notes = {}
+    for site_id in latest_state.get("sites") or {}:
+        texts = [note["text"] for note in rail_notes.planner_notes(_latest_entry(latest_state, site_id))]
+        if texts:
+            notes[site_id] = texts[: rail_notes.MAX_NOTES]
+    return {"planner_notes": notes} if notes else {}
+
+
+def _with_notes_rule(prompt: str, diff_summary: str) -> str:
+    """The summary prompt as it is when `diff_summary` carries no planner notes; with them, room for
+    3-6 sentences and NOTES_PARAGRAPH before the final rule. Only the rules after what was measured
+    are touched, so a name in the summary can never move them."""
+    if rail_notes.NOTES_LEAD not in diff_summary:
+        return prompt
+    found = prompt.find(diff_summary)
+    at = found + len(diff_summary) if found >= 0 else 0
+    rules = prompt[at:].replace("Write 2-4 plain sentences", "Write 3-6 plain sentences", 1)
+    before, final, after = rules.rpartition(_FINAL_RULE)
+    if not final:
+        return f"{prompt[:at]}{rules}\n\n{NOTES_PARAGRAPH}"
+    return f"{prompt[:at]}{before.rstrip()}\n\n{NOTES_PARAGRAPH}\n\n{final}{after}"

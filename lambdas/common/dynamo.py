@@ -114,6 +114,7 @@ def put_finding(
     source_refs: list[dict],
     research_call: dict | None = None,
     figures: list[dict] | None = None,
+    planner_notes: list[dict] | None = None,
 ) -> None:
     """Write a Finding item to the Findings table.
 
@@ -130,6 +131,10 @@ def put_finding(
     [{"key", "caption", "alt"}], the key a PNG in the content bucket), stored only
     when there is at least one: most sources draw nothing, and an absent field reads
     the same as an empty list everywhere it is used.
+
+    `planner_notes` is the adapter's rule-based notes on what it measured
+    (Adapter.planner_notes: the rail adapter's flags and simulations), DynamoDB-ready
+    (numbers as Decimal), stored likewise only when there is at least one.
     """
     table = get_table(os.environ["FINDINGS_TABLE"])
     item = {
@@ -144,6 +149,8 @@ def put_finding(
         item["research_call"] = research_call
     if figures:
         item["figures"] = figures
+    if planner_notes:
+        item["planner_notes"] = planner_notes
     table.put_item(Item=item)
 
 
