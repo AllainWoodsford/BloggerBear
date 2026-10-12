@@ -508,6 +508,37 @@ python scripts/alexa_addon_values.py dev --write-manifest ~/bloggerbear-addon-de
 It never prints the Alexa client secret unless you pass `--show-secret`, and it will not replace an
 existing manifest without `--force`. It needs Terraform and read access to that environment's state.
 
+## Timing the vision worker: `vision_benchmark.py`
+
+The vision worker (`lambdas/vision_worker_handler.py`; [docs/enhancements/vision.md](../docs/enhancements/vision.md))
+is benchmarked with one script, run the same way on every machine so the rows compare like with
+like: stock OpenCV 5 against OpenCV's COOL build, x86 against Graviton. It needs
+`lambdas/requirements-vision.txt` installed (`worker` mode also needs boto3 and AWS credentials)
+and reads only public data.
+
+```bash
+python scripts/vision_benchmark.py kernels --out stock-x86.json   # the OpenCV operations alone, on synthetic images
+python scripts/vision_benchmark.py scenes                         # the pinned scenes, in-process, read over HTTPS
+python scripts/vision_benchmark.py worker --arn <function ARN>    # a deployed worker, end to end
+python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-01-05   # a rail scene's OpenStreetMap network
+```
+
+`kernels` times every operation the worker spends its CPU on, for both of its tasks: the ship pass
+(resize, blur, adaptive threshold, morphology, components, contours, the warp, `analyse_site`) and
+the rail access pass (the distance transform, hit-or-miss thinning, polylines, the colour map, the
+desert components, `analyse_rail_access`), on fixed synthetic images, so network and data never
+enter it. `scenes` and `worker` run the scenes pinned in `vision_benchmark_scenes.json` (add
+scenes; never change one, or old reports stop being comparable). Every report records the OpenCV
+build fingerprint and the CPU generation.
+
+A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
+request. `fetch-network` asks Overpass for the scene's polygon (`lambdas/common/osm.py`, the same
+client the adapter uses) and writes the scene's `network_file`, a path relative to the scenes file
+(`--out` puts it elsewhere); until that file exists, the scene's row in a report reads
+`error: network_file missing`. The Sydney network is not committed, because Overpass is not
+reachable from the build containers: fetch it once on a machine that can and commit it, so later
+reports say (`fetched_at`) which network they measured.
+
 ## After changing the CLI: `generate_cli_reference.py`
 
 The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you
