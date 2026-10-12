@@ -6,8 +6,8 @@ built district, a lake (SCL 6) inside it and a cloud (SCL 9) outside it. The net
 pixels and turned into lon/lat with `geo.utm_to_lonlat`, so every test also round-trips the
 projection. The graph measures, flags and suggestions are tested on hand-built graphs whose
 answers are known. The figure is tested by decoding the PNG and sampling pixels, on the city's
-own analysis, on copies of its metrics with flags and suggestions injected, and on the city
-upscaled to the worker's 1024 px.
+own analysis, on copies of its metrics with flags and suggestions injected, on the city upscaled
+to the worker's 1024 px, and on a crowded city of noise built to be as many bytes as a figure gets.
 """
 
 from __future__ import annotations
@@ -23,9 +23,9 @@ import pytest
 
 from common import vision_contract as contract
 from common.vision_client import MAX_IMAGE_BYTES
-from vision import access, geo, rail_analyse, urban
+from vision import access, geo, rail_analyse, rail_annotate, urban
 from vision import network as rail_network
-from vision.annotate import CAPTION_BACKGROUND, burn_caption
+from vision.annotate import CAPTION_BACKGROUND, CAPTION_PAD, burn_caption, caption_bar_size
 from vision.rail_analyse import (
     PARAM_LIMITS,
     RailAnalysis,
@@ -39,12 +39,17 @@ from vision.rail_analyse import (
 from vision.rail_annotate import (
     CAPTION_LINES,
     DESERT_COLOUR,
+    FIGURE_BYTE_BUDGET,
+    FIGURE_MIN_SIDE,
     FLAG_COLOUR,
     HUB_COLOUR,
     LEGEND_MIN_WIDTH,
+    RULE_COLOUR,
+    STRETCH_MAX,
     SUGGESTION_COLOUR,
     _dashed_line,
     annotate_rail,
+    figure_strip,
     legend_strip,
 )
 
@@ -782,23 +787,26 @@ def test_mismatched_bands_and_bad_pixel_size_are_refused():
 # --- the figure ----------------------------------------------------------------------------------
 
 
+CAPTION = [line.format(year="2024") for line in CAPTION_LINES]
+
+
 def strip_height(width):
-    """The rows the legend strip adds under a map `width` px wide; 0 when it gets none."""
-    strip = legend_strip(np.zeros((1, width, 3), np.uint8))
-    return 0 if strip is None else strip.shape[0]
+    """The rows the strip (the caption, then the legend) adds under a map `width` px wide."""
+    return figure_strip(np.zeros((1, width, 3), np.uint8), CAPTION).shape[0]
 
 
 def decode(png):
     return cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
 
 
-def test_the_figure_is_a_png_within_the_cap_with_a_caption_bar(analysis):
+def test_the_figure_is_a_png_within_the_budget_with_the_caption_under_the_map(analysis):
     png = annotate_rail(analysis, city()["red"], year="2024", max_side=256)
-    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) <= FIGURE_BYTE_BUDGET <= MAX_IMAGE_BYTES
     image = decode(png)
     assert image.shape == (256 + strip_height(256), 256, 3) and strip_height(256) > 0
-    assert image[2, 2].tolist() == [0, 0, 0]  # the caption bar
-    assert image[1, 250].tolist() != [0, 0, 0]
+    # The caption is at the strip's top-left, white on black; the map's corner is the scene.
+    assert image[256 + 2, 2].tolist() == [0, 0, 0] and count_white(image[256 : 256 + 30, :150]) > 50
+    assert image[2, 2].tolist() != [0, 0, 0] and image[1, 250].tolist() != [0, 0, 0]
     # The cloud is tinted, the district carries the heat map's warm colours.
     cloud = image[int(55 * 0.64), int(340 * 0.64)]
     district = image[int(150 * 0.64), int(250 * 0.64)]
@@ -820,7 +828,7 @@ def figure(analysis, max_side=1024, layers=None, **metrics):
         metrics={**analysis.metrics, **metrics}, layers={**analysis.layers, **(layers or {})}
     )
     png = annotate_rail(variant, city()["red"], "2024", max_side=max_side)
-    assert png[:8] == PNG_SIGNATURE and len(png) <= MAX_IMAGE_BYTES
+    assert png[:8] == PNG_SIGNATURE and len(png) <= FIGURE_BYTE_BUDGET
     assert annotate_rail(variant, city()["red"], "2024", max_side=max_side) == png
     return decode(png)
 
@@ -941,51 +949,60 @@ def count_white(region, floor=200):
     return int((region.min(axis=2) >= floor).sum())
 
 
-def under_caption(width, x, y, margin=12):
-    """Whether pixel (x, y) is within `margin` of the caption bar on a map `width` px wide."""
-    canvas = np.full((300, width, 3), 128, np.uint8)
-    burn_caption(canvas, [line.format(year="2024") for line in CAPTION_LINES])
-    covered = (canvas != 128).any(axis=2)
-    right, bottom = np.flatnonzero(covered.any(axis=0)).max(), np.flatnonzero(covered.any(axis=1)).max()
-    return x <= right + margin and y <= bottom + margin
-
-
 @pytest.mark.parametrize("which", ["synthetic", "upscaled"])
-def test_the_legend_is_a_strip_under_the_map_and_hides_nothing(which, analysis, big_city, monkeypatch):
+def test_the_caption_and_legend_go_under_the_map_and_hide_nothing(which, analysis, big_city, monkeypatch):
     base, red = (analysis, city()["red"]) if which == "synthetic" else big_city
     side = red.shape[1]
     # Every station flagged, so each has a flag ring, and no suggestions: their green is the hubs'.
     flags = [{"type": "isolated_high_demand", "station": s["id"]} for s in base.metrics["stations"]]
     flagged = RailAnalysis(metrics={**base.metrics, "flags": flags, "suggestions": []}, layers=base.layers)
     png = annotate_rail(flagged, red, "2024")
-    assert len(png) <= MAX_IMAGE_BYTES
+    assert len(png) <= FIGURE_BYTE_BUDGET
     image = decode(png)
-    strip = legend_strip(image)
-    monkeypatch.setattr("vision.rail_annotate.LEGEND_MIN_WIDTH", side + 1)
-    map_only = decode(annotate_rail(flagged, red, "2024"))
+    strip = figure_strip(image[:side], CAPTION)
+    with monkeypatch.context() as patch:  # the strip disabled: the map alone
+        patch.setattr("vision.rail_annotate.figure_strip", lambda image, caption: image[:0])
+        map_only = decode(annotate_rail(flagged, red, "2024"))
     assert map_only.shape == (side, side, 3)
-    # The image grew by exactly the strip, and the legend changed no pixel of the map.
+    # The image grew by exactly the strip, and the caption and legend changed no pixel of the map.
     assert image.shape == (side + strip.shape[0], side, 3)
     assert np.array_equal(image[:side], map_only) and np.array_equal(image[side:], strip)
     background = (strip == CAPTION_BACKGROUND).all(axis=2)
     assert background[0].all() and background[:, -1].all() and background.mean() > 0.8
-    # Every station's symbol and flag ring shows at its position, bar those under the caption. A
-    # flagged hub's ring clears its marker: on a quiet hub (radius 2) the marker hid all but 12 px.
-    hubs, hidden = set(base.layers["hubs"]), []
+    # A strip with the caption alone (a figure too narrow for a legend) leaves the map as it is too.
+    monkeypatch.setattr("vision.rail_annotate.LEGEND_MIN_WIDTH", side + 1)
+    narrow = decode(annotate_rail(flagged, red, "2024"))
+    assert narrow.shape == (side + caption_bar_size(map_only, CAPTION)[1], side, 3)
+    assert np.array_equal(narrow[:side], map_only)
+    # Every station's symbol and flag ring shows at its position, North (200, 40) on the 400 px city
+    # too, which the caption bar hid when it was burned into the map. A flagged hub's ring clears
+    # its marker: on a quiet hub (radius 2) the marker hid all but 12 px.
+    hubs = set(base.layers["hubs"])
     for station, position in zip(base.metrics["stations"], base.layers["stations_px"], strict=True):
         x, y = round(position[0]), round(position[1])  # neither city is scaled
-        if under_caption(side, x, y):
-            hidden.append(station["id"])
-            continue
         patch = image[y - 12 : y + 13, x - 12 : x + 13]
         assert count_near(patch, FLAG_COLOUR) >= 60, station["id"]
         if station["id"] in hubs:
             assert count_near(patch, HUB_COLOUR) >= 20, station["id"]
         else:
             assert count_white(patch) >= 4, station["id"]
-    # On the 400 px city, North (200, 40) is under the caption bar, which stays where it was; on
-    # the 1024 px city, where the old legend hid North and its flag ring, nothing is.
-    assert hidden == (["s:n4"] if which == "synthetic" else [])
+
+
+def test_the_caption_is_burned_into_the_strip_as_the_ships_figure_burns_it():
+    for width in (200, LEGEND_MIN_WIDTH, 400, 1024, 2000):
+        canvas = np.zeros((1, width, 3), np.uint8)
+        strip, legend = figure_strip(canvas, CAPTION), legend_strip(canvas)
+        bar = np.zeros((strip.shape[0], width, 3), np.uint8)  # CAPTION_BACKGROUND
+        burn_caption(bar, CAPTION)
+        height = caption_bar_size(canvas, CAPTION)[1]
+        assert np.array_equal(strip[:height], bar[:height]), width
+        if legend is None:  # too narrow for a legend: the caption alone
+            assert width < LEGEND_MIN_WIDTH and strip.shape[0] == height
+            continue
+        # A rule under the caption, then the legend.
+        assert strip.shape[0] == height + 1 + legend.shape[0], width
+        assert (strip[height, CAPTION_PAD : width - CAPTION_PAD] == RULE_COLOUR).all()
+        assert np.array_equal(strip[height + 1 :], legend)
 
 
 def glyph_centres(strip):
@@ -1011,12 +1028,31 @@ def test_the_legend_lays_its_entries_out_in_as_many_columns_as_fit():
     # ... two at 400 (the flag starts the second row, the desert the third) ...
     (flag_x, flag_y), (desert_x, desert_y) = glyph_centres(strips[400])
     assert flag_x < 40 and desert_x < 40 and flag_y < desert_y and strips[400].shape[0] < strips[256].shape[0]
-    # ... and three from about 560 px up: the flag ends the first row, the desert is second in the second.
+    # ... and three from 485 px up: the flag ends the first row, the desert is second in the second.
     for width in (1024, 3000):
         strip = strips[width]
         (flag_x, flag_y), (desert_x, desert_y) = glyph_centres(strip)
         assert flag_x > width / 2 and width / 5 < desert_x < flag_x and flag_y < strip.shape[0] / 2 < desert_y
     assert strips[1024].shape[0] < 100  # two rows of words at the caption's 1024 px scale
+
+
+def test_the_legend_never_loses_a_column_as_the_figure_widens(monkeypatch):
+    # The glyphs' centres, recorded as the legend draws them: one distinct x per column.
+    centres = []
+    draw = rail_annotate._legend_glyph
+
+    def recording(image, kind, centre, size):
+        centres.append(centre[0])
+        return draw(image, kind, centre, size)
+
+    monkeypatch.setattr(rail_annotate, "_legend_glyph", recording)
+    counts = []
+    for width in range(LEGEND_MIN_WIDTH, 3001, 8):
+        centres.clear()
+        strip = legend_strip(np.zeros((1, width, 3), np.uint8))
+        assert (strip[:, -2:] == CAPTION_BACKGROUND).all(), width  # and no words cut off
+        counts.append(len(set(centres)))
+    assert counts == sorted(counts) and counts[0] == 1 and counts[-1] == 3
 
 
 def test_a_wide_short_figure_has_a_legend(analysis):
@@ -1032,9 +1068,10 @@ def test_a_wide_short_figure_has_a_legend(analysis):
     }
     variant = RailAnalysis(metrics=analysis.metrics, layers=layers)
     image = decode(annotate_rail(variant, wide(city()["red"], cv2.INTER_NEAREST), "2024"))
-    strip = legend_strip(image)
+    strip = figure_strip(image[:320], CAPTION)
     assert image.shape == (320 + strip.shape[0], 1024, 3) and np.array_equal(image[320:], strip)
-    assert count_near(strip, FLAG_COLOUR, 60) and image[2, 2].tolist() == [0, 0, 0]  # legend and caption
+    assert legend_strip(image) is not None and count_near(strip, FLAG_COLOUR, 60)  # the legend
+    assert image[320 + 2, 2].tolist() == [0, 0, 0] and count_white(image[320 : 320 + 30, :300]) > 100
 
 
 def test_the_figure_draws_a_city_with_no_graph_and_one_with_sampled_betweenness(monkeypatch):
@@ -1048,8 +1085,7 @@ def test_the_figure_draws_a_city_with_no_graph_and_one_with_sampled_betweenness(
     assert image.shape == (SIZE + strip_height(SIZE), SIZE, 3)
     # The stations are still drawn where they are; there is no hub, flag or link to draw.
     for x, y in ((round(x), round(y)) for x, y in bare.layers["stations_px"]):
-        if not under_caption(SIZE, x, y):
-            assert count_white(image[y - 8 : y + 9, x - 8 : x + 9]) >= 4, (x, y)
+        assert count_white(image[y - 8 : y + 9, x - 8 : x + 9]) >= 4, (x, y)
     assert count_near(image[:SIZE], HUB_COLOUR) == count_near(image[:SIZE], FLAG_COLOUR) == 0
     with monkeypatch.context() as patch:
         patch.setattr("vision.rail_analyse.BETWEENNESS_WORK", 1)
@@ -1061,8 +1097,7 @@ def test_the_figure_draws_a_city_with_no_graph_and_one_with_sampled_betweenness(
     positions = dict(zip(ids, sampled.layers["stations_px"], strict=True))
     for hub in sampled.layers["hubs"]:
         x, y = round(positions[hub][0]), round(positions[hub][1])
-        if not under_caption(SIZE, x, y):
-            assert count_near(image[y - 9 : y + 10, x - 9 : x + 10], HUB_COLOUR) >= 20, hub
+        assert count_near(image[y - 9 : y + 10, x - 9 : x + 10], HUB_COLOUR) >= 20, hub
 
 
 def test_the_dashed_line_leaves_gaps():
@@ -1109,26 +1144,27 @@ def test_the_dashed_line_is_clipped_to_the_image_first(monkeypatch):
         _dashed_line(canvas, (2, 2), (57, 2), 255, 2, on=0, off=0)
 
 
-def test_a_city_sized_figure_with_every_flag_and_suggestion_stays_under_the_cap(analysis):
-    """2,000 stations (the metrics' cap), 400 flags and 10 suggestions on a 1024 px grid, the
-    scene textured: the PNG must fit the pipeline's image cap at the worker's max_side."""
-    side, count = 1024, 2000
-    rng = np.random.default_rng(0)
-
-    def grow(layer, interpolation):
-        return cv2.resize(layer, (side, side), interpolation=interpolation)
-
-    red = grow(city()["red"], cv2.INTER_NEAREST).astype(np.float64) + rng.normal(0, 100, (side, side))
-    red = red.clip(0, 65535).astype(np.uint16)
+def crowded_city(analysis, side=1024, count=2000, seed=0):
+    """As many bytes as a figure gets: 2,000 stations (the metrics' cap) each joined to its two
+    nearest neighbours by short edges, 400 flags, 10 suggestions and 10 hubs, over a red band of
+    uniform noise across the stretch's whole range (maximum entropy) on a `side` px grid that is
+    usable everywhere. The analysis and its red band."""
+    rng = np.random.default_rng(seed)
+    red = rng.integers(0, int(STRETCH_MAX) + 1, (side, side)).astype(np.uint16)
     xs, ys = rng.uniform(0, side - 1, count), rng.uniform(0, side - 1, count)
-    graph, stations, edges = nx.Graph(), [], []
+    squared = (xs[:, None] - xs[None, :]) ** 2 + (ys[:, None] - ys[None, :]) ** 2
+    np.fill_diagonal(squared, np.inf)
+    nearest = np.argpartition(squared, 2, axis=1)[:, :2]
+    graph, stations = nx.Graph(), []
     for i in range(count):
         graph.add_node(f"s:{i}", kind="station", x=float(xs[i]), y=float(ys[i]), station=str(i))
         stations.append({"id": f"s:{i}", "name": f"S{i}", "activity": float(rng.uniform(0, 1)),
                          "isolation_weight": float(rng.uniform(0, 100))})  # fmt: skip
-        if i:
-            graph.add_edge(f"s:{i - 1}", f"s:{i}", length_m=100.0)
-            edges.append({"from": f"s:{i - 1}", "to": f"s:{i}", "betweenness": float(rng.uniform(0, 1))})
+    pairs = sorted({(min(i, int(j)), max(i, int(j))) for i in range(count) for j in nearest[i]})
+    edges = []
+    for i, j in pairs:
+        graph.add_edge(f"s:{i}", f"s:{j}", length_m=100.0)
+        edges.append({"from": f"s:{i}", "to": f"s:{j}", "betweenness": float(rng.uniform(0, 1))})
     flags = [{"type": "isolated_high_demand", "station": f"s:{i}"} for i in range(200)]
     flags += [{"type": "single_point_of_failure", "station": f"s:{i}"} for i in range(200, 390)]
     flags += [
@@ -1141,17 +1177,47 @@ def test_a_city_sized_figure_with_every_flag_and_suggestion_stays_under_the_cap(
     assert (len(stations), len(flags), len(suggestions)) == (2000, 400, 10)
     layers = {
         **analysis.layers,
-        "heat": grow(analysis.layers["heat"], cv2.INTER_LINEAR),
-        "usable": grow(analysis.layers["usable"], cv2.INTER_NEAREST),
-        "desert": grow(analysis.layers["desert"], cv2.INTER_NEAREST),
+        "heat": cv2.resize(analysis.layers["heat"], (side, side), interpolation=cv2.INTER_LINEAR),
+        "usable": np.ones((side, side), np.uint8),
+        "desert": cv2.resize(analysis.layers["desert"], (side, side), interpolation=cv2.INTER_NEAREST),
         "graph": graph,
         "stations_px": list(zip(xs, ys, strict=True)),
         "hubs": [f"s:{i}" for i in range(10)],
     }
     metrics = {**analysis.metrics, "stations": stations, "edges": edges, "flags": flags}
     metrics["suggestions"] = suggestions
+    return RailAnalysis(metrics=metrics, layers=layers), red
+
+
+def test_a_city_sized_figure_with_every_flag_and_suggestion_stays_within_the_byte_budget(analysis):
+    """The worst case for bytes: the PNG must fit FIGURE_BYTE_BUDGET, and so the pipeline's cap,
+    at the worker's max_side. It does not at a 1024 px map, so it is drawn again smaller."""
+    side = 1024
+    crowded, red = crowded_city(analysis, side)
     started = time.perf_counter()
-    png = annotate_rail(RailAnalysis(metrics=metrics, layers=layers), red, 2024)
-    assert time.perf_counter() - started < 10.0  # well under a second here
-    assert len(png) <= MAX_IMAGE_BYTES
-    assert decode(png).shape == (side + strip_height(side), side, 3)
+    png = annotate_rail(crowded, red, 2024)
+    assert time.perf_counter() - started < 10.0  # about a second here: two draws and encodes
+    assert len(png) <= FIGURE_BYTE_BUDGET <= MAX_IMAGE_BYTES
+    image = decode(png)
+    width = image.shape[1]
+    assert FIGURE_MIN_SIDE < width < side and image.shape == (width + strip_height(width), width, 3)
+
+
+def test_a_figure_over_the_byte_budget_is_drawn_again_smaller(analysis, big_city, monkeypatch):
+    big, red = big_city
+    full = annotate_rail(big, red, "2024")
+    assert decode(full).shape == (1024 + strip_height(1024), 1024, 3)
+    # One byte short: drawn again at 0.8x, the strip laid out again for the narrower map.
+    monkeypatch.setattr("vision.rail_annotate.FIGURE_BYTE_BUDGET", len(full) - 1)
+    smaller = annotate_rail(big, red, "2024")
+    assert len(smaller) < len(full) and smaller[:8] == PNG_SIGNATURE
+    assert decode(smaller).shape == (819 + strip_height(819), 819, 3)
+    # Nothing fits: shrunk to the floor (819, 655, 524, then 512 px) and returned over the budget.
+    monkeypatch.setattr("vision.rail_annotate.FIGURE_BYTE_BUDGET", 1)
+    floor = annotate_rail(big, red, "2024")
+    image = decode(floor)
+    assert image.shape == (FIGURE_MIN_SIDE + strip_height(FIGURE_MIN_SIDE), FIGURE_MIN_SIDE, 3)
+    assert count_near(image[:FIGURE_MIN_SIDE], FLAG_COLOUR) > 0  # Central's flag ring, drawn again
+    # A map already under the floor is never shrunk.
+    small = decode(annotate_rail(analysis, city()["red"], "2024"))
+    assert small.shape == (SIZE + strip_height(SIZE), SIZE, 3)

@@ -1,5 +1,5 @@
 """The rail access figure: the heat map over the scene, with deserts, lines, stations, hubs, flags
-and simulated links drawn, and a legend under it.
+and simulated links drawn, and the caption and a legend in a strip under it.
 
 The red band, contrast-stretched, carries the city's shape; the heat map is laid over it in an
 inferno colour map where the scene was usable, and the unmeasured parts get annotate.py's slate
@@ -9,18 +9,21 @@ with a thicker ring in the top quarter of isolation weight, and hubs marked. The
 flags and suggestions are on the figure too, since they are what the entry promises: a flagged
 station gets a second, red ring (on a hub, clear of the hub's marker), a ghost line a red
 polyline through its stations, and a simulated link (orbital or feeder) a dashed line in the hub
-green. The legend is a dark strip appended under the map, so it never covers anything drawn: the
-image grows by the strip's height, and the entries sit in as many columns as fit the width (three
-on a city's 1024 px figure, one per row on the narrowest). Every figure at least
-LEGEND_MIN_WIDTH (256 px) wide has one, in the caption's font at the caption's scale (never
-below CAPTION_MIN_SCALE). Three caption lines are burned into the map's top-left corner: the
-processed-imagery notice, the Copernicus sentence and the OpenStreetMap credit (the page carries
-the full attribution with its (c), which Hershey fonts lack).
+green. Nothing else is drawn on the map: the words go in a dark strip stacked under it, so they
+never cover a station, and the image grows by the strip's height. The strip holds the three
+caption lines at its top-left (the processed-imagery notice, the Copernicus sentence and the
+OpenStreetMap credit; the page carries the full attribution with its (c), which Hershey fonts
+lack), then, on every figure at least LEGEND_MIN_WIDTH (256 px) wide, the legend, its entries in
+as many columns as fit the width (three on a city's 1024 px figure, one per row on the
+narrowest). Both are set in the caption's font at the caption's scale (never below
+CAPTION_MIN_SCALE). The PNG is encoded at zlib's strongest level, and a figure over
+FIGURE_BYTE_BUDGET is drawn again smaller, so a crowded, noisy city still fits the pipeline's cap.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import cv2
 import numpy as np
@@ -32,6 +35,7 @@ from vision.annotate import (
     FONT,
     UNMEASURED_TINT,
     burn_caption,
+    caption_bar_size,
     caption_font_scale,
     encode_png,
 )
@@ -65,14 +69,22 @@ SUGGESTION_COLOUR = (80, 255, 80)
 ORBITAL_THICKNESS, FEEDER_THICKNESS = 2, 1
 # OpenCV has no dashed line: segments this long with this gap stand in for one.
 DASH_ON, DASH_OFF = 6, 4
-# The legend: a strip in the caption's colours appended under the map, never over it, so it hides
-# nothing however small the figure. Each entry is a glyph, drawn as the map draws its symbol, then
-# one or two lines of words, set in the caption's font at the caption's scale (which grows with
-# the width and never goes below CAPTION_MIN_SCALE). The widest entry is about 170 px at that
-# smallest scale, so every figure at least LEGEND_MIN_WIDTH wide fits one column; a narrower one
-# (a thumbnail) gets no legend. The entries fill as many columns as fit, row by row: three at
-# 1024 px, two at 400, one per row at 256.
+# The legend: rows in the caption's colours under the caption, in the strip under the map, so it
+# hides nothing however small the figure. Each entry is a glyph, drawn as the map draws its
+# symbol, then one or two lines of words, set in the caption's font at the caption's scale (which
+# grows with the width and never goes below CAPTION_MIN_SCALE). The widest entry is about 170 px
+# at that smallest scale, so every figure at least LEGEND_MIN_WIDTH wide fits one column; a
+# narrower one (a thumbnail) gets the caption alone. The entries fill as many columns as fit, row
+# by row: three at 1024 px, two at 400, one per row at 256.
 LEGEND_MIN_WIDTH = 256
+# Columns fit when LEGEND_MIN_GAP glyph sizes (a text height each) separate them, and are spread
+# up to LEGEND_GAP apart. A Hershey font's text sizes step with its scale, so a fit asking for the
+# full two fell from three columns to two just past some of the steps as the width grew (at 622,
+# 681, 918 and 977 px); with one glyph size of slack the count never falls as the width grows.
+LEGEND_MIN_GAP, LEGEND_GAP = 1, 2
+# A 1 px rule between the caption and the legend, dimmer than either, so the caption's last line
+# does not read as a legend entry.
+RULE_COLOUR = (96, 96, 96)
 LEGEND_ENTRIES = (
     ("station", ("station, larger = busier catchment,", "thick ring = high isolation weight")),
     ("hub", ("hub",)),
@@ -85,47 +97,85 @@ CAPTION_LINES = (
     "Contains modified Copernicus Sentinel data {year}",
     "Map data (c) OpenStreetMap contributors",
 )
+# zlib's strongest level: the synthetic city's figure in less than half the bytes of OpenCV's
+# fast default (49,089 against 109,348) and the 1024 px city's in about a third (137,467 against
+# 394,749), for about 0.4 s more encoding a 1024 px figure.
+PNG_COMPRESSION = 9
+# The figure's byte budget. The pipeline refuses a figure over MAX_IMAGE_BYTES (3 MiB,
+# common/vision_client.py, which the worker does not import). The worst case the tests build
+# (test_vision_rail_core.crowded_city: 2,000 stations each joined to its two nearest neighbours,
+# 400 flags, 10 suggestions, a maximum-entropy red band, all of it usable, a 1024 px map) was
+# 2,767,213 bytes with OpenCV's default compression and the caption on the map: 12 % under that
+# cap. At PNG_COMPRESSION, with the caption in the strip, it is 2,457,805 bytes at 1024 px, over
+# this budget, so it is drawn again at 0.8x, an 819 px map: 1,504,821 bytes, under half the cap.
+# A figure over the budget is drawn again with its map FIGURE_SHRINK times as large until it
+# fits; at FIGURE_MIN_SIDE (the map's longer side) it is returned as it is, even over the budget,
+# since the cap it must meet is still the client's 3 MiB (the worst case at 512 px is 608,310
+# bytes).
+FIGURE_BYTE_BUDGET = 2 * 1024 * 1024
+FIGURE_SHRINK, FIGURE_MIN_SIDE = 0.8, 512
 
 
 def annotate_rail(analysis: RailAnalysis, red: np.ndarray, year: str | int, max_side: int = 1024) -> bytes:
     """PNG bytes of the figure: the map, scaled so its longer side is at most `max_side`, with the
-    legend strip (`legend_strip`) appended under it, so the image is taller than the map by the
-    strip's height. Drawn on the map in this order: deserts, edges, suggested links, ghost lines,
-    stations, flag rings, hubs, the caption. A flag or suggestion naming a station without a
-    position, or an id the graph does not hold, draws nothing; every other part of it is still
-    drawn."""
+    strip (`figure_strip`: the caption, then the legend) stacked under it, so the image is taller
+    than the map by the strip's height and nothing but the analysis is drawn on the map. Drawn on
+    the map in this order: deserts, edges, suggested links, ghost lines, stations, flag rings,
+    hubs. A flag or suggestion naming a station without a position, or an id the graph does not
+    hold, draws nothing; every other part of it is still drawn. A figure over FIGURE_BYTE_BUDGET
+    is drawn again with its map FIGURE_SHRINK times as large, until it fits or the map's longer
+    side is down to FIGURE_MIN_SIDE."""
     layers, metrics = analysis.layers, analysis.metrics
-    heat, usable, desert = layers["heat"], layers["usable"], layers["desert"]
-    if red.shape != heat.shape:
+    if red.shape != layers["heat"].shape:
         raise ValueError("the red band must be on the analysis grid")
+    scene = _scene(layers, red)
+    # Outline the deserts the metrics report: clusters of at least min_desert_km2, not every speck.
+    params = metrics["params"]
+    min_px = params["min_desert_km2"] / (params["pixel_size_m"] / 1000.0) ** 2
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(layers["desert"], connectivity=8)
+    large = np.flatnonzero(stats[:, cv2.CC_STAT_AREA] >= min_px)
+    reported = np.isin(labels, large[large > 0]).astype(np.uint8)
+    deserts, _ = cv2.findContours(reported, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
+    caption = [line.format(year=year) for line in CAPTION_LINES]
+    longer = max(scene.shape[:2])
+    side = min(max_side, longer)
+    while True:
+        image = _draw_map(scene, deserts, analysis, side / longer)
+        png = encode_png(np.vstack((image, figure_strip(image, caption))), PNG_COMPRESSION)
+        if len(png) <= FIGURE_BYTE_BUDGET or side <= FIGURE_MIN_SIDE:
+            return png
+        side = max(FIGURE_MIN_SIDE, int(side * FIGURE_SHRINK))
+
+
+def _scene(layers: dict, red: np.ndarray) -> np.ndarray:
+    """The heat map over the stretched red band where the scene was usable, the unmeasured tint
+    elsewhere: BGR on the analysis grid."""
+    heat, usable = layers["heat"], layers["usable"]
     scene_bgr = cv2.cvtColor(stretch(red, STRETCH_MAX), cv2.COLOR_GRAY2BGR)
     heat_bgr = cv2.applyColorMap(np.clip(heat * 255.0, 0, 255).astype(np.uint8), cv2.COLORMAP_INFERNO)
     blended = cv2.addWeighted(scene_bgr, SCENE_WEIGHT, heat_bgr, HEAT_WEIGHT, 0)
     tint = np.empty_like(scene_bgr)
     tint[:] = UNMEASURED_TINT
     tinted = cv2.addWeighted(scene_bgr, 0.4, tint, 0.6, 0)
-    image = np.where((usable > 0)[:, :, None], blended, tinted)
+    return np.where((usable > 0)[:, :, None], blended, tinted)
 
-    h, w = image.shape[:2]
-    scale = min(1.0, max_side / float(max(h, w)))
+
+def _draw_map(scene: np.ndarray, deserts, analysis: RailAnalysis, scale: float) -> np.ndarray:
+    """The map: `scene` scaled by `scale` (at most 1), the analysis drawn on it."""
+    layers, metrics = analysis.layers, analysis.metrics
     if scale < 1.0:
+        h, w = scene.shape[:2]
         size = (max(1, round(w * scale)), max(1, round(h * scale)))
-        image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
-    image = np.ascontiguousarray(image)
+        image = cv2.resize(scene, size, interpolation=cv2.INTER_AREA)
+    else:
+        image = scene.copy()  # the scene may be drawn again at another scale
 
     def at(x, y):
         return int(round(x * scale)), int(round(y * scale))
 
-    # Outline the deserts the metrics report: clusters of at least min_desert_km2, not every speck.
-    params = metrics["params"]
-    min_px = params["min_desert_km2"] / (params["pixel_size_m"] / 1000.0) ** 2
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(desert, connectivity=8)
-    large = np.flatnonzero(stats[:, cv2.CC_STAT_AREA] >= min_px)
-    reported = np.isin(labels, large[large > 0]).astype(np.uint8)
-    contours, _ = cv2.findContours(reported, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        scaled = [np.round(c.astype(np.float64) * scale).astype(np.int32) for c in contours]
+    if deserts:
+        scaled = [np.round(c.astype(np.float64) * scale).astype(np.int32) for c in deserts]
         cv2.drawContours(image, scaled, -1, DESERT_COLOUR, 1)
 
     graph = layers["graph"]
@@ -190,12 +240,7 @@ def annotate_rail(analysis: RailAnalysis, red: np.ndarray, year: str | int, max_
     for sid in hubs:
         if sid in radius_of:
             cv2.drawMarker(image, at(*position_of[sid]), HUB_COLOUR, cv2.MARKER_DIAMOND, HUB_MARKER_SIZE, 2)
-
-    burn_caption(image, [line.format(year=year) for line in CAPTION_LINES])
-    strip = legend_strip(image)
-    if strip is not None:
-        image = np.vstack((image, strip))
-    return encode_png(image)
+    return image
 
 
 def _dashed_line(
@@ -235,11 +280,28 @@ def _dashed_line(
         start = end + off
 
 
+def figure_strip(image: np.ndarray, caption: Sequence[str]) -> np.ndarray:
+    """The strip to stack under a map as wide as `image` (BGR), in the caption's colours: the
+    `caption` lines at its top-left, burned as `burn_caption` burns them into the ships figure,
+    then, when the map is wide enough for one, a rule and the legend (`legend_strip`)."""
+    w = image.shape[1]
+    block = np.empty((caption_bar_size(image, caption)[1], w, 3), np.uint8)
+    block[:] = CAPTION_BACKGROUND
+    burn_caption(block, caption)
+    legend = legend_strip(image)
+    if legend is None:
+        return block
+    rule = np.empty((1, w, 3), np.uint8)
+    rule[:] = CAPTION_BACKGROUND
+    rule[:, CAPTION_PAD : w - CAPTION_PAD] = RULE_COLOUR
+    return np.vstack((block, rule, legend))
+
+
 def legend_strip(image: np.ndarray) -> np.ndarray | None:
-    """The legend for a figure as wide as `image` (BGR): a strip of the caption's background to
-    stack under it, in the caption's font at the caption's scale, `LEGEND_ENTRIES` laid out row
-    by row in as many columns as fit its width (as few rows as fit; each column as wide as its
-    widest entry). None when `image` is narrower than `LEGEND_MIN_WIDTH`."""
+    """The legend for a figure as wide as `image` (BGR): rows of the caption's background, in the
+    caption's font at the caption's scale, `LEGEND_ENTRIES` laid out row by row in as many columns
+    as fit its width (as few rows as fit; each column as wide as its widest entry, the columns a
+    glyph to two glyphs apart). None when `image` is narrower than `LEGEND_MIN_WIDTH`."""
     w = image.shape[1]
     if w < LEGEND_MIN_WIDTH:
         return None
@@ -251,13 +313,16 @@ def legend_strip(image: np.ndarray) -> np.ndarray | None:
     pitch = th + base + CAPTION_PAD  # one line of words, as the caption's lines are spaced
     indent = 3 * glyph + 2 * CAPTION_PAD  # where the words start, from the entry's left edge
     widths = [indent + max(tw for (tw, _), _ in entry) for entry in sizes]
-    gap = 2 * glyph  # between one column's widest words and the next column's glyphs
     count = len(LEGEND_ENTRIES)
     for row_count in range(1, count + 1):
         columns = -(-count // row_count)
         column_widths = [max(widths[i::columns]) for i in range(columns)]
-        if columns == 1 or 2 * CAPTION_PAD + sum(column_widths) + gap * (columns - 1) <= w:
+        room = w - 2 * CAPTION_PAD - sum(column_widths)  # for the gaps between the columns
+        if columns == 1 or room >= LEGEND_MIN_GAP * glyph * (columns - 1):
             break
+    # Between one column's widest words and the next column's glyphs: what the fit left, shared
+    # out, up to LEGEND_GAP glyphs.
+    gap = min(LEGEND_GAP * glyph, room // (columns - 1)) if columns > 1 else 0
     lefts = [CAPTION_PAD + sum(column_widths[:i]) + gap * i for i in range(columns)]
     rows = [LEGEND_ENTRIES[i : i + columns] for i in range(0, count, columns)]
     heights = [max(len(lines) for _, lines in row) * pitch for row in rows]
