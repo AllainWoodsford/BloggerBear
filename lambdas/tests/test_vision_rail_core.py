@@ -361,6 +361,34 @@ def test_orbital_links_lower_the_mean_distance_to_a_hub_and_are_deterministic():
     assert not [s for s in suggest(graph, rows, measures, adjacency, PX, 5.0) if s["type"] == "orbital_link"]
 
 
+
+def test_a_simulated_link_is_measured_with_the_base_graphs_sampling(monkeypatch):
+    """The before and after betweenness of an orbital link come from one estimator: with the work
+    budget set so the spokes graph is exact but the graph plus one link would be sampled, the trial
+    is still exact, and the suggestion is the one an unlimited budget gives."""
+    graph, activity = spokes()
+    adjacency = {node: sorted(graph.neighbors(node)) for node in graph}
+
+    def run():
+        measures = graph_metrics(graph, activity, hub_count=1)
+        return suggest(graph, rows_of(graph, activity, measures), measures, adjacency, PX, 5.0)
+
+    unlimited = run()
+    n, m = graph.number_of_nodes(), graph.number_of_edges()
+    monkeypatch.setattr(rail_analyse, "BETWEENNESS_WORK", n * (n + m))  # exact; one more edge is not
+    monkeypatch.setattr(rail_analyse, "MIN_BETWEENNESS_SAMPLES", 2)
+    calls = []
+    real = nx.betweenness_centrality
+
+    def recording(g, **kwargs):
+        calls.append((g.number_of_edges(), kwargs.get("k")))
+        return real(g, **kwargs)
+
+    monkeypatch.setattr(rail_analyse.nx, "betweenness_centrality", recording)
+    assert run() == unlimited
+    assert calls and all(k is None for _, k in calls)  # the trial (m + 1 edges) included
+    assert any(edges == m + 1 for edges, _ in calls)
+
 def test_feeder_corridors_target_the_nearest_hub():
     graph, activity = spokes()
     measures = graph_metrics(graph, activity, hub_count=2)
