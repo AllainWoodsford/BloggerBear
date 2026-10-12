@@ -39,8 +39,8 @@ SOURCE_TABLES = {
 }
 
 
-def ago(**delta) -> str:
-    return (NOW - timedelta(**delta)).isoformat()
+def ago(now: datetime = NOW, **delta) -> str:
+    return (now - timedelta(**delta)).isoformat()
 
 
 @pytest.fixture
@@ -106,7 +106,9 @@ def put_topic(tables, topic_id="crypto", name="Crypto", *, researched=None):
     tables.Table("Topics").put_item(Item=item)
 
 
-def put_published(tables, article_id=ARTICLE, *, title="A Plain Title", body=PLAIN_BODY, topic="crypto"):
+def put_published(
+    tables, article_id=ARTICLE, *, title="A Plain Title", body=PLAIN_BODY, topic="crypto", now: datetime = NOW
+):
     key = f"articles/{article_id}.md"
     boto3.client("s3", region_name=REGION).put_object(Bucket=BUCKET, Key=key, Body=body.encode("utf-8"))
     tables.Table("Articles").put_item(
@@ -114,21 +116,28 @@ def put_published(tables, article_id=ARTICLE, *, title="A Plain Title", body=PLA
             "article_id": article_id,
             "topic_id": topic,
             "status": "published",
-            "created_at": ago(hours=5),
-            "published_at": ago(hours=5),
+            "created_at": ago(now, hours=5),
+            "published_at": ago(now, hours=5),
             "title": title,
             "body_s3_key": key,
         }
     )
 
 
-def put_held(tables, article_id="held-1", *, reasons=("draft truncated at 4000 tokens",), topic="crypto"):
+def put_held(
+    tables,
+    article_id="held-1",
+    *,
+    reasons=("draft truncated at 4000 tokens",),
+    topic="crypto",
+    now: datetime = NOW,
+):
     tables.Table("Articles").put_item(
         Item={
             "article_id": article_id,
             "topic_id": topic,
             "status": "pending_moderation",
-            "created_at": ago(hours=2),
+            "created_at": ago(now, hours=2),
             "title": HOSTILE,
         }
     )
@@ -138,7 +147,7 @@ def put_held(tables, article_id="held-1", *, reasons=("draft truncated at 4000 t
             "article_id": article_id,
             "topic_id": topic,
             "status": "pending",
-            "created_at": ago(hours=2),
+            "created_at": ago(now, hours=2),
             "reasons": list(reasons),
         }
     )
@@ -859,16 +868,20 @@ def test_the_write_itself_refuses_anything_that_is_not_on_the_list(tables):
 
 
 def test_no_table_other_than_the_assistants_own_changes(client, tables):
+    # The tools run through the MCP server here, so they read the real clock, not NOW: the
+    # fixtures are dated from it too, or the content checks' 7-day window would lose the article
+    # a week after NOW (which is how this test started failing on 2026-10-11).
+    now = datetime.now(UTC)
     put_topic(tables, "crypto", "Crypto")
-    put_published(tables, ARTICLE, title="# Marked up", body=FENCED_BODY)
-    put_held(tables, "held-1")
+    put_published(tables, ARTICLE, title="# Marked up", body=FENCED_BODY, now=now)
+    put_held(tables, "held-1", now=now)
     tables.Table("Musings").put_item(
         Item={
             "musing_id": "m1",
             "kind": "article",
             "article_id": ARTICLE,
             "text": "",
-            "created_at": ago(hours=1),
+            "created_at": ago(now, hours=1),
         }
     )
     bucket = boto3.client("s3", region_name=REGION)
