@@ -898,6 +898,19 @@ had kept their commits, so the push was one command when the limit reset; the wo
 result with failed agents is not a clean result; read the failures before trusting an empty list.
 And have agents commit before the long suite, so a cut-off costs a push, not the work. (#289, #290)
 
+**12.12 The limit again, a different model, and a smoke test that was too small.** The usage
+limit ran out a third time with three jobs in flight: an implementation agent with about 1,100
+uncommitted lines, a second with its drawing code written and no tests, and a review whose eight
+verifiers all failed, leaving four of its seven findings unchecked. The session moved to another
+model. **Fix:** both agents were resumed by message in their own worktrees rather than restarted,
+so their uncommitted work carried over; the four unchecked findings went to a fix agent that had
+to reproduce each one before changing code. Two of them were about time: the worker's smoke run
+on the real Sydney scene used a nine-station hand-made network, so its 6.6 s graph stage said
+nothing about a city's real network, where sampled betweenness on a few thousand junctions can
+take most of the 60 s budget. **Lesson:** a smoke test proves the plumbing, not the budget; size
+the input to the real case before quoting a timing. And keep agents committing early: the
+resumable work was the work that sat in a worktree. (#291, rail PRs E and H)
+
 ## Patterns worth keeping
 
 1. **Real invocation beats static checks.** `validate`, mocks and green tests missed the worst bugs
