@@ -54,6 +54,20 @@ RAIL_REFERENCE_BAND = "swir16"
 _session: requests.Session | None = None
 
 
+class BadParams(Exception):
+    """A params dataclass refused a combination the contract's per-field checks let through: the
+    caller's to fix (bad_request), found before any scene is read. Not a ValueError, so that every
+    ValueError from the reading and the analysis stays an internal error, and is logged."""
+
+
+def _params(cls, request: dict):
+    """`cls` (DetectParams, RailParams) built from the request's params, or BadParams."""
+    try:
+        return cls(**request["params"])
+    except ValueError as exc:
+        raise BadParams(str(exc)) from exc
+
+
 def http_fetch(url: str, start: int, end: int) -> bytes:
     """One HTTP range request. S3 answers 206 with exactly the bytes asked for (fewer at the end
     of the file)."""
@@ -90,6 +104,8 @@ def lambda_handler(event, context, fetch=None):
 
     try:
         return _measure(request, info, fetch, started)
+    except BadParams as exc:
+        return contract.error("bad_request", str(exc))
     except scene.SiteOutsideScene as exc:
         return contract.error("site_outside_scene", str(exc))
     except scene.WindowTooLarge as exc:
@@ -97,11 +113,7 @@ def lambda_handler(event, context, fetch=None):
     except (cog.CogError, requests.RequestException) as exc:
         logger.warning("unreadable scene %s: %s", request["scene"]["id"], exc)
         return contract.error("unreadable_scene", str(exc))
-    except ValueError as exc:
-        # A params dataclass refused a combination the contract's per-field checks let through:
-        # the caller's to fix, not a failure of the worker. After CogError, which is a ValueError.
-        return contract.error("bad_request", str(exc))
-    except Exception:
+    except Exception:  # a ValueError from the analysis included: the worker's fault, not the caller's
         logger.exception("vision worker failed on %s / %s", request["site"]["id"], request["scene"]["id"])
         return contract.error("internal", "the worker failed; see its log")
 
@@ -128,6 +140,7 @@ def _measure(request: dict, info: dict, fetch, started: float) -> dict:
 
 def _measure_ships(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | None, dict]:
     """Vessels in the site: the bands on nir's grid, the analysis, the figure, the stage timings."""
+    params = _params(DetectParams, request)  # before any read: a bad combination costs no bytes
     t0 = time.perf_counter()
     site = scene.read_site(request["scene"]["assets"], request["site"]["polygon"], fetch)
     t1 = time.perf_counter()
@@ -141,7 +154,6 @@ def _measure_ships(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes |
         if missing.any():
             scl = np.full(nir.shape, 6, np.uint8) if scl is None else scl.copy()
             scl[missing] = 0
-    params = DetectParams(**request["params"])
     analysis = analyse_site(
         nir,
         green,
@@ -165,6 +177,7 @@ def _measure_ships(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes |
 def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | None, dict]:
     """Rail access over the site: the bands on swir16's 20 m grid, the analysis against the
     network in the request, the figure, the stage timings (with the graph stage apart)."""
+    params = _params(RailParams, request)  # before any read: a bad combination costs no bytes
     t0 = time.perf_counter()
     site = scene.read_site(
         request["scene"]["assets"], request["site"]["polygon"], fetch, reference=RAIL_REFERENCE_BAND
@@ -181,7 +194,6 @@ def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | 
             scl = bands["scl"].copy()
             scl[missing] = 0
             bands["scl"] = scl
-    params = RailParams(**request["params"])
     analysis = analyse_rail_access(
         bands,
         [site.polygon_px],

@@ -128,16 +128,23 @@ TASKS = {
 NETWORK_LIMITS = {"points": 60_000, "ways": 5_000, "stations": 2_000, "pois": 5_000, "name_chars": 80}
 # A station or point-of-interest kind is a short OpenStreetMap tag value ("station", "bus_stop").
 MAX_KIND_CHARS = 32
+# The longest network element id (vision/network.py's MAX_ID_CHARS, which bounds graph node ids; a
+# test holds the two equal): an OpenStreetMap id is a letter and up to 16 digits.
+MAX_NETWORK_ID_CHARS = 32
+# network.fetched_at is a timestamp (an ISO one is 32 characters), not a place to put a document.
+MAX_FETCHED_AT_CHARS = 64
 # Where a lon/lat may be: on Earth, and inside UTM's latitudes (as a site polygon's points).
 LON_RANGE, LAT_RANGE = (-180.0, 180.0), (-80.0, 84.0)
 
 MAX_POLYGON_VERTICES = 64
-_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+# Matched whole (`fullmatch`): with `match` and `$`, a trailing newline would pass.
+_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 # Characters that do not belong in a name shown in a caption or a prompt, by Unicode category:
 # controls, formatting characters, surrogates, private use, unassigned, and the line and paragraph
 # separators; the two joiners are formatting characters that Persian, Arabic and Indic names need.
 _DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
-_KEPT_JOINERS = frozenset("‌‍")
+# ZERO WIDTH NON-JOINER and ZERO WIDTH JOINER, written as escapes because the characters are invisible.
+_KEPT_JOINERS = frozenset("\u200c\u200d")
 
 
 class ContractError(ValueError):
@@ -157,7 +164,7 @@ def validate_request(
     if backend not in BACKENDS:
         raise ContractError(f"backend must be one of {BACKENDS}")
     task = request.get("task", DEFAULT_TASK)
-    if task not in TASKS:
+    if not isinstance(task, str) or task not in TASKS:  # a list or dict is unhashable: no TypeError
         raise ContractError(f"task must be one of {tuple(TASKS)}")
     spec = TASKS[task]
 
@@ -247,7 +254,8 @@ def validate_network(network: object) -> dict:
     """The rail network in the shape common/osm.py's `fetch_network` returns, normalised: ids as
     strings, names sanitised (control and formatting characters out, whitespace collapsed, cut at
     NETWORK_LIMITS["name_chars"]; a nameless station is "Unnamed station (<id>)"), every lon/lat
-    checked as a site polygon's points are, `tunnel` a bool, `fetched_at` a string or None. Only
+    checked as a site polygon's points are, ids at most MAX_NETWORK_ID_CHARS, `tunnel` a bool,
+    `fetched_at` a string of at most MAX_FETCHED_AT_CHARS or None. Only
     `ways`, `stations`, `pois` and `fetched_at` are kept (the fetch's `source`, `counts` and the
     like are the adapter's). ContractError on anything else, and on a list over NETWORK_LIMITS."""
     if not isinstance(network, dict):
@@ -314,8 +322,8 @@ def validate_network(network: object) -> dict:
         )
 
     fetched_at = network.get("fetched_at")
-    if fetched_at is not None and not isinstance(fetched_at, str):
-        raise ContractError("network.fetched_at must be a string")
+    if fetched_at is not None and (not isinstance(fetched_at, str) or len(fetched_at) > MAX_FETCHED_AT_CHARS):
+        raise ContractError(f"network.fetched_at must be a string of at most {MAX_FETCHED_AT_CHARS} chars")
     return {"ways": ways, "stations": stations, "pois": pois, "fetched_at": fetched_at}
 
 
@@ -338,7 +346,7 @@ def validate_reply(reply: object) -> dict:
             raise ContractError("unknown error code")
         return reply
     task = reply.get("task", DEFAULT_TASK)
-    if task not in TASKS:
+    if not isinstance(task, str) or task not in TASKS:
         raise ContractError("unknown task in the reply")
     metrics = reply.get("metrics")
     if not isinstance(metrics, dict):
@@ -386,7 +394,7 @@ def _listed(names: tuple[str, ...]) -> str:
 
 
 def _is_id(value: object) -> bool:
-    return isinstance(value, str) and bool(_ID.match(value))
+    return isinstance(value, str) and bool(_ID.fullmatch(value))
 
 
 def _is_number(value: object) -> bool:
@@ -410,17 +418,18 @@ def _lonlat(point: object, what: str) -> list[float]:
 
 
 def _element_id(element: dict, what: str) -> str:
-    """The element's `id` as a string: OpenStreetMap's "n123" / "w45", or a number."""
+    """The element's `id` as a string: OpenStreetMap's "n123" / "w45", or a number; at most
+    `MAX_NETWORK_ID_CHARS` long."""
     value = element.get("id")
     if isinstance(value, int) and not isinstance(value, bool):
         value = str(value)
-    if not _is_id(value):
-        raise ContractError(f"a network {what} needs an id")
+    if not _is_id(value) or len(value) > MAX_NETWORK_ID_CHARS:
+        raise ContractError(f"a network {what} needs an id of at most {MAX_NETWORK_ID_CHARS} characters")
     return value
 
 
 def _kind(value: object, what: str) -> str:
-    if not isinstance(value, str) or not 1 <= len(value) <= MAX_KIND_CHARS or not _ID.match(value):
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_KIND_CHARS or not _ID.fullmatch(value):
         raise ContractError(f"a network {what} needs a short kind")
     return value
 

@@ -28,8 +28,13 @@ import numpy as np
 from vision import cog, geo
 
 # The largest window the worker will read, per side, in reference pixels: 4096 px = 41 km at 10 m
-# (larger than any anchorage) or 82 km at 20 m (a city and its suburbs), and bounded so one request
-# can't ask for a whole 110 km scene.
+# (larger than any anchorage) or 82 km at 20 m (a city and its suburbs; the four city boxes of
+# docs/enhancements/rail-access-monitor.md §2 need at most 3,327 px, Sydney's), and bounded so one
+# request can't ask for a whole 110 km scene. The rail task's compute at 4096 x 4096 px was
+# measured on a 4-core Intel Xeon at 2.1 GHz: 9 s for a synthetic city with 180 stations, and at
+# worst 20 s (a mesh of crossing ways just under the graph cap, 2,000 stations) or 21 s (4,096
+# parallel ways rasterised into one solid block, which the thinning peels for its full 32 passes),
+# under 1.4 GB, which leaves the 60 s invoke over half its time for the read.
 MAX_WINDOW_PX = 4096
 # Extra pixels read around the polygon so the adaptive threshold's window has context at the edge.
 PAD_PX = 16
@@ -149,8 +154,11 @@ def _read_aligned(
     ratio = target_px / info.pixel_size
     whole = ratio > 1 and abs(ratio - round(ratio)) < _EDGE_EPS
     if not categorical and whole and data.dtype in _AREA_DTYPES:
-        h, w = data.shape
-        size = (max(1, math.ceil(w / ratio - _EDGE_EPS)), max(1, math.ceil(h / ratio - _EDGE_EPS)))
+        r = round(ratio)
+        # Whole blocks only, so INTER_AREA is an exact block mean (a partial block at the edge is dropped).
+        h, w = (n - n % r if n >= r else n for n in data.shape)
+        data = data[:h, :w]
+        size = (max(1, w // r), max(1, h // r))
         data = cv2.resize(data, size, interpolation=cv2.INTER_AREA)
         c, a, _, f, _, e = transform
         transform = (c, a * w / size[0], 0.0, f, 0.0, e * h / size[1])

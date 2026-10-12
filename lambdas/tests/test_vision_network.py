@@ -97,7 +97,10 @@ def test_graph_of_a_cross_with_a_branch():
     stations = [{"id": "nA", "name": "A"}, {"id": "nB", "name": "B"}]
     snapped = network.snap_stations(skel, [(10, 60), (110, 30)], snap_px=3)
     graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros())
-    assert info == {"warnings": [], "unsnapped": [], "merged": [], "snapped": snapped, "components": 1}
+    assert info == {
+        "warnings": [], "unsnapped": [], "merged": [], "snapped": snapped, "components": 1,
+        "too_large": False,
+    }  # fmt: skip
     kinds = Counter(data["kind"] for _, data in graph.nodes(data=True))
     assert kinds == {"station": 2, "junction": 2, "end": 3}
     assert graph.number_of_edges() == 6 and nx.number_of_selfloops(graph) == 0
@@ -113,6 +116,30 @@ def test_graph_of_a_cross_with_a_branch():
     assert graph.edges["s:nB", fork]["corridor_visibility"] == 1.0
     assert graph.edges["s:nB", fork]["tunnel"] is False
     assert graph.edges["s:nB", fork]["pixels"] > 20
+
+
+def test_a_skeleton_over_max_nodes_is_refused_before_any_graph_is_made(monkeypatch):
+    # Nine ways each way, 10 px apart: 81 crossings and 36 ends are 117 nodes, joined by 180 runs;
+    # a station on one of them adds a node and splits a run.
+    steps = range(20, 101, 10)
+    skel = skeleton_of([[(5, y), (114, y)] for y in steps] + [[(x, 5), (x, 114)] for x in steps])
+    stations = [{"id": "n1"}, {"id": "n2"}]
+    snapped = network.snap_stations(skel, [(25, 20), (25, 23)], snap_px=2)
+    assert snapped == [(25, 20), None]
+    graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros(), max_nodes=1000)
+    assert graph.number_of_nodes() == 118 and not info["too_large"]
+
+    def no_graph(*args, **kwargs):
+        raise AssertionError("the graph was being built")
+
+    monkeypatch.setattr(network, "_touching", no_graph)  # the first per-run step after the checks
+    monkeypatch.setattr(network.nx.Graph, "add_node", no_graph)
+    for max_nodes, what in ((117, "118 nodes, over 117"), (118, "181 runs, over 118")):
+        graph, info = network.build_graph(skel, stations, snapped, PX, ones(), zeros(), max_nodes=max_nodes)
+        assert graph.number_of_nodes() == 0 and info == {
+            "warnings": [f"the skeleton has {what}: no graph was built"], "unsnapped": ["s:n2"], "merged": [],
+            "snapped": snapped, "components": 0, "too_large": True,
+        }  # fmt: skip
 
 
 def test_two_stations_in_one_cluster_merge_with_a_warning():

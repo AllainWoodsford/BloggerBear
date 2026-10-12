@@ -138,6 +138,7 @@ def build_graph(
     pixel_size_m: float,
     visible01: np.ndarray,
     tunnel_mask: np.ndarray,
+    max_nodes: int | None = None,
 ) -> tuple[nx.Graph, dict]:
     """The skeleton as a graph.
 
@@ -164,7 +165,13 @@ def build_graph(
 
     `info` has `warnings`, `unsnapped` (station ids without a skeleton pixel within reach),
     `merged` ([kept id, merged id] pairs), `snapped` (the per-station pixels actually used,
-    None for the unsnapped) and `components` of the graph.
+    None for the unsnapped), `components` of the graph and `too_large`.
+
+    With `max_nodes`, a skeleton of more node clusters or more runs than that is not built: the
+    graph comes back empty, with `too_large` true, no components and a warning saying why. Both
+    counts come from `connectedComponentsWithStats` before any per-node Python loop or networkx
+    allocation, so a dense mesh of crossing ways (a few thousand points can make hundreds of
+    thousands of junctions) costs a labelling pass, not gigabytes and minutes.
     """
     if pixel_size_m <= 0:
         raise ValueError("pixel_size_m must be positive")
@@ -185,6 +192,18 @@ def build_graph(
         if pixel is not None:
             seeds[pixel[1], pixel[0]] = 1
     count, node_labels, _, centroids = cv2.connectedComponentsWithStats(seeds, connectivity=8)
+    if max_nodes is not None and count - 1 > max_nodes:
+        return _too_large(stations, snapped, warnings, f"{count - 1} nodes", max_nodes)
+
+    # The runs between nodes: the skeleton minus every node cluster and its 3x3 neighbourhood,
+    # so the branches of a junction do not touch each other diagonally once it is removed. The
+    # skeleton pixels inside a neighbourhood but not in a cluster are the bridges.
+    node_zone = cv2.dilate(node_labels.astype(np.float32), _SQUARE).astype(np.int32)
+    on = skel01 > 0
+    run_src = (on & (node_zone == 0)).astype(np.uint8)
+    run_count, run_labels, run_stats, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
+    if max_nodes is not None and run_count - 1 > max_nodes:
+        return _too_large(stations, snapped, warnings, f"{run_count - 1} runs", max_nodes)
 
     graph = nx.Graph()
     station_of_label: dict[int, int] = {}
@@ -221,13 +240,6 @@ def build_graph(
             graph.add_node(node, kind=kind, x=x, y=y, station=None)
         node_of_label[label] = node
 
-    # The runs between nodes: the skeleton minus every node cluster and its 3x3 neighbourhood,
-    # so the branches of a junction do not touch each other diagonally once it is removed. The
-    # skeleton pixels inside a neighbourhood but not in a cluster are the bridges.
-    node_zone = cv2.dilate(node_labels.astype(np.float32), _SQUARE).astype(np.int32)
-    on = skel01 > 0
-    run_src = (on & (node_zone == 0)).astype(np.uint8)
-    run_count, run_labels, run_stats, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
     bridge_src = (on & (node_zone > 0) & (node_labels == 0)).astype(np.uint8)
     bridge_count, bridge_labels = cv2.connectedComponents(bridge_src, connectivity=8)
     bridge_touches = _touching(bridge_labels, node_labels, bridge_count)
@@ -273,8 +285,27 @@ def build_graph(
         "merged": merged,
         "snapped": snapped,
         "components": nx.number_connected_components(graph),
+        "too_large": False,
     }
     return graph, info
+
+
+def _too_large(
+    stations: Sequence[dict], snapped: list, warnings: list[str], what: str, max_nodes: int
+) -> tuple[nx.Graph, dict]:
+    """The empty graph and the `info` of a skeleton over `max_nodes`: the stations keep their
+    snapping (they are on the drawn lines), but no node, edge or component was made."""
+    warnings = warnings[:MAX_WARNINGS] + [f"the skeleton has {what}, over {max_nodes}: no graph was built"]
+    unsnapped = [station_node_id(s) for s, pixel in zip(stations, snapped, strict=True) if pixel is None]
+    info = {
+        "warnings": warnings,
+        "unsnapped": list(dict.fromkeys(unsnapped)),
+        "merged": [],
+        "snapped": snapped,
+        "components": 0,
+        "too_large": True,
+    }
+    return nx.Graph(), info
 
 
 def station_adjacency(graph: nx.Graph) -> dict[str, list[str]]:
