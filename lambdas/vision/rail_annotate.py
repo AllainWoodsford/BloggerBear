@@ -1,5 +1,5 @@
-"""The rail access figure: the heat map over the scene, with deserts, lines, stations, flags and
-suggested links drawn, and a legend.
+"""The rail access figure: the heat map over the scene, with deserts, lines, stations, hubs, flags
+and simulated links drawn, and a legend under it.
 
 The red band, contrast-stretched, carries the city's shape; the heat map is laid over it in an
 inferno colour map where the scene was usable, and the unmeasured parts get annotate.py's slate
@@ -7,12 +7,15 @@ tint so a cloud never looks like an empty suburb. Deserts are outlined, the grap
 drawn thicker the more paths run through them, stations larger the busier their catchment and
 with a thicker ring in the top quarter of isolation weight, and hubs marked. The analysis's
 flags and suggestions are on the figure too, since they are what the entry promises: a flagged
-station gets a second, red ring, a ghost line a red polyline through its stations, and a
-simulated link (orbital or feeder) a dashed line in the hub green. A legend under the caption
-bar names each symbol, on any figure large enough to read it (a city's, at 1024 px, always is).
-Three caption lines are burned in: the processed-imagery notice, the Copernicus sentence and the
-OpenStreetMap credit (the page carries the full attribution with its (c), which Hershey fonts
-lack).
+station gets a second, red ring (on a hub, clear of the hub's marker), a ghost line a red
+polyline through its stations, and a simulated link (orbital or feeder) a dashed line in the hub
+green. The legend is a dark strip appended under the map, so it never covers anything drawn: the
+image grows by the strip's height, and the entries sit in as many columns as fit the width (three
+on a city's 1024 px figure, one per row on the narrowest). Every figure at least
+LEGEND_MIN_WIDTH (256 px) wide has one, in the caption's font at the caption's scale (never
+below CAPTION_MIN_SCALE). Three caption lines are burned into the map's top-left corner: the
+processed-imagery notice, the Copernicus sentence and the OpenStreetMap credit (the page carries
+the full attribution with its (c), which Hershey fonts lack).
 """
 
 from __future__ import annotations
@@ -23,12 +26,12 @@ import cv2
 import numpy as np
 
 from vision.annotate import (
-    CAPTION_MIN_SCALE,
+    CAPTION_BACKGROUND,
     CAPTION_PAD,
+    CAPTION_TEXT,
     FONT,
     UNMEASURED_TINT,
     burn_caption,
-    caption_bar_size,
     caption_font_scale,
     encode_png,
 )
@@ -52,6 +55,9 @@ ISOLATED_RING_THICKNESS = 2
 # thin ring. A flagged station's second ring sits outside the largest station ring.
 FLAG_COLOUR = (60, 60, 255)  # BGR red
 FLAG_RING_OFFSET, FLAG_RING_THICKNESS = 4, 2
+# A flagged hub's ring is never smaller than this, or the hub marker drawn over it (its 2 px line
+# reaching a pixel past half HUB_MARKER_SIZE) would cover most of it on a quiet station.
+HUB_FLAG_RING_RADIUS = HUB_MARKER_SIZE // 2 + 3
 GHOST_LINE_THICKNESS = 2
 # Suggestions: a proposed link belongs to the hub story, so it is dashed in the hub green; an
 # orbital link (a new edge) is drawn thicker than a feeder corridor (an existing path to a hub).
@@ -59,22 +65,20 @@ SUGGESTION_COLOUR = (80, 255, 80)
 ORBITAL_THICKNESS, FEEDER_THICKNESS = 2, 1
 # OpenCV has no dashed line: segments this long with this gap stand in for one.
 DASH_ON, DASH_OFF = 6, 4
-# The legend: one line per symbol, a glyph then its words, in a black box under the caption bar
-# with this many rows of the image showing between the two.
-LEGEND_MARGIN = 1
-# The legend may cover at most these shares of the image's height and width. Its font is the
-# caption's, shrunk until the box fits but never below the caption's own smallest scale: a figure
-# too small for a legible legend (under about 400 px; a city's figure is 1024) gets none, since an
-# unreadable legend only hides the map.
-LEGEND_MAX_HEIGHT, LEGEND_MAX_WIDTH = 0.25, 0.75
-# Each step down in font scale while the legend does not fit.
-LEGEND_SHRINK = 0.95
-LEGEND_LINES = (
-    ("station", "station, larger = busier catchment, thick ring = high isolation weight"),
-    ("hub", "hub"),
-    ("flag", "flagged (isolated high demand, single point of failure, ghost line)"),
-    ("suggestion", "suggested link"),
-    ("desert", "beyond walking reach"),
+# The legend: a strip in the caption's colours appended under the map, never over it, so it hides
+# nothing however small the figure. Each entry is a glyph, drawn as the map draws its symbol, then
+# one or two lines of words, set in the caption's font at the caption's scale (which grows with
+# the width and never goes below CAPTION_MIN_SCALE). The widest entry is about 170 px at that
+# smallest scale, so every figure at least LEGEND_MIN_WIDTH wide fits one column; a narrower one
+# (a thumbnail) gets no legend. The entries fill as many columns as fit, row by row: three at
+# 1024 px, two at 400, one per row at 256.
+LEGEND_MIN_WIDTH = 256
+LEGEND_ENTRIES = (
+    ("station", ("station, larger = busier catchment,", "thick ring = high isolation weight")),
+    ("hub", ("hub",)),
+    ("flag", ("flagged (isolated high demand,", "single point of failure, ghost line)")),
+    ("suggestion", ("suggested link",)),
+    ("desert", ("beyond walking reach",)),
 )
 CAPTION_LINES = (
     "Processed imagery - BloggerBear",
@@ -84,10 +88,12 @@ CAPTION_LINES = (
 
 
 def annotate_rail(analysis: RailAnalysis, red: np.ndarray, year: str | int, max_side: int = 1024) -> bytes:
-    """PNG bytes of the figure, scaled so the longer side is at most `max_side`. Drawn in this
-    order: deserts, edges, suggested links, ghost lines, stations, flag rings, hubs, the legend,
-    the caption. A flag or suggestion naming a station without a position, or an id the graph
-    does not hold, draws nothing; every other part of it is still drawn."""
+    """PNG bytes of the figure: the map, scaled so its longer side is at most `max_side`, with the
+    legend strip (`legend_strip`) appended under it, so the image is taller than the map by the
+    strip's height. Drawn on the map in this order: deserts, edges, suggested links, ghost lines,
+    stations, flag rings, hubs, the caption. A flag or suggestion naming a station without a
+    position, or an id the graph does not hold, draws nothing; every other part of it is still
+    drawn."""
     layers, metrics = analysis.layers, analysis.metrics
     heat, usable, desert = layers["heat"], layers["usable"], layers["desert"]
     if red.shape != heat.shape:
@@ -174,18 +180,21 @@ def annotate_rail(analysis: RailAnalysis, red: np.ndarray, year: str | int, max_
         for flag in flags
         if flag.get("type") in ("isolated_high_demand", "single_point_of_failure")
     }
+    hubs = layers["hubs"]
     for sid in sorted(sid for sid in flagged if sid in radius_of):
         radius = radius_of[sid] + FLAG_RING_OFFSET
+        if sid in hubs:
+            radius = max(radius, HUB_FLAG_RING_RADIUS)
         cv2.circle(image, at(*position_of[sid]), radius, FLAG_COLOUR, FLAG_RING_THICKNESS, cv2.LINE_AA)
 
-    for sid in layers["hubs"]:
+    for sid in hubs:
         if sid in radius_of:
             cv2.drawMarker(image, at(*position_of[sid]), HUB_COLOUR, cv2.MARKER_DIAMOND, HUB_MARKER_SIZE, 2)
 
-    lines = [line.format(year=year) for line in CAPTION_LINES]
-    # cv2.rectangle fills both corners, so the caption bar's last row is its height.
-    burn_legend(image, top=caption_bar_size(image, lines)[1] + 1 + LEGEND_MARGIN)
-    burn_caption(image, lines)
+    burn_caption(image, [line.format(year=year) for line in CAPTION_LINES])
+    strip = legend_strip(image)
+    if strip is not None:
+        image = np.vstack((image, strip))
     return encode_png(image)
 
 
@@ -194,15 +203,29 @@ def _dashed_line(
 ) -> None:
     """A dashed line from pixel `a` to pixel `b` (both (x, y)): `on` px drawn, `off` px left,
     from `a` onwards. An anti-aliased line's end caps reach half its thickness and half a pixel
-    past each end, so each dash is drawn that much shorter and the gaps stay `off` px wide."""
-    (ax, ay), (bx, by) = a, b
+    past each end, so each dash is drawn that much shorter and the gaps stay `off` px wide. Only
+    the dashes that can touch the image are drawn (the segment is clipped to it first, the dashes
+    still counted from `a`), so an end far outside costs nothing."""
+    if on + off <= 0:
+        raise ValueError("a dash and its gap must add up to at least one pixel")
+    (ax, ay), (bx, by) = (int(v) for v in a), (int(v) for v in b)
     length = math.hypot(bx - ax, by - ay)
     if length == 0:
         return
+    h, w = image.shape[:2]
+    reach = thickness + 1  # how far past the image a line's pixels can still land in it
+    visible, *ends = cv2.clipLine((-reach, -reach, w + 2 * reach, h + 2 * reach), (ax, ay), (bx, by))
+    if not visible:
+        return
     ux, uy = (bx - ax) / length, (by - ay) / length
+    first_seen, last_seen = sorted((x - ax) * ux + (y - ay) * uy for x, y in ends)
+    period = on + off
+    # From a dash boundary a period before the clipped part (clipLine rounds to whole pixels) to a
+    # period past it: the same dashes an unclipped draw would put inside the image.
+    start = max(0, math.floor(first_seen / period) - 1) * period
+    stop = min(length, last_seen + period)
     cap = thickness / 2.0 + 0.5
-    start = 0.0
-    while start < length:
+    while start < stop:
         end = min(start + on, length)
         first, last = start + cap, end - cap
         if last > first:
@@ -212,47 +235,62 @@ def _dashed_line(
         start = end + off
 
 
-def burn_legend(image: np.ndarray, top: int = 0) -> np.ndarray:
-    """Burn the legend (`LEGEND_LINES`: a glyph, then its words) on a black box at the left edge
-    of `image` (BGR, in place) from row `top` down. The font is the caption's, shrunk until the
-    box covers no more than `LEGEND_MAX_HEIGHT` of the height and `LEGEND_MAX_WIDTH` of the
-    width; when that would take it below `CAPTION_MIN_SCALE`, nothing is drawn."""
-    h, w = image.shape[:2]
+def legend_strip(image: np.ndarray) -> np.ndarray | None:
+    """The legend for a figure as wide as `image` (BGR): a strip of the caption's background to
+    stack under it, in the caption's font at the caption's scale, `LEGEND_ENTRIES` laid out row
+    by row in as many columns as fit its width (as few rows as fit; each column as wide as its
+    widest entry). None when `image` is narrower than `LEGEND_MIN_WIDTH`."""
+    w = image.shape[1]
+    if w < LEGEND_MIN_WIDTH:
+        return None
     scale = caption_font_scale(image)
-    while True:
-        sizes = [cv2.getTextSize(text, FONT, scale, 1) for _, text in LEGEND_LINES]
-        glyph = max(4, max(th for (_, th), _ in sizes))  # the glyph cell: a text height tall, twice as wide
-        width = 3 * CAPTION_PAD + 2 * glyph + max(tw for (tw, _), _ in sizes)
-        height = sum(max(th, glyph) + base + CAPTION_PAD for (_, th), base in sizes) + CAPTION_PAD
-        # cv2.rectangle fills both corners: the box is one px wider and taller than its size.
-        if width + 1 <= LEGEND_MAX_WIDTH * w and height + 1 <= LEGEND_MAX_HEIGHT * h:
+    sizes = [[cv2.getTextSize(line, FONT, scale, 1) for line in lines] for _, lines in LEGEND_ENTRIES]
+    th = max(th for entry in sizes for (_, th), _ in entry)
+    base = max(base for entry in sizes for _, base in entry)
+    glyph = max(4, th)  # the glyph cell: a text height tall, three times as wide
+    pitch = th + base + CAPTION_PAD  # one line of words, as the caption's lines are spaced
+    indent = 3 * glyph + 2 * CAPTION_PAD  # where the words start, from the entry's left edge
+    widths = [indent + max(tw for (tw, _), _ in entry) for entry in sizes]
+    gap = 2 * glyph  # between one column's widest words and the next column's glyphs
+    count = len(LEGEND_ENTRIES)
+    for row_count in range(1, count + 1):
+        columns = -(-count // row_count)
+        column_widths = [max(widths[i::columns]) for i in range(columns)]
+        if columns == 1 or 2 * CAPTION_PAD + sum(column_widths) + gap * (columns - 1) <= w:
             break
-        if scale <= CAPTION_MIN_SCALE:
-            return image
-        scale = max(CAPTION_MIN_SCALE, scale * LEGEND_SHRINK)
-    cv2.rectangle(image, (0, top), (width, top + height), (0, 0, 0), thickness=-1)
-    y = top + CAPTION_PAD
-    for (kind, text), ((_, th), base) in zip(LEGEND_LINES, sizes, strict=True):
-        row = max(th, glyph)
-        _legend_glyph(image, kind, (CAPTION_PAD + glyph, y + row // 2), glyph)
-        origin = (2 * CAPTION_PAD + 2 * glyph, y + (row + th) // 2)
-        cv2.putText(image, text, origin, FONT, scale, (255, 255, 255), 1, cv2.LINE_AA)
-        y += row + base + CAPTION_PAD
-    return image
+    lefts = [CAPTION_PAD + sum(column_widths[:i]) + gap * i for i in range(columns)]
+    rows = [LEGEND_ENTRIES[i : i + columns] for i in range(0, count, columns)]
+    heights = [max(len(lines) for _, lines in row) * pitch for row in rows]
+    # A pad above the first row and between rows, beyond the pad each line of words ends with.
+    strip = np.empty((CAPTION_PAD + sum(heights) + CAPTION_PAD * (len(rows) - 1), w, 3), np.uint8)
+    strip[:] = CAPTION_BACKGROUND
+    top = CAPTION_PAD
+    for row, height in zip(rows, heights, strict=True):
+        for left, (kind, lines) in zip(lefts, row, strict=False):
+            middle = top + ((len(lines) - 1) * pitch + th) // 2  # of the entry's words
+            _legend_glyph(strip, kind, (left + 3 * glyph // 2, middle), glyph)
+            for index, line in enumerate(lines):
+                origin = (left + indent, top + index * pitch + th)
+                cv2.putText(strip, line, origin, FONT, scale, CAPTION_TEXT, 1, cv2.LINE_AA)
+        top += height + CAPTION_PAD
+    return strip
 
 
 def _legend_glyph(image: np.ndarray, kind: str, centre: tuple[int, int], size: int) -> None:
     """The legend's symbol for `kind`, drawn as the figure draws it, centred in a cell `size`
-    tall and twice as wide."""
+    tall and three times as wide."""
     cx, cy = centre
     radius = max(3, size // 2)  # a 2 px ring smaller than this fills in and reads as a dot
+    half = 3 * size // 2 - 1  # a line's reach either side of the centre
     if kind == "station":
-        cv2.circle(image, centre, radius, STATION_COLOUR, 1, cv2.LINE_AA)
+        # A small thin ring beside a larger thick one: both things a station's ring says.
+        cv2.circle(image, (cx - 3 * size // 4, cy), max(2, size // 3), STATION_COLOUR, 1, cv2.LINE_AA)
+        cv2.circle(image, (cx + size // 2, cy), radius, STATION_COLOUR, ISOLATED_RING_THICKNESS, cv2.LINE_AA)
     elif kind == "hub":
         cv2.drawMarker(image, centre, HUB_COLOUR, cv2.MARKER_DIAMOND, max(4, size), 2)
     elif kind == "flag":
         cv2.circle(image, centre, radius, FLAG_COLOUR, FLAG_RING_THICKNESS, cv2.LINE_AA)
     elif kind == "suggestion":
-        _dashed_line(image, (cx - size, cy), (cx + size, cy), SUGGESTION_COLOUR, ORBITAL_THICKNESS)
+        _dashed_line(image, (cx - half, cy), (cx + half, cy), SUGGESTION_COLOUR, ORBITAL_THICKNESS)
     elif kind == "desert":
-        cv2.line(image, (cx - size, cy), (cx + size, cy), DESERT_COLOUR, 1)
+        cv2.line(image, (cx - half, cy), (cx + half, cy), DESERT_COLOUR, 1)

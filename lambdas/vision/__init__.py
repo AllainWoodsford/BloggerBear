@@ -21,7 +21,8 @@ The rail access task (docs/enhancements/rail-access-monitor.md) adds, on the sam
 - access.py       distance to stations: served area, transit deserts, catchments, intermodal points
 - network.py      OpenStreetMap rail ways rasterised, thinned and read back as a graph (networkx)
 - rail_analyse.py the whole pass for one city: heat, reach, graph measures, flags, suggestions
-- rail_annotate.py the figure: heat over the scene, deserts, lines, stations and hubs
+- rail_annotate.py the figure: heat over the scene, deserts, lines, stations, hubs, flags,
+                   simulated links and a legend
 
 Imported only by the vision worker (and its tests): the shared pipeline zip has no OpenCV.
 """
