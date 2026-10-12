@@ -69,9 +69,9 @@ ISOLATED = (
     "2 track directions and 3.4 km by rail to the nearest hub: the pipeline flags it as isolated high demand."
 )
 GHOST = (
-    "3 consecutive stations from Ourimbah to Niagara Park sit in the quietest quarter of built-up density "
-    "along the network: the pipeline flags the stretch as a possible ghost line, where track runs through "
-    "little built-up area."
+    "3 connected stations, among them Ourimbah and Niagara Park, sit in the quietest quarter of built-up "
+    "density along the network: the pipeline flags the stretch as a possible ghost line, where track runs "
+    "through little built-up area."
 )
 # 3.1234 km in a straight line, simulated 20 % longer: 3.7 km; -0.06 of the top hub's 0.5: -12 %.
 ORBITAL = (
@@ -200,7 +200,7 @@ def test_a_station_missing_from_the_rows_uses_the_name_it_carries_or_is_skipped(
     gone = {"type": "single_point_of_failure", "station": "s:gone", "name": "Asquith", "ratio": 3.0}
     assert only(entry(flags=[gone]), "single_point_of_failure").startswith("Asquith lies on 3.0 times")
     unnamed = {"type": "single_point_of_failure", "station": "s:gone", "ratio": 3.0}
-    blank = {"type": "isolated_high_demand", "station": "s:gone", "name": " ​ "}
+    blank = {"type": "isolated_high_demand", "station": "s:gone", "name": " \u200b "}
     ghost = {"type": "ghost_line", "stations": ["s:gone", "s:X2", "s:X3"]}
     link = {**entry()["suggestions"][0], "to": "s:gone", "to_name": None}
     feeder = {**entry()["suggestions"][1], "station": "s:gone", "name": None}
@@ -211,17 +211,40 @@ def test_a_station_missing_from_the_rows_uses_the_name_it_carries_or_is_skipped(
     assert only(entry(stations=renamed), "single_point_of_failure").startswith("Sydney Central lies on")
     # Ghost lines without names in the flag take them from the rows.
     ghost = {"type": "ghost_line", "stations": ["s:X1", "s:X2", "s:X3"]}
-    assert only(entry(flags=[ghost]), "ghost_line").startswith("3 consecutive stations from Ourimbah to")
+    assert only(entry(flags=[ghost]), "ghost_line").startswith("3 connected stations, among them Ourimbah")
 
 
 def test_names_with_control_or_bidi_characters_come_out_clean():
     rows = copy.deepcopy(entry()["stations"])
-    rows[0]["name"] = "Cen‮tral\x00 Station\n⁦Platform⁩ 1"
+    rows[0]["name"] = "Cen\u202etral\x00 Station\n\u2066Platform\u2069 1"
     text = only(entry(stations=rows), "single_point_of_failure")
     assert text.startswith("Central Station Platform 1 lies on 2.5 times")
     flag = {**entry()["flags"][2], "stations": ["s:new1", "s:X2", "s:new3"],
-            "names": ["Up​per\tWest", "x", "Lower\r\nEast‭"]}  # fmt: skip
-    assert "from Upper West to Lower East sit" in only(entry(flags=[flag]), "ghost_line")
+            "names": ["Up\u200bper\tWest", "x", "Lower\r\nEast\u202d"]}  # fmt: skip
+    assert "among them Upper West and Lower East, sit" in only(entry(flags=[flag]), "ghost_line")
+
+
+def test_a_quiet_stretch_that_forks_is_not_read_as_one_line_from_end_to_end():
+    from vision import rail_analyse  # numpy: the worker's module, imported only here
+
+    # H-P-A1-A2-J, and at J the line forks to B1-B2 and C1-C2; A1, A2, J, B1 and C1 are quiet. The
+    # flag lists the path walked (A1 to B1) and then the other branch's C1, so its last station is
+    # not an end of the path, and its five stations are not five in a row.
+    adjacency = {"H": ["P"], "P": ["H", "A1"], "A1": ["P", "A2"], "A2": ["A1", "J"], "J": ["A2", "B1", "C1"],
+                 "B1": ["J", "B2"], "B2": ["B1"], "C1": ["J", "C2"], "C2": ["C1"]}  # fmt: skip
+    names = {"H": "Hub", "P": "Park", "A1": "Ash", "A2": "Birch", "J": "Junction", "B1": "Cedar",
+             "B2": "Elm", "C1": "Dale", "C2": "Fern"}  # fmt: skip
+    busy = {"H": 0.9, "P": 0.8, "B2": 0.7, "C2": 0.6}
+    rows = [{"id": sid, "name": name, "degree": len(adjacency[sid]), "betweenness": 0.0,
+             "activity": busy.get(sid, 0.1), "isolation_weight": None}
+            for sid, name in names.items()]  # fmt: skip
+    (ghost,) = (flag for flag in rail_analyse.flag_stations(rows, adjacency) if flag["type"] == "ghost_line")
+    assert ghost["stations"] == ["A1", "A2", "J", "B1", "C1"]
+    assert only(entry(flags=[ghost]), "ghost_line") == (
+        "5 connected stations, among them Ash and Dale, sit in the quietest quarter of built-up density "
+        "along the network: the pipeline flags the stretch as a possible ghost line, where track runs "
+        "through little built-up area."
+    )
 
 
 # --- order and caps ------------------------------------------------------------------------------
@@ -243,12 +266,16 @@ def test_flags_keep_a_fixed_order_and_the_cap():
         ("isolated_high_demand", "s:A"),
         ("ghost_line", "s:X1"),  # the longest stretch; the shorter one is past the cap of four
     ]
-    assert len(notes[3]["stations"]) == 5 and notes[3]["text"].startswith("5 consecutive stations")
+    assert len(notes[3]["stations"]) == 5 and notes[3]["text"].startswith("5 connected stations")
     # The same entry in any order reads the same.
     assert planner_notes(entry(flags=flags[::-1], suggestions=[])) == notes
-    # A flag that cannot be written does not take a place.
-    unnamed = {"type": "single_point_of_failure", "station": "s:gone"}
-    assert planner_notes(entry(flags=[unnamed, *flags], suggestions=[]))[0]["stations"] == ["s:H1"]
+    # A flag that cannot be written (no row, no name) does not take a place, even ranked ahead of
+    # those that can: the highest isolation weight, or the first station id under a cap of one.
+    unnamed = {"type": "isolated_high_demand", "station": "s:gone", "isolation_weight": 99.0}
+    assert planner_notes(entry(flags=[unnamed, *flags], suggestions=[])) == notes
+    unnamed = {"type": "single_point_of_failure", "station": "s:A0"}
+    capped = planner_notes(entry(flags=[unnamed, *flags], suggestions=[]), max_flags=1)
+    assert [(n["type"], n["stations"]) for n in capped] == [("single_point_of_failure", ["s:H1"])]
     assert [n["type"] for n in planner_notes(entry(flags=flags, suggestions=[]), max_flags=1)] == [
         "single_point_of_failure"
     ]

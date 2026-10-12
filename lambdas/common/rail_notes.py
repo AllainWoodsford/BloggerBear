@@ -114,10 +114,13 @@ def _ghost_line(flag: dict, rows: dict, entry: dict) -> tuple[list[str], str] | 
     last = _name(rows, _id(chain[-1]), carried[-1])
     if first is None or last is None:
         return None
+    # Connected, not consecutive, and two of them, not the two ends: where the quiet stretch forks,
+    # rail_analyse._walk_chain lists the path it walked and then the other branches' stations, so
+    # the list's last station can sit on a branch and its length is not one line's.
     text = (
-        f"{len(chain)} consecutive stations from {first} to {last} sit in the quietest quarter of built-up "
-        "density along the network: the pipeline flags the stretch as a possible ghost line, where track "
-        "runs through little built-up area."
+        f"{len(chain)} connected stations, among them {first} and {last}, sit in the quietest quarter of "
+        "built-up density along the network: the pipeline flags the stretch as a possible ghost line, where "
+        "track runs through little built-up area."
     )
     return _ids(*chain), text
 

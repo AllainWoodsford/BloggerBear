@@ -1125,6 +1125,40 @@ def test_the_finding_gets_each_measured_scenes_notes_with_its_site_capped(adapte
     assert len(notes) == 7 and [n["site_id"] for n in notes] == ["sydney"] * 5 + ["melbourne"] * 2
 
 
+class SiteRailWorker(FakeRailWorker):
+    """A FakeRailWorker that answers each site from its own {scene id: metrics}."""
+
+    def __init__(self, by_site):
+        super().__init__({})
+        self.by_site = by_site
+
+    def __call__(self, site, scene, **kwargs):
+        self.by_scene = self.by_site[site["id"]]
+        return super().__call__(site, scene, **kwargs)
+
+
+def test_the_finding_gets_the_notes_of_the_sites_the_summary_reports(adapter):
+    # Melbourne is measured first, but its new scene is below the coverage floor, so only Sydney's
+    # change is reported: the Finding carries Sydney's notes, as the summary does, and none of
+    # Melbourne's, which would otherwise fill the first five of the seven places.
+    two = [{"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}, *SITES]
+    melbourne = {"S0": noted(), "S1": noted(coverage=0.2)}
+    sydney = {"S0": noted(served_share=0.73), "S1": noted(served_share=0.6)}
+    worker = SiteRailWorker({"melbourne": melbourne, "sydney": sydney})
+    first = run(adapter, scene(0, day=10), worker, sites=two, max_sites_per_tick=2)
+    assert adapter.material_diff(None, first)[0]  # the first observation reports both, in order
+    assert [n["site_id"] for n in adapter.planner_notes(first)] == ["melbourne"] * 5 + ["sydney"] * 2
+
+    state = run(adapter, scene(1, day=11), worker, previous=first, sites=two, max_sites_per_tick=2)
+    assert [m["site_id"] for m in state["measured"]] == ["melbourne", "sydney"]
+    changed, summary = adapter.material_diff(first, state)
+    assert changed and "Melbourne" not in summary and summary.count(NOTES_LEAD) == 1
+    assert adapter.planner_notes(state) == [{"site_id": "sydney", **n} for n in latest_notes(state)]
+    # Before any diff on this instance, the notes are every measured scene's.
+    undiffed = ra.RailAccessAdapter().planner_notes(state)
+    assert [n["site_id"] for n in undiffed] == ["melbourne"] * 5 + ["sydney"] * 2
+
+
 def test_a_scene_the_agent_doubted_gives_the_finding_no_notes(adapter):
     adapter.triage_agent = FakeAgent("artefact", "a cloud bank over the western suburbs")
     state = None

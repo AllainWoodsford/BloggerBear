@@ -184,6 +184,8 @@ class RailAccessAdapter(Adapter):
     _topic: dict | None = None
     _config: dict | None = None
     _started: float | None = None
+    # Set by material_diff for planner_notes: the sites its summary reported (None before it runs).
+    _reported: list[str] | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
         config = parse_config(topic_config.get("adapter_config"))
@@ -357,6 +359,7 @@ class RailAccessAdapter(Adapter):
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
+        self._reported = []
         first = not vision_sites.anything_measured(old_state)
         if not first:
             self._triage(new_state, [v for v in verdicts if v["material"]])
@@ -365,11 +368,11 @@ class RailAccessAdapter(Adapter):
                 errors = vision_sites.site_errors(new_state) or "no scene to measure"
                 return False, f"nothing measured yet: {errors}"
             summary = "First observation. " + "; ".join(_first_line(v) for v in verdicts)
-            return True, _with_planner_notes(summary, verdicts, new_state)
+            return True, self._with_planner_notes(summary, verdicts, new_state)
         material = [v for v in verdicts if v["material"]]
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
-        return True, _with_planner_notes("; ".join(_describe(v) for v in material), material, new_state)
+        return True, self._with_planner_notes("; ".join(_describe(v) for v in material), material, new_state)
 
     def _triage(self, new_state: dict, candidates: list[dict]) -> None:
         """Ask the agent about each numerically material site; an "artefact" (or any failure)
@@ -421,6 +424,12 @@ class RailAccessAdapter(Adapter):
             if outcome["verdict"] != "real":
                 verdict["material"] = False
                 verdict["reason"] = f"the agent judged it an artefact: {outcome['reason']}"
+
+    def _with_planner_notes(self, summary: str, verdicts: list[dict], new_state: dict) -> str:
+        """`summary` with the planner notes of the sites it reports, which are the sites
+        planner_notes gives the Finding the notes of."""
+        self._reported = [v["site_id"] for v in verdicts]
+        return _with_planner_notes(summary, verdicts, new_state)
 
     def figures(self, new_state: dict) -> list[dict]:
         """One figure per site measured this tick that has one: the worker's heat map, with a
@@ -533,11 +542,16 @@ class RailAccessAdapter(Adapter):
         return _with_notes_rule(prompt, diff_summary)
 
     def planner_notes(self, new_state: dict) -> list[dict]:
-        """The rule-based flags and simulations (common/rail_notes.py) of each scene measured this
-        tick, each with its site's id, for the Finding: at most rail_notes.MAX_NOTES in all. A
-        scene the agent judged an artefact is left out (its measurements are what it doubted)."""
+        """The rule-based flags and simulations (common/rail_notes.py) of each site the diff summary
+        reported, each with its site's id, for the Finding: at most rail_notes.MAX_NOTES in all, so
+        a site measured this tick that the summary left out (not material, below the coverage
+        floor) never takes the reported site's places. Before material_diff has run on this
+        instance, those of every scene measured this tick. A scene the agent judged an artefact is
+        left out (its measurements are what it doubted)."""
         notes = []
         for m in new_state.get("measured") or []:
+            if self._reported is not None and m["site_id"] not in self._reported:
+                continue
             latest = _latest_entry(new_state, m["site_id"])
             doubted = (latest.get("triage") or {}).get("verdict", "real") != "real"
             if latest.get("scene_id") != m["scene_id"] or doubted:
