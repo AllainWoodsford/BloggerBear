@@ -18,8 +18,11 @@ import re
 # A page is an article with a map or two on it, not a gallery; three keeps it that and keeps the
 # copies and the CloudFront paths per article small.
 MAX_FIGURES_PER_ARTICLE = 3
-# A caption is a sentence or two under the image; alt text is read aloud, so it is shorter.
-MAX_CAPTION_CHARS = 300
+# A caption is a few sentences under the image: what the picture shows, the site and its date,
+# and the data credits a derived product must carry (the rail map's names Copernicus with the
+# year and OpenStreetMap, which alone take a hundred characters). Alt text is read aloud, so it
+# is shorter.
+MAX_CAPTION_CHARS = 400
 MAX_ALT_CHARS = 200
 
 # The only keys a figure has, on the way in and on the way out. Anything else on a stored entry

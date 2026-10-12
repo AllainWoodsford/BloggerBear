@@ -260,6 +260,28 @@ def test_sites_per_tick_and_time_budget_are_bounded(adapter):
     assert state["sites"]["s1"]["last_error"]["code"] == "time_budget"
 
 
+def test_sites_rotate_one_per_tick_with_the_unvisited_first(adapter):
+    """Two sites and one measurement per tick: the first tick takes the first site, the next the
+    one never visited, and from then on the longest unvisited (common/vision_sites.order_sites)."""
+    sites = [{"id": "a", "polygon": POLY}, {"id": "b", "polygon": POLY}]
+    stac, worker = FakeStac([item("S1", "2026-10-03T00:00:00Z")]), FakeWorker({"S1": 1})
+    adapter.http_post, adapter.measure = stac, worker
+    config = {"sites": sites, "max_sites_per_tick": 1}
+
+    first = adapter.fetch_state({"topic_id": "t", "adapter_config": config})
+    assert [m["site_id"] for m in first["measured"]] == ["a"]
+    assert first["sites"]["a"]["last_attempt_at"] == first["fetched_at"]
+    assert "last_attempt_at" not in first["sites"]["b"]  # skipped for the cap: not an attempt
+
+    second = adapter.fetch_state({"topic_id": "t", "adapter_config": config}, previous_state=first)
+    assert [m["site_id"] for m in second["measured"]] == ["b"]
+    assert [c[0] for c in worker.calls] == ["a", "b"]
+
+    third = adapter.fetch_state({"topic_id": "t", "adapter_config": config}, previous_state=second)
+    assert third["measured"] == [] and len(worker.calls) == 2  # both know S1; both were visited
+    assert len(stac.bodies) == 4
+
+
 # --- the diff ------------------------------------------------------------------------------------
 
 

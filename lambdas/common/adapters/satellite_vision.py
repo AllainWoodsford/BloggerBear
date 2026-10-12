@@ -3,7 +3,9 @@
 docs/enhancements/opencv-agentic-vision-enhancement.md is the design. This adapter is the thin,
 topic-agnostic part of it: which sites, which scenes, the history and the diff. It has no OpenCV;
 the measuring is done by the vision worker (vision_worker_handler.py), which may run in another
-region, through common/vision_client.py. What a topic watches is configuration, not code:
+region, through common/vision_client.py. What it shares with the rail_access adapter (the STAC
+search, the figure store, the time budget, the site order) lives in common/vision_sites.py. What
+a topic watches is configuration, not code:
 
     adapter_config = {
       "sites": [{"id": "botany-bay", "name": "Botany Bay anchorage",
@@ -16,15 +18,17 @@ region, through common/vision_client.py. What a topic watches is configuration, 
       "coverage_floor": 0.7,                               # below it a count is never material
       "history_size": 8, "min_baseline": 2,
       "relative_threshold": 0.35, "absolute_threshold": 5,
-      "max_sites_per_tick": 5, "time_budget_seconds": 60,
+      "max_sites_per_tick": 5, "time_budget_seconds": 60,  # the budget is capped at 80
       "triage": true, "triage_max_tool_calls": 3,          # the agent (common/vision_triage.py)
       "triage_deadline_seconds": 85,                       # the agent answers by then, from the
     }                                                      # tick's start (the tick itself has 120 s)
 
-**Per tick**, for each site: find the newest Sentinel-2 L2A scene over it (Earth Search STAC,
-free, no key); if it is one the site already has, do nothing; otherwise ask the worker to measure
-it and append the result to the site's history. A site that can't be searched or measured keeps
-its history and records `last_error`: not measured is never "nothing there".
+**Per tick**, for each site in turn (those never visited first, then the longest unvisited, so a
+topic with more sites than it measures per tick rotates through them): find the newest Sentinel-2
+L2A scene over it (Earth Search STAC, free, no key); if it is one the site already has, do nothing;
+otherwise ask the worker to measure it and append the result to the site's history. A site that
+can't be searched or measured keeps its history and records `last_error`: not measured is never
+"nothing there".
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py) looks at the figure and the evidence, may re-measure the
@@ -46,39 +50,61 @@ reported, so this adapter sets `keeps_running_state`: the research tick keeps it
 no-change tick too (research_tick_handler.py). The figure for each scene is stored in the content
 bucket under `vision/<topic>/<site>/<scene>.png`; the snapshot holds only its key.
 
-**Data licences** (docs/risks/opencv-bushfire-watch-01.md item 1, checked 2026-10-03):
-Sentinel-2 is free, full and open under the Copernicus Sentinel data legal notice, which asks
-derived products to carry "Contains modified Copernicus Sentinel data [year]"
-(https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice). The AWS copy
-asks to be cited as accessed from https://registry.opendata.aws/sentinel-2-l2a-cogs. The year
-varies by scene, so the class-level credit below names the data and its source; each article's
-figure caption carries the capture year.
+The data licences and the credits are in common/vision_sites.py, beside the search.
 """
 
 from __future__ import annotations
 
 import copy
-import os
 import statistics
 import time
-from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from datetime import UTC, datetime
 
-import boto3
-import requests
-
-from common import vision_client, vision_triage
+from common import vision_client, vision_sites, vision_triage
 from common.adapters.base import Adapter, render_review_evidence
 from common.model_routing import resolve_model
+from common.vision_sites import (
+    ASSETS_SHIPS,
+    AWS_OPEN_DATA_SOURCE,
+    COPERNICUS_SOURCE,
+    MAX_SITES,
+    STAC_COLLECTION,
+    STAC_ITEM_URL,
+    STAC_SEARCH_URL,
+    Budget,
+    ConfigError,
+    clear_entries,
+    load_image,
+    order_sites,
+    plain,
+    search_newest_scene,
+    site_bbox,
+    store_image,
+)
 
-STAC_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
-STAC_ITEM_URL = "https://earth-search.aws.element84.com/v1/collections/{collection}/items/{item_id}"
-STAC_COLLECTION = "sentinel-2-l2a"
+# The names this module had before common/vision_sites.py existed, still importable from here.
+__all__ = [
+    "ASSETS",
+    "AWS_OPEN_DATA_SOURCE",
+    "COPERNICUS_SOURCE",
+    "DEFAULTS",
+    "MAX_SITES",
+    "STAC_COLLECTION",
+    "STAC_ITEM_URL",
+    "STAC_SEARCH_URL",
+    "THRESHOLD_KEYS",
+    "ConfigError",
+    "SatelliteVisionAdapter",
+    "clear_entries",
+    "parse_config",
+    "plain",
+    "search_newest_scene",
+    "site_bbox",
+]
+
 # Earth Search v1's asset keys for the bands the worker reads.
-ASSETS = {"nir": "nir", "green": "green", "scl": "scl"}
-_STAC_TIMEOUT_SECONDS = 20.0
+ASSETS = ASSETS_SHIPS
 
-MAX_SITES = 10
 THRESHOLD_KEYS = ("coverage_floor", "min_baseline", "relative_threshold", "absolute_threshold")
 DEFAULTS = {
     "object_noun": "objects",
@@ -100,124 +126,13 @@ DEFAULTS = {
     # is for the summary call and the stores. The agent treats running out of time as an artefact.
     "triage_deadline_seconds": 85,
 }
-
-COPERNICUS_SOURCE = {
-    "text": "Contains modified Copernicus Sentinel data",
-    "label": "Copernicus Sentinel data",
-    "url": "https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice",
-}
-AWS_OPEN_DATA_SOURCE = {
-    "text": "Sentinel-2 Cloud-Optimized GeoTIFFs accessed from the Registry of Open Data on AWS",
-    "label": "Registry of Open Data on AWS",
-    "url": "https://registry.opendata.aws/sentinel-2-l2a-cogs/",
-}
-
-
-class ConfigError(ValueError):
-    """The topic's adapter_config can't be used."""
-
-
-def plain(value):
-    """`value` with DynamoDB's Decimals turned into ints and floats, all the way down."""
-    if isinstance(value, Decimal):
-        return int(value) if value == value.to_integral_value() else float(value)
-    if isinstance(value, dict):
-        return {k: plain(v) for k, v in value.items()}
-    if isinstance(value, list | tuple):
-        return [plain(v) for v in value]
-    return value
+_FLOAT_KEYS = vision_sites.FLOAT_KEYS + ("relative_threshold", "absolute_threshold")
 
 
 def parse_config(adapter_config: dict | None) -> dict:
-    """adapter_config with defaults filled in, or ConfigError. Site polygons are checked properly
-    by the worker contract before any call; here only their shape."""
-    config = {**DEFAULTS, **plain(adapter_config or {})}
-    sites = config.get("sites")
-    if not isinstance(sites, list) or not 1 <= len(sites) <= MAX_SITES:
-        raise ConfigError(f"adapter_config.sites needs 1 to {MAX_SITES} sites")
-    ids = set()
-    for site in sites:
-        if not isinstance(site, dict) or not site.get("id") or not isinstance(site.get("polygon"), list):
-            raise ConfigError("each site needs an id and a polygon")
-        if site["id"] in ids:
-            raise ConfigError(f"duplicate site id {site['id']!r}")
-        ids.add(site["id"])
-    if config["backend"] not in ("opencv", "cool"):
-        raise ConfigError("backend must be opencv or cool")
-    whole = ("history_size", "min_baseline", "max_sites_per_tick", "lookback_days", "triage_max_tool_calls")
-    for key in whole:
-        config[key] = int(config[key])
-    for key in ("coverage_floor", "relative_threshold", "absolute_threshold", "max_cloud_cover",
-                "time_budget_seconds", "triage_deadline_seconds"):  # fmt: skip
-        config[key] = float(config[key])
-    if config["history_size"] < 2 or config["min_baseline"] < 1:
-        raise ConfigError("history_size must be at least 2 and min_baseline at least 1")
-    return config
-
-
-def site_bbox(polygon: list) -> tuple[float, float, float, float]:
-    lons = [float(p[0]) for p in polygon]
-    lats = [float(p[1]) for p in polygon]
-    return min(lons), min(lats), max(lons), max(lats)
-
-
-def search_newest_scene(
-    site: dict, config: dict, now: datetime, http_post=None
-) -> dict | None:
-    """The newest scene that fully covers the site and has every band the worker reads, as
-    {"id", "captured_at", "cloud_cover", "assets"}; None if there is none in the lookback."""
-    post = http_post or requests.post
-    start = (now - timedelta(days=config["lookback_days"])).strftime("%Y-%m-%dT%H:%M:%SZ")
-    body = {
-        "collections": [STAC_COLLECTION],
-        "intersects": {"type": "Polygon", "coordinates": [_closed_ring(site["polygon"])]},
-        "datetime": f"{start}/{now.strftime('%Y-%m-%dT%H:%M:%SZ')}",
-        "query": {"eo:cloud_cover": {"lte": config["max_cloud_cover"]}},
-        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
-        "limit": 10,
-    }
-    response = post(STAC_SEARCH_URL, json=body, timeout=_STAC_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    west, south, east, north = site_bbox(site["polygon"])
-    for item in response.json().get("features") or []:
-        box = item.get("bbox") or []
-        if len(box) != 4 or not (box[0] <= west <= east <= box[2] and box[1] <= south <= north <= box[3]):
-            continue  # the site straddles this tile's edge; another tile covers it whole
-        assets = item.get("assets") or {}
-        hrefs = {name: (assets.get(key) or {}).get("href") for name, key in ASSETS.items()}
-        if not all(hrefs.values()):
-            continue
-        props = item.get("properties") or {}
-        return {
-            "id": item.get("id"),
-            "captured_at": props.get("datetime"),
-            "cloud_cover": props.get("eo:cloud_cover"),
-            "assets": hrefs,
-        }
-    return None
-
-
-def _closed_ring(polygon: list) -> list:
-    ring = [[float(x), float(y)] for x, y in polygon]
-    return ring if ring[0] == ring[-1] else [*ring, ring[0]]
-
-
-def _store_image(topic_id: str, site_id: str, scene_id: str, png: bytes) -> str:
-    key = f"vision/{topic_id}/{site_id}/{scene_id}.png"
-    boto3.client("s3").put_object(
-        Bucket=os.environ["CONTENT_BUCKET"], Key=key, Body=png, ContentType="image/png"
-    )
-    return key
-
-
-def _load_image(key: str) -> bytes | None:
-    response = boto3.client("s3").get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=key)
-    return response["Body"].read()
-
-
-def clear_entries(history: list[dict], floor: float) -> list[dict]:
-    """The history entries a baseline may use: measured, and with coverage at the floor."""
-    return [e for e in history if e.get("count") is not None and (e.get("coverage") or 0) >= floor]
+    """adapter_config with defaults filled in, or ConfigError (common/vision_sites.py has the
+    checks every vision topic shares)."""
+    return vision_sites.parse_site_config(adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS)
 
 
 class SatelliteVisionAdapter(Adapter):
@@ -228,8 +143,8 @@ class SatelliteVisionAdapter(Adapter):
     # Injected by tests; the defaults talk to Earth Search, the worker, S3 and Bedrock.
     http_post = None
     measure = staticmethod(vision_client.measure)
-    store_image = staticmethod(_store_image)
-    load_image = staticmethod(_load_image)
+    store_image = staticmethod(store_image)
+    load_image = staticmethod(load_image)
     triage_agent = staticmethod(vision_triage.triage)
     choose_model = staticmethod(resolve_model)
     clock = staticmethod(time.monotonic)
@@ -247,20 +162,23 @@ class SatelliteVisionAdapter(Adapter):
         self._topic, self._config = topic_config, config
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
-        started = self.clock()
-        self._started = started
+        budget = Budget(self.clock, config["time_budget_seconds"])
+        self._started = budget.started
         previous_sites = (previous_state or {}).get("sites") or {}
         sites, measured = {}, []
-
         for site in config["sites"]:
             record = copy.deepcopy(previous_sites.get(site["id"])) or {"history": []}
             record["name"] = site.get("name") or site["id"]
             sites[site["id"]] = record
+
+        for site in order_sites(config["sites"], previous_sites):
+            record = sites[site["id"]]
             if len(measured) >= config["max_sites_per_tick"]:
                 continue
-            if self.clock() - started > config["time_budget_seconds"]:
+            if budget.exhausted():
                 record["last_error"] = {"at": now.isoformat(), "code": "time_budget", "detail": "next tick"}
                 continue
+            record["last_attempt_at"] = now.isoformat()
             try:
                 scene = search_newest_scene(site, config, now, http_post=self.http_post)
             except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
@@ -364,13 +282,14 @@ class SatelliteVisionAdapter(Adapter):
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
-        first = not _anything_measured(old_state)
+        first = not vision_sites.anything_measured(old_state)
         if not first:
             self._triage(new_state, [v for v in verdicts if v["material"]])
         noun = new_state.get("object_noun") or DEFAULTS["object_noun"]
         if first:
             if not verdicts:
-                return False, "nothing measured yet: " + (_errors(new_state) or "no scene to measure")
+                errors = vision_sites.site_errors(new_state) or "no scene to measure"
+                return False, f"nothing measured yet: {errors}"
             lines = [f"{v['name']}: {v['count']} {noun} (coverage {v['coverage']:.0%})" for v in verdicts]
             return True, "First observation. " + "; ".join(lines)
         material = [v for v in verdicts if v["material"]]
@@ -425,16 +344,7 @@ class SatelliteVisionAdapter(Adapter):
                 verdict["reason"] = f"the agent judged it an artefact: {outcome['reason']}"
 
     def source_refs(self, new_state: dict) -> list[dict]:
-        refs = []
-        for m in new_state.get("measured") or []:
-            refs.append(
-                {
-                    "url": STAC_ITEM_URL.format(collection=STAC_COLLECTION, item_id=m["scene_id"]),
-                    "title": f"Sentinel-2 L2A scene {m['scene_id']}",
-                    "accessed_at": new_state.get("fetched_at"),
-                }
-            )
-        return refs
+        return vision_sites.stac_refs(new_state.get("measured") or [], new_state.get("fetched_at"))
 
     def review_evidence(self, topic_config: dict, latest_state: dict | None) -> str | None:
         """What was measured, from the stored state: re-running the worker for a review would
@@ -470,21 +380,6 @@ class SatelliteVisionAdapter(Adapter):
             "no cause, prediction, price, market or trading view; do not say any area is safe, clear "
             "or unaffected; do not invent place names or numbers that are not given above."
         )
-
-
-def _anything_measured(state: dict | None) -> bool:
-    """Whether any site in `state` has a measured scene in its history."""
-    return any((record or {}).get("history") for record in ((state or {}).get("sites") or {}).values())
-
-
-def _errors(state: dict) -> str:
-    """Each site's last error, for the no-change summary of a tick that measured nothing."""
-    parts = []
-    for site_id, record in (state.get("sites") or {}).items():
-        error = (record or {}).get("last_error")
-        if error:
-            parts.append(f"{record.get('name') or site_id}: {error.get('code')}")
-    return "; ".join(parts)
 
 
 def _describe(v: dict, noun: str) -> str:
