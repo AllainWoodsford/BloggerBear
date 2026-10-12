@@ -11,6 +11,7 @@ answers are known.
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import cv2
@@ -18,7 +19,9 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from vision import access, geo, urban
+from common import vision_contract as contract
+from vision import access, geo, rail_analyse, urban
+from vision import network as rail_network
 from vision.rail_analyse import (
     PARAM_LIMITS,
     RailParams,
@@ -539,12 +542,59 @@ def test_a_pathological_graph_skips_the_graph_measures_and_says_so(monkeypatch):
     assert measures["approximate"] and measures["hubs"] == [] and measures["betweenness"] == {}
     assert measures["edge_betweenness"] == {} and set(measures["d_hub_m"].values()) == {None}
     assert measures["degree"]["s:H"] == 3 and measures["interchanges"] == ["s:H"]
-    m = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
-    assert "graph_too_large" in m["quality_flags"] and m["hubs"] == [] and m["suggestions"] == []
-    assert m["node_count"] == 8 and m["edge_count"] == 7 and m["interchanges"] == ["s:n2"]
-    assert all(e["betweenness"] == 0.0 for e in m["edges"])
-    assert all(s["d_hub_m"] is None and s["betweenness"] == 0.0 for s in m["stations"])
+
+
+def test_a_skeleton_over_the_cap_is_never_made_a_graph_and_says_so(monkeypatch):
+    full = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network()).metrics
+    assert full["node_count"] == 8 and "graph_too_large" not in full["quality_flags"]
+    monkeypatch.setattr("vision.rail_analyse.MAX_GRAPH_NODES", 5)
+    analysis = analyse_rail_access(city(), WHOLE, PX, TRANSFORM, EPSG, grid_network())
+    m = analysis.metrics
+    assert "graph_too_large" in m["quality_flags"] and "graph_fragmented" not in m["quality_flags"]
+    assert (m["node_count"], m["edge_count"], m["components"], m["truncated"]) == (0, 0, 0, 0)
+    assert m["hubs"] == m["interchanges"] == m["flags"] == m["suggestions"] == m["edges"] == []
+    # The stations are still on the drawn lines, and still measured against the imagery.
+    assert m["snapped_station_count"] == full["snapped_station_count"] == 7
+    assert [s["activity"] for s in m["stations"]] == [s["activity"] for s in full["stations"]]
+    for station in m["stations"]:
+        assert (station["degree"], station["betweenness"], station["d_hub_m"]) == (0, 0.0, None)
+        assert station["isolation_weight"] is None
+    assert m["warnings"][-1] == "the skeleton has 8 nodes, over 5: no graph was built"
     assert json.loads(json.dumps(m, allow_nan=False)) == m
+    assert annotate_rail(analysis, city()["red"], 2024).startswith(b"\x89PNG")
+
+
+def mesh_network(size, gap):
+    """Two-point ways `gap` px apart across a `size` px window, each way crossing every way the
+    other way: (size / gap) squared junctions from a few hundred points."""
+    steps = range(gap, size - gap + 1, gap)
+    ways = [{"id": f"h{y}", "points": [lonlat(1, y), lonlat(size - 2, y)], "tunnel": False} for y in steps]
+    ways += [{"id": f"v{x}", "points": [lonlat(x, 1), lonlat(x, size - 2)], "tunnel": False} for x in steps]
+    stations = [{"id": f"n{k}", "name": f"S{k}", "kind": "station", "lon": lonlat(5 * k + 7, 5 * k + 5)[0],
+                 "lat": lonlat(5 * k + 7, 5 * k + 5)[1]} for k in range(20)]  # fmt: skip
+    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT}
+
+
+def test_a_dense_mesh_of_ways_is_refused_before_the_graph_is_built():
+    """206 two-point ways 5 px apart over a 520 px window cross 10,609 times: over MAX_GRAPH_NODES,
+    found from the labelled pixels, so the pass takes a fraction of a second, not minutes."""
+    size = 520
+    names = ("red", "nir", "swir16")
+    bands = {name: np.full((size, size), value, np.uint16) for name, value in zip(names, BUILT, strict=True)}
+    bands["scl"] = np.full((size, size), 5, np.uint8)
+    window = [[[0, 0], [size - 1, 0], [size - 1, size - 1], [0, size - 1]]]
+    network = contract.validate_network(mesh_network(size, 5))
+    assert sum(len(way["points"]) for way in network["ways"]) == 412
+    started = time.perf_counter()
+    m = analyse_rail_access(bands, window, PX, TRANSFORM, EPSG, network).metrics
+    assert time.perf_counter() - started < 2.0  # 0.1 s here; 29 s when the graph was built first
+    assert "graph_too_large" in m["quality_flags"] and m["node_count"] == 0
+    crossings_and_ends = 103 * 103 + 4 * 103
+    cap = rail_analyse.MAX_GRAPH_NODES
+    assert m["warnings"][-1] == f"the skeleton has {crossings_and_ends} nodes, over {cap}: no graph was built"
+    reply = {"version": 1, "ok": True, "task": "rail_access", "backend": "opencv", "build": {},
+             "image_png_b64": None, "metrics": json.loads(json.dumps(m, allow_nan=False))}  # fmt: skip
+    assert contract.validate_reply(reply) == reply
 
 
 def test_edges_over_the_cap_are_dropped_by_betweenness_and_counted(monkeypatch):
@@ -564,8 +614,8 @@ def test_edges_over_the_cap_are_dropped_by_betweenness_and_counted(monkeypatch):
 
 
 def big_graph(side=30, stations=40):
-    """A `side` x `side` grid of junctions, the first `stations` of them stations: over the
-    exact-betweenness bound."""
+    """A `side` x `side` grid of junctions, the first `stations` of them stations: at the default
+    side, over the exact-betweenness budget."""
     grid = nx.grid_2d_graph(side, side)
     graph = nx.Graph()
     for index, (i, j) in enumerate(sorted(grid.nodes)):
@@ -588,6 +638,40 @@ def test_a_large_graph_uses_sampled_betweenness_and_says_so():
     assert measures["approximate"] and len(measures["hubs"]) == 3
     assert measures == graph_metrics(graph, activity, hub_count=3)  # the seed makes the sample repeat
     assert all(d is not None for d in measures["d_hub_m"].values())
+
+
+def test_betweenness_samples_what_the_work_budget_affords(monkeypatch):
+    graph = big_graph()  # 900 nodes, 1,740 edges: 2,640 steps a source
+    assert rail_analyse.BETWEENNESS_WORK < 900 * 2640
+    assert rail_analyse._betweenness_sample(graph) == {"k": 200, "seed": 0}  # capped at BETWEENNESS_SAMPLES
+    monkeypatch.setattr(rail_analyse, "BETWEENNESS_WORK", 50 * 2640)
+    assert rail_analyse._betweenness_sample(graph) == {"k": 50, "seed": 0}
+    monkeypatch.setattr(rail_analyse, "BETWEENNESS_WORK", 5 * 2640)
+    assert rail_analyse._betweenness_sample(graph) == {"k": rail_analyse.MIN_BETWEENNESS_SAMPLES, "seed": 0}
+    _, _, approximate = rail_analyse.betweenness(graph)
+    assert approximate
+    monkeypatch.setattr(rail_analyse, "BETWEENNESS_WORK", 900 * 2640)  # every source fits: exact
+    assert rail_analyse._betweenness_sample(graph) == {}
+    small = big_graph(side=5, stations=3)
+    assert rail_analyse._betweenness_sample(small) == {} and not rail_analyse.betweenness(small)[2]
+
+
+@pytest.mark.skipif(not os.environ.get("VISION_PERF"), reason="set VISION_PERF=1 to time the graph measures")
+def test_the_graph_measures_of_a_five_thousand_node_graph_stay_within_budget():
+    graph = big_graph(side=71, stations=180)  # 5,041 nodes, 9,940 edges
+    stations = [node for node in sorted(graph) if node.startswith("s:")]
+    activity = {node: 0.1 + (index % 9) / 10 for index, node in enumerate(stations)}
+    started = time.perf_counter()
+    measures = graph_metrics(graph, activity, hub_count=5)
+    between, d_hub = measures["betweenness"], measures["d_hub_m"]
+    rows = [row(n, activity[n], measures["degree"][n], between.get(n, 0.0), d_hub[n]) for n in stations]
+    adjacency = rail_network.station_adjacency(graph)
+    flag_stations(rows, adjacency)
+    suggest(graph, rows, measures, adjacency, PX, max_orbital_km=20.0)
+    seconds = time.perf_counter() - started
+    print(f"graph measures, flags and suggestions on {graph.number_of_nodes()} nodes: {seconds:.2f} s")
+    assert measures["approximate"] and len(measures["hubs"]) == 5
+    assert seconds < 20.0  # about 3 s here; 200 sources in each of the five betweenness calls took 22 s
 
 
 def test_a_city_sized_network_completes_in_seconds_with_the_flag():
