@@ -61,6 +61,137 @@ def test_a_one_pixel_diagonal_survives_thinning():
     np.testing.assert_array_equal(network.thin(mask), (mask > 0).astype(np.uint8))
 
 
+def thin_over_the_whole_box_every_pass(mask, max_iterations=32):
+    """network.thin as it was before it looked only where the last pass changed something: every
+    pass over the foreground's whole bounding box. The new one must give exactly this."""
+    skeleton = (mask > 0).astype(np.uint8)
+    ys, xs = np.nonzero(skeleton)
+    if not len(ys):
+        return skeleton
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    box = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
+    box[1:-1, 1:-1] = skeleton[y0:y1, x0:x1]
+    for _ in range(max_iterations):
+        before = int(np.count_nonzero(box))
+        for kernel in network.THINNING_KERNELS:
+            hit = cv2.morphologyEx(box, cv2.MORPH_HITMISS, kernel)
+            box = cv2.subtract(box, hit)
+        if int(np.count_nonzero(box)) == before:
+            break
+    skeleton[y0:y1, x0:x1] = box[1:-1, 1:-1]
+    return skeleton
+
+
+def random_raster(seed):
+    """One seeded raster of a kind thinning meets, or could: polylines that run to and past the
+    edges, thick bars, solid blobs, crossing grids, single pixels, and masks touching an edge or a
+    corner, most of them a few passes deep and some deeper than the 32 passes."""
+    rng = np.random.default_rng(seed)
+    h, w = (int(v) for v in rng.integers(1, 160, 2))
+    mask = np.zeros((h, w), np.uint8)
+    kind = seed % 7
+    if kind == 0:  # polylines, some vertices off the raster: clipped at its edges
+        vertices = [int(rng.integers(2, 7)) for _ in range(4)]
+        lines = [rng.integers(-40, max(h, w) + 40, (n, 1, 2)).astype(np.int32) for n in vertices]
+        cv2.polylines(mask, lines, False, 255, int(rng.integers(1, 12)), cv2.LINE_8)
+    elif kind == 1:  # thick bars, 1-80 px, across, along or at an angle
+        for _ in range(int(rng.integers(1, 4))):
+            (ax, ay), (bx, by) = rng.integers(-20, max(h, w) + 20, (2, 2)).tolist()
+            cv2.line(mask, (ax, ay), (bx, by), 255, int(rng.integers(1, 81)), cv2.LINE_8)
+    elif kind == 2:  # solid blobs
+        for _ in range(int(rng.integers(1, 4))):
+            centre = tuple(int(v) for v in rng.integers(0, max(h, w), 2))
+            axes = tuple(int(v) for v in rng.integers(1, 70, 2))
+            cv2.ellipse(mask, centre, axes, float(rng.integers(0, 180)), 0, 360, 255, -1)
+        if rng.random() < 0.3:  # and a block in the corner
+            mask[: int(rng.integers(0, h + 1)), : int(rng.integers(0, w // 2 + 1))] = 255
+    elif kind == 3:  # a crossing grid of lines one or more pixels wide
+        gap, width = int(rng.integers(2, 20)), int(rng.integers(1, 4))
+        for start in range(int(rng.integers(0, gap)), max(h, w), gap):
+            mask[start : start + width, :] = 255
+            mask[:, start : start + width] = 255
+    elif kind == 4:  # single pixels, scattered
+        mask.flat[rng.choice(h * w, size=int(rng.integers(1, 2 + h * w // 20)), replace=False)] = 255
+    elif kind == 5:  # a block touching one edge or corner, with a line along another edge
+        top, left = int(rng.integers(0, h)), int(rng.integers(0, w))
+        mask[: top + 1, : left + 1] = 255
+        mask = np.ascontiguousarray(np.rot90(mask, int(rng.integers(0, 4))))
+        if rng.random() < 0.5:
+            mask[-1, :] = 255
+    else:  # noise, sparse to dense
+        mask = ((rng.random((h, w)) < rng.random()) * 255).astype(np.uint8)
+    return mask
+
+
+def network_rasters():
+    """rasterise_ways on this file's networks and the rail core's, some at another size, some
+    thicker, and ways that run past the window's edges as whole OSM ways do."""
+    rail_core = [[(40, 200), (360, 200)], [(200, 40), (200, 200)], [(200, 200), (200, 360)]]
+    rail_core.append([(280, 200), (340, 120)])
+    edge_to_edge = [[(-50, 37), (450, 37)], [(-30, -30), (430, 430)], [(399, -10), (0, 260), (420, 300)]]
+    rng = np.random.default_rng(3)
+    walks = [np.cumsum(rng.normal(0, 25, (40, 2)), axis=0) + 200 for _ in range(8)]
+    mesh = [[(5, at), (114, at)] for at in range(20, 101, 10)]
+    mesh += [[(at, 5), (at, 114)] for at in range(20, 101, 10)]
+    for shape, ways in (
+        (SHAPE, [*CROSS, BRANCH]),
+        (SHAPE, mesh),
+        (SHAPE, [[(10, 60), (110, 60)], [(10, 62), (110, 62)]]),
+        ((400, 400), rail_core),
+        ((400, 400), rail_core + edge_to_edge),
+        ((400, 400), [w.tolist() for w in walks]),
+        ((400, 400), [[(100, y), (300, y)] for y in range(150, 216)] + edge_to_edge),  # a 66-row bar
+    ):
+        for thickness in (1, 2, 3, 7):
+            yield network.rasterise_ways(shape, ways, thickness=thickness)
+
+
+def test_thinning_only_where_the_last_pass_changed_is_the_whole_box_thinning():
+    """Pixel for pixel the thinning it replaced, on a few hundred seeded rasters, the edge cases
+    and the rasterised test networks, at the default 32 passes and at other limits."""
+    cases = [random_raster(seed) for seed in range(420)]
+    cases += [zeros(), ones(), ones() * 255, np.ones((1, 1), np.uint8), np.zeros((1, 1), np.uint8)]
+    cases += [np.pad(ones(), 1), np.pad(ones(), ((0, 1), (1, 0))), np.eye(50, dtype=np.uint8)]
+    cases += list(network_rasters())
+    for index, mask in enumerate(cases):
+        for limit in (32,) + ((1, 2, 5, 40) if index % 10 == 0 else ()):
+            want = thin_over_the_whole_box_every_pass(mask, limit)
+            got = network.thin(mask, limit)
+            assert got.dtype == want.dtype and got.shape == want.shape, (index, limit)
+            assert np.array_equal(got, want), (index, limit)
+
+
+def test_thinning_after_the_first_pass_reads_only_round_what_the_last_pass_changed(monkeypatch):
+    """A 3,584 px raster whose foreground reaches every edge (full-width lines along the top, the
+    bottom and between, as clipped OSM ways are) and needs all 32 passes in one small place, a bar
+    of 66 rows. The pixels handed to the hit-or-miss elements are counted (a count, not a clock):
+    the whole window for the first pass, and then only the bar and its 8 px reach, where thinning
+    the whole window on every pass handed them 32 x 8 windows (3.29 billion pixels)."""
+    size, (bar_rows, bar_cols) = 3584, (66, 400)
+    mask = np.zeros((size, size), np.uint8)
+    mask[::512] = 255
+    mask[-1] = 255
+    mask[1100 : 1100 + bar_rows, 1500 : 1500 + bar_cols] = 255
+    handed = []
+    hit_or_miss = cv2.morphologyEx
+
+    def counting(image, *args, **kwargs):
+        handed.append(image.size)
+        return hit_or_miss(image, *args, **kwargs)
+
+    monkeypatch.setattr(network.cv2, "morphologyEx", counting)
+    skel = network.thin(mask)
+    elements, reach = len(network.THINNING_KERNELS), network.THINNING_REACH_PX
+    first = (size + 2) ** 2  # the foreground's box and its one-pixel pad
+    around_the_bar = (bar_rows + 2 * reach + 2) * (bar_cols + 2 * reach + 2)
+    assert len(handed) == 32 * elements and handed[:elements] == [first] * elements
+    assert sum(handed) <= first * elements + 32 * elements * around_the_bar
+    assert skel[::512].all() and skel[-1].all()  # the lines along the edges stay whole
+    bar = skel[1100 : 1100 + bar_rows, 1500 : 1500 + bar_cols]
+    assert bar[:, 60:-60].any(axis=1).sum() == 2  # 32 passes peel 64 of its 66 rows away from its ends
+
+
 def test_junctions_and_ends_on_a_cross():
     skel = skeleton_of(CROSS)
     junctions, ends = network.junctions_and_ends(skel)
@@ -272,6 +403,196 @@ def test_station_adjacency_runs_through_junctions_and_stops_at_stations():
         graph.add_node(node, kind=kind)
     graph.add_edges_from([("s:1", "j1"), ("j1", "s:2"), ("s:2", "s:3"), ("j1", "e1")])
     assert network.station_adjacency(graph) == {"s:1": ["s:2"], "s:2": ["s:1", "s:3"], "s:3": ["s:2"]}
+
+
+def adjacency_by_walking(graph):
+    """station_adjacency as it was: a walk from every station through every non-station node it
+    can reach. The one-pass version must give exactly this."""
+    out = {}
+    for node, data in graph.nodes(data=True):
+        if data.get("kind") != "station":
+            continue
+        seen, todo, found = {node}, [node], set()
+        while todo:
+            current = todo.pop()
+            for neighbour in graph.neighbors(current):
+                if neighbour in seen:
+                    continue
+                seen.add(neighbour)
+                if graph.nodes[neighbour].get("kind") == "station":
+                    found.add(neighbour)
+                else:
+                    todo.append(neighbour)
+        out[node] = sorted(found)
+    return out
+
+
+def random_rail_graph(seed):
+    """A seeded random graph of station, junction and end nodes (and the odd node without a kind,
+    or with a loop onto itself): sparse or dense, few stations or most."""
+    rng = np.random.default_rng(seed)
+    n = int(rng.integers(0, 40))
+    shape = nx.gnp_random_graph(n, float(rng.choice([0.03, 0.08, 0.2, 0.5])), seed=int(seed))
+    share = float(rng.choice([0.1, 0.4, 0.8]))
+    graph = nx.Graph()
+    names = {}
+    for i in shape.nodes:
+        kind = "station" if rng.random() < share else str(rng.choice(["junction", "end", "none"]))
+        names[i] = f"s:{i}" if kind == "station" else f"j{i}"
+        if kind == "none":
+            graph.add_node(names[i])
+        else:
+            graph.add_node(names[i], kind=kind)
+    graph.add_edges_from((names[u], names[v]) for u, v in shape.edges)
+    if n and rng.random() < 0.2:
+        loop = names[int(rng.integers(0, n))]
+        graph.add_edge(loop, loop)
+    return graph
+
+
+def test_station_adjacency_in_one_pass_is_the_walk_from_every_station():
+    graphs = [random_rail_graph(seed) for seed in range(400)]
+    assert sum(1 for g in graphs if any(d.get("kind") == "station" for _, d in g.nodes(data=True))) > 300
+    for seed, graph in enumerate(graphs):
+        assert network.station_adjacency(graph) == adjacency_by_walking(graph), seed
+
+
+def junction_tree_with_station_leaves(side=45, stations=2000):
+    """A `side` x `side` grid of junctions with `stations` stations hanging off it: every station
+    is next to every other through the junctions, the shape that made the walk from each station
+    cost stations x (nodes + edges)."""
+    grid = nx.grid_2d_graph(side, side)
+    graph = nx.Graph()
+    graph.add_nodes_from((f"j{i}_{j}" for i, j in grid.nodes), kind="junction")
+    graph.add_edges_from((f"j{a}_{b}", f"j{c}_{d}") for (a, b), (c, d) in grid.edges)
+    core = sorted(f"j{i}_{j}" for i, j in grid.nodes)
+    for k in range(stations):
+        graph.add_node(f"s:{k:04d}", kind="station")
+        graph.add_edge(core[(k * 7919) % len(core)], f"s:{k:04d}")
+    return graph
+
+
+class CountingGraph(nx.Graph):
+    """A graph that counts the work done on it: the calls for a node's neighbours (neighbors()
+    and graph[node]) and the neighbours neighbors() hands back. A count, not a clock, so a test of
+    it holds on any machine and under any load."""
+
+    def __init__(self, incoming_graph_data=None, **attr):
+        self.calls = self.steps = 0
+        super().__init__(incoming_graph_data, **attr)
+
+    def neighbors(self, n):
+        self.calls += 1
+        for neighbour in super().neighbors(n):
+            self.steps += 1
+            yield neighbour
+
+    def __getitem__(self, n):
+        self.calls += 1
+        return super().__getitem__(n)
+
+
+def test_station_adjacency_asks_each_node_for_its_neighbours_once_not_once_per_station():
+    """2,000 stations off one junction grid, every station next to every other through it: the
+    one pass asks each of the 4,025 nodes for its neighbours once, where the walk from every
+    station asked every junction again for each station (4,052,000 calls on this graph)."""
+    graph = CountingGraph(junction_tree_with_station_leaves())
+    adjacency = network.station_adjacency(graph)
+    stations = sorted(n for n in graph if n.startswith("s:"))
+    assert len(adjacency) == 2000
+    assert all(adjacency[s] == [t for t in stations if t != s] for s in ("s:0000", "s:1234", "s:1999"))
+    assert graph.calls <= 2 * graph.number_of_nodes() and graph.steps <= 4 * graph.number_of_edges()
+
+
+def crop_per_run(run_labels, stats, run):
+    """A run's length as build_graph measured it before: a crop of the run's bounding box, the
+    run's pixels in it, and its outer contour. The one-pass version must give exactly this."""
+    x, y, w, h = (int(v) for v in stats[:4])
+    crop = (run_labels[y : y + h, x : x + w] == run).astype(np.uint8)
+    contours, _ = cv2.findContours(crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    arc = max((cv2.arcLength(c, True) for c in contours), default=0.0)
+    return arc / 2.0 + 1.0
+
+
+def diagonals(size, spacing):
+    """Anti-diagonal ways x + y = c, `spacing` px apart, corner to corner: each run's bounding box
+    is the square on its diagonal, up to the whole window."""
+    mask = np.zeros((size, size), np.uint8)
+    for c in range(8, 2 * size - 8, spacing):
+        low = max(0, c - (size - 1))
+        cv2.line(mask, (low, c - low), (c - low, low), 255, 1, cv2.LINE_8)
+    return network.thin(mask)
+
+
+def ring_and_box():
+    mask = zeros()
+    cv2.circle(mask, (60, 60), 30, 255, 1)
+    cv2.rectangle(mask, (45, 45), (75, 75), 255, 1)  # inside the ring's hole
+    cv2.line(mask, (50, 60), (70, 60), 255, 1)
+    return network.thin(mask)
+
+
+def random_ways(seed, size=300):
+    rng = np.random.default_rng(seed)
+    ways = [[tuple(int(v) for v in p) for p in rng.integers(0, size, (4, 2))] for _ in range(12)]
+    return network.thin(network.rasterise_ways((size, size), ways, thickness=int(rng.integers(1, 4))))
+
+
+RUN_FIXTURES = {
+    "cross and branch": lambda: skeleton_of([*CROSS, BRANCH]),
+    "thick cross": lambda: skeleton_of(CROSS, thickness=3),
+    "mesh": lambda: skeleton_of([[(5, y), (114, y)] for y in range(20, 101, 10)]
+                                + [[(x, 5), (x, 114)] for x in range(20, 101, 10)]),  # fmt: skip
+    "parallel lines": lambda: skeleton_of([[(10, 60), (110, 60)], [(10, 62), (110, 62)]]),
+    "stub": lambda: skeleton_of([[(10, 60), (110, 60)], [(60, 60), (60, 57)]]),
+    "ring and box": ring_and_box,
+    "diagonals 3 px apart": lambda: diagonals(400, 3),
+    "one long diagonal": lambda: network.thin(network.rasterise_ways((1200, 1200), [[(0, 1199), (1199, 0)]])),
+    **{f"random ways {seed}": (lambda seed=seed: random_ways(seed)) for seed in range(6)},
+}
+
+
+@pytest.mark.parametrize("name", list(RUN_FIXTURES))
+def test_run_lengths_in_one_pass_are_those_of_a_crop_per_run(name, monkeypatch):
+    skel = RUN_FIXTURES[name]()
+    seen = []
+    one_pass = network._run_pixels
+
+    def recording(run_src, run_labels, run_count):
+        lengths = one_pass(run_src, run_labels, run_count)
+        seen.append((run_src, run_labels, run_count, lengths))
+        return lengths
+
+    monkeypatch.setattr(network, "_run_pixels", recording)
+    blank = np.zeros(skel.shape, np.uint8)
+    graph, _ = network.build_graph(skel, [], [], PX, blank + 1, blank)
+    ((run_src, run_labels, run_count, lengths),) = seen
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
+    assert count == run_count > 1 and np.array_equal(labels, run_labels)
+    assert lengths.tolist()[1:] == [crop_per_run(run_labels, stats[run], run) for run in range(1, count)]
+    assert graph.number_of_edges() > 0
+
+
+def test_run_lengths_cost_the_window_once_not_each_runs_bounding_box(monkeypatch):
+    """Diagonals 3 px apart, corner to corner: one run each, whose bounding boxes add up to about
+    ninety windows. The pixels handed to findContours while the graph is built are counted (a
+    count, not a clock): one pass over the window, where a crop per run handed it every box."""
+    skel = diagonals(400, 3)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(skel, connectivity=8)
+    boxes = int(stats[1:, cv2.CC_STAT_WIDTH].astype(np.int64) @ stats[1:, cv2.CC_STAT_HEIGHT])
+    assert count > 250 and boxes > 50 * skel.size  # what a crop per run would cost here
+    handed = []
+    find_contours = cv2.findContours
+
+    def counting(image, *args, **kwargs):
+        handed.append(image.size)
+        return find_contours(image, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, "findContours", counting)
+    blank = np.zeros(skel.shape, np.uint8)
+    graph, _ = network.build_graph(skel, [], [], PX, blank + 1, blank)
+    assert graph.number_of_edges() > 250
+    assert sum(handed) <= 2 * skel.size
 
 
 def test_rasterise_skips_degenerate_ways_and_rounds_vertices():
