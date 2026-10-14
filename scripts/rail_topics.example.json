@@ -1,5 +1,5 @@
 {
-  "about": "Four rail_access topics, one city each: the Rail Access Monitor's starting cities (docs/enhancements/rail-access-monitor.md §2). Each entry is a complete body for the admin API's POST /topics; docs/deployment-runsheet.md, 'rail_access topics', shows how to create them with scripts/admin_cli.py. Each box sits inside one 100 km UTM square, so inside one Sentinel-2 tile. adapter_config sets only the site and its reach; every other key takes the rail_access adapter's default (docs/enhancements/vision.md §5). The daily cadences are staggered so that each day of the week one city's daily cycle runs: Sydney Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston Thursday. force_manual_review is forced on for this adapter whether or not it is sent.",
+  "about": "Four rail_access topics, one city each: the Rail Access Monitor's starting cities (docs/enhancements/rail-access-monitor.md §2). Each entry is a complete body for the admin API's POST /topics; docs/deployment-runsheet.md, 'rail_access topics', shows how to create them with scripts/admin_cli.py. Each box sits inside one 100 km UTM square, so inside one Sentinel-2 tile. adapter_config sets only the site and its reach; every other key takes the rail_access adapter's default (docs/enhancements/vision.md §5). Each city's daily cycle runs every day, a minute apart from 09:05 Sydney time (Sydney, Melbourne, Singapore, Boston): the daily cycle drafts only the Findings of its last 24 hours, so a city drafted on fewer days would never have the other days' Findings written; a day with no new Finding drafts nothing. force_manual_review is forced on for this adapter whether or not it is sent.",
   "topics": [
     {
       "topic_id": "rail-sydney",
@@ -21,7 +21,7 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(5 9 ? * MON,FRI *)",
+      "daily_cadence": "cron(5 9 * * ? *)",
       "daily_timezone": "Australia/Sydney"
     },
     {
@@ -44,7 +44,7 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(5 9 ? * TUE,SAT *)",
+      "daily_cadence": "cron(6 9 * * ? *)",
       "daily_timezone": "Australia/Sydney"
     },
     {
@@ -67,7 +67,7 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(5 9 ? * WED,SUN *)",
+      "daily_cadence": "cron(7 9 * * ? *)",
       "daily_timezone": "Australia/Sydney"
     },
     {
@@ -90,7 +90,7 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(5 9 ? * THU *)",
+      "daily_cadence": "cron(8 9 * * ? *)",
       "daily_timezone": "Australia/Sydney"
     }
   ]

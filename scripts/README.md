@@ -195,8 +195,8 @@ python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
 **The Rail Access Monitor's topics.** The four `rail_access` city topics (Sydney, Melbourne,
-Singapore and Boston, each with its box, reach, editorial goal and a daily cadence staggered so
-each day features one city) are complete admin API topic bodies in
+Singapore and Boston, each with its box, reach, editorial goal and a daily cycle that runs every
+day, since the cycle drafts only the last 24 hours' Findings) are complete admin API topic bodies in
 [`rail_topics.example.json`](rail_topics.example.json). `topics create` takes a topic as flags, not
 a file: [docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
 has the loop that reads each field out of the file, and how to check a new city's box.

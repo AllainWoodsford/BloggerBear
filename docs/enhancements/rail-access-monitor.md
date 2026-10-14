@@ -30,8 +30,13 @@ stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agenti
 >   back-off after a failure); a topic holds 1 to 3 cities; the first observation is reported once,
 >   only from a scene at or above the coverage floor (`first_observed_at`); a baseline uses only
 >   scenes with the same polygon and parameters; only the newest history entry keeps `stations`,
->   `flags`, `suggestions` and `deserts`, and every entry keeps `flag_count`; a refused scene is
->   recorded (`failed_scene`) and not re-sent for 6 hours.
+>   `flags`, `suggestions` and `deserts`, and every entry keeps `flag_count`; a failed scene is
+>   recorded (`failed_scene`), and one the worker refused as `window_too_large`,
+>   `site_outside_scene` or `bad_request` is not sent again until a newer scene appears, 6 hours
+>   pass, or the site's polygon or parameters change; any other failure is retried on the next tick.
+> - **PR F:** each city topic's daily cycle runs every day, a minute apart, not on staggered
+>   weekdays: the daily cycle drafts only the Findings of its last 24 hours, so a city drafted on
+>   fewer days would never have the other days' Findings written.
 > - **§2 and §5 risk 2:** the city boxes are 1.0 to 3.0 km inside their 100 km squares (enough: a
 >   tile reaches 9.8 km past its square to the east and south), and a city's network at the caps
 >   is 2.6 to 3 MB of JSON, not 1.5 MB.

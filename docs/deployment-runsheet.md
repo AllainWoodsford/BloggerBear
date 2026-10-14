@@ -583,11 +583,16 @@ over the whole city in the last 20 days. Sentinel-2 passes every few days, so mo
 scene the city already has: nothing is measured, no model is called, and the tick may instead
 refresh a network past its 30-day TTL. A new scene is measured; only a material change (or the
 first observation) makes a Finding. The daily cycle runs on `daily_cadence` in `daily_timezone`
-and drafts from the Findings newer than the topic's last article; with none, it does nothing. The
-example staggers the cities over the week, all at 09:05 Sydney time, after the other topics'
-09:00 to 09:03: Sydney on Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday
-and Sunday, Boston Thursday (`cron(5 9 ? * MON,FRI *)` and so on). So each day features at most
-one city, and that city's article gathers every Finding since its last one. Within a topic,
+and drafts from the Findings of the last 24 hours, never reaching back past the topic's last
+article (`FINDINGS_WINDOW_HOURS` in `lambdas/daily_cycle_handler.py`); with none, it stops before
+any model call. A Finding older than that is never drafted, and it expires after 14 days, so
+each city's daily cycle must run every day: the example runs them a minute apart after the other
+topics' 09:00 to 09:03 Sydney time, Sydney at 09:05 (`cron(5 9 * * ? *)`), Melbourne 09:06,
+Singapore 09:07 and Boston 09:08. Each run then reads what the one before it did not, but for one
+hour a year: on the morning clocks go back the runs are 25 hours apart. A city staggered onto
+fewer days would lose the other days' Findings. Rail Findings are few (the first observation,
+then material changes), so most days draft nothing, and a day features more than one city only
+when more than one changed. Within a topic,
 which holds at most three cities, one city is measured per tick (`max_sites_per_tick`): those
 never attempted first, then the one attempted longest ago; a city skipped for that cap, or
 deferred because the tick ran short of time, keeps its place.
@@ -651,7 +656,11 @@ For Sydney it prints `zone 56 S | 100 km squares [(3, 62)] | margin km 1.4 | win
 Three things to read: **one** square in the list (two means the box straddles a grid line: move
 or shrink it); a margin of a kilometre or more from the square's nearest edge (the four boxes have
 1.0 to 3.0); and a window of at most 3,584 px a side (the worker's `RAIL_MAX_WINDOW_PX`, 71.7 km
-at 20 m with the 16 px pad), or the worker refuses the city as `window_too_large`. Some passes
+at 20 m with the 16 px pad), or the worker refuses the city as `window_too_large`. A scene refused
+as `window_too_large`, `site_outside_scene` or `bad_request` is recorded in the running state as
+`failed_scene` (`id`, `code`, `at`, `site_key`, `params`) and not sent again until a newer scene
+appears, 6 hours pass, or the site's polygon or parameters change, so a corrected box is sent on
+the next tick; `unreadable_scene` and any other failure are retried on the next tick. Some passes
 cover only part of a tile; the search skips those and waits for one that holds the whole city.
 
 `reach_m` is the walking reach of a station in a straight line, 200 to 5000 m. Keep 1000 (about a

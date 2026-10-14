@@ -87,7 +87,9 @@ switch: exactly `true` turns the worker on; any other value, or unset, is read a
 environments call the module with `count = var.vision_enabled ? 1 : 0`; the research tick's
 `VISION_WORKER_ARN` is empty, which the client reads as "not configured", and the invoke policy
 does not exist. A vision topic created anyway runs, records `last_error` on every site, and
-writes no Finding; its first Finding comes with the first scene it measures.
+writes no Finding; its first Finding comes with the first scene it measures at or above the
+coverage floor (the first observation, reported once; a cloudier scene is kept but reports
+nothing).
 
 **With it `true`:** in `vision_region` (us-west-2 by default), the worker, its role (its own log
 group and nothing else), its log group and the artifacts bucket; in the home region, one policy

@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 20 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware |
+| Vision and rail (OpenCV 2026) | 21 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware |
 
 ---
 
@@ -1005,6 +1005,18 @@ reviewed PR whose prose was another document's. **Fix:** the docs quote the code
 specification gained a status note listing where the code differs; the two stale comments are a
 follow-up for a code PR, since this one changes no code. **Lesson:** pattern 7 again: the PR that
 closes a stack's documentation is written from `grep`, not from the spec. (#296, rail PR F2)
+
+**12.21 A staggered cadence that would have dropped most Findings.** The spec asked for the city
+topics' daily cycles staggered so each day features one city, and the first templates ran Sydney
+on Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston
+Thursday; the runsheet said each article gathers every Finding since the city's last one. The
+review ran the daily cycle's own `_window_start` over four weeks of one Finding a day: Sydney's
+article drafted 7 of 28, Boston's 4. The daily cycle reads the last 24 hours
+(`FINDINGS_WINDOW_HOURS`), never past the last article, and nothing else; a Finding outside every
+window expires after 14 days unwritten. **Fix:** each city's daily cycle runs every day, a minute
+apart from 09:05 Sydney time (a day with no new Finding stops before any model call), and the
+runsheet describes the 24-hour window. **Lesson:** a schedule is only half a pipeline; read what
+the scheduled run reads before deciding how often it runs. (#296, rail PR F2)
 
 ## Patterns worth keeping
 

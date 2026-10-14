@@ -21,8 +21,9 @@ import boto3
 import pytest
 from moto import mock_aws
 
+import daily_cycle_handler
 import research_tick_handler
-from common import osm, vision_client, vision_sites, vision_triage
+from common import osm, scheduler, vision_client, vision_sites, vision_triage
 from common.adapters import MANUAL_REVIEW_ADAPTERS, RAIL_ACCESS_ADAPTER_KEY
 from common.adapters import rail_access as ra
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -36,6 +37,7 @@ PREFIX = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/
 RAIL_ASSETS = ("red", "nir", "swir16", "scl")
 PNG = vision_client.PNG_SIGNATURE + b"heat map"
 WIDE = (140.0, -40.0, 155.0, -30.0)  # a scene box that covers both cities (a stand-in, not a tile)
+EXAMPLE_TOPICS = Path(__file__).resolve().parents[2] / "scripts" / "rail_topics.example.json"
 
 
 def item(scene_id, when, bbox=WIDE, assets=RAIL_ASSETS, cloud=12.0):
@@ -388,6 +390,28 @@ def test_an_unusable_ttl_reads_as_stale_rather_than_breaking_the_tick():
     for ttl in (1e9, float("inf"), float("nan"), "soon"):
         assert ra._is_stale(network(now.isoformat()), now, ttl) is True
     assert ra._is_stale(network(now.isoformat()), now, 30) is False
+
+
+def test_the_example_city_topics_are_rail_topics_drafted_every_day():
+    """scripts/rail_topics.example.json holds four complete rail_access topic bodies the adapter
+    accepts, and each city's daily cycle runs every day: the cycle drafts only the Findings of its
+    last FINDINGS_WINDOW_HOURS (never reaching back past the topic's last article), so a city
+    drafted on fewer days would never have the other days' Findings written."""
+    assert daily_cycle_handler.FINDINGS_WINDOW_HOURS == 24  # the runsheet and the template quote it
+    topics = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
+    cities = ["rail-sydney", "rail-melbourne", "rail-singapore", "rail-boston"]
+    assert [t["topic_id"] for t in topics] == cities
+    for topic in topics:
+        assert topic["adapter"] == RAIL_ACCESS_ADAPTER_KEY
+        config = ra.parse_config(topic["adapter_config"])
+        assert len(config["sites"]) == 1 and config["reach_m"] == 1000.0
+        scheduler._validate_schedule_expression(topic["daily_cadence"])
+        scheduler.validate_timezone(topic["daily_timezone"])
+        fields = topic["daily_cadence"].removeprefix("cron(").removesuffix(")").split()
+        minute, hour, day_of_month, month, day_of_week, year = fields
+        assert minute.isdigit() and hour.isdigit()
+        # Every day of every month (EventBridge takes `?` in one of the two day fields).
+        assert (day_of_month, month, day_of_week, year) == ("*", "*", "?", "*"), topic["topic_id"]
 
 
 # --- fetching ------------------------------------------------------------------------------------

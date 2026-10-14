@@ -376,6 +376,14 @@ them) and, once judged, `triage` (`verdict`, `reason`). Only the newest entry al
 it alone, and dropping them from older entries is what keeps three cities' state near 10 MB
 (§8).
 
+A scene the worker failed on leaves `failed_scene` (`id`, `code`, `at`, `site_key`, `params`) on
+the site beside its `last_error`. One refused for what it is (`window_too_large`,
+`site_outside_scene` or `bad_request`, the adapter's `REFUSED_SCENE_CODES`) would be refused again,
+so it is not sent again until a newer scene appears, 6 hours pass (`NETWORK_RETRY_HOURS`), or the
+site's polygon or parameters change: an edited box or reach is a new request, sent on the next
+tick. `unreadable_scene` (which also covers a timed-out or throttled read) and every other failure
+are tried again on the next tick. A measurement clears both.
+
 ---
 
 ## 6. How the decisions are made

@@ -285,7 +285,7 @@ kept is numbers and one map per scene.
    ([runsheet](../deployment-runsheet.md#vision-optional))
 2. **Create the topics.** The four city topics are complete topic bodies in
    `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,
-   staggered daily cadences); the runsheet's
+   each drafted daily, a minute apart); the runsheet's
    [rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them with the admin
    CLI. For the ship task, `adapter: "satellite_vision"` with a Botany Bay polygon and
    `object_noun: "large vessels"`. `force_manual_review` is set for you.
