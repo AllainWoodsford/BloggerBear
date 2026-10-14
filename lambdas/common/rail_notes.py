@@ -281,17 +281,31 @@ def _name(rows: dict, station: str | None, carried) -> str | None:
     return None
 
 
+# What a quoted name may not carry: double quotation marks of any kind become single (they would
+# close the name's quotes), angle brackets and backticks go (HTML tags, code spans) and square
+# brackets become round (a markdown link needs them). Real station names have none of these.
+_NAME_MARKUP = str.maketrans(
+    {'"': "'", "\u201c": "'", "\u201d": "'", "\u201e": "'", "\u201f": "'", "\u00ab": "'", "\u00bb": "'",
+     "<": None, ">": None, "`": None, "[": "(", "]": ")"}
+)  # fmt: skip
+
+
 def _clean_name(value) -> str | None:
     """`value` as a name fit to quote: common/osm.clean_name (controls, bidi overrides and isolates
     and every other formatting character out, except the joiners U+200C and U+200D that Persian,
     Arabic and Indic names are spelt with; at most osm.MAX_NAME_CHARS), whitespace collapsed again
-    where it dropped something, and a double quotation mark made single, so the name cannot close
-    its own quotes. None when nothing is left, or it was not text. (common.figures.plain_text
+    where it dropped something, every double quotation mark (straight or typographic) made single,
+    so the name cannot close its own quotes, and HTML and markdown markup broken (_NAME_MARKUP: an
+    OpenStreetMap name is anyone's edit and the article page renders HTML). None when nothing a
+    reader would see is left, or it was not text. (common.figures.plain_text
     would also strip the two joiners and misspell those names.)"""
     name = osm.clean_name(value)
     if name is None:
         return None
-    return " ".join(name.replace('"', "'").split()) or None
+    name = name.translate(_NAME_MARKUP)
+    if not name.strip("\u200c\u200d \t"):
+        return None  # only joiners: nothing a reader would see
+    return " ".join(name.split()) or None
 
 
 def _number(value) -> float | None:

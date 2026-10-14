@@ -443,3 +443,21 @@ def test_requires_manual_review_only_when_the_flag_is_true():
     not_set = ({}, {"force_manual_review": False}, {"force_manual_review": "true"}, {"is_financial": True})
     for topic in not_set:
         assert not compliance.requires_manual_review(topic)
+
+
+def test_a_nominated_quote_holding_quoted_names_is_checked_whole():
+    """A draft sentence that quotes a station name (rail planner notes) or the vision agent's note is
+    nominated with its inner quotation marks; the quote is taken up to the mark before " | why", so
+    the invented figure in it is checked and held, not lost at the first inner mark."""
+    source = '"Central" lies on 2.5 times as many shortest paths as any other station.'
+    draft = '"Central" lies on 7.5 times as many shortest paths as any other station.'
+    response = 'FABRICATED: ""Central" lies on 7.5 times as many shortest paths" | 7.5 is not in the sources'
+    verdict = compliance._review_verdict(response, source, draft)
+    assert verdict["compliant"] is False and verdict["reasons"][0].startswith("Fabricated claim:")
+    # The same sentence with the measured figure is not held.
+    fine = 'FABRICATED: ""Central" lies on 2.5 times as many shortest paths" | checking'
+    assert compliance._review_verdict(fine, source, source)["compliant"] is True
+    # A quote without a reason, and a reason that itself holds quotes, are both read right.
+    assert compliance._nominated_quote('"a "b" c"') == 'a "b" c'
+    assert compliance._nominated_quote('"x" | the "y" part') == "x"
+    assert compliance._nominated_quote("no quote here") is None

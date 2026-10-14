@@ -492,3 +492,31 @@ def test_the_lead_passes_the_compliance_checks():
     # Its one "recommendations" is the denial.
     assert compliance.regex_redact(NOTES_LEAD) == NOTES_LEAD
     assert not compliance._item_stands("ADVICE", NOTES_LEAD, source="")
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ('Central<meta http-equiv=refresh content="0;url=//evil.example">',
+         "Centralmeta http-equiv=refresh content='0;url=//evil.example'"),
+        ('Central <a href="https://evil.example">tickets</a>', "Central a href='https://evil.example'tickets/a"),
+        ("Central [tickets](https://evil.example)", "Central (tickets)(https://evil.example)"),
+        ("Central `code`", "Central code"),
+        ("\u201cCentral\u201d \u00abNord\u00bb", "'Central' 'Nord'"),
+    ],
+)  # fmt: skip
+def test_a_name_carries_no_markup_the_article_page_would_render(raw, shown):
+    """An OpenStreetMap name is anyone's edit, and the static page renders a draft's HTML and
+    markdown: a name keeps no tag, link or code span, and no quotation mark that could close it."""
+    rows = copy.deepcopy(entry()["stations"])
+    rows[0]["name"] = raw
+    text = only(entry(stations=rows), "single_point_of_failure")
+    assert text.startswith(f'"{shown}" lies on') and text.count('"') == 2
+    assert not set("<>`[]") & set(text) and "\u201c" not in text and "\u00ab" not in text
+
+
+def test_a_name_of_joiners_alone_is_no_name():
+    rows = copy.deepcopy(entry()["stations"])
+    rows[0]["name"] = "\u200c\u200d\u200c"
+    notes = planner_notes(entry(stations=rows))
+    assert all('""' not in note["text"] for note in notes)
