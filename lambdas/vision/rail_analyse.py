@@ -58,10 +58,14 @@ MIN_BETWEENNESS_SAMPLES, BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 20, 200, 0
 # a city has a few hundred to a few thousand nodes) is not made a graph at all (network.build_graph's
 # max_nodes, checked on the labelled pixels before any networkx object exists): the stations are
 # reported without degree, betweenness or hub distance, the hubs, flags and suggestions are empty and
-# the quality flag graph_too_large says so. At the cap, on the CPU above, building the graph takes
-# 0.5 s (a 500 px mesh of 9,996 nodes) and the measures, flags and suggestions about 9 s. Before
-# the check (the cap was 20,000 and only skipped the measures), a 2,632-point mesh of crossing ways
-# on a 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in build_graph, 55 s for the pass.
+# the quality flag graph_too_large says so. Just under the cap on a 4096 px window, on the 4-core
+# Intel Xeon at 2.1 GHz above (scene.MAX_WINDOW_PX lists the networks): building the graph takes
+# 3.6-4.9 s at 9,400-9,800 nodes, most of it passes over the whole window; the measures, flags and
+# suggestions 2.5-5.9 s, of which station_adjacency and the ghost-line walk take 1.2 s for 2,000
+# stations on one junction tree (15-21 s while both were quadratic) and the simulated links up to
+# 3.3 s; the whole pass with its figure at most 26 s, at a peak RSS of 1.43 GB. Before the check
+# (the cap was 20,000 and only skipped the measures), a 2,632-point mesh of crossing ways on a
+# 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in build_graph, 55 s for the pass.
 MAX_GRAPH_NODES = 10_000
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.
@@ -590,7 +594,11 @@ def _quartiles(values: np.ndarray) -> tuple[float, float]:
 
 def _walk_chain(start: str, members: set[str], adjacency: dict[str, list[str]]) -> list[str]:
     """The members connected to `start` through members, in order along the line: from an end
-    of the chain, each next station the nearest unvisited neighbour (by id when several)."""
+    of the chain, each next station the nearest unvisited neighbour (by id when several).
+
+    Every membership test is against a set (the visited stations are kept in one beside the
+    order), so each step costs the station's adjacency, not the chain's length times it: 1,500
+    quiet stations all next to each other took 10.1 s against the list and take 0.35 s."""
     component, todo = {start}, [start]
     while todo:
         for neighbour in adjacency.get(todo.pop(), ()):
@@ -602,14 +610,15 @@ def _walk_chain(start: str, members: set[str], adjacency: dict[str, list[str]]) 
         return [n for n in adjacency.get(node, ()) if n in component]
 
     first = min(component, key=lambda n: (len(inside(n)), n))
-    order, current = [first], first
+    order, visited, current = [first], {first}, first
     while True:
-        following = [n for n in inside(current) if n not in order]
+        following = [n for n in inside(current) if n not in visited]
         if not following:
             break
         current = min(following)
         order.append(current)
-    return order + sorted(component - set(order))
+        visited.add(current)
+    return order + sorted(component - visited)
 
 
 def suggest(
@@ -643,8 +652,9 @@ def suggest(
         remote = sorted((row for row in remote_rows if row["d_hub_m"] >= p75), key=lambda row: row["id"])
         candidates = []
         for i, a in enumerate(remote):
+            next_along = set(adjacency.get(a["id"], ()))  # a set: tested once per pair
             for b in remote[i + 1 :]:
-                if b["id"] in adjacency.get(a["id"], ()):
+                if b["id"] in next_along:
                     continue
                 straight_m = _pixel_distance(graph, a["id"], b["id"]) * pixel_size_m
                 if straight_m > max_orbital_km * 1000.0:

@@ -30,11 +30,17 @@ from vision import cog, geo
 # The largest window the worker will read, per side, in reference pixels: 4096 px = 41 km at 10 m
 # (larger than any anchorage) or 82 km at 20 m (a city and its suburbs; the four city boxes of
 # docs/enhancements/rail-access-monitor.md §2 need at most 3,327 px, Sydney's), and bounded so one
-# request can't ask for a whole 110 km scene. The rail task's compute at 4096 x 4096 px was
-# measured on a 4-core Intel Xeon at 2.1 GHz: 9 s for a synthetic city with 180 stations, and at
-# worst 20 s (a mesh of crossing ways just under the graph cap, 2,000 stations) or 21 s (4,096
-# parallel ways rasterised into one solid block, which the thinning peels for its full 32 passes),
-# under 1.4 GB, which leaves the 60 s invoke over half its time for the read.
+# request can't ask for a whole 110 km scene. The rail task's compute (analyse_rail_access and
+# annotate_rail in one process; peak RSS from getrusage) at 4096 x 4096 px, measured on a 4-core
+# Intel Xeon at 2.10 GHz with a load average of 0.6-3.5 from other work: 9.2 s and 1.37 GB for a
+# synthetic city of 180 stations. The worst contract-valid networks built, all under the graph caps:
+# 24-26 s and 1.41 GB for one way snaking across the window in 40 rows with 2,000 stations, 3,900
+# spurs and a solid bar of 66 adjacent ways (the thinning's 32 passes 9 s, the simulated links 3 s);
+# 20-22 s and 1.43 GB for 1,194 long anti-diagonals, a 3,500-spur comb with 2,000 stations on one
+# junction tree and the same bar (39 s before the station passes and run lengths were linear); 18 s
+# for 4,096 parallel ways rasterised into one solid block; 9 s and 1.50 GB for 2,711 anti-diagonals
+# 3 px apart (19 s before). All under 30 s, so the rail task has no window cap of its own (3,584 px
+# would shrink only the pixel-bound stages), and the 60 s invoke keeps over half its time for the read.
 MAX_WINDOW_PX = 4096
 # Extra pixels read around the polygon so the adaptive threshold's window has context at the edge.
 PAD_PX = 16

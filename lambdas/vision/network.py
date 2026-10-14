@@ -201,7 +201,7 @@ def build_graph(
     node_zone = cv2.dilate(node_labels.astype(np.float32), _SQUARE).astype(np.int32)
     on = skel01 > 0
     run_src = (on & (node_zone == 0)).astype(np.uint8)
-    run_count, run_labels, run_stats, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
+    run_count, run_labels, _, _ = cv2.connectedComponentsWithStats(run_src, connectivity=8)
     if max_nodes is not None and run_count - 1 > max_nodes:
         return _too_large(stations, snapped, warnings, f"{run_count - 1} runs", max_nodes)
 
@@ -257,6 +257,7 @@ def build_graph(
 
     visible_blur = cv2.blur(visible01.astype(np.float32), (3, 3))
     run_stats_px = _pixel_stats(run_labels, run_count, tunnel_mask, visible_blur)
+    run_pixels = _run_pixels(run_src, run_labels, run_count)
     for run, touched in _touching(run_labels, carrier, run_count).items():
         nodes = sorted(node_of_label[label] for label in touched if label in node_of_label)
         if len(nodes) < 2:
@@ -265,7 +266,7 @@ def build_graph(
         if len(nodes) > 2:
             warnings.append(f"run {run} touches {len(nodes)} nodes: joined pairwise")
         # The run's pixels, the pixel cut from each end, and the step onto the far node.
-        length_px = _run_pixels(run_labels, run_stats[run], run) + 3.0
+        length_px = float(run_pixels[run]) + 3.0
         _join(graph, nodes, _attributes(run_stats_px, run, length_px, pixel_size_m), warnings)
 
     bridge_stats_px = _pixel_stats(bridge_labels, bridge_count, tunnel_mask, visible_blur)
@@ -310,23 +311,43 @@ def _too_large(
 
 def station_adjacency(graph: nx.Graph) -> dict[str, list[str]]:
     """For each station node, the stations reachable from it through non-station nodes only:
-    the stations next along a line, however many junctions lie between."""
-    out: dict[str, list[str]] = {}
-    for node, data in graph.nodes(data=True):
-        if data.get("kind") != "station":
+    the stations next along a line, however many junctions lie between.
+
+    One pass over the graph, not one per station: the connected pieces of the graph without its
+    stations are found once, each with the stations it touches, and a station's neighbours are
+    the stations next to it and those of every piece it touches, itself left out. So the cost is
+    the graph's size plus the answer's, where a walk from each station through every junction it
+    could reach cost stations x (nodes + edges): for 2,000 stations off one 89 x 89 junction grid,
+    14.6 s that way and 1.0 s this way (the answer is then every station for every station)."""
+    stations = [node for node, data in graph.nodes(data=True) if data.get("kind") == "station"]
+    is_station = set(stations)
+    piece_of: dict[str, int] = {}
+    touching: list[set[str]] = []  # per piece, the stations next to one of its nodes
+    for node in graph:
+        if node in is_station or node in piece_of:
             continue
-        seen, todo, found = {node}, [node], set()
+        piece, found, todo = len(touching), set(), [node]
+        piece_of[node] = piece
         while todo:
-            current = todo.pop()
-            for neighbour in graph.neighbors(current):
-                if neighbour in seen:
-                    continue
-                seen.add(neighbour)
-                if graph.nodes[neighbour].get("kind") == "station":
+            for neighbour in graph.neighbors(todo.pop()):
+                if neighbour in is_station:
                     found.add(neighbour)
-                else:
+                elif neighbour not in piece_of:
+                    piece_of[neighbour] = piece
                     todo.append(neighbour)
-        out[node] = sorted(found)
+        touching.append(found)
+    out: dict[str, list[str]] = {}
+    for station in stations:
+        found, pieces = set(), set()
+        for neighbour in graph.neighbors(station):
+            if neighbour in is_station:
+                found.add(neighbour)
+            else:
+                pieces.add(piece_of[neighbour])
+        for piece in pieces:
+            found |= touching[piece]
+        found.discard(station)
+        out[station] = sorted(found)
     return out
 
 
@@ -385,14 +406,26 @@ def _join(graph: nx.Graph, nodes: list[str], attributes: dict, warnings: list[st
             graph.add_edge(u, v, **attributes)
 
 
-def _run_pixels(run_labels: np.ndarray, stats: np.ndarray, run: int) -> float:
-    """A run's extent in pixels along its length: half the closed contour around its pixels
-    (the way there and back along a one-pixel line) plus one for the last pixel."""
-    x, y, w, h = (int(v) for v in stats[:4])
-    crop = (run_labels[y : y + h, x : x + w] == run).astype(np.uint8)
-    contours, _ = cv2.findContours(crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    arc = max((cv2.arcLength(c, True) for c in contours), default=0.0)
-    return arc / 2.0 + 1.0
+def _run_pixels(run_src: np.ndarray, run_labels: np.ndarray, run_count: int) -> np.ndarray:
+    """Per run label, the run's extent in pixels along its length: half the closed contour
+    around its pixels (the way there and back along a one-pixel line) plus one for the last
+    pixel.
+
+    One `findContours` over every run at once: each run is one eight-connected component, so it
+    has exactly one outer border (`RETR_CCOMP` keeps them at its top level, with no parent, even
+    for a run inside another's hole), traced from the run's first pixel in scan order exactly as
+    in a crop holding the run alone, and named by the label under its first point. The cost is one
+    pass over the image plus each run's own border, where a crop per run cost its bounding box:
+    a long diagonal's is the whole window."""
+    arcs = np.zeros(run_count, np.float64)
+    contours, hierarchy = cv2.findContours(run_src, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    if contours:
+        for contour, (_, _, _, parent) in zip(contours, hierarchy[0], strict=True):
+            if parent < 0:
+                x, y = contour[0, 0]
+                run = run_labels[y, x]
+                arcs[run] = max(arcs[run], cv2.arcLength(contour, True))
+    return arcs / 2.0 + 1.0
 
 
 def _r2(value) -> float:
