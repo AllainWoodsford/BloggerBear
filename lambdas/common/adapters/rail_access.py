@@ -11,7 +11,8 @@ lives in common/vision_sites.py. What a topic watches is configuration, not code
 
     adapter_config = {
       "sites": [{"id": "sydney", "name": "Sydney",
-                 "polygon": [[lon, lat], ...]}],           # required; a city inside one Sentinel-2 tile
+                 "polygon": [[lon, lat], ...]}],           # required; 1 to MAX_RAIL_SITES cities, each
+                                                           # inside one Sentinel-2 tile
       "backend": "opencv",                                 # or "cool"
       "params": {...},                                     # vision.rail_analyse.RailParams overrides
       "reach_m": 1000,                                     # walking reach of a station, straight line
@@ -26,16 +27,22 @@ lives in common/vision_sites.py. What a topic watches is configuration, not code
       "web_context": true,                                 # the agent may ask the news search
     }
 
-**Per tick**, for each site in turn (those never visited first, then the longest unvisited, so a
-topic with several cities rotates through them one per tick) and within the tick's budget:
-(1) the OpenStreetMap network: the cached one from the running state, fetched again through the
-Overpass API (common/osm.py) when it is older than `osm_ttl_days` and at least
-OSM_RESERVE_SECONDS of the budget remain; a failed fetch keeps the cached network and is recorded
-as `network_error`; no network at all means the site is not measured (`last_error` "osm").
-(2) The newest Sentinel-2 L2A scene over the whole site (Earth Search STAC, free, no key); a
-scene the site already has is nothing new. (3) With fewer than MEASURE_RESERVE_SECONDS left the
-measurement waits for the next tick. (4) The worker measures the scene against the network and
-the result joins the site's history. Not measured is never "nothing there".
+**Per tick**, for each site in turn (common/vision_sites.order_sites: those never attempted first,
+then the longest unattempted, so a topic with several cities rotates through them one per tick)
+and within the tick's budget, the scene first and the network refreshed only when there is
+nothing new to measure: (a) the newest Sentinel-2 L2A scene over the whole site (Earth Search
+STAC, free, no key); a scene the site already has is nothing new. (b) No usable cached network
+(none, or one fetched for another polygon: each carries its polygon's `site_key`): fetch it now
+through the Overpass API (common/osm.py) with OSM_RESERVE_SECONDS; a failure is `last_error`
+"osm" and the site waits. (c) A new scene: the worker measures it against the cached network,
+stale or not (the entry says `network_stale`), when MEASURE_RESERVE_SECONDS remain, else next
+tick. (d) Nothing new and the network older than `osm_ttl_days`: fetch it again with the time
+this tick would not otherwise use; a failure keeps the cached network, records `network_error`
+and is not tried again for NETWORK_RETRY_HOURS. A slow or failing Overpass therefore never stops
+a city with a cached network from being measured. A scene the worker refuses for what it is
+(REFUSED_SCENE_CODES, recorded as `failed_scene`) is nothing new until a newer scene appears or
+NETWORK_RETRY_HOURS pass, so it is not sent again every hour and (d) still gets its ticks. Not
+measured is never "nothing there".
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py, the rail profile) looks at the figure and the evidence, may
@@ -46,11 +53,16 @@ state. It runs inside `material_diff`, after the thresholds, so rule 2 holds: no
 without a numeric change.
 
 **Material** when the new scene's coverage is at least `coverage_floor`, the site has at least
-`min_baseline` earlier clear scenes, and the served share moved by at least
+`min_baseline` earlier clear scenes measured the same way (the same polygon's `site_key` and the
+same echoed parameters, so an operator's edit of the reach or the polygon starts a new baseline
+rather than reading as a change), and the served share moved by at least
 `served_share_threshold` against their median, or the desert area by at least
 `desert_relative_threshold` of its median (at least 1 km²), or the station count differs from the
-previous scene's. The first tick that measures anything is the first observation and is reported
-as such; a tick before that, with nothing measured, is not.
+previous such scene's. The first tick with a scene at or above the coverage floor is the first
+observation and is reported as such, once: the state records when (`first_observed_at`), so a run
+of cloudy scenes that trims every clear one from the history, or a raised floor, never makes a
+later scene "first" again. A tick before that, with nothing measured or only scenes below the
+floor, is not material.
 
 **What is honest.** The heat is a built-up density proxy from imagery, not population; walking
 reach is straight-line distance; the network is OpenStreetMap's (ODbL, credited) and the imagery
@@ -60,8 +72,11 @@ only verifies and scores it. The summary prompt says so, and says what was not m
 no-change tick too, so the baseline includes every scene measured and the network is fetched once
 a month, not once a tick. The figure for each scene is stored in the content bucket under
 `vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the
-newest to the article (common/figures.py). The network (about 1.5 MB per city) is in the state and
-the worker request, and nowhere a prompt or a reviewer would see it.
+newest to the article (common/figures.py). The network (about 3 MB of JSON per city at
+common/osm.py's caps with ASCII names, more with long non-ASCII ones; the worker request is sent
+as UTF-8, not escaped) is in the state and the worker request, and nowhere a prompt or a reviewer
+would see it. Only the newest history entry keeps the per-scene lists (NEWEST_ONLY_KEYS); with
+MAX_RAIL_SITES that keeps the state within what the research tick's 512 MB can load.
 """
 
 from __future__ import annotations
@@ -70,7 +85,7 @@ import copy
 import json
 import statistics
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from common import osm, rail_notes, vision_client, vision_sites, vision_triage
 from common import vision_contract as contract
@@ -85,6 +100,7 @@ from common.vision_sites import (
     clear_entries,
     order_sites,
     search_newest_scene,
+    site_key,
 )
 from common.web_search import search_web
 
@@ -126,27 +142,60 @@ MEASURE_RESERVE_SECONDS = 45.0
 # ... and is waited on for at most this long (its own timeout is 60 s; the client's default 90 s
 # would run the tick out of time).
 WORKER_READ_TIMEOUT = 58.0
+# After a refresh of a stale network fails, the cached one keeps serving and the refresh waits
+# this long: Overpass fails in spells (429s, 504s, timeouts), each try may take OSM_RESERVE_SECONDS
+# of a tick, and a struggling mirror asked again every hour only stays struggling. Four tries a day
+# is still far inside the 30-day TTL.
+NETWORK_RETRY_HOURS = 6
+# A scene the worker refuses for what it is (the site is outside it or too big for the worker's
+# window, the request does not fit the contract) would be refused again for the same polygon and
+# parameters: it is not sent again until a newer scene appears, NETWORK_RETRY_HOURS pass, or the
+# operator edits the site's polygon or parameters (the refusal records both). `unreadable_scene` is
+# not one: the worker also reports a timed-out or throttled read under it. Any other failure
+# (`unreadable_scene`, `invoke`, `internal`, a malformed `reply`) is tried next tick.
+REFUSED_SCENE_CODES = ("window_too_large", "site_outside_scene", "bad_request")
+# The longest a cached network may serve before it is due again: a year of OpenStreetMap edits.
+MAX_OSM_TTL_DAYS = 365.0
+# One topic per city is the design (docs §2), so a topic watches at most this many. Each city's
+# network is in the running state, which the research tick (512 MB) loads whole, deep-copies site
+# by site and writes back. Measured (ru_maxrss) for 3 cities at common/osm.py's caps (2.6-3 MB of
+# network JSON each), history_size 20, 2000 station rows per scene and a tick measuring a new one:
+# with every entry keeping its lists the state was 54 MB and the tick peaked at 390 MB; with only
+# the newest keeping them (NEWEST_ONLY_KEYS) 10 MB and 146 MB, 38 MB of that the imports. A review
+# with every name at its 80-character cap measured 11.3 MB and 155 MB (22.6 MB and 181 MB with 80
+# CJK characters each). The one tick that slims a state written before peaks at 293 MB.
+MAX_RAIL_SITES = 3
+# What a budget-starved site returns from _visit: it waits for the next tick, unstamped.
+DEFERRED = "deferred"
 
 # A history entry keeps each station's row cut to these fields (the worker's rows also carry
 # `kind`, `snapped` and `catchment_coverage`), at most this many: about 2000 rows of ten fields
-# is the size the running state and a Finding's snapshot can carry per scene (docs §5 risk 2).
+# (some 600 KB of JSON) is what the running state can carry for the newest scene (docs §5 risk 2).
 STATION_FIELDS = (
     "id", "name", "lon", "lat", "degree", "betweenness", "activity", "d_hub_m", "isolation_weight",
     "intermodal",
 )  # fmt: skip
 MAX_HISTORY_STATIONS = 2000
+# Only the newest history entry keeps these lists: the figure, the review evidence and the agent's
+# brief (and planner notes built on them) read them from it alone. An older entry keeps the scalars
+# and counts the material rules, `site_history` and `previous_scene` read (`flag_count` among them),
+# so twenty scenes of a big city cost little more than one.
+NEWEST_ONLY_KEYS = ("stations", "flags", "suggestions", "deserts")
 
 
 def parse_config(adapter_config: dict | None) -> dict:
     """adapter_config with defaults filled in, or ConfigError: the checks every vision topic
-    shares (common/vision_sites.py), then `reach_m` within the worker contract's bounds, a positive
-    network TTL and `params` as an object (the contract checks each parameter before any call)."""
-    config = vision_sites.parse_site_config(adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS)
+    shares (common/vision_sites.py) with at most MAX_RAIL_SITES sites, then `reach_m` within the
+    worker contract's bounds, a network TTL in (0, MAX_OSM_TTL_DAYS] and `params` as an object (the
+    contract checks each parameter before any call)."""
+    config = vision_sites.parse_site_config(
+        adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS, max_sites=MAX_RAIL_SITES
+    )
     low, high = contract.RAIL_PARAM_LIMITS["reach_m"]
     if not low <= config["reach_m"] <= high:
         raise ConfigError(f"reach_m must be between {low:g} and {high:g} metres")
-    if config["osm_ttl_days"] <= 0:
-        raise ConfigError("osm_ttl_days must be positive")
+    if not 0 < config["osm_ttl_days"] <= MAX_OSM_TTL_DAYS:
+        raise ConfigError(f"osm_ttl_days must be more than 0 and at most {MAX_OSM_TTL_DAYS:g}")
     if not isinstance(config["params"], dict):
         raise ConfigError("params must be an object")
     return config
@@ -201,6 +250,8 @@ class RailAccessAdapter(Adapter):
         sites, measured = {}, []
         for site in config["sites"]:
             record = copy.deepcopy(previous_sites.get(site["id"])) or {"history": []}
+            # A state written before NEWEST_ONLY_KEYS is slimmed on its first tick.
+            record["history"] = _slim_history(record.get("history") or [])
             record["name"] = site.get("name") or site["id"]
             sites[site["id"]] = record
 
@@ -211,86 +262,138 @@ class RailAccessAdapter(Adapter):
             if budget.exhausted():
                 record["last_error"] = _error(now, "time_budget", "next tick")
                 continue
-            record["last_attempt_at"] = now.isoformat()
-
-            network = self._network(site, record, config, now, budget)
-            if network is None:
-                continue
-            try:
-                scene = search_newest_scene(site, config, now, http_post=self.http_post, assets=ASSETS_RAIL)
-            except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
-                record["last_error"] = _error(now, "search", str(exc))
-                continue
-            known = {entry.get("scene_id") for entry in record["history"]}
-            if scene is None or scene["id"] in known:
-                record.pop("last_error", None)
-                continue
-            if budget.remaining() < MEASURE_RESERVE_SECONDS:
+            outcome = self._visit(site, record, config, now, budget, topic_id)
+            if outcome == DEFERRED:
+                # Not an attempt: the site keeps its place and goes ahead of those worked on.
                 record["last_error"] = _error(now, "time_budget", "next tick")
                 continue
-            try:
-                result = self.measure(
-                    {"id": site["id"], "polygon": site["polygon"]},
-                    {"id": scene["id"], "captured_at": scene["captured_at"], "assets": scene["assets"]},
-                    backend=config["backend"],
-                    params=worker_params(config),
-                    coverage_floor=config["coverage_floor"],
-                    task=TASK,
-                    network=worker_network(network),
-                    read_timeout=WORKER_READ_TIMEOUT,
-                )
-                entry = _history_entry(scene, result, network)
-            except vision_client.VisionError as exc:
-                record["last_error"] = _error(now, exc.code, exc.detail)
-                continue
-            if result.image_png:
-                try:
-                    entry["image_key"] = self.store_image(topic_id, site["id"], scene["id"], result.image_png)
-                except Exception as exc:  # noqa: BLE001 - a lost figure doesn't lose the measurement
-                    print(f"rail_access: could not store the figure for {site['id']}: {exc!r}")
-            record["history"] = [*record["history"], entry][-config["history_size"] :]
-            record.pop("last_error", None)
-            measured.append({"site_id": site["id"], "scene_id": scene["id"]})
+            record["last_attempt_at"] = now.isoformat()
+            if outcome is not None:
+                measured.append(outcome)
 
         return {
             "fetched_at": now.isoformat(),
             "task": TASK,
             # The diff gets only the two states, so the topic's thresholds travel in the state.
             "thresholds": {key: config[key] for key in THRESHOLD_KEYS},
+            # Set on the tick of the first observation and carried forward, so it is reported once.
+            vision_sites.FIRST_OBSERVED_KEY: vision_sites.first_observed_at(
+                previous_state, sites, measured, config["coverage_floor"], now.isoformat()
+            ),
             "sites": sites,
             "measured": measured,
         }
 
-    def _network(self, site: dict, record: dict, config: dict, now: datetime, budget: Budget) -> dict | None:
-        """The site's rail network for this tick: the cached one, fetched again when it is stale
-        and the budget allows, in `record`. None (with `last_error`) when there is none at all."""
-        network = record.get("network")
-        if osm.is_stale(network, now, config["osm_ttl_days"]) and budget.remaining() >= OSM_RESERVE_SECONDS:
-            try:
-                network = self.fetch_network(
-                    site["polygon"],
-                    http_post=self.http_post,
-                    now=now,
-                    deadline=self.clock() + OSM_RESERVE_SECONDS,
-                    clock=self.clock,
-                )
-                record["network"] = network
-                record.pop("network_error", None)
-            except osm.OsmError as exc:
-                record["network_error"] = _error(now, exc.code, exc.detail)
-            except Exception as exc:  # noqa: BLE001 - a fetch that breaks keeps the cached network too
-                record["network_error"] = _error(now, "fetch", f"{type(exc).__name__}: {exc}")
-        if not isinstance(network, dict):
-            error = record.get("network_error") or {}
-            record["last_error"] = _error(now, "osm", error.get("detail") or "no network fetched yet")
+    def _visit(self, site: dict, record: dict, config: dict, now: datetime, budget: Budget, topic_id: str):
+        """One site's turn, scene first (the module docstring's (a) to (d)). Returns
+        {"site_id", "scene_id"} when a scene was measured, DEFERRED when the budget left too little
+        time for what was due, and None for any other outcome (nothing new, or an error recorded
+        in `record`)."""
+        try:
+            scene = search_newest_scene(site, config, now, http_post=self.http_post, assets=ASSETS_RAIL)
+        except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
+            record["last_error"] = _error(now, "search", str(exc))
             return None
+        known = {entry.get("scene_id") for entry in record["history"]}
+        new_scene = scene is not None and scene["id"] not in known
+        key = site_key(site["polygon"])
+        # A scene the worker refused for what it is is nothing new for a while (REFUSED_SCENE_CODES),
+        # so (d) may use the tick; the refusal stays the site's `last_error` meanwhile. An edited
+        # polygon or parameters is a new request, so it is sent at once.
+        refused = new_scene and _refused_before(record, scene["id"], now, key, worker_params(config))
+        new_scene = new_scene and not refused
+        network = record.get("network")
+        if not (isinstance(network, dict) and network.get("site_key") == key):
+            # (b) No usable network: none yet, or the old polygon's (it is never measured against).
+            record.pop("network", None)
+            if budget.remaining() < OSM_RESERVE_SECONDS:
+                return DEFERRED
+            network = self._fetch_network(site, record, now, key)
+            if network is None:
+                error = record.get("network_error") or {}
+                record["last_error"] = _error(now, "osm", error.get("detail") or "no network fetched yet")
+                return None
+            stale = False
+        elif new_scene:
+            # (c) Measure with what is cached, however old: a slow Overpass must not stop it.
+            stale = _is_stale(network, now, config["osm_ttl_days"])
+        else:
+            # (d) Nothing new to measure: the time goes to a stale network, unless it just failed.
+            if (
+                _is_stale(network, now, config["osm_ttl_days"])
+                and not _retry_waits(record, now)
+                and budget.remaining() >= OSM_RESERVE_SECONDS
+            ):
+                self._fetch_network(site, record, now, key)
+            if not refused:
+                record.pop("last_error", None)
+            return None
+        if not new_scene:
+            if not refused:
+                record.pop("last_error", None)
+            return None
+        if budget.remaining() < MEASURE_RESERVE_SECONDS:
+            return DEFERRED
+        try:
+            result = self.measure(
+                {"id": site["id"], "polygon": site["polygon"]},
+                {"id": scene["id"], "captured_at": scene["captured_at"], "assets": scene["assets"]},
+                backend=config["backend"],
+                params=worker_params(config),
+                coverage_floor=config["coverage_floor"],
+                task=TASK,
+                network=worker_network(network),
+                read_timeout=WORKER_READ_TIMEOUT,
+            )
+            entry = _history_entry(scene, result, network, key, stale)
+        except vision_client.VisionError as exc:
+            record["last_error"] = _error(now, exc.code, exc.detail)
+            record["failed_scene"] = {
+                "id": scene["id"],
+                "code": exc.code,
+                "at": now.isoformat(),
+                "site_key": key,
+                "params": worker_params(config),
+            }
+            return None
+        if result.image_png:
+            try:
+                entry["image_key"] = self.store_image(topic_id, site["id"], scene["id"], result.image_png)
+            except Exception as exc:  # noqa: BLE001 - a lost figure doesn't lose the measurement
+                print(f"rail_access: could not store the figure for {site['id']}: {exc!r}")
+        record["history"] = _slim_history([*record["history"], entry][-config["history_size"] :])
+        record.pop("last_error", None)
+        record.pop("failed_scene", None)
+        return {"site_id": site["id"], "scene_id": scene["id"]}
+
+    def _fetch_network(self, site: dict, record: dict, now: datetime, key: str) -> dict | None:
+        """The site's network from Overpass within OSM_RESERVE_SECONDS (both hops included), kept
+        in `record` with the polygon's `site_key`; None on failure, with `network_error` recorded and
+        whatever was cached left as it was."""
+        try:
+            network = self.fetch_network(
+                site["polygon"],
+                http_post=self.http_post,
+                now=now,
+                deadline=self.clock() + OSM_RESERVE_SECONDS,
+                clock=self.clock,
+            )
+        except osm.OsmError as exc:
+            record["network_error"] = _error(now, exc.code, exc.detail)
+            return None
+        except Exception as exc:  # noqa: BLE001 - a fetch that breaks keeps the cached network too
+            record["network_error"] = _error(now, "fetch", f"{type(exc).__name__}: {exc}")
+            return None
+        network["site_key"] = key
+        record["network"] = network
+        record.pop("network_error", None)
         return network
 
     def assess(self, new_state: dict) -> list[dict]:
         """One verdict per site measured this tick: its served share, desert area and station
         count against its baseline, and whether that is material, by the thresholds stored in the
         state."""
-        config = {**{key: DEFAULTS[key] for key in THRESHOLD_KEYS}, **(new_state.get("thresholds") or {})}
+        config = _thresholds(new_state)
         verdicts = []
         for m in new_state.get("measured") or []:
             record = (new_state.get("sites") or {}).get(m["site_id"]) or {}
@@ -298,7 +401,9 @@ class RailAccessAdapter(Adapter):
             if not history or history[-1].get("scene_id") != m["scene_id"]:
                 continue
             latest, earlier = history[-1], history[:-1]
-            baseline_entries = clear_entries(earlier, config["coverage_floor"], value_key="served_share")
+            # Only scenes measured the same way are compared: the same polygon and parameters.
+            comparable = [e for e in earlier if _comparable(e, latest)]
+            baseline_entries = clear_entries(comparable, config["coverage_floor"], value_key="served_share")
             verdict = {
                 "site_id": m["site_id"],
                 "name": record.get("name") or m["site_id"],
@@ -309,6 +414,8 @@ class RailAccessAdapter(Adapter):
                 "desert_km2": _km2(latest),
                 "station_count": latest.get("station_count"),
                 "reach_m": _reach_m(latest),
+                # The scene before was measured another way (an edited reach, polygon or parameter).
+                "params_changed": bool(earlier) and not _comparable(earlier[-1], latest),
                 "baseline": None,
                 "baseline_scenes": len(baseline_entries),
                 "delta": None,
@@ -323,7 +430,7 @@ class RailAccessAdapter(Adapter):
             else:
                 share_baseline = statistics.median(e["served_share"] for e in baseline_entries)
                 desert_baseline = statistics.median(_km2(e) for e in baseline_entries)
-                previous_stations = earlier[-1].get("station_count")
+                previous_stations = comparable[-1].get("station_count")
                 share_delta = latest["served_share"] - share_baseline
                 desert_delta = _km2(latest) - desert_baseline
                 desert_scale = max(desert_baseline, 1.0)
@@ -343,10 +450,12 @@ class RailAccessAdapter(Adapter):
                     },
                     relative={"desert_km2": round(desert_delta / desert_scale, 3)},
                 )
+                # Compared as stored (4 decimal places), so a move of exactly the threshold is one.
                 reasons = []
-                if abs(share_delta) >= config["served_share_threshold"]:
+                if round(abs(share_delta), 4) >= config["served_share_threshold"]:
                     reasons.append("served share moved")
-                if abs(desert_delta) >= config["desert_relative_threshold"] * desert_scale:
+                desert_threshold = round(config["desert_relative_threshold"] * desert_scale, 4)
+                if round(abs(desert_delta), 4) >= desert_threshold:
                     reasons.append("desert area moved")
                 if stations_delta:
                     reasons.append("station count changed")
@@ -360,15 +469,16 @@ class RailAccessAdapter(Adapter):
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
         self._reported = []
-        first = not vision_sites.anything_measured(old_state)
-        if not first:
-            self._triage(new_state, [v for v in verdicts if v["material"]])
-        if first:
-            if not verdicts:
-                errors = vision_sites.site_errors(new_state) or "no scene to measure"
-                return False, f"nothing measured yet: {errors}"
-            summary = "First observation. " + "; ".join(_first_line(v) for v in verdicts)
-            return True, self._with_planner_notes(summary, verdicts, new_state)
+        first = vision_sites.first_observation(
+            old_state, new_state, verdicts, _thresholds(new_state)["coverage_floor"]
+        )
+        if first is not None:
+            clear, not_yet = first
+            if not clear:
+                return False, not_yet
+            summary = "First observation. " + "; ".join(_first_line(v) for v in clear)
+            return True, self._with_planner_notes(summary, clear, new_state)
+        self._triage(new_state, [v for v in verdicts if v["material"]])
         material = [v for v in verdicts if v["material"]]
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
@@ -423,7 +533,8 @@ class RailAccessAdapter(Adapter):
             verdict["triage"] = latest["triage"]
             if outcome["verdict"] != "real":
                 verdict["material"] = False
-                verdict["reason"] = f"the agent judged it an artefact: {outcome['reason']}"
+                note = vision_triage.quoted_note(outcome["reason"])
+                verdict["reason"] = f"the agent judged it an artefact; {note}"
 
     def _with_planner_notes(self, summary: str, verdicts: list[dict], new_state: dict) -> str:
         """`summary` with the planner notes of the sites it reports, which are the sites
@@ -446,22 +557,24 @@ class RailAccessAdapter(Adapter):
                 continue
             name = record.get("name") or m["site_id"]
             captured_at = latest.get("captured_at") or ""
-            date = captured_at[:10] or "an unknown date"
+            date = captured_at[:10] or "(date unknown)"
             year = captured_at[:4] or (new_state.get("fetched_at") or "")[:4]
-            reach = _reach_m(latest)
+            reach = _reach_text(_reach_m(latest))
 
+            # The figure's symbols, as PR H draws them: heat, outlined deserts, the network,
+            # flagged stations in red rings and simulated links dashed.
             def caption(site_name: str) -> str:
                 return (
-                    f"Rail access heat map of {site_name} from the Sentinel-2 scene captured {date}: "
-                    f"built-up density (warm colours), areas more than {reach:g} m from a station "
-                    "(outlined), rail lines and stations from OpenStreetMap. Processed imagery; contains "
+                    f"Rail access in {site_name}, Sentinel-2 {date}: built-up density (warm colours), "
+                    f"areas beyond {reach} of a station (outlined), OpenStreetMap rail lines and stations, "
+                    "flagged stations (red rings) and simulated links (dashed). Processed imagery; contains "
                     f"modified Copernicus Sentinel data {year}; map data © OpenStreetMap contributors."
                 )
 
             def alt(site_name: str) -> str:
                 return (
-                    f"Processed satellite map of {site_name} showing rail lines, stations and built-up "
-                    "areas beyond walking reach of a station"
+                    f"Processed satellite map of {site_name} showing rail lines, stations, flagged stations, "
+                    "simulated links and built-up areas beyond walking reach of a station"
                 )
 
             figures.append(
@@ -519,7 +632,7 @@ class RailAccessAdapter(Adapter):
                     "station_count": last.get("station_count"),
                     "reach_m": _reach_m(last),
                     "coverage": last.get("coverage"),
-                    "flag_count": len(last.get("flags") or []),
+                    "flag_count": last.get("flag_count", len(last.get("flags") or [])),
                     "previous_served_shares": [e.get("served_share") for e in history[:-1]],
                 }
         return render_review_evidence({"task": TASK, "sites": latest, **_evidence_notes(latest_state)})
@@ -564,18 +677,97 @@ def _error(now: datetime, code: str, detail: str) -> dict:
     return {"at": now.isoformat(), "code": code, "detail": (detail or "")[:300]}
 
 
-def _history_entry(scene: dict, result: vision_client.VisionResult, network: dict) -> dict:
-    """One scene's measurement as the history keeps it: the metrics an article or the agent may
-    use, the station rows cut to STATION_FIELDS and capped, the build and timings for
-    reproducibility, and the scene's assets for `look_again`. VisionError "reply" if anything in it
-    would not survive JSON (a NaN or an infinity the worker let through): a value that cannot be
-    stored is a measurement that was not made."""
+def _thresholds(state: dict) -> dict:
+    """The thresholds the diff uses: the topic's, as stored in the state, over the defaults."""
+    return {**{key: DEFAULTS[key] for key in THRESHOLD_KEYS}, **(state.get("thresholds") or {})}
+
+
+def _is_stale(network: dict, now: datetime, ttl_days) -> bool:
+    """osm.is_stale, with a TTL it cannot use (parse_config refuses one; an older state might
+    still reach here) read as stale rather than raised out of the tick."""
+    try:
+        return osm.is_stale(network, now, ttl_days)
+    except (ArithmeticError, ValueError, TypeError):
+        return True
+
+
+def _retry_waits(record: dict, now: datetime) -> bool:
+    """Whether the last network fetch failed less than NETWORK_RETRY_HOURS ago."""
+    return _recent(record.get("network_error"), now)
+
+
+def _refused_before(record: dict, scene_id: str, now: datetime, key: str, params: dict) -> bool:
+    """Whether the worker refused this very scene, for this polygon (`key`) and these `params`, for
+    what it is (REFUSED_SCENE_CODES) less than NETWORK_RETRY_HOURS ago: then it is not sent again
+    yet. A refusal recorded before the polygon and params were kept with it is matched on the
+    scene alone."""
+    failed = record.get("failed_scene")
+    if not isinstance(failed, dict) or failed.get("id") != scene_id:
+        return False
+    if failed.get("site_key", key) != key or failed.get("params", params) != params:
+        return False
+    return failed.get("code") in REFUSED_SCENE_CODES and _recent(failed, now)
+
+
+def _recent(stamp, now: datetime) -> bool:
+    """Whether `stamp` ({"at": iso, ...}) is less than NETWORK_RETRY_HOURS old."""
+    if not isinstance(stamp, dict) or not isinstance(stamp.get("at"), str):
+        return False
+    try:
+        at = datetime.fromisoformat(stamp["at"])
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=UTC)
+    return now - at < timedelta(hours=NETWORK_RETRY_HOURS)
+
+
+def _slim_history(history: list) -> list:
+    """`history` with every entry but the newest without NEWEST_ONLY_KEYS (its flags counted in
+    `flag_count` if it had none)."""
+    return [*(_slim(entry) for entry in history[:-1]), *history[-1:]]
+
+
+def _slim(entry):
+    if not isinstance(entry, dict):
+        return entry
+    slim = {key: value for key, value in entry.items() if key not in NEWEST_ONLY_KEYS}
+    if "flag_count" not in slim and isinstance(entry.get("flags"), list):
+        slim["flag_count"] = len(entry["flags"])
+    return slim
+
+
+def _param_values(entry: dict) -> tuple:
+    """The parameters an entry was measured with, as the worker echoed them: every RailParams
+    field (the worker contract's RAIL_PARAM_LIMITS keys), the reach among them."""
+    params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+    return tuple(params.get(key) for key in contract.RAIL_PARAM_LIMITS)
+
+
+def _comparable(entry: dict, latest: dict) -> bool:
+    """Whether `entry` was measured the way `latest` was: the same polygon (`site_key`) and the
+    same parameters. Others are not a baseline for it: an edited reach or polygon would read as a
+    change in the city."""
+    return entry.get("site_key") == latest.get("site_key") and _param_values(entry) == _param_values(latest)
+
+
+def _history_entry(
+    scene: dict, result: vision_client.VisionResult, network: dict, polygon_key: str, network_stale: bool
+) -> dict:
+    """One scene's measurement as the history keeps it while it is the newest: the metrics an
+    article or the agent may use, the station rows cut to STATION_FIELDS and capped (these and the
+    other NEWEST_ONLY_KEYS lists go when a newer scene arrives), the build and timings for
+    reproducibility, the scene's assets for `look_again`, the polygon's `site_key` and whether the
+    network was past its TTL. VisionError "reply" if anything in it would not survive JSON (a NaN
+    or an infinity the worker let through): a value that cannot be stored is a measurement that was
+    not made."""
     metrics = result.metrics
     stations = [
         {key: row.get(key) for key in STATION_FIELDS}
         for row in (metrics.get("stations") or [])[:MAX_HISTORY_STATIONS]
         if isinstance(row, dict)
     ]
+    flags = metrics.get("flags") or []
     entry = {
         "scene_id": scene["id"],
         "captured_at": scene["captured_at"],
@@ -588,7 +780,9 @@ def _history_entry(scene: dict, result: vision_client.VisionResult, network: dic
         "station_count": metrics["station_count"],
         "edge_count": metrics.get("edge_count"),
         "hubs": metrics.get("hubs") or [],
-        "flags": metrics.get("flags") or [],
+        # The lists (NEWEST_ONLY_KEYS) are dropped when a newer scene arrives; the count stays.
+        "flags": flags,
+        "flag_count": len(flags) if isinstance(flags, list) else 0,
         "suggestions": metrics.get("suggestions") or [],
         "deserts": metrics.get("deserts") or [],
         "stations": stations,
@@ -600,8 +794,12 @@ def _history_entry(scene: dict, result: vision_client.VisionResult, network: dic
         # For the agent's look_again: the same bands, re-measured with other settings.
         "assets": scene["assets"],
         "network_fetched_at": network.get("fetched_at"),
+        # Measured with a cached network past osm_ttl_days (a refresh had not yet succeeded).
+        "network_stale": bool(network_stale),
+        # Which polygon this scene was measured over: only scenes of the same one are compared.
+        "site_key": polygon_key,
         # Echoed by the worker: the reach and the rest, so the figure's caption and a re-run say
-        # what this scene was measured with.
+        # what this scene was measured with, and the baseline compares only like with like.
         "params": metrics.get("params"),
     }
     try:
@@ -672,7 +870,7 @@ def _describe(v: dict) -> str:
         text += f" against {baseline['station_count']}"
     text += f"; coverage {_pct(v['coverage'])}; {v['reason']}"
     if v.get("triage"):
-        text += f"; checked by the vision agent: {v['triage']['reason']}"
+        text += f"; {vision_triage.quoted_note(v['triage']['reason'])}"
     return text
 
 
@@ -704,7 +902,9 @@ def _with_planner_notes(summary: str, verdicts: list[dict], new_state: dict) -> 
             parts.append(f"{v['name']}: {notes}")
     if not parts:
         return summary
-    return f"{summary}{' ' if summary.endswith('.') else '. '}{' '.join(parts)}"
+    # A summary that ends a sentence, or the agent's quoted note that does, gets no second full stop.
+    ended = summary.endswith(".") or summary.endswith('."')
+    return f"{summary}{' ' if ended else '. '}{' '.join(parts)}"
 
 
 def _evidence_notes(latest_state: dict) -> dict:

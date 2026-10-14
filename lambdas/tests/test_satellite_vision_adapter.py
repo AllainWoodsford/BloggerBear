@@ -338,6 +338,67 @@ def test_the_first_tick_is_material(adapter):
     assert changed and summary.startswith("First observation") and "10 objects" in summary
 
 
+def test_the_first_observation_is_the_first_clear_scene(adapter):
+    """A first scene below the coverage floor (0.7 here) is kept but reports nothing: a count over
+    a third of the site is not an observation. The next clear scene is the first observation."""
+    cloudy = history_state(adapter, [3], coverage={0: 0.31})
+    changed, summary = adapter.material_diff(None, cloudy)
+    assert not changed
+    assert summary == (
+        "nothing measured clearly yet: Botany Bay anchorage: coverage 31 % is below the 70 % floor"
+    )
+    assert cloudy["sites"]["botany"]["history"][-1]["coverage"] == 0.31  # kept, not lost
+    stac = FakeStac([item("S1", "2026-09-11T00:00:00Z")])
+    clear = run(adapter, stac, FakeWorker({"S1": 12}), previous=cloudy)
+    changed, summary = adapter.material_diff(cloudy, clear)
+    assert changed and summary == "First observation. Botany Bay anchorage: 12 objects (coverage 95%)"
+    assert adapter.agent.calls == []
+
+
+def diff_tick(adapter, previous, n, count, coverage=0.95, **config):
+    """One research tick as research_tick_handler runs it, with a new scene S<n>: the fetch on the
+    previous state, then the diff against it."""
+    scene = f"S{n}"
+    stac = FakeStac([item(scene, f"2026-09-{10 + n}T00:00:00Z")])
+    worker = FakeWorker({scene: count}, coverage={scene: coverage})
+    state = run(adapter, stac, worker, previous=previous, **config)
+    return state, adapter.material_diff(previous, state)
+
+
+def test_the_first_observation_is_reported_once(adapter):
+    """The state records it (`first_observed_at`): a run of history_size cloudy scenes trims every
+    clear one from the history, yet the next clear scene is not a first observation again."""
+    small = {"history_size": 2, "min_baseline": 1}
+    state, (changed, summary) = diff_tick(adapter, None, 0, 10, **small)
+    assert changed and summary.startswith("First observation")
+    assert state["first_observed_at"] == state["fetched_at"]
+    for n in (1, 2):
+        state, diff = diff_tick(adapter, state, n, 3, coverage=0.3, **small)
+        assert diff == (False, f"{SITE_NAME}: coverage below the floor")
+    assert [e["coverage"] for e in state["sites"]["botany"]["history"]] == [0.3, 0.3]
+    state, diff = diff_tick(adapter, state, 3, 30, **small)
+    assert diff == (False, f"{SITE_NAME}: baseline still building") and adapter.agent.calls == []
+
+
+def test_a_raised_floor_or_a_state_from_before_the_marker_does_not_make_a_scene_first(adapter):
+    state, (changed, _) = diff_tick(adapter, None, 0, 10, coverage=0.75)
+    assert changed
+    # The floor goes to 0.8, above the only scene so far: the next clear one is compared.
+    later, diff = diff_tick(adapter, state, 1, 30, coverage=0.9, coverage_floor=0.8)
+    assert diff == (False, f"{SITE_NAME}: baseline still building")
+    # A state written before the marker is judged by its own scene against its own floor (0.7).
+    legacy = json.loads(json.dumps(state))
+    del legacy["first_observed_at"]
+    later, diff = diff_tick(adapter, legacy, 1, 30, coverage=0.9, coverage_floor=0.8)
+    assert diff == (False, f"{SITE_NAME}: baseline still building")
+    assert later["first_observed_at"] == legacy["fetched_at"]
+    # One from before with only a cloudy scene: the next clear scene is the first observation.
+    cloudy, _ = diff_tick(adapter, None, 0, 3, coverage=0.3)
+    del cloudy["first_observed_at"]
+    clear, (changed, summary) = diff_tick(adapter, cloudy, 1, 12)
+    assert changed and summary.startswith("First observation")
+
+
 def test_no_material_change_while_the_baseline_builds(adapter):
     state = history_state(adapter, [10, 40])
     changed, summary = adapter.material_diff(EARLIER, state)
@@ -512,7 +573,8 @@ def test_the_agent_is_asked_only_about_a_numeric_change_and_its_yes_is_material(
 
     state = history_state(adapter, [10, 12, 11, 30])
     changed, summary = adapter.material_diff(EARLIER, state)
-    assert changed and "checked by the vision agent: boxes sit on open water" in summary
+    # The agent's reason is quoted as its note, not given as a measurement.
+    assert changed and 'the vision agent\'s note (not a measurement): "boxes sit on open water' in summary
     asked = adapter.agent.calls[0]
     assert asked["site"]["id"] == "botany" and asked["site"]["polygon"] == POLY
     assert asked["scene"]["id"] == "S3" and asked["scene"]["assets"]["nir"].endswith("S3/nir.tif")
@@ -530,7 +592,10 @@ def test_an_artefact_is_not_material_and_says_why(adapter):
     state = history_state(adapter, [10, 12, 11, 30])
     changed, summary = adapter.material_diff(EARLIER, state)
     assert not changed
-    assert "the agent judged it an artefact: the extra boxes trace a thin cloud edge" in summary
+    assert (
+        'the agent judged it an artefact; the vision agent\'s note (not a measurement): "the extra boxes '
+        'trace a thin cloud edge"' in summary
+    )
     assert state["sites"]["botany"]["history"][-1]["triage"]["verdict"] == "artefact"
 
 

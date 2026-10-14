@@ -193,6 +193,26 @@ def test_a_topic_reads_its_two_functions_narrowed_to_its_id_and_adapter(monkeypa
     assert "crypto_feed adapter" in result["spoken"]
 
 
+@pytest.mark.parametrize("adapter", ["satellite_vision", "rail_access"])
+def test_a_vision_topic_narrows_to_the_lines_its_adapter_prints(adapter, monkeypatch):
+    # The prefix is the one the adapter's own print lines start with.
+    source = Path(log_review.__file__).resolve().parents[1] / "common" / "adapters" / f"{adapter}.py"
+    assert f'print(f"{adapter}: ' in source.read_text()
+    assert log_review.ADAPTER_PREFIXES[adapter] == f"{adapter}:"
+    monkeypatch.setattr(
+        log_review.topic_match, "get_topic", lambda topic_id: {"topic_id": topic_id, "adapter": adapter}
+    )
+    run = Run()
+    review(run, topic="cities")
+    assert f"| filter @message like /cities|{adapter}:/" in run.jobs[0][3]
+
+
+def test_every_prefix_is_a_registered_adapters():
+    from common.adapters.registry import ADAPTER_REGISTRY
+
+    assert set(log_review.ADAPTER_PREFIXES) <= set(ADAPTER_REGISTRY)
+
+
 def test_a_topic_with_an_adapter_we_do_not_know_filters_on_its_id_only(monkeypatch):
     monkeypatch.setattr(
         log_review.topic_match, "get_topic", lambda topic_id: {"topic_id": topic_id, "adapter": "evil|.*"}

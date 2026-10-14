@@ -1,11 +1,13 @@
 """Tests for common/vision_sites.py: what the two vision adapters share. The config checks every
 vision topic gets, the STAC search and the choice of scene (moved here from the ship adapter's
 tests, which now hold only what that adapter decides), the figure store, the baseline's clear
-entries, the tick's budget, the STAC references, the order sites are visited in, and the rule
-that a tick which measured nothing is not yet an observation."""
+entries, the tick's budget, the STAC references, the order sites are visited in, the rule that a
+tick which measured nothing is not yet an observation, and the marker that reports the first one
+once."""
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -14,6 +16,7 @@ import pytest
 from moto import mock_aws
 
 from common import vision_sites as vs
+from common.figures import clean_figure
 
 POLY = [[151.20, -33.97], [151.26, -33.97], [151.26, -34.02], [151.20, -34.02]]
 PREFIX = "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/"
@@ -96,11 +99,59 @@ def test_defaults_are_filled_and_the_numbers_typed():
         {"sites": SITES, "history_size": "many"},
         {"sites": SITES, "coverage_floor": None},
         {"sites": SITES, "time_budget_seconds": 81},
+        # A float that is not finite would pass a `> cap` check (NaN compares false with anything).
+        {"sites": SITES, "time_budget_seconds": "nan"},
+        {"sites": SITES, "time_budget_seconds": "inf"},
+        {"sites": SITES, "time_budget_seconds": -5},
+        {"sites": SITES, "triage_deadline_seconds": "nan"},
+        {"sites": SITES, "triage_deadline_seconds": 1e9},
+        {"sites": SITES, "triage_deadline_seconds": 0},
+        {"sites": SITES, "triage_max_tool_calls": 1e9},
+        {"sites": SITES, "triage_max_tool_calls": -1},
+        {"sites": SITES, "history_size": "inf"},
+        {"sites": SITES, "history_size": 21},
+        {"sites": SITES, "min_baseline": 8},  # a history of 8 holds at most 7 earlier scenes
+        {"sites": SITES, "max_sites_per_tick": 0},
+        {"sites": SITES, "max_sites_per_tick": 11},
+        {"sites": SITES, "coverage_floor": -0.1},
+        {"sites": SITES, "coverage_floor": "inf"},
+        {"sites": SITES, "max_cloud_cover": "nan"},
+        {"sites": SITES, "own_threshold": -1},
+        {"sites": SITES, "own_threshold": "-inf"},
+        {"sites": SITES, "triage": "false"},
+        {"sites": SITES, "triage": 1},
+        {"sites": SITES, "web_context": "false"},
+        {"sites": SITES, "history_size": True},
+        {"sites": [{"id": "a", "name": ["Botany", "Bay"], "polygon": POLY}]},
+        {"sites": [{"id": "a", "name": "", "polygon": POLY}]},
+        {"sites": [{"id": "a", "name": "\u200b\n", "polygon": POLY}]},
+        {"sites": [{"id": "a", "name": "B" * 81, "polygon": POLY}]},
+        {"sites": [{"id": "bay:1", "polygon": POLY}]},
+        {"sites": [{"id": "..", "polygon": POLY}]},
+        {"sites": [{"id": "bay/../x", "polygon": POLY}]},
+        {"sites": [{"id": "bay.1", "polygon": POLY}]},
+        {"sites": [{"id": "x" * 65, "polygon": POLY}]},
+        {"sites": [{"id": 12, "polygon": POLY}]},
     ],
 )
 def test_bad_config_is_refused(config):
     with pytest.raises(vs.ConfigError):
         vs.parse_site_config(config, DEFAULTS, floats=FLOATS)
+
+
+def test_site_ids_and_names_are_what_a_figure_key_and_a_caption_can_carry():
+    sites = [{"id": "Botany_Bay-2", "name": "  Botany\tBay\u202e\n", "polygon": POLY},
+             {"id": "b" * 64, "polygon": POLY}]  # fmt: skip
+    config = vs.parse_site_config({"sites": sites}, DEFAULTS, floats=FLOATS)
+    assert config["sites"][0]["name"] == "Botany Bay" and "name" not in config["sites"][1]
+    assert sites[0]["name"] == "  Botany\tBay\u202e\n"  # the caller's config is not changed
+    for site in config["sites"]:  # a figure key built from the id is one common/figures.py keeps
+        assert clean_figure({"key": f"vision/topic/{site['id']}/S2A_X.png", "caption": "map"})
+    # The bounds are inclusive where they say so.
+    edge = {"sites": SITES, "time_budget_seconds": 80, "triage_deadline_seconds": 90,
+            "triage_max_tool_calls": 5, "history_size": 20, "min_baseline": 19, "max_sites_per_tick": 10,
+            "coverage_floor": 0, "own_threshold": 0, "triage": False}  # fmt: skip
+    assert vs.parse_site_config(edge, DEFAULTS, floats=FLOATS)["triage"] is False
 
 
 def test_the_budget_cap_is_the_ticks_and_the_site_cap_is_a_parameter():
@@ -253,6 +304,22 @@ def test_order_sites_puts_the_unvisited_first_then_the_longest_unvisited():
     assert [s["id"] for s in vs.order_sites(sites[:2][::-1], same)] == ["b", "a"]
 
 
+# --- the site key --------------------------------------------------------------------------------
+
+
+def test_the_site_key_is_a_short_stable_fingerprint_of_the_polygon():
+    key = vs.site_key(POLY)
+    assert re.fullmatch(r"[0-9a-f]{16}", key)
+    # The same polygon however it was read back (DynamoDB's Decimals, ints for whole degrees).
+    as_decimals = [[Decimal(str(x)), Decimal(str(y))] for x, y in POLY]
+    assert vs.site_key(as_decimals) == vs.site_key(vs.plain(as_decimals)) == key
+    assert vs.site_key([[151, -34], [152, -34], [152, -33]]) == vs.site_key([[151.0, -34.0], [152.0, -34.0],
+                                                                              [152.0, -33.0]])  # fmt: skip
+    # Any edit is another key.
+    assert vs.site_key([[151.2, -33.97], *POLY[1:]]) == key
+    assert vs.site_key([[151.21, -33.97], *POLY[1:]]) != key and vs.site_key(POLY[::-1]) != key
+
+
 # --- the first observation -----------------------------------------------------------------------
 
 
@@ -260,6 +327,10 @@ def test_anything_measured_and_the_errors_of_a_tick_that_measured_nothing():
     assert not vs.anything_measured(None) and not vs.anything_measured({})
     assert not vs.anything_measured({"sites": {"a": {"history": []}, "b": {}}})
     assert vs.anything_measured({"sites": {"a": {"history": []}, "b": {"history": [{"scene_id": "S"}]}}})
+    # With a floor, only a scene measured at or above it counts.
+    cloudy = {"sites": {"a": {"history": [{"scene_id": "S", "coverage": 0.31}]}}}
+    assert vs.anything_measured(cloudy) and not vs.anything_measured(cloudy, 0.6)
+    assert vs.anything_measured({"sites": {"a": {"history": [{"coverage": 0.6}]}}}, 0.6)
     state = {
         "sites": {
             "a": {"name": "Botany Bay", "last_error": {"code": "search", "detail": "down"}},
@@ -269,3 +340,57 @@ def test_anything_measured_and_the_errors_of_a_tick_that_measured_nothing():
     }
     assert vs.site_errors(state) == "Botany Bay: search; c: osm"
     assert vs.site_errors({"sites": {}}) == "" and vs.site_errors({}) == ""
+
+
+def test_the_first_observation_comes_from_the_first_clear_scene():
+    clear = {"name": "Botany Bay", "coverage": 0.9}
+    cloudy = {"name": "Kurnell", "coverage": 0.31}
+    state = {"sites": {"a": {"name": "Botany Bay", "last_error": {"code": "search"}}}}
+    # Nothing measured before: the clear verdicts are the first observation, the cloudy ones are not.
+    assert vs.first_observation(None, state, [clear, cloudy], 0.6) == ([clear], "")
+    assert vs.first_observation(None, state, [cloudy], 0.6) == (
+        [], "nothing measured clearly yet: Kurnell: coverage 31 % is below the 60 % floor"
+    )
+    assert vs.first_observation(None, state, [], 0.6) == ([], "nothing measured yet: Botany Bay: search")
+    assert vs.first_observation(None, {}, [], 0.6) == ([], "nothing measured yet: no scene to measure")
+    # A cloudy scene before is not an observation; a clear one is, and then the tick is compared.
+    before = {"sites": {"a": {"history": [{"coverage": 0.31}]}}}
+    assert vs.first_observation(before, state, [clear], 0.6) == ([clear], "")
+    before["sites"]["a"]["history"].append({"coverage": 0.6})
+    assert vs.first_observation(before, state, [cloudy], 0.6) is None
+    # Once observed, the marker says so, though no clear scene is kept and the floor was raised.
+    marked = {"first_observed_at": "2026-10-01T00:00:00+00:00",
+              "sites": {"a": {"history": [{"coverage": 0.3}]}}}  # fmt: skip
+    assert vs.first_observation(marked, state, [clear], 0.95) is None
+
+
+def test_the_first_observation_is_marked_on_its_tick_and_carried_forward():
+    sites = {"a": {"history": [{"scene_id": "S0", "coverage": 0.3}, {"scene_id": "S1", "coverage": 0.9}]}}
+    measured = [{"site_id": "a", "scene_id": "S1"}]
+    # Nothing observed before, and this tick measured a clear scene: its fetch marks the state.
+    assert vs.first_observed_at(None, sites, measured, 0.6, "T1") == "T1"
+    assert vs.first_observed_at({"first_observed_at": None}, sites, measured, 0.6, "T1") == "T1"
+    assert vs.first_observed_at(None, sites, measured, 0.95, "T1") is None  # below the floor
+    assert vs.first_observed_at(None, sites, [], 0.6, "T1") is None  # nothing measured this tick
+    assert vs.first_observed_at(None, sites, [{"site_id": "a", "scene_id": "S0"}], 0.6, "T1") is None
+    # Once marked, carried forward whatever the history holds and the floor says.
+    assert vs.first_observed_at({"first_observed_at": "T0", "sites": {}}, {}, [], 0.99, "T1") == "T0"
+    assert vs.observed_before({"first_observed_at": "T0"}, 0.99)
+    # The marker decides when it is there: None is "not yet", whatever an older history kept.
+    assert not vs.observed_before({"first_observed_at": None, "sites": sites}, 0.6)
+    assert not vs.observed_before(None, 0.6) and not vs.observed_before({}, 0.6)
+
+
+def test_a_state_from_before_the_marker_is_judged_by_its_own_scenes_and_floor():
+    legacy = {"fetched_at": "T0", "thresholds": {"coverage_floor": 0.6},
+              "sites": {"a": {"history": [{"scene_id": "S0", "coverage": 0.7}]}}}  # fmt: skip
+    # Clear by its own floor (0.6), though not by today's (0.8): observed, and marked from now on.
+    assert vs.observed_before(legacy, 0.8)
+    assert vs.first_observed_at(legacy, {}, [], 0.8, "T1") == "T0"
+    assert vs.first_observed_at({**legacy, "fetched_at": None}, {}, [], 0.8, "T1") == "T1"
+    # Not clear by its own floor (0.75), though it would be by today's (0.6): not observed.
+    legacy["thresholds"]["coverage_floor"] = 0.75
+    assert not vs.observed_before(legacy, 0.6) and vs.first_observed_at(legacy, {}, [], 0.6, "T1") is None
+    # A state with no floor stored is judged by the one given.
+    del legacy["thresholds"]
+    assert vs.observed_before(legacy, 0.6) and not vs.observed_before(legacy, 0.8)

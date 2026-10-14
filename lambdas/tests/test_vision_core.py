@@ -9,6 +9,8 @@ known sizes, so each test knows exactly what should be counted. Reflectance foll
 
 from __future__ import annotations
 
+import hashlib
+
 import cv2
 import numpy as np
 import pytest
@@ -17,7 +19,7 @@ from vision_fakes import block_mean, write_tiff
 from vision import build, cog, geo, masks
 from vision import scene as scene_reader
 from vision.analyse import analyse_site, pixel_to_map, size_histogram
-from vision.annotate import annotate
+from vision.annotate import annotate, burn_caption
 from vision.detect import DetectParams, detect_objects
 
 PX = 10.0
@@ -185,6 +187,40 @@ def test_annotate_makes_a_scaled_png():
     assert image[2, 2].tolist() == [0, 0, 0]
 
 
+# sha256 of the ships figure's pixels at three max_sides, and of a two-line caption bar burned at
+# two widths, as the base branch drew them before the rail figure moved its caption into a strip
+# under its map and took a stronger PNG level (rail PR H): neither change may touch the ships
+# figure. OpenCV is pinned (requirements-vision.txt); one that draws differently means recording
+# these again.
+SHIPS_FIGURE_SHA256 = {
+    120: "cfa4db9d5193210fb6b5060f30b24a3e441d7c10aa57de66cf2ab290633131df",
+    300: "c34af15075887dee57f0c6126da6895ad5fb02e8794d95dbd10c56d9574d0b23",
+    1024: "304afcc8382bebc819e26d79b2242deede3a41532a6c4b0a8fbd00ab0d9c6d51",
+}
+CAPTION_BAR_SHA256 = {
+    256: "1ab714dc70a4a87ea85f704b9763d2eeb8101bd953aedd781b939458257d41bb",
+    1600: "798c09c056620258c158ff140bfa6db7053ed71eb5602d0b483124123fa4a02f",
+}
+
+
+def test_the_ships_figure_and_its_caption_bar_are_unchanged():
+    ys, xs = np.mgrid[0:300, 0:420]
+    nir = ((xs * 37 + ys * 91) % 4000).astype(np.uint16)  # texture for the encoder and the resize
+    measurable = (xs + ys < 500).astype(np.uint8)
+    detections = [{"box": [[60, 60], [140, 80], [130, 120], [50, 100]]}]
+    for max_side, digest in SHIPS_FIGURE_SHA256.items():
+        png = annotate(nir, measurable, detections, max_side=max_side)
+        image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+        assert hashlib.sha256(image.tobytes()).hexdigest() == digest, max_side
+        # ... and the bytes are OpenCV's default encoding of those pixels, as they always were.
+        assert png == cv2.imencode(".png", image)[1].tobytes(), max_side
+    lines = ["Processed imagery - BloggerBear", "", "Contains modified Copernicus Sentinel data 2024"]
+    for width, digest in CAPTION_BAR_SHA256.items():
+        canvas = np.full((120, width, 3), 128, np.uint8)
+        burn_caption(canvas, lines)
+        assert hashlib.sha256(canvas.tobytes()).hexdigest() == digest, width
+
+
 def test_build_info_and_fingerprint_match():
     info = build.build_info()
     assert info["opencv_version"].startswith("5.")
@@ -312,6 +348,37 @@ def test_read_site_reduces_a_band_without_overviews_by_area_unless_it_is_categor
     assert cheaper.bytes_read - headers < (site.bytes_read - headers) / 2
     assert np.abs(cheaper.bands["fine"].astype(np.int64) - site.bands["fine"].astype(np.int64)).max() <= 1
 
+
+
+def test_the_area_reduction_keeps_whole_blocks_when_the_covering_window_is_odd():
+    """A target grid 5 m off the 10 m band's makes an odd covering window (21 x 21 fine pixels for
+    10 x 10 target ones): the partial block at the edge is dropped, so every value is an exact
+    2 x 2 block mean, and the residual quarter-pixel shift is nearest neighbour onto the grid."""
+    fine = fine_band()
+    blobs = {"fine": write_tiff(fine, tile=16, gap=cog.HEADER_BYTES)}
+    target = (ORIGIN[0] + 5.0, 20.0, 0.0, ORIGIN[1] - 5.0, 0.0, -20.0)
+    data, nodata, level = scene_reader._read_aligned("fine", fetch_blobs(blobs), target, (10, 10))
+    assert data.shape == (10, 10) and data.dtype == np.uint16 and level == 0
+    means = block_mean(fine, 2)[:10, :10].astype(np.int64)
+    # Nearest neighbour picks each target pixel's block; every value is one block's mean (to the
+    # rounding of a half), never a mean across a partial block.
+    assert np.abs(data.astype(np.int64) - means).max() <= 1
+
+
+def test_the_area_reduction_keeps_a_column_narrower_than_one_block():
+    """A window clipped to the band's last column is one fine pixel wide, narrower than a 2 x 2
+    block: it is kept at its own 10 m size (not stretched to 20 m), and the half of the target
+    pixel past the image's edge is the fill."""
+    fine = fine_band()
+    blobs = {"fine": write_tiff(fine, tile=16, nodata="0", gap=cog.HEADER_BYTES)}
+    target = (ORIGIN[0] + 1270.0, 20.0, 0.0, ORIGIN[1], 0.0, -20.0)
+    data, nodata, _ = scene_reader._read_aligned("fine", fetch_blobs(blobs), target, (2, 1))
+    assert data.shape == (2, 1) and nodata == 0
+    # The column is reduced down only (two rows into one), so each value is the mean of a pair of
+    # the last column's pixels, to the rounding of a half; or the fill past the edge.
+    pairs = fine[:4, 127].astype(np.float64).reshape(2, 2).mean(axis=1)
+    for value in data.ravel().tolist():
+        assert value == 0 or min(abs(value - p) for p in pairs) <= 1
 
 def test_read_site_warps_a_band_whose_grid_is_shifted_or_coarser():
     fine = fine_band()

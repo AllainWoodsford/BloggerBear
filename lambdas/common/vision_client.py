@@ -30,15 +30,25 @@ from botocore.config import Config
 from common import vision_contract as contract
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-# A reply's figure is at most 1024 px on its longer side; 3 MB is far above any such PNG and well
-# under Lambda's 6 MB synchronous response limit.
+# A reply's figure is a map at most 1024 px on its longer side, plus, on the rail figure, the strip
+# of caption and legend under it (vision/rail_annotate.py, which also keeps that figure within a
+# 2 MiB budget); 3 MB is far above any such PNG and well under Lambda's 6 MB synchronous response
+# limit.
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
 _ENV_BY_BACKEND = {"opencv": "VISION_WORKER_ARN", "cool": "VISION_COOL_WORKER_ARN"}
 
 # A worker call reads a few tiles and runs for seconds. No automatic retries: the next tick tries
 # again, and a retry here would double a slow call's cost inside the research tick's own timeout.
-_CLIENT_CONFIG = Config(connect_timeout=5, read_timeout=90, retries={"max_attempts": 1, "mode": "standard"})
+# A caller with a deadline (common/vision_triage.py) passes a shorter read timeout, and counts the
+# connect allowance on top of it: a call may take both before it gives up.
+DEFAULT_READ_TIMEOUT_SECONDS = 90
+CONNECT_TIMEOUT_SECONDS = 5
+_CLIENT_CONFIG = Config(
+    connect_timeout=CONNECT_TIMEOUT_SECONDS,
+    read_timeout=DEFAULT_READ_TIMEOUT_SECONDS,
+    retries={"max_attempts": 1, "mode": "standard"},
+)
 _clients: dict[tuple[str, float | None], object] = {}
 
 
@@ -128,9 +138,10 @@ def measure(
 
     lambda_client = client or _client(region_of(arn), read_timeout)
     try:
-        response = lambda_client.invoke(
-            FunctionName=arn, InvocationType="RequestResponse", Payload=json.dumps(request).encode("utf-8")
-        )
+        # UTF-8, not \u escapes: a network's non-ASCII names cost 2-3 bytes a character instead of
+        # 6-12, against Lambda's 6 MB synchronous payload.
+        payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        response = lambda_client.invoke(FunctionName=arn, InvocationType="RequestResponse", Payload=payload)
         body = response["Payload"].read()
     except Exception as exc:  # botocore's errors, timeouts and throttles alike
         raise VisionError("invoke", str(exc)) from exc

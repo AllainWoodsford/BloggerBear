@@ -527,8 +527,9 @@ CATALOGUE: tuple[Component, ...] = (
     _lambda(
         "vision-worker",
         "Measures one site in one Sentinel-2 scene with OpenCV 5 (arm64) for the satellite_vision "
-        "adapter, and returns counts and a figure. Stores nothing.",
-        "on each call from the research tick of a satellite_vision topic, across Regions",
+        "and rail_access adapters (the ships and rail_access tasks), and returns the metrics and a "
+        "figure. Stores nothing.",
+        "on each call from the research tick of a satellite_vision or rail_access topic, across Regions",
         alarmed=False,
         details=(
             ("Region", "the vision Region (us-west-2, beside the imagery), not the stack's"),

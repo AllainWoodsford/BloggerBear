@@ -14,6 +14,8 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
+import time
 
 import cv2
 import numpy as np
@@ -23,7 +25,8 @@ from vision_fakes import fetcher, write_tiff
 import vision_worker_handler as worker
 from common import osm, vision_client
 from common import vision_contract as contract
-from vision import build, cog, geo, rail_analyse, scene
+from vision import build, cog, geo, rail_analyse, rail_annotate, scene
+from vision import network as vision_network
 
 PREFIX = contract.DEFAULT_ALLOWED_URL_PREFIXES[0]
 NIR_URL, GREEN_URL, SCL_URL = PREFIX + "x/B08.tif", PREFIX + "x/B03.tif", PREFIX + "x/SCL.tif"
@@ -252,6 +255,9 @@ def test_no_image_when_not_asked(files):
         {"scene": {"id": "s", "assets": {"nir": NIR_URL}}},
         {"scene": {"id": "s", "assets": {"nir": NIR_URL, "green": "https://example.com/B03.tif"}}},
         {"scene": {"id": "s", "assets": {"nir": NIR_URL, "green": GREEN_URL, "swir": GREEN_URL}}},
+        {"task": ["ships"]},  # unhashable: a ContractError, never a TypeError
+        {"task": {"a": 1}},
+        {"site": {"id": "botany-bay\n", "polygon": POLYGON}},  # an id is matched whole
     ],
 )
 def test_bad_requests_are_refused_before_any_read(files, bad):
@@ -309,6 +315,15 @@ def test_window_too_large(files, monkeypatch):
     assert reply["error"] == "window_too_large"
 
 
+def test_a_rail_site_over_the_window_cap_is_refused_before_any_tile_is_read(rail_files, monkeypatch):
+    monkeypatch.setattr(scene, "MAX_WINDOW_PX", 100)  # the rail box needs about 170 x 180 px at 20 m
+    log = []
+    reply = worker.lambda_handler(rail_request(rail_files), None, fetch=fetch_from(rail_files["blobs"], log))
+    assert reply["error"] == "window_too_large"
+    # Only the reference band's header was read, to put the polygon in pixels: no tile, no other band.
+    assert log and all(url == SWIR_URL and start < cog.HEADER_BYTES for url, start, _ in log)
+
+
 def test_unreadable_scene(files):
     blobs = dict(files["blobs"])
     del blobs[GREEN_URL]
@@ -317,6 +332,26 @@ def test_unreadable_scene(files):
     blobs[GREEN_URL] = b"not a tiff at all, just some bytes"
     reply = worker.lambda_handler(request(), None, fetch=fetch_from(blobs))
     assert reply["error"] == "unreadable_scene"
+
+
+@pytest.mark.parametrize("task", ["ships", "rail_access"])
+def test_a_value_error_in_the_analysis_is_internal_and_logged(files, rail_files, monkeypatch, caplog, task):
+    """Only a params combination is the caller's fault: any other ValueError (numpy, the analysis's
+    own checks, geo) is the worker's, reported as internal without its message, and logged."""
+
+    def broken(*args, **kwargs):
+        raise ValueError("operands could not be broadcast together: secret detail")
+
+    monkeypatch.setattr(worker, "analyse_site", broken)
+    monkeypatch.setattr(worker, "analyse_rail_access", broken)
+    req, blobs = request(), files["blobs"]
+    if task == "rail_access":
+        req, blobs = rail_request(rail_files), rail_files["blobs"]
+    with caplog.at_level(logging.ERROR):
+        reply = worker.lambda_handler(req, None, fetch=fetch_from(blobs))
+    assert reply == contract.error("internal", "the worker failed; see its log")
+    (record,) = (r for r in caplog.records if r.levelno >= logging.ERROR)
+    assert record.getMessage().startswith("vision worker failed on") and record.exc_info[0] is ValueError
 
 
 def test_unexpected_failures_are_internal_and_quiet(files, monkeypatch):
@@ -390,7 +425,13 @@ def test_the_rail_task_measures_the_city(rail_files):
     png = base64.b64decode(reply["image_png_b64"])
     assert png.startswith(vision_client.PNG_SIGNATURE)
     image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-    assert max(image.shape[:2]) <= 1024 and image[2, 2].tolist() == [0, 0, 0]  # the caption bar
+    # The map is at most 1024 px on its longer side, with the strip (the caption, then the legend)
+    # under it, the caption at the strip's top-left.
+    caption = [line.format(year="2024") for line in rail_annotate.CAPTION_LINES]
+    strip = rail_annotate.figure_strip(image[:1], caption)
+    map_height = image.shape[0] - strip.shape[0]
+    assert 0 < map_height and max(map_height, image.shape[1]) <= 1024
+    assert np.array_equal(image[map_height:], strip) and image[map_height + 2, 2].tolist() == [0, 0, 0]
     json.dumps(reply, allow_nan=False)  # no NaN or infinity anywhere in a Lambda reply
     assert contract.validate_reply(json.loads(json.dumps(reply))) == reply
 
@@ -463,7 +504,13 @@ def _far_too_many_points(r):
         lambda r: r["network"]["ways"][0].update(tunnel="yes"),
         lambda r: r["network"]["pois"][0].pop("kind"),
         lambda r: r["network"].update(fetched_at=12),
+        lambda r: r["network"].update(fetched_at="2026-10-10T03:00:00+00:00" + "x" * 40),  # 65 characters
+        lambda r: r["network"]["stations"][0].update(id="n1\n"),
+        lambda r: r["network"]["stations"][0].update(id="n" * 33),
+        lambda r: r["network"]["ways"][0].update(id=10**40),  # 41 digits
+        lambda r: r["network"]["stations"][0].update(kind="station\n"),
         lambda r: r.update(task="mystery"),
+        lambda r: r.update(task=["rail_access"]),
         lambda r: r["params"].update(hub_count=2.5),
         lambda r: r["params"].update(reach_m=100),
         lambda r: r["params"].update(block_size=31),  # a ships parameter
@@ -506,12 +553,38 @@ def test_a_params_value_error_past_the_contract_is_a_bad_request(files, rail_fil
     say bad_request rather than internal."""
     monkeypatch.setattr(contract, "DEFAULT_LENGTH_M", (60.0, 5000.0))
     req = request(params={"min_length_m": 700})
-    reply = worker.lambda_handler(req, None, fetch=fetch_from(files["blobs"]))
+    log = []
+    reply = worker.lambda_handler(req, None, fetch=fetch_from(files["blobs"], log))
     assert reply["error"] == "bad_request" and "min_length_m" in reply["detail"]
     monkeypatch.setattr(contract, "DEFAULT_INTERMODAL_M", (300.0, 5000.0))
     req = rail_request(rail_files, params={"intermodal_near_m": 900})
-    reply = worker.lambda_handler(req, None, fetch=fetch_from(rail_files["blobs"]))
+    reply = worker.lambda_handler(req, None, fetch=fetch_from(rail_files["blobs"], log))
     assert reply["error"] == "bad_request" and "intermodal_far_m" in reply["detail"]
+    assert log == []  # the params are built before the scene is read: a bad pair costs no bytes
+
+
+def test_a_dense_mesh_through_the_worker_is_measured_with_graph_too_large(rail_files, monkeypatch):
+    """A contract-valid network that would make a huge graph is a measured reply flagged
+    graph_too_large, quickly, never a timeout. The cap is lowered so the test scene can exceed it."""
+    monkeypatch.setattr(rail_analyse, "MAX_GRAPH_NODES", 100)
+
+    def lonlat(x, y):
+        return list(geo.pixel_to_lonlat(rail_files["transform"], 32756, x, y))
+
+    steps = range(35, 166, 5)  # 27 ways each way across the box: 729 crossings
+    ways = [{"id": f"h{y}", "points": [lonlat(30, y), lonlat(170, y)]} for y in steps]
+    ways += [{"id": f"v{x}", "points": [lonlat(x, 30), lonlat(x, 170)]} for x in steps]
+    req = rail_request(rail_files)
+    req["network"]["ways"] = ways
+    started = time.perf_counter()
+    reply = worker.lambda_handler(req, None, fetch=fetch_from(rail_files["blobs"]))
+    assert time.perf_counter() - started < 5.0  # about 0.3 s here
+    assert reply["ok"], reply
+    m = reply["metrics"]
+    assert "graph_too_large" in m["quality_flags"] and (m["node_count"], m["edge_count"]) == (0, 0)
+    assert m["hubs"] == m["flags"] == m["suggestions"] == m["edges"] == []
+    assert m["warnings"][-1].endswith("over 100: no graph was built")
+    assert contract.validate_reply(json.loads(json.dumps(reply, allow_nan=False))) == reply
 
 
 # --- the contract --------------------------------------------------------------------------------
@@ -526,6 +599,8 @@ def test_the_contracts_rail_limits_and_defaults_are_the_cores():
     assert contract.DEFAULT_INTERMODAL_M == (defaults.intermodal_near_m, defaults.intermodal_far_m)
     assert contract.TASKS["ships"].param_limits is contract.PARAM_LIMITS
     assert contract.TASKS["ships"].whole_params == contract.WHOLE_NUMBER_PARAMS
+    # A network element id is at most what a graph node id carries.
+    assert contract.MAX_NETWORK_ID_CHARS == vision_network.MAX_ID_CHARS
     # And the network caps are the OSM client's, so a fetched network always fits the contract.
     assert contract.NETWORK_LIMITS == {
         "points": osm.MAX_POINTS, "ways": osm.MAX_WAYS, "stations": osm.MAX_STATIONS,
@@ -582,6 +657,18 @@ def test_validate_network_normalises_ids_and_names():
     assert network["fetched_at"] is None
 
 
+def test_validate_network_takes_ids_and_fetched_at_up_to_their_caps_and_keeps_the_joiners():
+    longest_id, longest_time = "n" * contract.MAX_NETWORK_ID_CHARS, "2" * contract.MAX_FETCHED_AT_CHARS
+    persian = "\u0645\u06cc\u200c\u0631\u062f\u0627\u0645\u0627\u062f"  # a zero-width non-joiner in it
+    network = contract.validate_network({
+        "ways": [], "pois": [], "fetched_at": longest_time,
+        "stations": [{"id": longest_id, "lon": 151.2, "lat": -33.9, "name": persian}],
+    })  # fmt: skip
+    assert network["stations"][0]["id"] == longest_id and network["fetched_at"] == longest_time
+    assert network["stations"][0]["name"] == persian
+    assert contract._KEPT_JOINERS == {"\u200c", "\u200d"}
+
+
 def rail_reply(**overrides):
     reply = {
         "version": 1, "ok": True, "task": "rail_access", "backend": "opencv", "site_id": "s", "scene_id": "x",
@@ -597,6 +684,8 @@ def test_replies_are_checked_per_task():
     assert contract.validate_reply(good_reply(task="ships")) == good_reply(task="ships")
     bad = [
         rail_reply(task="mystery"),
+        rail_reply(task=["rail_access"]),  # unhashable: a ContractError, never a TypeError
+        rail_reply(task={"a": 1}),
         rail_reply(metrics={"coverage": 0.9, "station_count": -1, "served_share": 0.5, "quality_flags": []}),
         rail_reply(metrics={"coverage": 0.9, "station_count": 3.0, "served_share": 0.5, "quality_flags": []}),
         rail_reply(metrics={"coverage": 0.9, "station_count": 3, "served_share": 1.5, "quality_flags": []}),
@@ -676,6 +765,9 @@ def test_client_validates_before_invoking(configured):
     fake = FakeLambda(reply={})
     with pytest.raises(vision_client.VisionError) as err:
         vision_client.measure({"id": "x", "polygon": [[0, 0]]}, SCENE, client=fake)
+    assert err.value.code == "bad_request"
+    with pytest.raises(vision_client.VisionError) as err:
+        vision_client.measure(SITE, SCENE, task=["ships"], client=fake)
     assert err.value.code == "bad_request"
     assert fake.calls == []
 
@@ -788,6 +880,28 @@ def test_client_sends_the_task_and_the_network_and_checks_the_task_in_the_reply(
         )  # fmt: skip
 
 
+
+def test_client_sends_non_ascii_names_as_utf8_not_escapes(rail_files, configured):
+    """A network's names travel as UTF-8 (2-3 bytes a character), not as \\u escapes (6), so long
+    non-ASCII names keep the request well inside Lambda's 6 MB synchronous payload."""
+    sent = []
+
+    class Recording(FakeLambda):
+        def invoke(self, FunctionName, InvocationType, Payload):
+            sent.append(Payload)
+            return super().invoke(FunctionName, InvocationType, Payload)
+
+    network = json.loads(json.dumps(rail_files["network"]))
+    for station in network["stations"]:
+        station["name"] = "中央駅" * 20  # 60 characters, all outside ASCII
+    rail_scene = rail_request(rail_files)["scene"]
+    fake = Recording(blobs=rail_files["blobs"])
+    vision_client.measure(RAIL_SITE, rail_scene, task="rail_access", network=network, client=fake)
+    payload = sent[0]
+    assert isinstance(payload, bytes) and b"\\u" not in payload
+    assert "中央駅".encode() in payload
+    assert json.loads(payload)["network"]["stations"][0]["name"] == "中央駅" * 20
+
 def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeypatch):
     made = []
 
@@ -803,6 +917,8 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     assert default is not shorter
     retries = {"max_attempts": 1, "mode": "standard"}
     assert made == [("lambda", "us-west-2", 5, 90, retries), ("lambda", "us-west-2", 5, 58, retries)]
+    # The connect allowance is exported: the triage agent counts it before the answer turn.
+    assert vision_client.CONNECT_TIMEOUT_SECONDS == 5 and vision_client.DEFAULT_READ_TIMEOUT_SECONDS == 90
     # measure() asks for the client with its read timeout: the triage agent's look_again waits less.
     vision_client.measure(SITE, SCENE, read_timeout=30)
     assert made[-1][1:4] == ("us-west-2", 5, 30) and len(made) == 3
