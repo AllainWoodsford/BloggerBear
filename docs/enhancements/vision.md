@@ -144,7 +144,7 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | Scene reading | `lambdas/vision/scene.py` | Reads all bands over the site aligned to a reference band's grid: NIR at 10 m for ships, SWIR16 at 20 m for rail. A band with a COG overview at the reference's pixel size is read from it; else a finer band is read and reduced with `INTER_AREA`; SCL is never averaged (nearest `warpAffine`). `levels_used` says which level each band came from. Window cap 4096 px (rail: 3584 px, §4 contract). |
 | Built-up heat | `lambdas/vision/urban.py` | NDVI and NDBI; `built_up_mask` (NDBI above a threshold, NDVI below a cap, not SCL water, not unusable, a 3×3 opening); `heat_map`: the mask blurred with a Gaussian of a walking distance, the local share of built-up ground, never rescaled. |
 | Station reach | `lambdas/vision/access.py` | One `distanceTransformWithLabels` from the station raster: served area, `desert_mask`, desert clusters (`connectedComponentsWithStats`), each station's catchment activity and catchment coverage, intermodal counts. |
-| Rail network | `lambdas/vision/network.py` | OpenStreetMap ways rasterised (`polylines`), thinned with `MORPH_HITMISS` (core OpenCV; no `ximgproc`), junctions and ends (`filter2D`), stations snapped (`DIST_LABEL_PIXEL`), the skeleton read back as a networkx graph with lengths, corridor visibility and tunnels; `station_adjacency`. |
+| Rail network | `lambdas/vision/network.py` | OpenStreetMap ways rasterised (`polylines`), thinned with `MORPH_HITMISS` (core OpenCV; no `ximgproc`; after the first pass only within `THINNING_REACH_PX`, 8 px, of what the last pass removed), junctions and ends (`filter2D`), stations snapped (`DIST_LABEL_PIXEL`), the skeleton read back as a networkx graph with lengths, corridor visibility and tunnels; `station_adjacency`. |
 | Rail analysis | `lambdas/vision/rail_analyse.py` | `RailParams`; the whole pass in order (masks, heat, network projected, reach, deserts, catchments, graph, measures, flags, simulated links); every metric rounded, JSON-clean and with its parameters echoed. |
 | Rail figure | `lambdas/vision/rail_annotate.py` | The heat map over the red band, the analysis drawn on it, the caption and legend in a strip under the map; PNG level 9 within a 2 MiB budget (§6.6). |
 | Worker | `lambdas/vision_worker_handler.py` | Validates, reads, analyses, annotates; replies with metrics, figure, build record, I/O and per-stage timings. Dispatches on `task`. Stateless. |
@@ -211,9 +211,12 @@ inside the worker, a `ValueError` from the analysis included, is `internal` and 
   is never averaged. SWIR16's no-data pixels are folded into SCL's no-data class.
 - **Window.** The rail task has its own cap, `RAIL_MAX_WINDOW_PX` = 3,584 px a side (71.7 km at
   20 m), under the reader's 4096 px for ships: its compute grows with the window and the worker
-  has one vCPU (§7, §8). The four starting cities need at most 3,327 × 3,306 px (Sydney) with the
-  reader's 16 px pad. A larger site is `window_too_large` once the reference band's header is read,
-  before any tile.
+  has one vCPU. On one core, through `lambda_handler`, the worst contract-valid networks (ways
+  reaching the window's edges) take up to 37.5 s at 4096 px, about 49 s on arm64 and 59 to 79 s
+  with the read, past the client's 58 s; at 3,584 px up to 25.5 s at 1.32 GB, about 33 s on arm64
+  and 41 to 56 s with the read, within it (§7, §8 lesson 13). The four starting cities need at
+  most 3,327 × 3,306 px (Sydney) with the reader's 16 px pad. A larger site is
+  `window_too_large` once the reference band's header is read, before any tile.
 - **`network`.** Required for rail and refused for ships: the shape `common/osm.py` returns, checked
   by `validate_network` against `NETWORK_LIMITS` (60,000 way points in all, 5,000 ways, 2,000
   stations, 5,000 points of interest, names cut at 80 characters), every lon/lat checked as a
@@ -304,8 +307,11 @@ Every key, its default and its bounds are in one table, in
 [configuration.md, A `rail_access` topic](../configuration.md#a-rail_access-topic), read from the
 adapter's `DEFAULTS` (`lambdas/common/adapters/rail_access.py`); the rail parameters `params` may
 override are the table in §4. Four ready topic bodies, one per starting city, are
-`scripts/rail_topics.example.json`, and the runsheet's
-[rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them. What differs from a
+`scripts/rail_topics.example.json`: the cities take turns, one a day at 09:05 Sydney time, and each
+sets `findings_window_hours` to 192 (8 days, more than Boston's 7 between runs), so each article
+drafts every Finding since the city's last one. The runsheet's
+[rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them and says how the
+window works. What differs from a
 ship topic, in short: at most three sites (one city per topic is the design), one city measured per
 tick by default, `reach_m` and the network cache's `osm_ttl_days`, the agent's `web_context`, and
 three material rules (served share, desert area, station count, §6.2) in place of the count's two
@@ -630,8 +636,27 @@ rows:
 | `connected_components_stats` | 9.6 | 24.1 |
 | `analyse_site` (ships, 2048 px) | 191.6 | 224.6 |
 
-**The COOL and Graviton rows are still to be measured** (§9). The worst cases the worker must
-survive were measured separately on one core (§8, lesson 13).
+**The COOL and Graviton rows are still to be measured** (§9).
+
+The worst cases the worker must survive were measured separately (PR J; the figures are in the
+comments on `RAIL_MAX_WINDOW_PX` in `vision_worker_handler.py`, `MAX_WINDOW_PX` in
+`vision/scene.py` and `MAX_GRAPH_NODES` in `vision/rail_analyse.py`): on one core of the same
+Xeon (`taskset`, `cv2.setNumThreads(1)`, two runs each), through `lambda_handler` (the bands read
+from in-memory COGs, the analysis, the figure, the reply), on contract-valid networks built to be
+slow, under both graph caps, with ways that reach the window's edges as clipped OpenStreetMap ways
+do:
+
+| Window | Worst compute, peak RSS | Taking arm64 as 1.3 times slower | With a 10 to 30 s read | Against the client's 58 s read timeout |
+|---|---|---|---|---|
+| 4096 px | up to 37.5 s; up to 1.69 GB | about 49 s | 59 to 79 s | past it |
+| 3,584 px (the rail cap) | up to 25.5 s; up to 1.32 GB | about 33 s | 41 to 56 s (the read covers 77 % of the pixels) | within it |
+
+The 3,584 px budget assumes the read scales with the window's pixels; a full 30 s read on top of
+the worst case would not fit. That worst case is constructed: two 1.3 km-wide solid bars of track
+along both edges of the window, which no real network looks like. The reviewer's edge-reaching
+inputs stay within 21.9 s, and a real city's network measures about 9 s. A worker
+that times out is an `invoke` error the adapter retries on its next tick. The 1.3 factor is an
+assumption until the Graviton run (§10).
 
 Tests: the full suite passed at 4412 on the stack's last PR, and 4448 with the whole stack merged
 into the latest `dev`; each rail PR added its own, with the full suite green before every push.
@@ -666,8 +691,10 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     which `opencv-python-headless` does not carry, and COOL's module list is not published. The
     skeleton is made with core OpenCV instead: sequential hit-or-miss thinning
     (`cv2.morphologyEx(MORPH_HITMISS)`) over the Golay L elements and their rotations, each hit
-    removed before the next element, on the drawing's bounding box, at most 32 passes. One-pixel
-    `polylines` are nearly thin already, so a real network needs a few passes.
+    removed before the next element, on the drawing's bounding box, at most 32 passes; after the
+    first pass, only within `THINNING_REACH_PX` (8 px) of what the last pass removed, with the
+    same skeleton pixel for pixel (PR J; friction 12.22). One-pixel `polylines` are nearly thin
+    already, so a real network needs a few passes.
 11. **Overview reads to fit a city in the window.** A 60 km city at 10 m is 6,000 px a side, past
     the reader's 4096 px window and far past the worker's time. The rail task works on SWIR16's
     20 m grid instead, and reads the 10 m red and NIR from the COG overview whose pixel is 20 m:
@@ -691,14 +718,17 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
 13. **One core, not four.** The first worst-case timings of the rail analysis were taken on the
     build container's four cores, where OpenCV threads: 20 to 21 s at 4096 px, comfortably inside
     the worker's 60 s. The worker has one vCPU at 2048 MB. Pinned to one core (`taskset`,
-    `cv2.setNumThreads(1)`), the worst contract-valid networks took 28 to 32 s at 4096 px, about
-    42 s at an assumed 1.3 times slower arm64 core, which with a 10 to 30 s read runs past the
-    client's 58 s whenever the read takes over 16 s. So the rail task got its own window cap,
-    `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at 20 m; Sydney needs 3,327): there the same inputs
-    take at most 20.7 s at 1.24 GB peak, about 27 s on arm64, 35 to 50 s with the read. Station
-    adjacency, the ghost-line walk and the run lengths were made linear first (PR J): for 2,000
-    stations off one junction grid, adjacency took 14.6 s and takes 1.0 s. The lesson: time a
-    bound on the cores the target has, not the ones the build machine has.
+    `cv2.setNumThreads(1)`) and run through `lambda_handler` with ways that reach the window's
+    edges, the worst contract-valid networks take up to 37.5 s at 4096 px, about 49 s at an assumed
+    1.3 times slower arm64 core, which with a 10 to 30 s read is 59 to 79 s, past the client's
+    58 s. So the rail task got its own window cap, `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at
+    20 m; Sydney needs 3,327): there the same inputs take at most 25.5 s at 1.32 GB peak, about
+    33 s on arm64, 41 to 56 s with the read (§7). Station adjacency, the ghost-line walk and the
+    run lengths were made linear first (PR J): for 2,000 stations off one junction grid, the old
+    adjacency walk asked a node for its neighbours 4,052,000 times, the new pass asks 4,025 times
+    and takes up to 1.0 s; and the thinning works only where its last pass changed something
+    (lesson 10). The lesson: time a bound on the cores the target has, not the ones the build
+    machine has.
 14. **The state a city costs.** A city's network at the caps is 2.6 to 3 MB of JSON, and the
     first state kept every scene's station list: three cities, twenty scenes each, made a 54 MB
     state and a 390 MB peak in the 512 MB tick. Only the newest entry now keeps the lists

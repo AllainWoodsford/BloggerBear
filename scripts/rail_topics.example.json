@@ -1,5 +1,5 @@
 {
-  "about": "Four rail_access topics, one city each: the Rail Access Monitor's starting cities (docs/enhancements/rail-access-monitor.md §2). Each entry is a complete body for the admin API's POST /topics; docs/deployment-runsheet.md, 'rail_access topics', shows how to create them with scripts/admin_cli.py. Each box sits inside one 100 km UTM square, so inside one Sentinel-2 tile. adapter_config sets only the site and its reach; every other key takes the rail_access adapter's default (docs/enhancements/vision.md §5). Each city's daily cycle runs every day, a minute apart from 09:05 Sydney time (Sydney, Melbourne, Singapore, Boston): the daily cycle drafts only the Findings of its last 24 hours, so a city drafted on fewer days would never have the other days' Findings written; a day with no new Finding drafts nothing. force_manual_review is forced on for this adapter whether or not it is sent.",
+  "about": "Four rail_access topics, one city each: the Rail Access Monitor's starting cities (docs/enhancements/rail-access-monitor.md §2). Each entry is a complete body for the admin API's POST /topics; docs/deployment-runsheet.md, 'rail_access topics', shows how to create them with scripts/admin_cli.py. Each box sits inside one 100 km UTM square, so inside one Sentinel-2 tile. adapter_config sets only the site and its reach; every other key takes the rail_access adapter's default (docs/enhancements/vision.md §5). The cities take turns, one a day, each at 09:05 Sydney time: Sydney on Monday and Friday, Melbourne on Tuesday and Saturday, Singapore on Wednesday and Sunday, Boston on Thursday. Each article drafts every Finding made since that city's last article. findings_window_hours is 192 (8 days): Boston's 7 days between runs, the longest gap, plus a day for a clock change or a late run. The window never reaches back past the city's last article, so no Finding is drafted twice. A day with no new Finding stops before any model call. Adding a city means adding a topic on a day of its own (one of a two-day city's days) or on a day it shares with another city; 192 hours covers any city that runs at least once a week. force_manual_review is forced on for this adapter whether or not it is sent.",
   "topics": [
     {
       "topic_id": "rail-sydney",
@@ -21,8 +21,9 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(5 9 * * ? *)",
-      "daily_timezone": "Australia/Sydney"
+      "daily_cadence": "cron(5 9 ? * MON,FRI *)",
+      "daily_timezone": "Australia/Sydney",
+      "findings_window_hours": 192
     },
     {
       "topic_id": "rail-melbourne",
@@ -44,8 +45,9 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(6 9 * * ? *)",
-      "daily_timezone": "Australia/Sydney"
+      "daily_cadence": "cron(5 9 ? * TUE,SAT *)",
+      "daily_timezone": "Australia/Sydney",
+      "findings_window_hours": 192
     },
     {
       "topic_id": "rail-singapore",
@@ -67,8 +69,9 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(7 9 * * ? *)",
-      "daily_timezone": "Australia/Sydney"
+      "daily_cadence": "cron(5 9 ? * WED,SUN *)",
+      "daily_timezone": "Australia/Sydney",
+      "findings_window_hours": 192
     },
     {
       "topic_id": "rail-boston",
@@ -90,8 +93,9 @@
       },
       "is_financial": false,
       "force_manual_review": true,
-      "daily_cadence": "cron(8 9 * * ? *)",
-      "daily_timezone": "Australia/Sydney"
+      "daily_cadence": "cron(5 9 ? * THU *)",
+      "daily_timezone": "Australia/Sydney",
+      "findings_window_hours": 192
     }
   ]
 }

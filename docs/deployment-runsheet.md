@@ -555,8 +555,9 @@ default: [configuration.md](configuration.md#a-rail_access-topic)). Turn the wor
 **Create the four city topics.** `scripts/rail_topics.example.json` holds four complete admin API
 topic bodies, Sydney, Melbourne, Singapore and Boston: each city's box from
 [rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards),
-`reach_m` 1000, an editorial goal, and a daily cadence. `topics create` takes a topic as flags,
-not as a file, so read each field out of it, from the repository root:
+`reach_m` 1000, an editorial goal, the city's days of the week (`daily_cadence`) and a findings
+window of 192 hours (`findings_window_hours`). `topics create` takes a topic as flags, not as a
+file, so read each field out of it, from the repository root:
 
 ```bash
 field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.example.json"))["topics"][int(sys.argv[1])][sys.argv[2]]; print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"; }
@@ -564,7 +565,8 @@ for i in 0 1 2 3; do
   python scripts/admin_cli.py topics create --topic-id "$(field $i topic_id)" --name "$(field $i name)" \
       --adapter rail_access --config-json "$(field $i adapter_config)" \
       --editorial-goals-json "$(field $i editorial_goals)" \
-      --daily-cadence "$(field $i daily_cadence)" --daily-timezone "$(field $i daily_timezone)"
+      --daily-cadence "$(field $i daily_cadence)" --daily-timezone "$(field $i daily_timezone)" \
+      --findings-window-hours "$(field $i findings_window_hours)"
 done
 python scripts/admin_cli.py topics get rail-sydney
 ```
@@ -582,20 +584,32 @@ pipeline-wide interval) and, when it is, the adapter searches Earth Search for t
 over the whole city in the last 20 days. Sentinel-2 passes every few days, so most ticks find a
 scene the city already has: nothing is measured, no model is called, and the tick may instead
 refresh a network past its 30-day TTL. A new scene is measured; only a material change (or the
-first observation) makes a Finding. The daily cycle runs on `daily_cadence` in `daily_timezone`
-and drafts from the Findings of the last 24 hours, never reaching back past the topic's last
-article (`FINDINGS_WINDOW_HOURS` in `lambdas/daily_cycle_handler.py`); with none, it stops before
-any model call. A Finding older than that is never drafted, and it expires after 14 days, so
-each city's daily cycle must run every day: the example runs them a minute apart after the other
-topics' 09:00 to 09:03 Sydney time, Sydney at 09:05 (`cron(5 9 * * ? *)`), Melbourne 09:06,
-Singapore 09:07 and Boston 09:08. Each run then reads what the one before it did not, but for one
-hour a year: on the morning clocks go back the runs are 25 hours apart. A city staggered onto
-fewer days would lose the other days' Findings. Rail Findings are few (the first observation,
-then material changes), so most days draft nothing, and a day features more than one city only
-when more than one changed. Within a topic,
-which holds at most three cities, one city is measured per tick (`max_sites_per_tick`): those
-never attempted first, then the one attempted longest ago; a city skipped for that cap, or
-deferred because the tick ran short of time, keeps its place.
+first observation) makes a Finding. The daily cycle runs on `daily_cadence` in `daily_timezone`,
+and the cities take turns, one a day, each at 09:05 Sydney time, after the other topics' 09:00 to
+09:03: Sydney on Monday and Friday (`cron(5 9 ? * MON,FRI *)`), Melbourne on Tuesday and Saturday,
+Singapore on Wednesday and Sunday, Boston on Thursday. More cities can join the rotation (see
+"Adding a city" below).
+
+Each run drafts every Finding made since the city's last article, reaching back at most the topic's
+`findings_window_hours` (`lambdas/common/findings_window.py`; 24 hours when it is not set, at most
+336); with none, it stops before any model call. The example sets 192 hours, 8 days: the longest
+gap between two of a city's runs is Boston's 7 days, and the eighth day covers a clock change or a
+late run. The window never reaches back past the topic's `last_article_at`, so no Finding is
+drafted twice: the daily cycle stamps it with the run's start time on every article it writes,
+published or held for review (every rail article is held). A run that writes nothing (no Finding,
+or no usable angle) stamps nothing; the next run then reaches back its whole 192 hours and no
+further, so after a run with no usable angle the oldest Findings it saw can drop out. Findings
+expire 14 days after they are made (`FINDING_TTL_DAYS` in `lambdas/research_tick_handler.py`),
+which is why the window is capped at 336 hours. Daylight saving no longer matters: when the clocks
+move, two runs are an hour more or less than whole days apart, and the window starts at the last
+article whatever the gap. Re-Write from the review inbox rebuilds a rail article's sources from the
+same window, looking back `findings_window_hours` from the article's creation (`_findings_for` in
+`lambdas/common/rewrite.py`, #297), so a rewritten article still sees the Findings of the city's
+off days (and may also see some an earlier article used, since the previous article is not known
+there). Rail Findings are few (the first observation, then material changes), so most runs draft
+nothing. Within a topic, which holds at most three cities, one city is measured per tick
+(`max_sites_per_tick`): those never attempted first, then the one attempted longest ago; a city
+skipped for that cap, or deferred because the tick ran short of time, keeps its place.
 
 **What the first tick does.** Trigger it by hand rather than wait for the heartbeat:
 `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick` (a manual tick
@@ -640,8 +654,12 @@ draft against, carries each city's measured numbers and planner notes, not the t
 a change was or was not reported, read `triage`.
 
 **Adding a city.** A new city is a new topic: copy one of the four bodies, with a new `topic_id`
-(at most 24 characters), name, site and cadence. Its box must sit inside one Sentinel-2 tile,
-because the scene search keeps only scenes whose footprint holds the whole site. A tile is a
+(at most 24 characters), name, site and days. Every day of the week already features a city, so
+give the new one a day of its own, taken from a city that has two (for Friday,
+`topics update rail-sydney --daily-cadence "cron(5 9 ? * MON *)"`), or share a day with another
+city, which then has two articles. Keep `findings_window_hours` at least the longest gap between
+a city's days plus a day: 192 hours covers any city that runs at least once a week. Its box must
+sit inside one Sentinel-2 tile, because the scene search keeps only scenes whose footprint holds the whole site. A tile is a
 100 km square of the UTM grid and 9.8 km more to the east and south (Sydney's 56HLH runs from
 easting 300,000 to 409,800 and northing 6,190,240 to 6,300,040), so a box whose corners fall in
 one 100 km square fits. Check it with `lambdas/vision/geo.py` from the repository root (any

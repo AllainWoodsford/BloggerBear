@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 21 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware |
+| Vision and rail (OpenCV 2026) | 22 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware |
 
 ---
 
@@ -968,17 +968,20 @@ nothing new, and not again for 6 hours after a failure. **Lesson:** callers that
 deadline need one ledger: give each a reserve and a deadline from the same start, not a timeout
 of its own. (#285, #292; vision.md §8, lesson 12)
 
-**12.18 Timed on four cores, deployed on one.** The rail analysis's worst cases were first timed
-in the build container: 20 to 21 s at a 4096 px window, inside the worker's 60 s with room for
-the read. The container has four cores and OpenCV spreads its work over them; the worker, at
-2048 MB, has one vCPU. Pinned to one core (`taskset -c 0`, `cv2.setNumThreads(1)`), the same
-contract-valid networks took 28 to 32 s, about 42 s on an arm64 core taken as 1.3 times slower,
-which with a 10 to 30 s read runs past the adapter's 58 s wait. **Fix:** the station passes were
-made linear, then the rail task got its own window cap, `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km
-at 20 m; the four starting cities need at most 3,327): there the worst case is 20.7 s and 1.24 GB
-on one core, 35 to 50 s with the read on arm64. The comments now quote one-core figures and name
-the CPU. **Lesson:** time a bound on the hardware it bounds: pin the cores, set the library's
-threads, and write the CPU next to the number. (#295)
+**12.18 Timed on four cores, deployed on one.** The rail analysis's worst cases were first timed in
+the build container: 20 to 21 s at a 4096 px window, inside the worker's 60 s with room for the
+read. The container has four cores and OpenCV spreads its work over them; the worker, at 2048 MB,
+has one vCPU. Pinned to one core (`taskset -c 0`, `cv2.setNumThreads(1)`) and run through
+`lambda_handler` with ways that reach the window's edges (12.22), the worst contract-valid networks
+take up to 37.5 s at 4096 px, about 49 s on an arm64 core taken as 1.3 times slower, which with a
+10 to 30 s read is 59 to 79 s, past the adapter's 58 s wait. **Fix:** the station passes were made
+linear, the thinning incremental (12.22), and the rail task got its own window cap,
+`RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at 20 m; the four starting cities need at most 3,327):
+there the worst case is 25.5 s and 1.32 GB on one core, about 33 s on arm64, 41 to 56 s with the
+read, which covers 77 % of the pixels. That case is constructed (two 1.3 km-wide bars of track
+along both edges of the window); a real city's network measures about 9 s. The comments now quote
+one-core figures and name the CPU. **Lesson:** time a bound on the hardware it bounds: pin the
+cores, set the library's threads, and write the CPU next to the number. (#295)
 
 **12.19 The rail topics had no editorial goal of their own.** Writing the city topic templates
 meant following a topic's fields into the prompts that read them. The research summary uses the
@@ -1007,16 +1010,38 @@ follow-up for a code PR, since this one changes no code. **Lesson:** pattern 7 a
 closes a stack's documentation is written from `grep`, not from the spec. (#296, rail PR F2)
 
 **12.21 A staggered cadence that would have dropped most Findings.** The spec asked for the city
-topics' daily cycles staggered so each day features one city, and the first templates ran Sydney
-on Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston
-Thursday; the runsheet said each article gathers every Finding since the city's last one. The
-review ran the daily cycle's own `_window_start` over four weeks of one Finding a day: Sydney's
-article drafted 7 of 28, Boston's 4. The daily cycle reads the last 24 hours
-(`FINDINGS_WINDOW_HOURS`), never past the last article, and nothing else; a Finding outside every
-window expires after 14 days unwritten. **Fix:** each city's daily cycle runs every day, a minute
-apart from 09:05 Sydney time (a day with no new Finding stops before any model call), and the
-runsheet describes the 24-hour window. **Lesson:** a schedule is only half a pipeline; read what
-the scheduled run reads before deciding how often it runs. (#296, rail PR F2)
+topics' daily cycles staggered so each day features one city, and the first templates ran Sydney on
+Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston Thursday;
+the runsheet said each article gathers every Finding since the city's last one. The review ran the
+daily cycle's own `_window_start` over four weeks of one Finding a day: Sydney's article drafted 7
+of 28, Boston's 4. The daily cycle read the last 24 hours (`FINDINGS_WINDOW_HOURS`), never past the
+last article, and nothing else; a Finding outside every window expires after 14 days unwritten.
+F2's first fix made each city's daily cycle run every day, a minute apart: that kept the Findings
+but dropped the owner's rotation, one city a day. **Fix:** PR K (#297) added a topic's
+`findings_window_hours` (1 to 336 hours, 24 by default, never past the last article), and the
+templates rotate one city a day again, each with 192 hours: Boston's 7 days between runs, the
+longest gap, plus a day for a clock change or a late run. A test runs the same simulation with
+`_window_start` over four weeks around each of Sydney's clock changes and checks that every Finding
+is drafted exactly once, and that the old 24-hour window fails it. **Lesson:** a schedule is only
+half a pipeline; read what the scheduled run reads before deciding how often it runs. When a limit
+in the code blocks what the owner asked for, change the limit, not the request. (#296, #297, rail
+PRs F2 and K)
+
+**12.22 Clipped ways made the thinning's box the whole window, and a wall-clock guard passed the
+old code.** PR J's review built its worst cases with ways that run off the window's edges, as
+OpenStreetMap ways clipped to a city's box do. `network.thin` worked on the foreground's bounding
+box, and such ways make it the whole window: the thick parts of a network then cost up to 32 passes
+over every pixel of it, up to 7.3 s of thinning in a 28.9 s pass at 3,584 px. The first round's
+worst cases did not reach the edges, so their timings missed this. And the speed tests that bounded
+the station passes by wall time passed with the old quadratic code swapped back in. **Fix:** after
+its first pass the thinning works only within `THINNING_REACH_PX` (8 px) of what the last pass
+removed, with a byte-identical skeleton, so the same thinning takes 0.2 to 0.4 s with the thick
+parts in one place (2.0 to 4.3 s with them at both ends of the window). The guards now count the
+work: neighbour lookups (4,025 on the 2,000-station grid, where the old walk made 4,052,000),
+equality comparisons of station ids, and pixels handed to OpenCV (thinning the whole window on
+every pass hands it 3.29 billion); each guard was checked to fail with the old code. **Lesson:** a
+speed test must fail on the slow code, so count the work, not the seconds; and build the worst
+input from what the real source sends. (#295, rail PR J)
 
 ## Patterns worth keeping
 

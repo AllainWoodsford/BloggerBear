@@ -313,9 +313,11 @@ Every key is in `adapter_config`, with the defaults of the adapter's `DEFAULTS`
 (`lambdas/common/adapters/rail_access.py`, whose docstring documents them). This table is the one
 list of them; [vision.md](enhancements/vision.md#5-configuration) points here.
 `force_manual_review` is forced on and cannot be unset. Four ready topic bodies, one per starting
-city, are in `scripts/rail_topics.example.json`, and the runsheet's
-[rail_access topics](deployment-runsheet.md#rail_access-topics) creates them and says how to add a
-city.
+city, are in `scripts/rail_topics.example.json`: the cities take turns, one a day, and each sets
+the topic field `findings_window_hours` to 192 ([DynamoDB
+settings](#dynamodb-settings-changed-with-no-deploy)), so each article drafts every Finding since
+the city's last. The runsheet's [rail_access topics](deployment-runsheet.md#rail_access-topics)
+creates them and says how to add a city.
 
 | Key | Default | Meaning |
 |---|---|---|

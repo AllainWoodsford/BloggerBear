@@ -52,9 +52,13 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
   and `minAreaRect` filters.
 - **Bounded for every valid input, not just real cities.** The graph is not built past 10,000
   junction clusters or runs; betweenness is exact within a work budget and sampled with a fixed
-  seed above it (and says so); the station passes are linear; and the rail window is capped at
-  3,584 px a side (71.7 km at 20 m), from timings on one core, the worker's share, so the worst
-  contract-valid network still leaves the read its time inside the 60 s invoke.
+  seed above it (and says so); the station passes are linear, and the thinning works only where
+  its last pass changed something; and the rail window is capped at 3,584 px a side (71.7 km at
+  20 m), from timings on one core, the worker's share. There the worst contract-valid network
+  built for the test takes up to 25.5 s, about 33 s on arm64 and 41 to 56 s with the read, inside
+  the client's 58 s; at 4096 px it took up to 37.5 s, 59 to 79 s with the read. A real city's network measures
+  about 9 s. The speed tests count the work (neighbour lookups, comparisons, pixels handed to
+  OpenCV), not the time, so they fail on the slow code.
 - **A contract, not a convention.** Every request is validated (version, asset URL allowlist,
   parameter bounds, polygon size; the task's assets and the network's shape and caps); every
   failure is a code; every reply echoes the parameters it was measured with, the OpenCV build
@@ -231,7 +235,7 @@ benchmark report, never typed from memory.
 | Research tick wall time, with and without the agent | [s], [s] | the tick's log |
 | Agent: tool calls, turns, verdict, tokens, cost | [n], [n], [verdict], [tokens], [USD] | the trail in the running state; Stats `vision_triage` |
 | Kernel benchmark, x86 stock (this build container's CPU, not Graviton) | Intel Xeon at 2.10 GHz, OpenCV 5.0.0 (`0ef08003c311`), 2048 px synthetic images, medians of 20, on 4 vCPUs / pinned to one: `analyse_rail_access` 1,138 / 1,303 ms (a city of 8 lines and 40 stations), `analyse_site` 192 / 225 ms, `thinning_hitmiss` 51 / 44 ms, `distance_transform_l2` 49 / 57 ms, `adaptive_threshold_gaussian_31` 38 / 36 ms; the full table is in [vision.md §7](../enhancements/vision.md#7-measured) | `vision_benchmark.py kernels`, and the same under `taskset -c 0` |
-| Worst-case rail analysis on one core (contract-valid networks built to be slow) | at most 32.2 s and 1.56 GB at a 4096 px window, at most 20.7 s and 1.24 GB at the 3,584 px cap | PR J's measurements, quoted in `vision_worker_handler.py` and `vision/scene.py` |
+| Worst-case rail analysis on one core (contract-valid networks built to be slow, with ways reaching the window's edges) | at most 37.5 s and 1.69 GB at a 4096 px window, at most 25.5 s and 1.32 GB at the 3,584 px cap (about 33 s on an arm64 core taken as 1.3 times slower, 41 to 56 s with the read); a real city's network about 9 s | PR J's measurements through `lambda_handler` on one core of the Intel Xeon above, quoted in `vision_worker_handler.py`, `vision/scene.py` and `vision/rail_analyse.py` |
 | Kernel benchmark, Graviton stock | [ms] | the same, on a `c8g` |
 | Kernel benchmark, Graviton COOL | [ms], fingerprint [sha256] | the same, inside the COOL image |
 | Deployed worker end to end | [ms] | `vision_benchmark.py worker --arn` |
@@ -285,7 +289,8 @@ kept is numbers and one map per scene.
    ([runsheet](../deployment-runsheet.md#vision-optional))
 2. **Create the topics.** The four city topics are complete topic bodies in
    `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,
-   each drafted daily, a minute apart); the runsheet's
+   one city drafted a day, each article from every Finding since that city's last, through a
+   192-hour `findings_window_hours`); the runsheet's
    [rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them with the admin
    CLI. For the ship task, `adapter: "satellite_vision"` with a Botany Bay polygon and
    `object_noun: "large vessels"`. `force_manual_review` is set for you.

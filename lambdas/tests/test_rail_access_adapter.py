@@ -12,10 +12,11 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import boto3
 import pytest
@@ -23,7 +24,7 @@ from moto import mock_aws
 
 import daily_cycle_handler
 import research_tick_handler
-from common import osm, scheduler, vision_client, vision_sites, vision_triage
+from common import findings_window, osm, scheduler, vision_client, vision_sites, vision_triage
 from common.adapters import MANUAL_REVIEW_ADAPTERS, RAIL_ACCESS_ADAPTER_KEY
 from common.adapters import rail_access as ra
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -392,26 +393,98 @@ def test_an_unusable_ttl_reads_as_stale_rather_than_breaking_the_tick():
     assert ra._is_stale(network(now.isoformat()), now, 30) is False
 
 
-def test_the_example_city_topics_are_rail_topics_drafted_every_day():
+# EventBridge's day-of-week names, in date.weekday() order (Monday is 0).
+WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+
+
+def drafting_days(cadence):
+    """(minute, hour, weekdays) of an EventBridge `cron(M H ? * DAYS *)` that runs on named days."""
+    fields = cadence.removeprefix("cron(").removesuffix(")").split()
+    minute, hour, day_of_month, month, day_of_week, year = fields
+    assert minute.isdigit() and hour.isdigit(), cadence
+    # Some days of every week (EventBridge takes `?` in one of the two day fields).
+    assert (day_of_month, month, year) == ("?", "*", "*"), cadence
+    return int(minute), int(hour), sorted(WEEKDAYS.index(day) for day in day_of_week.split(","))
+
+
+def longest_gap_days(weekdays):
+    """The most days from one of a city's drafting days to its next, round the week."""
+    return max((later - earlier) % 7 or 7 for earlier, later in zip(weekdays, weekdays[1:] + weekdays[:1]))
+
+
+def simulate_rotation(topic, start, finding_minute, weeks=4):
+    """The daily cycle's windows for one city over `weeks`, with one Finding a day at a fixed UTC
+    time (`finding_minute` past midnight). The city's run is at its cron's local time on its days;
+    each window is the daily cycle's own _window_start, and `last_article_at` is stamped with the
+    run's start whenever the window holds a Finding, as _run_daily_cycle stamps it (on every
+    article written, published or held for review; a run with nothing to write stamps nothing).
+    Returns (the Findings made before the last run, how many runs drafted each Finding)."""
+    minute, hour, weekdays = drafting_days(topic["daily_cadence"])
+    zone = ZoneInfo(topic["daily_timezone"])
+    end = start + timedelta(weeks=weeks)
+    findings = [start + timedelta(days=day, minutes=finding_minute) for day in range(weeks * 7)]
+    first_day = start.astimezone(zone).date()
+    runs = []
+    for day in range(weeks * 7 + 1):
+        local_day = first_day + timedelta(days=day)
+        run_at = datetime.combine(local_day, time(hour, minute), tzinfo=zone).astimezone(UTC)
+        if local_day.weekday() in weekdays and start <= run_at <= end:
+            runs.append(run_at)
+    item = dict(topic)  # no last_article_at yet: a new topic
+    drafted = dict.fromkeys(findings, 0)
+    for run_started in runs:
+        since = datetime.fromisoformat(daily_cycle_handler._window_start(item, run_started, force=False))
+        window = [finding for finding in findings if since <= finding <= run_started]
+        if window:
+            for finding in window:
+                drafted[finding] += 1
+            item["last_article_at"] = run_started.isoformat()
+    return [finding for finding in findings if finding < runs[-1]], drafted
+
+
+def test_the_example_city_topics_rotate_one_a_day_and_draft_every_finding_once():
     """scripts/rail_topics.example.json holds four complete rail_access topic bodies the adapter
-    accepts, and each city's daily cycle runs every day: the cycle drafts only the Findings of its
-    last FINDINGS_WINDOW_HOURS (never reaching back past the topic's last article), so a city
-    drafted on fewer days would never have the other days' Findings written."""
-    assert daily_cycle_handler.FINDINGS_WINDOW_HOURS == 24  # the runsheet and the template quote it
+    accepts, and the cities take turns: each day of the week one city's daily cycle runs. A city
+    drafts on some days only, so its findings_window_hours covers its longest gap between them:
+    every Finding made between two of its runs is drafted at the next, once, whatever the time of
+    day it was made and across a daylight-saving change in the topics' time zone."""
+    assert findings_window.FINDINGS_WINDOW_HOURS == 24  # the default the runsheet quotes
     topics = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
     cities = ["rail-sydney", "rail-melbourne", "rail-singapore", "rail-boston"]
     assert [t["topic_id"] for t in topics] == cities
+    city_of_day = {}
     for topic in topics:
         assert topic["adapter"] == RAIL_ACCESS_ADAPTER_KEY
         config = ra.parse_config(topic["adapter_config"])
         assert len(config["sites"]) == 1 and config["reach_m"] == 1000.0
         scheduler._validate_schedule_expression(topic["daily_cadence"])
         scheduler.validate_timezone(topic["daily_timezone"])
-        fields = topic["daily_cadence"].removeprefix("cron(").removesuffix(")").split()
-        minute, hour, day_of_month, month, day_of_week, year = fields
-        assert minute.isdigit() and hour.isdigit()
-        # Every day of every month (EventBridge takes `?` in one of the two day fields).
-        assert (day_of_month, month, day_of_week, year) == ("*", "*", "?", "*"), topic["topic_id"]
+        minute, hour, weekdays = drafting_days(topic["daily_cadence"])
+        # All at 09:05 Sydney time, after the other topics' 09:00 to 09:03.
+        assert (hour, minute, topic["daily_timezone"]) == (9, 5, "Australia/Sydney"), topic["topic_id"]
+        for weekday in weekdays:
+            assert weekday not in city_of_day, (WEEKDAYS[weekday], topic["topic_id"], city_of_day[weekday])
+            city_of_day[weekday] = topic["topic_id"]
+        hours = topic["findings_window_hours"]
+        assert findings_window.findings_window_error(hours) is None  # the admin API takes it
+        assert longest_gap_days(weekdays) * 24 <= hours <= findings_window.MAX_FINDINGS_WINDOW_HOURS
+    assert sorted(city_of_day) == list(range(7))  # every day features exactly one city
+
+    # Four weeks around each of Sydney's clock changes (back on 5 April 2026, forward on 4 October
+    # 2026), with the day's Finding at every half hour of the UTC day: 22:30 UTC falls after the
+    # 09:05 run in summer time and before it in standard time.
+    for start in (datetime(2026, 3, 23, tzinfo=UTC), datetime(2026, 9, 21, tzinfo=UTC)):
+        for finding_minute in range(0, 24 * 60, 30):
+            for topic in topics:
+                made, drafted = simulate_rotation(topic, start, finding_minute)
+                assert made and max(drafted.values()) == 1, (topic["topic_id"], start, finding_minute)
+                missed = [finding.isoformat() for finding in made if drafted[finding] != 1]
+                assert not missed, (topic["topic_id"], start, finding_minute, missed)
+                # The default window (a day) drops Findings: on two of a city's days at least
+                # three days apart, a day's window misses the days between.
+                default = {key: value for key, value in topic.items() if key != "findings_window_hours"}
+                made, drafted = simulate_rotation(default, start, finding_minute)
+                assert any(drafted[finding] == 0 for finding in made), (topic["topic_id"], start)
 
 
 # --- fetching ------------------------------------------------------------------------------------

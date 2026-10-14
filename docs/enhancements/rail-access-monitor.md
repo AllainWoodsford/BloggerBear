@@ -5,8 +5,10 @@
 stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agentic-vision-enhancement.md)
 
 > **Status, 2026-10-14: every PR has landed** on the integration branch (#285): 0, A (#289),
-> B (#287), C (#288), D (#291), E (#292), G (#286) and F (#290, and its closing half F2, #296), and three
-> PRs the reviews added: H (#293, the figure), I (#294, planner notes) and J (#295, time bounds).
+> B (#287), C (#288), D (#291), E (#292), G (#286) and F (#290, and its closing half F2, #296),
+> and four PRs the reviews added: H (#293, the figure), I (#294, planner notes), J (#295, time
+> bounds) and K (#297, a topic's `findings_window_hours`, so a city's rotation day drafts every
+> Finding since its last article).
 > This document is the record of what was specified and why; the living page, which describes the
 > code as merged, is [vision.md](vision.md). Where the code differs from a specification below, the
 > code is right; the differences that matter:
@@ -34,9 +36,10 @@ stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agenti
 >   recorded (`failed_scene`), and one the worker refused as `window_too_large`,
 >   `site_outside_scene` or `bad_request` is not sent again until a newer scene appears, 6 hours
 >   pass, or the site's polygon or parameters change; any other failure is retried on the next tick.
-> - **PR F:** each city topic's daily cycle runs every day, a minute apart, not on staggered
->   weekdays: the daily cycle drafts only the Findings of its last 24 hours, so a city drafted on
->   fewer days would never have the other days' Findings written.
+> - **PR F:** the cities rotate one a day as specified (Sydney Monday and Friday, Melbourne Tuesday
+>   and Saturday, Singapore Wednesday and Sunday, Boston Thursday, all at 09:05 Sydney time), and
+>   each topic sets `findings_window_hours` to 192 (PR K): the daily cycle reads 24 hours back by
+>   default, which would have dropped most Findings made on a city's off days.
 > - **§2 and §5 risk 2:** the city boxes are 1.0 to 3.0 km inside their 100 km squares (enough: a
 >   tile reaches 9.8 km past its square to the east and south), and a city's network at the caps
 >   is 2.6 to 3 MB of JSON, not 1.5 MB.
@@ -126,8 +129,10 @@ keeps a person on every article.
 The wish to use web search or GDELT maps onto the existing `search_web` as a bounded agent tool,
 not as a source of geometry: pages do not yield station coordinates, OpenStreetMap does.
 
-**Cities.** One topic per city, rotating by `daily_cadence`, so adding a city is adding a topic:
-Sydney, Melbourne, Singapore and Boston to start. Each site must sit inside one Sentinel-2 tile
+**Cities.** One topic per city, rotating by `daily_cadence` so that each day features one city,
+with a `findings_window_hours` (PR K) that covers the days between a city's runs, so each article
+drafts every Finding since the city's last. Adding a city is adding a topic; Sydney, Melbourne,
+Singapore and Boston are the first four. Each site must sit inside one Sentinel-2 tile
 (the search takes only scenes whose bounding box contains the whole site). Boxes that stay inside
 one 100 km UTM square, computed with `vision/geo.py` and a 2 km margin:
 
@@ -141,7 +146,8 @@ one 100 km UTM square, computed with `vision/geo.py` and a 2 km margin:
 ## 3. Architecture
 
 ```
-topic (rail_access; sites: [city polygon]; reach_m 1000; daily_cadence staggered per city)
+topic (rail_access; sites: [city polygon]; reach_m 1000; daily_cadence: one city a day;
+       findings_window_hours 192)
    │ research tick (home region, 120 s)
    ▼
 rail_access adapter ── Earth Search STAC: newest clear scene over the whole site
@@ -163,9 +169,10 @@ articles/figures/<article>/<n>.png with the Copernicus, AWS Open Data and OSM cr
 
 Design choices, each with its reason:
 
-- **A 20 m analysis grid** (reference band `swir16`), so a 60 km city fits the worker's 4096 px
-  window. The 10 m bands are read from the COG overview whose pixel size is 20 m; a file without
-  that overview is read at full resolution and reduced with `INTER_AREA`.
+- **A 20 m analysis grid** (reference band `swir16`), so a 60 km city fits the rail task's
+  3,584 px window cap (`RAIL_MAX_WINDOW_PX`, PR J; the reader's own cap, for ships, is 4096 px).
+  The 10 m bands are read from the COG overview whose pixel size is 20 m; a file without that
+  overview is read at full resolution and reduced with `INTER_AREA`.
 - **OpenStreetMap is fetched by the adapter**, which already talks to STAC and runs where
   `requests` lives, and is passed inline to the worker. The worker keeps its "public imagery
   over HTTPS, nothing else" egress and stays stateless. Points are decimated to 20 m spacing and
@@ -264,7 +271,9 @@ with `cv2.polylines(..., LINE_8)`; `thin(mask, max_iterations=32)`: sequential t
 (1 = foreground, -1 = background, 0 = don't care: `[[-1,-1,-1],[0,1,0],[1,1,1]]` and
 `[[0,-1,-1],[1,1,-1],[0,1,0]]`) and their three rotations, each hit removed before the next kernel
 (that order is what keeps connectivity), on the bounding box
-of the nonzero pixels padded by one, until a pass removes nothing; `neighbour_count(skel01)` with
+of the nonzero pixels padded by one, until a pass removes nothing (as merged, PR J: every pass
+after the first works only within `THINNING_REACH_PX`, 8 px, of what the last pass removed, with
+byte-identical output); `neighbour_count(skel01)` with
 `cv2.filter2D` and the 3×3 ring kernel; `junctions_and_ends(skel01)` (count ≥ 3, count == 1);
 `snap_stations(skel01, stations_px, snap_px) -> list[(x, y) | None]` via
 `distanceTransformWithLabels(..., DIST_LABEL_PIXEL)`, whose label is the 1-based scan-order index
