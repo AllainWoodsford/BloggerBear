@@ -27,7 +27,7 @@ from decimal import Decimal
 import boto3
 
 from common import equipment, feedback_limits, gear, security_events, sign_ins
-from common.adapters import CRYPTO_FEED_ADAPTER_KEY, SATELLITE_VISION_ADAPTER_KEY
+from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
 from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
@@ -268,9 +268,10 @@ def _create_topic(event: dict) -> dict:
     force_manual_review = body.get("force_manual_review", False)
     if not isinstance(force_manual_review, bool):
         return _error(400, "'force_manual_review' must be a boolean if provided")
-    # The same kind of guarantee for imagery: a satellite_vision article is always seen by a
-    # person before it is published (common/compliance.py's requires_manual_review).
-    if adapter == SATELLITE_VISION_ADAPTER_KEY:
+    # The same kind of guarantee for imagery: an article of a satellite_vision or rail_access topic
+    # is always seen by a person before it is published (common/compliance.py's
+    # requires_manual_review; the set is common/adapters/__init__.py's MANUAL_REVIEW_ADAPTERS).
+    if adapter in MANUAL_REVIEW_ADAPTERS:
         force_manual_review = True
 
     research_cadence = body.get("research_cadence", _DEFAULT_RESEARCH_CADENCE)
@@ -417,7 +418,7 @@ def _update_topic(event: dict) -> dict:
         updated["is_financial"] = True
     if "force_manual_review" in body and not isinstance(updated["force_manual_review"], bool):
         return _error(400, "'force_manual_review' must be a boolean")
-    if updated["adapter"] == SATELLITE_VISION_ADAPTER_KEY:
+    if updated["adapter"] in MANUAL_REVIEW_ADAPTERS:
         updated["force_manual_review"] = True
     if "research_cadence" in body and (
         not isinstance(updated["research_cadence"], str) or not updated["research_cadence"]

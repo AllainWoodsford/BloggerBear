@@ -739,6 +739,10 @@ ADAPTERS = {
     # common/adapters/satellite_vision.py: counts what the vision worker sees at the sites in its
     # config, in each new Sentinel-2 scene.
     "satellite_vision": "counts objects at fixed sites in new satellite scenes (needs sites in its config)",
+    # common/adapters/rail_access.py: built-up density from each new Sentinel-2 scene against the
+    # OpenStreetMap rail network of each city in its config; admin_api_handler forces
+    # force_manual_review for it, as for satellite_vision.
+    "rail_access": "maps rail access from satellite imagery and OpenStreetMap for the cities in its config",
 }
 
 # The owner's worked example for an editorial goal. `exclusion_criteria` because the validator

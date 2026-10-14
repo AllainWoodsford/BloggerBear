@@ -880,6 +880,28 @@ def test_client_sends_the_task_and_the_network_and_checks_the_task_in_the_reply(
         )  # fmt: skip
 
 
+
+def test_client_sends_non_ascii_names_as_utf8_not_escapes(rail_files, configured):
+    """A network's names travel as UTF-8 (2-3 bytes a character), not as \\u escapes (6), so long
+    non-ASCII names keep the request well inside Lambda's 6 MB synchronous payload."""
+    sent = []
+
+    class Recording(FakeLambda):
+        def invoke(self, FunctionName, InvocationType, Payload):
+            sent.append(Payload)
+            return super().invoke(FunctionName, InvocationType, Payload)
+
+    network = json.loads(json.dumps(rail_files["network"]))
+    for station in network["stations"]:
+        station["name"] = "中央駅" * 20  # 60 characters, all outside ASCII
+    rail_scene = rail_request(rail_files)["scene"]
+    fake = Recording(blobs=rail_files["blobs"])
+    vision_client.measure(RAIL_SITE, rail_scene, task="rail_access", network=network, client=fake)
+    payload = sent[0]
+    assert isinstance(payload, bytes) and b"\\u" not in payload
+    assert "中央駅".encode() in payload
+    assert json.loads(payload)["network"]["stations"][0]["name"] == "中央駅" * 20
+
 def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeypatch):
     made = []
 
@@ -895,6 +917,8 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     assert default is not shorter
     retries = {"max_attempts": 1, "mode": "standard"}
     assert made == [("lambda", "us-west-2", 5, 90, retries), ("lambda", "us-west-2", 5, 58, retries)]
+    # The connect allowance is exported: the triage agent counts it before the answer turn.
+    assert vision_client.CONNECT_TIMEOUT_SECONDS == 5 and vision_client.DEFAULT_READ_TIMEOUT_SECONDS == 90
     # measure() asks for the client with its read timeout: the triage agent's look_again waits less.
     vision_client.measure(SITE, SCENE, read_timeout=30)
     assert made[-1][1:4] == ("us-west-2", 5, 30) and len(made) == 3
