@@ -297,11 +297,11 @@ def build_server() -> MCPServer:
         limit: int = cli_guide.OVERVIEW_DEFAULT_LIMIT, topic: str | None = None
     ) -> dict[str, Any]:
         """The topics and their settings, as a table on screen: name, id, adapter, research
-        heartbeat and interval, daily cadence and timezone, model, financial or not, review mode,
-        last researched, last article. The first `limit` topics (1 to 50) by id, and how many
-        more there are. Pass `topic` (its id, its name, or the operator's own words for it) for every
-        setting of that one topic. Use it
-        when the operator asks to list topics or about a topic's configuration."""
+        heartbeat and interval, daily cadence and timezone, findings window, model, financial or
+        not, review mode, last researched, last article. The first `limit` topics (1 to 50) by id,
+        and how many more there are. Pass `topic` (its id, its name, or the operator's own words
+        for it) for every setting of that one topic. Use it when the operator asks to list topics
+        or about a topic's configuration."""
         return cli_guide.topics_overview(limit, topic)
 
     # The architecture expert (architecture.py, runsheets.py). Read-only, and they read nothing at

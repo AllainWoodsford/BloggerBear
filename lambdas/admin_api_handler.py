@@ -87,6 +87,7 @@ from common.editorial_resolver import (
 )
 from common.fact_check import fact_check_label
 from common.figures import clean_figures
+from common.findings_window import findings_window_error
 from common.fresh_review import (
     on_unavailable_error,
     resolve_on_unavailable,
@@ -295,6 +296,13 @@ def _create_topic(event: dict) -> dict:
     if interval_problem:
         return _error(400, f"'research_interval_hours' {interval_problem}")
 
+    # How far back the daily article reads findings. Optional: unset is the last day; a topic
+    # that writes on some days only widens it (see common/findings_window.py).
+    findings_window_hours = body.get("findings_window_hours")
+    window_problem = findings_window_error(findings_window_hours)
+    if window_problem:
+        return _error(400, f"'findings_window_hours' {window_problem}")
+
     # Per-topic override of the fresh-data review mode (else the pipeline-wide one).
     review_mode = body.get("review_mode")
     mode_problem = review_mode_error(review_mode)
@@ -345,6 +353,8 @@ def _create_topic(event: dict) -> dict:
         item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
     if research_interval_hours is not None:
         item["research_interval_hours"] = research_interval_hours
+    if findings_window_hours is not None:
+        item["findings_window_hours"] = findings_window_hours
     if review_mode is not None:
         item["review_mode"] = review_mode
     put_topic(item)
@@ -384,6 +394,7 @@ def _update_topic(event: dict) -> dict:
         "force_manual_review",
         "research_cadence",
         "research_interval_hours",
+        "findings_window_hours",
         "review_mode",
         "daily_cadence",
         "daily_timezone",
@@ -434,6 +445,12 @@ def _update_topic(event: dict) -> dict:
             return _error(400, f"'research_interval_hours' {interval_problem}")
         if updated["research_interval_hours"] is None:
             del updated["research_interval_hours"]  # cleared: inherit the pipeline default
+    if "findings_window_hours" in body:
+        window_problem = findings_window_error(updated["findings_window_hours"])
+        if window_problem:
+            return _error(400, f"'findings_window_hours' {window_problem}")
+        if updated["findings_window_hours"] is None:
+            del updated["findings_window_hours"]  # cleared: back to the default window
     if "review_mode" in body:
         mode_problem = review_mode_error(updated["review_mode"])
         if mode_problem:

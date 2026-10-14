@@ -156,8 +156,8 @@ CATALOGUE: tuple[Component, ...] = (
     _table(
         "topics",
         "One row per topic the blog writes about, with its settings: adapter, research interval, "
-        "daily cadence, model, review mode, editorial goals, and when it was last researched and "
-        "last written about.",
+        "daily cadence, findings window, model, review mode, editorial goals, and when it was last "
+        "researched and last written about.",
         ("topic_id",),
         details=(
             (
@@ -1141,8 +1141,10 @@ FEATURES: tuple[Feature, ...] = (
             Step(
                 "Candidate ideas",
                 "Once a day, through the daily-cycle state machine, the daily cycle reads every "
-                "finding since the topic's last article, asks Bedrock for three candidate angles, "
-                "stores them as candidate ideas and selects one. Ideas expire after 7 days.",
+                "finding since the topic's last article, at most its findings window back (a day "
+                "unless the topic sets a wider one, up to 14 days), asks Bedrock for three "
+                "candidate angles, stores them as candidate ideas and selects one. Ideas expire "
+                "after 7 days.",
                 (
                     "state_machine:daily-cycle",
                     "function:daily-cycle",
