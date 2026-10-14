@@ -9,6 +9,8 @@ known sizes, so each test knows exactly what should be counted. Reflectance foll
 
 from __future__ import annotations
 
+import hashlib
+
 import cv2
 import numpy as np
 import pytest
@@ -17,7 +19,7 @@ from vision_fakes import block_mean, write_tiff
 from vision import build, cog, geo, masks
 from vision import scene as scene_reader
 from vision.analyse import analyse_site, pixel_to_map, size_histogram
-from vision.annotate import annotate
+from vision.annotate import annotate, burn_caption
 from vision.detect import DetectParams, detect_objects
 
 PX = 10.0
@@ -183,6 +185,40 @@ def test_annotate_makes_a_scaled_png():
     assert image.shape[:2] == (100, 100)
     # The caption bar is burned in at the top left.
     assert image[2, 2].tolist() == [0, 0, 0]
+
+
+# sha256 of the ships figure's pixels at three max_sides, and of a two-line caption bar burned at
+# two widths, as the base branch drew them before the rail figure moved its caption into a strip
+# under its map and took a stronger PNG level (rail PR H): neither change may touch the ships
+# figure. OpenCV is pinned (requirements-vision.txt); one that draws differently means recording
+# these again.
+SHIPS_FIGURE_SHA256 = {
+    120: "cfa4db9d5193210fb6b5060f30b24a3e441d7c10aa57de66cf2ab290633131df",
+    300: "c34af15075887dee57f0c6126da6895ad5fb02e8794d95dbd10c56d9574d0b23",
+    1024: "304afcc8382bebc819e26d79b2242deede3a41532a6c4b0a8fbd00ab0d9c6d51",
+}
+CAPTION_BAR_SHA256 = {
+    256: "1ab714dc70a4a87ea85f704b9763d2eeb8101bd953aedd781b939458257d41bb",
+    1600: "798c09c056620258c158ff140bfa6db7053ed71eb5602d0b483124123fa4a02f",
+}
+
+
+def test_the_ships_figure_and_its_caption_bar_are_unchanged():
+    ys, xs = np.mgrid[0:300, 0:420]
+    nir = ((xs * 37 + ys * 91) % 4000).astype(np.uint16)  # texture for the encoder and the resize
+    measurable = (xs + ys < 500).astype(np.uint8)
+    detections = [{"box": [[60, 60], [140, 80], [130, 120], [50, 100]]}]
+    for max_side, digest in SHIPS_FIGURE_SHA256.items():
+        png = annotate(nir, measurable, detections, max_side=max_side)
+        image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+        assert hashlib.sha256(image.tobytes()).hexdigest() == digest, max_side
+        # ... and the bytes are OpenCV's default encoding of those pixels, as they always were.
+        assert png == cv2.imencode(".png", image)[1].tobytes(), max_side
+    lines = ["Processed imagery - BloggerBear", "", "Contains modified Copernicus Sentinel data 2024"]
+    for width, digest in CAPTION_BAR_SHA256.items():
+        canvas = np.full((120, width, 3), 128, np.uint8)
+        burn_caption(canvas, lines)
+        assert hashlib.sha256(canvas.tobytes()).hexdigest() == digest, width
 
 
 def test_build_info_and_fingerprint_match():
