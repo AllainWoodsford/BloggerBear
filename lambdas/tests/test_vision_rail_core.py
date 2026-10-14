@@ -870,14 +870,14 @@ def serpentine_and_bar(size=4096):
 
 
 @pytest.mark.skipif(not os.environ.get("VISION_PERF"), reason="set VISION_PERF=1 to time the worst networks")
-@pytest.mark.parametrize(
-    ("make", "bound"),
-    [
-        (comb_and_diagonals, 30.0),  # 20-22 s here; 39 s while the station passes were quadratic
-        (serpentine_and_bar, 40.0),  # 24-26 s here, before and after: generous for a busier machine
-    ],
-)
-def test_the_worst_networks_measured_stay_within_the_analysis_budget(make, bound):
+@pytest.mark.parametrize("make", [comb_and_diagonals, serpentine_and_bar])
+def test_the_worst_networks_measured_stay_within_the_analysis_budget(make):
+    """The whole pass with its figure, and the graph measures, flags and suggestions alone (the
+    stage the quadratic station passes were in). On the machine of scene.MAX_WINDOW_PX: 20-22 s
+    and 2.5-2.8 s for comb_and_diagonals (39 s and 17.5 s before), 24-26 s and 5.5-5.7 s for
+    serpentine_and_bar; 30-42 s and 2.7-6.4 s with other test suites sharing its four cores (the
+    thinning's memory traffic suffers most). So the whole pass is bounded by the worker's 60 s
+    invoke, and the stage, which moves little with load, by a figure the quadratic passes miss."""
     size = 4096
     network = contract.validate_network(make(size))
     assert len(network["stations"]) == 2000 and len(network["ways"]) <= contract.NETWORK_LIMITS["ways"]
@@ -894,7 +894,7 @@ def test_the_worst_networks_measured_stay_within_the_analysis_budget(make, bound
     assert "graph_too_large" not in m["quality_flags"] and png.startswith(b"\x89PNG")
     if make is comb_and_diagonals:
         assert max(len(f["stations"]) for f in m["flags"] if f["type"] == "ghost_line") > 1000
-    assert seconds < bound
+    assert seconds < 60.0 and stages["metrics"] < 12_000.0
 
 
 def test_a_wide_heat_blur_runs_on_a_reduced_grid_and_matches():

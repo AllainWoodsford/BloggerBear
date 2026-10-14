@@ -39,8 +39,11 @@ from vision import cog, geo
 # 20-22 s and 1.43 GB for 1,194 long anti-diagonals, a 3,500-spur comb with 2,000 stations on one
 # junction tree and the same bar (39 s before the station passes and run lengths were linear); 18 s
 # for 4,096 parallel ways rasterised into one solid block; 9 s and 1.50 GB for 2,711 anti-diagonals
-# 3 px apart (19 s before). All under 30 s, so the rail task has no window cap of its own (3,584 px
-# would shrink only the pixel-bound stages), and the 60 s invoke keeps over half its time for the read.
+# 3 px apart (19 s before). With other test suites sharing the four cores (load average 4-6) the two
+# worst took 30-42 s, the growth in the graph stage's passes over the whole window: contention a
+# worker's own CPU share does not have. At the lighter load all are under 30 s, so the rail task has no
+# window cap of its own (3,584 px would shrink only the pixel-bound stages), and the 60 s invoke keeps
+# over half its time for the read.
 MAX_WINDOW_PX = 4096
 # Extra pixels read around the polygon so the adaptive threshold's window has context at the edge.
 PAD_PX = 16
