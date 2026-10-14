@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 
 import boto3
 
@@ -64,6 +65,9 @@ SEEN_MAX_KEYS = 2000
 # for that, and one automatic retry with more if a reply still runs out.
 RESEARCH_MAX_TOKENS = 2048
 RESEARCH_RETRY_MAX_TOKENS = 4096
+# How many of an adapter's planner notes (Adapter.planner_notes) a Finding keeps: the rail
+# adapter's four flags and three simulations, a few KB of a Findings item's 400 KB.
+MAX_PLANNER_NOTES_PER_FINDING = 7
 
 _s3_client = None
 
@@ -128,6 +132,20 @@ def _merge_seen(adapter, old_state: dict | None, new_state: dict, today: date) -
         newest = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)[:SEEN_MAX_KEYS]
         seen = dict(newest)
     return seen
+
+
+def _planner_notes(adapter, new_state: dict) -> list[dict]:
+    """The adapter's planner notes as a Finding keeps them: its dicts only, the first
+    MAX_PLANNER_NOTES_PER_FINDING, through JSON so every number is a Decimal as DynamoDB wants.
+    A hook that fails, or notes that would not survive JSON (a NaN, an object), cost the notes and
+    never the Finding: by now its summary has been paid for."""
+    try:
+        notes = [note for note in adapter.planner_notes(new_state) or [] if isinstance(note, dict)]
+        text = json.dumps(notes[:MAX_PLANNER_NOTES_PER_FINDING], allow_nan=False)
+        return json.loads(text, parse_float=Decimal)
+    except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it
+        print(f"research_tick_handler: planner notes dropped: {type(exc).__name__}: {exc}")
+        return []
 
 
 def _build_prompt(topic: dict, diff_summary: str, new_state: dict, adapter) -> str:
@@ -313,6 +331,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # (a PNG key in the content bucket, a caption, alt text) ever reach a Finding; stored
     # only when there are any (common/figures.py).
     figures = clean_figures(adapter.figures(new_state))[:MAX_FIGURES_PER_FINDING]
+    planner_notes = _planner_notes(adapter, new_state)
 
     put_finding(
         topic_id=topic_id,
@@ -323,6 +342,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
         source_refs=refs,
         research_call=research_call,
         figures=figures,
+        planner_notes=planner_notes,
     )
 
     return {"status": "material_change", "summary": summary}

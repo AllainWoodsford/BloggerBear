@@ -151,6 +151,15 @@ class Adapter(ABC):
         """
         return []
 
+    def planner_notes(self, new_state: dict) -> list[dict]:
+        """Rule-based notes this observation's measurements support, kept on the Finding as data
+        beside the prose summary: one JSON-able dict per note (the rail_access adapter's are
+        {"site_id", "kind": "flag" | "simulation", "type", "stations", "text"}, written by
+        common/rail_notes.py). The research tick stores the first few, only when there are any;
+        nothing renders them. The default, for a source with no such rules, is none.
+        """
+        return []
+
     def build_summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict
     ) -> str | None:

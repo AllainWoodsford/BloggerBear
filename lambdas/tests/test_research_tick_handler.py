@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from unittest.mock import patch
 
 import boto3
@@ -663,3 +664,63 @@ def test_an_adapter_draws_nothing_unless_it_says_so_and_its_finding_has_no_figur
     _run_one_tick(monkeypatch, _tracked("a summary"))
 
     assert "figures" not in _the_finding()
+
+
+# --- planner notes (Adapter.planner_notes) --------------------------------------------------------
+
+
+class _NotingAdapter(GitHubTrendingAdapter):
+    """An adapter with more rule-based notes than a Finding keeps, one carrying a number."""
+
+    def planner_notes(self, new_state):
+        notes = [{"kind": "flag", "type": "t", "stations": [f"s{n}"], "text": f"Note {n}."} for n in range(9)]
+        notes[0]["ratio"] = 2.5
+        return [*notes[:1], "not a note", *notes[1:]]
+
+
+class _BrokenNotesAdapter(GitHubTrendingAdapter):
+    def planner_notes(self, new_state):
+        raise RuntimeError("the rules broke")
+
+
+class _NanNotesAdapter(GitHubTrendingAdapter):
+    def planner_notes(self, new_state):
+        return [{"kind": "flag", "type": "t", "stations": [], "text": "Odd.", "ratio": float("nan")}]
+
+
+def test_an_adapters_planner_notes_are_stored_on_the_finding_capped_and_dynamodb_ready(
+    aws_resources, monkeypatch
+):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _NotingAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    stored = _the_finding()["planner_notes"]
+    assert len(stored) == research_tick_handler.MAX_PLANNER_NOTES_PER_FINDING == 7
+    assert [note["text"] for note in stored] == [f"Note {n}." for n in range(7)]  # dicts only, in order
+    assert stored[0]["ratio"] == Decimal("2.5") and stored[0]["stations"] == ["s0"]
+
+
+@pytest.mark.parametrize("adapter_class", [_BrokenNotesAdapter, _NanNotesAdapter])
+def test_notes_that_fail_or_cannot_be_stored_cost_the_notes_never_the_finding(
+    aws_resources, monkeypatch, capsys, adapter_class
+):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", adapter_class)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    finding = _the_finding()
+    assert finding["summary"] == "a summary" and "planner_notes" not in finding
+    assert "planner notes dropped" in capsys.readouterr().out
+
+
+def test_an_adapter_has_no_planner_notes_unless_it_says_so_and_its_finding_has_no_such_field(
+    aws_resources, monkeypatch
+):
+    assert GitHubTrendingAdapter().planner_notes({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "planner_notes" not in _the_finding()

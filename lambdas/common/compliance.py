@@ -121,6 +121,12 @@ _STREET_ADDRESS = re.compile(
     r"Way|Court|Ct|Boulevard|Blvd|Place|Pl|Terrace|Crescent)\b"
 )
 _QUOTED_CLAIM = re.compile(r"[\"“](.+?)[\"”]")
+# A nominated quote is everything up to the closing quotation mark before its " | why": a draft
+# sentence that itself holds quoted text (a quoted station name, the vision agent's quoted note)
+# is taken whole, not cut at its first inner quotation mark. Without a reason, the whole quoted
+# line; failing both, the first quoted span.
+_QUOTE_BEFORE_REASON = re.compile(r"^\s*[\"“](.+?)[\"”]\s*\|")
+_WHOLE_QUOTE = re.compile(r"^\s*[\"“](.+)[\"”]\s*$")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _PROPER_NOUN = re.compile(r"\b[A-Z][A-Za-z0-9]{3,}")
 # A figure counts as found in the sources if one is within this fraction of it ("over 170" for
@@ -223,8 +229,8 @@ def _review_verdict(response: str, source: str, draft: str) -> dict:
         if label == "NOTE":
             notes.append(f"NOTE: {text}")
             continue
-        quote = _QUOTED_CLAIM.search(text)
-        if quote is not None and _item_stands(label, quote.group(1), source):
+        quote = _nominated_quote(text)
+        if quote is not None and _item_stands(label, quote, source):
             standing.append(f"{_ITEM_TITLES[label]}: {text}")
         else:
             notes.append(f"{_ITEM_TITLES[label]} flagged but not held: {text}")
@@ -236,6 +242,15 @@ def _review_verdict(response: str, source: str, draft: str) -> dict:
         return {"compliant": True, "reasons": notes}
     # No labels and no "nothing to report": not the format we asked for. Fail closed.
     return {"compliant": False, "reasons": [response.strip()]}
+
+
+def _nominated_quote(text: str) -> str | None:
+    """The draft text a labelled line quotes (see _QUOTE_BEFORE_REASON); None when it quotes nothing."""
+    for pattern in (_QUOTE_BEFORE_REASON, _WHOLE_QUOTE, _QUOTED_CLAIM):
+        match = pattern.search(text)
+        if match is not None:
+            return match.group(1)
+    return None
 
 
 def is_financial_topic(topic: dict) -> bool:
