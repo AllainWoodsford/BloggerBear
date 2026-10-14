@@ -1,8 +1,9 @@
 """Tests for common/vision_sites.py: what the two vision adapters share. The config checks every
 vision topic gets, the STAC search and the choice of scene (moved here from the ship adapter's
 tests, which now hold only what that adapter decides), the figure store, the baseline's clear
-entries, the tick's budget, the STAC references, the order sites are visited in, and the rule
-that a tick which measured nothing is not yet an observation."""
+entries, the tick's budget, the STAC references, the order sites are visited in, the rule that a
+tick which measured nothing is not yet an observation, and the marker that reports the first one
+once."""
 
 from __future__ import annotations
 
@@ -357,3 +358,39 @@ def test_the_first_observation_comes_from_the_first_clear_scene():
     assert vs.first_observation(before, state, [clear], 0.6) == ([clear], "")
     before["sites"]["a"]["history"].append({"coverage": 0.6})
     assert vs.first_observation(before, state, [cloudy], 0.6) is None
+    # Once observed, the marker says so, though no clear scene is kept and the floor was raised.
+    marked = {"first_observed_at": "2026-10-01T00:00:00+00:00",
+              "sites": {"a": {"history": [{"coverage": 0.3}]}}}  # fmt: skip
+    assert vs.first_observation(marked, state, [clear], 0.95) is None
+
+
+def test_the_first_observation_is_marked_on_its_tick_and_carried_forward():
+    sites = {"a": {"history": [{"scene_id": "S0", "coverage": 0.3}, {"scene_id": "S1", "coverage": 0.9}]}}
+    measured = [{"site_id": "a", "scene_id": "S1"}]
+    # Nothing observed before, and this tick measured a clear scene: its fetch marks the state.
+    assert vs.first_observed_at(None, sites, measured, 0.6, "T1") == "T1"
+    assert vs.first_observed_at({"first_observed_at": None}, sites, measured, 0.6, "T1") == "T1"
+    assert vs.first_observed_at(None, sites, measured, 0.95, "T1") is None  # below the floor
+    assert vs.first_observed_at(None, sites, [], 0.6, "T1") is None  # nothing measured this tick
+    assert vs.first_observed_at(None, sites, [{"site_id": "a", "scene_id": "S0"}], 0.6, "T1") is None
+    # Once marked, carried forward whatever the history holds and the floor says.
+    assert vs.first_observed_at({"first_observed_at": "T0", "sites": {}}, {}, [], 0.99, "T1") == "T0"
+    assert vs.observed_before({"first_observed_at": "T0"}, 0.99)
+    # The marker decides when it is there: None is "not yet", whatever an older history kept.
+    assert not vs.observed_before({"first_observed_at": None, "sites": sites}, 0.6)
+    assert not vs.observed_before(None, 0.6) and not vs.observed_before({}, 0.6)
+
+
+def test_a_state_from_before_the_marker_is_judged_by_its_own_scenes_and_floor():
+    legacy = {"fetched_at": "T0", "thresholds": {"coverage_floor": 0.6},
+              "sites": {"a": {"history": [{"scene_id": "S0", "coverage": 0.7}]}}}  # fmt: skip
+    # Clear by its own floor (0.6), though not by today's (0.8): observed, and marked from now on.
+    assert vs.observed_before(legacy, 0.8)
+    assert vs.first_observed_at(legacy, {}, [], 0.8, "T1") == "T0"
+    assert vs.first_observed_at({**legacy, "fetched_at": None}, {}, [], 0.8, "T1") == "T1"
+    # Not clear by its own floor (0.75), though it would be by today's (0.6): not observed.
+    legacy["thresholds"]["coverage_floor"] = 0.75
+    assert not vs.observed_before(legacy, 0.6) and vs.first_observed_at(legacy, {}, [], 0.6, "T1") is None
+    # A state with no floor stored is judged by the one given.
+    del legacy["thresholds"]
+    assert vs.observed_before(legacy, 0.6) and not vs.observed_before(legacy, 0.8)

@@ -74,6 +74,15 @@ class Worker:
         return vision_client.VisionResult(reply={"metrics": metrics}, image_png=PNG)
 
 
+class KeywordWorker(Worker):
+    """A ships worker that also takes vision_client.measure's keywords, and records them."""
+
+    def __call__(self, site, scene, backend, params, coverage_floor, **kwargs):
+        result = super().__call__(site, scene, backend, params, coverage_floor)
+        self.calls[-1]["kwargs"] = kwargs
+        return result
+
+
 @pytest.fixture
 def recorded(monkeypatch):
     calls = []
@@ -187,7 +196,8 @@ def test_look_again_is_refused_when_the_worker_might_not_answer_in_time():
     script = Script(
         tool("look_again", {"offset": 40}), text('{"verdict": "artefact", "reason": "no re-check"}')
     )
-    # 19 s left: enough to answer, but the worker could have only 9 s before the last turn must start.
+    # 19 s left: enough to answer, but the worker could have only 4 s (9 s before the last turn must
+    # start, less the client's 5 s connect allowance).
     out = run(script, worker=worker, deadline=100.0, clock=lambda: 81.0)
     assert worker.calls == []
     result = script.requests[1]["messages"][-1]["content"][0]["toolResult"]
@@ -282,13 +292,13 @@ def test_the_ships_prompt_is_unchanged_and_the_rail_prompt_says_tool_text_is_dat
     assert "Text returned by the tools" not in vision_triage.SYSTEM_PROMPT
 
 
-def test_the_task_profile_keeps_the_specified_field_order_with_history_keys_last():
+def test_the_task_profile_keeps_the_specified_field_order_with_the_later_additions_last():
     names = [f.name for f in dataclasses.fields(vision_triage.TaskProfile)]
     assert names == ["task", "system_prompt", "tools", "metric_keys", "look_again_limits", "web_query",
-                     "history_keys"]  # fmt: skip
+                     "history_keys", "min_look_again_seconds"]  # fmt: skip
     # Built as the specification writes it, positionally: site_history then tells the metric keys.
     profile = vision_triage.TaskProfile("ships", "prompt", [], ("count",), contract.PARAM_LIMITS, None)
-    assert profile.history_keys == ()
+    assert profile.history_keys == () and profile.min_look_again_seconds == 10.0
     body, status = vision_triage._run_tool(
         {"name": "site_history"}, profile=profile, site=SITE, history=HISTORY, scene=SCENE, params={},
         backend="opencv", load_image=None, measure=None,
@@ -431,44 +441,93 @@ class Clock:
 
 
 @pytest.mark.parametrize("read_timeout", [58.0, None])
-def test_look_again_never_returns_after_the_deadline_and_keeps_the_client_cache_small(read_timeout):
+def test_look_again_returns_in_time_for_the_answer_and_keeps_the_client_cache_small(read_timeout):
     """On a fake clock, from every moment of the agent's window: the worker is slow (it answers at
-    the very end of its connect allowance plus the read timeout it was given). It never returns
-    after the deadline; the read timeouts it is given are whole steps of 5 s, so vision_client
-    makes at most a handful of clients (one per region and read timeout)."""
+    the very end of the client's connect allowance plus the read timeout it was given). Every
+    look_again returns with at least MIN_SECONDS_TO_ANSWER left, so the answer turn still starts
+    and the verdict is the model's, not "no time left"; it never waits less than the rail minimum;
+    the read timeouts are whole steps of 5 s, so vision_client makes at most a handful of clients
+    (one per region and read timeout)."""
     deadline, seen = 85.0, set()
+    minimum = vision_triage.PROFILES["rail_access"].min_look_again_seconds
     for tenth in range(0, 850, 7):
         clock = Clock(tenth / 10)
+        left_after = []
 
         class SlowWorker(RailWorker):
             def __call__(self, site, scene, backend, params, coverage_floor, **kwargs):
-                clock.now += 5.0 + kwargs["read_timeout"]  # the connect allowance, then the whole read
+                clock.now += vision_client.CONNECT_TIMEOUT_SECONDS + kwargs["read_timeout"]
+                left_after.append(deadline - clock.now)
                 return super().__call__(site, scene, backend, params, coverage_floor, **kwargs)
 
         worker = SlowWorker()
         script = Script(tool("look_again", {"reach_m": 800}), text('{"verdict": "real", "reason": "x"}'))
-        vision_triage.triage(
+        out = vision_triage.triage(
             site=RAIL_SITE, verdict=RAIL_VERDICT, history=RAIL_HISTORY, scene=RAIL_SCENE, model_id="m",
             object_noun=None, params={}, converse=script, measure=worker, task="rail_access",
             network=NETWORK, deadline=deadline, clock=clock, read_timeout=read_timeout,
         )  # fmt: skip
         assert clock.now <= deadline
+        assert all(left >= vision_triage.MIN_SECONDS_TO_ANSWER for left in left_after)
+        if worker.calls:
+            assert out["verdict"] == "real"
         for call in worker.calls:
             seen.add(call["read_timeout"])
-            assert call["read_timeout"] >= vision_triage.MIN_LOOK_AGAIN_READ_SECONDS
+            assert call["read_timeout"] >= minimum
     assert all(timeout % 5 == 0 for timeout in seen)
-    assert max(seen) == (55.0 if read_timeout else 75.0)  # 58 s rounds down; no timeout: the 75 s left
-    assert len(seen) <= 14
+    # 58 s rounds down to 55; with no timeout given, 85 - 10 (the answer turn) - 5 (connect) = 70.
+    assert max(seen) == (55.0 if read_timeout else 70.0) and min(seen) == minimum == 30.0
+    assert len(seen) <= 9
 
 
-def test_look_again_gets_the_time_left_before_the_last_turn_in_whole_steps():
+def test_look_again_gets_the_time_left_before_the_last_turn_less_the_connect_allowance():
+    assert vision_client.CONNECT_TIMEOUT_SECONDS == 5
     assert vision_triage.look_again_timeout(58.0, None, lambda: 0.0) == 58.0  # no deadline: as given
     assert vision_triage.look_again_timeout(None, None, lambda: 0.0) is None
     assert vision_triage.look_again_timeout(58.0, 85.0, lambda: 0.0) == 55.0
-    assert vision_triage.look_again_timeout(58.0, 85.0, lambda: 41.0) == 30.0  # 34 s before the last turn
+    assert vision_triage.look_again_timeout(None, 85.0, lambda: 0.0) == 70.0  # 85 - 10 - 5
+    assert vision_triage.look_again_timeout(58.0, 85.0, lambda: 41.0) == 25.0  # 29 s: rounded down
     assert vision_triage.look_again_timeout(None, 200.0, lambda: 0.0) == 90.0  # the client's default
-    assert vision_triage.look_again_timeout(58.0, 85.0, lambda: 66.0) == 5.0  # under 10: refused
+    assert vision_triage.look_again_timeout(58.0, 85.0, lambda: 66.0) == 0.0  # 4 s
     assert vision_triage.look_again_timeout(58.0, 85.0, lambda: 90.0) == 0.0
+
+
+def test_look_again_is_refused_under_the_tasks_minimum_wait():
+    """A rail re-measurement runs about 20-40 s, so a 25 s wait cannot finish and is refused (the
+    invoke would still be billed); the model is told to answer with what it has. A ships one takes
+    seconds, so it still runs with 25 s."""
+    assert vision_triage.PROFILES["ships"].min_look_again_seconds == 10.0
+    assert vision_triage.PROFILES["rail_access"].min_look_again_seconds == 30.0
+    rail_worker = RailWorker()
+    script = Script(tool("look_again", {"reach_m": 800}), text('{"verdict": "artefact", "reason": "x"}'))
+    out = run_rail(script, worker=rail_worker, deadline=85.0, clock=lambda: 45.0)  # 85 - 45 - 15 = 25 s
+    assert rail_worker.calls == [] and out["tool_calls"][0]["ok"] is False
+    result = script.requests[1]["messages"][-1]["content"][0]["toolResult"]
+    assert result["status"] == "error"
+    assert result["content"][0]["text"] == "No time left to re-measure. Answer now with what you have."
+    # With 30 s to wait it runs.
+    out = run_rail(Script(tool("look_again", {"reach_m": 800}), text('{"verdict": "real", "reason": "x"}')),
+                   worker=rail_worker, deadline=85.0, clock=lambda: 40.0)  # fmt: skip
+    assert [c["read_timeout"] for c in rail_worker.calls] == [30.0] and out["verdict"] == "real"
+
+    ships_worker = KeywordWorker()
+    script = Script(tool("look_again", {"offset": 40}), text('{"verdict": "real", "reason": "x"}'))
+    out = run(script, worker=ships_worker, deadline=85.0, clock=lambda: 45.0)
+    assert [c["kwargs"] for c in ships_worker.calls] == [{"read_timeout": 25.0}] and out["verdict"] == "real"
+
+
+def test_ships_look_again_with_a_deadline_passes_a_stepped_read_timeout():
+    """The ships adapter always gives a deadline, so its look_again passes the worker a read
+    timeout too (vision_client.measure takes it): a whole step of 5 s within the time before the
+    last turn, and neither a task nor a network."""
+    worker = KeywordWorker(count=12)
+    script = Script(tool("look_again", {"edge_buffer_px": 6}), text('{"verdict": "real", "reason": "x"}'))
+    out = run(script, worker=worker, deadline=85.0, clock=lambda: 0.0)
+    assert out["verdict"] == "real" and out["tool_calls"][0]["ok"] is True
+    (call,) = worker.calls
+    assert call["params"] == {"offset": 25, "edge_buffer_px": 6} and set(call["kwargs"]) == {"read_timeout"}
+    timeout = call["kwargs"]["read_timeout"]
+    assert timeout % 5 == 0 and 10 <= timeout <= 75 and timeout == 70.0
 
 
 def test_rail_look_again_sends_the_task_the_network_and_the_read_timeout():

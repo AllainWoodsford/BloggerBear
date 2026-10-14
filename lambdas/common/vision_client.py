@@ -38,10 +38,12 @@ _ENV_BY_BACKEND = {"opencv": "VISION_WORKER_ARN", "cool": "VISION_COOL_WORKER_AR
 
 # A worker call reads a few tiles and runs for seconds. No automatic retries: the next tick tries
 # again, and a retry here would double a slow call's cost inside the research tick's own timeout.
-# A caller with a deadline (common/vision_triage.py) passes a shorter read timeout.
+# A caller with a deadline (common/vision_triage.py) passes a shorter read timeout, and counts the
+# connect allowance on top of it: a call may take both before it gives up.
 DEFAULT_READ_TIMEOUT_SECONDS = 90
+CONNECT_TIMEOUT_SECONDS = 5
 _CLIENT_CONFIG = Config(
-    connect_timeout=5,
+    connect_timeout=CONNECT_TIMEOUT_SECONDS,
     read_timeout=DEFAULT_READ_TIMEOUT_SECONDS,
     retries={"max_attempts": 1, "mode": "standard"},
 )

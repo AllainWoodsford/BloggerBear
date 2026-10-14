@@ -6,9 +6,10 @@ the first that the second needed as it was: the config checks every vision topic
 Earth Search STAC search and the choice of scene, the figure store in the content bucket, the
 baseline's clear entries, the budget a tick measures within, the STAC source references, the rule
 that the first observation is the first scene at or above the coverage floor (a tick that measured
-nothing, or only below it, is not), a polygon's `site_key`, and the order sites are visited in, so
-a topic with several rotates through them. The adapters keep what differs: which
-bands, which metrics, what is material, what the agent is told.
+nothing, or only below it, is not) and is reported once (`first_observed_at`, carried in the
+running state), a polygon's `site_key`, and the order sites are visited in, so a topic with several
+rotates through them. The adapters keep what differs: which bands, which metrics, what is material,
+what the agent is told.
 
 No OpenCV, numpy or networkx here: the adapter registry is imported by every pipeline Lambda.
 
@@ -62,6 +63,11 @@ MAX_SITE_NAME_CHARS = 80
 # common/figures.py's _KEY accepts only with plain path characters and no "..": letters, digits,
 # "_" and "-" always pass it, and 64 keeps the key well under its 200.
 SITE_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# When the topic's first observation was reported (an ISO time), in its running state: set by the
+# fetch of that tick and carried forward by every fetch after, so it is reported once. Without it,
+# whether a topic had been observed would be read from the scenes still in its history, which are
+# trimmed to history_size, against today's coverage floor, which an operator can raise.
+FIRST_OBSERVED_KEY = "first_observed_at"
 # The config keys every vision topic has, by how they are read: whole numbers and floats. An
 # adapter adds its own to these when it parses its config.
 WHOLE_KEYS = ("history_size", "min_baseline", "max_sites_per_tick", "lookback_days", "triage_max_tool_calls")
@@ -305,8 +311,8 @@ def order_sites(sites: list[dict], records: dict | None) -> list[dict]:
 
 def anything_measured(state: dict | None, floor: float = 0.0) -> bool:
     """Whether any site in `state` has a scene in its history measured at a coverage of at least
-    `floor`: the first tick with one is the topic's first observation; a tick before that measured
-    nothing clearly (nothing at all, or only scenes below the coverage floor) and is not."""
+    `floor`. Only a state written before FIRST_OBSERVED_KEY existed is judged this way
+    (`observed_before`)."""
     return any(
         (entry.get("coverage") or 0) >= floor
         for record in ((state or {}).get("sites") or {}).values()
@@ -315,15 +321,51 @@ def anything_measured(state: dict | None, floor: float = 0.0) -> bool:
     )
 
 
+def observed_before(old_state: dict | None, floor: float) -> bool:
+    """Whether the topic's first observation was reported before this tick: `old_state` carries
+    FIRST_OBSERVED_KEY with a time. A state written before the key existed (none in it at all) is
+    judged by its own scenes against its own stored coverage floor (`floor` only when it stored
+    none): whether it has one at or above it."""
+    if not old_state:
+        return False
+    if FIRST_OBSERVED_KEY in old_state:
+        return bool(old_state[FIRST_OBSERVED_KEY])
+    stored = (old_state.get("thresholds") or {}).get("coverage_floor")
+    return anything_measured(old_state, floor if stored is None else stored)
+
+
+def first_observed_at(
+    previous_state: dict | None, sites: dict, measured: list[dict], floor: float, fetched_at: str
+) -> str | None:
+    """The FIRST_OBSERVED_KEY of the state a fetch builds: `previous_state`'s, carried forward;
+    else `fetched_at` when this tick measured a scene (`measured`, the newest entry of its site in
+    `sites`) at or above the coverage `floor`, which is the tick whose diff reports the first
+    observation; else None. A state written before the key existed that was already observed
+    (`observed_before`) gets its own `fetched_at` (else this one): the first observation was
+    reported by then."""
+    if FIRST_OBSERVED_KEY in (previous_state or {}):
+        if previous_state[FIRST_OBSERVED_KEY]:
+            return previous_state[FIRST_OBSERVED_KEY]
+    elif observed_before(previous_state, floor):
+        return previous_state.get("fetched_at") or fetched_at
+    for m in measured or []:
+        history = ((sites or {}).get(m.get("site_id")) or {}).get("history") or []
+        if history and history[-1].get("scene_id") == m.get("scene_id"):
+            if (history[-1].get("coverage") or 0) >= floor:
+                return fetched_at
+    return None
+
+
 def first_observation(old_state: dict | None, new_state: dict, verdicts: list[dict], floor: float):
-    """The first-observation rule both adapters share. None when `old_state` already has a clear
-    scene: this tick is compared with a baseline, not first. Otherwise (`clear`, `summary`):
-    `clear` is this tick's verdicts at or above the coverage `floor`, which are the topic's first
-    observation; when there are none, `summary` says why it is not material yet ("nothing measured
-    yet: ..." with each site's error, or "nothing measured clearly yet: ..." with each scene's
-    coverage). A first scene below the floor is kept in the history but reports nothing, so the
-    next clear scene is the first observation."""
-    if anything_measured(old_state, floor):
+    """The first-observation rule both adapters share. None when the topic was observed before
+    (`observed_before`): this tick is compared with a baseline, not first. Otherwise (`clear`,
+    `summary`): `clear` is this tick's verdicts at or above the coverage `floor`, which are the
+    topic's first observation (the fetch marked `new_state` with FIRST_OBSERVED_KEY for them, so
+    no later tick reports one again); when there are none, `summary` says why it is not material
+    yet ("nothing measured yet: ..." with each site's error, or "nothing measured clearly yet: ..."
+    with each scene's coverage). A first scene below the floor is kept in the history but reports
+    nothing, so the next clear scene is the first observation."""
+    if observed_before(old_state, floor):
         return None
     clear = [v for v in verdicts if v["coverage"] >= floor]
     if clear:

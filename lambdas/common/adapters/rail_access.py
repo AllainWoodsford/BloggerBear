@@ -11,7 +11,8 @@ lives in common/vision_sites.py. What a topic watches is configuration, not code
 
     adapter_config = {
       "sites": [{"id": "sydney", "name": "Sydney",
-                 "polygon": [[lon, lat], ...]}],           # required; a city inside one Sentinel-2 tile
+                 "polygon": [[lon, lat], ...]}],           # required; 1 to MAX_RAIL_SITES cities, each
+                                                           # inside one Sentinel-2 tile
       "backend": "opencv",                                 # or "cool"
       "params": {...},                                     # vision.rail_analyse.RailParams overrides
       "reach_m": 1000,                                     # walking reach of a station, straight line
@@ -38,7 +39,10 @@ stale or not (the entry says `network_stale`), when MEASURE_RESERVE_SECONDS rema
 tick. (d) Nothing new and the network older than `osm_ttl_days`: fetch it again with the time
 this tick would not otherwise use; a failure keeps the cached network, records `network_error`
 and is not tried again for NETWORK_RETRY_HOURS. A slow or failing Overpass therefore never stops
-a city with a cached network from being measured. Not measured is never "nothing there".
+a city with a cached network from being measured. A scene the worker refuses for what it is
+(REFUSED_SCENE_CODES, recorded as `failed_scene`) is nothing new until a newer scene appears or
+NETWORK_RETRY_HOURS pass, so it is not sent again every hour and (d) still gets its ticks. Not
+measured is never "nothing there".
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py, the rail profile) looks at the figure and the evidence, may
@@ -55,8 +59,10 @@ rather than reading as a change), and the served share moved by at least
 `served_share_threshold` against their median, or the desert area by at least
 `desert_relative_threshold` of its median (at least 1 km²), or the station count differs from the
 previous such scene's. The first tick with a scene at or above the coverage floor is the first
-observation and is reported as such; a tick before that, with nothing measured or only scenes
-below the floor, is not.
+observation and is reported as such, once: the state records when (`first_observed_at`), so a run
+of cloudy scenes that trims every clear one from the history, or a raised floor, never makes a
+later scene "first" again. A tick before that, with nothing measured or only scenes below the
+floor, is not material.
 
 **What is honest.** The heat is a built-up density proxy from imagery, not population; walking
 reach is straight-line distance; the network is OpenStreetMap's (ODbL, credited) and the imagery
@@ -66,8 +72,10 @@ only verifies and scores it. The summary prompt says so, and says what was not m
 no-change tick too, so the baseline includes every scene measured and the network is fetched once
 a month, not once a tick. The figure for each scene is stored in the content bucket under
 `vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the
-newest to the article (common/figures.py). The network (about 1.5 MB per city) is in the state and
-the worker request, and nowhere a prompt or a reviewer would see it.
+newest to the article (common/figures.py). The network (up to about 2.6 MB of JSON per city at
+common/osm.py's caps) is in the state and the worker request, and nowhere a prompt or a reviewer
+would see it. Only the newest history entry keeps the per-scene lists (NEWEST_ONLY_KEYS); with
+MAX_RAIL_SITES that keeps the state within what the research tick's 512 MB can load.
 """
 
 from __future__ import annotations
@@ -138,27 +146,47 @@ WORKER_READ_TIMEOUT = 58.0
 # of a tick, and a struggling mirror asked again every hour only stays struggling. Four tries a day
 # is still far inside the 30-day TTL.
 NETWORK_RETRY_HOURS = 6
+# A scene the worker refuses for what it is (the site is outside it or too big for the worker's
+# window, the request does not fit the contract, a band cannot be read) would be refused again: it
+# is not sent again until a newer scene appears or NETWORK_RETRY_HOURS pass (a band unreadable now
+# may read later). Any other failure (`invoke`, `internal`, a malformed `reply`) is tried next tick.
+REFUSED_SCENE_CODES = ("window_too_large", "site_outside_scene", "bad_request", "unreadable_scene")
 # The longest a cached network may serve before it is due again: a year of OpenStreetMap edits.
 MAX_OSM_TTL_DAYS = 365.0
+# One topic per city is the design (docs §2), so a topic watches at most this many. Each city's
+# network is in the running state, which the research tick (512 MB) loads whole, deep-copies site
+# by site and writes back. Measured (ru_maxrss) for 3 cities at common/osm.py's caps (2.6 MB of
+# network JSON each), history_size 20, 2000 station rows per scene and a tick measuring a new one:
+# with every entry keeping its lists the state was 54 MB and the tick peaked at 390 MB; with only
+# the newest keeping them (NEWEST_ONLY_KEYS) 10 MB and 146 MB, 38 MB of that the imports. The one
+# tick that slims a state written before peaks at 293 MB.
+MAX_RAIL_SITES = 3
 # What a budget-starved site returns from _visit: it waits for the next tick, unstamped.
 DEFERRED = "deferred"
 
 # A history entry keeps each station's row cut to these fields (the worker's rows also carry
 # `kind`, `snapped` and `catchment_coverage`), at most this many: about 2000 rows of ten fields
-# is the size the running state and a Finding's snapshot can carry per scene (docs §5 risk 2).
+# (some 600 KB of JSON) is what the running state can carry for the newest scene (docs §5 risk 2).
 STATION_FIELDS = (
     "id", "name", "lon", "lat", "degree", "betweenness", "activity", "d_hub_m", "isolation_weight",
     "intermodal",
 )  # fmt: skip
 MAX_HISTORY_STATIONS = 2000
+# Only the newest history entry keeps these lists: the figure, the review evidence and the agent's
+# brief (and planner notes built on them) read them from it alone. An older entry keeps the scalars
+# and counts the material rules, `site_history` and `previous_scene` read (`flag_count` among them),
+# so twenty scenes of a big city cost little more than one.
+NEWEST_ONLY_KEYS = ("stations", "flags", "suggestions", "deserts")
 
 
 def parse_config(adapter_config: dict | None) -> dict:
     """adapter_config with defaults filled in, or ConfigError: the checks every vision topic
-    shares (common/vision_sites.py), then `reach_m` within the worker contract's bounds, a network
-    TTL in (0, MAX_OSM_TTL_DAYS] and `params` as an object (the contract checks each parameter
-    before any call)."""
-    config = vision_sites.parse_site_config(adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS)
+    shares (common/vision_sites.py) with at most MAX_RAIL_SITES sites, then `reach_m` within the
+    worker contract's bounds, a network TTL in (0, MAX_OSM_TTL_DAYS] and `params` as an object (the
+    contract checks each parameter before any call)."""
+    config = vision_sites.parse_site_config(
+        adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS, max_sites=MAX_RAIL_SITES
+    )
     low, high = contract.RAIL_PARAM_LIMITS["reach_m"]
     if not low <= config["reach_m"] <= high:
         raise ConfigError(f"reach_m must be between {low:g} and {high:g} metres")
@@ -216,6 +244,8 @@ class RailAccessAdapter(Adapter):
         sites, measured = {}, []
         for site in config["sites"]:
             record = copy.deepcopy(previous_sites.get(site["id"])) or {"history": []}
+            # A state written before NEWEST_ONLY_KEYS is slimmed on its first tick.
+            record["history"] = _slim_history(record.get("history") or [])
             record["name"] = site.get("name") or site["id"]
             sites[site["id"]] = record
 
@@ -240,6 +270,10 @@ class RailAccessAdapter(Adapter):
             "task": TASK,
             # The diff gets only the two states, so the topic's thresholds travel in the state.
             "thresholds": {key: config[key] for key in THRESHOLD_KEYS},
+            # Set on the tick of the first observation and carried forward, so it is reported once.
+            vision_sites.FIRST_OBSERVED_KEY: vision_sites.first_observed_at(
+                previous_state, sites, measured, config["coverage_floor"], now.isoformat()
+            ),
             "sites": sites,
             "measured": measured,
         }
@@ -256,6 +290,10 @@ class RailAccessAdapter(Adapter):
             return None
         known = {entry.get("scene_id") for entry in record["history"]}
         new_scene = scene is not None and scene["id"] not in known
+        # A scene the worker refused for what it is is nothing new for a while (REFUSED_SCENE_CODES),
+        # so (d) may use the tick; the refusal stays the site's `last_error` meanwhile.
+        refused = new_scene and _refused_before(record, scene["id"], now)
+        new_scene = new_scene and not refused
         key = site_key(site["polygon"])
         network = record.get("network")
         if not (isinstance(network, dict) and network.get("site_key") == key):
@@ -280,10 +318,12 @@ class RailAccessAdapter(Adapter):
                 and budget.remaining() >= OSM_RESERVE_SECONDS
             ):
                 self._fetch_network(site, record, now, key)
-            record.pop("last_error", None)
+            if not refused:
+                record.pop("last_error", None)
             return None
         if not new_scene:
-            record.pop("last_error", None)
+            if not refused:
+                record.pop("last_error", None)
             return None
         if budget.remaining() < MEASURE_RESERVE_SECONDS:
             return DEFERRED
@@ -301,14 +341,16 @@ class RailAccessAdapter(Adapter):
             entry = _history_entry(scene, result, network, key, stale)
         except vision_client.VisionError as exc:
             record["last_error"] = _error(now, exc.code, exc.detail)
+            record["failed_scene"] = {"id": scene["id"], "code": exc.code, "at": now.isoformat()}
             return None
         if result.image_png:
             try:
                 entry["image_key"] = self.store_image(topic_id, site["id"], scene["id"], result.image_png)
             except Exception as exc:  # noqa: BLE001 - a lost figure doesn't lose the measurement
                 print(f"rail_access: could not store the figure for {site['id']}: {exc!r}")
-        record["history"] = [*record["history"], entry][-config["history_size"] :]
+        record["history"] = _slim_history([*record["history"], entry][-config["history_size"] :])
         record.pop("last_error", None)
+        record.pop("failed_scene", None)
         return {"site_id": site["id"], "scene_id": scene["id"]}
 
     def _fetch_network(self, site: dict, record: dict, now: datetime, key: str) -> dict | None:
@@ -569,7 +611,7 @@ class RailAccessAdapter(Adapter):
                     "station_count": last.get("station_count"),
                     "reach_m": _reach_m(last),
                     "coverage": last.get("coverage"),
-                    "flag_count": len(last.get("flags") or []),
+                    "flag_count": last.get("flag_count", len(last.get("flags") or [])),
                     "previous_served_shares": [e.get("served_share") for e in history[:-1]],
                 }
         return render_review_evidence({"task": TASK, "sites": latest})
@@ -611,16 +653,44 @@ def _is_stale(network: dict, now: datetime, ttl_days) -> bool:
 
 def _retry_waits(record: dict, now: datetime) -> bool:
     """Whether the last network fetch failed less than NETWORK_RETRY_HOURS ago."""
-    error = record.get("network_error")
-    if not isinstance(error, dict) or not isinstance(error.get("at"), str):
+    return _recent(record.get("network_error"), now)
+
+
+def _refused_before(record: dict, scene_id: str, now: datetime) -> bool:
+    """Whether the worker refused this very scene for what it is (REFUSED_SCENE_CODES) less than
+    NETWORK_RETRY_HOURS ago: then it is not sent again yet."""
+    failed = record.get("failed_scene")
+    if not isinstance(failed, dict) or failed.get("id") != scene_id:
+        return False
+    return failed.get("code") in REFUSED_SCENE_CODES and _recent(failed, now)
+
+
+def _recent(stamp, now: datetime) -> bool:
+    """Whether `stamp` ({"at": iso, ...}) is less than NETWORK_RETRY_HOURS old."""
+    if not isinstance(stamp, dict) or not isinstance(stamp.get("at"), str):
         return False
     try:
-        at = datetime.fromisoformat(error["at"])
+        at = datetime.fromisoformat(stamp["at"])
     except ValueError:
         return False
     if at.tzinfo is None:
         at = at.replace(tzinfo=UTC)
     return now - at < timedelta(hours=NETWORK_RETRY_HOURS)
+
+
+def _slim_history(history: list) -> list:
+    """`history` with every entry but the newest without NEWEST_ONLY_KEYS (its flags counted in
+    `flag_count` if it had none)."""
+    return [*(_slim(entry) for entry in history[:-1]), *history[-1:]]
+
+
+def _slim(entry):
+    if not isinstance(entry, dict):
+        return entry
+    slim = {key: value for key, value in entry.items() if key not in NEWEST_ONLY_KEYS}
+    if "flag_count" not in slim and isinstance(entry.get("flags"), list):
+        slim["flag_count"] = len(entry["flags"])
+    return slim
 
 
 def _param_values(entry: dict) -> tuple:
@@ -640,8 +710,9 @@ def _comparable(entry: dict, latest: dict) -> bool:
 def _history_entry(
     scene: dict, result: vision_client.VisionResult, network: dict, polygon_key: str, network_stale: bool
 ) -> dict:
-    """One scene's measurement as the history keeps it: the metrics an article or the agent may
-    use, the station rows cut to STATION_FIELDS and capped, the build and timings for
+    """One scene's measurement as the history keeps it while it is the newest: the metrics an
+    article or the agent may use, the station rows cut to STATION_FIELDS and capped (these and the
+    other NEWEST_ONLY_KEYS lists go when a newer scene arrives), the build and timings for
     reproducibility, the scene's assets for `look_again`, the polygon's `site_key` and whether the
     network was past its TTL. VisionError "reply" if anything in it would not survive JSON (a NaN
     or an infinity the worker let through): a value that cannot be stored is a measurement that was
@@ -652,6 +723,7 @@ def _history_entry(
         for row in (metrics.get("stations") or [])[:MAX_HISTORY_STATIONS]
         if isinstance(row, dict)
     ]
+    flags = metrics.get("flags") or []
     entry = {
         "scene_id": scene["id"],
         "captured_at": scene["captured_at"],
@@ -664,7 +736,9 @@ def _history_entry(
         "station_count": metrics["station_count"],
         "edge_count": metrics.get("edge_count"),
         "hubs": metrics.get("hubs") or [],
-        "flags": metrics.get("flags") or [],
+        # The lists (NEWEST_ONLY_KEYS) are dropped when a newer scene arrives; the count stays.
+        "flags": flags,
+        "flag_count": len(flags) if isinstance(flags, list) else 0,
         "suggestions": metrics.get("suggestions") or [],
         "deserts": metrics.get("deserts") or [],
         "stations": stations,

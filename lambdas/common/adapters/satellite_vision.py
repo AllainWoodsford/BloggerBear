@@ -43,8 +43,9 @@ least `absolute_threshold` *and* `relative_threshold`, the new scene's coverage 
 a scene at or above the coverage floor is material (the adapter contract's first observation); a
 tick before that, with nothing measured (no scene in the lookback, the worker unreachable) or only
 scenes below the floor, is not: a Finding with nothing in it, or a count made over a third of the site,
-would still cost a model call and make an empty or misleading article. Rule 2 holds: every
-Bedrock call comes after this.
+would still cost a model call and make an empty or misleading article. The state records when it was
+(`first_observed_at`), so it is reported once, however the history is trimmed or the floor raised
+later. Rule 2 holds: every Bedrock call comes after this.
 
 **State between ticks.** The baseline must include every scene measured, not only those that were
 reported, so this adapter sets `keeps_running_state`: the research tick keeps its state after a
@@ -234,6 +235,10 @@ class SatelliteVisionAdapter(Adapter):
             "object_noun": config["object_noun"],
             # The diff gets only the two states, so the topic's thresholds travel in the state.
             "thresholds": {key: config[key] for key in THRESHOLD_KEYS},
+            # Set on the tick of the first observation and carried forward, so it is reported once.
+            vision_sites.FIRST_OBSERVED_KEY: vision_sites.first_observed_at(
+                previous_state, sites, measured, config["coverage_floor"], now.isoformat()
+            ),
             "sites": sites,
             "measured": measured,
         }

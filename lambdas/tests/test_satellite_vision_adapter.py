@@ -355,6 +355,50 @@ def test_the_first_observation_is_the_first_clear_scene(adapter):
     assert adapter.agent.calls == []
 
 
+def diff_tick(adapter, previous, n, count, coverage=0.95, **config):
+    """One research tick as research_tick_handler runs it, with a new scene S<n>: the fetch on the
+    previous state, then the diff against it."""
+    scene = f"S{n}"
+    stac = FakeStac([item(scene, f"2026-09-{10 + n}T00:00:00Z")])
+    worker = FakeWorker({scene: count}, coverage={scene: coverage})
+    state = run(adapter, stac, worker, previous=previous, **config)
+    return state, adapter.material_diff(previous, state)
+
+
+def test_the_first_observation_is_reported_once(adapter):
+    """The state records it (`first_observed_at`): a run of history_size cloudy scenes trims every
+    clear one from the history, yet the next clear scene is not a first observation again."""
+    small = {"history_size": 2, "min_baseline": 1}
+    state, (changed, summary) = diff_tick(adapter, None, 0, 10, **small)
+    assert changed and summary.startswith("First observation")
+    assert state["first_observed_at"] == state["fetched_at"]
+    for n in (1, 2):
+        state, diff = diff_tick(adapter, state, n, 3, coverage=0.3, **small)
+        assert diff == (False, f"{SITE_NAME}: coverage below the floor")
+    assert [e["coverage"] for e in state["sites"]["botany"]["history"]] == [0.3, 0.3]
+    state, diff = diff_tick(adapter, state, 3, 30, **small)
+    assert diff == (False, f"{SITE_NAME}: baseline still building") and adapter.agent.calls == []
+
+
+def test_a_raised_floor_or_a_state_from_before_the_marker_does_not_make_a_scene_first(adapter):
+    state, (changed, _) = diff_tick(adapter, None, 0, 10, coverage=0.75)
+    assert changed
+    # The floor goes to 0.8, above the only scene so far: the next clear one is compared.
+    later, diff = diff_tick(adapter, state, 1, 30, coverage=0.9, coverage_floor=0.8)
+    assert diff == (False, f"{SITE_NAME}: baseline still building")
+    # A state written before the marker is judged by its own scene against its own floor (0.7).
+    legacy = json.loads(json.dumps(state))
+    del legacy["first_observed_at"]
+    later, diff = diff_tick(adapter, legacy, 1, 30, coverage=0.9, coverage_floor=0.8)
+    assert diff == (False, f"{SITE_NAME}: baseline still building")
+    assert later["first_observed_at"] == legacy["fetched_at"]
+    # One from before with only a cloudy scene: the next clear scene is the first observation.
+    cloudy, _ = diff_tick(adapter, None, 0, 3, coverage=0.3)
+    del cloudy["first_observed_at"]
+    clear, (changed, summary) = diff_tick(adapter, cloudy, 1, 12)
+    assert changed and summary.startswith("First observation")
+
+
 def test_no_material_change_while_the_baseline_builds(adapter):
     state = history_state(adapter, [10, 40])
     changed, summary = adapter.material_diff(EARLIER, state)

@@ -26,12 +26,13 @@ budget is answered "budget used, answer now"), and at most `max_tool_calls + 2` 
 per tool call, one to be told the budget is used, and the answer. A `deadline` (a `clock()` value,
 given by the adapter from the research tick's own budget) is kept too: no model turn starts with
 less than MIN_SECONDS_TO_ANSWER left; `look_again` waits on the worker for at most what is left
-before that last turn (rounded down to LOOK_AGAIN_TIMEOUT_STEP_SECONDS), so it can never return
-after the deadline, and is refused when that is under MIN_LOOK_AGAIN_READ_SECONDS; `web_context`
-gets at most WEB_CONTEXT_SECONDS of what is left. The answer must be a JSON object
-{"verdict": "real" | "artefact", "reason": "..."}; anything else, a Bedrock error, a turn limit or
-a tool failure the model can't get past is "artefact" with the reason why. **Fail closed:** an
-unsure agent never makes a Finding. **Outside text is data.** What the tools return (news text,
+before that last turn, less the client's connect allowance (rounded down to
+LOOK_AGAIN_TIMEOUT_STEP_SECONDS), so it returns in time for the answer turn, and is refused when
+that is under the task's `min_look_again_seconds` (a worker run that cannot finish is still
+billed); `web_context` gets at most WEB_CONTEXT_SECONDS of what is left. The answer must be a
+JSON object {"verdict": "real" | "artefact", "reason": "..."}; anything else, a Bedrock error, a
+turn limit or a tool failure the model can't get past is "artefact" with the reason why. **Fail
+closed:** an unsure agent never makes a Finding. **Outside text is data.** What the tools return (news text,
 OpenStreetMap names) is cut and cleaned before the model sees it, the reason it answers with is
 one plain line of at most MAX_REASON_CHARS, and the adapters quote it in a summary as the agent's
 note, not a measurement. Every call's tokens are tallied on the Stats page
@@ -61,12 +62,17 @@ MAX_TOKENS = 700
 MAX_REASON_CHARS = 300
 # Seconds that must remain before the deadline for one more model turn.
 MIN_SECONDS_TO_ANSWER = 10.0
-# A re-measurement (a worker call: usually seconds, up to the worker's own 60 s timeout) waits at
-# most until that last turn must start: its read timeout is cut to the time left before it, in
-# whole steps of this many seconds (vision_client keeps one boto3 client per read timeout, so the
-# steps bound how many it makes), and under the minimum the worker could not usefully answer.
+# A re-measurement (a worker call: seconds for ships, up to the worker's own 60 s timeout) waits at
+# most until that last turn must start: its read timeout is cut to the time left before it, less
+# the client's connect allowance, in whole steps of this many seconds (vision_client keeps one
+# boto3 client per read timeout, so the steps bound how many it makes). Under the task's minimum
+# (TaskProfile.min_look_again_seconds, this by default) the worker could not usefully answer.
 LOOK_AGAIN_TIMEOUT_STEP_SECONDS = 5
 MIN_LOOK_AGAIN_READ_SECONDS = 10.0
+# The rail worker's measured run is about 20-40 s (a city's bands, the built-up mask, the graph): a
+# shorter wait cannot finish, and the invoke is billed all the same (Lambda runs on after a client
+# gives up).
+RAIL_MIN_LOOK_AGAIN_SECONDS = 30.0
 # What `web_context` may cost: a handful of headlines from the last two months, within ten
 # seconds of the deadline's remainder (the news search has its own retries and fallback, which
 # would otherwise run the tick out of time).
@@ -181,7 +187,7 @@ SHIP_METRIC_KEYS = (
 SHIP_HISTORY_KEYS = ("scene_id", "captured_at", "count", "coverage", "quality_flags")
 RAIL_METRIC_KEYS = (
     "scene_id", "captured_at", "coverage", "built_up_km2", "served_km2", "desert_km2", "served_share",
-    "station_count", "snapped_station_count", "edge_count", "components", "hubs", "flags",
+    "station_count", "snapped_station_count", "edge_count", "components", "hubs", "flags", "flag_count",
     "quality_flags", "scene_cloud_cover", "network_fetched_at",
 )  # fmt: skip
 RAIL_HISTORY_KEYS = (
@@ -194,8 +200,10 @@ class TaskProfile:
     """How the agent is set up for one task: its system prompt, the tools it may call, what it is
     told about a measurement (`metric_keys`), the bounds of `look_again`'s settings (the worker
     contract's), how `web_context` phrases its search from the site's name (None: the task has no
-    such tool), and what it is told about each stored scene (`history_keys`; `metric_keys` when
-    empty). The fields are in the specification's order, the later addition last."""
+    such tool), what it is told about each stored scene (`history_keys`; `metric_keys` when empty)
+    and the shortest wait on the worker `look_again` is worth (`min_look_again_seconds`: under it,
+    with a deadline, it is refused). The fields are in the specification's order, the later
+    additions last."""
 
     task: str
     system_prompt: str
@@ -204,6 +212,7 @@ class TaskProfile:
     look_again_limits: dict
     web_query: Callable[[str], str] | None
     history_keys: tuple[str, ...] = ()
+    min_look_again_seconds: float = MIN_LOOK_AGAIN_READ_SECONDS
 
 
 def rail_web_query(site_name: str) -> str:
@@ -219,6 +228,7 @@ PROFILES = {
         look_again_limits=contract.PARAM_LIMITS,
         web_query=None,
         history_keys=SHIP_HISTORY_KEYS,
+        min_look_again_seconds=MIN_LOOK_AGAIN_READ_SECONDS,
     ),
     "rail_access": TaskProfile(
         task="rail_access",
@@ -228,6 +238,7 @@ PROFILES = {
         look_again_limits=contract.RAIL_PARAM_LIMITS,
         web_query=rail_web_query,
         history_keys=RAIL_HISTORY_KEYS,
+        min_look_again_seconds=RAIL_MIN_LOOK_AGAIN_SECONDS,
     ),
 }
 
@@ -415,11 +426,13 @@ def _run_tool(
             if not isinstance(given, dict):
                 return [{"text": "look_again takes an object of settings."}], "error"
             wait = look_again_timeout(read_timeout, deadline, clock)
-            if deadline is not None and wait < MIN_LOOK_AGAIN_READ_SECONDS:
+            if deadline is not None and wait < profile.min_look_again_seconds:
+                # Too short for the worker to finish: the call would be billed and answer nothing.
                 return [{"text": "No time left to re-measure. Answer now with what you have."}], "error"
-            # The task, its network and the read timeout are passed only when there is one (not
-            # ships, a network, a deadline or a timeout given), so a worker stand-in written before
-            # they existed is still called as before (the ships adapter's own tests hold that).
+            # The task and its network are passed only for a task other than ships, and the read
+            # timeout whenever there is one: with a deadline (the adapters always give one, ships
+            # too) or a timeout given. vision_client.measure takes them all; a ships stand-in with
+            # neither is called with the five arguments it always had.
             extra = {}
             if profile.task != contract.DEFAULT_TASK:
                 extra["task"] = profile.task
@@ -507,12 +520,13 @@ def _is_iso_date(value: str) -> bool:
 def look_again_timeout(read_timeout: float | None, deadline: float | None, clock) -> float | None:
     """How long `look_again` may wait on the worker: `read_timeout` (the client's default when
     None) without a deadline; with one, at most what is left before the last model turn must start
-    (deadline - MIN_SECONDS_TO_ANSWER), rounded down to a whole LOOK_AGAIN_TIMEOUT_STEP_SECONDS.
-    None means the client's own default and no deadline to keep."""
+    (deadline - MIN_SECONDS_TO_ANSWER) less the client's connect allowance (the call may take that
+    too before its read begins), rounded down to a whole LOOK_AGAIN_TIMEOUT_STEP_SECONDS. None
+    means the client's own default and no deadline to keep."""
     if deadline is None:
         return read_timeout
     base = read_timeout if read_timeout is not None else vision_client.DEFAULT_READ_TIMEOUT_SECONDS
-    left = min(base, deadline - clock() - MIN_SECONDS_TO_ANSWER)
+    left = min(base, deadline - clock() - MIN_SECONDS_TO_ANSWER - vision_client.CONNECT_TIMEOUT_SECONDS)
     step = LOOK_AGAIN_TIMEOUT_STEP_SECONDS
     return float(max(int(left // step) * step, 0))
 

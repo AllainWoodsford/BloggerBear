@@ -889,6 +889,8 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     assert default is not shorter
     retries = {"max_attempts": 1, "mode": "standard"}
     assert made == [("lambda", "us-west-2", 5, 90, retries), ("lambda", "us-west-2", 5, 58, retries)]
+    # The connect allowance is exported: the triage agent counts it before the answer turn.
+    assert vision_client.CONNECT_TIMEOUT_SECONDS == 5 and vision_client.DEFAULT_READ_TIMEOUT_SECONDS == 90
     # measure() asks for the client with its read timeout: the triage agent's look_again waits less.
     vision_client.measure(SITE, SCENE, read_timeout=30)
     assert made[-1][1:4] == ("us-west-2", 5, 30) and len(made) == 3
