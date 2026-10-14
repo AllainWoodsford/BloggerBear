@@ -194,6 +194,13 @@ python scripts/admin_cli.py topics update github-trending     --model-candidates
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
+**The Rail Access Monitor's topics.** The four `rail_access` city topics (Sydney, Melbourne,
+Singapore and Boston, each with its box, reach, editorial goal and a daily cadence staggered so
+each day features one city) are complete admin API topic bodies in
+[`rail_topics.example.json`](rail_topics.example.json). `topics create` takes a topic as flags, not
+a file: [docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
+has the loop that reads each field out of the file, and how to check a new city's box.
+
 Setting the registry up on a new deployment, with a sample `model-config` item, is in
 [docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
 
@@ -530,6 +537,13 @@ desert components, `analyse_rail_access`), on fixed synthetic images, so network
 enter it. `scenes` and `worker` run the scenes pinned in `vision_benchmark_scenes.json` (add
 scenes; never change one, or old reports stop being comparable). Every report records the OpenCV
 build fingerprint and the CPU generation.
+
+The options, as `--help` gives them: `kernels`, `scenes` and `worker` take `--repeats` (timed runs
+per case; 20, 3 and 5 when left out) and `--out FILE` (the report as JSON; a Markdown table is
+always printed); `kernels` takes `--size` (the synthetic images' side, 2048 px); `scenes` and
+`worker` take `--scenes-file` and `--backend opencv|cool`, and `worker` needs `--arn`;
+`fetch-network` takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one
+vCPU, so a CPU's rows are closest to it with the run pinned to one core (`taskset -c 0` on Linux).
 
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
 request. `fetch-network` asks Overpass for the scene's polygon (`lambdas/common/osm.py`, the same

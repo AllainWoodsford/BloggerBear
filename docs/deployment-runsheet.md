@@ -526,13 +526,14 @@ variable, not with a tfvars edit. Every setting it uses is in
 3. **Create a topic.** A `satellite_vision` topic needs `adapter: "satellite_vision"` and
    `sites` in its `adapter_config` (one to ten lon/lat polygons, each with an `id` and
    optionally a `name`), and usually an `object_noun`; everything else has a default
-   (`common/adapters/satellite_vision.py` documents every key). A `rail_access` topic (once its
-   adapter has merged) needs `sites` whose polygons each sit inside one Sentinel-2 tile, and
-   takes `reach_m`. Both get `force_manual_review` whether you ask or not: every article waits
-   for `admin_cli approve`. Trigger the first tick by hand
-   (`topics trigger <id> --pipeline research_tick`); the first tick that measures something is
-   always reported, so a Finding, then a held article, is what success looks like. A tick that
-   measures nothing (the worker off, every site in `last_error`) writes no Finding.
+   (`common/adapters/satellite_vision.py` documents every key). A `rail_access` topic is one
+   city inside one Sentinel-2 tile: [`rail_access` topics](#rail_access-topics), below, creates
+   the four starting cities from a file. Both get `force_manual_review` whether you ask or not:
+   every article waits for `admin_cli approve`. Trigger the first tick by hand
+   (`topics trigger <id> --pipeline research_tick`); the first scene measured at or above the
+   topic's coverage floor is its first observation, reported once, so a Finding, then a held
+   article, is what success looks like. A tick that measures nothing (the worker off, every site
+   in `last_error`), or only a scene under the floor (mostly cloud), writes no Finding.
 4. **To turn it off again:** set the variable to any value but `true`, or remove it (either is
    read as off), and run a deploy. The next apply removes the worker, its bucket, its log group
    and the invoke right;
@@ -543,6 +544,124 @@ The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` buc
 else) and needs no key and no other access. It has no alarm of its own: observability's alarms
 are in the home Region, and the worker is not; read its log group,
 `/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`.
+
+### `rail_access` topics
+
+The Rail Access Monitor is one topic per city
+([what it measures](architecture/blogger-vision.md#part-two-the-trains-explainer); every key and
+default: [configuration.md](configuration.md#a-rail_access-topic)). Turn the worker on first
+(above): without it each tick records `last_error` on the city and writes nothing.
+
+**Create the four city topics.** `scripts/rail_topics.example.json` holds four complete admin API
+topic bodies, Sydney, Melbourne, Singapore and Boston: each city's box from
+[rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards),
+`reach_m` 1000, an editorial goal, and a daily cadence. `topics create` takes a topic as flags,
+not as a file, so read each field out of it, from the repository root:
+
+```bash
+field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.example.json"))["topics"][int(sys.argv[1])][sys.argv[2]]; print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"; }
+for i in 0 1 2 3; do
+  python scripts/admin_cli.py topics create --topic-id "$(field $i topic_id)" --name "$(field $i name)" \
+      --adapter rail_access --config-json "$(field $i adapter_config)" \
+      --editorial-goals-json "$(field $i editorial_goals)" \
+      --daily-cadence "$(field $i daily_cadence)" --daily-timezone "$(field $i daily_timezone)"
+done
+python scripts/admin_cli.py topics get rail-sydney
+```
+
+Each answer shows `"force_manual_review": true`, which was not sent: the admin API forces it for
+this adapter. The editorial goals matter more than they look: the `rail_access` adapter has no
+default goal of its own, so a rail topic created without one is ideated and drafted under the
+global default ("independent web research ... sampling 5 to 10 articles"), which does not fit a
+measurement. The example's goal asks for the measured figures, the capture date and what was not
+measured, and rules out ridership, cost, recommendations and causes.
+
+**How the cadence works.** Like every topic, each city has two schedules. The research heartbeat
+(`rate(1 hour)` by default) asks whether the topic is due (its `research_interval_hours`, else the
+pipeline-wide interval) and, when it is, the adapter searches Earth Search for the newest scene
+over the whole city in the last 20 days. Sentinel-2 passes every few days, so most ticks find a
+scene the city already has: nothing is measured, no model is called, and the tick may instead
+refresh a network past its 30-day TTL. A new scene is measured; only a material change (or the
+first observation) makes a Finding. The daily cycle runs on `daily_cadence` in `daily_timezone`
+and drafts from the Findings newer than the topic's last article; with none, it does nothing. The
+example staggers the cities over the week, all at 09:05 Sydney time, after the other topics'
+09:00 to 09:03: Sydney on Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday
+and Sunday, Boston Thursday (`cron(5 9 ? * MON,FRI *)` and so on). So each day features at most
+one city, and that city's article gathers every Finding since its last one. Within a topic,
+which holds at most three cities, one city is measured per tick (`max_sites_per_tick`): those
+never attempted first, then the one attempted longest ago; a city skipped for that cap, or
+deferred because the tick ran short of time, keeps its place.
+
+**What the first tick does.** Trigger it by hand rather than wait for the heartbeat:
+`python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick` (a manual tick
+ignores the interval). In order: the scene search; the city's OpenStreetMap network from the
+Overpass API, since none is cached (within 30 s, both endpoints included; a failure is
+`last_error` `osm` and the city waits for the next tick); then, if 45 s of the 70 s measuring
+budget remain, the worker measures the newest scene with that network (if the fetch was slow, the
+measurement is deferred to the next tick, which uses the cached network). If the scene's coverage
+is at least 0.6, that is the first observation: a Finding, its summary written by the model from
+"First observation. Sydney: served share …, … stations, … km² beyond 1 km of a station (coverage
+…)" and the planner notes, with the figure attached, and no triage (there is no baseline to check
+against; a person reads every article anyway). A scene under the floor
+writes no Finding, and the next clear one is the first observation. Then
+`topics trigger rail-sydney --pipeline daily_cycle` drafts the article, which the
+`force_manual_review` hold keeps in the review inbox for `admin_cli approve`, whatever the
+compliance review says.
+
+**Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
+drew it, `vision/<topic>/<site>/<scene>.png` (for example
+`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); the running state, rewritten every
+tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
+`snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the
+newest entry with its station, flag, suggestion and desert lists), the cached network, and any
+`last_error`, `network_error` or `failed_scene`; and `first_observed_at` for the topic. When the
+article is published, each figure is copied to the site bucket, `<prefix>-<env>-site`, as
+`articles/figures/<article>/<n>.png`, and the page shows it under the credits with its caption.
+
+```bash
+aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json - | python -m json.tool | less
+```
+
+**Reading the agent's trail.** From the second clear scene on, a numeric change goes to the
+triage agent before it can become a Finding. `topics findings rail-sydney` prints the latest
+Finding: its `summary` (the model wrote it from a diff that, for a change the agent judged real,
+quoted the agent's reason as `the vision agent's note (not a measurement): "…"`), `figures`,
+`planner_notes` and `raw_snapshot_s3_key`. That snapshot (and the running state) holds the whole
+trail under `triage`, keyed by site id: `verdict`, `reason`, `tool_calls` (each tool's `name`, its
+`input` and whether it was `ok`), `model_id`, the tokens and `model_calls`; the newest history entry
+repeats the verdict and reason. A change the agent judged an artefact writes no Finding, so its
+trail is only in the running state. The review evidence, which the fresh-data review checks the
+draft against, carries each city's measured numbers and planner notes, not the trail: to see why
+a change was or was not reported, read `triage`.
+
+**Adding a city.** A new city is a new topic: copy one of the four bodies, with a new `topic_id`
+(at most 24 characters), name, site and cadence. Its box must sit inside one Sentinel-2 tile,
+because the scene search keeps only scenes whose footprint holds the whole site. A tile is a
+100 km square of the UTM grid and 9.8 km more to the east and south (Sydney's 56HLH runs from
+easting 300,000 to 409,800 and northing 6,190,240 to 6,300,040), so a box whose corners fall in
+one 100 km square fits. Check it with `lambdas/vision/geo.py` from the repository root (any
+Python 3.11 or later; `geo.py` needs only the standard library), putting your box's west, south,
+east and north in place of Sydney's:
+
+```bash
+python -c 'import sys, math; sys.path.insert(0, "lambdas"); from vision import geo; w, s, e, n = 150.86, -34.16, 151.56, -33.58; z = int((w + e) / 2 + 180) // 6 + 1; c = [geo.lonlat_to_utm(x, y, z, s < 0) for x in (w, e) for y in (s, n)]; xs, ys = [p[0] for p in c], [p[1] for p in c]; print("zone", z, "S" if s < 0 else "N", "| 100 km squares", sorted({(int(x // 1e5), int(y // 1e5)) for x, y in c}), "| margin km", round(min(min(xs) % 1e5, 1e5 - max(xs) % 1e5, min(ys) % 1e5, 1e5 - max(ys) % 1e5) / 1e3, 1), "| window px", math.ceil(max(xs) / 20) - math.floor(min(xs) / 20) + 32, "x", math.ceil(max(ys) / 20) - math.floor(min(ys) / 20) + 32)'
+```
+
+For Sydney it prints `zone 56 S | 100 km squares [(3, 62)] | margin km 1.4 | window px 3327 x 3306`.
+Three things to read: **one** square in the list (two means the box straddles a grid line: move
+or shrink it); a margin of a kilometre or more from the square's nearest edge (the four boxes have
+1.0 to 3.0); and a window of at most 3,584 px a side (the worker's `RAIL_MAX_WINDOW_PX`, 71.7 km
+at 20 m with the 16 px pad), or the worker refuses the city as `window_too_large`. Some passes
+cover only part of a tile; the search skips those and waits for one that holds the whole city.
+
+`reach_m` is the walking reach of a station in a straight line, 200 to 5000 m. Keep 1000 (about a
+12-minute walk) unless there is a reason: the served share and the deserts are only comparable
+between cities at the same reach, and a larger reach describes stations people drive or ride a
+bus to. Changing it, or the polygon, on a running topic starts a new baseline: the next scene
+reports "baseline still building" rather than a change. A topic may hold up to three cities
+(`MAX_RAIL_SITES`), measured one per tick, each with its own network in the running state; one
+city per topic is the design, since each city's network is about 3 MB of the state and articles
+are about one city.
 
 ### The COOL backend and the benchmark
 

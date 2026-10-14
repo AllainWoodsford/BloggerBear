@@ -251,8 +251,10 @@ and no `last_error` repeating in its running state. Then, in order:
    repository, which also covers dev) and publish a release. The worker lands in `vision_region`;
    in the home region the research tick gets the worker's ARN (`VISION_WORKER_ARN`) and the
    pipeline's role one policy to invoke it; nothing else in production changes.
-3. Create the topic in production with the same `adapter_config` that worked on dev, and trigger
-   its first tick by hand.
+3. Create the topic in production with the same `adapter_config` that worked on dev (for the
+   rail cities, the same bodies from `scripts/rail_topics.example.json`, as in the runsheet's
+   [`rail_access` topics](deployment-runsheet.md#rail_access-topics)), and trigger its first tick
+   by hand.
 
 `force_manual_review` is forced on every vision topic: **every vision article waits for a
 person** in the review inbox, whatever the compliance review said. Take it down again by
