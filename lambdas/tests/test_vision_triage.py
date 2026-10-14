@@ -670,3 +670,14 @@ def test_an_unknown_task_is_an_artefact_before_any_model_call(recorded):
     out = run(script, task="rail_yards")
     assert (out["verdict"], out["reason"]) == ("artefact", "no triage profile for task 'rail_yards'")
     assert script.requests == [] and recorded == []
+
+
+def test_the_brief_carries_at_most_max_brief_flags_and_the_count():
+    """The worker may flag hundreds of stations and the brief is resent on every turn: it carries
+    the first MAX_BRIEF_FLAGS flags and `flag_count` says how many there were."""
+    flags = [{"type": "isolated_high_demand", "station": f"s:{n}", "name": f"S{n}"} for n in range(300)]
+    entry = {"served_share": 0.7, "flags": flags, "flag_count": 300}
+    brief = vision_triage.summarise_metrics(entry, vision_triage.RAIL_METRIC_KEYS)
+    assert brief["flags"] == flags[: vision_triage.MAX_BRIEF_FLAGS] and brief["flag_count"] == 300
+    assert entry["flags"] == flags  # the history entry keeps them all
+    assert vision_triage.summarise_metrics({"count": 3}) == {"count": 3}  # ships: unchanged

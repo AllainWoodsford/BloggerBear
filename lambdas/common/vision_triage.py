@@ -185,6 +185,9 @@ SHIP_METRIC_KEYS = (
     "size_histogram", "rejected", "quality_flags", "scene_cloud_cover",
 )  # fmt: skip
 SHIP_HISTORY_KEYS = ("scene_id", "captured_at", "count", "coverage", "quality_flags")
+# The flags the agent's brief carries: the worker may flag hundreds of stations, and the brief is
+# resent on every model turn.
+MAX_BRIEF_FLAGS = 20
 RAIL_METRIC_KEYS = (
     "scene_id", "captured_at", "coverage", "built_up_km2", "served_km2", "desert_km2", "served_share",
     "station_count", "snapped_station_count", "edge_count", "components", "hubs", "flags", "flag_count",
@@ -245,8 +248,12 @@ PROFILES = {
 
 def summarise_metrics(entry: dict, keys: tuple[str, ...] = SHIP_METRIC_KEYS) -> dict:
     """What the model is told about one measurement: `keys` of `entry` (the ships keys by
-    default), nothing else."""
-    return {key: entry.get(key) for key in keys if key in entry}
+    default), nothing else. A list of flags is cut to MAX_BRIEF_FLAGS (the brief is resent on every
+    turn; `flag_count` still says how many there were)."""
+    summary = {key: entry.get(key) for key in keys if key in entry}
+    if isinstance(summary.get("flags"), list):
+        summary["flags"] = summary["flags"][:MAX_BRIEF_FLAGS]
+    return summary
 
 
 def parse_verdict(text: str) -> tuple[str, str]:

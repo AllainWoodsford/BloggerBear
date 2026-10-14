@@ -604,16 +604,17 @@ def test_a_scene_the_worker_refuses_for_what_it_is_is_not_sent_every_tick(adapte
     """The same scene would be refused again: it is recorded (`failed_scene`) and is nothing new
     until a newer scene appears or NETWORK_RETRY_HOURS pass. A tick that skips it has nothing new,
     so a stale network is refreshed meanwhile (step (d))."""
-    assert ra.REFUSED_SCENE_CODES == (
-        "window_too_large", "site_outside_scene", "bad_request", "unreadable_scene",
-    )  # fmt: skip
+    assert ra.REFUSED_SCENE_CODES == ("window_too_large", "site_outside_scene", "bad_request")
     first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     refusing = FakeRailWorker({}, error=vision_client.VisionError(code, "the worker's detail"))
     overpass = FakeOverpass(network())
     failed = run(adapter, scene(2), refusing, overpass, previous=first)
     record = failed["sites"]["sydney"]
     assert len(refusing.calls) == 1 and overpass.calls == []  # a new scene: measured before any refresh
-    assert record["failed_scene"] == {"id": "S2", "code": code, "at": failed["fetched_at"]}
+    assert record["failed_scene"] == {
+        "id": "S2", "code": code, "at": failed["fetched_at"],
+        "site_key": vision_sites.site_key(SYDNEY), "params": {"reach_m": 1000},
+    }  # fmt: skip
     assert record["last_error"]["code"] == code
 
     skipped = run(adapter, scene(2), refusing, overpass, previous=failed)
@@ -639,7 +640,43 @@ def test_a_scene_the_worker_refuses_for_what_it_is_is_not_sent_every_tick(adapte
     assert len(worker.calls) == 1 and retried["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
 
 
-@pytest.mark.parametrize("code", ["invoke", "throttled", "internal", "reply"])
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"reach_m": 800},
+        {"params": {"hub_count": 4}},
+        {"sites": [{"id": "sydney", "name": "Sydney", "polygon": [[150.8, -34.2], *SYDNEY[1:]]}]},
+    ],
+)
+def test_a_refused_scene_is_sent_again_at_once_after_the_operator_edits_the_site(adapter, edit):
+    """window_too_large is fixed by a smaller polygon, bad_request often by other parameters: the
+    refusal records both, so an edit makes the same scene a new request on the next tick, and a
+    measurement clears the refusal and its error."""
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    refusing = FakeRailWorker({}, error=vision_client.VisionError("window_too_large", "too big"))
+    failed = run(adapter, scene(2), refusing, previous=first)
+    assert failed["sites"]["sydney"]["failed_scene"]["code"] == "window_too_large"
+    polygon = (edit.get("sites") or SITES)[0]["polygon"]
+    worker = FakeRailWorker({"S2": metrics()})
+    edited = run(adapter, scene(2), worker, FakeOverpass(network(polygon=polygon)), previous=failed, **edit)
+    assert len(worker.calls) == 1 and edited["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert not {"failed_scene", "last_error"} & set(edited["sites"]["sydney"])
+
+
+def test_a_refusal_recorded_before_it_kept_the_polygon_still_holds(adapter):
+    """A `failed_scene` from before the polygon and params were recorded with it matches on the
+    scene alone, as it did when it was written."""
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    refusing = FakeRailWorker({}, error=vision_client.VisionError("site_outside_scene", "outside"))
+    failed = run(adapter, scene(2), refusing, previous=first)
+    old = json.loads(json.dumps(failed))
+    for key in ("site_key", "params"):
+        del old["sites"]["sydney"]["failed_scene"][key]
+    skipped = run(adapter, scene(2), refusing, previous=old)
+    assert len(refusing.calls) == 1 and skipped["measured"] == []
+
+@pytest.mark.parametrize("code", ["unreadable_scene", "invoke", "throttled", "internal", "reply"])
 def test_a_transient_worker_failure_is_tried_again_next_tick(adapter, code):
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
     failing = FakeRailWorker({}, error=vision_client.VisionError(code, "try later"))

@@ -72,8 +72,9 @@ only verifies and scores it. The summary prompt says so, and says what was not m
 no-change tick too, so the baseline includes every scene measured and the network is fetched once
 a month, not once a tick. The figure for each scene is stored in the content bucket under
 `vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the
-newest to the article (common/figures.py). The network (up to about 2.6 MB of JSON per city at
-common/osm.py's caps) is in the state and the worker request, and nowhere a prompt or a reviewer
+newest to the article (common/figures.py). The network (about 3 MB of JSON per city at
+common/osm.py's caps with ASCII names, more with long non-ASCII ones; the worker request is sent
+as UTF-8, not escaped) is in the state and the worker request, and nowhere a prompt or a reviewer
 would see it. Only the newest history entry keeps the per-scene lists (NEWEST_ONLY_KEYS); with
 MAX_RAIL_SITES that keeps the state within what the research tick's 512 MB can load.
 """
@@ -147,19 +148,22 @@ WORKER_READ_TIMEOUT = 58.0
 # is still far inside the 30-day TTL.
 NETWORK_RETRY_HOURS = 6
 # A scene the worker refuses for what it is (the site is outside it or too big for the worker's
-# window, the request does not fit the contract, a band cannot be read) would be refused again: it
-# is not sent again until a newer scene appears or NETWORK_RETRY_HOURS pass (a band unreadable now
-# may read later). Any other failure (`invoke`, `internal`, a malformed `reply`) is tried next tick.
-REFUSED_SCENE_CODES = ("window_too_large", "site_outside_scene", "bad_request", "unreadable_scene")
+# window, the request does not fit the contract) would be refused again for the same polygon and
+# parameters: it is not sent again until a newer scene appears, NETWORK_RETRY_HOURS pass, or the
+# operator edits the site's polygon or parameters (the refusal records both). `unreadable_scene` is
+# not one: the worker also reports a timed-out or throttled read under it. Any other failure
+# (`unreadable_scene`, `invoke`, `internal`, a malformed `reply`) is tried next tick.
+REFUSED_SCENE_CODES = ("window_too_large", "site_outside_scene", "bad_request")
 # The longest a cached network may serve before it is due again: a year of OpenStreetMap edits.
 MAX_OSM_TTL_DAYS = 365.0
 # One topic per city is the design (docs §2), so a topic watches at most this many. Each city's
 # network is in the running state, which the research tick (512 MB) loads whole, deep-copies site
-# by site and writes back. Measured (ru_maxrss) for 3 cities at common/osm.py's caps (2.6 MB of
+# by site and writes back. Measured (ru_maxrss) for 3 cities at common/osm.py's caps (2.6-3 MB of
 # network JSON each), history_size 20, 2000 station rows per scene and a tick measuring a new one:
 # with every entry keeping its lists the state was 54 MB and the tick peaked at 390 MB; with only
-# the newest keeping them (NEWEST_ONLY_KEYS) 10 MB and 146 MB, 38 MB of that the imports. The one
-# tick that slims a state written before peaks at 293 MB.
+# the newest keeping them (NEWEST_ONLY_KEYS) 10 MB and 146 MB, 38 MB of that the imports. A review
+# with every name at its 80-character cap measured 11.3 MB and 155 MB (22.6 MB and 181 MB with 80
+# CJK characters each). The one tick that slims a state written before peaks at 293 MB.
 MAX_RAIL_SITES = 3
 # What a budget-starved site returns from _visit: it waits for the next tick, unstamped.
 DEFERRED = "deferred"
@@ -290,11 +294,12 @@ class RailAccessAdapter(Adapter):
             return None
         known = {entry.get("scene_id") for entry in record["history"]}
         new_scene = scene is not None and scene["id"] not in known
-        # A scene the worker refused for what it is is nothing new for a while (REFUSED_SCENE_CODES),
-        # so (d) may use the tick; the refusal stays the site's `last_error` meanwhile.
-        refused = new_scene and _refused_before(record, scene["id"], now)
-        new_scene = new_scene and not refused
         key = site_key(site["polygon"])
+        # A scene the worker refused for what it is is nothing new for a while (REFUSED_SCENE_CODES),
+        # so (d) may use the tick; the refusal stays the site's `last_error` meanwhile. An edited
+        # polygon or parameters is a new request, so it is sent at once.
+        refused = new_scene and _refused_before(record, scene["id"], now, key, worker_params(config))
+        new_scene = new_scene and not refused
         network = record.get("network")
         if not (isinstance(network, dict) and network.get("site_key") == key):
             # (b) No usable network: none yet, or the old polygon's (it is never measured against).
@@ -341,7 +346,13 @@ class RailAccessAdapter(Adapter):
             entry = _history_entry(scene, result, network, key, stale)
         except vision_client.VisionError as exc:
             record["last_error"] = _error(now, exc.code, exc.detail)
-            record["failed_scene"] = {"id": scene["id"], "code": exc.code, "at": now.isoformat()}
+            record["failed_scene"] = {
+                "id": scene["id"],
+                "code": exc.code,
+                "at": now.isoformat(),
+                "site_key": key,
+                "params": worker_params(config),
+            }
             return None
         if result.image_png:
             try:
@@ -656,11 +667,15 @@ def _retry_waits(record: dict, now: datetime) -> bool:
     return _recent(record.get("network_error"), now)
 
 
-def _refused_before(record: dict, scene_id: str, now: datetime) -> bool:
-    """Whether the worker refused this very scene for what it is (REFUSED_SCENE_CODES) less than
-    NETWORK_RETRY_HOURS ago: then it is not sent again yet."""
+def _refused_before(record: dict, scene_id: str, now: datetime, key: str, params: dict) -> bool:
+    """Whether the worker refused this very scene, for this polygon (`key`) and these `params`, for
+    what it is (REFUSED_SCENE_CODES) less than NETWORK_RETRY_HOURS ago: then it is not sent again
+    yet. A refusal recorded before the polygon and params were kept with it is matched on the
+    scene alone."""
     failed = record.get("failed_scene")
     if not isinstance(failed, dict) or failed.get("id") != scene_id:
+        return False
+    if failed.get("site_key", key) != key or failed.get("params", params) != params:
         return False
     return failed.get("code") in REFUSED_SCENE_CODES and _recent(failed, now)
 

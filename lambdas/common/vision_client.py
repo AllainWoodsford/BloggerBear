@@ -138,9 +138,10 @@ def measure(
 
     lambda_client = client or _client(region_of(arn), read_timeout)
     try:
-        response = lambda_client.invoke(
-            FunctionName=arn, InvocationType="RequestResponse", Payload=json.dumps(request).encode("utf-8")
-        )
+        # UTF-8, not \u escapes: a network's non-ASCII names cost 2-3 bytes a character instead of
+        # 6-12, against Lambda's 6 MB synchronous payload.
+        payload = json.dumps(request, ensure_ascii=False).encode("utf-8")
+        response = lambda_client.invoke(FunctionName=arn, InvocationType="RequestResponse", Payload=payload)
         body = response["Payload"].read()
     except Exception as exc:  # botocore's errors, timeouts and throttles alike
         raise VisionError("invoke", str(exc)) from exc
