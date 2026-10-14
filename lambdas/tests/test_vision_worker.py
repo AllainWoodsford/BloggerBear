@@ -315,13 +315,46 @@ def test_window_too_large(files, monkeypatch):
     assert reply["error"] == "window_too_large"
 
 
-def test_a_rail_site_over_the_window_cap_is_refused_before_any_tile_is_read(rail_files, monkeypatch):
-    monkeypatch.setattr(scene, "MAX_WINDOW_PX", 100)  # the rail box needs about 170 x 180 px at 20 m
+# The Sydney box of docs/enhancements/rail-access-monitor.md §2, the largest of the four cities, and
+# the same box with its east edge 0.09° further out: 3,742 px across at 20 m, within
+# scene.MAX_WINDOW_PX but not within the rail task's own cap.
+SYDNEY_BOX = [[150.86, -33.58], [151.56, -33.58], [151.56, -34.16], [150.86, -34.16]]
+WIDER_THAN_SYDNEY = [[150.86, -33.58], [151.65, -33.58], [151.65, -34.16], [150.86, -34.16]]
+
+
+@pytest.fixture(scope="module")
+def tile_sized_swir():
+    """A 20 m swir16 band as big as a whole Sentinel-2 tile (5,490 px, 109.8 km a side) at
+    write_tiff's default origin in zone 56S, constant, its tiles past the header block: room for
+    a city-sized box."""
+    band = np.full((5490, 5490), VEGETATION[2], np.uint16)
+    return write_tiff(band, tile=512, pixel=20.0, gap=cog.HEADER_BYTES)
+
+
+def test_a_rail_site_over_the_rail_window_cap_is_refused_before_any_tile_is_read(rail_files, tile_sized_swir):
+    assert worker.RAIL_MAX_WINDOW_PX == 3584 < scene.MAX_WINDOW_PX
+    blobs = {**rail_files["blobs"], SWIR_URL: tile_sized_swir}
+    site = {"id": "wider-than-sydney", "polygon": WIDER_THAN_SYDNEY}
     log = []
-    reply = worker.lambda_handler(rail_request(rail_files), None, fetch=fetch_from(rail_files["blobs"], log))
+    reply = worker.lambda_handler(rail_request(rail_files, site=site), None, fetch=fetch_from(blobs, log))
     assert reply["error"] == "window_too_large"
+    assert reply["detail"] == "the site needs a 3742 x 3311 px window"  # under 4096: the rail cap refused it
     # Only the reference band's header was read, to put the polygon in pixels: no tile, no other band.
     assert log and all(url == SWIR_URL and start < cog.HEADER_BYTES for url, start, _ in log)
+
+
+def test_the_largest_city_box_fits_the_rail_window_cap(tile_sized_swir):
+    """Sydney's box, read as the rail task reads it: 3,327 x 3,306 px with the 16 px pad round
+    it, inside RAIL_MAX_WINDOW_PX."""
+    site = scene.read_site(
+        {"swir16": SWIR_URL},
+        SYDNEY_BOX,
+        fetch_from({SWIR_URL: tile_sized_swir}),
+        reference=worker.RAIL_REFERENCE_BAND,
+        max_window_px=worker.RAIL_MAX_WINDOW_PX,
+    )
+    col0, row0, col1, row1 = site.window
+    assert (col1 - col0, row1 - row0) == (3327, 3306) and site.bands["swir16"].shape == (3306, 3327)
 
 
 def test_unreadable_scene(files):

@@ -28,13 +28,35 @@ import numpy as np
 from vision import cog, geo
 
 # The largest window the worker will read, per side, in reference pixels: 4096 px = 41 km at 10 m
-# (larger than any anchorage) or 82 km at 20 m (a city and its suburbs; the four city boxes of
-# docs/enhancements/rail-access-monitor.md §2 need at most 3,327 px, Sydney's), and bounded so one
-# request can't ask for a whole 110 km scene. The rail task's compute at 4096 x 4096 px was
-# measured on a 4-core Intel Xeon at 2.1 GHz: 9 s for a synthetic city with 180 stations, and at
-# worst 20 s (a mesh of crossing ways just under the graph cap, 2,000 stations) or 21 s (4,096
-# parallel ways rasterised into one solid block, which the thinning peels for its full 32 passes),
-# under 1.4 GB, which leaves the 60 s invoke over half its time for the read.
+# (larger than any anchorage) or 82 km at 20 m, and bounded so one request can't ask for a whole
+# 110 km scene. The rail task has a smaller cap of its own, vision_worker_handler.RAIL_MAX_WINDOW_PX
+# = 3,584 px (71.7 km at 20 m; the four city boxes of docs/enhancements/rail-access-monitor.md §2
+# need at most 3,327 px with the pad, Sydney's), because its compute grows with the window and the
+# worker has one vCPU (2048 MB). That compute, through vision_worker_handler.lambda_handler (the bands
+# read from in-memory COGs, analyse_rail_access, annotate_rail, the reply; peak RSS from getrusage),
+# on ONE core of a 4-core Intel Xeon at 2.10 GHz (taskset to one CPU, cv2.setNumThreads(1), two runs
+# each), for the worst contract-valid networks built, all under the graph caps, each as built and with
+# two short ways in opposite corners (clipped OSM ways run to the window's edges, so the foreground's
+# box is the whole window), at 4096 px and at 3,584 px:
+#   one way back and forth across the window in 40 rows, 2,000 stations on it, 3,900 spurs 8 px long
+#   and a solid bar of 66 adjacent ways (the thinning's full 32 passes): 24.2-25.1 s and 1.49 GB at
+#   4096 px, 18.8-21.0 s and 1.20 GB at 3,584 px;
+#   1,194 anti-diagonals 3 px apart over one corner (1,044 at 3,584 px), a comb of 3,500 spurs with
+#   2,000 stations on one junction tree, and the bar: 21.3-22.8 s and 1.55 GB, 18.1-19.3 s and 1.22 GB;
+#   4,850 spurs 4 px apart off spines joined into one tree, 2,000 stations on their tips, and the bar:
+#   25.0-28.8 s and 1.49 GB, 18.2-21.0 s and 1.18 GB;
+#   the snaking way with a vertex every 4 px (50,158 points; 45,038), 4,300 spurs, 1,000 stations along
+#   it and 1,000 on spur tips, 5,000 bus stops and the bar: 27.3-32.7 s and 1.55 GB, 19.6-21.9 s and
+#   1.22 GB; the same with a second bar between its last two rows, so the thinning changes pixels at
+#   both ends of the window on every pass: 34.0-37.5 s, 22.6-23.4 s; and with both bars running off
+#   both sides of the window along its top and bottom edges: 34.3-34.9 s, 25.2-25.5 s, the worst;
+#   1,828 full-width ways 2 px apart (1,572 at 3,584 px), the most run pixels and the most memory:
+#   14.9-16.3 s and 1.69 GB, 12.2-13.1 s and 1.32 GB.
+# Before network.thin looked only where its last pass changed something, the same networks with the
+# corner ways took up to 28.9 s at 3,584 px, up to 7.3 s of it in the thinning (now 0.2-4.3 s).
+# Taking the worker's arm64 core as 1.3 times slower, the worst is about 49 s of compute at 4096 px:
+# with a 10-30 s read, 59-79 s, past the client's 58 s read timeout (rail_access.WORKER_READ_TIMEOUT).
+# At 3,584 px it is about 33 s, and the read covers 77% of the pixels: 41-56 s in all.
 MAX_WINDOW_PX = 4096
 # Extra pixels read around the polygon so the adaptive threshold's window has context at the edge.
 PAD_PX = 16

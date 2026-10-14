@@ -103,6 +103,13 @@ python scripts/admin_cli.py topics update github-trending --research-interval-ho
 python scripts/admin_cli.py pipeline-config get
 python scripts/admin_cli.py pipeline-config set --research-interval-hours 2   # save cost
 python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
+# How far back the daily article reads findings: everything since the topic's last article,
+# but never more than its findings window, 24 hours by default. A topic that does not write
+# every day (one day of a weekly rotation, a weekly topic) widens it so a finding made on a day
+# it does not write is still there on the day it does. Whole hours, 1-336 (findings expire after
+# 14 days); '' clears it. Also on `topics create`. Editing `findings_window_hours` in DynamoDB works too.
+python scripts/admin_cli.py topics update rail-sydney --findings-window-hours 192
+python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
 # Fresh-data review of each draft before it is checked and published. `shadow` (the
 # default) runs it and records the result on the article and, if it goes to moderation,
 # on its queue item (`review_notes`, shown by `moderation list`) without changing any
@@ -138,7 +145,8 @@ python scripts/admin_cli.py topics delete github-trending
 python scripts/admin_cli.py topics trigger github-trending --pipeline research_tick   # a manual run always runs now, whatever the interval
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --no-wait
 # daily_cycle only writes from findings newer than the topic's last article, so a
-# repeat run with nothing new is a no-op. --force rewrites from the whole last-24h window:
+# repeat run with nothing new is a no-op. --force rewrites from the topic's whole findings
+# window (the last 24 hours unless it sets --findings-window-hours):
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --force
 python scripts/admin_cli.py topics candidates github-trending
 python scripts/admin_cli.py topics findings github-trending

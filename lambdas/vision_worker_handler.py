@@ -51,6 +51,21 @@ logger.setLevel(logging.INFO)
 _REQUEST_TIMEOUT_SECONDS = 20.0
 # The rail task's analysis grid: every band is put onto this one's pixels (the reference band).
 RAIL_REFERENCE_BAND = "swir16"
+# The rail task's own window cap, per side, in swir16's 20 m pixels: 3,584 px = 71.7 km, which holds
+# the four city boxes of docs/enhancements/rail-access-monitor.md §2 (Sydney's is the largest, 3,327 x
+# 3,306 px with read_site's 16 px pad round it). The ships task keeps scene.MAX_WINDOW_PX (4096 px).
+# Why less: the rail analysis grows with the window and the worker has one vCPU (2048 MB). On one core
+# of a 4-core Intel Xeon at 2.10 GHz, through lambda_handler (the bands read from in-memory COGs, the
+# analysis, the figure, the reply), the worst contract-valid networks (scene.MAX_WINDOW_PX lists them),
+# with ways that run off the window's edges as clipped OSM ways do, take up to 37.5 s at 4096 px,
+# about 49 s on the arm64 worker (taken as 1.3 times slower): with a 10-30 s read, 59-79 s, past the
+# client's 58 s read timeout (rail_access.WORKER_READ_TIMEOUT). At 3,584 px they take up to 25.5 s at
+# a peak RSS of 1.32 GB, about 33 s on arm64, and the read covers 77% of the pixels: 41-56 s in all.
+# That budget assumes the read scales with the window's pixels; a full 30 s read on top of the
+# worst case would not fit. The worst case is constructed (two 1.3 km-wide solid bars of track
+# along both edges of the window, no real network looks like it); a real city's network measures
+# about 9 s. A worker that times out is an `invoke` error the adapter retries on its next tick.
+RAIL_MAX_WINDOW_PX = 3584
 _session: requests.Session | None = None
 
 
@@ -180,7 +195,11 @@ def _measure_rail(request: dict, fetch) -> tuple[scene.SiteBands, dict, bytes | 
     params = _params(RailParams, request)  # before any read: a bad combination costs no bytes
     t0 = time.perf_counter()
     site = scene.read_site(
-        request["scene"]["assets"], request["site"]["polygon"], fetch, reference=RAIL_REFERENCE_BAND
+        request["scene"]["assets"],
+        request["site"]["polygon"],
+        fetch,
+        reference=RAIL_REFERENCE_BAND,
+        max_window_px=RAIL_MAX_WINDOW_PX,
     )
     t1 = time.perf_counter()
 

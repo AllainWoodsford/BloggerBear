@@ -2482,6 +2482,96 @@ def test_something_that_is_not_a_number_still_fails_loudly():
         admin_api_handler._response(200, {"when": object()})
 
 
+# --- A topic's findings window (common/findings_window.py) ----------------------------------------
+#
+# How far back the daily article reads findings: validated exactly as research_interval_hours is,
+# stored only when set, and cleared with null.
+
+
+def _stored_topic(topic_id):
+    return boto3.resource("dynamodb", region_name=REGION).Table("Topics").get_item(
+        Key={"topic_id": topic_id}
+    ).get("Item")
+
+
+@pytest.mark.parametrize("hours", [1, 192, 336])
+def test_a_topic_can_be_created_with_a_findings_window(aws_resources, hours):
+    result = _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": hours})
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["findings_window_hours"] == hours
+    assert _stored_topic("rail-sydney")["findings_window_hours"] == hours
+
+
+def test_a_topic_created_without_a_findings_window_stores_none(aws_resources):
+    _create({"topic_id": "rail-sydney", "name": "Sydney rail"})
+    _create({"topic_id": "rail-boston", "name": "Boston rail", "findings_window_hours": None})
+
+    assert "findings_window_hours" not in _stored_topic("rail-sydney")
+    assert "findings_window_hours" not in _stored_topic("rail-boston")
+
+
+@pytest.mark.parametrize("bad", [0, 337, 1.5, "24", True, -1, [24]])
+def test_an_invalid_findings_window_is_refused_on_create(aws_resources, bad):
+    result = _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": bad})
+
+    assert result["statusCode"] == 400
+    assert json.loads(result["body"])["error"] == (
+        "'findings_window_hours' must be a whole number of hours from 1 to 336, or null for the "
+        "default (24)"
+    )
+    assert _stored_topic("rail-sydney") is None
+
+
+def test_a_findings_window_can_be_set_changed_and_cleared_on_update(aws_resources):
+    _put_topic()
+
+    for hours in (192, 336):
+        result = _update("github-trending", {"findings_window_hours": hours})
+        assert result["statusCode"] == 200
+        assert _stored_topic("github-trending")["findings_window_hours"] == hours
+
+    cleared = _update("github-trending", {"findings_window_hours": None})
+
+    assert cleared["statusCode"] == 200
+    assert "findings_window_hours" not in json.loads(cleared["body"])
+    assert "findings_window_hours" not in _stored_topic("github-trending")  # back to the default day
+
+
+@pytest.mark.parametrize("bad", [0, 337, 1.5, "24", True])
+def test_an_invalid_findings_window_is_refused_on_update_and_changes_nothing(aws_resources, bad):
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+
+    result = _update("github-trending", {"findings_window_hours": bad})
+
+    assert result["statusCode"] == 400
+    assert "'findings_window_hours' must be a whole number of hours" in json.loads(result["body"])["error"]
+    assert _stored_topic("github-trending")["findings_window_hours"] == 192
+
+
+def test_an_unrelated_update_keeps_the_findings_window(aws_resources):
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+
+    _update("github-trending", {"name": "Renamed"})
+
+    assert _stored_topic("github-trending")["findings_window_hours"] == 192
+
+
+def test_a_topic_s_findings_window_is_fetched_and_listed_as_a_whole_number(aws_resources):
+    _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": 192})
+
+    fetched = admin_api_handler.handler(
+        _event("GET /topics/{topic_id}", path_params={"topic_id": "rail-sydney"}), None
+    )
+    listed = admin_api_handler.handler(_event("GET /topics"), None)
+
+    assert fetched["statusCode"] == 200 and listed["statusCode"] == 200
+    window = json.loads(fetched["body"])["findings_window_hours"]
+    assert window == 192 and isinstance(window, int)
+    (topic,) = json.loads(listed["body"])["topics"]
+    assert topic["findings_window_hours"] == 192 and isinstance(topic["findings_window_hours"], int)
+
+
 # --- Creating and deleting gear by hand ------------------------------------------------------
 
 

@@ -196,6 +196,7 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`, `feedback-lock`, `feedback-unlock` | See `feedback-config --help` |
 | A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
+| How far back a topic's daily article reads findings (`findings_window_hours`), never past its last article. Widen it for a topic that does not write every day (one day of a rotation, such as a city topic whose `daily_cadence` runs two days a week, or a weekly topic), so a finding made on a day it does not write is still drafted. Whole hours, 1 to 336: findings expire after 14 days | same item | `topics create\|update --findings-window-hours N` (`""` clears it) | 24 hours |
 
 Seeding the model tables, with a sample item, is in
 [The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).

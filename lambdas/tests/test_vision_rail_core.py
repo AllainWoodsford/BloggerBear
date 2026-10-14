@@ -21,6 +21,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
+import vision_worker_handler as worker
 from common import vision_contract as contract
 from common.vision_client import MAX_IMAGE_BYTES
 from vision import access, geo, rail_analyse, rail_annotate, urban
@@ -64,12 +65,17 @@ LAKE = (slice(220, 260), slice(120, 160))  # inside the district
 CLOUD = (slice(30, 80), slice(300, 380))  # outside it
 
 
-def city():
-    """The bands of the synthetic city: `red`, `nir`, `swir16` and `scl`."""
+def city(size=SIZE):
+    """The bands of the synthetic city: `red`, `nir`, `swir16` and `scl` (at another `size`, the
+    district, lake and cloud scaled with it)."""
     names = ("red", "nir", "swir16")
-    bands = {name: np.full((SIZE, SIZE), v, np.uint16) for name, v in zip(names, VEGETATION, strict=True)}
-    scl = np.full((SIZE, SIZE), 4, np.uint8)  # vegetation
-    for region, scl_class in ((DISTRICT, 5), (LAKE, 6), (CLOUD, 9)):
+    bands = {name: np.full((size, size), v, np.uint16) for name, v in zip(names, VEGETATION, strict=True)}
+    scl = np.full((size, size), 4, np.uint8)  # vegetation
+
+    def scaled(region):
+        return tuple(slice(part.start * size // SIZE, part.stop * size // SIZE) for part in region)
+
+    for region, scl_class in ((scaled(DISTRICT), 5), (scaled(LAKE), 6), (scaled(CLOUD), 9)):
         for name, value in zip(names, BUILT, strict=True):
             bands[name][region] = value  # the lake and the cloud look built up; only SCL tells
         scl[region] = scl_class
@@ -316,6 +322,118 @@ def test_the_three_station_flags():
     # Nothing stands out when every station is alike.
     alike = [row(f"s:{i}", 0.5, 2, 0.2, 1000.0) for i in range(5)]
     assert flag_stations(alike, {r["id"]: [] for r in alike}) == []
+
+
+def walk_chain_with_a_list(start, members, adjacency):
+    """rail_analyse._walk_chain as it was, testing each step against the list of the order so
+    far. The walk with a visited set must give exactly this."""
+    component, todo = {start}, [start]
+    while todo:
+        for neighbour in adjacency.get(todo.pop(), ()):
+            if neighbour in members and neighbour not in component:
+                component.add(neighbour)
+                todo.append(neighbour)
+
+    def inside(node):
+        return [n for n in adjacency.get(node, ()) if n in component]
+
+    first = min(component, key=lambda n: (len(inside(n)), n))
+    order, current = [first], first
+    while True:
+        following = [n for n in inside(current) if n not in order]
+        if not following:
+            break
+        current = min(following)
+        order.append(current)
+    return order + sorted(component - set(order))
+
+
+def test_the_ghost_line_walk_with_a_visited_set_is_the_walk_it_replaces():
+    rng = np.random.default_rng(3)
+    for trial in range(300):
+        ids = [f"s:{i:02d}" for i in range(int(rng.integers(1, 30)))]
+        density = float(rng.choice([0.05, 0.15, 0.4]))
+        adjacency = {s: set() for s in ids}
+        for i, a in enumerate(ids):
+            for b in ids[i + 1 :]:
+                if rng.random() < density:
+                    adjacency[a].add(b)
+                    adjacency[b].add(a)
+        adjacency = {s: sorted(n) for s, n in adjacency.items()}
+        members = {s for s in ids if rng.random() < 0.7} or {ids[0]}
+        for start in sorted(members):
+            expected = walk_chain_with_a_list(start, members, adjacency)
+            assert rail_analyse._walk_chain(start, members, adjacency) == expected, trial
+
+
+def test_a_two_thousand_station_ghost_line_is_walked_in_order():
+    """2,000 quiet stations one after another along a line (ids shuffled along it), and 700 busy
+    ones off it: one ghost line, in line order, the same as the list walk gave."""
+    rng = np.random.default_rng(5)
+    line = [f"s:q{i:04d}" for i in rng.permutation(2000)]
+    adjacency = {s: sorted(line[max(0, i - 1) : i] + line[i + 1 : i + 2]) for i, s in enumerate(line)}
+    adjacency.update({f"s:b{i:03d}": [] for i in range(700)})
+    rows = [row(s, 0.0, 2, 0.0, 5000.0) for s in line] + [row(f"s:b{i:03d}", 0.6, 1, 0.0, 900.0)
+                                                          for i in range(700)]  # fmt: skip
+    (ghost,) = (f for f in flag_stations(rows, adjacency) if f["type"] == "ghost_line")
+    ends = sorted((line[0], line[-1]))
+    assert ghost["stations"] == (line if ends[0] == line[0] else line[::-1])
+    assert ghost["stations"] == walk_chain_with_a_list(ends[0], set(line), adjacency)
+
+
+def test_a_ghost_line_of_stations_all_next_to_each_other_is_walked_by_id():
+    """1,500 quiet stations off one junction tree are all next to each other: the walk takes the
+    nearest id each time."""
+    ids = [f"s:{i:04d}" for i in range(2000)]
+    adjacency = {s: [t for t in ids if t != s] for s in ids}
+    rows = [row(s, 0.0 if i % 4 else 0.7, 1, 0.0, 5000.0) for i, s in enumerate(ids)]
+    (ghost,) = (f for f in flag_stations(rows, adjacency) if f["type"] == "ghost_line")
+    assert ghost["stations"] == [s for i, s in enumerate(ids) if i % 4]
+
+
+class CountingId(str):
+    """A station id that counts the times it is compared for equality. A set finds an id by its
+    hash and then by identity, with no comparison; a list compares it with each entry in turn. So
+    the count is the work of the membership tests, and a test of it holds on any machine."""
+
+    comparisons = 0
+
+    def __eq__(self, other):
+        CountingId.comparisons += 1
+        return str.__eq__(self, other)
+
+    __hash__ = str.__hash__
+
+
+def a_line_of(n):
+    """`n` stations one after another along a line, their ids shuffled along it."""
+    line = [CountingId(f"s:{i:04d}") for i in np.random.default_rng(7).permutation(n)]
+    return line, {s: sorted(line[max(0, i - 1) : i] + line[i + 1 : i + 2]) for i, s in enumerate(line)}
+
+
+def all_next_to_each_other(n):
+    """`n` stations off one junction tree: each one next to every other."""
+    ids = [CountingId(f"s:{i:04d}") for i in range(n)]
+    return ids, {s: [t for t in ids if t is not s] for s in ids}
+
+
+@pytest.mark.parametrize("shape, n", [(a_line_of, 600), (all_next_to_each_other, 200)])
+def test_the_ghost_line_walk_tests_membership_against_sets_not_the_order_so_far(shape, n):
+    """The walk's equality comparisons stay within one per station (the min over the chain for its
+    first station makes them; a set finds the rest without one). The order so far kept as a list
+    made one per entry for every candidate at every step: about 359,000 along the line and 1.1
+    million among the 150 quiet stations next to each other."""
+    ids, adjacency = shape(n)
+    if shape is a_line_of:
+        members, expected = set(ids), (ids if ids[0] < ids[-1] else ids[::-1])
+    else:
+        members = {s for i, s in enumerate(ids) if i % 4}
+        expected = sorted(members)
+    CountingId.comparisons = 0
+    order = rail_analyse._walk_chain(min(members), members, adjacency)
+    comparisons = CountingId.comparisons
+    assert order == expected
+    assert comparisons <= 4 * len(members)
 
 
 def spokes():
@@ -740,6 +858,102 @@ def test_a_city_sized_network_completes_in_seconds_with_the_flag():
     assert "graph_too_large" not in m["quality_flags"]  # the graph was built; only betweenness sampled
     assert m["components"] == 1 and m["truncated"] == 0 and m["hubs"]
     assert json.loads(json.dumps(m, allow_nan=False)) == m
+
+
+def two_point_way(wid, a, b):
+    return {"id": wid, "points": [lonlat(*a), lonlat(*b)], "tunnel": False}
+
+
+def station_at(sid, x, y):
+    lon, lat = lonlat(x, y)
+    return {"id": sid, "name": f"Station {sid}", "kind": "station", "lon": lon, "lat": lat}
+
+
+def comb_and_diagonals(size=4096):
+    """A contract-valid network under both graph caps that was the heaviest before the station
+    passes and run lengths were linear: anti-diagonal ways 3 px apart over one corner (runs whose
+    bounding boxes are most of the window), a comb of 3,500 spurs 8 px long off spines 600 px
+    apart, joined by one way (one junction tree), 2,000 stations on spur tips (510 in the built
+    district, the rest in canopy: three quarters quiet, one long ghost line, every station next
+    to every other), and a solid bar of 66 adjacent ways that the thinning peels for its full
+    32 passes. The corner the diagonals cover scales with `size` (3,600 px of x + y at 4096)."""
+    reach = 2 * size - 3600 * size // 4096  # the diagonals x + y >= reach; the comb stays left of them
+    edge = size - 3
+    corner = range(reach, 2 * size - 20, 3)
+    ways = [two_point_way(f"d{c}", (c - edge, edge), (edge, c - edge)) for c in corner]
+    tips, spines = [], []
+    for y in range(60, size - 60, 600):
+        right = min(size - 20, reach - 60 - y)
+        spurs = range(28, right - 8, 4)
+        if len(spurs) < 50 or len(tips) >= 3500:
+            break
+        spines.append(y)
+        ways.append(two_point_way(f"sp{y}", (20, y), (right, y)))
+        for x in spurs[: 3500 - len(tips)]:
+            ways.append(two_point_way(f"u{len(tips)}", (x, y), (x, y + 8)))
+            tips.append((x, y + 8))
+    ways.append(two_point_way("conn", (22, spines[0]), (22, spines[-1])))
+    low, high = size // 4 + 100, 3 * size // 4 - 100
+    inside = [(x, y) for x, y in tips if low <= x <= high and low <= y <= high]
+    near = range(size // 4 - 100, 3 * size // 4 + 101)  # the district and a margin round it
+    outside = [(x, y) for x, y in tips if not (x in near and y in near)]
+    outside = [(x, y) for x, y in outside if not (y < size // 10 + 20 and x > 3 * size // 4 - 20)]
+    picked = inside[:: max(1, len(inside) // 510)][:510]
+    picked += outside[:: max(1, len(outside) // (2000 - len(picked)))][: 2000 - len(picked)]
+    stations = [station_at(f"n{k}", x, y) for k, (x, y) in enumerate(picked)]
+    bar = (spines[0] + spines[1]) // 2
+    ways += [two_point_way(f"bar{r}", (100, bar + r), (size - 200, bar + r)) for r in range(66)]
+    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT}
+
+
+def serpentine_and_bar(size=4096):
+    """The heaviest contract-valid network measured after: one way back and forth across the
+    window in 40 rows, 2,000 stations along it and 3,900 spurs 8 px long off it (9,807 nodes, one
+    long line whose far stations give the orbital links their full set of trials), and the same
+    66-way bar between its first two rows."""
+    rows = [40 + i * (size - 80) // 39 for i in range(40)]
+    points = []
+    for i, y in enumerate(rows):
+        ends = (40, size - 40) if i % 2 == 0 else (size - 40, 40)
+        points += [lonlat(ends[0], y), lonlat(ends[1], y)]
+    ways, stations = [{"id": "serp", "points": points, "tunnel": False}], []
+    for k, (x, y) in enumerate([(x, y) for y in rows for x in range(60, size - 60, 20)][:5900]):
+        if k % 2 == 0 and len(stations) < 2000:
+            stations.append(station_at(f"n{len(stations)}", x, y))
+        else:
+            ways.append(two_point_way(f"u{k}", (x, y), (x, y + 8)))
+    bar = rows[0] + 18
+    ways += [two_point_way(f"bar{r}", (100, bar + r), (size - 100, bar + r)) for r in range(66)]
+    return {"ways": ways, "stations": stations, "pois": [], "fetched_at": FETCHED_AT}
+
+
+@pytest.mark.skipif(not os.environ.get("VISION_PERF"), reason="set VISION_PERF=1 to time the worst networks")
+@pytest.mark.parametrize("make", [comb_and_diagonals, serpentine_and_bar])
+def test_the_worst_networks_measured_stay_within_the_analysis_budget(make):
+    """The whole pass with its figure at the rail task's window cap, and the graph measures, flags
+    and suggestions alone (the stage the quadratic station passes were in). The whole pass is held
+    to 30 s, the analysis's share of the worker's 60 s (the read takes 10-30 s of it), not to the
+    whole invoke. On one core of the machine of scene.MAX_WINDOW_PX (taskset): 13.0-13.3 s and
+    2.9-3.0 s for comb_and_diagonals, 15.3-15.6 s and 6.3-6.4 s for serpentine_and_bar; on its
+    four cores 11.6 s and 13.5 s. With the quadratic station passes back, comb_and_diagonals took
+    30.8 s on one core, 18.5 s of it in the stage, and failed both bounds."""
+    size = worker.RAIL_MAX_WINDOW_PX
+    network = contract.validate_network(make(size))
+    assert len(network["stations"]) == 2000 and len(network["ways"]) <= contract.NETWORK_LIMITS["ways"]
+    bands = city(size)
+    window = [[[0, 0], [size - 1, 0], [size - 1, size - 1], [0, size - 1]]]
+    started = time.perf_counter()
+    analysis = analyse_rail_access(bands, window, PX, TRANSFORM, EPSG, network)
+    png = annotate_rail(analysis, bands["red"], 2024)
+    seconds = time.perf_counter() - started
+    m = analysis.metrics
+    stages = analysis.layers["timings"]
+    print(f"{make.__name__} at {size} px: {m['node_count']} nodes, {seconds:.1f} s, stages (ms) {stages}")
+    assert 9000 < m["node_count"] <= rail_analyse.MAX_GRAPH_NODES
+    assert "graph_too_large" not in m["quality_flags"] and png.startswith(b"\x89PNG")
+    if make is comb_and_diagonals:
+        assert max(len(f["stations"]) for f in m["flags"] if f["type"] == "ghost_line") > 1000
+    assert seconds < 30.0 and stages["metrics"] < 12_000.0
 
 
 def test_a_wide_heat_blur_runs_on_a_reduced_grid_and_matches():
