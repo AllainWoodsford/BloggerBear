@@ -61,6 +61,10 @@ RAIL_REFERENCE_BAND = "swir16"
 # about 49 s on the arm64 worker (taken as 1.3 times slower): with a 10-30 s read, 59-79 s, past the
 # client's 58 s read timeout (rail_access.WORKER_READ_TIMEOUT). At 3,584 px they take up to 25.5 s at
 # a peak RSS of 1.32 GB, about 33 s on arm64, and the read covers 77% of the pixels: 41-56 s in all.
+# That budget assumes the read scales with the window's pixels; a full 30 s read on top of the
+# worst case would not fit. The worst case is constructed (two 1.3 km-wide solid bars of track
+# along both edges of the window, no real network looks like it); a real city's network measures
+# about 9 s. A worker that times out is an `invoke` error the adapter retries on its next tick.
 RAIL_MAX_WINDOW_PX = 3584
 _session: requests.Session | None = None
 

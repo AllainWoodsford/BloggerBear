@@ -63,7 +63,7 @@ MIN_BETWEENNESS_SAMPLES, BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 20, 200, 0
 # window's edges): the graph stage (rasterise, thin, snap, build_graph) takes 6.1-18.4 s at 4096 px
 # and 3.5-9.2 s at 3,584 px, the rail task's window cap (vision_worker_handler.RAIL_MAX_WINDOW_PX).
 # build_graph's passes over the whole window take 3.8-6.8 s and 2.1-4.7 s of it; the thinning 0.4-0.9 s
-# and 0.2-0.4 s with the thick parts in one place, but 9.0-9.9 s and 2.1-3.7 s with them at both ends
+# and 0.2-0.4 s with the thick parts in one place, but 8.9-10.2 s and 2.0-4.3 s with them at both ends
 # of the window, where the region network.thin keeps working on is most of it on every pass. The
 # measures, flags and suggestions take 0.2-7.9 s at either size, of which station_adjacency up to
 # 1.0 s for 2,000 stations on one junction tree and the simulated links up to 3.7 s. The whole pass
@@ -603,9 +603,10 @@ def _walk_chain(start: str, members: set[str], adjacency: dict[str, list[str]]) 
 
     Every membership test is against a set (the visited stations are kept in one beside the
     order), so each step costs the station's adjacency, not the chain's length times it. Counted
-    as equality comparisons of station ids (tests/test_vision_rail_core.py): 338 along a line of
-    600 stations and 149 among 150 quiet stations all next to each other, where testing against
-    the order kept as a list made 359,139 and 1,113,924."""
+    as equality comparisons of station ids (tests/test_vision_rail_core.py, which bounds them at
+    four per station): 149 among 150 quiet stations all next to each other, where testing against
+    the order kept as a list made 1,113,924; along a line of 600 stations a few hundred against
+    about 359,000 (the exact count follows the set's iteration order, so the hash seed)."""
     component, todo = {start}, [start]
     while todo:
         for neighbour in adjacency.get(todo.pop(), ()):
