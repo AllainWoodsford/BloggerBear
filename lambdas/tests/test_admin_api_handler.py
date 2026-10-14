@@ -11,6 +11,7 @@ from moto import mock_aws
 from table_schemas import create_table
 
 import admin_api_handler
+from common.adapters import MANUAL_REVIEW_ADAPTERS
 
 REGION = "ap-southeast-2"
 
@@ -3334,6 +3335,53 @@ def test_update_cannot_unset_manual_review_on_a_satellite_vision_topic(aws_resou
     )
     with patch("admin_api_handler.upsert_topic_schedules"):
         result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+RAIL_CONFIG = {"sites": [{"id": "sydney", "name": "Sydney", "polygon": POLYGON}], "reach_m": 1000}
+
+
+def test_the_manual_review_adapters_are_the_two_vision_ones():
+    assert MANUAL_REVIEW_ADAPTERS == frozenset({"satellite_vision", "rail_access"})
+
+
+def test_create_topic_rail_access_forces_manual_review(aws_resources):
+    body = {
+        "topic_id": "rail",
+        "name": "Rail access",
+        "adapter": "rail_access",
+        "adapter_config": RAIL_CONFIG,
+        "force_manual_review": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["force_manual_review"] is True
+    assert created["adapter_config"]["reach_m"] == 1000
+
+
+def test_update_cannot_unset_manual_review_on_a_rail_access_topic(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "rail", "adapter": "rail_access", "force_manual_review": True})
+    event = _event(
+        "PUT /topics/{topic_id}", path_params={"topic_id": "rail"}, body={"force_manual_review": False}
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+@pytest.mark.parametrize("adapter", sorted(MANUAL_REVIEW_ADAPTERS))
+def test_switching_a_topic_onto_a_manual_review_adapter_forces_the_flag(aws_resources, adapter):
+    _put_topic()  # github-trending, with no flag at all
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter": adapter, "adapter_config": RAIL_CONFIG},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
     assert json.loads(result["body"])["force_manual_review"] is True
 
 

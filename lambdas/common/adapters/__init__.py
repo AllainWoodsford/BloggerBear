@@ -15,3 +15,14 @@ WEB_SEARCH_ADAPTER_KEY = "web_search"
 # what the vision worker sees at fixed sites in Sentinel-2 scenes (OpenCV competition entry,
 # docs/enhancements/opencv-agentic-vision-enhancement.md).
 SATELLITE_VISION_ADAPTER_KEY = "satellite_vision"
+
+# Adapter registry key for common/adapters/rail_access.py's RailAccessAdapter -- maps how much of
+# a city's built-up area lies within walking reach of a rail station, from Sentinel-2 scenes and
+# OpenStreetMap's rail network (docs/enhancements/rail-access-monitor.md).
+RAIL_ACCESS_ADAPTER_KEY = "rail_access"
+
+# The adapters whose every article a person sees before it is published: admin_api_handler.py
+# forces `force_manual_review` on for a topic using one of them, on create and on update, as it
+# forces is_financial for the crypto feed. Processed imagery and maps of a city are published only
+# once someone has looked at them.
+MANUAL_REVIEW_ADAPTERS = frozenset({SATELLITE_VISION_ADAPTER_KEY, RAIL_ACCESS_ADAPTER_KEY})

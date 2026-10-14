@@ -911,6 +911,37 @@ take most of the 60 s budget. **Lesson:** a smoke test proves the plumbing, not 
 the input to the real case before quoting a timing. And keep agents committing early: the
 resumable work was the work that sat in a worktree. (#291, rail PRs E and H)
 
+**12.13 A message to a running workflow's agent forks it.** To pass on a note about the date-bomb
+test (12.14), the orchestrator messaged the agent a review-fix workflow was running. The message
+did not reach that agent; it resumed a second copy with the same history, in the same worktree.
+For two minutes both edited the same file, each seeing the other's changes as an outsider's. The
+orchestrator then told the wrong copy to stand down: the workflow's instance stopped, the resumed
+copy finished and pushed, and the workflow went on to recheck "no fix" and report every finding
+as still standing. **Fix:** the workflow was stopped, its recheck and review phases were re-run
+against the commit that was actually pushed, and the merge the note asked for was done by hand.
+**Lesson:** never message an agent while its workflow runs; wait for the workflow, or stop it
+first. A message resumes an agent; it does not reach one that is running. (#291)
+
+**12.14 A test pinned to a date broke every branch a week later.** An ops-assistant memory test
+built its fixtures from a fixed clock (2026-10-04) but called the tools through the MCP server,
+which read the real clock and looked back seven days. On 2026-10-11 the article fell out of the
+window and the test failed on every branch, `dev` included, with nothing in the diff to explain
+it. **Fix:** that test dates its fixtures from the clock its tools read; the helpers take an
+optional `now` so the other tests keep the fixed one. **Lesson:** a test that reaches code through
+a real clock must build its data from that clock; a fixed date is a timer. (the integration
+branch)
+
+**12.15 Each review of a fix found something real.** PR D's fix round was rechecked clean, then its
+bounds reviewer found two passes no cap covered (station adjacency per station, a list scan in the
+ghost-line walk: 31-44 s on contract-valid networks), and its regression reviewer found that a
+simulated link compared two different betweenness estimators. PR E's first round fixed nine
+findings; its reviewers then found four more (a repeated first observation, a running state too
+big for the 512 MB tick, untested reserve gates, a scene re-sent every tick). **Fix:** small ones
+were fixed in the PR; the station passes became their own PR (J), so the worker PR could merge.
+**Lesson:** a fix changes the code a review looked at; review the fix too, with a lens for
+bounds as well as regressions, and split out what would hold the rest back. (#291, #292, rail
+PR J)
+
 ## Patterns worth keeping
 
 1. **Real invocation beats static checks.** `validate`, mocks and green tests missed the worst bugs

@@ -25,7 +25,7 @@ from vision_fakes import fetcher, write_tiff
 import vision_worker_handler as worker
 from common import osm, vision_client
 from common import vision_contract as contract
-from vision import build, cog, geo, rail_analyse, scene
+from vision import build, cog, geo, rail_analyse, rail_annotate, scene
 from vision import network as vision_network
 
 PREFIX = contract.DEFAULT_ALLOWED_URL_PREFIXES[0]
@@ -425,7 +425,13 @@ def test_the_rail_task_measures_the_city(rail_files):
     png = base64.b64decode(reply["image_png_b64"])
     assert png.startswith(vision_client.PNG_SIGNATURE)
     image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-    assert max(image.shape[:2]) <= 1024 and image[2, 2].tolist() == [0, 0, 0]  # the caption bar
+    # The map is at most 1024 px on its longer side, with the strip (the caption, then the legend)
+    # under it, the caption at the strip's top-left.
+    caption = [line.format(year="2024") for line in rail_annotate.CAPTION_LINES]
+    strip = rail_annotate.figure_strip(image[:1], caption)
+    map_height = image.shape[0] - strip.shape[0]
+    assert 0 < map_height and max(map_height, image.shape[1]) <= 1024
+    assert np.array_equal(image[map_height:], strip) and image[map_height + 2, 2].tolist() == [0, 0, 0]
     json.dumps(reply, allow_nan=False)  # no NaN or infinity anywhere in a Lambda reply
     assert contract.validate_reply(json.loads(json.dumps(reply))) == reply
 
@@ -874,6 +880,28 @@ def test_client_sends_the_task_and_the_network_and_checks_the_task_in_the_reply(
         )  # fmt: skip
 
 
+
+def test_client_sends_non_ascii_names_as_utf8_not_escapes(rail_files, configured):
+    """A network's names travel as UTF-8 (2-3 bytes a character), not as \\u escapes (6), so long
+    non-ASCII names keep the request well inside Lambda's 6 MB synchronous payload."""
+    sent = []
+
+    class Recording(FakeLambda):
+        def invoke(self, FunctionName, InvocationType, Payload):
+            sent.append(Payload)
+            return super().invoke(FunctionName, InvocationType, Payload)
+
+    network = json.loads(json.dumps(rail_files["network"]))
+    for station in network["stations"]:
+        station["name"] = "中央駅" * 20  # 60 characters, all outside ASCII
+    rail_scene = rail_request(rail_files)["scene"]
+    fake = Recording(blobs=rail_files["blobs"])
+    vision_client.measure(RAIL_SITE, rail_scene, task="rail_access", network=network, client=fake)
+    payload = sent[0]
+    assert isinstance(payload, bytes) and b"\\u" not in payload
+    assert "中央駅".encode() in payload
+    assert json.loads(payload)["network"]["stations"][0]["name"] == "中央駅" * 20
+
 def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeypatch):
     made = []
 
@@ -889,6 +917,8 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     assert default is not shorter
     retries = {"max_attempts": 1, "mode": "standard"}
     assert made == [("lambda", "us-west-2", 5, 90, retries), ("lambda", "us-west-2", 5, 58, retries)]
+    # The connect allowance is exported: the triage agent counts it before the answer turn.
+    assert vision_client.CONNECT_TIMEOUT_SECONDS == 5 and vision_client.DEFAULT_READ_TIMEOUT_SECONDS == 90
     # measure() asks for the client with its read timeout: the triage agent's look_again waits less.
     vision_client.measure(SITE, SCENE, read_timeout=30)
     assert made[-1][1:4] == ("us-west-2", 5, 30) and len(made) == 3
