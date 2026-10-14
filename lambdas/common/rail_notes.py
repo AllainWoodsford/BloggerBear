@@ -14,8 +14,14 @@ The rules, which the tests hold:
   density from imagery, straight-line reach, OpenStreetMap's topology), not ridership, cost or
   recommendations;
 - a value that was not measured (None, missing, not a finite number) drops the clause that needs
-  it, never prints "None"; a note whose station has no name to show is dropped whole; a figure
-  read from betweenness the analysis estimated from a sample says "about";
+  it, never prints "None"; so does a figure that rounds to nothing as printed (a change of 0 %,
+  0.0 km, 0 m), and a simulation whose one claim rounds to nothing is not written at all; a note
+  whose station has no name to show is dropped whole; a figure read from betweenness the analysis
+  estimated from a sample says "about";
+- every station name is OpenStreetMap's, crowd-sourced, and reaches the summary model's prompt: it
+  is written in double quotation marks, as one line without controls or bidi overrides (but with
+  the two joiners Persian and Indic names are spelt with), so it reads as a quoted name and
+  nothing else;
 - the order is fixed (flags: single point of failure, isolated high demand by isolation weight,
   ghost line longest first; simulations: orbital links by the fall in distance to a hub, feeder
   corridors by isolation weight), so the same entry always reads the same.
@@ -26,7 +32,7 @@ from __future__ import annotations
 import math
 from decimal import Decimal
 
-from common.figures import plain_text
+from common import osm
 
 # At most this many of each kind per entry: an article ends with at most three (the summary prompt
 # says so), and the review evidence and the Finding carry at most seven.
@@ -71,12 +77,12 @@ def _single_point_of_failure(flag: dict, rows: dict, entry: dict) -> tuple[list[
     name = _name(rows, station, flag.get("name"))
     if name is None:
         return None
-    ratio = _number(flag.get("ratio"))
+    ratio = _shown(_number(flag.get("ratio")), 1)
     if ratio is None:
         lead = f"{name} lies on more shortest paths through the mapped rail network than any other station"
     else:
         lead = (
-            f"{name} lies on {_about(entry)}{ratio:.1f} times as many shortest paths through the mapped rail "
+            f"{name} lies on {_about(entry)}{ratio} times as many shortest paths through the mapped rail "
             "network as any other station"
         )
     text = (
@@ -92,15 +98,15 @@ def _isolated_high_demand(flag: dict, rows: dict, entry: dict) -> tuple[list[str
     if name is None:
         return None
     row = rows.get(station) or {}
-    activity = _measured(flag, row, "activity")
+    activity = _shown(_measured(flag, row, "activity"), 2)
     degree = _whole(_first(flag.get("degree"), row.get("degree")))
-    d_hub_m = _number(row.get("d_hub_m"))
-    measured = f"activity {activity:.2f}, " if activity is not None else ""
+    d_hub_km = _km(row.get("d_hub_m"))
+    measured = f"activity {activity}, " if activity is not None else ""
     parts = [f"one of the busiest catchments in the city by built-up density ({measured}top quarter)"]
     if degree is not None:
         parts.append(f"{degree} track direction{'' if degree == 1 else 's'}")
-    if d_hub_m is not None:
-        parts.append(f"{d_hub_m / 1000:.1f} km by rail to the nearest hub")
+    if d_hub_km is not None:
+        parts.append(f"{d_hub_km} km by rail to the nearest hub")
     return _ids(station), f"{name} has {_and(parts)}: the pipeline flags it as isolated high demand."
 
 
@@ -129,24 +135,23 @@ def _orbital_link(suggestion: dict, rows: dict, entry: dict) -> tuple[list[str],
     a, b = _id(suggestion.get("from")), _id(suggestion.get("to"))
     a_name, b_name = _name(rows, a, suggestion.get("from_name")), _name(rows, b, suggestion.get("to_name"))
     closer = _number(suggestion.get("delta_mean_d_hub_m"))
-    # The analysis keeps only links that bring the stations closer to a hub; without that fall (or
-    # with one that rounds to no metre at all) there is nothing the simulation showed.
-    if a_name is None or b_name is None or closer is None or round(closer) >= 0:
+    # The analysis keeps only links that bring the stations closer to a hub. That fall is the
+    # note's one claim: without it, or with one that rounds to no metre at all, there is no note.
+    fall = _shown(-closer if closer is not None else None, 0)
+    if a_name is None or b_name is None or fall is None:
         return None
     straight_km = _number(suggestion.get("straight_km"))
-    if straight_km is None:
-        link = "a link"
-    else:
-        # The simulated link is the straight line plus the detour, and that is the length named.
-        length = f"{straight_km * (100 + ORBITAL_DETOUR_PERCENT) / 100:.1f}"
-        link = f"{_a_or_an(length)} {length} km link"
+    # The simulated link is the straight line plus the detour, and that is the length named.
+    simulated_km = straight_km * (100 + ORBITAL_DETOUR_PERCENT) / 100 if straight_km is not None else None
+    length = _shown(simulated_km, 1)
+    link = f"{_a_or_an(length)} {length} km link" if length is not None else "a link"
     text = (
         f"Simulation: {link} between {a_name} and {b_name} (the straight line plus "
-        f"{ORBITAL_DETOUR_PERCENT} %) would bring the mapped network's stations {abs(closer):.0f} m closer "
-        "to a hub on average by rail"
+        f"{ORBITAL_DETOUR_PERCENT} %) would bring the mapped network's stations {fall} m closer to a hub on "
+        "average by rail"
     )
     share = _top_hub_share_change(suggestion, rows, entry)
-    if share is not None:
+    if share:  # a change that rounds to 0 % is no change to report
         text += f", and change the busiest hub's share of shortest paths by {_about(entry)}{share:+d} %"
     return _ids(a, b), text + "."
 
@@ -159,21 +164,21 @@ def _feeder_corridor(suggestion: dict, rows: dict, entry: dict) -> tuple[list[st
     # The hub is the station's nearest by construction, so an unnamed one is still described.
     hub_name = _name(rows, hub, suggestion.get("hub_name")) or "its nearest hub"
     row = rows.get(station) or {}
-    weight = _number(row.get("isolation_weight"))
-    length_m = _number(_first(suggestion.get("length_m"), row.get("d_hub_m")))
+    weight = _shown(_number(row.get("isolation_weight")), 1)
+    length_km = _km(_first(suggestion.get("length_m"), row.get("d_hub_m")))
     text = f"Simulation: {name} is among the most isolated stations for the size of its catchment"
     if weight is not None:
-        text += f" (isolation weight {weight:.1f})"
+        text += f" (isolation weight {weight})"
     text += f"; a feeder corridor, such as an express bus, to {hub_name}"
-    if length_m is not None:
-        text += f", {length_m / 1000:.1f} km away by rail today,"
+    if length_km is not None:
+        text += f", {length_km} km away by rail today,"
     return _ids(station, hub), text + " is the link the pipeline's rules point to."
 
 
 def _top_hub_share_change(suggestion: dict, rows: dict, entry: dict) -> int | None:
     """The change in the busiest hub's betweenness the simulation measured, in per cent of its
-    betweenness now (the highest among the entry's hubs); None unless both are known, which
-    needs every hub's station row."""
+    betweenness now (the highest among the entry's hubs), rounded to a whole per cent (0 is left
+    out of the note); None unless both are known, which needs every hub's station row."""
     delta = _number(suggestion.get("delta_top_hub_betweenness"))
     hubs = entry.get("hubs")
     if delta is None or not isinstance(hubs, list) or not hubs:
@@ -265,13 +270,28 @@ def _sort_id(value) -> str:
 
 
 def _name(rows: dict, station: str | None, carried) -> str | None:
-    """The station's name as its row stores it, else the one the flag or suggestion carries, as
-    plain text; None when neither has one."""
+    """The station's name as its row stores it, else the one the flag or suggestion carries,
+    cleaned (`_clean_name`) and in double quotation marks, so a reader, and the summary model, sees
+    where an OpenStreetMap name starts and ends; None when neither has one."""
     row = rows.get(station) if station is not None else None
     for value in ((row or {}).get("name"), carried):
-        if isinstance(value, str) and plain_text(value):
-            return plain_text(value)
+        name = _clean_name(value)
+        if name is not None:
+            return f'"{name}"'
     return None
+
+
+def _clean_name(value) -> str | None:
+    """`value` as a name fit to quote: common/osm.clean_name (controls, bidi overrides and isolates
+    and every other formatting character out, except the joiners U+200C and U+200D that Persian,
+    Arabic and Indic names are spelt with; at most osm.MAX_NAME_CHARS), whitespace collapsed again
+    where it dropped something, and a double quotation mark made single, so the name cannot close
+    its own quotes. None when nothing is left, or it was not text. (common.figures.plain_text
+    would also strip the two joiners and misspell those names.)"""
+    name = osm.clean_name(value)
+    if name is None:
+        return None
+    return " ".join(name.replace('"', "'").split()) or None
 
 
 def _number(value) -> float | None:
@@ -280,6 +300,23 @@ def _number(value) -> float | None:
         return None
     number = float(value)
     return number if math.isfinite(number) else None
+
+
+def _shown(value: float | None, places: int) -> str | None:
+    """`value` as a note prints it, to `places` decimals; None when it was not measured or prints
+    as zero or less (activity 0.00, a ratio of 0.0, 0 m): a clause that rounds to nothing is left
+    out, never written as a claim. Every figure shown this way is a size, never below zero."""
+    if value is None:
+        return None
+    text = f"{value:.{places}f}"
+    return text if float(text) > 0 else None
+
+
+def _km(metres) -> str | None:
+    """A distance measured in metres as the notes print it, in km to one decimal; None when it was
+    not measured or rounds to 0.0 km."""
+    value = _number(metres)
+    return _shown(value / 1000 if value is not None else None, 1)
 
 
 def _whole(value) -> int | None:
