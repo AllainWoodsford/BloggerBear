@@ -232,6 +232,22 @@
           "destructive": false
         },
         {
+          "name": "--findings-window-hours",
+          "dest": "findings_window_hours",
+          "kind": "option",
+          "flags": [
+            "--findings-window-hours"
+          ],
+          "help": "How many hours back the daily article reads findings, never past the topic's last article: whole hours, 1 to 336 (default 24). Widen it for a topic that does not write every day (one day of a rotation, a weekly topic)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
           "name": "--review-mode",
           "dest": "review_mode",
           "kind": "option",
@@ -333,7 +349,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics create [-h] --topic-id TOPIC_ID --name NAME [--adapter ADAPTER]\n                                  [--config-json CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--review-mode {off,shadow,enforce}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n\noptions:\n  -h, --help            show this help message and exit\n  --topic-id TOPIC_ID\n  --name NAME\n  --adapter ADAPTER     Adapter key (default: web_search -- independent web research on the\n                        topic's name)\n  --config-json CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Topic-specific goal, e.g. '{\"primary_focus\": \"...\", \"exclusion_criteria\":\n                        \"...\"}'; omit to inherit the adapter/global default\n  --financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1\n                        hour))\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (the --research-cadence schedule is\n                        only the heartbeat). Omit to inherit the pipeline-wide default\n  --review-mode {off,shadow,enforce}\n                        This topic's fresh-data review mode; omit to inherit the pipeline-wide\n                        mode\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default:\n                        cron(0 9 * * ? *))\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in (default: Australia/Sydney)\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+      "help_text": "usage: admin_cli.py topics create [-h] --topic-id TOPIC_ID --name NAME [--adapter ADAPTER]\n                                  [--config-json CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n\noptions:\n  -h, --help            show this help message and exit\n  --topic-id TOPIC_ID\n  --name NAME\n  --adapter ADAPTER     Adapter key (default: web_search -- independent web research on the\n                        topic's name)\n  --config-json CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Topic-specific goal, e.g. '{\"primary_focus\": \"...\", \"exclusion_criteria\":\n                        \"...\"}'; omit to inherit the adapter/global default\n  --financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1\n                        hour))\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (the --research-cadence schedule is\n                        only the heartbeat). Omit to inherit the pipeline-wide default\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336 (default 24). Widen it for a\n                        topic that does not write every day (one day of a rotation, a weekly\n                        topic)\n  --review-mode {off,shadow,enforce}\n                        This topic's fresh-data review mode; omit to inherit the pipeline-wide\n                        mode\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default:\n                        cron(0 9 * * ? *))\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in (default: Australia/Sydney)\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
     },
     "topics update": {
       "help": "Update a topic",
@@ -468,6 +484,22 @@
           "destructive": false
         },
         {
+          "name": "--findings-window-hours",
+          "dest": "findings_window_hours",
+          "kind": "option",
+          "flags": [
+            "--findings-window-hours"
+          ],
+          "help": "How many hours back the daily article reads findings, never past the topic's last article: whole hours, 1 to 336, for a topic that does not write every day; '' clears it (back to 24)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
           "name": "--review-mode",
           "dest": "review_mode",
           "kind": "option",
@@ -570,7 +602,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
     },
     "topics delete": {
       "help": "Delete a topic",
@@ -655,7 +687,7 @@
           "flags": [
             "--force"
           ],
-          "help": "daily_cycle only: write an article from the whole last-24h window even if the topic already has one since (the default is to write only from findings newer than its last article, so a repeat run with nothing new is a no-op)",
+          "help": "daily_cycle only: write an article from the topic's whole findings window (the last 24 h, or its --findings-window-hours) even if the topic already has one since (the default is to write only from findings newer than its last article, so a repeat run with nothing new is a no-op)",
           "type": "str",
           "choices": null,
           "default": false,
@@ -667,7 +699,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics trigger [-h] --pipeline {research_tick,daily_cycle} [--no-wait]\n                                   [--force]\n                                   topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --pipeline {research_tick,daily_cycle}\n  --no-wait             Don't poll for completion after triggering -- just fire the request and\n                        return immediately (the old behavior). Default is to wait and report when\n                        the pipeline has actually finished, since the trigger itself is\n                        asynchronous.\n  --force               daily_cycle only: write an article from the whole last-24h window even if\n                        the topic already has one since (the default is to write only from\n                        findings newer than its last article, so a repeat run with nothing new is\n                        a no-op)\n"
+      "help_text": "usage: admin_cli.py topics trigger [-h] --pipeline {research_tick,daily_cycle} [--no-wait]\n                                   [--force]\n                                   topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --pipeline {research_tick,daily_cycle}\n  --no-wait             Don't poll for completion after triggering -- just fire the request and\n                        return immediately (the old behavior). Default is to wait and report when\n                        the pipeline has actually finished, since the trigger itself is\n                        asynchronous.\n  --force               daily_cycle only: write an article from the topic's whole findings window\n                        (the last 24 h, or its --findings-window-hours) even if the topic already\n                        has one since (the default is to write only from findings newer than its\n                        last article, so a repeat run with nothing new is a no-op)\n"
     },
     "topics candidates": {
       "help": "List candidate ideas considered for a topic",

@@ -1,12 +1,17 @@
 import json
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 import boto3
 import pytest
 from moto import mock_aws
 
+import common.dynamo as dynamo
 import daily_cycle_handler
+import research_tick_handler
+from common import findings_window
 from common.editorial_goals import (
     ARTICLE_STYLES,
     EDITORIAL_MANDATES,
@@ -298,6 +303,167 @@ def test_only_a_literal_true_forces_a_run(s3_bucket):
     assert mock_list.call_args.kwargs["since"] == topic["last_article_at"]
 
 
+# --- a topic's own findings window (common/findings_window.py) ----------------------------------
+#
+# A topic that writes on some days only (one city of a rotation, a weekly topic) widens its window,
+# so a Finding made on a day it does not write is drafted on the day it does.
+
+
+def _hours_before_the_run(hours):
+    return (_RUN - timedelta(hours=hours)).isoformat()
+
+
+@pytest.mark.parametrize("hours", [1, 24, 192, 336, Decimal("192")])
+def test_a_topic_s_own_window_replaces_the_day(hours):
+    since = daily_cycle_handler._window_start({"findings_window_hours": hours}, _RUN, force=False)
+
+    assert since == _hours_before_the_run(int(hours))
+
+
+def test_the_last_article_still_caps_a_wide_window():
+    last = _RUN - timedelta(days=3)
+    topic = {"findings_window_hours": 192, "last_article_at": last.isoformat()}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=False) == last.isoformat()
+
+
+def test_a_last_article_older_than_the_wide_window_leaves_the_window():
+    last = _RUN - timedelta(days=10)
+    topic = {"findings_window_hours": 192, "last_article_at": last.isoformat()}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=False) == _hours_before_the_run(192)
+
+
+def test_force_ignores_the_last_article_but_keeps_the_topic_s_window():
+    last = _RUN - timedelta(hours=3)
+    topic = {"findings_window_hours": 192, "last_article_at": last.isoformat()}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=True) == _hours_before_the_run(192)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [0, -24, 337, 1000, "x", "", "192", "192.0", 1.5, 192.0, True, Decimal("1.5"), Decimal("NaN"), [192]],
+)
+def test_a_stored_window_that_is_not_valid_falls_back_to_the_day_and_says_so(bad, capsys):
+    topic = {"topic_id": "rail-sydney", "findings_window_hours": bad}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=False) == _DAY_BEFORE
+    said = capsys.readouterr().out
+    assert "topic_id=rail-sydney findings_window_hours" in said and "using the default 24 h" in said
+
+
+def test_a_topic_without_a_window_of_its_own_says_nothing(capsys):
+    since = daily_cycle_handler._window_start({"findings_window_hours": None}, _RUN, force=False)
+
+    assert since == _DAY_BEFORE
+    assert capsys.readouterr().out == ""
+
+
+def test_the_widest_window_reaches_back_exactly_as_far_as_a_finding_lives():
+    """Findings expire after FINDING_TTL_DAYS (DynamoDB TTL, set by the research tick): a wider
+    window would reach back to nothing, and a narrower bound would refuse a useful one."""
+    assert findings_window.MAX_FINDINGS_WINDOW_HOURS == research_tick_handler.FINDING_TTL_DAYS * 24
+    assert daily_cycle_handler.FINDINGS_WINDOW_HOURS == findings_window.FINDINGS_WINDOW_HOURS == 24
+
+
+@pytest.fixture
+def findings_table(s3_bucket, monkeypatch):
+    """A real (moto) Findings table, so the window is applied by DynamoDB's own range query."""
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+    monkeypatch.setattr(dynamo, "_dynamodb_resource", None)
+    boto3.client("dynamodb", region_name="ap-southeast-2").create_table(
+        TableName=ENV["FINDINGS_TABLE"],
+        KeySchema=[
+            {"AttributeName": "topic_id", "KeyType": "HASH"},
+            {"AttributeName": "captured_at", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "topic_id", "AttributeType": "S"},
+            {"AttributeName": "captured_at", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    yield boto3.resource("dynamodb", region_name="ap-southeast-2").Table(ENV["FINDINGS_TABLE"])
+
+
+def _off_day_finding(findings_table, days_ago=5):
+    """A Finding made `days_ago` days back: on a rotation, a day the topic did not write."""
+    summary = "A new station opened on the line; the served share of the city rose."
+    findings_table.put_item(
+        Item={
+            "topic_id": NON_FINANCIAL_TOPIC["topic_id"],
+            "captured_at": (datetime.now(UTC) - timedelta(days=days_ago)).isoformat(),
+            "summary": summary,
+            "source_refs": [],
+        }
+    )
+    return summary
+
+
+def _rotation_topic(**extra):
+    """A topic whose previous article was a week ago, as one day of a weekly rotation's is."""
+    last = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    return {**NON_FINANCIAL_TOPIC, "last_article_at": last, **extra}
+
+
+def test_a_wide_window_drafts_from_a_finding_made_on_an_off_day(findings_table):
+    summary = _off_day_finding(findings_table)
+    calls = []
+    # A number comes back from DynamoDB as a Decimal.
+    topic = _rotation_topic(findings_window_hours=Decimal("192"))
+
+    with patch(
+        "daily_cycle_handler._format_findings_summaries",
+        wraps=daily_cycle_handler._format_findings_summaries,
+    ) as drafted_from:
+        result, _ = _run_a_full_cycle(findings=None, lineage_calls=calls, topic=topic)
+
+    assert result["status"] == "published"
+    assert [finding["summary"] for finding in drafted_from.call_args.args[0]] == [summary]
+    ((_, kwargs),) = calls
+    assert kwargs["research"]["findings"] == 1
+
+
+def test_without_its_own_window_the_off_day_finding_is_outside_the_day(findings_table):
+    _off_day_finding(findings_table)
+
+    result, mock_set = _run_a_full_cycle(findings=None, topic=_rotation_topic())
+
+    assert result == {"status": "no_findings", "topic_id": NON_FINANCIAL_TOPIC["topic_id"]}
+    mock_set.assert_not_called()
+
+
+def test_a_wide_window_with_more_findings_than_the_cap_keeps_the_newest(findings_table):
+    now = datetime.now(UTC)
+    for number in range(daily_cycle_handler.MAX_WINDOW_FINDINGS + 2):  # finding 0 is the newest
+        findings_table.put_item(
+            Item={
+                "topic_id": NON_FINANCIAL_TOPIC["topic_id"],
+                "captured_at": (now - timedelta(hours=3 * number + 1)).isoformat(),
+                "summary": f"finding {number}",
+            }
+        )
+    topic = {**NON_FINANCIAL_TOPIC, "findings_window_hours": Decimal("192")}
+
+    with patch(
+        "daily_cycle_handler._format_findings_summaries",
+        wraps=daily_cycle_handler._format_findings_summaries,
+    ) as drafted_from:
+        _run_a_full_cycle(findings=None, topic=topic)
+
+    drafted = [finding["summary"] for finding in drafted_from.call_args.args[0]]
+    assert drafted == [f"finding {number}" for number in range(daily_cycle_handler.MAX_WINDOW_FINDINGS)]
+
+
+def test_a_wide_window_still_never_drafts_a_finding_from_before_the_last_article(findings_table):
+    _off_day_finding(findings_table, days_ago=8)  # before the article a week ago: already written up
+
+    result, _ = _run_a_full_cycle(findings=None, topic=_rotation_topic(findings_window_hours=Decimal("336")))
+
+    assert result["status"] == "no_findings"
+
+
 def _run_a_full_cycle(
     compliant=True,
     record_side_effect=None,
@@ -306,7 +472,8 @@ def _run_a_full_cycle(
     topic=NON_FINANCIAL_TOPIC,
 ):
     """Run a whole cycle with everything external mocked. `lineage_calls`, if given,
-    collects the (args, kwargs) build_lineage was called with."""
+    collects the (args, kwargs) build_lineage was called with. `findings=None` reads them
+    from the Findings table instead (the `findings_table` fixture)."""
     responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
 
     def _build_lineage(*args, **kwargs):
@@ -316,7 +483,11 @@ def _run_a_full_cycle(
 
     with (
         patch("daily_cycle_handler.get_topic", return_value=topic),
-        patch("daily_cycle_handler.list_recent_findings", return_value=findings),
+        (
+            nullcontext()
+            if findings is None
+            else patch("daily_cycle_handler.list_recent_findings", return_value=findings)
+        ),
         patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
@@ -874,7 +1045,10 @@ def test_worn_armor_and_the_topics_rings_are_injected_and_recorded_on_the_articl
         {**_gear("github-trending", "2026-09-04", "ring", "topic", "Benched."), "equipped": False},
     ]
 
-    ideation_prompt, draft_prompt, article = _run_with_gear(s3_bucket, gear)
+    # The draw itself is random (none of the armor to all of it; tests/test_equipment.py), and
+    # left to the real random module this test failed now and then. Here the bear takes it all.
+    with patch("daily_cycle_handler.equipment.pick_armor", side_effect=lambda armor, *_, **__: armor):
+        ideation_prompt, draft_prompt, article = _run_with_gear(s3_bucket, gear)
 
     for prompt in (ideation_prompt, draft_prompt):
         header = "Additional guidance based on reader feedback:"
