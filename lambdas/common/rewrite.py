@@ -65,6 +65,7 @@ from common.dynamo import (
     update_article_after_rewrite,
     update_article_status,
 )
+from common.findings_window import findings_window_hours
 from common.model_pricing import model_label
 from common.model_routing import resolve_model
 from common.relevance import topic_label
@@ -82,7 +83,6 @@ REWRITE_MAX_TOKENS = 8192
 REWRITE_BODY_LENGTH_BOUNDS = (0.4, 1.5)
 # Past this a `rewriting` item is assumed dead (the Lambda's own timeout is 300s).
 STALE_REWRITE_MINUTES = 15
-FINDINGS_LOOKBACK_HOURS = 24
 MAX_FINDINGS = 48
 FINDINGS_MAX_CHARS = 12_000
 # Compliance's fixed reason for a financial topic (common/compliance.py): routine, nothing to fix.
@@ -252,11 +252,15 @@ def _strip_disclaimer(body: str) -> tuple[str, bool]:
     return compliance.strip_financial_disclaimer(body)
 
 
-def _findings_for(article: dict) -> list[dict]:
-    """The findings the article was most likely written from: those captured in the day before
-    it was created (newest first). Empty once they have aged out of the Findings table."""
+def _findings_for(article: dict, topic: dict) -> list[dict]:
+    """The findings the article was most likely written from: those captured in the topic's
+    findings window before it was created (newest first). That is the reach the daily cycle read
+    it from (common/findings_window.py): a day, or more for a topic that writes on some days only,
+    whose article drew on the findings of its off days too. The previous article is not known
+    here, so a wide window can also hold findings an earlier article used: more context, never
+    less. Empty once they have aged out of the Findings table."""
     created_at = article.get("created_at") or datetime.now(UTC).isoformat()
-    since = (datetime.fromisoformat(created_at) - timedelta(hours=FINDINGS_LOOKBACK_HOURS)).isoformat()
+    since = (datetime.fromisoformat(created_at) - timedelta(hours=findings_window_hours(topic))).isoformat()
     findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
     return [f for f in findings if (f.get("captured_at") or "") <= created_at]
 
@@ -355,7 +359,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         stored_body = read_article_body(article["body_s3_key"])
         body, had_disclaimer = _strip_disclaimer(stored_body)
 
-        findings = _findings_for(article)
+        findings = _findings_for(article, topic)
         findings_text = "\n".join(f"- {f.get('summary', '')}" for f in findings)
         snapshot = _load_snapshot(findings)
         evidence = _evidence(topic, snapshot)

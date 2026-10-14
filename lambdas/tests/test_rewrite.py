@@ -226,6 +226,36 @@ def test_a_rewrite_replaces_the_text_keeps_the_old_one_and_goes_back_to_the_inbo
     assert "<editor_note>" not in mock_invoke.call_args.args[0]
 
 
+def _put_finding(captured_at, summary, topic_id=TOPIC["topic_id"]):
+    _table("Findings").put_item(Item={"topic_id": topic_id, "captured_at": captured_at, "summary": summary})
+
+
+def test_a_topic_with_a_wide_findings_window_is_rewritten_from_the_findings_of_its_off_days(aws):
+    # A topic that writes on some days only (one day of a rotation) sets findings_window_hours, and
+    # the daily cycle drafts its article from findings up to that far back: the rewrite must see
+    # them too. 192 h before created_at (2026-09-26T09:00) is 2026-09-18T09:00.
+    _seed(topic={**TOPIC, "findings_window_hours": 192})
+    _put_finding("2026-09-22T08:00:00+00:00", "Four days earlier: a new station opened.")
+    _put_finding("2026-09-17T08:00:00+00:00", "Nine days earlier: outside the window.")
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    assert "Bitcoin was at $81,000" in prompt and "Four days earlier" in prompt
+    assert "Nine days earlier" not in prompt
+
+
+def test_a_topic_without_one_is_rewritten_from_the_day_before_its_article(aws):
+    _seed()
+    _put_finding("2026-09-22T08:00:00+00:00", "Four days earlier: a new station opened.")
+
+    _, mock_invoke, _ = _run()
+
+    prompt = mock_invoke.call_args.args[0]
+    assert "Bitcoin was at $81,000" in prompt and "Four days earlier" not in prompt
+
+
 def test_a_steered_rewrite_follows_the_persons_note_and_records_it(aws):
     _seed(reasons=[rewrite.SENT_BACK_REASON])
     _table("ModerationQueue").update_item(

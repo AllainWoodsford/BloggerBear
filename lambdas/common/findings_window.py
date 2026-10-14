@@ -5,7 +5,8 @@ further back than the topic's findings window. A day (FINDINGS_WINDOW_HOURS) sui
 writes every day. A topic that writes on some days only (one day of a rotation, a weekly topic)
 sets `findings_window_hours` on its item, so a Finding made on a day it does not write is still
 in the window on the day it does. The previous article still bounds the window either way, so a
-wide window never writes the same Findings twice.
+wide window never writes the same Findings twice. Re-Write (common/rewrite.py) reads the same
+window back from an article's creation to find the Findings the article was written from.
 
 Whole hours, 1 to MAX_FINDINGS_WINDOW_HOURS. A stored value that is not valid (edited by hand,
 or written before a bound changed) is skipped and the default applies, never trusted.

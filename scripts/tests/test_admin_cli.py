@@ -409,7 +409,10 @@ def test_topics_trigger_daily_cycle_times_out(monkeypatch, capsys):
     monkeypatch.setattr(admin_cli, "_POLL_INTERVAL_SECONDS", 0.01)
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"candidates": []})):
         _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle"])
-    assert "No new candidates after" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "No new candidates after" in err
+    # --force reaches back the topic's own findings window, not always a day.
+    assert "findings_window_hours" in err and "last-24h" not in err
 
 
 def test_topics_findings_calls_get():

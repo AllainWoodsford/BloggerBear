@@ -386,7 +386,8 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
                 f"No new candidates after {_DAILY_CYCLE_TIMEOUT_SECONDS}s. This can mean there "
                 "were no Findings newer than the topic's last article (run research_tick first "
                 "and confirm it produced a Finding, or pass --force to rewrite from the "
-                "whole last-24h window), or a real failure -- check the logs:\n"
+                "topic's whole findings window: 24 h, or its findings_window_hours), or a real "
+                "failure -- check the logs:\n"
                 "  aws logs tail /aws/lambda/<daily-cycle function name> --since 5m",
                 file=sys.stderr,
             )
