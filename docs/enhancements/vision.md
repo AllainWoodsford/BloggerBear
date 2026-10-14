@@ -126,7 +126,7 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293) | H | The rail figure: flags, isolation weight and simulated links drawn, the caption and a legend in a strip under the map, a byte budget |
 | [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294) | I | Planner notes (`common/rail_notes.py`): the flags and simulated links as sentences, in the summary, the review evidence and the Finding |
 | [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295) | J | Linear station adjacency, ghost-line walk and run lengths; the rail window cap (`RAIL_MAX_WINDOW_PX`) |
-| this PR | F2 | This document for two tasks, the city topic templates, the runsheet's rail section, progress and friction |
+| [#296](https://github.com/AllainWoodsford/BloggerBear/pull/296) | F2 | This document for two tasks, the city topic templates, the runsheet's rail section, progress and friction |
 
 ---
 

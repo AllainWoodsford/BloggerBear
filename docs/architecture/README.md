@@ -8,8 +8,8 @@ The pages here describe the project by **feature** instead. A feature is a small
 of the parts that together do one job, in the order the work flows through them. Each page has,
 or will have, a matching entry in the operator's assistant: ask it about the feature, and it
 walks through the same steps with this environment's resource names on screen (`architecture`
-with `feature`, in `lambdas/ops_mcp/architecture.py`). The vision page is the exception until
-the assistant gains its `Feature`, with the rail adapter or the docs PR after it.
+with `feature`, in `lambdas/ops_mcp/architecture.py`). The vision page is the exception: the
+assistant has no vision `Feature` yet (the rail work added none), so it is a page alone.
 
 | Feature | What it covers |
 |---|---|

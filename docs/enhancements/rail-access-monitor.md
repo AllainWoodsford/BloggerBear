@@ -4,6 +4,38 @@
 **Deadline:** 26 October 2026, 11:45 pm PDT · **Builds on:** [vision.md](vision.md) (the agentic vision
 stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agentic-vision-enhancement.md)
 
+> **Status, 2026-10-14: every PR has landed** on the integration branch (#285): 0, A (#289),
+> B (#287), C (#288), D (#291), E (#292), G (#286) and F (#290, and its closing half F2, #296), and three
+> PRs the reviews added: H (#293, the figure), I (#294, planner notes) and J (#295, time bounds).
+> This document is the record of what was specified and why; the living page, which describes the
+> code as merged, is [vision.md](vision.md). Where the code differs from a specification below, the
+> code is right; the differences that matter:
+>
+> - **PR 0:** `look_again` waits for the deadline less the 10 s answer turn and a 5 s connect
+>   allowance, rounded down to 5 s, and is refused under 10 s (ships) or 30 s (rail), not at a
+>   fixed `MIN_SECONDS_TO_LOOK_AGAIN`.
+> - **PR A:** `MAX_GRAPH_NODES` is 10,000, checked on node clusters and runs before any graph is
+>   built (`graph_too_large` then means no graph); betweenness is exact within `BETWEENNESS_WORK`
+>   (600,000) and sampled from 20 to 200 seeded sources above it (`betweenness_sampled`), not
+>   "exact up to 800 nodes".
+> - **PR A and E, the figure (PR H):** the caption lines and a legend are in a strip under the map,
+>   the map draws the flags, isolation weight and simulated links, and the page caption reads
+>   "Rail access in {name}, Sentinel-2 {date}: …" ([vision.md §6.6](vision.md#66-attribution)).
+> - **PR C:** `MAX_CAPTION_CHARS` is 400.
+> - **PR D:** only a parameter dataclass's refusal (built before any read) is `bad_request`; any
+>   other `ValueError` is `internal` and logged. The rail task's window cap is 3,584 px
+>   (`RAIL_MAX_WINDOW_PX`, PR J), not the reader's 4096.
+> - **PR E:** the tick works scene first (a new scene is measured with the cached network even
+>   past its TTL; a stale network is refreshed only on a tick with nothing new, with a 6-hour
+>   back-off after a failure); a topic holds 1 to 3 cities; the first observation is reported once,
+>   only from a scene at or above the coverage floor (`first_observed_at`); a baseline uses only
+>   scenes with the same polygon and parameters; only the newest history entry keeps `stations`,
+>   `flags`, `suggestions` and `deserts`, and every entry keeps `flag_count`; a refused scene is
+>   recorded (`failed_scene`) and not re-sent for 6 hours.
+> - **§2 and §5 risk 2:** the city boxes are 1.0 to 3.0 km inside their 100 km squares (enough: a
+>   tile reaches 9.8 km past its square to the east and south), and a city's network at the caps
+>   is 2.6 to 3 MB of JSON, not 1.5 MB.
+
 This document records the review of the vision stack, the choice of competition angle, the
 architecture of the rail task, and one specification per pull request. The specifications are
 what the implementing sessions build from; the rest is why.

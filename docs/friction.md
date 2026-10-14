@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 11 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
+| Vision and rail (OpenCV 2026) | 20 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware |
 
 ---
 
@@ -941,6 +941,70 @@ were fixed in the PR; the station passes became their own PR (J), so the worker 
 **Lesson:** a fix changes the code a review looked at; review the fix too, with a lens for
 bounds as well as regressions, and split out what would hold the rest back. (#291, #292, rail
 PR J)
+
+**12.16 A city did not fit the worker's window at 10 m.** The ship task reads 10 m bands over a
+site a few kilometres across. A city is 60 to 70 km across: at 10 m that is 6,000 to 7,000 px a
+side, past the reader's 4096 px window, and four times the pixels the analysis would then thin and
+label. Reading at 10 m and resampling afterwards would have fetched every tile only to throw three
+quarters of it away. **Fix:** the rail task works on SWIR16's 20 m grid and reads the 10 m red
+and NIR from the COG overview whose pixel is 20 m: the reader follows the IFD chain and keeps each
+reduced image as a level, a band without one is read whole and reduced with `INTER_AREA`, and the
+scene classification is never averaged. Sydney's 66 km box is 3,327 × 3,306 px, 54 MB in 192
+range requests. **Lesson:** a COG already holds the coarser grid; ask the file for the resolution
+the analysis uses before reading the one it was delivered at. (#289, #291)
+
+**12.17 The tick's 120 s, shared three ways.** The research tick is one Lambda with 120 s for
+everything a rail city needs: the scene search, an Overpass fetch (25 s a hop, a second hop on
+failure), a worker call that may take most of its own 60 s, an agent with several turns and a
+worker call of its own, then the summary call and the stores. Each part had its own timeout, and
+the timeouts added up to well over 120 s, so a slow Overpass and a slow worker in one tick would
+have killed it and lost what it had measured. **Fix:** the split is in code, all counted from the
+tick's start: the network fetched only with 30 s of the 70 s measuring budget left and finished
+within them, the worker asked only with 45 s left and waited on for 58 s, the agent's answer due
+at 85 s, `look_again` cut to the time left and refused under 30 s, `web_context` within 10 s. And
+the order of work keeps a slow source from costing a measurement: the scene first, a new scene
+measured with the cached network even past its TTL, a stale network refreshed only on a tick with
+nothing new, and not again for 6 hours after a failure. **Lesson:** callers that share one
+deadline need one ledger: give each a reserve and a deadline from the same start, not a timeout
+of its own. (#285, #292; vision.md §8, lesson 12)
+
+**12.18 Timed on four cores, deployed on one.** The rail analysis's worst cases were first timed
+in the build container: 20 to 21 s at a 4096 px window, inside the worker's 60 s with room for
+the read. The container has four cores and OpenCV spreads its work over them; the worker, at
+2048 MB, has one vCPU. Pinned to one core (`taskset -c 0`, `cv2.setNumThreads(1)`), the same
+contract-valid networks took 28 to 32 s, about 42 s on an arm64 core taken as 1.3 times slower,
+which with a 10 to 30 s read runs past the adapter's 58 s wait. **Fix:** the station passes were
+made linear, then the rail task got its own window cap, `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km
+at 20 m; the four starting cities need at most 3,327): there the worst case is 20.7 s and 1.24 GB
+on one core, 35 to 50 s with the read on arm64. The comments now quote one-core figures and name
+the CPU. **Lesson:** time a bound on the hardware it bounds: pin the cores, set the library's
+threads, and write the CPU next to the number. (#295)
+
+**12.19 The rail topics had no editorial goal of their own.** Writing the city topic templates
+meant following a topic's fields into the prompts that read them. The research summary uses the
+adapter's own prompt, but the daily cycle's ideation and drafting resolve the topic's editorial
+goal: the topic's own, else the adapter's default, else the global one, and `rail_access` (like
+`satellite_vision`) has no adapter default. A rail topic created as the runsheet first described
+it would have been ideated and drafted under "independent web research ... sampling 5 to 10
+highly relevant articles", around a measurement. **Fix:** each body in
+`scripts/rail_topics.example.json` carries `editorial_goals` (the measured figures, the capture
+date and what was not measured; no ridership, cost, recommendation or cause), and the runsheet
+says why. An adapter default in `common/editorial_resolver.py` would cover topics made by hand;
+that is a code change, left for a later PR. **Lesson:** a template is a test of the path it
+feeds; follow its fields into every prompt before calling it complete. (#296, rail PR F2)
+
+**12.20 Numbers that drifted between the spec, the comments and the code.** Writing the closing
+docs from the merged code, not the specification, found the figures each review had moved: a
+`MAX_GRAPH_NODES` of 20,000 and betweenness sampled above 800 nodes (the code: 10,000, checked
+before any graph is built, and a work budget, `BETWEENNESS_WORK`); a 300-character caption cap
+(`figures.MAX_CAPTION_CHARS` is 400); a network "near 1.5 MB" (the adapter measured 2.6 to 3 MB,
+and the comments on `vision_contract.NETWORK_LIMITS` and in `common/osm.py` still say 1.5); city
+boxes "with a 2 km margin" (`geo.py` puts them 1.0 to 3.0 km inside their squares, which is
+enough, since a tile reaches 9.8 km past its square to the east and south). Each moved in a
+reviewed PR whose prose was another document's. **Fix:** the docs quote the code; the
+specification gained a status note listing where the code differs; the two stale comments are a
+follow-up for a code PR, since this one changes no code. **Lesson:** pattern 7 again: the PR that
+closes a stack's documentation is written from `grep`, not from the spec. (#296, rail PR F2)
 
 ## Patterns worth keeping
 

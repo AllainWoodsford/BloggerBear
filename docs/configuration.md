@@ -261,7 +261,7 @@ role the right to create the worker ([the runsheet's steps](deployment-runsheet.
 | `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN and the right to invoke it. Off, none of it exists. |
 | `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too; the reads then cross instead. |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create Lambda functions and log groups named `<prefix>-*-vision-*`, and nowhere else outside `aws_region`. |
-| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. The timeout stays under the client's 90 s read timeout, so the caller sees the worker's own error, not its own. |
+| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so the caller sees the worker's own error, not its own. The `rail_access` adapter waits only 58 s (`WORKER_READ_TIMEOUT`), to keep the tick's 120 s for the agent and the summary; a rail run that slow is an `invoke` error to it, and the site is tried again next tick. |
 
 ### The worker's environment variables
 
@@ -301,38 +301,51 @@ be unset.
 | `min_baseline` | 2 | Earlier clear scenes needed before a change can be material. |
 | `relative_threshold`, `absolute_threshold` | 0.35, 5 | Both must be crossed against the baseline median. |
 | `max_sites_per_tick` | 5 | Bound on worker calls per tick. |
-| `time_budget_seconds` | 60 | Stop measuring new sites after this (the research tick has 120 s). |
+| `time_budget_seconds` | 60 | Stop measuring new sites after this, more than 0 and at most 80 (the research tick has 120 s). |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget; it gets that plus two model turns. |
 | `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered; out of time is "artefact". |
 
-### A `rail_access` topic (as specified; the adapter lands in PR E)
+### A `rail_access` topic
 
-The keys and defaults of
-[the specification](enhancements/rail-access-monitor.md#4-specifications-one-per-pull-request),
-PR E. `force_manual_review` is forced on, as above. Each site must sit inside one Sentinel-2
-tile; the specification's §2 has four city boxes.
+Every key is in `adapter_config`, with the defaults of the adapter's `DEFAULTS`
+(`lambdas/common/adapters/rail_access.py`, whose docstring documents them). This table is the one
+list of them; [vision.md](enhancements/vision.md#5-configuration) points here.
+`force_manual_review` is forced on and cannot be unset. Four ready topic bodies, one per starting
+city, are in `scripts/rail_topics.example.json`, and the runsheet's
+[rail_access topics](deployment-runsheet.md#rail_access-topics) creates them and says how to add a
+city.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sites` | required | As above: 1 to 10 city polygons, each inside one Sentinel-2 tile. |
-| `backend` | `"opencv"` | Or `"cool"`. |
-| `params` | `{}` | Rail parameter overrides: `ndbi_threshold` 0.0, `ndvi_max` 0.3, `heat_sigma_m` 500, `snap_m` 300, `hub_count` 5, `intermodal_near_m` 300, `intermodal_far_m` 500, `min_desert_km2` 0.5, `visibility_ndvi_max` 0.35, `max_orbital_km` 5, within the vision core's bounds. |
-| `reach_m` | 1000 | Walking reach of a station, straight-line metres. |
-| `osm_ttl_days` | 30 | How long the cached OpenStreetMap network is used before Overpass is asked again. |
+| `sites` | required | 1 to 3 cities (`MAX_RAIL_SITES`; one city per topic is the design), each `{"id", "polygon": [[lon, lat], ...]}` with an optional `"name"` (the id when absent), a polygon of 3 to 64 points. The polygon must sit inside one Sentinel-2 tile: the scene search takes only scenes that hold the whole site. |
+| `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
+| `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call). |
+| `reach_m` | 1000 | Walking reach of a station, straight-line metres, 200 to 5000 (the contract's bounds). Always sent to the worker; a `reach_m` in `params` wins over it. |
+| `osm_ttl_days` | 30 | How long the cached OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. |
 | `max_cloud_cover` | 40 | Scene-level cloud filter in the search, %. |
 | `lookback_days` | 20 | How far back to search for a scene. |
-| `coverage_floor` | 0.6 | Below it a scene is never material and never part of a baseline. |
-| `history_size` | 6 | Scenes kept per site. |
-| `min_baseline` | 1 | Earlier clear scenes needed before a change can be material. |
-| `served_share_threshold` | 0.02 | A change in the served share of at least this is material. |
-| `desert_relative_threshold` | 0.10 | A change in the desert area of at least this share of the baseline median is material. A changed station count is material on its own. |
-| `max_sites_per_tick` | 1 | One city per tick: the network fetch, the worker and the agent share the tick's 120 s. |
-| `time_budget_seconds` | 70 | The measuring budget (80 at most). |
-| `triage`, `triage_max_tool_calls`, `triage_deadline_seconds` | true, 3, 85 | As above. |
+| `coverage_floor` | 0.6 | 0 to 1. Below it a scene is never material and never part of a baseline, and never the first observation. |
+| `history_size` | 6 | Scenes kept per site, 2 to 20. Only the newest keeps the station, flag, suggestion and desert lists. |
+| `min_baseline` | 1 | Earlier clear scenes, measured with the same polygon and parameters, needed before a change can be material; at least 1 and under `history_size`. |
+| `served_share_threshold` | 0.02 | A move of the served share of at least this from the baseline median is material. Not negative. |
+| `desert_relative_threshold` | 0.10 | A move of the desert area of at least this times the baseline median (at least 1 km²) is material. Not negative. A changed station count is material on its own. |
+| `max_sites_per_tick` | 1 | 1 to 3. One city per tick: the network fetch, the worker and the agent share the tick's 120 s. A site skipped for this cap, or deferred for time, keeps its place in the rotation. |
+| `time_budget_seconds` | 70 | The measuring budget, more than 0 and at most 80. The network is fetched only with 30 s of it left, the worker asked only with 45 s left. |
+| `triage` | true | Run the agent on a numeric change. |
+| `triage_max_tool_calls` | 3 | The agent's tool budget, 0 to 5; it gets that plus two model turns. |
+| `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered, more than 0 and at most 90; out of time is "artefact". |
 | `web_context` | true | Give the agent the news search tool (GDELT) for the city's rail stations and lines. |
+
+Every number must be finite, a site id is letters, digits, `_` and `-` (at most 64), unique in
+the topic, and a site name is 1 to 80 characters of plain text, used in articles exactly as given.
+The admin API stores `adapter_config` as given: a config the adapter refuses fails the topic's
+research tick, with the reason in the research tick's log, until it is fixed with
+`topics update <id> --adapter-config-json '...'`.
 
 ### No keys
 
-Earth Search STAC, the Sentinel-2 COGs in the `sentinel-cogs` bucket, the Overpass API and
-GDELT need no key, secret or parameter: nothing is added to the tables above for them.
+The rail task needs no new secret, parameter or variable: `VISION_ENABLED` is the only setting it
+shares with the ship task, and nothing else is added. Earth Search STAC, the Sentinel-2 COGs in the
+`sentinel-cogs` bucket, the Overpass API and GDELT need no key, secret or parameter: nothing is
+added to the tables above for them.

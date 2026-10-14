@@ -1,14 +1,14 @@
 # OpenCV AI Competition 2026: submission draft
 
-**Status:** draft, to be filled from the Sydney run and re-checked against the Devpost rules
-before submitting · **Deadline:** 26 October 2026, 11:45 pm PDT · **Entry:** BloggerBear's
+**Status:** draft; the measurements of the deployed run are still to be filled, and the whole
+re-checked against the Devpost rules before submitting · **Deadline:** 26 October 2026, 11:45 pm PDT · **Entry:** BloggerBear's
 Rail Access Monitor · **Design:** [vision.md](../enhancements/vision.md) and
 [rail-access-monitor.md](../enhancements/rail-access-monitor.md) · **How it works:**
 [docs/architecture/blogger-vision.md](../architecture/blogger-vision.md)
 
-Everything here describes what is on the integration branch or specified in the rail document;
-where a part is specified but not yet merged, it is marked *(specified)*. Numbers in square
-brackets are placeholders for the Sydney run. The competition pages were read through search
+Everything here describes what is on the integration branch (#285), every rail pull request
+merged. Numbers in square brackets are placeholders for the deployed run on Sydney and for the
+Graviton benchmark, which the operator makes. The competition pages were read through search
 results from the build container, so the rubric headings below are to be re-checked against the
 Devpost page by hand.
 
@@ -42,7 +42,7 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
 - **Perception with OpenCV 5, in a stateless worker on arm64.** The worker reads only the tiles
   under a site from the public Sentinel-2 Cloud-Optimized GeoTIFFs with HTTP range requests and
   a small reader for the TIFF subset they use (no GDAL: rasterio for arm64 did not fit Lambda's
-  250 MB). The rail task works on a 20 m grid read from the COG overviews *(specified)* and uses
+  250 MB). The rail task works on a 20 m grid read from the COG overviews and uses
   NDBI and NDVI thresholds and the scene classification for the built-up mask, a Gaussian blur
   for the heat map, one distance transform with labels for served area, deserts and catchments,
   `polylines` and hit-or-miss thinning in core OpenCV to turn OpenStreetMap ways into a one-pixel
@@ -50,8 +50,13 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
   networkx (in the worker only) for betweenness, hubs, distance to a hub and the simulated links.
   The ship task, the first on the same worker, uses an NDWI water mask, an adaptive threshold
   and `minAreaRect` filters.
+- **Bounded for every valid input, not just real cities.** The graph is not built past 10,000
+  junction clusters or runs; betweenness is exact within a work budget and sampled with a fixed
+  seed above it (and says so); the station passes are linear; and the rail window is capped at
+  3,584 px a side (71.7 km at 20 m), from timings on one core, the worker's share, so the worst
+  contract-valid network still leaves the read its time inside the 60 s invoke.
 - **A contract, not a convention.** Every request is validated (version, asset URL allowlist,
-  parameter bounds, polygon size; the task's assets and the network shape *(specified)*); every
+  parameter bounds, polygon size; the task's assets and the network's shape and caps); every
   failure is a code; every reply echoes the parameters it was measured with, the OpenCV build
   record and per-stage timings, so a result is reproducible and a COOL result is provable.
 - **Tested without the network.** 128 new tests in the stack and more per rail PR, on
@@ -68,7 +73,7 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
   trusting either source.
 - **Active perception as an agent tool.** The triage agent can re-measure the same scene with
   other parameters, compare the previous scene, read the site's history and (for rail) check
-  the news *(specified)*, and must answer in a bounded number of turns before a deadline.
+  the news, and must answer in a bounded number of turns before a deadline.
 - **A pixel-to-graph step that takes any mask**, so a learned track segmentation could replace
   the rasterised ways later and nothing after it changes.
 
@@ -79,6 +84,15 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
   the network reaches least well, the station every journey depends on, the lines through
   little, and simulated orbital links and feeder corridors ranked by how much they bring the
   city closer to a hub.
+- Says those flags and simulations in words a planner can check: **planner notes**, one sentence
+  each, written by code from the measured values ("{station} lies on {ratio} times as many
+  shortest paths through the mapped rail network as any other station: the pipeline flags it as
+  a single point of failure …"; "Simulation: a {km} km link between {a} and {b} … would bring the
+  mapped network's stations {m} m closer to a hub on average by rail …"; the templates are in
+  [vision.md §6.8](../enhancements/vision.md#68-planner-notes-the-flags-and-simulations-in-words)).
+  They are called flags and simulations, never
+  recommendations, and carry no cost, cause or timetable; up to three end the article, all of
+  them go to the reviewer's evidence, and the Finding keeps them as data.
 - Says what it did not measure: coverage under cloud, stations that did not snap to a line, a
   fragmented graph, a map disagreeing with the imagery.
 - Honest by construction about what the numbers are: built-up density is a proxy from
@@ -87,13 +101,17 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
 
 ### User experience
 
-- The map on the page: the heat map over the scene, deserts outlined, lines drawn thicker the
-  more paths run through them, stations larger the busier their catchment, hubs marked,
-  unmeasured areas tinted, the credits burned in (the rail figure is #289, in review). The static
-  page and the single-page app show figures under the credit line, above the article text, with
-  their captions; the rail adapter (PR E) attaches the rail figure to its Findings.
-- The article is two to four plain sentences with the station and line names exactly as
-  mapped, the served share, the area beyond reach, the capture date, and what was not measured.
+- The map on the page: the heat map over the scene (warm colours), unmeasured areas in slate,
+  deserts outlined in amber, the network's edges in pale cyan, thicker the more paths run through
+  them, stations as white rings, larger the busier their catchment and thicker in the top quarter
+  of isolation weight, hubs as green diamonds, flagged stations with a red ring, ghost lines in
+  red, simulated links dashed in green. Nothing else is drawn on the map: a dark strip under it
+  holds the three caption lines with the credits and a legend of the symbols. The static page and
+  the single-page app show the figure under the credit line, above the article text, with a
+  caption that says what the colours and lines are and repeats the credits with the year.
+- The article is two to four plain sentences (three to six with planner notes) with the station
+  and line names exactly as mapped, the served share, the area beyond reach, the capture date,
+  and what was not measured.
 - Adding a city is adding a topic with the admin CLI; the operator's assistant reports what
   needs attention.
 
@@ -134,10 +152,15 @@ The loop is **perception → diff → agent → person**, and each arrow is boun
    is called. That is the repository's rule 2, and the vision work keeps it.
 3. **Agent.** A numeric change is a candidate, not a Finding. The agent sees the figure as an
    image and the metrics, may call `look_again` (re-measure with other settings), `previous_scene`,
-   `site_history` and, for rail, `web_context` *(specified)*, within a tool budget, that plus
-   two turns, and a deadline 85 s from the tick's start. The answer must be a strict JSON
-   verdict. A malformed answer, an error, the turn limit or the deadline is "artefact": the
-   agent fails closed. Its trail is stored and its spend lands on the Stats page.
+   `site_history` and, for rail, `web_context` (recent news on the city's stations and lines),
+   within a tool budget, that plus two turns, and a deadline 85 s from the tick's start;
+   `look_again` is cut to the time left and refused when a worker run could not finish. The
+   answer must be a strict JSON verdict. A malformed answer, an error, the turn limit or the
+   deadline is "artefact": the agent fails closed. What its tools return is treated as data, and
+   its reason reaches a summary only quoted, as the agent's note, not a measurement. Its trail is
+   stored and its spend lands on the Stats page. The rule-based planner notes sit beside the
+   agent's verdict: the agent decides whether a change is real; code, not a model, writes what the
+   network's flags and simulations say.
 4. **Person.** `force_manual_review` is forced on every vision topic; no vision article is
    published without someone approving it in the review inbox.
 
@@ -154,7 +177,7 @@ refuses every request. `scripts/vision_benchmark.py` times the kernels the worke
 on, the whole per-site analysis, and a deployed worker end to end, and every report names the
 CPU generation and the build fingerprint, so a COOL row is a COOL row. The rail kernels (the
 distance transform, hit-or-miss thinning, `polylines`, the colour map, connected components and
-the whole rail analysis) join the benchmark in the worker-tasks PR *(specified)*.
+the whole rail analysis) are in it beside the ship kernels.
 
 ## Architecture
 
@@ -183,26 +206,32 @@ Finding {summary, figures} → daily cycle → draft → reviews → held (force
 
 ## Measurements
 
-To be filled from the Sydney run (the Botany Bay tile, 56HLH, whose scene
-`S2A_56HLH_20240105_0_L2A` is already verified for the ship task). Every row comes from a stored
-reply or a benchmark report, never typed from memory.
+Two runs exist so far, and neither is the deployed one. **PR D's smoke run** read the Sydney
+scene for real (the Botany Bay tile, 56HLH, scene `S2A_56HLH_20240105_0_L2A`, already verified for
+the ship task) with the worker handler in-process in the build container, outside us-west-2, and
+a nine-station network made by hand, since Overpass is unreachable from there: its read and window
+are real, its graph numbers are not a city's. **The kernel benchmark** ran on the build
+container's CPU, not on Graviton. The rows in square brackets wait for the deployed run, with the
+Overpass network, and for the operator's Graviton run. Every row comes from a stored reply or a
+benchmark report, never typed from memory.
 
 | Measurement | Value | Source |
 |---|---|---|
-| Site box, UTM zone, pixels on the 20 m grid | 150.86–151.56, −34.16 to −33.58, 56S; [w × h] | the request and `window` in the reply |
-| Bytes read, range requests | [MB], [n] | the reply's `io` |
-| Worker time: read, analyse (masks, access, graph, metrics), annotate | [ms each] | the reply's `timings_ms` |
-| Coverage, scene cloud cover | [0.xx], [%] | `metrics.coverage`, the STAC item |
-| Built-up km², served km², desert km², served share | [ ], [ ], [ ], [0.xx] | `metrics` |
-| Stations, snapped, nodes, edges, components | [n], [n], [n], [n], [n] | `metrics` |
+| Site box, UTM zone, pixels on the 20 m grid | 150.86–151.56, −34.16 to −33.58, 56S; 3,327 × 3,306 px with the reader's 16 px pad (the rail window cap is 3,584) | the smoke run's `window`; `geo.py` gives the same |
+| Bytes read, range requests | 54 MB in 192 range requests (the 10 m bands from their 20 m overviews) | the smoke run's `io` |
+| Worker time: read, analyse, of which graph, annotate | read 27.1 s through the build container's proxy, from outside us-west-2 (beside the bucket it is a different number: [s]); analyse 12.1 s, of which the graph stage 6.6 s on the hand-made network ([s] on the city's); annotate 0.5 s; total 39.7 s | the smoke run's `timings_ms` |
+| Coverage, scene cloud cover | 0.147 on 2024-01-05: the scene is mostly cloud over the city, so `low_coverage` is flagged and the scene could never be material or a first observation; [0.xx], [%] on a clear scene | `metrics.coverage`, the STAC item |
+| Built-up km², served km², desert km², served share | [ ], [ ], [ ], [0.xx] | `metrics`, deployed run |
+| Stations, snapped, nodes, edges, components | [n], [n], [n], [n], [n] | `metrics`, deployed run |
 | Hubs and interchanges, by name | [names] | `metrics.hubs`, `metrics.interchanges` |
-| Flags raised | [list] | `metrics.flags` |
+| Flags raised, and the planner notes written for them | [list] | `metrics.flags`; the Finding's `planner_notes` |
 | Top suggestion, and its fall in mean distance to a hub | [from–to], [m] | `metrics.suggestions` |
 | Quality flags, warnings | [list] | `metrics.quality_flags`, `metrics.warnings` |
-| Network payload | [MB]; ways [n], points [n] | `metrics.network`, the request size |
+| Network payload | [MB]; ways [n], points [n] (a city at `osm.py`'s caps is 2.6 to 3 MB of JSON) | `metrics.network`, the request size |
 | Research tick wall time, with and without the agent | [s], [s] | the tick's log |
 | Agent: tool calls, turns, verdict, tokens, cost | [n], [n], [verdict], [tokens], [USD] | the trail in the running state; Stats `vision_triage` |
-| Kernel benchmark, x86 stock | [ms per kernel, whole analysis] | `vision_benchmark.py kernels` |
+| Kernel benchmark, x86 stock (this build container's CPU, not Graviton) | Intel Xeon at 2.10 GHz, OpenCV 5.0.0 (`0ef08003c311`), 2048 px synthetic images, medians of 20, on 4 vCPUs / pinned to one: `analyse_rail_access` 1,138 / 1,303 ms (a city of 8 lines and 40 stations), `analyse_site` 192 / 225 ms, `thinning_hitmiss` 51 / 44 ms, `distance_transform_l2` 49 / 57 ms, `adaptive_threshold_gaussian_31` 38 / 36 ms; the full table is in [vision.md §7](../enhancements/vision.md#7-measured) | `vision_benchmark.py kernels`, and the same under `taskset -c 0` |
+| Worst-case rail analysis on one core (contract-valid networks built to be slow) | at most 32.2 s and 1.56 GB at a 4096 px window, at most 20.7 s and 1.24 GB at the 3,584 px cap | PR J's measurements, quoted in `vision_worker_handler.py` and `vision/scene.py` |
 | Kernel benchmark, Graviton stock | [ms] | the same, on a `c8g` |
 | Kernel benchmark, Graviton COOL | [ms], fingerprint [sha256] | the same, inside the COOL image |
 | Deployed worker end to end | [ms] | `vision_benchmark.py worker --arn` |
@@ -211,9 +240,9 @@ reply or a benchmark report, never typed from memory.
 
 | Data | Licence and credit |
 |---|---|
-| Sentinel-2 | Copernicus Sentinel data, free, full and open; "Contains modified Copernicus Sentinel data" under each vision article and on the About page; the rail figure (#289, in review) burns it in with the year, and its page caption repeats it with the rail adapter (PR E) |
+| Sentinel-2 | Copernicus Sentinel data, free, full and open; "Contains modified Copernicus Sentinel data" under each vision article and on the About page; the rail figure carries it with the year in the strip under the map, and its page caption repeats it |
 | The AWS copy | Registry of Open Data on AWS; "Sentinel-2 Cloud-Optimized GeoTIFFs accessed from the Registry of Open Data on AWS" |
-| OpenStreetMap | ODbL; "Map data © OpenStreetMap contributors" burned into the rail figure (#289, in review); in its caption and under each rail article with the rail adapter *(PR E, specified)* |
+| OpenStreetMap | ODbL; "Map data © OpenStreetMap contributors" in the rail figure's strip (as "(c)"), in its page caption, under each rail article and on the About page |
 | GDELT | Free with a citation and a link, as the project already gives |
 | COOL | AWS Marketplace subscription (a trial, then usage pricing); a manual benchmark run, not Terraform |
 | This repository | Apache License 2.0 |
@@ -237,7 +266,7 @@ kept is numbers and one map per scene.
   a flooded field or a misclassified shadow can move the built-up mask at the edges.
 - **One Sentinel-2 tile per site.** The scene search keeps only scenes whose footprint holds the
   whole site, so a city must fit inside one 100 km tile, with the box placed to avoid its grid
-  lines.
+  lines, and inside the worker's rail window, 71.7 km a side at 20 m.
 - **Cloud.** A scene under the coverage floor is kept but never material; a station under cloud
   is unmeasured, not quiet; in a cloudy season the baseline builds slowly.
 - **The map is the topology.** Where OpenStreetMap is wrong or stale, the graph is; the
@@ -254,21 +283,23 @@ kept is numbers and one map per scene.
    (`us-west-2`), set the `VISION_ENABLED` repository variable to `true`, and merge or dispatch
    a deploy. The worker, its bucket and log group appear in us-west-2; nothing else changes.
    ([runsheet](../deployment-runsheet.md#vision-optional))
-2. **Create a topic.** With the admin CLI, `topics create` with `adapter: "rail_access"`
-   *(specified; the adapter is PR E)* and the Sydney box from the rail document's §2 as its one
-   site, `reach_m` 1000, or `adapter: "satellite_vision"` with a Botany Bay polygon and
-   `object_noun: "large vessels"` for the ship task that is on the branch. `force_manual_review`
-   is set for you.
-3. **Force a tick.** `python scripts/admin_cli.py topics trigger <id> --pipeline research_tick`.
-   The first scene measured is always material: a Finding appears (the ships Finding carries no
-   figure; a figure on the Finding comes with the rail adapter, PR E; today the ship PNG sits in
-   the content bucket under `vision/<topic>/<site>/<scene>.png`), and the running state at
-   `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and timings and
-   the agent's trail (from the second clear scene on).
+2. **Create the topics.** The four city topics are complete topic bodies in
+   `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,
+   staggered daily cadences); the runsheet's
+   [rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them with the admin
+   CLI. For the ship task, `adapter: "satellite_vision"` with a Botany Bay polygon and
+   `object_noun: "large vessels"`. `force_manual_review` is set for you.
+3. **Force a tick.** `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick`.
+   The first tick fetches the city's network from Overpass and measures the newest scene; if its
+   coverage is at least 0.6, that is the first observation and a Finding appears, carrying the
+   map and the planner notes (a cloudy scene reports nothing, and the next clear one is first).
+   The figure is in the content bucket under `vision/<topic>/<site>/<scene>.png`, and the running
+   state at `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and
+   timings, the cached network and, from the second clear scene on, the agent's trail.
 4. **Run the daily cycle** (`--pipeline daily_cycle`) and open the inbox
    (`python scripts/admin_cli.py inbox`): the article is held for you.
-   `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; with the
-   rail adapter the page shows the map at `articles/figures/<article>/1.png` with the credits.
+   `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; the page
+   shows the map at `articles/figures/<article>/1.png` with its caption and the credits.
 5. **The benchmark.** `python scripts/vision_benchmark.py kernels --out stock-x86.json` on any
    machine with `requirements-vision.txt`; the same on a `c8g` from the COOL AMI and in a stock
    venv beside it; `worker --arn <VISION_WORKER_ARN>` for the deployed worker.
