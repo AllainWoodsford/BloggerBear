@@ -30,8 +30,10 @@ from botocore.config import Config
 from common import vision_contract as contract
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-# A reply's figure is at most 1024 px on its longer side; 3 MB is far above any such PNG and well
-# under Lambda's 6 MB synchronous response limit.
+# A reply's figure is a map at most 1024 px on its longer side, plus, on the rail figure, the strip
+# of caption and legend under it (vision/rail_annotate.py, which also keeps that figure within a
+# 2 MiB budget); 3 MB is far above any such PNG and well under Lambda's 6 MB synchronous response
+# limit.
 MAX_IMAGE_BYTES = 3 * 1024 * 1024
 
 _ENV_BY_BACKEND = {"opencv": "VISION_WORKER_ARN", "cool": "VISION_COOL_WORKER_ARN"}

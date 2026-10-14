@@ -25,7 +25,7 @@ from vision_fakes import fetcher, write_tiff
 import vision_worker_handler as worker
 from common import osm, vision_client
 from common import vision_contract as contract
-from vision import build, cog, geo, rail_analyse, scene
+from vision import build, cog, geo, rail_analyse, rail_annotate, scene
 from vision import network as vision_network
 
 PREFIX = contract.DEFAULT_ALLOWED_URL_PREFIXES[0]
@@ -425,7 +425,13 @@ def test_the_rail_task_measures_the_city(rail_files):
     png = base64.b64decode(reply["image_png_b64"])
     assert png.startswith(vision_client.PNG_SIGNATURE)
     image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
-    assert max(image.shape[:2]) <= 1024 and image[2, 2].tolist() == [0, 0, 0]  # the caption bar
+    # The map is at most 1024 px on its longer side, with the strip (the caption, then the legend)
+    # under it, the caption at the strip's top-left.
+    caption = [line.format(year="2024") for line in rail_annotate.CAPTION_LINES]
+    strip = rail_annotate.figure_strip(image[:1], caption)
+    map_height = image.shape[0] - strip.shape[0]
+    assert 0 < map_height and max(map_height, image.shape[1]) <= 1024
+    assert np.array_equal(image[map_height:], strip) and image[map_height + 2, 2].tolist() == [0, 0, 0]
     json.dumps(reply, allow_nan=False)  # no NaN or infinity anywhere in a Lambda reply
     assert contract.validate_reply(json.loads(json.dumps(reply))) == reply
 
