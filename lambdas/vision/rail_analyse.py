@@ -58,14 +58,16 @@ MIN_BETWEENNESS_SAMPLES, BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 20, 200, 0
 # a city has a few hundred to a few thousand nodes) is not made a graph at all (network.build_graph's
 # max_nodes, checked on the labelled pixels before any networkx object exists): the stations are
 # reported without degree, betweenness or hub distance, the hubs, flags and suggestions are empty and
-# the quality flag graph_too_large says so. Just under the cap on a 4096 px window, on the 4-core
-# Intel Xeon at 2.1 GHz above (scene.MAX_WINDOW_PX lists the networks): building the graph takes
-# 3.6-4.9 s at 9,400-9,800 nodes, most of it passes over the whole window; the measures, flags and
-# suggestions 2.5-5.9 s, of which station_adjacency and the ghost-line walk take 1.2 s for 2,000
-# stations on one junction tree (15-21 s while both were quadratic) and the simulated links up to
-# 3.3 s; the whole pass with its figure at most 26 s, at a peak RSS of 1.43 GB. Before the check
-# (the cap was 20,000 and only skipped the measures), a 2,632-point mesh of crossing ways on a
-# 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in build_graph, 55 s for the pass.
+# the quality flag graph_too_large says so. Just under the cap (9,000-9,800 nodes), on one core of
+# the Intel Xeon above (scene.MAX_WINDOW_PX lists the networks and their totals): the graph stage
+# (rasterise, thin, snap, build_graph) takes 13.7-16.5 s at 4096 px and 6.1-8.0 s at 3,584 px, the
+# rail task's window cap (vision_worker_handler.RAIL_MAX_WINDOW_PX), most of it passes over the whole
+# window (the thinning 6.8-9.2 s and 1.6-2.4 s of it, build_graph 4.7-6.3 s and 3.4-4.2 s); the
+# measures, flags and suggestions 2.5-6.7 s at either size, of which station_adjacency takes 0.8-1.0 s
+# for 2,000 stations on one junction tree and the simulated links up to 3.3 s. The whole pass with its
+# figure: at most 32.2 s and 1.56 GB at 4096 px, at most 20.7 s and 1.24 GB at 3,584 px. Before the
+# check (the cap was 20,000 and only skipped the measures), a 2,632-point mesh of crossing ways on a
+# 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in build_graph, 55 s for the pass (four cores).
 MAX_GRAPH_NODES = 10_000
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.

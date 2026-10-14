@@ -341,15 +341,36 @@ def junction_tree_with_station_leaves(side=45, stations=2000):
     return graph
 
 
-def test_station_adjacency_of_two_thousand_stations_off_one_junction_tree_is_quick():
-    graph = junction_tree_with_station_leaves()
-    started = time.perf_counter()
+class CountingGraph(nx.Graph):
+    """A graph that counts the work done on it: the calls for a node's neighbours (neighbors()
+    and graph[node]) and the neighbours neighbors() hands back. A count, not a clock, so a test of
+    it holds on any machine and under any load."""
+
+    def __init__(self, incoming_graph_data=None, **attr):
+        self.calls = self.steps = 0
+        super().__init__(incoming_graph_data, **attr)
+
+    def neighbors(self, n):
+        self.calls += 1
+        for neighbour in super().neighbors(n):
+            self.steps += 1
+            yield neighbour
+
+    def __getitem__(self, n):
+        self.calls += 1
+        return super().__getitem__(n)
+
+
+def test_station_adjacency_asks_each_node_for_its_neighbours_once_not_once_per_station():
+    """2,000 stations off one junction grid, every station next to every other through it: the
+    one pass asks each of the 4,025 nodes for its neighbours once, where the walk from every
+    station asked every junction again for each station (4,052,000 calls on this graph)."""
+    graph = CountingGraph(junction_tree_with_station_leaves())
     adjacency = network.station_adjacency(graph)
-    seconds = time.perf_counter() - started
     stations = sorted(n for n in graph if n.startswith("s:"))
     assert len(adjacency) == 2000
     assert all(adjacency[s] == [t for t in stations if t != s] for s in ("s:0000", "s:1234", "s:1999"))
-    assert seconds < 10.0  # 0.9 s here; the walk from every station took 5.9 s on this graph
+    assert graph.calls <= 2 * graph.number_of_nodes() and graph.steps <= 4 * graph.number_of_edges()
 
 
 def crop_per_run(run_labels, stats, run):
@@ -419,6 +440,28 @@ def test_run_lengths_in_one_pass_are_those_of_a_crop_per_run(name, monkeypatch):
     assert count == run_count > 1 and np.array_equal(labels, run_labels)
     assert lengths.tolist()[1:] == [crop_per_run(run_labels, stats[run], run) for run in range(1, count)]
     assert graph.number_of_edges() > 0
+
+
+def test_run_lengths_cost_the_window_once_not_each_runs_bounding_box(monkeypatch):
+    """Diagonals 3 px apart, corner to corner: one run each, whose bounding boxes add up to about
+    ninety windows. The pixels handed to findContours while the graph is built are counted (a
+    count, not a clock): one pass over the window, where a crop per run handed it every box."""
+    skel = diagonals(400, 3)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(skel, connectivity=8)
+    boxes = int(stats[1:, cv2.CC_STAT_WIDTH].astype(np.int64) @ stats[1:, cv2.CC_STAT_HEIGHT])
+    assert count > 250 and boxes > 50 * skel.size  # what a crop per run would cost here
+    handed = []
+    find_contours = cv2.findContours
+
+    def counting(image, *args, **kwargs):
+        handed.append(image.size)
+        return find_contours(image, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, "findContours", counting)
+    blank = np.zeros(skel.shape, np.uint8)
+    graph, _ = network.build_graph(skel, [], [], PX, blank + 1, blank)
+    assert graph.number_of_edges() > 250
+    assert sum(handed) <= 2 * skel.size
 
 
 def test_rasterise_skips_degenerate_ways_and_rounds_vertices():

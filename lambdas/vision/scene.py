@@ -28,22 +28,29 @@ import numpy as np
 from vision import cog, geo
 
 # The largest window the worker will read, per side, in reference pixels: 4096 px = 41 km at 10 m
-# (larger than any anchorage) or 82 km at 20 m (a city and its suburbs; the four city boxes of
-# docs/enhancements/rail-access-monitor.md §2 need at most 3,327 px, Sydney's), and bounded so one
-# request can't ask for a whole 110 km scene. The rail task's compute (analyse_rail_access and
-# annotate_rail in one process; peak RSS from getrusage) at 4096 x 4096 px, measured on a 4-core
-# Intel Xeon at 2.10 GHz with a load average of 0.6-3.5 from other work: 9.2 s and 1.37 GB for a
-# synthetic city of 180 stations. The worst contract-valid networks built, all under the graph caps:
-# 24-26 s and 1.41 GB for one way snaking across the window in 40 rows with 2,000 stations, 3,900
-# spurs and a solid bar of 66 adjacent ways (the thinning's 32 passes 9 s, the simulated links 3 s);
-# 20-22 s and 1.43 GB for 1,194 long anti-diagonals, a 3,500-spur comb with 2,000 stations on one
-# junction tree and the same bar (39 s before the station passes and run lengths were linear); 18 s
-# for 4,096 parallel ways rasterised into one solid block; 9 s and 1.50 GB for 2,711 anti-diagonals
-# 3 px apart (19 s before). With other test suites sharing the four cores (load average 4-6) the two
-# worst took 30-42 s, the growth in the graph stage's passes over the whole window: contention a
-# worker's own CPU share does not have. At the lighter load all are under 30 s, so the rail task has no
-# window cap of its own (3,584 px would shrink only the pixel-bound stages), and the 60 s invoke keeps
-# over half its time for the read.
+# (larger than any anchorage) or 82 km at 20 m, and bounded so one request can't ask for a whole
+# 110 km scene. The rail task has a smaller cap of its own, vision_worker_handler.RAIL_MAX_WINDOW_PX
+# = 3,584 px (71.7 km at 20 m; the four city boxes of docs/enhancements/rail-access-monitor.md §2
+# need at most 3,327 px with the pad, Sydney's), because its compute grows with the window and the
+# worker has one vCPU (2048 MB). That compute (analyse_rail_access and annotate_rail in one process,
+# peak RSS from getrusage), on ONE core of a 4-core Intel Xeon at 2.10 GHz (taskset to one CPU,
+# cv2.setNumThreads(1), two runs each), for the worst contract-valid networks built, all under the
+# graph caps, at 4096 px and at 3,584 px:
+#   one way back and forth across the window in 40 rows, 2,000 stations on it, 3,900 spurs 8 px long
+#   and a solid bar of 66 adjacent ways (the thinning's full 32 passes): 28.7-29.6 s and 1.41 GB at
+#   4096 px, 19.3-19.9 s and 1.12 GB at 3,584 px;
+#   1,194 anti-diagonals 3 px apart over one corner (1,044 at 3,584 px), a comb of 3,500 spurs with
+#   2,000 stations on one junction tree, and the bar: 29.1-29.3 s and 1.43 GB, 18.3-18.5 s and 1.14 GB;
+#   4,850 spurs 4 px apart off spines joined into one tree, 2,000 stations on their tips, and the bar:
+#   28.3-28.5 s and 1.37 GB, 18.2-18.8 s and 1.11 GB;
+#   the snaking way with a vertex every 4 px (50,158 points; 45,038), 4,300 spurs, 1,000 stations along
+#   it and 1,000 on spur tips, 5,000 bus stops and the bar: 32.1-32.2 s and 1.40 GB, 19.7-20.7 s and 1.12 GB;
+#   1,828 full-width ways 2 px apart (1,572 at 3,584 px), the most run pixels and the most memory:
+#   22.4-23.6 s and 1.56 GB, 11.7-12.0 s and 1.24 GB.
+# Taking the worker's arm64 core as 1.3 times slower, the worst is about 42 s of compute at 4096 px:
+# with a 10-30 s read, 52-72 s, past the client's 58 s read timeout (rail_access.WORKER_READ_TIMEOUT)
+# whenever the read takes over 16 s. At 3,584 px it is about 27 s, and the read covers 77% of the
+# pixels: 35-50 s in all.
 MAX_WINDOW_PX = 4096
 # Extra pixels read around the polygon so the adaptive threshold's window has context at the edge.
 PAD_PX = 16

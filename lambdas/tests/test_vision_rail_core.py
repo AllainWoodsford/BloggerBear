@@ -21,6 +21,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
+import vision_worker_handler as worker
 from common import vision_contract as contract
 from common.vision_client import MAX_IMAGE_BYTES
 from vision import access, geo, rail_analyse, rail_annotate, urban
@@ -374,28 +375,65 @@ def test_a_two_thousand_station_ghost_line_is_walked_in_order():
     adjacency.update({f"s:b{i:03d}": [] for i in range(700)})
     rows = [row(s, 0.0, 2, 0.0, 5000.0) for s in line] + [row(f"s:b{i:03d}", 0.6, 1, 0.0, 900.0)
                                                           for i in range(700)]  # fmt: skip
-    started = time.perf_counter()
-    flags = flag_stations(rows, adjacency)
-    seconds = time.perf_counter() - started
-    (ghost,) = (f for f in flags if f["type"] == "ghost_line")
+    (ghost,) = (f for f in flag_stations(rows, adjacency) if f["type"] == "ghost_line")
     ends = sorted((line[0], line[-1]))
     assert ghost["stations"] == (line if ends[0] == line[0] else line[::-1])
     assert ghost["stations"] == walk_chain_with_a_list(ends[0], set(line), adjacency)
-    assert seconds < 5.0  # well under 0.1 s here
 
 
-def test_a_ghost_line_of_stations_all_next_to_each_other_is_walked_quickly():
+def test_a_ghost_line_of_stations_all_next_to_each_other_is_walked_by_id():
     """1,500 quiet stations off one junction tree are all next to each other: the walk takes the
-    nearest id each time. Testing each step against the order so far took 10.1 s here."""
+    nearest id each time."""
     ids = [f"s:{i:04d}" for i in range(2000)]
     adjacency = {s: [t for t in ids if t != s] for s in ids}
     rows = [row(s, 0.0 if i % 4 else 0.7, 1, 0.0, 5000.0) for i, s in enumerate(ids)]
-    started = time.perf_counter()
-    flags = flag_stations(rows, adjacency)
-    seconds = time.perf_counter() - started
-    (ghost,) = (f for f in flags if f["type"] == "ghost_line")
+    (ghost,) = (f for f in flag_stations(rows, adjacency) if f["type"] == "ghost_line")
     assert ghost["stations"] == [s for i, s in enumerate(ids) if i % 4]
-    assert seconds < 10.0  # 0.35 s here
+
+
+class CountingId(str):
+    """A station id that counts the times it is compared for equality. A set finds an id by its
+    hash and then by identity, with no comparison; a list compares it with each entry in turn. So
+    the count is the work of the membership tests, and a test of it holds on any machine."""
+
+    comparisons = 0
+
+    def __eq__(self, other):
+        CountingId.comparisons += 1
+        return str.__eq__(self, other)
+
+    __hash__ = str.__hash__
+
+
+def a_line_of(n):
+    """`n` stations one after another along a line, their ids shuffled along it."""
+    line = [CountingId(f"s:{i:04d}") for i in np.random.default_rng(7).permutation(n)]
+    return line, {s: sorted(line[max(0, i - 1) : i] + line[i + 1 : i + 2]) for i, s in enumerate(line)}
+
+
+def all_next_to_each_other(n):
+    """`n` stations off one junction tree: each one next to every other."""
+    ids = [CountingId(f"s:{i:04d}") for i in range(n)]
+    return ids, {s: [t for t in ids if t is not s] for s in ids}
+
+
+@pytest.mark.parametrize("shape, n", [(a_line_of, 600), (all_next_to_each_other, 200)])
+def test_the_ghost_line_walk_tests_membership_against_sets_not_the_order_so_far(shape, n):
+    """The walk's equality comparisons stay within one per station (the min over the chain for its
+    first station makes them; a set finds the rest without one). The order so far kept as a list
+    made one per entry for every candidate at every step: about 359,000 along the line and 1.1
+    million among the 150 quiet stations next to each other."""
+    ids, adjacency = shape(n)
+    if shape is a_line_of:
+        members, expected = set(ids), (ids if ids[0] < ids[-1] else ids[::-1])
+    else:
+        members = {s for i, s in enumerate(ids) if i % 4}
+        expected = sorted(members)
+    CountingId.comparisons = 0
+    order = rail_analyse._walk_chain(min(members), members, adjacency)
+    comparisons = CountingId.comparisons
+    assert order == expected
+    assert comparisons <= 4 * len(members)
 
 
 def spokes():
@@ -838,8 +876,8 @@ def comb_and_diagonals(size=4096):
     apart, joined by one way (one junction tree), 2,000 stations on spur tips (510 in the built
     district, the rest in canopy: three quarters quiet, one long ghost line, every station next
     to every other), and a solid bar of 66 adjacent ways that the thinning peels for its full
-    32 passes."""
-    reach = 2 * size - 3600  # the diagonals x + y >= reach; the comb stays left of them
+    32 passes. The corner the diagonals cover scales with `size` (3,600 px of x + y at 4096)."""
+    reach = 2 * size - 3600 * size // 4096  # the diagonals x + y >= reach; the comb stays left of them
     edge = size - 3
     corner = range(reach, 2 * size - 20, 3)
     ways = [two_point_way(f"d{c}", (c - edge, edge), (edge, c - edge)) for c in corner]
@@ -892,13 +930,14 @@ def serpentine_and_bar(size=4096):
 @pytest.mark.skipif(not os.environ.get("VISION_PERF"), reason="set VISION_PERF=1 to time the worst networks")
 @pytest.mark.parametrize("make", [comb_and_diagonals, serpentine_and_bar])
 def test_the_worst_networks_measured_stay_within_the_analysis_budget(make):
-    """The whole pass with its figure, and the graph measures, flags and suggestions alone (the
-    stage the quadratic station passes were in). On the machine of scene.MAX_WINDOW_PX: 20-22 s
-    and 2.5-2.8 s for comb_and_diagonals (39 s and 17.5 s before), 24-26 s and 5.5-5.7 s for
-    serpentine_and_bar; 30-42 s and 2.7-6.4 s with other test suites sharing its four cores (the
-    thinning's memory traffic suffers most). So the whole pass is bounded by the worker's 60 s
-    invoke, and the stage, which moves little with load, by a figure the quadratic passes miss."""
-    size = 4096
+    """The whole pass with its figure at the rail task's window cap, and the graph measures, flags
+    and suggestions alone (the stage the quadratic station passes were in). The whole pass is held
+    to 30 s, the analysis's share of the worker's 60 s (the read takes 10-30 s of it), not to the
+    whole invoke. On one core of the machine of scene.MAX_WINDOW_PX (taskset): 12.8-14.4 s and
+    2.7-2.9 s for comb_and_diagonals, 16.4-16.6 s and 5.9-6.0 s for serpentine_and_bar; on its
+    four cores 14.5-14.8 s. With the quadratic station passes back, comb_and_diagonals took 30.8 s
+    on one core, 18.5 s of it in the stage, and failed both bounds."""
+    size = worker.RAIL_MAX_WINDOW_PX
     network = contract.validate_network(make(size))
     assert len(network["stations"]) == 2000 and len(network["ways"]) <= contract.NETWORK_LIMITS["ways"]
     bands = city(size)
@@ -914,7 +953,7 @@ def test_the_worst_networks_measured_stay_within_the_analysis_budget(make):
     assert "graph_too_large" not in m["quality_flags"] and png.startswith(b"\x89PNG")
     if make is comb_and_diagonals:
         assert max(len(f["stations"]) for f in m["flags"] if f["type"] == "ghost_line") > 1000
-    assert seconds < 60.0 and stages["metrics"] < 12_000.0
+    assert seconds < 30.0 and stages["metrics"] < 12_000.0
 
 
 def test_a_wide_heat_blur_runs_on_a_reduced_grid_and_matches():
