@@ -933,10 +933,10 @@ def test_the_worst_networks_measured_stay_within_the_analysis_budget(make):
     """The whole pass with its figure at the rail task's window cap, and the graph measures, flags
     and suggestions alone (the stage the quadratic station passes were in). The whole pass is held
     to 30 s, the analysis's share of the worker's 60 s (the read takes 10-30 s of it), not to the
-    whole invoke. On one core of the machine of scene.MAX_WINDOW_PX (taskset): 12.8-14.4 s and
-    2.7-2.9 s for comb_and_diagonals, 16.4-16.6 s and 5.9-6.0 s for serpentine_and_bar; on its
-    four cores 14.5-14.8 s. With the quadratic station passes back, comb_and_diagonals took 30.8 s
-    on one core, 18.5 s of it in the stage, and failed both bounds."""
+    whole invoke. On one core of the machine of scene.MAX_WINDOW_PX (taskset): 13.0-13.3 s and
+    2.9-3.0 s for comb_and_diagonals, 15.3-15.6 s and 6.3-6.4 s for serpentine_and_bar; on its
+    four cores 11.6 s and 13.5 s. With the quadratic station passes back, comb_and_diagonals took
+    30.8 s on one core, 18.5 s of it in the stage, and failed both bounds."""
     size = worker.RAIL_MAX_WINDOW_PX
     network = contract.validate_network(make(size))
     assert len(network["stations"]) == 2000 and len(network["ways"]) <= contract.NETWORK_LIMITS["ways"]

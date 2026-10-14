@@ -30,6 +30,9 @@ _L_DIAGONAL = np.array([[0, -1, -1], [1, 1, -1], [0, 1, 0]], np.int8)
 THINNING_KERNELS = tuple(
     np.ascontiguousarray(np.rot90(kernel, turn)) for turn in range(4) for kernel in (_L_STRAIGHT, _L_DIAGONAL)
 )
+# How far from the pixels one thinning pass removed the next pass can remove any: one pixel per
+# element (thin() says why), so a pass after the first looks only that far round the last changes.
+THINNING_REACH_PX = len(THINNING_KERNELS)
 # The 3x3 ring: a pixel's eight neighbours.
 _RING = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], np.float32)
 _SQUARE = np.ones((3, 3), np.uint8)
@@ -61,6 +64,21 @@ def thin(mask: np.ndarray, max_iterations: int = 32) -> np.ndarray:
     Works on the bounding box of the foreground, padded by one pixel of background so no element
     reads past the image's edge, and stops when a full pass over the eight elements removes
     nothing, or after `max_iterations` passes.
+
+    The first pass covers the whole box; every later pass only the region that can still change:
+    the bounding box of the pixels the previous pass removed, grown by THINNING_REACH_PX (8) on
+    every side. That gives the skeleton passing over the whole box every time gives, pixel for
+    pixel. An element's hit is decided by the pixel's 3 x 3 neighbourhood alone, so a pixel the
+    k-th element hits in this pass (still there, so the k-th element did not hit it in the previous
+    pass) has a neighbour that changed in between: one the previous pass removed with the k-th
+    element or a later one, or one this pass removed with an earlier element. By induction over the
+    elements, what the k-th element removes lies within k pixels of what the previous pass removed,
+    so everything this pass removes lies within eight. The elements read the region plus a
+    one-pixel margin, so every neighbourhood they decide on is the real image, and only the region
+    itself (not the margin) is written. Ways that run to the window's edges (whole OSM ways, clipped
+    by rasterise_ways) make the first box the whole window; a thick blob in one place then costs its
+    own rows on every later pass, not the window's, though thick parts at both ends of the window
+    still keep the region most of it.
     """
     skeleton = (mask > 0).astype(np.uint8)
     ys, xs = np.nonzero(skeleton)
@@ -70,13 +88,21 @@ def thin(mask: np.ndarray, max_iterations: int = 32) -> np.ndarray:
     x0, x1 = int(xs.min()), int(xs.max()) + 1
     box = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
     box[1:-1, 1:-1] = skeleton[y0:y1, x0:x1]
+    height, width = box.shape
+    top, bottom, left, right = 1, height - 1, 1, width - 1  # the region, inside the pad
+    reach = THINNING_REACH_PX
     for _ in range(max_iterations):
-        before = int(np.count_nonzero(box))
+        view = box[top - 1 : bottom + 1, left - 1 : right + 1]  # the region and its read margin
+        region = view[1:-1, 1:-1]  # a view into `box`: subtracting from it thins `box`
+        before = region.copy()
         for kernel in THINNING_KERNELS:
-            hit = cv2.morphologyEx(box, cv2.MORPH_HITMISS, kernel)
-            box = cv2.subtract(box, hit)
-        if int(np.count_nonzero(box)) == before:
+            hit = cv2.morphologyEx(view, cv2.MORPH_HITMISS, kernel)
+            np.subtract(region, hit[1:-1, 1:-1], out=region)  # a hit is foreground: no wrap
+        bx, by, bw, bh = cv2.boundingRect(cv2.compare(before, region, cv2.CMP_NE))
+        if not bw:
             break
+        top, bottom = max(1, top + by - reach), min(height - 1, top + by + bh + reach)
+        left, right = max(1, left + bx - reach), min(width - 1, left + bx + bw + reach)
     skeleton[y0:y1, x0:x1] = box[1:-1, 1:-1]
     return skeleton
 
@@ -317,8 +343,9 @@ def station_adjacency(graph: nx.Graph) -> dict[str, list[str]]:
     stations are found once, each with the stations it touches, and a station's neighbours are
     the stations next to it and those of every piece it touches, itself left out. So the cost is
     the graph's size plus the answer's, where a walk from each station through every junction it
-    could reach cost stations x (nodes + edges): for 2,000 stations off one 89 x 89 junction grid,
-    14.6 s that way and 1.0 s this way (the answer is then every station for every station)."""
+    could reach cost stations x (nodes + edges): for 2,000 stations off one 45 x 45 junction grid
+    (every station then next to every other), the walk asked a node for its neighbours 4,052,000
+    times and this pass asks 4,025 times, once per node (tests/test_vision_network.py counts it)."""
     stations = [node for node, data in graph.nodes(data=True) if data.get("kind") == "station"]
     is_station = set(stations)
     piece_of: dict[str, int] = {}

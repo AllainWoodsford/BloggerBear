@@ -55,11 +55,12 @@ RAIL_REFERENCE_BAND = "swir16"
 # the four city boxes of docs/enhancements/rail-access-monitor.md §2 (Sydney's is the largest, 3,327 x
 # 3,306 px with read_site's 16 px pad round it). The ships task keeps scene.MAX_WINDOW_PX (4096 px).
 # Why less: the rail analysis grows with the window and the worker has one vCPU (2048 MB). On one core
-# of a 4-core Intel Xeon at 2.10 GHz the worst contract-valid networks (scene.MAX_WINDOW_PX lists them)
-# take up to 32.2 s at 4096 px, about 42 s on the arm64 worker (taken as 1.3 times slower), which with
-# a 10-30 s read runs past the client's 58 s read timeout (rail_access.WORKER_READ_TIMEOUT) whenever
-# the read takes over 16 s. At 3,584 px they take up to 20.7 s at a peak RSS of 1.24 GB, about 27 s on
-# arm64, and the read covers 77% of the pixels: 35-50 s in all.
+# of a 4-core Intel Xeon at 2.10 GHz, through lambda_handler (the bands read from in-memory COGs, the
+# analysis, the figure, the reply), the worst contract-valid networks (scene.MAX_WINDOW_PX lists them),
+# with ways that run off the window's edges as clipped OSM ways do, take up to 37.5 s at 4096 px,
+# about 49 s on the arm64 worker (taken as 1.3 times slower): with a 10-30 s read, 59-79 s, past the
+# client's 58 s read timeout (rail_access.WORKER_READ_TIMEOUT). At 3,584 px they take up to 25.5 s at
+# a peak RSS of 1.32 GB, about 33 s on arm64, and the read covers 77% of the pixels: 41-56 s in all.
 RAIL_MAX_WINDOW_PX = 3584
 _session: requests.Session | None = None
 

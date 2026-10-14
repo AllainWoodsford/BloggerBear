@@ -59,15 +59,18 @@ MIN_BETWEENNESS_SAMPLES, BETWEENNESS_SAMPLES, BETWEENNESS_SEED = 20, 200, 0
 # max_nodes, checked on the labelled pixels before any networkx object exists): the stations are
 # reported without degree, betweenness or hub distance, the hubs, flags and suggestions are empty and
 # the quality flag graph_too_large says so. Just under the cap (9,000-9,800 nodes), on one core of
-# the Intel Xeon above (scene.MAX_WINDOW_PX lists the networks and their totals): the graph stage
-# (rasterise, thin, snap, build_graph) takes 13.7-16.5 s at 4096 px and 6.1-8.0 s at 3,584 px, the
-# rail task's window cap (vision_worker_handler.RAIL_MAX_WINDOW_PX), most of it passes over the whole
-# window (the thinning 6.8-9.2 s and 1.6-2.4 s of it, build_graph 4.7-6.3 s and 3.4-4.2 s); the
-# measures, flags and suggestions 2.5-6.7 s at either size, of which station_adjacency takes 0.8-1.0 s
-# for 2,000 stations on one junction tree and the simulated links up to 3.3 s. The whole pass with its
-# figure: at most 32.2 s and 1.56 GB at 4096 px, at most 20.7 s and 1.24 GB at 3,584 px. Before the
-# check (the cap was 20,000 and only skipped the measures), a 2,632-point mesh of crossing ways on a
-# 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in build_graph, 55 s for the pass (four cores).
+# the Intel Xeon above (scene.MAX_WINDOW_PX lists the networks and their totals; their ways reach the
+# window's edges): the graph stage (rasterise, thin, snap, build_graph) takes 6.1-18.4 s at 4096 px
+# and 3.5-9.2 s at 3,584 px, the rail task's window cap (vision_worker_handler.RAIL_MAX_WINDOW_PX).
+# build_graph's passes over the whole window take 3.8-6.8 s and 2.1-4.7 s of it; the thinning 0.4-0.9 s
+# and 0.2-0.4 s with the thick parts in one place, but 9.0-9.9 s and 2.1-3.7 s with them at both ends
+# of the window, where the region network.thin keeps working on is most of it on every pass. The
+# measures, flags and suggestions take 0.2-7.9 s at either size, of which station_adjacency up to
+# 1.0 s for 2,000 stations on one junction tree and the simulated links up to 3.7 s. The whole pass
+# with its figure, through lambda_handler: at most 37.5 s and 1.69 GB at 4096 px, at most 25.5 s and
+# 1.32 GB at 3,584 px. Before the check (the cap was 20,000 and only skipped the measures), a
+# 2,632-point mesh of crossing ways on a 3,300 px window made 435,596 nodes: 20 s and 1.4 GB in
+# build_graph, 55 s for the pass (four cores).
 MAX_GRAPH_NODES = 10_000
 # A station's activity is floored here in the isolation weight, so an empty catchment far from
 # a hub is "very isolated" rather than infinitely so.
@@ -599,8 +602,10 @@ def _walk_chain(start: str, members: set[str], adjacency: dict[str, list[str]]) 
     of the chain, each next station the nearest unvisited neighbour (by id when several).
 
     Every membership test is against a set (the visited stations are kept in one beside the
-    order), so each step costs the station's adjacency, not the chain's length times it: 1,500
-    quiet stations all next to each other took 10.1 s against the list and take 0.35 s."""
+    order), so each step costs the station's adjacency, not the chain's length times it. Counted
+    as equality comparisons of station ids (tests/test_vision_rail_core.py): 338 along a line of
+    600 stations and 149 among 150 quiet stations all next to each other, where testing against
+    the order kept as a list made 359,139 and 1,113,924."""
     component, todo = {start}, [start]
     while todo:
         for neighbour in adjacency.get(todo.pop(), ()):

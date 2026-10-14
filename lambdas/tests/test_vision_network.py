@@ -61,6 +61,137 @@ def test_a_one_pixel_diagonal_survives_thinning():
     np.testing.assert_array_equal(network.thin(mask), (mask > 0).astype(np.uint8))
 
 
+def thin_over_the_whole_box_every_pass(mask, max_iterations=32):
+    """network.thin as it was before it looked only where the last pass changed something: every
+    pass over the foreground's whole bounding box. The new one must give exactly this."""
+    skeleton = (mask > 0).astype(np.uint8)
+    ys, xs = np.nonzero(skeleton)
+    if not len(ys):
+        return skeleton
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    box = np.zeros((y1 - y0 + 2, x1 - x0 + 2), np.uint8)
+    box[1:-1, 1:-1] = skeleton[y0:y1, x0:x1]
+    for _ in range(max_iterations):
+        before = int(np.count_nonzero(box))
+        for kernel in network.THINNING_KERNELS:
+            hit = cv2.morphologyEx(box, cv2.MORPH_HITMISS, kernel)
+            box = cv2.subtract(box, hit)
+        if int(np.count_nonzero(box)) == before:
+            break
+    skeleton[y0:y1, x0:x1] = box[1:-1, 1:-1]
+    return skeleton
+
+
+def random_raster(seed):
+    """One seeded raster of a kind thinning meets, or could: polylines that run to and past the
+    edges, thick bars, solid blobs, crossing grids, single pixels, and masks touching an edge or a
+    corner, most of them a few passes deep and some deeper than the 32 passes."""
+    rng = np.random.default_rng(seed)
+    h, w = (int(v) for v in rng.integers(1, 160, 2))
+    mask = np.zeros((h, w), np.uint8)
+    kind = seed % 7
+    if kind == 0:  # polylines, some vertices off the raster: clipped at its edges
+        vertices = [int(rng.integers(2, 7)) for _ in range(4)]
+        lines = [rng.integers(-40, max(h, w) + 40, (n, 1, 2)).astype(np.int32) for n in vertices]
+        cv2.polylines(mask, lines, False, 255, int(rng.integers(1, 12)), cv2.LINE_8)
+    elif kind == 1:  # thick bars, 1-80 px, across, along or at an angle
+        for _ in range(int(rng.integers(1, 4))):
+            (ax, ay), (bx, by) = rng.integers(-20, max(h, w) + 20, (2, 2)).tolist()
+            cv2.line(mask, (ax, ay), (bx, by), 255, int(rng.integers(1, 81)), cv2.LINE_8)
+    elif kind == 2:  # solid blobs
+        for _ in range(int(rng.integers(1, 4))):
+            centre = tuple(int(v) for v in rng.integers(0, max(h, w), 2))
+            axes = tuple(int(v) for v in rng.integers(1, 70, 2))
+            cv2.ellipse(mask, centre, axes, float(rng.integers(0, 180)), 0, 360, 255, -1)
+        if rng.random() < 0.3:  # and a block in the corner
+            mask[: int(rng.integers(0, h + 1)), : int(rng.integers(0, w // 2 + 1))] = 255
+    elif kind == 3:  # a crossing grid of lines one or more pixels wide
+        gap, width = int(rng.integers(2, 20)), int(rng.integers(1, 4))
+        for start in range(int(rng.integers(0, gap)), max(h, w), gap):
+            mask[start : start + width, :] = 255
+            mask[:, start : start + width] = 255
+    elif kind == 4:  # single pixels, scattered
+        mask.flat[rng.choice(h * w, size=int(rng.integers(1, 2 + h * w // 20)), replace=False)] = 255
+    elif kind == 5:  # a block touching one edge or corner, with a line along another edge
+        top, left = int(rng.integers(0, h)), int(rng.integers(0, w))
+        mask[: top + 1, : left + 1] = 255
+        mask = np.ascontiguousarray(np.rot90(mask, int(rng.integers(0, 4))))
+        if rng.random() < 0.5:
+            mask[-1, :] = 255
+    else:  # noise, sparse to dense
+        mask = ((rng.random((h, w)) < rng.random()) * 255).astype(np.uint8)
+    return mask
+
+
+def network_rasters():
+    """rasterise_ways on this file's networks and the rail core's, some at another size, some
+    thicker, and ways that run past the window's edges as whole OSM ways do."""
+    rail_core = [[(40, 200), (360, 200)], [(200, 40), (200, 200)], [(200, 200), (200, 360)]]
+    rail_core.append([(280, 200), (340, 120)])
+    edge_to_edge = [[(-50, 37), (450, 37)], [(-30, -30), (430, 430)], [(399, -10), (0, 260), (420, 300)]]
+    rng = np.random.default_rng(3)
+    walks = [np.cumsum(rng.normal(0, 25, (40, 2)), axis=0) + 200 for _ in range(8)]
+    mesh = [[(5, at), (114, at)] for at in range(20, 101, 10)]
+    mesh += [[(at, 5), (at, 114)] for at in range(20, 101, 10)]
+    for shape, ways in (
+        (SHAPE, [*CROSS, BRANCH]),
+        (SHAPE, mesh),
+        (SHAPE, [[(10, 60), (110, 60)], [(10, 62), (110, 62)]]),
+        ((400, 400), rail_core),
+        ((400, 400), rail_core + edge_to_edge),
+        ((400, 400), [w.tolist() for w in walks]),
+        ((400, 400), [[(100, y), (300, y)] for y in range(150, 216)] + edge_to_edge),  # a 66-row bar
+    ):
+        for thickness in (1, 2, 3, 7):
+            yield network.rasterise_ways(shape, ways, thickness=thickness)
+
+
+def test_thinning_only_where_the_last_pass_changed_is_the_whole_box_thinning():
+    """Pixel for pixel the thinning it replaced, on a few hundred seeded rasters, the edge cases
+    and the rasterised test networks, at the default 32 passes and at other limits."""
+    cases = [random_raster(seed) for seed in range(420)]
+    cases += [zeros(), ones(), ones() * 255, np.ones((1, 1), np.uint8), np.zeros((1, 1), np.uint8)]
+    cases += [np.pad(ones(), 1), np.pad(ones(), ((0, 1), (1, 0))), np.eye(50, dtype=np.uint8)]
+    cases += list(network_rasters())
+    for index, mask in enumerate(cases):
+        for limit in (32,) + ((1, 2, 5, 40) if index % 10 == 0 else ()):
+            want = thin_over_the_whole_box_every_pass(mask, limit)
+            got = network.thin(mask, limit)
+            assert got.dtype == want.dtype and got.shape == want.shape, (index, limit)
+            assert np.array_equal(got, want), (index, limit)
+
+
+def test_thinning_after_the_first_pass_reads_only_round_what_the_last_pass_changed(monkeypatch):
+    """A 3,584 px raster whose foreground reaches every edge (full-width lines along the top, the
+    bottom and between, as clipped OSM ways are) and needs all 32 passes in one small place, a bar
+    of 66 rows. The pixels handed to the hit-or-miss elements are counted (a count, not a clock):
+    the whole window for the first pass, and then only the bar and its 8 px reach, where thinning
+    the whole window on every pass handed them 32 x 8 windows (3.29 billion pixels)."""
+    size, (bar_rows, bar_cols) = 3584, (66, 400)
+    mask = np.zeros((size, size), np.uint8)
+    mask[::512] = 255
+    mask[-1] = 255
+    mask[1100 : 1100 + bar_rows, 1500 : 1500 + bar_cols] = 255
+    handed = []
+    hit_or_miss = cv2.morphologyEx
+
+    def counting(image, *args, **kwargs):
+        handed.append(image.size)
+        return hit_or_miss(image, *args, **kwargs)
+
+    monkeypatch.setattr(network.cv2, "morphologyEx", counting)
+    skel = network.thin(mask)
+    elements, reach = len(network.THINNING_KERNELS), network.THINNING_REACH_PX
+    first = (size + 2) ** 2  # the foreground's box and its one-pixel pad
+    around_the_bar = (bar_rows + 2 * reach + 2) * (bar_cols + 2 * reach + 2)
+    assert len(handed) == 32 * elements and handed[:elements] == [first] * elements
+    assert sum(handed) <= first * elements + 32 * elements * around_the_bar
+    assert skel[::512].all() and skel[-1].all()  # the lines along the edges stay whole
+    bar = skel[1100 : 1100 + bar_rows, 1500 : 1500 + bar_cols]
+    assert bar[:, 60:-60].any(axis=1).sum() == 2  # 32 passes peel 64 of its 66 rows away from its ends
+
+
 def test_junctions_and_ends_on_a_cross():
     skel = skeleton_of(CROSS)
     junctions, ends = network.junctions_and_ends(skel)
