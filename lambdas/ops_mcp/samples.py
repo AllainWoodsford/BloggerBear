@@ -23,9 +23,10 @@ somehow arrive. A field can only be added to the allowlist on purpose.
 
 **No personal data out.** Every value shown passes through `redact`: e-mail addresses and IP
 addresses become placeholders, fields that identify a person (a user id, an address) are replaced
-whole, and text is cut short and stripped of control characters (common/security_events.
-untrusted_text). The values go under `untrusted`, never into `spoken`: the spoken answer says how
-old the newest row is and whether writes look on time, nothing a row contains.
+whole, text that reads like instructions to a model is withheld (redact.looks_like_instructions),
+and text is cut short and stripped of control characters (common/security_events.untrusted_text).
+The values go under `untrusted`, never into `spoken`: the spoken answer says how old the newest row
+is and whether writes look on time, nothing a row contains.
 
 **Cheap.** One ListTagsOfResource, then a Query with Limit 1 per topic, or per status on an index,
 or a Scan capped at SCAN_MAX_ITEMS. The tags come from the environment: no lookup at all.
@@ -49,6 +50,7 @@ from common.dynamo import get_pipeline_config, get_table, list_topics
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import architecture, topic_match
+from ops_mcp.redact import WITHHELD, looks_like_instructions
 from ops_mcp.suggestions import ID_PATTERN
 from ops_mcp.tools import DAY_WINDOW, _age, _join, _parse, _topic_label
 
@@ -230,6 +232,11 @@ def redact(value: Any, key: str = "") -> Any:
 
 
 def _redact_text(text: str) -> str:
+    # A value that reads like instructions to a model (a Finding's summary is a model's words from
+    # source data) is not shown at all: the same rule, and the same normalisation, as the log tools'
+    # (redact.looks_like_instructions). This module keeps its own [ip] masking.
+    if looks_like_instructions(text):
+        return WITHHELD
     text = _EMAIL.sub("[email]", text)
     text = _IPV4.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
     text = _IPV6.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
