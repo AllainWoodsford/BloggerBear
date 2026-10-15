@@ -574,7 +574,8 @@ def _topics_schedule(event: dict) -> dict:
         {
             "stagger_minutes": stagger_minutes,
             "topic_count": len(topics),
-            "daily_delay_minutes": len(topics) * stagger_minutes,
+            # Slot 1's daily cycle: one slot past the hour's last research heartbeat.
+            "daily_delay_minutes": (len(topics) + 1) * stagger_minutes,
             "topics": [_schedule_view(topic) for topic in topics],
         },
     )
@@ -640,7 +641,7 @@ def _reschedule_topics(event: dict) -> dict:
             "dry_run": dry_run,
             "stagger_minutes": stagger_minutes,
             "topic_count": len(topics),
-            "daily_delay_minutes": len(topics) * stagger_minutes,
+            "daily_delay_minutes": (len(topics) + 1) * stagger_minutes,
             "topics": rows,
         },
     )

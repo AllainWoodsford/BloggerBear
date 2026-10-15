@@ -217,18 +217,18 @@ def test_create_topic_success(aws_resources):
         "fallback_model_id": None,
         "model_id_candidates": None,
         # The first topic takes stagger slot 1 (common/stagger.py): its research heartbeat at :05
-        # past, and its daily cycle 5 minutes after its hour (one topic, so a delay of one slot).
+        # past, and its daily cycle one slot past the hour's last heartbeat (one topic: :10).
         # What was written to EventBridge Scheduler is recorded on the row.
         "stagger_slot": 1,
         "research_schedule": "cron(5 * * * ? *)",
-        "daily_schedule": "cron(5 9 * * ? *)",
+        "daily_schedule": "cron(10 9 * * ? *)",
     }
 
     table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
     assert table.get_item(Key={"topic_id": "new-topic"})["Item"] == created
 
     mock_upsert.assert_called_once_with(
-        "new-topic", "cron(5 * * * ? *)", "cron(5 9 * * ? *)", "Australia/Sydney", enabled=True
+        "new-topic", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "Australia/Sydney", enabled=True
     )
 
 
@@ -337,7 +337,7 @@ def test_create_topic_custom_cadence(aws_resources):
     # A rate in minutes has no hour to be a minute past, so it is written as it is; the daily
     # cron gets the slot's minute.
     mock_upsert.assert_called_once_with(
-        "new-topic", "rate(30 minutes)", "cron(5 12 * * ? *)", "Australia/Sydney", enabled=True
+        "new-topic", "rate(30 minutes)", "cron(10 12 * * ? *)", "Australia/Sydney", enabled=True
     )
 
 
@@ -354,7 +354,7 @@ def test_create_topic_custom_daily_timezone(aws_resources):
     assert result["statusCode"] == 201
     assert json.loads(result["body"])["daily_timezone"] == "America/New_York"
     mock_upsert.assert_called_once_with(
-        "new-topic", "cron(5 * * * ? *)", "cron(5 9 * * ? *)", "America/New_York", enabled=True
+        "new-topic", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "America/New_York", enabled=True
     )
 
 
@@ -469,7 +469,7 @@ def test_update_topic_partial(aws_resources):
     # time it is edited, and its schedules are written at that slot's minutes.
     assert updated["stagger_slot"] == 1
     mock_upsert.assert_called_once_with(
-        "github-trending", "cron(5 * * * ? *)", "cron(5 9 * * ? *)", "UTC", enabled=True
+        "github-trending", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "UTC", enabled=True
     )
 
 
@@ -519,7 +519,7 @@ def test_update_topic_custom_cadence(aws_resources):
     assert updated["research_cadence"] == "rate(2 hours)"
     assert updated["daily_cadence"] == "cron(0 18 * * ? *)"
     mock_upsert.assert_called_once_with(
-        "github-trending", "cron(5 */2 * * ? *)", "cron(5 18 * * ? *)", "UTC", enabled=True
+        "github-trending", "cron(5 */2 * * ? *)", "cron(10 18 * * ? *)", "UTC", enabled=True
     )
 
 
@@ -536,7 +536,7 @@ def test_update_topic_moves_a_legacy_topic_to_sydney_time(aws_resources):
     assert result["statusCode"] == 200
     assert json.loads(result["body"])["daily_timezone"] == "Australia/Sydney"
     mock_upsert.assert_called_once_with(
-        "github-trending", "cron(5 * * * ? *)", "cron(5 9 * * ? *)", "Australia/Sydney", enabled=True
+        "github-trending", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "Australia/Sydney", enabled=True
     )
 
 

@@ -446,7 +446,8 @@ def _print_schedule_table(data: dict) -> None:
         print(
             f"Stagger: {stagger} minutes between topics (slot 1 at :{stagger % 60:02d} past, "
             f"slot 2 at :{(2 * stagger) % 60:02d}, ...); {count} topic{'s' if count != 1 else ''}, "
-            f"so every daily cycle starts {delay} minutes after its hour, then one slot apart."
+            f"so the daily cycles start {delay} minutes after their hour (one slot past the last "
+            "heartbeat), then one slot apart."
         )
     else:
         print(
@@ -1565,9 +1566,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Minutes between one topic's schedules and the next (0-30): slot 1's research "
-            "heartbeat at :05 past, slot 2's at :10, and every daily cycle delayed by topics x "
-            "this, then one slot apart; 0 turns it off; '' clears it (back to 5). Then run "
-            "`topics reschedule`"
+            "heartbeat at :05 past, slot 2's at :10, and every daily cycle one slot past the "
+            "hour's last heartbeat, then one slot apart; 0 turns it off; '' clears it (back to "
+            "5). Then run `topics reschedule`"
         ),
     )
     pipeline_config_set.set_defaults(func=_cmd_pipeline_config_set)

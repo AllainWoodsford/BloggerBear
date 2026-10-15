@@ -27,8 +27,8 @@ Since the stagger landed (docs/project-plan.md §11, "Staggered schedules by slo
 each schedule runs at is no longer hand-kept. Every topic has a **slot** (`stagger_slot`, from
 1), the pipeline has one gap (`stagger_minutes`, 5 by default, in the `pipeline` config row),
 and the Admin API writes the schedules at the slot's minute: the research heartbeat of slot *k*
-at `k × stagger` past its hour, the daily cycle of every topic delayed by `topics × stagger`
-(past the hour's heartbeats) and then one slot apart. What was written is on the row
+at `k × stagger` past its hour, the daily cycle of every topic delayed past the hour's
+heartbeats (`topics × stagger`) and then one slot apart. What was written is on the row
 (`research_schedule`, `daily_schedule`), listed by `topics schedule`, and rewritten for every
 topic by `topics reschedule`. A topic can also be **paused** (`paused`, `paused_at`): both
 schedules are set DISABLED, and the research tick and the daily cycle refuse the topic whatever
@@ -36,10 +36,10 @@ invoked them.
 
 | Topic (production, after `topics reschedule` with four topics) | Slot | Research (UTC) | Daily (Australia/Sydney) |
 |---|---|---|---|
-| finance-crypto-investing | 1 | :05 past every 4th hour | 09:20 |
-| github-trending | 2 | :10 | 09:25 |
-| tech-market-news | 3 | :15 | 09:30 |
-| wow-forever | 4 | :20 | 09:35 |
+| finance-crypto-investing | 1 | :05 past every 4th hour | 09:25 |
+| github-trending | 2 | :10 | 09:30 |
+| tech-market-news | 3 | :15 | 09:35 |
+| wow-forever | 4 | :20 | 09:40 |
 
 That is fine at four topics, and good to about twelve. It stops working because:
 
@@ -108,7 +108,7 @@ All per-topic schedules are deleted once the migration below is done.
 For each topic that is **not paused** it decides, from fields already on the Topic row:
 
 - **its turn:** this minute is the topic's. The research turn is `(slot × stagger) mod 60`;
-  the daily turn is its `daily_cadence` hour in `daily_timezone` plus `(topics + slot - 1) ×
+  the daily turn is its `daily_cadence` hour in `daily_timezone` plus `(topics + slot) ×
   stagger` minutes: exactly the minutes `common/stagger.py` writes into the schedules today, so
   `topics schedule` keeps meaning what it means (the dispatcher calls `effective_schedules` and
   compares the minute, rather than keeping a second rule).

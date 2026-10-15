@@ -10,15 +10,18 @@ Scheduler schedules are written with a minute of their own:
   whose cadence is "every 4 hours" runs at 00:05, 04:05, 08:05 ... and the next topic at 00:10,
   04:10, 08:10 ...;
 - the **daily cycle** (candidate ideas, the draft, the reviews) of every topic is first delayed
-  by `topics * stagger_minutes`, so it starts after the last research heartbeat of its hour has
-  had its turn, and then staggered the same way: with 4 topics and 5 minutes, 9:00 becomes 9:20
-  for slot 1, 9:25 for slot 2, 9:30 for slot 3 and 9:35 for slot 4.
+  past the hour's research heartbeats, `topics * stagger_minutes`, and then takes its own turn,
+  one slot later: with 4 topics and 5 minutes, the last heartbeat is at :20 and 9:00 becomes
+  9:25 for slot 1, 9:30 for slot 2, 9:35 for slot 3 and 9:40 for slot 4, so no daily cycle ever
+  shares a minute with a heartbeat.
 
 The stagger decides the **minute**; the topic's own cadence still decides everything else (the
 hour pattern, the day, the time zone the daily cron is read in). A `rate(N hours)` heartbeat is
-written as the cron it amounts to (`cron(5 */4 * * ? *)`), because a rate has no minute to set.
-A cadence whose minute field is not a single number (`*/15`, `0,30`) cannot be staggered and is
-written as it is.
+written as the cron it amounts to (`cron(5 */4 * * ? *)`), because a rate has no minute to set;
+only when N divides 24, since `*/5` hours would reset at midnight and change the cadence (the
+10-hour trap docs/project-plan.md §4 describes), so such a rate is left as it is. A cadence whose
+minute field is not a single number (`*/15`, `0,30`) cannot be staggered and is written as it is,
+and a cron that names days is never carried past midnight (that would move it to other days).
 
 What was actually written is recorded on the Topics row (`research_schedule`, `daily_schedule`)
 so it can be read in DynamoDB and shown by the admin CLI (`topics schedule`), and the whole
@@ -130,21 +133,26 @@ def research_offset_minutes(slot: int | None, stagger_minutes: int) -> int:
 
 
 def daily_offset_minutes(slot: int | None, stagger_minutes: int, topic_count: int) -> int:
-    """How many minutes after its hour the topic's daily cycle runs: every topic's is delayed by
-    `topic_count * stagger_minutes` (past the hour's research heartbeats), then slot 1 goes
-    first, slot 2 one stagger later, and so on."""
+    """How many minutes after its hour the topic's daily cycle runs: past the hour's research
+    heartbeats (`topic_count * stagger_minutes`, the last one's minute), then slot 1 one stagger
+    later, slot 2 another, and so on, so a daily cycle never shares a minute with a heartbeat."""
     if slot is None or stagger_minutes <= 0:
         return 0
-    return ((max(topic_count, 1) + slot - 1) * stagger_minutes) % _MINUTES_IN_DAY
+    return ((max(topic_count, 1) + slot) * stagger_minutes) % _MINUTES_IN_DAY
 
 
-def _shift_hours(field: str, carry: int) -> str:
+def _shift_hours(field: str, carry: int, *, wrap: bool) -> str | None:
     """The cron hour field moved `carry` hours later, for the shapes a topic's cadence uses:
-    `*` (unchanged), `9`, `*/4`, `1/4`, `9,21`, `9-17`. Anything else is left as it is."""
+    `*` (unchanged), `9`, `*/4`, `1/4`, `9,21`, `9-17`. Anything else is left as it is. An hour
+    that would pass midnight wraps round the clock only when `wrap` (an every-day schedule, where
+    the day does not matter); otherwise None: the shift cannot be made."""
     if carry == 0 or field == "*":
         return field
     if _WHOLE.match(field):
-        return str((int(field) + carry) % 24)
+        hour = int(field) + carry
+        if hour < 24:
+            return str(hour)
+        return str(hour % 24) if wrap else None
     step = _STEP.match(field)
     if step:
         start, every = step.group(1), int(step.group(2))
@@ -155,10 +163,17 @@ def _shift_hours(field: str, carry: int) -> str:
     span = _RANGE.match(field)
     if span:
         low, high = int(span.group(1)) + carry, int(span.group(2)) + carry
-        return f"{low}-{high}" if high < 24 else field
+        return f"{low}-{high}" if high < 24 else None
     if all(_WHOLE.match(part) for part in field.split(",")):
-        return ",".join(str((int(part) + carry) % 24) for part in field.split(","))
+        hours = [int(part) + carry for part in field.split(",")]
+        if max(hours) < 24:
+            return ",".join(str(hour) for hour in hours)
+        return ",".join(str(hour % 24) for hour in hours) if wrap else None
     return field
+
+
+def _every_day(day_of_month: str, month: str, day_of_week: str, year: str) -> bool:
+    return day_of_month in ("*", "?") and month == "*" and day_of_week in ("*", "?") and year == "*"
 
 
 def staggered_expression(expression: str, offset_minutes: int) -> tuple[str, bool]:
@@ -166,11 +181,15 @@ def staggered_expression(expression: str, offset_minutes: int) -> tuple[str, boo
     `offset_minutes`: (the expression to write, whether the offset was applied).
 
     - `rate(N hours)` becomes the cron it amounts to, at that minute: `rate(1 hour)` at offset 5
-      is `cron(5 * * * ? *)`, `rate(4 hours)` is `cron(5 */4 * * ? *)`. `rate(N days)` likewise,
-      at midnight UTC. A rate in minutes is left alone: it has no hour to be a minute past.
+      is `cron(5 * * * ? *)`, `rate(4 hours)` is `cron(5 */4 * * ? *)`; only for an N that
+      divides 24 (1, 2, 3, 4, 6, 8, 12), since a `*/N` hour field resets at midnight and
+      `rate(5 hours)` as `*/5` would run 0, 5, 10, 15, 20 and then 0 again. `rate(N days)`
+      likewise, at midnight UTC. A rate in minutes is left alone: it has no hour to be a minute
+      past.
     - `cron(M H ...)` with a single-number minute gets the offset's minute in place of M, and
-      its hour moved on when the offset is an hour or more. Any other minute field (`*/15`,
-      `0,30`) is left alone.
+      its hour moved on when the offset is an hour or more; an every-day schedule wraps round
+      the clock, one that names days is left alone rather than moved to other days. Any other
+      minute field (`*/15`, `0,30`) is left alone.
     - `at(...)`, and anything that doesn't parse, is left alone.
     """
     expression = (expression or "").strip()
@@ -185,9 +204,13 @@ def staggered_expression(expression: str, offset_minutes: int) -> tuple[str, boo
         if count <= 0 or unit.startswith("minute"):
             return expression, False
         if unit.startswith("hour") and count < 24:
-            hours = "*" if count == 1 else _shift_hours(f"*/{count}", carry)
+            if 24 % count != 0:
+                return expression, False
+            hours = "*" if count == 1 else _shift_hours(f"*/{count}", carry, wrap=True)
             return f"cron({minute} {hours} * * ? *)", True
-        days = count if unit.startswith("day") else max(count // 24, 1)
+        if unit.startswith("hour") and count % 24 != 0:
+            return expression, False
+        days = count if unit.startswith("day") else count // 24
         day_of_month = "*" if days == 1 else f"1/{days}"
         return f"cron({minute} {carry} {day_of_month} * ? *)", True
 
@@ -196,8 +219,10 @@ def staggered_expression(expression: str, offset_minutes: int) -> tuple[str, boo
         fields = list(cron.groups())
         if not _WHOLE.match(fields[0]):
             return expression, False
-        fields[0] = str(minute)
-        fields[1] = _shift_hours(fields[1], carry)
+        hours = _shift_hours(fields[1], carry, wrap=_every_day(*fields[2:]))
+        if hours is None:
+            return expression, False
+        fields[0], fields[1] = str(minute), hours
         return f"cron({' '.join(fields)})", True
 
     return expression, False
@@ -248,7 +273,7 @@ def describe_expression(expression: str) -> str:
     minute, hour, day_of_month, month, day_of_week, year = cron.groups()
     if not _WHOLE.match(minute):
         return expression
-    every_day = day_of_month in ("*", "?") and month == "*" and day_of_week in ("*", "?") and year == "*"
+    every_day = _every_day(day_of_month, month, day_of_week, year)
     when = f":{int(minute):02d} past"
     if hour == "*":
         text = f"every hour at {when}"

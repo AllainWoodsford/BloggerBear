@@ -79,10 +79,10 @@ def test_the_next_free_slot_fills_gaps_before_opening_new_ones():
 
 
 def test_slot_k_researches_k_staggers_past_the_hour_and_the_daily_waits_for_every_heartbeat():
-    # Four topics, 5 minutes: research at :05, :10, :15, :20; daily cycles 20 minutes late, one
-    # slot apart: 9:20, 9:25, 9:30, 9:35.
+    # Four topics, 5 minutes: research at :05, :10, :15, :20; the daily cycles one slot past the
+    # last heartbeat, one slot apart: 9:25, 9:30, 9:35, 9:40. None shares a minute with a heartbeat.
     assert [stagger.research_offset_minutes(k, 5) for k in (1, 2, 3, 4)] == [5, 10, 15, 20]
-    assert [stagger.daily_offset_minutes(k, 5, 4) for k in (1, 2, 3, 4)] == [20, 25, 30, 35]
+    assert [stagger.daily_offset_minutes(k, 5, 4) for k in (1, 2, 3, 4)] == [25, 30, 35, 40]
     # No slot, or staggering off: no offset at all.
     assert stagger.research_offset_minutes(None, 5) == 0
     assert stagger.daily_offset_minutes(2, 0, 4) == 0
@@ -99,7 +99,9 @@ def test_slot_k_researches_k_staggers_past_the_hour_and_the_daily_waits_for_ever
         ("cron(1 */4 * * ? *)", 15, "cron(15 */4 * * ? *)"),  # the slot's minute replaces the cadence's
         ("cron(0 9 * * ? *)", 25, "cron(25 9 * * ? *)"),
         ("cron(0 9 * * ? *)", 85, "cron(25 10 * * ? *)"),  # carried into the hour
-        ("cron(0 23 * * ? *)", 70, "cron(10 0 * * ? *)"),  # and round the clock
+        ("cron(0 23 * * ? *)", 70, "cron(10 0 * * ? *)"),  # and round the clock, every day
+        ("rate(12 hours)", 5, "cron(5 */12 * * ? *)"),
+        ("rate(24 hours)", 5, "cron(5 0 * * ? *)"),
         ("cron(0 9,21 * * ? *)", 65, "cron(5 10,22 * * ? *)"),
         ("cron(0 9-17 ? * MON-FRI *)", 65, "cron(5 10-18 ? * MON-FRI *)"),
         ("cron(30 8 * * ? *)", 5, "cron(5 8 * * ? *)"),
@@ -117,6 +119,22 @@ def test_what_has_no_single_minute_to_set_is_written_as_it_is(expression):
     assert stagger.staggered_expression(expression, 5) == (expression, False)
 
 
+@pytest.mark.parametrize("expression", ["rate(5 hours)", "rate(7 hours)", "rate(10 hours)", "rate(36 hours)"])
+def test_a_rate_that_does_not_divide_the_day_stays_a_rate(expression):
+    # `*/5` hours would run 0, 5, 10, 15, 20 and then 0 again: a different cadence, the midnight
+    # reset docs/project-plan.md §4 warns about. The rate keeps its cadence and goes unstaggered.
+    assert stagger.staggered_expression(expression, 5) == (expression, False)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["cron(0 23 ? * MON-FRI *)", "cron(0 22,23 ? * MON *)", "cron(0 20-23 1 * ? *)", "cron(0 23 * * ? 2026)"],
+)
+def test_a_cron_that_names_days_is_never_carried_past_midnight(expression):
+    assert stagger.staggered_expression(expression, 65) == (expression, False)
+    assert stagger.staggered_expression(expression, 5)[1] is True  # within its hour it is fine
+
+
 def test_no_offset_leaves_everything_alone():
     assert stagger.staggered_expression("rate(1 hour)", 0) == ("rate(1 hour)", False)
 
@@ -131,9 +149,9 @@ def test_effective_schedules_say_what_was_applied():
     )
     assert result == {
         "research": "cron(10 * * * ? *)",
-        "daily": "cron(25 9 * * ? *)",
+        "daily": "cron(30 9 * * ? *)",  # four heartbeats to :20, slot 1 at :25, slot 2 at :30
         "research_offset_minutes": 10,
-        "daily_offset_minutes": 25,
+        "daily_offset_minutes": 30,
         "staggered": True,
     }
     unchanged = stagger.effective_schedules(
@@ -237,17 +255,17 @@ def test_each_new_topic_takes_the_next_slot_and_its_schedules_are_written_at_tha
 
     assert json.loads(first["body"])["stagger_slot"] == 1
     assert json.loads(second["body"])["stagger_slot"] == 2
-    # One topic when the first was made: its daily cycle 5 minutes late. Two when the second was:
-    # 10 minutes of delay, then slot 2 is one slot later still (15).
+    # One topic when the first was made: its heartbeat at :05, its daily cycle one slot past it
+    # (:10). Two when the second was: heartbeats to :10, slot 2's daily cycle two slots past (:20).
     upsert_first.assert_called_once_with(
-        "first", "cron(5 * * * ? *)", "cron(5 9 * * ? *)", "Australia/Sydney", enabled=True
+        "first", "cron(5 * * * ? *)", "cron(10 9 * * ? *)", "Australia/Sydney", enabled=True
     )
     upsert_second.assert_called_once_with(
-        "second", "cron(10 * * * ? *)", "cron(15 9 * * ? *)", "Australia/Sydney", enabled=True
+        "second", "cron(10 * * * ? *)", "cron(20 9 * * ? *)", "Australia/Sydney", enabled=True
     )
     # What was written is on the row, for DynamoDB and `topics schedule`.
     assert _row("second")["research_schedule"] == "cron(10 * * * ? *)"
-    assert _row("second")["daily_schedule"] == "cron(15 9 * * ? *)"
+    assert _row("second")["daily_schedule"] == "cron(20 9 * * ? *)"
 
 
 def test_a_slot_can_be_chosen_but_not_one_another_topic_holds(aws_resources):
@@ -277,9 +295,9 @@ def test_an_update_can_move_a_topic_or_hand_it_the_next_free_slot(aws_resources)
     with patch("admin_api_handler.upsert_topic_schedules") as mock_upsert:
         moved = _update(5)
     assert json.loads(moved["body"])["stagger_slot"] == 5
-    # Two topics: 10 minutes of delay, then slot 5 is four slots later (30).
+    # Two topics: heartbeats to :10, then slot 5 is five slots later (:35).
     mock_upsert.assert_called_once_with(
-        "first", "cron(25 * * * ? *)", "cron(30 9 * * ? *)", "Australia/Sydney", enabled=True
+        "first", "cron(25 * * * ? *)", "cron(35 9 * * ? *)", "Australia/Sydney", enabled=True
     )
 
     with patch("admin_api_handler.upsert_topic_schedules"):
@@ -332,12 +350,13 @@ def test_the_schedule_listing_shows_each_topic_as_written_and_in_plain_words(aws
     listing = json.loads(admin_api_handler.handler(_event("GET /topics/schedule"), None)["body"])
 
     assert listing["stagger_minutes"] == 5 and listing["topic_count"] == 2
-    assert listing["daily_delay_minutes"] == 10
+    assert listing["daily_delay_minutes"] == 15  # two heartbeats, then slot 1's daily cycle
     first, legacy = listing["topics"]
     assert first["topic_id"] == "first" and first["stagger_slot"] == 1 and first["paused"] is False
     assert first["research_schedule"] == "cron(5 * * * ? *)"
     assert first["research_schedule_text"] == "every hour at :05 past"
-    assert first["daily_schedule_text"] == "daily at 09:05" and first["daily_timezone"] == "Australia/Sydney"
+    # Written when it was the only topic: one heartbeat, then its daily cycle at :10.
+    assert first["daily_schedule_text"] == "daily at 09:10" and first["daily_timezone"] == "Australia/Sydney"
     # A topic from before slots existed shows its cadence as it stands, and no slot.
     assert legacy["stagger_slot"] is None
     assert legacy["research_schedule"] == "cron(1 */4 * * ? *)"
@@ -358,16 +377,17 @@ def test_reschedule_gives_older_topics_slots_and_rewrites_every_schedule(aws_res
         result = admin_api_handler.handler(_event("POST /topics/reschedule"), None)
 
     body = json.loads(result["body"])
-    assert body["dry_run"] is False and body["topic_count"] == 3 and body["daily_delay_minutes"] == 15
+    assert body["dry_run"] is False and body["topic_count"] == 3 and body["daily_delay_minutes"] == 20
     # "wow" keeps slot 1; the others are filled in topic-id order.
     slots = [(t["topic_id"], t["stagger_slot"]) for t in body["topics"]]
     assert slots == [("crypto", 2), ("github", 3), ("wow", 1)]
-    assert _row("github")["stagger_slot"] == 3 and _row("github")["daily_schedule"] == "cron(25 9 * * ? *)"
-    # A paused topic's schedules are rewritten disabled, so a reschedule never restarts it.
+    assert _row("github")["stagger_slot"] == 3 and _row("github")["daily_schedule"] == "cron(30 9 * * ? *)"
+    # Three heartbeats to :15; the daily cycles at :20, :25 and :30 by slot. A paused topic's
+    # schedules are rewritten disabled, so a reschedule never restarts it.
     calls = {c.args[0]: c for c in mock_upsert.call_args_list}
-    assert calls["crypto"].args[1:] == ("cron(10 */4 * * ? *)", "cron(20 9 * * ? *)", "UTC")
-    assert calls["github"].args[1:] == ("cron(15 */4 * * ? *)", "cron(25 9 * * ? *)", "UTC")
-    assert calls["wow"].args[1:] == ("cron(5 * * * ? *)", "cron(15 9 * * ? *)", "UTC")
+    assert calls["crypto"].args[1:] == ("cron(10 */4 * * ? *)", "cron(25 9 * * ? *)", "UTC")
+    assert calls["github"].args[1:] == ("cron(15 */4 * * ? *)", "cron(30 9 * * ? *)", "UTC")
+    assert calls["wow"].args[1:] == ("cron(5 * * * ? *)", "cron(20 9 * * ? *)", "UTC")
     assert calls["wow"].kwargs == {"enabled": False}
     assert calls["crypto"].kwargs == {"enabled": True}
 

@@ -51,7 +51,7 @@ def test_topics_schedule_prints_each_topic_in_plain_words_and_as_written(capsys)
     m.assert_called_once_with("GET", API, "/topics/schedule", REGION, body=None)
     out = capsys.readouterr().out
     assert "Stagger: 5 minutes between topics (slot 1 at :05 past, slot 2 at :10, ...); 2 topics" in out
-    assert "starts 10 minutes after its hour" in out
+    assert "start 10 minutes after their hour (one slot past the last heartbeat)" in out
     assert "crypto  (slot 1, running)" in out and "wow  (slot 2, PAUSED)" in out
     assert "every 4 hours at :05 past" in out and "cron(5 */4 * * ? *)  UTC" in out
     assert "daily at 09:10  Australia/Sydney" in out and "cron(10 9 * * ? *)" in out

@@ -160,6 +160,13 @@ def test_the_rest_api_module_attaches_the_policy_from_a_plain_flag_and_redeploys
     policy = _resource_block(module, "aws_api_gateway_rest_api_policy.this")
     assert re.search(r"^\s*count\s*=\s*var\.resource_policy_enabled \? 1 : 0\s*$", policy, re.M)
     assert "var.resource_policy ==" not in policy  # sensitive: must not decide a count
+    # The caller's "execute-api:/*" shorthand becomes this API's full ARN, so what API Gateway
+    # stores is what Terraform wrote (the shorthand would read back as a change on every plan).
+    expanded = (
+        'replace(var.resource_policy, "execute-api:/*", '
+        '"${aws_api_gateway_rest_api.this.execution_arn}/*")'
+    )
+    assert expanded in policy
     deployment = _resource_block(module, "aws_api_gateway_deployment.this")
     assert 'policy = var.resource_policy_enabled ? sha1(var.resource_policy) : ""' in deployment
     assert "depends_on = [aws_api_gateway_rest_api_policy.this]" in deployment

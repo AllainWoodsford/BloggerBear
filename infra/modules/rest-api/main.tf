@@ -170,7 +170,11 @@ resource "aws_api_gateway_rest_api_policy" "this" {
   count = var.resource_policy_enabled ? 1 : 0
 
   rest_api_id = aws_api_gateway_rest_api.this.id
-  policy      = var.resource_policy
+  # The caller writes the resource as API Gateway's own shorthand, "execute-api:/*", because the
+  # API's id does not exist until this module makes it. API Gateway stores the shorthand as the
+  # full ARN, which Terraform would then read back as a change on every plan, so it is written
+  # out in full here: this API, every stage, method and path.
+  policy = replace(var.resource_policy, "execute-api:/*", "${aws_api_gateway_rest_api.this.execution_arn}/*")
 }
 
 # API Gateway v1 deployments are immutable snapshots -- redeploying on any

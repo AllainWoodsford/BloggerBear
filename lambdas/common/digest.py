@@ -33,15 +33,30 @@ DIGEST_TOPIC_NAME = "Trending Everywhere"
 # is dropped before the digest is composed (trending_digest_handler.py's _compose_digest), on the
 # model's lines and on the fallback taken from a finding's own summary alike.
 #
-# A figure is money, a percentage, a number with a thousands separator or a decimal point, a
-# count with a scale word (thousand, million, 5k, 2M), a multiple (3x), or any number of four or
-# more digits that is not a year. A bare small number ("OpenCV 5", "three", "Python 3") is not a
-# figure: dropping those would cost names, not numbers.
+# A figure is money (a symbol or a currency code with a number, "5 dollars"), a percentage
+# ("4.2%", "twenty percent"), a number with a thousands separator or a decimal point, a count
+# with a scale word ("3 billion", "two million", 5k, 2M), a multiple (3x), or any number of four
+# or more digits that is not a year. A bare small number ("OpenCV 5", "three", "Python 3") is
+# not a figure: dropping those would cost names, not numbers.
+
+_NUMBER_WORDS = (
+    r"(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
+    r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+    r"eighty|ninety|hundred|half|quarter|third|several)(?:[\s-]+(?:one|two|three|four|five|six|"
+    r"seven|eight|nine|hundred|thousand))*"
+)
+_CURRENCY_CODES = r"(?:USD|AUD|EUR|GBP|NZD|CAD|JPY|CHF|CNY|INR|BTC|ETH)"
+_CURRENCY_WORDS = r"(?:dollars?|cents?|euros?|pounds?|yen|yuan|rupees?|bucks|sats|satoshis)"
 
 _FIGURE_PATTERNS = (
     r"(?:US|AU|NZ|CA|HK|SG|A)?\$\s?\d",  # $5, US$ 12
     r"[€£¥₹]\s?\d",
-    r"\d\s?(?:USD|AUD|EUR|GBP|NZD|CAD|BTC|ETH)\b",
+    rf"\d\s?{_CURRENCY_CODES}\b",  # 5 USD
+    rf"\b{_CURRENCY_CODES}\s?\d",  # USD 5
+    rf"\d\s?{_CURRENCY_WORDS}\b",  # 5 dollars
+    rf"\b{_NUMBER_WORDS}\s+{_CURRENCY_WORDS}\b",  # twenty dollars, half a cent
+    rf"\b{_NUMBER_WORDS}\s+(?:%|percent|per cent|pct)(?!\w)",  # twenty percent
+    rf"\b{_NUMBER_WORDS}\s+(?:thousand|million|billion|trillion)\b",  # two million
     r"\d\s?(?:%|percent|per cent|pct)(?!\w)",  # not \b: after "%" comes punctuation, not a word
     r"\d{1,3}(?:,\d{3})+",  # 1,234 or 12,345,678
     r"\d+\.\d+",  # 3.5, 0.25

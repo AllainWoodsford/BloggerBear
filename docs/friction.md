@@ -876,12 +876,27 @@ this PR's: the two `main.tf` files, both deploy workflows, `admin_api_handler.py
 configuration. Every hunk here was placed away from theirs (the workflow lines beside
 `TF_VAR_admin_allowed_cidrs` rather than at the end of the block, PROGRESS lines mid-list, new
 test files rather than new tests in shared files, this section at the end of this file), and
-nothing in #285 was edited. The one certain conflict is `lambdas/ops_mcp/cli_reference.json`,
-which both regenerate: resolve it by running `scripts/generate_cli_reference.py` again, never by
-hand. **Lesson:** read the other branch's diff first and choose where to insert, not just what.
+nothing in #285 was edited. The switch variables sit beside `admin_allowed_cidrs` in each
+`variables.tf`, not at the end where #285 appends its own (a review caught the first draft
+appending too). The one certain conflict is `lambdas/ops_mcp/cli_reference.json`, which both
+regenerate: resolve it by running `scripts/generate_cli_reference.py` again, never by hand.
+**Lesson:** read the other branch's diff first and choose where to insert, not just what.
 
 **13.8 · The container's Python is 3.13; CI's is 3.11.** The test suite ran under 3.13 here
 (the session hook installs only ruff, 12.7), and the regenerated CLI reference records
 `help_python: 3.13`, as the committed one already did. Nothing in this PR depends on a 3.13-only
 feature, and the suite's own guard compares help text loosely across releases. **Lesson:** say
 which interpreter ran the suite in the pull request.
+
+**13.9 · A review found four things the tests had been written to agree with.** Before the push,
+four independent reviewers read the diff and three refuters judged each finding. What stood: the
+first daily cycle shared a minute with the last research heartbeat (`topics × stagger` is the
+last heartbeat's minute, not the minute after it); `rate(5 hours)` was being rewritten to a
+`*/5` cron that resets at midnight, the very trap §4 of the plan warns about; a cron that names
+days could be carried past midnight onto other days; and the resource policy's `execute-api:/*`
+shorthand, which API Gateway stores expanded, would have shown as a change on every plan. All
+four had tests, because the tests were written from the same understanding as the code.
+**Fix:** one slot past the last heartbeat; only an N that divides 24 becomes a cron; a
+day-constrained cron is left alone past midnight; the module writes the full ARN. **Lesson:** a
+test written by the author of the code checks the author's intent, not the world; have someone
+try to refute the intent too.

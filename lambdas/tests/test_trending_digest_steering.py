@@ -23,6 +23,13 @@ from common.digest import has_figure, without_figures
         "A 12000-word thread.",
         "Priced at 0.25 per unit.",
         "Up 30 per cent since spring.",
+        "USD 5 per token.",
+        "EUR 10 a seat.",
+        "It costs 5 dollars a month.",
+        "Roughly twenty percent of readers.",
+        "Two million users signed up.",
+        "Half a cent per call.",
+        "Several billion in inflows.",
     ],
 )
 def test_money_percentages_counts_and_big_numbers_are_figures(text):
@@ -36,6 +43,8 @@ def test_money_percentages_counts_and_big_numbers_are_figures(text):
         "Python 3 is everywhere.",
         "A story from 2026 about three ships.",
         "Interest in small language models keeps growing.",
+        "A third party audited the code.",
+        "One more release landed.",
     ],
 )
 def test_names_with_a_digit_years_and_words_are_not(text):

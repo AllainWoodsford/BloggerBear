@@ -280,8 +280,8 @@ Topics take turns so that no two call their sources or Bedrock at the same minut
 (docs/project-plan.md §11, "Staggered schedules by slot"). Every topic has a **slot** (1, 2,
 3, ...; the next free one when it is created) and the pipeline has one **stagger**, 5 minutes by
 default: slot 1's research heartbeat runs at :05 past the hour it would run anyway, slot 2's at
-:10, and every daily cycle starts `topics × 5` minutes after its hour, then one slot apart (four
-topics: 09:20, 09:25, 09:30, 09:35 for a 9 AM cadence). The slot sets the minute; the cadence
+:10, and every daily cycle starts after the hour's heartbeats, one slot apart (four topics: the
+last heartbeat is at :20, so 09:25, 09:30, 09:35 and 09:40 for a 9 AM cadence). The slot sets the minute; the cadence
 still sets the hour pattern, the day and the time zone. What was written is on the topic's row
 in DynamoDB (`stagger_slot`, `research_schedule`, `daily_schedule`, `paused`) and printed here:
 
@@ -301,9 +301,9 @@ python scripts/admin_cli.py topics create --topic-id ... --name ... --stagger-sl
 github-trending  (slot 2, running)
   research: every 4 hours at :10 past
             cron(10 */4 * * ? *)  UTC
-  daily:    daily at 09:25  Australia/Sydney
-            cron(25 9 * * ? *)
-  real research every 4 h · last researched 2026-10-15T04:10:12+00:00 · last article 2026-10-14T23:25:03+00:00
+  daily:    daily at 09:30  Australia/Sydney
+            cron(30 9 * * ? *)
+  real research every 4 h · last researched 2026-10-15T04:10:12+00:00 · last article 2026-10-14T23:30:03+00:00
 ```
 
 Twelve five-minute slots fill an hour; past that, shorten the stagger or read

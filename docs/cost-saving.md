@@ -42,8 +42,8 @@ deploy**: a push to `dev` (or the `terraform` workflow by hand) for dev, a GitHu
 on the `production` environment, which wins over the repository's, as any environment variable
 does.
 
-The Terraform variables are `bool`, so a typo (`ture`, `yes`, `0`) fails the plan with "a bool
-is required" instead of quietly picking a mode. Only `true` and `false` are accepted.
+The Terraform variables are `bool`, so a typo (`ture`, `yes`) fails the plan with "a bool is
+required" instead of quietly picking a mode. Use `true` or `false`.
 
 To undo any switch, delete the variable (or set it back to `true`) and re-run the deploy. The
 resources come back exactly as they were, under the same names.
@@ -55,10 +55,12 @@ resources come back exactly as they were, under the same names.
 | `WAF_SITE_ENABLED` (production only) | `waf_site_enabled` | no shared CloudFront ACL on the site and the public API's CDN | about 7 |
 | `WAF_LOG_ALL_REQUESTS` | `waf_log_all_requests` | the admin ACL's log keeps only what a rule blocked or counted | CloudWatch Logs ingestion (the Hosting line) |
 
-The first apply after this page's pull request shows **nothing to destroy or create** with every
-switch on: every firewall resource that gained a `count` has a `moved` block to its new index.
-The plan for a switch turned off lists exactly the resources it removes; read it before
-approving.
+The first apply after this page's pull request destroys or creates **no firewall resource** with
+every switch on: every one that gained a `count` has a `moved` block to its new index. What that
+apply does add is the admin API's resource policy (below), the admin API's four new routes (pause,
+resume, the schedule listing and the rewrite of every schedule) and one redeployment of each
+API's stage, which the policy's hash in the deployment's triggers brings about. The plan for a
+switch turned off lists exactly the resources it removes; read it before approving.
 
 ## The admin API's allowlist is always on
 
@@ -81,7 +83,10 @@ firewall saw them (`security_events_handler.counts_as_admin_error`).
 The addresses are no more exposed than they were:
 
 - the policy is built from the same `TF_VAR_admin_allowed_cidrs` the IP set is built from, which
-  is `sensitive = true`, so the plan prints it as `(sensitive value)`;
+  is `sensitive = true`, so the plan prints it as `(sensitive value)`; the root writes its
+  resource as API Gateway's shorthand `execute-api:/*` and the module writes it out as the API's
+  full ARN, which API Gateway would otherwise do by itself and Terraform would then read back as
+  a change on every plan;
 - it lives in the account and in the Terraform state, where the IP set already lives;
 - no Terraform output carries it;
 - a refused caller's 403 says only that the call was denied.

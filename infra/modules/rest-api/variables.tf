@@ -91,7 +91,8 @@ variable "resource_policy" {
   default     = ""
   description = <<-EOT
     An API Gateway resource policy (a JSON IAM policy document) for the REST API, used only when
-    resource_policy_enabled is true.
+    resource_policy_enabled is true. Write its Resource as the shorthand "execute-api:/*": the
+    module replaces it with this API's full execution ARN, since the id is not known to a caller.
     The admin API passes a Deny of execute-api:Invoke from any address outside the operator's
     allowlist (docs/cost-saving.md): it costs nothing, it is in force whether or not a WAF web ACL
     is associated, and an empty allowlist denies everything, the same fail-closed behaviour as the

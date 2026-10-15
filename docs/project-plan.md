@@ -173,6 +173,15 @@ Core pipeline code must remain topic-agnostic.
 - Never persist raw, unredacted comment text.
 - Financial topics must avoid advice language and always queue for manual moderation.
 
+**One deliberate exception: the Trending Everywhere digest** (§11, "Staggered schedules by slot,
+pausing a topic, and the digest's steering"). The digest is not a financial topic; it is a
+cross-topic survey written with no figures (every sentence with one is removed before it is
+composed) and nothing more specific than a theme and its direction. It is reviewed by the
+compliance review like every other draft and published when that passes, rather than held for a
+person whenever one of its contributors is financial. The financial drafting guidance still goes
+into its prompt and the disclaimer onto its body whenever a contributor is financial. A financial
+topic's own articles are unchanged: always a person.
+
 ## 8) CI/CD and Infrastructure Rules
 
 Two long-lived branches, two environments:
@@ -2076,14 +2085,18 @@ rate limits until the dispatcher lands.
 From them the Admin API writes the *effective* schedules: the research heartbeat of slot *k*
 at `k × stagger` past the hour it would run anyway (slot 1 at :05, slot 2 at :10, so "every 4
 hours" is 00:05, 04:05, 08:05 ... for slot 1 and 00:10, 04:10 ... for slot 2), and the daily
-cycle (the candidate ideas, the draft, the reviews) of every topic first delayed by `topics ×
-stagger`, so it starts after the hour's heartbeats have had their turn, and then one slot
-apart: with four topics, 09:00 becomes 09:20, 09:25, 09:30 and 09:35. The slot decides the
-**minute**; the topic's own cadence still decides the hour pattern, the day and the time zone.
-A `rate(N hours)` heartbeat is written as the cron it amounts to (`cron(5 */4 * * ? *)`),
-because a rate has no minute to set; a cadence whose minute field is not a single number
-(`*/15`) cannot be staggered and is written as it is. Offsets of an hour or more carry into the
-hour field for the shapes a cadence uses (`9`, `*/4`, `9,21`, `9-17`).
+cycle (the candidate ideas, the draft, the reviews) of every topic first delayed past the
+hour's heartbeats (`topics × stagger`, the last one's minute) and then one slot apart: with
+four topics the last heartbeat is at :20, and 09:00 becomes 09:25, 09:30, 09:35 and 09:40, so
+a daily cycle never shares a minute with a heartbeat. The slot decides the **minute**; the
+topic's own cadence still decides the hour pattern, the day and the time zone. A `rate(N
+hours)` heartbeat is written as the cron it amounts to (`cron(5 */4 * * ? *)`), because a rate
+has no minute to set, but only for an N that divides 24: `*/5` hours would reset at midnight
+and change the cadence (the ten-hour trap §4 describes), so such a rate is left as it is. A
+cadence whose minute field is not a single number (`*/15`) cannot be staggered and is written
+as it is. Offsets of an hour or more carry into the hour field for the shapes a cadence uses
+(`9`, `*/4`, `9,21`, `9-17`); an every-day schedule wraps round the clock, one that names days
+is left alone rather than moved to other days.
 
 What was written is recorded on the topic row (`research_schedule`, `daily_schedule`), so
 DynamoDB shows the minute a topic really runs at. `topics schedule` prints every topic's slot,
@@ -2115,9 +2128,11 @@ digest carries nothing a person would have to check (no price, no forecast, no a
 financial contributor no longer holds it for a person unconditionally: it is reviewed as the
 non-financial piece it is and published when the review passes. The compliance review itself
 still runs on every digest (hard constraint #3), the financial drafting guidance is still in the
-prompt and the disclaimer still appended whenever a contributor is financial, and a topic whose
-articles always wait for a person (`force_manual_review`, the vision topics on #285) is still
-left out of it.
+prompt and the disclaimer still appended whenever a contributor is financial. (On #285, a topic
+whose articles always wait for a person, `force_manual_review`, is left out of the digest by that
+branch's own rule, which this change does not touch.) This is a deliberate exception to the
+"financial topic, always a person" rule, and §7 says so: the digest is not a financial topic,
+and with its figures gone there is nothing in it that rule exists to catch.
 
 **Compatibility with the vision stack (#285).** Nothing here touches the adapters, the Finding
 or the article: the pause check sits before the tick fetches anything, the stagger only changes
@@ -2144,7 +2159,8 @@ GitHub variable by the deploy workflows (`<SWITCH>_DEV` / `<SWITCH>_PROD`, else 
 | `waf_log_all_requests` | the admin ACL logs blocks and counts only | CloudWatch Logs ingestion |
 
 Every firewall resource that gained a `count` has a `moved` block to its new index, so the
-first apply shows nothing to destroy or create. The lists built from those resources (the edge
+first apply destroys or creates no firewall resource (it adds the resource policy and the admin
+routes, and redeploys each API's stage once). The lists built from those resources (the edge
 dashboard's ACLs, the security-events subscriptions, the assistant's firewall log groups) are
 conditional on the same switches, with the `for _ in (switch ? [1] : [])` idiom the
 observability module already uses, so a switched-off ACL is never read.
@@ -2158,7 +2174,10 @@ stays what admits a caller. With the admin ACL on, that is two layers instead of
 off, refused calls show in the admin API's access log, which the security-events Lambda already
 counts. The policy is `sensitive`, so the plan prints it as `(sensitive value)`; no output
 carries it; a 403 shows nothing. API Gateway enforces a resource policy only from the next
-deployment, so the module puts the policy's hash in the deployment's triggers.
+deployment, so the module puts the policy's hash in the deployment's triggers; and the root
+writes the resource as the shorthand `execute-api:/*`, which the module replaces with the API's
+full execution ARN, because API Gateway stores the shorthand expanded and Terraform would read
+that back as a change on every plan.
 
 **Validation.** `terraform validate` on both roots (with the providers mirrored from the
 release host, since the registry is behind this environment's proxy), `terraform fmt`, and

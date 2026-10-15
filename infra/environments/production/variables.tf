@@ -72,6 +72,72 @@ variable "admin_allowed_cidrs" {
   EOT
 }
 
+# -----------------------------------------------------------------------
+# Cost saving: the firewall switches (docs/cost-saving.md). Every one defaults to true, which is
+# the firewall exactly as it was before the switches existed, and CI passes each one from a
+# GitHub variable (WAF_<SWITCH>_<ENV>, else WAF_<SWITCH>, else true: see .github/workflows).
+# They are bool, so a typo ("ture") fails the plan with "a bool is required" rather than
+# silently picking a mode. Turning one off is for a deployment that only tries the project out:
+# a fork that stores real people's data should keep every switch on.
+#
+# Whatever these say, the admin API's address allowlist (var.admin_allowed_cidrs) is always
+# enforced by the API's own resource policy (module.admin_api's resource_policy, free), so no
+# switch ever leaves the admin API reachable from another address.
+# -----------------------------------------------------------------------
+variable "waf_regional_enabled" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Create the REGIONAL WAF web ACLs in front of this environment's two REST APIs (the public
+    API's rate limits and managed rules, the admin API's address allowlist), with their log
+    groups, logging and the security-events subscriptions that read them. About US$16 a month
+    at list price per environment (2 web ACLs, 6 rules). Off, the APIs keep API Gateway's own
+    throttling and the admin API keeps its resource-policy allowlist, but lose the per-visitor
+    rate limits, the AWS managed rule set and the firewall's logs, dashboards and incidents.
+    Read docs/cost-saving.md before turning it off. Default true: the firewall as it has always
+    been.
+  EOT
+}
+
+variable "waf_admin_allowlist" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Keep the admin API's WAF web ACL (its address allowlist as a firewall rule, an IP set and
+    the admin WAF log group) as a second layer on top of the API's always-on resource policy.
+    About US$6 a month at list price. Off, the allowlist is enforced by the resource policy
+    alone (the same addresses, from the same secret) and refused calls show in the API's
+    access log rather than in a WAF log. Ignored when waf_regional_enabled is false. Read
+    docs/cost-saving.md before turning it off. Default true.
+  EOT
+}
+
+variable "waf_log_all_requests" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Have the admin API's WAF web ACL log every request it sees (allowed ones included: only
+    the operator's addresses get through, and a full record of that is the audit trail). Off,
+    its log keeps only what a rule blocked or counted, like the visitor ACLs' logs already do,
+    which saves CloudWatch Logs ingestion on the Hosting line. Nothing else changes. Read
+    docs/cost-saving.md for what the full log is for. Default true.
+  EOT
+}
+
+variable "waf_site_enabled" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Create the shared CLOUDFRONT-scope web ACL (aws_wafv2_web_acl.this: the site's and the
+    public API CDN's per-visitor rate limit and the AWS managed common rule set, with its
+    us-east-1 log group) and attach it to both distributions. About US$7 a month at list price.
+    Off, the distributions run without a web ACL and keep only CloudFront's and Shield
+    Standard's own protections; dev's web_acl_arn must then be left empty, and the
+    wafv2_web_acl_arn output is null. Read docs/cost-saving.md before turning it off. Default
+    true. Production only: dev never owns this ACL.
+  EOT
+}
+
 # TODO: set before first production apply -- see
 # docs/specs/phase-0-foundations.md "Open questions" (domain name and
 # registrar not yet decided/registered).
@@ -257,71 +323,5 @@ variable "ops_alexa_redirect_uris" {
     client, and no Alexa account can be linked to production. Never dev's URLs: each environment's
     add-on is its own, and links only to its own user pool. Setting it also keeps the MCP
     function warm (module.ops_assistant's keep_warm).
-  EOT
-}
-
-# -----------------------------------------------------------------------
-# Cost saving: the firewall switches (docs/cost-saving.md). Every one defaults to true, which is
-# the firewall exactly as it was before the switches existed, and CI passes each one from a
-# GitHub variable (WAF_<SWITCH>_<ENV>, else WAF_<SWITCH>, else true: see .github/workflows).
-# They are bool, so a typo ("ture") fails the plan with "a bool is required" rather than
-# silently picking a mode. Turning one off is for a deployment that only tries the project out:
-# a fork that stores real people's data should keep every switch on.
-#
-# Whatever these say, the admin API's address allowlist (var.admin_allowed_cidrs) is always
-# enforced by the API's own resource policy (module.admin_api's resource_policy, free), so no
-# switch ever leaves the admin API reachable from another address.
-# -----------------------------------------------------------------------
-variable "waf_regional_enabled" {
-  type        = bool
-  default     = true
-  description = <<-EOT
-    Create the REGIONAL WAF web ACLs in front of this environment's two REST APIs (the public
-    API's rate limits and managed rules, the admin API's address allowlist), with their log
-    groups, logging and the security-events subscriptions that read them. About US$16 a month
-    at list price per environment (2 web ACLs, 6 rules). Off, the APIs keep API Gateway's own
-    throttling and the admin API keeps its resource-policy allowlist, but lose the per-visitor
-    rate limits, the AWS managed rule set and the firewall's logs, dashboards and incidents.
-    Read docs/cost-saving.md before turning it off. Default true: the firewall as it has always
-    been.
-  EOT
-}
-
-variable "waf_admin_allowlist" {
-  type        = bool
-  default     = true
-  description = <<-EOT
-    Keep the admin API's WAF web ACL (its address allowlist as a firewall rule, an IP set and
-    the admin WAF log group) as a second layer on top of the API's always-on resource policy.
-    About US$6 a month at list price. Off, the allowlist is enforced by the resource policy
-    alone (the same addresses, from the same secret) and refused calls show in the API's
-    access log rather than in a WAF log. Ignored when waf_regional_enabled is false. Read
-    docs/cost-saving.md before turning it off. Default true.
-  EOT
-}
-
-variable "waf_log_all_requests" {
-  type        = bool
-  default     = true
-  description = <<-EOT
-    Have the admin API's WAF web ACL log every request it sees (allowed ones included: only
-    the operator's addresses get through, and a full record of that is the audit trail). Off,
-    its log keeps only what a rule blocked or counted, like the visitor ACLs' logs already do,
-    which saves CloudWatch Logs ingestion on the Hosting line. Nothing else changes. Read
-    docs/cost-saving.md for what the full log is for. Default true.
-  EOT
-}
-
-variable "waf_site_enabled" {
-  type        = bool
-  default     = true
-  description = <<-EOT
-    Create the shared CLOUDFRONT-scope web ACL (aws_wafv2_web_acl.this: the site's and the
-    public API CDN's per-visitor rate limit and the AWS managed common rule set, with its
-    us-east-1 log group) and attach it to both distributions. About US$7 a month at list price.
-    Off, the distributions run without a web ACL and keep only CloudFront's and Shield
-    Standard's own protections; dev's web_acl_arn must then be left empty, and the
-    wafv2_web_acl_arn output is null. Read docs/cost-saving.md before turning it off. Default
-    true. Production only: dev never owns this ACL.
   EOT
 }
