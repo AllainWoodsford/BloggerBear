@@ -118,6 +118,11 @@ SPEND_IDS = ("ai", "aws")
 
 # A Cognito subject is a UUID. Anything else in the claim is not used as a key.
 USER_ID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# The app clients whose callers have a screen (infra/modules/ops-assistant/main.tf sets the page's,
+# aws_cognito_user_pool_client.page): only they are sent operator and third-party text, in a
+# table's "(unverified)" columns (screen_caller). A Cognito app client id is letters and digits.
+SCREEN_CLIENT_IDS_ENV = "OPS_SCREEN_CLIENT_IDS"
+CLIENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{1,128}$")
 
 NEEDS_USER = "I need a signed-in user to remember anything, and I can't tell who is asking."
 _REQUEST_CONTEXT = REQUEST_CONTEXT_HEADER.decode()
@@ -177,28 +182,58 @@ def user_id_from_headers(headers) -> str | None:
     names in lower case, or None when there is no HTTP request. The header must appear exactly
     once, as in access.py: the adapter sets one, so two means something else built the request.
     """
+    for claims in _claims(headers):  # REST API, then HTTP API
+        subject = claims.get("sub")
+        if isinstance(subject, str) and USER_ID_PATTERN.match(subject):
+            return subject
+    return None
+
+
+def client_id_from_headers(headers) -> str | None:
+    """The caller's Cognito app client id (`client_id`, which every access token carries) from the
+    same verified claims `user_id_from_headers` reads, or None when they cannot be read."""
+    for claims in _claims(headers):
+        client_id = claims.get("client_id")
+        if isinstance(client_id, str) and CLIENT_ID_PATTERN.match(client_id):
+            return client_id
+    return None
+
+
+def screen_caller(headers) -> bool:
+    """Whether the caller reads a screen: True only when its app client id is read and is one of
+    OPS_SCREEN_CLIENT_IDS (the page's; the agent calls the tools with the page's own token).
+    Everything else is a voice caller: Alexa+ (its own client), the briefing Alexa+ starts (it runs
+    with the Alexa token), any later client, and a request whose claims cannot be read. Fail
+    closed: a voice caller is never sent a table's "(unverified)" columns."""
+    try:
+        client_id = client_id_from_headers(headers)
+    except Exception:  # noqa: BLE001 - not knowing who is asking is a voice caller
+        return False
+    allowed = {value.strip() for value in os.environ.get(SCREEN_CLIENT_IDS_ENV, "").split(",")} - {""}
+    return client_id is not None and client_id in allowed
+
+
+def _claims(headers) -> list[dict]:
+    """The verified claims in the forwarded request context, REST API's first, then HTTP API's;
+    none when the header is missing, repeated or unreadable (as `user_id_from_headers` reads it)."""
     if headers is None:
-        return None
+        return []
     getlist = getattr(headers, "getlist", None)
     if getlist is not None:
         values = list(getlist(_REQUEST_CONTEXT))
     else:
         values = [value for name, value in headers.items() if str(name).lower() == _REQUEST_CONTEXT]
     if len(values) != 1:
-        return None
+        return []
     try:
         context = json.loads(values[0])
     except ValueError:
-        return None
+        return []
     authorizer = context.get("authorizer") if isinstance(context, dict) else None
     if not isinstance(authorizer, dict):
-        return None
+        return []
     jwt = authorizer.get("jwt") if isinstance(authorizer.get("jwt"), dict) else {}
-    for claims in (authorizer.get("claims"), jwt.get("claims")):  # REST API, then HTTP API
-        subject = claims.get("sub") if isinstance(claims, dict) else None
-        if isinstance(subject, str) and USER_ID_PATTERN.match(subject):
-            return subject
-    return None
+    return [claims for claims in (authorizer.get("claims"), jwt.get("claims")) if isinstance(claims, dict)]
 
 
 def _needs_user() -> dict:

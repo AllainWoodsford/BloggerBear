@@ -1243,10 +1243,17 @@ def environment() -> str | None:
     return name if _ENVIRONMENT_NAME.fullmatch(name) else None
 
 
+_REGION = re.compile(r"[a-z]{2}(-[a-z]+)+-\d+")
+
+
+def valid_region(value) -> str | None:
+    """`value` when it is shaped like an AWS Region (us-west-2), else None."""
+    return value if isinstance(value, str) and _REGION.fullmatch(value) else None
+
+
 def region() -> str | None:
     """The region this runs in, which is where everything but CloudFront lives."""
-    value = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
-    return value if re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d+", value) else None
+    return valid_region(os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "")
 
 
 def fill(template: str, env: str | None) -> str:

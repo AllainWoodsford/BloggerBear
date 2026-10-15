@@ -69,7 +69,17 @@ def test_the_kinds_with_no_command_are_the_ones_the_cli_cannot_fix():
     log_kinds += [f"api_{key}" for key in api_errors.CAUSES]
     # A security incident and a firewall spike have one each now: `security acknowledge` and
     # `security open`.
-    others = ["alarm_firing", "musing_dangling", "spend_unusual"]
+    # The vision cards (vision_status.py): a sites config is written by hand, and the worker is a
+    # deployment setting.
+    vision = [
+        "vision_config_error",
+        "vision_site_refused",
+        "vision_site_starved",
+        "vision_source_error",
+        "vision_worker_error",
+        "vision_worker_off",
+    ]
+    others = ["alarm_firing", "musing_dangling", "spend_unusual", *vision]
     assert WITHOUT_A_COMMAND == sorted(others + log_kinds)
     for kind in WITH_A_COMMAND:
         assert suggestions.CATALOGUE[kind].what_it_does

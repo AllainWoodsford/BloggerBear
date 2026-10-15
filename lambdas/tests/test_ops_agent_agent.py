@@ -796,3 +796,24 @@ def test_the_model_is_told_to_report_status_codes_and_never_a_lambda_success_rat
     ):
         assert rule in prompt, rule
     assert "the share that succeeded" not in prompt
+
+
+def test_the_model_is_told_how_to_see_the_vision_pipeline():
+    """The owner's ask: the agent and Alexa+ can see the vision pipeline. Site names and errors are
+    operator and third-party text, so they are never said; briefings get vision from
+    pipeline_health. DEEP_DIVE_TOOLS is unchanged (the test above)."""
+    prompt = agent.SYSTEM_PROMPT
+    for rule in (
+        "how the vision pipeline's satellite sites are doing",
+        "a first topic, vision topics, reviewing, musings",
+        "For the vision pipeline (satellite or rail topics, their sites, the vision worker) call "
+        "vision_status, with `topic=` for one topic or one site",
+        "Never say a site's name, an error's text or a table's cells",
+        "In a briefing, say what pipeline_health says about vision and call vision_status only when "
+        "the operator asks",
+        'call log_review with `function` "vision-worker"',
+        'call architecture with `feature` "vision-pipeline"',
+    ):
+        assert rule in prompt, rule
+    assert "vision_status" not in policy.DEEP_DIVE_TOOLS
+

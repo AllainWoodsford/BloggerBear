@@ -171,6 +171,48 @@ CATALOGUE: dict[str, Suggestion] = {
     "spend_unusual": Suggestion(
         action="Look at the Stats page, then Cost Explorer by service, for what grew this week",
     ),
+    # A vision topic's sites (vision_status.py): one kind per reason a site was not measured, so
+    # each card says what to do about that reason, and dismissing one does not hide another. No
+    # command: a topic's sites config is written by hand (cli_guide.py never fills one in), and the
+    # worker is a deployment setting. The id is the environment for the worker, else the topic.
+    "vision_worker_off": Suggestion(
+        action=(
+            "Turn the vision worker on: re-apply infra/bootstrap by hand with vision_region first "
+            "(docs/deployment-runsheet.md), set the VISION_ENABLED repository variable to true, and let "
+            "the next deploy (a merge to dev, or a production release) create the worker. Until then "
+            "these topics record every site as not measured"
+        ),
+    ),
+    "vision_config_error": Suggestion(
+        action=(
+            "Fix the topic's sites config by hand (topics update; scripts/rail_topics.example.json "
+            "shows the shape). Research stops before measuring, or a backend with no worker is asked for"
+        ),
+    ),
+    "vision_site_refused": Suggestion(
+        action=(
+            "Edit the site's polygon or parameters by hand (topics update): the worker refuses this "
+            "request as the site is set up"
+        ),
+    ),
+    "vision_worker_error": Suggestion(
+        action=(
+            "Read the vision worker's log in the vision Region (log_review with the vision-worker "
+            "function, or the runsheet)"
+        ),
+    ),
+    "vision_source_error": Suggestion(
+        action=(
+            "Usually passes by itself: the next tick tries again. If it lasts, the satellite image "
+            "search or the OpenStreetMap mirror is down"
+        ),
+    ),
+    "vision_site_starved": Suggestion(
+        action=(
+            "Give the topic a larger time budget (topics update): the worker is asked only with 45 "
+            "seconds of it left after the image search, so its sites wait for time and are never measured"
+        ),
+    ),
     # What log_review found in a function's log (log_review.py), one kind per root cause, about the
     # function. No command: none of these is fixed from admin_cli. The finding's `root_cause`
     # carries the longer advice and where the change is made; this is the line on the card.
