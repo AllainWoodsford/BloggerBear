@@ -103,7 +103,10 @@ class Component:
     (label, text) pairs for the page, in the order shown. `log_groups`, `dashboards` and `alarms`
     are templates too: where to look for this resource. `only_in` lists the environments that have
     it, when not every one does. `assistant_reads` is whether the assistant's own role may read it
-    (for a table: its rows), which test_ops_mcp_architecture.py holds to the Terraform."""
+    (for a table: its rows), which test_ops_mcp_architecture.py holds to the Terraform.
+    `home_sweep` is False for one the assistant's log reads (log_review.py) leave out: it is not in
+    the stack's home Region, or exists only when an optional feature is on. Reading the home Region
+    for it would only report a log group it was refused."""
 
     kind: str
     key: str
@@ -116,6 +119,7 @@ class Component:
     alarms: tuple[str, ...] = ()
     only_in: tuple[str, ...] = ()
     assistant_reads: bool = False
+    home_sweep: bool = True
     keys: tuple[str, ...] = field(default=())  # a table's hash key, then its range key if any
     indexes: tuple[str, ...] = ()
     ttl: str | None = None  # a table's TTL attribute
@@ -156,8 +160,8 @@ CATALOGUE: tuple[Component, ...] = (
     _table(
         "topics",
         "One row per topic the blog writes about, with its settings: adapter, research interval, "
-        "daily cadence, model, review mode, editorial goals, and when it was last researched and "
-        "last written about.",
+        "daily cadence, findings window, model, review mode, editorial goals, and when it was last "
+        "researched and last written about.",
         ("topic_id",),
         details=(
             (
@@ -523,6 +527,22 @@ CATALOGUE: tuple[Component, ...] = (
         "on each POST /ask to the assistant's API (Cognito sign-in)",
         alarmed=False,
         aliases=("agent", "assistant"),
+    ),
+    _lambda(
+        "vision-worker",
+        "Measures one site in one Sentinel-2 scene with OpenCV 5 (arm64) for the satellite_vision "
+        "and rail_access adapters (the ships and rail_access tasks), and returns the metrics and a "
+        "figure. Stores nothing.",
+        "on each call from the research tick of a satellite_vision or rail_access topic, across Regions",
+        alarmed=False,
+        details=(
+            ("Region", "the vision Region (us-west-2, beside the imagery), not the stack's"),
+            ("Exists", "only when the environment sets vision_enabled"),
+        ),
+        aliases=("vision", "opencv"),
+        # Its log group is in the vision Region, and only when vision is on: a log review of the
+        # home Region leaves it out rather than report it refused on every deployment.
+        home_sweep=False,
     ),
     # --- API Gateway ---------------------------------------------------------------------------
     Component(
@@ -1128,8 +1148,10 @@ FEATURES: tuple[Feature, ...] = (
             Step(
                 "Candidate ideas",
                 "Once a day, through the daily-cycle state machine, the daily cycle reads every "
-                "finding since the topic's last article, asks Bedrock for three candidate angles, "
-                "stores them as candidate ideas and selects one. Ideas expire after 7 days.",
+                "finding since the topic's last article, at most its findings window back (a day "
+                "unless the topic sets a wider one, up to 14 days), asks Bedrock for three "
+                "candidate angles, stores them as candidate ideas and selects one. Ideas expire "
+                "after 7 days.",
                 (
                     "state_machine:daily-cycle",
                     "function:daily-cycle",

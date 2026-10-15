@@ -13,7 +13,9 @@ digest"):
   2. For each, fetch its single most recent Finding, if any, and skip
      topics with nothing recent (per DIGEST_LOOKBACK_HOURS) -- a topic
      that hasn't had a material research-tick change lately has nothing
-     to contribute to a "what's trending right now" digest.
+     to contribute to a "what's trending right now" digest. A topic whose
+     articles always wait for a person (force_manual_review: the vision
+     topics) is left out too: see _recent_contributions.
   3. Ask Bedrock to synthesize one short digest surveying what's
      currently trending across every contributing topic, calling out any
      genuine cross-topic connection if one exists.
@@ -216,18 +218,31 @@ def _recent_contributions() -> list[dict]:
     A topic with no Finding yet, or whose latest Finding has aged out of
     the window, contributes nothing -- there's no "trending" signal to
     include from it right now.
+
+    Nor does a topic whose every article waits for a person
+    (compliance.requires_manual_review: the vision topics). The digest is
+    published with no person, so taking its text in would publish it
+    unseen; it gets its own article, held for a person, instead. Leaving
+    it out keeps the digest exactly as it is for every other topic, where
+    holding the whole digest whenever a vision topic had a Finding would
+    hold it most days. One line names the topics left out.
     """
     cutoff = (datetime.now(UTC) - timedelta(hours=DIGEST_LOOKBACK_HOURS)).isoformat()
 
-    contributions = []
+    contributions, left_out = [], []
     for topic in list_topics():
         finding = get_latest_finding(topic["topic_id"])
         if finding is None:
             continue
         if (finding.get("captured_at") or "") < cutoff:
             continue
+        if compliance.requires_manual_review(topic):
+            left_out.append(topic["topic_id"])
+            continue
         contributions.append({"topic": topic, "finding": finding})
 
+    if left_out:
+        print(f"trending_digest_handler: left out {', '.join(left_out)}: their articles wait for a person")
     return contributions
 
 

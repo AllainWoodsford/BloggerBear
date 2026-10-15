@@ -6,9 +6,11 @@ on a schedule is Phase 3 and is intentionally not built here.
 Flow (see docs/project-plan.md §4 "Daily Authoring Cycle" and §5 data
 model):
 1. Load topic.
-2. Load every finding since the topic's previous article, at most
-   FINDINGS_WINDOW_HOURS back (the whole window the research loop covered, not
-   just the newest few); bail out if there's nothing new to write about.
+2. Load every finding since the topic's previous article, at most the topic's
+   findings window back (FINDINGS_WINDOW_HOURS unless it sets its own
+   `findings_window_hours`, see common/findings_window.py; the whole window the
+   research loop covered, not just the newest few); bail out if there's nothing
+   new to write about.
    Topics with a daily editorial goal (the crypto feed -- see
    common/editorial_goals.py) resolve today's goal here and keep only the
    findings that belong to it; its mandate and article style are folded into
@@ -71,6 +73,12 @@ from common.editorial_resolver import (
     resolve_editorial_goals,
 )
 from common.fact_check import fact_check_label
+from common.figures import figures_for_findings
+from common.findings_window import (
+    FINDINGS_WINDOW_HOURS,
+    findings_window_error,
+    findings_window_hours,
+)
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
@@ -86,9 +94,13 @@ from common.stats_tracking import record_article_lineage, refresh_articles_snaps
 
 # An article is written from everything the research loop found since the last
 # daily run, not from the few newest findings: the window is the day the run
-# covers, the count is a safety cap, and the character budget keeps a busy
-# topic's prompt bounded (the oldest findings drop out first).
-FINDINGS_WINDOW_HOURS = 24
+# covers (FINDINGS_WINDOW_HOURS, or the topic's own findings_window_hours, up to
+# MAX_FINDINGS_WINDOW_HOURS: both from common/findings_window.py), the count is a
+# safety cap, and the character budget keeps a busy topic's prompt bounded (the
+# oldest findings drop out first). list_recent_findings is a descending Query on
+# captured_at with this as its Limit, so when a wide window holds more findings
+# than the cap it is the oldest that are left out, never the newest
+# (tests/test_findings_window.py, tests/test_daily_cycle_handler.py).
 MAX_WINDOW_FINDINGS = 48
 SUMMARIES_MAX_CHARS = 40_000
 # An article draft is a few paragraphs to a few pages; the 1,024-token default cut real
@@ -96,6 +108,13 @@ SUMMARIES_MAX_CHARS = 40_000
 # long draft, and one automatic retry with more if a reply still runs out.
 DRAFT_MAX_TOKENS = 4096
 DRAFT_RETRY_MAX_TOKENS = 8192
+# Three short angles never need this much. A reasoning model (MiniMax M2 in production) spends
+# its budget *thinking* first, and that counts against maxTokens: at the 1,024 default it thought
+# for all 1,024 and sent back no text at all, nine days running, and the run bailed out with
+# "no usable angles" each time (docs/friction.md). Room for the thinking, one retry with more,
+# and a reply that still has no text in it is treated as the failure it is (see _ideate).
+IDEATION_MAX_TOKENS = 4096
+IDEATION_RETRY_MAX_TOKENS = 8192
 TRUNCATED_DRAFT_REASON = (
     "draft truncated: the model ran out of output tokens before finishing the article"
 )
@@ -199,16 +218,32 @@ def _handle(event: dict) -> dict:
         return {"status": "error", "topic_id": topic_id, "error": str(exc)}
 
 
+def _window_hours(topic: dict) -> int:
+    """The topic's findings window in hours (common/findings_window.py). A stored value that is
+    not a whole number of hours in range is said in the log and the default used, never raised:
+    a hand-edited topic must not stop its articles."""
+    stored = topic.get("findings_window_hours")
+    problem = findings_window_error(stored)
+    if problem:
+        print(
+            f"daily_cycle_handler: topic_id={topic.get('topic_id')} findings_window_hours "
+            f"{stored!r:.40} {problem}; using the default {FINDINGS_WINDOW_HOURS} h"
+        )
+    return findings_window_hours(topic)
+
+
 def _window_start(topic: dict, run_started: datetime, force: bool) -> str:
     """ISO timestamp findings must be captured at or after to feed this article.
 
-    The window is the last FINDINGS_WINDOW_HOURS, but never reaches back past the
-    topic's previous article (`last_article_at`), so a second run with nothing
-    found since the last one has nothing to write about instead of rewriting the
-    same findings. `force` ignores the previous article (an operator asking for
-    a fresh take on the whole window).
+    The window is the topic's findings window (the last FINDINGS_WINDOW_HOURS
+    unless it sets `findings_window_hours`, e.g. a topic that writes on some days
+    only), but never reaches back past the topic's previous article
+    (`last_article_at`), so a second run with nothing found since the last one
+    has nothing to write about instead of rewriting the same findings. `force`
+    ignores the previous article (an operator asking for a fresh take on the
+    whole window); the window itself still applies.
     """
-    floor = run_started - timedelta(hours=FINDINGS_WINDOW_HOURS)
+    floor = run_started - timedelta(hours=_window_hours(topic))
     last_article_at = None if force else topic.get("last_article_at")
     if last_article_at:
         try:
@@ -250,7 +285,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     since = _window_start(topic, run_started, force)
     findings = list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
     if not findings:
-        # Nothing new since the topic's last article (or in the last day): better
+        # Nothing new since the topic's last article (or in its findings window): better
         # no article than one rewritten from findings a previous run already used.
         return {"status": "no_findings", "topic_id": topic_id}
 
@@ -292,7 +327,18 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         # angles based on these findings...") rather than producing anything usable -- better no
         # article today than one built around a candidate that was never really an angle. Same
         # shape as the "nothing new since last run" bail-out above.
-        print(f"daily_cycle_handler: ideation had no usable angles for topic_id={topic_id}")
+        # Say what came back, so the next person reading the logs can tell a refusal (text, no
+        # angles in it) from a reply with no text in it (a reasoning model that ran out of
+        # tokens), without re-running the model to find out.
+        print(
+            f"daily_cycle_handler: ideation had no usable angles for topic_id={topic_id} "
+            f"model_id={ideate_call['model_id']} stop_reason={ideate_call.get('stop_reason')} "
+            f"output_tokens={ideate_call['output_tokens']} reply_chars={ideate_call['reply_chars']}"
+        )
+        # A model that can't propose angles for this topic must not keep the topic: the roll
+        # forward used to happen only after a publish, so a topic whose model never published
+        # stayed on that model for good (two production topics, nine days each).
+        _assign_rotated_model(topic_id)
         return {"status": "no_usable_angles", "topic_id": topic_id}
     selected = _select_and_store_candidates(topic_id, angles)
 
@@ -317,6 +363,8 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         hold_reasons.append(TRUNCATED_DRAFT_REASON)
     if not title_is_plausible:
         hold_reasons.append(IMPLAUSIBLE_TITLE_REASON)
+    if compliance.requires_manual_review(topic):
+        hold_reasons.append(compliance.MANUAL_REVIEW_REASON)
     if hold_reasons:
         print(f"daily_cycle_handler: holding {hold_reasons} for topic_id={topic_id}")
 
@@ -716,7 +764,36 @@ def _ideate(
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
         prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
-    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    result = invoke_model_tracked(
+        prompt,
+        model_id,
+        fallback_model_id=fallback_model_id,
+        max_tokens=IDEATION_MAX_TOKENS,
+        retry_max_tokens=IDEATION_RETRY_MAX_TOKENS,
+    )
+    if _reply_is_all_thinking(result) and fallback_model_id and not result["used_fallback"]:
+        # The model ran out of tokens before it had written a single word (a reasoning model
+        # that never finished thinking). Bedrock reports that as a normal reply with no text,
+        # not as an error, so the fallback that an exception would have reached never ran.
+        # Reach it here: a wasted call costs the same as a failed one.
+        print(
+            f"daily_cycle_handler: ideation on {result['model_id']} stopped at its token limit "
+            f"with no text (output_tokens={result['output_tokens']}); trying {fallback_model_id}"
+        )
+        first = result
+        result = invoke_model_tracked(
+            prompt,
+            fallback_model_id,
+            max_tokens=IDEATION_MAX_TOKENS,
+            retry_max_tokens=IDEATION_RETRY_MAX_TOKENS,
+        )
+        result = {
+            **result,
+            "input_tokens": first["input_tokens"] + result["input_tokens"],
+            "output_tokens": first["output_tokens"] + result["output_tokens"],
+            "attempts": first.get("attempts", 1) + result.get("attempts", 1),
+            "used_fallback": True,
+        }
     response = result["text"]
 
     angles = []
@@ -742,8 +819,18 @@ def _ideate(
         "input_tokens": result["input_tokens"],
         "output_tokens": result["output_tokens"],
         "used_fallback": result["used_fallback"],
+        "stop_reason": result.get("stop_reason"),
+        "reply_chars": len(response),
     }
+    if result.get("attempts", 1) > 1:
+        lineage_call["attempts"] = result["attempts"]
     return angles[:_NUM_CANDIDATE_ANGLES], lineage_call
+
+
+def _reply_is_all_thinking(result: dict) -> bool:
+    """A reply that hit its token limit and has no text: every token went on reasoning that
+    the Converse API returns in a block of its own, which the caller never sees."""
+    return result.get("stop_reason") == "max_tokens" and not result["text"].strip()
 
 
 def _select_and_store_candidates(topic_id: str, angles: list[str]) -> dict:
@@ -872,11 +959,12 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
 
 
 def _assign_rotated_model(topic_id: str) -> None:
-    """Once a topic has published an article, roll its `model_id` (Topics table) forward to a
-    random pick from the shared rotation pool -- common/dynamo.py's "model-rotation" ModelConfig
-    row -- so the *next* run for this topic tries a different model, without a Terraform apply or
-    an admin edit. No candidates configured is a valid state: rotation then does nothing, same as
-    before this existed.
+    """Once a topic has published an article -- or its model has just failed to propose any
+    angle at all -- roll its `model_id` (Topics table) forward to a random pick from the shared
+    rotation pool -- common/dynamo.py's "model-rotation" ModelConfig row -- so the *next* run
+    for this topic tries a different model, without a Terraform apply or an admin edit. No
+    candidates configured is a valid state: rotation then does nothing, same as before this
+    existed.
 
     Deliberately only ever writes `model_id`, the next rung down in common/model_routing.py's
     resolve_model precedence -- a topic with its own `model_id_candidates` already rerolls every
@@ -949,6 +1037,9 @@ def _publish_or_moderate(
     for finding in findings:
         source_refs.extend(finding.get("source_refs") or [])
     source_refs = dedupe_source_refs(source_refs)
+    # The pictures those findings came with (common/figures.py): the newest few, each once,
+    # stored on the article and copied onto its page when it is published.
+    figures = figures_for_findings(findings)
 
     compliant = review["compliant"] and not hold_reasons
     reasons = hold_reasons + list(review["reasons"])
@@ -968,6 +1059,7 @@ def _publish_or_moderate(
         **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
         **({"equipment_used": equipment_used} if equipment_used is not None else {}),
         **({"attribution": attribution} if attribution is not None else {}),
+        figures=figures,
     )
 
     if compliant:
@@ -988,6 +1080,7 @@ def _publish_or_moderate(
             fact_check=fact_check_label(fresh_review_record, "ai_only"),
             equipment_used=equipment_used,
             attribution=attribution,
+            figures=figures,
         )
         generate_and_store_article_musing(
             article_id=article_id,

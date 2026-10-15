@@ -1,12 +1,17 @@
 import json
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from unittest.mock import patch
 
 import boto3
 import pytest
 from moto import mock_aws
 
+import common.dynamo as dynamo
 import daily_cycle_handler
+import research_tick_handler
+from common import findings_window
 from common.editorial_goals import (
     ARTICLE_STYLES,
     EDITORIAL_MANDATES,
@@ -298,6 +303,167 @@ def test_only_a_literal_true_forces_a_run(s3_bucket):
     assert mock_list.call_args.kwargs["since"] == topic["last_article_at"]
 
 
+# --- a topic's own findings window (common/findings_window.py) ----------------------------------
+#
+# A topic that writes on some days only (one city of a rotation, a weekly topic) widens its window,
+# so a Finding made on a day it does not write is drafted on the day it does.
+
+
+def _hours_before_the_run(hours):
+    return (_RUN - timedelta(hours=hours)).isoformat()
+
+
+@pytest.mark.parametrize("hours", [1, 24, 192, 336, Decimal("192")])
+def test_a_topic_s_own_window_replaces_the_day(hours):
+    since = daily_cycle_handler._window_start({"findings_window_hours": hours}, _RUN, force=False)
+
+    assert since == _hours_before_the_run(int(hours))
+
+
+def test_the_last_article_still_caps_a_wide_window():
+    last = _RUN - timedelta(days=3)
+    topic = {"findings_window_hours": 192, "last_article_at": last.isoformat()}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=False) == last.isoformat()
+
+
+def test_a_last_article_older_than_the_wide_window_leaves_the_window():
+    last = _RUN - timedelta(days=10)
+    topic = {"findings_window_hours": 192, "last_article_at": last.isoformat()}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=False) == _hours_before_the_run(192)
+
+
+def test_force_ignores_the_last_article_but_keeps_the_topic_s_window():
+    last = _RUN - timedelta(hours=3)
+    topic = {"findings_window_hours": 192, "last_article_at": last.isoformat()}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=True) == _hours_before_the_run(192)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [0, -24, 337, 1000, "x", "", "192", "192.0", 1.5, 192.0, True, Decimal("1.5"), Decimal("NaN"), [192]],
+)
+def test_a_stored_window_that_is_not_valid_falls_back_to_the_day_and_says_so(bad, capsys):
+    topic = {"topic_id": "rail-sydney", "findings_window_hours": bad}
+
+    assert daily_cycle_handler._window_start(topic, _RUN, force=False) == _DAY_BEFORE
+    said = capsys.readouterr().out
+    assert "topic_id=rail-sydney findings_window_hours" in said and "using the default 24 h" in said
+
+
+def test_a_topic_without_a_window_of_its_own_says_nothing(capsys):
+    since = daily_cycle_handler._window_start({"findings_window_hours": None}, _RUN, force=False)
+
+    assert since == _DAY_BEFORE
+    assert capsys.readouterr().out == ""
+
+
+def test_the_widest_window_reaches_back_exactly_as_far_as_a_finding_lives():
+    """Findings expire after FINDING_TTL_DAYS (DynamoDB TTL, set by the research tick): a wider
+    window would reach back to nothing, and a narrower bound would refuse a useful one."""
+    assert findings_window.MAX_FINDINGS_WINDOW_HOURS == research_tick_handler.FINDING_TTL_DAYS * 24
+    assert daily_cycle_handler.FINDINGS_WINDOW_HOURS == findings_window.FINDINGS_WINDOW_HOURS == 24
+
+
+@pytest.fixture
+def findings_table(s3_bucket, monkeypatch):
+    """A real (moto) Findings table, so the window is applied by DynamoDB's own range query."""
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+    monkeypatch.setattr(dynamo, "_dynamodb_resource", None)
+    boto3.client("dynamodb", region_name="ap-southeast-2").create_table(
+        TableName=ENV["FINDINGS_TABLE"],
+        KeySchema=[
+            {"AttributeName": "topic_id", "KeyType": "HASH"},
+            {"AttributeName": "captured_at", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "topic_id", "AttributeType": "S"},
+            {"AttributeName": "captured_at", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    yield boto3.resource("dynamodb", region_name="ap-southeast-2").Table(ENV["FINDINGS_TABLE"])
+
+
+def _off_day_finding(findings_table, days_ago=5):
+    """A Finding made `days_ago` days back: on a rotation, a day the topic did not write."""
+    summary = "A new station opened on the line; the served share of the city rose."
+    findings_table.put_item(
+        Item={
+            "topic_id": NON_FINANCIAL_TOPIC["topic_id"],
+            "captured_at": (datetime.now(UTC) - timedelta(days=days_ago)).isoformat(),
+            "summary": summary,
+            "source_refs": [],
+        }
+    )
+    return summary
+
+
+def _rotation_topic(**extra):
+    """A topic whose previous article was a week ago, as one day of a weekly rotation's is."""
+    last = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    return {**NON_FINANCIAL_TOPIC, "last_article_at": last, **extra}
+
+
+def test_a_wide_window_drafts_from_a_finding_made_on_an_off_day(findings_table):
+    summary = _off_day_finding(findings_table)
+    calls = []
+    # A number comes back from DynamoDB as a Decimal.
+    topic = _rotation_topic(findings_window_hours=Decimal("192"))
+
+    with patch(
+        "daily_cycle_handler._format_findings_summaries",
+        wraps=daily_cycle_handler._format_findings_summaries,
+    ) as drafted_from:
+        result, _ = _run_a_full_cycle(findings=None, lineage_calls=calls, topic=topic)
+
+    assert result["status"] == "published"
+    assert [finding["summary"] for finding in drafted_from.call_args.args[0]] == [summary]
+    ((_, kwargs),) = calls
+    assert kwargs["research"]["findings"] == 1
+
+
+def test_without_its_own_window_the_off_day_finding_is_outside_the_day(findings_table):
+    _off_day_finding(findings_table)
+
+    result, mock_set = _run_a_full_cycle(findings=None, topic=_rotation_topic())
+
+    assert result == {"status": "no_findings", "topic_id": NON_FINANCIAL_TOPIC["topic_id"]}
+    mock_set.assert_not_called()
+
+
+def test_a_wide_window_with_more_findings_than_the_cap_keeps_the_newest(findings_table):
+    now = datetime.now(UTC)
+    for number in range(daily_cycle_handler.MAX_WINDOW_FINDINGS + 2):  # finding 0 is the newest
+        findings_table.put_item(
+            Item={
+                "topic_id": NON_FINANCIAL_TOPIC["topic_id"],
+                "captured_at": (now - timedelta(hours=3 * number + 1)).isoformat(),
+                "summary": f"finding {number}",
+            }
+        )
+    topic = {**NON_FINANCIAL_TOPIC, "findings_window_hours": Decimal("192")}
+
+    with patch(
+        "daily_cycle_handler._format_findings_summaries",
+        wraps=daily_cycle_handler._format_findings_summaries,
+    ) as drafted_from:
+        _run_a_full_cycle(findings=None, topic=topic)
+
+    drafted = [finding["summary"] for finding in drafted_from.call_args.args[0]]
+    assert drafted == [f"finding {number}" for number in range(daily_cycle_handler.MAX_WINDOW_FINDINGS)]
+
+
+def test_a_wide_window_still_never_drafts_a_finding_from_before_the_last_article(findings_table):
+    _off_day_finding(findings_table, days_ago=8)  # before the article a week ago: already written up
+
+    result, _ = _run_a_full_cycle(findings=None, topic=_rotation_topic(findings_window_hours=Decimal("336")))
+
+    assert result["status"] == "no_findings"
+
+
 def _run_a_full_cycle(
     compliant=True,
     record_side_effect=None,
@@ -306,7 +472,8 @@ def _run_a_full_cycle(
     topic=NON_FINANCIAL_TOPIC,
 ):
     """Run a whole cycle with everything external mocked. `lineage_calls`, if given,
-    collects the (args, kwargs) build_lineage was called with."""
+    collects the (args, kwargs) build_lineage was called with. `findings=None` reads them
+    from the Findings table instead (the `findings_table` fixture)."""
     responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
 
     def _build_lineage(*args, **kwargs):
@@ -316,7 +483,11 @@ def _run_a_full_cycle(
 
     with (
         patch("daily_cycle_handler.get_topic", return_value=topic),
-        patch("daily_cycle_handler.list_recent_findings", return_value=findings),
+        (
+            nullcontext()
+            if findings is None
+            else patch("daily_cycle_handler.list_recent_findings", return_value=findings)
+        ),
         patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
         patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
         patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
@@ -874,7 +1045,10 @@ def test_worn_armor_and_the_topics_rings_are_injected_and_recorded_on_the_articl
         {**_gear("github-trending", "2026-09-04", "ring", "topic", "Benched."), "equipped": False},
     ]
 
-    ideation_prompt, draft_prompt, article = _run_with_gear(s3_bucket, gear)
+    # The draw itself is random (none of the armor to all of it; tests/test_equipment.py), and
+    # left to the real random module this test failed now and then. Here the bear takes it all.
+    with patch("daily_cycle_handler.equipment.pick_armor", side_effect=lambda armor, *_, **__: armor):
+        ideation_prompt, draft_prompt, article = _run_with_gear(s3_bucket, gear)
 
     for prompt in (ideation_prompt, draft_prompt):
         header = "Additional guidance based on reader feedback:"
@@ -1893,7 +2067,10 @@ def test_the_draft_is_given_room_for_an_article_and_one_automatic_retry(s3_bucke
     ideate, draft, title = calls
     assert draft["max_tokens"] == daily_cycle_handler.DRAFT_MAX_TOKENS == 4096
     assert draft["retry_max_tokens"] == daily_cycle_handler.DRAFT_RETRY_MAX_TOKENS == 8192
-    assert "max_tokens" not in ideate and "max_tokens" not in title  # short outputs keep the default
+    # Ideation's room is for a reasoning model's thinking, not its three short lines.
+    assert ideate["max_tokens"] == daily_cycle_handler.IDEATION_MAX_TOKENS == 4096
+    assert ideate["retry_max_tokens"] == daily_cycle_handler.IDEATION_RETRY_MAX_TOKENS == 8192
+    assert "max_tokens" not in title  # a short output keeps the default
 
 
 def test_a_complete_draft_is_published_as_before(s3_bucket):
@@ -2380,6 +2557,89 @@ def test_ideate_prompt_is_unchanged_with_no_recent_titles():
     assert "Already covered recently" not in captured_prompt["text"]
 
 
+# --- _ideate gives a reasoning model room to think, and notices when it never stopped ------------
+
+
+def test_ideate_asks_for_room_to_think_and_one_retry_with_more():
+    """Three angles never need 4,096 tokens; a reasoning model's thinking, which counts against
+    the limit, did (MiniMax M2 spent all 1,024 of the old default on it and sent no text)."""
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked", return_value=_tracked_result("Angle one\nAngle two")
+    ) as mock_invoke:
+        daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    kwargs = mock_invoke.call_args.kwargs
+    assert kwargs["max_tokens"] == daily_cycle_handler.IDEATION_MAX_TOKENS
+    assert kwargs["retry_max_tokens"] == daily_cycle_handler.IDEATION_RETRY_MAX_TOKENS
+    assert kwargs["fallback_model_id"] == "fallback-m"
+
+
+def test_ideate_reaches_the_fallback_when_the_reply_is_all_thinking_and_no_text():
+    """Bedrock reports a reply that ran out of tokens mid-thought as a normal reply with no text,
+    not as an error, so invoke_model_tracked's own fallback (exceptions only) never ran."""
+    responses = [
+        _tracked_result("", stop_reason="max_tokens", output_tokens=8192, attempts=2),
+        _tracked_result("Angle one\nAngle two\nAngle three", model_id="fallback-m", output_tokens=30),
+    ]
+    calls = []
+
+    def model(prompt, model_id, **kwargs):
+        calls.append(model_id)
+        return responses.pop(0)
+
+    with patch("daily_cycle_handler.invoke_model_tracked", side_effect=model):
+        angles, lineage_call = daily_cycle_handler._ideate(
+            NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m"
+        )
+
+    assert calls == ["m", "fallback-m"]
+    assert angles == ["Angle one", "Angle two", "Angle three"]
+    assert lineage_call["model_id"] == "fallback-m"
+    assert lineage_call["used_fallback"] is True
+    assert lineage_call["output_tokens"] == 8192 + 30  # the wasted call still cost money
+    assert lineage_call["attempts"] == 3
+    assert lineage_call["stop_reason"] == "end_turn"
+
+
+def test_ideate_returns_nothing_when_there_is_no_fallback_to_reach():
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("", stop_reason="max_tokens", output_tokens=4096),
+    ) as mock_invoke:
+        angles, lineage_call = daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", None)
+
+    assert angles == []
+    assert mock_invoke.call_count == 1
+    assert lineage_call["stop_reason"] == "max_tokens"
+    assert lineage_call["reply_chars"] == 0
+
+
+def test_ideate_does_not_call_the_fallback_twice_when_it_already_answered():
+    """invoke_model_tracked already fell back (the first model raised); if the fallback's own
+    reply is all thinking, there is no third model to try."""
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("", stop_reason="max_tokens", used_fallback=True, model_id="fallback-m"),
+    ) as mock_invoke:
+        angles, _ = daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    assert angles == []
+    assert mock_invoke.call_count == 1
+
+
+def test_a_cut_off_reply_that_still_has_text_in_it_is_parsed_not_retried():
+    """What a model managed to write before the limit is kept (the Oct 3 production article came
+    from exactly that); only a reply with *no* text is treated as a failure."""
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("Angle one\nAngle two", stop_reason="max_tokens"),
+    ) as mock_invoke:
+        angles, _ = daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    assert angles == ["Angle one", "Angle two"]
+    assert mock_invoke.call_count == 1
+
+
 # --- _draft_title validates its own output, with one retry -----------------------------------------
 
 
@@ -2461,6 +2721,55 @@ def test_handler_bails_out_cleanly_when_ideation_has_no_usable_angles(s3_bucket)
     mock_put_article.assert_not_called()
 
 
+def _bail_out_with_no_usable_angles(reply):
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
+        patch("daily_cycle_handler.invoke_model_tracked", return_value=reply),
+        patch("daily_cycle_handler.put_article"),
+    ):
+        return daily_cycle_handler.handler({"topic_id": NON_FINANCIAL_TOPIC["topic_id"]}, None)
+
+
+def test_no_usable_angles_rolls_the_topic_to_another_model_from_the_pool(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    """The roll forward used to happen only after a publish, so a topic whose model could never
+    propose an angle kept that model indefinitely (two production topics, nine days each)."""
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.return_value = ["model-a", "model-b"]
+
+    with patch("daily_cycle_handler.random.choice", return_value="model-a"):
+        result = _bail_out_with_no_usable_angles(_tracked_result("", stop_reason="max_tokens"))
+
+    assert result["status"] == "no_usable_angles"
+    mock_set.assert_called_once_with("github-trending", "model-a")
+
+
+def test_no_usable_angles_with_no_pool_configured_rolls_nothing(s3_bucket, _no_rotation_pool_by_default):
+    _, mock_set = _no_rotation_pool_by_default
+
+    result = _bail_out_with_no_usable_angles(_tracked_result("I cannot propose article angles."))
+
+    assert result["status"] == "no_usable_angles"
+    mock_set.assert_not_called()
+
+
+def test_no_usable_angles_says_what_came_back(s3_bucket, capsys):
+    """A refusal and an all-thinking reply used to log the same line; the stop reason and the
+    reply's length tell them apart without re-running the model."""
+    _bail_out_with_no_usable_angles(_tracked_result("", stop_reason="max_tokens", output_tokens=4096))
+
+    out = capsys.readouterr().out
+    assert "no usable angles for topic_id=github-trending" in out
+    assert "stop_reason=max_tokens" in out
+    assert "output_tokens=4096" in out
+    assert "reply_chars=0" in out
+
+
 def test_handler_holds_an_article_whose_title_is_still_implausible_after_retry(s3_bucket):
     title_responses = [
         _tracked_result("I cannot help with that request."),
@@ -2540,3 +2849,87 @@ def test_only_a_finished_rewrite_rebuilds_the_article_figures(status, rebuilt):
 
     assert result == {"status": status}
     assert refresh.called is rebuilt
+
+
+# --- force_manual_review: a person sees every article of such a topic -----------------------------
+
+
+def test_a_force_manual_review_topic_is_held_even_when_compliant(s3_bucket):
+    topic = {**NON_FINANCIAL_TOPIC, "force_manual_review": True}
+    result, _, mock_put_article, mock_put_moderation, _ = _run_with_review(topic=topic, compliant=True)
+    assert result["status"] == "pending_moderation"
+    reasons = mock_put_moderation.call_args.kwargs["reasons"]
+    assert daily_cycle_handler.compliance.MANUAL_REVIEW_REASON in reasons
+    assert mock_put_article.call_args.kwargs["status"] == "pending_moderation"
+
+
+def test_without_the_flag_a_compliant_article_still_publishes(s3_bucket):
+    result, _, _, _, _ = _run_with_review(compliant=True)
+    assert result["status"] == "published"
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+
+def _finding_with_figures(captured_at, *keys):
+    return {
+        "topic_id": "github-trending",
+        "captured_at": captured_at,
+        "summary": "Something was seen.",
+        "source_refs": [],
+        "figures": [{"key": key, "caption": f"Caption for {key}", "alt": f"Alt for {key}"} for key in keys],
+    }
+
+
+def _publish_or_moderate_with(findings, compliant=True):
+    """_publish_or_moderate for `findings`; returns (put_article's mock, the page renderer's mock)."""
+    with (
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page") as mock_render,
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+    ):
+        daily_cycle_handler._publish_or_moderate(
+            topic_id="github-trending",
+            topic_name="GitHub Trending",
+            title="A Title",
+            draft_text="Body.",
+            findings=findings,
+            review={"compliant": compliant, "reasons": [] if compliant else ["held"]},
+            model_id="anthropic.claude-test-model",
+            lineage=_DUMMY_LINEAGE,
+        )
+    return mock_put_article, mock_render
+
+
+def test_the_findings_figures_reach_the_article_and_its_page_newest_first_each_once_and_capped(s3_bucket):
+    findings = [  # newest first, as list_recent_findings returns them
+        _finding_with_figures("2026-09-13T03:00:00+00:00", "vision/c.png", "vision/b.png"),
+        _finding_with_figures("2026-09-13T02:00:00+00:00", "vision/b.png", "vision/a.png"),
+        _finding_with_figures("2026-09-13T01:00:00+00:00", "vision/z.png"),
+    ]
+
+    mock_put_article, mock_render = _publish_or_moderate_with(findings)
+
+    expected = [
+        {"key": key, "caption": f"Caption for {key}", "alt": f"Alt for {key}"}
+        for key in ("vision/c.png", "vision/b.png", "vision/a.png")  # z: over the cap of three
+    ]
+    assert mock_put_article.call_args.kwargs["figures"] == expected
+    assert mock_render.call_args.kwargs["figures"] == expected
+
+
+def test_a_held_article_keeps_its_figures_for_the_page_a_person_may_later_approve(s3_bucket):
+    findings = [_finding_with_figures("2026-09-13T03:00:00+00:00", "vision/a.png")]
+
+    mock_put_article, mock_render = _publish_or_moderate_with(findings, compliant=False)
+
+    assert mock_put_article.call_args.kwargs["figures"] == findings[0]["figures"]
+    mock_render.assert_not_called()  # nothing is copied onto the site until it is published
+
+
+def test_findings_without_figures_give_the_article_none(s3_bucket):
+    mock_put_article, mock_render = _publish_or_moderate_with([{"summary": "plain", "source_refs": []}])
+
+    assert mock_put_article.call_args.kwargs["figures"] == []
+    assert mock_render.call_args.kwargs["figures"] == []

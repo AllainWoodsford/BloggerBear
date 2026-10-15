@@ -186,17 +186,16 @@ def _add_model_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _parse_interval_hours(text: str):
-    """`--research-interval-hours` value: a whole number of hours, or '' meaning
-    "clear it and inherit the pipeline-wide default" (sent as null)."""
+def _parse_hours(text: str, flag: str = "--research-interval-hours"):
+    """An hours flag's value (`--research-interval-hours`, `--findings-window-hours`): a whole
+    number of hours, or '' meaning "clear it and fall back to the default" (sent as null). The
+    Admin API checks the range."""
     if text == "":
         return None
     try:
         return int(text)
     except ValueError as exc:
-        raise CliError(
-            f"--research-interval-hours must be a whole number of hours (or ''): {text!r}"
-        ) from exc
+        raise CliError(f"{flag} must be a whole number of hours (or ''): {text!r}") from exc
 
 
 def _parse_editorial_goals_json(text: str):
@@ -231,7 +230,11 @@ def _cmd_topics_create(args: argparse.Namespace) -> None:
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
-        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+        body["research_interval_hours"] = _parse_hours(args.research_interval_hours)
+    if args.findings_window_hours is not None:
+        body["findings_window_hours"] = _parse_hours(
+            args.findings_window_hours, "--findings-window-hours"
+        )
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
     if args.daily_cadence is not None:
@@ -260,7 +263,11 @@ def _cmd_topics_update(args: argparse.Namespace) -> None:
     if args.research_cadence is not None:
         body["research_cadence"] = args.research_cadence
     if args.research_interval_hours is not None:
-        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+        body["research_interval_hours"] = _parse_hours(args.research_interval_hours)
+    if args.findings_window_hours is not None:
+        body["findings_window_hours"] = _parse_hours(
+            args.findings_window_hours, "--findings-window-hours"
+        )
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (inherit the pipeline mode)
     if args.daily_cadence is not None:
@@ -383,7 +390,8 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
                 f"No new candidates after {_DAILY_CYCLE_TIMEOUT_SECONDS}s. This can mean there "
                 "were no Findings newer than the topic's last article (run research_tick first "
                 "and confirm it produced a Finding, or pass --force to rewrite from the "
-                "whole last-24h window), or a real failure -- check the logs:\n"
+                "topic's whole findings window: 24 h, or its findings_window_hours), or a real "
+                "failure -- check the logs:\n"
                 "  aws logs tail /aws/lambda/<daily-cycle function name> --since 5m",
                 file=sys.stderr,
             )
@@ -684,7 +692,7 @@ def _cmd_pipeline_config_get(args: argparse.Namespace) -> None:
 def _cmd_pipeline_config_set(args: argparse.Namespace) -> None:
     body: dict = {}
     if args.research_interval_hours is not None:
-        body["research_interval_hours"] = _parse_interval_hours(args.research_interval_hours)
+        body["research_interval_hours"] = _parse_hours(args.research_interval_hours)
     if args.review_mode is not None:
         body["review_mode"] = args.review_mode or None  # '' clears it (back to the default)
     if args.review_on_unavailable is not None:
@@ -1072,6 +1080,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     create_parser.add_argument(
+        "--findings-window-hours",
+        dest="findings_window_hours",
+        default=None,
+        help=(
+            "How many hours back the daily article reads findings, never past the topic's last "
+            "article: whole hours, 1 to 336 (default 24). Widen it for a topic that does not "
+            "write every day (one day of a rotation, a weekly topic)"
+        ),
+    )
+    create_parser.add_argument(
         "--review-mode",
         dest="review_mode",
         default=None,
@@ -1136,6 +1154,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     update_parser.add_argument(
+        "--findings-window-hours",
+        dest="findings_window_hours",
+        default=None,
+        help=(
+            "How many hours back the daily article reads findings, never past the topic's last "
+            "article: whole hours, 1 to 336, for a topic that does not write every day; '' "
+            "clears it (back to 24)"
+        ),
+    )
+    update_parser.add_argument(
         "--review-mode",
         dest="review_mode",
         default=None,
@@ -1197,9 +1225,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "daily_cycle only: write an article from the whole last-24h window even if "
-            "the topic already has one since (the default is to write only from findings "
-            "newer than its last article, so a repeat run with nothing new is a no-op)"
+            "daily_cycle only: write an article from the topic's whole findings window (the "
+            "last 24 h, or its --findings-window-hours) even if the topic already has one since "
+            "(the default is to write only from findings newer than its last article, so a "
+            "repeat run with nothing new is a no-op)"
         ),
     )
     trigger_parser.set_defaults(func=_cmd_topics_trigger)

@@ -3,7 +3,9 @@
 **Started:** 2026-10-03 · **Covers:** the build from Phase 0 (2026-09-12) to today, PRs #1–#165,
 plus the hackathon-planning and public-repo session of 2026-10-03, and the Alexa+ planning session
 of 2026-10-04 (through #174), and the Alexa+ add-on review that followed it, and what of the
-Alexa+ add-on could not be tested (2026-10-05), and PRs #260–#280 (2026-10-07 to 2026-10-09).
+Alexa+ add-on could not be tested (2026-10-05), and PRs #260–#280 (2026-10-07 to 2026-10-09),
+and the vision review and Rail Access Monitor build for the OpenCV AI Competition (2026-10-10 on,
+PR #285 and its sub-PRs).
 
 What was harder than it should have been, why, and what we changed. It is for learning, not blame:
 a lot of these were found by the process working (a real invocation, a real deploy, a review), just
@@ -28,6 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
+| Vision and rail (OpenCV 2026) | 24 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed; a scanner's false positive met first with its allowlist |
 
 ---
 
@@ -409,7 +412,10 @@ docs/enhancements/supply-chain-tracker-enhancement.md).
 10 m resolution (a container is 2.4 m wide); ships are.
 
 **9.4 OpenCV 5 on Graviton is unconfirmed.** Whether an `opencv-python-headless` 5.x wheel exists for
-Linux aarch64 is still the first thing to settle.
+Linux aarch64 is still the first thing to settle. **Settled 2026-10-06:** `opencv-python-headless==5.0.0.93`
+ships Linux aarch64 wheels. That is stock OpenCV on Graviton, which is not COOL, the Graviton-tuned build
+the COOL award asks for
+([docs/enhancements/opencv-agentic-vision-enhancement.md](enhancements/opencv-agentic-vision-enhancement.md) §4).
 
 ## 10. Alexa+ and MCP (2026-10-04)
 
@@ -797,7 +803,312 @@ under #278's branch; it was caught and redone before the push. **Lesson:** after
 merges, check the newest deploy run, not each one; and scratch commits belong in a scratch branch
 that is never pushed.
 
+## 12. The silent topic (2026-10-15)
+
+**#299 · Nine days of "no usable angles", and nothing was wrong.** `wow-forever` stopped
+publishing after 5 October; so did `tech-market-news`. Research was fine (a Finding every four
+hours), Step Functions said every daily run succeeded, the moderation queue and failed-executions
+table were empty, and no alarm fired, because the run's answer, `no_usable_angles`, is a valid
+outcome. Rotation had put both topics on MiniMax M2, a reasoning model, and on Bedrock its thinking
+counts against `maxTokens`. Ideation used the 1,024-token default. With the topic's approved
+guidance in the prompt the model thought for all 1,024 tokens and sent back a `reasoningContent`
+block and no text; three runs of the exact production prompt did the same, each in about nine
+seconds, which is what the Lambda's unvarying 9.2 s had been saying all along. The parser found no
+angles and bailed, and because the roll to the next model only ran after a publish, a topic whose
+model never published kept that model for good. **AWS friction:** a reply cut off mid-thought is
+reported as a normal reply (`stopReason: max_tokens`, empty text), not an error, so the fallback
+that an exception reaches never ran; and with no invocation logging configured, the reply could only
+be reproduced, not read back. **Fix:** ideation gets the draft's budget (4,096, one retry at 8,192);
+a reply that stopped at its limit with no text tries the fallback model; the bail-out line logs the
+model, stop reason, output tokens and reply length; and a bail-out rolls the model forward too. By
+hand: both topics set to Nova Micro, and MiniMax removed from the registry and the rotation pool
+in both environments. **Lesson:** a run that "succeeds" by writing nothing needs the same alarm as
+one that fails (1.9, 11's #265 again), and a constant duration is a symptom: a model that takes
+exactly as long every day is hitting a limit, not finishing.
+
 ---
+
+## 12. Vision and the Rail Access Monitor (2026-10-10 on)
+
+The OpenCV AI Competition 2026 work: the review of the vision stack (#240–#254), its merge onto
+`dev` as the integration branch of #285, and the rail task built on it
+([rail-access-monitor.md](enhancements/rail-access-monitor.md)). Entries are added as the work
+goes, newest last.
+
+**12.1 A stacked PR's green CI was not dev's CI.** Every PR of the stack passed its checks, each
+against the branch below it. `dev` had meanwhile gained a Checkov job (#266), and on the merged
+tree the vision worker's artifacts bucket failed it twice (`CKV_AWS_21` versioning, `CKV_AWS_300`
+abort incomplete uploads). **Fix:** versioning skipped with the reason (packages are keyed by MD5
+and expire after 14 days), incomplete uploads aborted after 7 days, and Checkov 3.3.25 installed
+locally to reproduce, which showed the check wants that rule unfiltered: a prefixed rule does not
+count, hence a second bucket-wide rule. **Lesson:** after merging `dev` into a stack, run the
+checks `dev` runs now, not the ones the stack ran then. (#285)
+
+**12.2 `cv2.ximgproc` is not in the headless wheel.** The usual `cv2.ximgproc.thinning` lives in
+opencv-contrib, which the pinned `opencv-python-headless` does not carry, and COOL's module list
+is not published. **Fix:** thinning with core OpenCV, `cv2.morphologyEx` and `MORPH_HITMISS` over
+the Golay L kernels. **Lesson:** check the pinned wheel's module list before designing around a
+function; "it's in OpenCV" can mean "it's in contrib". (#285)
+
+**12.3 The build container reaches the data but not its catalogue.** `sentinel-cogs` (the
+imagery) and PyPI answer; Earth Search (the STAC catalogue), Overpass (OpenStreetMap), GDELT,
+Devpost and opencv.org do not. So the rubric came from search snippets and is to be re-checked
+against Devpost by hand; tests use fakes for every service, as they already did; and a real-scene
+check can only read known COG URLs. **Lesson:** list what the container can reach before
+planning what the agents will verify there. (#285)
+
+**12.4 Three append/append conflicts, and a careless first resolution.** `dev` had moved 86
+commits since the stack branched; three files had both sides appending at the end. A generic
+"keep both halves" resolution duplicated six lines of one test file, which ruff caught as F821
+before any test ran. **Fix:** each file resolved as dev's version plus the stack's appended hunk,
+by script, then ruff and the full suite. **Lesson:** CLAUDE.md's "re-run ruff after merging dev"
+is for this; and a conflict in a test file is still a conflict in code. (#285)
+
+**12.5 Figures that no reader could see.** The review found the stack's figure (the worker's PNG)
+stored in the private content bucket and read only by the triage agent: no Finding or article
+field, no renderer, no copy into the site bucket. A vision entry whose map never reaches a page
+would fail its own point. **Fix:** a generic figures path, Finding → article → site bucket → page,
+as its own PR (C). **Lesson:** trace an artefact from where it is made to where a person sees it
+before calling a pipeline complete. (#285)
+
+**12.6 Parallel agents need their own checkouts, and the main one must not sweep.** Three
+implementation agents working in one working tree would have fought over the checkout, so each got
+a git worktree under `.claude/worktrees/`. The stop hook then reported those directories as
+untracked files to commit. **Fix:** `.git/info/exclude` lists the directory locally, and the main
+checkout stages files by name, never `git add -A`. **Lesson:** anything that creates directories
+inside the repository needs an exclude before the first commit after it. (#285)
+
+**12.7 The session hook installs ruff, not the tests' needs, and the container's Python is 3.13.**
+CI runs 3.11. **Fix:** a 3.11 venv with `requirements-dev.txt` (and Checkov in another), used for
+every PR's checks. **Lesson:** match CI's interpreter before trusting a local green run. (#285)
+
+**12.8 A five-line workflow change, three tests that police it, and only two run locally.** The
+deployment switch (a `VISION_ENABLED` variable read by both apply workflows) was pushed after the
+wiring tests passed; CI then failed in `scripts/tests/test_setup_repo.py`, whose table test knows
+every variable a workflow reads and refuses a new one until the fork setup script asks for it or
+lists it as deliberately not asked. **Fix:** `VISION_ENABLED` in `NOT_ASKED` with its reason.
+**Lesson:** the rule in the agents' brief, "the full suite before pushing", applies to the
+orchestrator too, and most of all to small changes that look too small to need it. (#286)
+
+**12.9 Green suites, then a review that refutes itself.** Each wave-1 PR arrived with its own
+tests and the full suite green. A second pass, four reviewers (spec, correctness, wiring,
+security) whose every finding was then handed to a refuter and a reproducer, still found what the
+tests had not: a `requests` error that is neither a timeout nor a refused connection escaping the
+OSM client uncaught, so a connection cut mid-body would have crashed the research tick instead of
+keeping the cached network; redirects followed off the endpoint allowlist; a 20 MB cap checked
+only after the whole body was in memory; a figure caption that a bidi override could reverse on
+the page; a key pattern ending in `$`, which lets a trailing newline through. The refuters
+refuted six of the findings as "the spec did not ask for it", while the reproducers reproduced
+every one of those six. **Fix:** the four confirmed findings and the five cheap disputed ones,
+pushed to the PRs before merging. **Lesson:** "not in the spec" is a fact about the spec; when the
+mechanism reproduces, fix it and amend the spec. (#287, #288)
+
+**12.10 The documentation review found two defects in the code.** Writing down how the switch
+behaves ("anything but `true` leaves it off") made a reviewer check it: the workflows handed the
+variable to a Terraform `bool` as it stood, so `off` would have failed the apply. And writing down
+"a topic created before the worker is on writes no Finding" was false: the ship adapter treated
+any first tick as material, so an empty one made a "No scene measured yet" Finding and spent a
+model call on nothing. **Fix:** the workflows pass exactly `true` or `false`; the first tick that
+measures something is the first observation. **Lesson:** a sentence a document cannot state
+plainly is often a behaviour that is wrong; review the docs against the code, not only the code
+against the spec. (#290, the integration branch)
+
+**12.11 A usage limit mid-run, twice.** The session's usage limit ran out while three agents were
+working: one had its suite green and died before pushing; a review workflow lost four of its
+finders and reported "zero findings", which was no finding at all. **Fix:** the agents' worktrees
+had kept their commits, so the push was one command when the limit reset; the workflow was resumed
+(its completed agents replayed from cache) and then did find five defects. **Lesson:** a workflow
+result with failed agents is not a clean result; read the failures before trusting an empty list.
+And have agents commit before the long suite, so a cut-off costs a push, not the work. (#289, #290)
+
+**12.12 The limit again, a different model, and a smoke test that was too small.** The usage
+limit ran out a third time with three jobs in flight: an implementation agent with about 1,100
+uncommitted lines, a second with its drawing code written and no tests, and a review whose eight
+verifiers all failed, leaving four of its seven findings unchecked. The session moved to another
+model. **Fix:** both agents were resumed by message in their own worktrees rather than restarted,
+so their uncommitted work carried over; the four unchecked findings went to a fix agent that had
+to reproduce each one before changing code. Two of them were about time: the worker's smoke run
+on the real Sydney scene used a nine-station hand-made network, so its 6.6 s graph stage said
+nothing about a city's real network, where sampled betweenness on a few thousand junctions can
+take most of the 60 s budget. **Lesson:** a smoke test proves the plumbing, not the budget; size
+the input to the real case before quoting a timing. And keep agents committing early: the
+resumable work was the work that sat in a worktree. (#291, rail PRs E and H)
+
+**12.13 A message to a running workflow's agent forks it.** To pass on a note about the date-bomb
+test (12.14), the orchestrator messaged the agent a review-fix workflow was running. The message
+did not reach that agent; it resumed a second copy with the same history, in the same worktree.
+For two minutes both edited the same file, each seeing the other's changes as an outsider's. The
+orchestrator then told the wrong copy to stand down: the workflow's instance stopped, the resumed
+copy finished and pushed, and the workflow went on to recheck "no fix" and report every finding
+as still standing. **Fix:** the workflow was stopped, its recheck and review phases were re-run
+against the commit that was actually pushed, and the merge the note asked for was done by hand.
+**Lesson:** never message an agent while its workflow runs; wait for the workflow, or stop it
+first. A message resumes an agent; it does not reach one that is running. (#291)
+
+**12.14 A test pinned to a date broke every branch a week later.** An ops-assistant memory test
+built its fixtures from a fixed clock (2026-10-04) but called the tools through the MCP server,
+which read the real clock and looked back seven days. On 2026-10-11 the article fell out of the
+window and the test failed on every branch, `dev` included, with nothing in the diff to explain
+it. **Fix:** that test dates its fixtures from the clock its tools read; the helpers take an
+optional `now` so the other tests keep the fixed one. **Lesson:** a test that reaches code through
+a real clock must build its data from that clock; a fixed date is a timer. (the integration
+branch)
+
+**12.15 Each review of a fix found something real.** PR D's fix round was rechecked clean, then its
+bounds reviewer found two passes no cap covered (station adjacency per station, a list scan in the
+ghost-line walk: 31-44 s on contract-valid networks), and its regression reviewer found that a
+simulated link compared two different betweenness estimators. PR E's first round fixed nine
+findings; its reviewers then found four more (a repeated first observation, a running state too
+big for the 512 MB tick, untested reserve gates, a scene re-sent every tick). **Fix:** small ones
+were fixed in the PR; the station passes became their own PR (J), so the worker PR could merge.
+**Lesson:** a fix changes the code a review looked at; review the fix too, with a lens for
+bounds as well as regressions, and split out what would hold the rest back. (#291, #292, rail
+PR J)
+
+**12.16 A city did not fit the worker's window at 10 m.** The ship task reads 10 m bands over a
+site a few kilometres across. A city is 60 to 70 km across: at 10 m that is 6,000 to 7,000 px a
+side, past the reader's 4096 px window, and four times the pixels the analysis would then thin and
+label. Reading at 10 m and resampling afterwards would have fetched every tile only to throw three
+quarters of it away. **Fix:** the rail task works on SWIR16's 20 m grid and reads the 10 m red
+and NIR from the COG overview whose pixel is 20 m: the reader follows the IFD chain and keeps each
+reduced image as a level, a band without one is read whole and reduced with `INTER_AREA`, and the
+scene classification is never averaged. Sydney's 66 km box is 3,327 × 3,306 px, 54 MB in 192
+range requests. **Lesson:** a COG already holds the coarser grid; ask the file for the resolution
+the analysis uses before reading the one it was delivered at. (#289, #291)
+
+**12.17 The tick's 120 s, shared three ways.** The research tick is one Lambda with 120 s for
+everything a rail city needs: the scene search, an Overpass fetch (25 s a hop, a second hop on
+failure), a worker call that may take most of its own 60 s, an agent with several turns and a
+worker call of its own, then the summary call and the stores. Each part had its own timeout, and
+the timeouts added up to well over 120 s, so a slow Overpass and a slow worker in one tick would
+have killed it and lost what it had measured. **Fix:** the split is in code, all counted from the
+tick's start: the network fetched only with 30 s of the 70 s measuring budget left and finished
+within them, the worker asked only with 45 s left and waited on for 58 s, the agent's answer due
+at 85 s, `look_again` cut to the time left and refused under 30 s, `web_context` within 10 s. And
+the order of work keeps a slow source from costing a measurement: the scene first, a new scene
+measured with the cached network even past its TTL, a stale network refreshed only on a tick with
+nothing new, and not again for 6 hours after a failure. **Lesson:** callers that share one
+deadline need one ledger: give each a reserve and a deadline from the same start, not a timeout
+of its own. (#285, #292; vision.md §8, lesson 12)
+
+**12.18 Timed on four cores, deployed on one.** The rail analysis's worst cases were first timed in
+the build container: 20 to 21 s at a 4096 px window, inside the worker's 60 s with room for the
+read. The container has four cores and OpenCV spreads its work over them; the worker, at 2048 MB,
+has one vCPU. Pinned to one core (`taskset -c 0`, `cv2.setNumThreads(1)`) and run through
+`lambda_handler` with ways that reach the window's edges (12.22), the worst contract-valid networks
+take up to 37.5 s at 4096 px, about 49 s on an arm64 core taken as 1.3 times slower, which with a
+10 to 30 s read is 59 to 79 s, past the adapter's 58 s wait. **Fix:** the station passes were made
+linear, the thinning incremental (12.22), and the rail task got its own window cap,
+`RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at 20 m; the four starting cities need at most 3,327):
+there the slowest case takes 25.5 s and the largest peaks at 1.32 GB on one core; the slowest is
+about 33 s on arm64, 41 to 56 s with the read, which covers 77 % of the pixels. That slowest case
+is constructed (two 1.3 km-wide bars of track along both edges of the window); the 1.32 GB peak is
+another network, 2 px-apart full-width ways, which takes 12.2 to 13.1 s. No real OpenStreetMap
+network has been timed: the "about 9 s" for a city is PR J's synthetic city, 180 stations and 221
+nodes, 9.2 to 9.6 s at 4096 px on four cores, and the deployed Sydney run with the Overpass network
+(vision.md §9) will give the real figure. The comments now quote one-core figures and name the
+CPU. **Lesson:** time a bound on the hardware it bounds: pin the cores, set the library's threads,
+and write the CPU next to the number. (#295)
+
+**12.19 The rail topics had no editorial goal of their own.** Writing the city topic templates
+meant following a topic's fields into the prompts that read them. The research summary uses the
+adapter's own prompt, but the daily cycle's ideation and drafting resolve the topic's editorial
+goal: the topic's own, else the adapter's default, else the global one, and `rail_access` (like
+`satellite_vision`) had no adapter default then. A rail topic created as the runsheet first described
+it would have been ideated and drafted under "independent web research ... sampling 5 to 10
+highly relevant articles", around a measurement. **Fix:** each body in
+`scripts/rail_topics.example.json` carries `editorial_goals` (the measured figures, the capture
+date and what was not measured; no ridership, cost, recommendation or cause), and the runsheet
+says why. The follow-up, an adapter default for topics made by hand, is done: #298 (rail PR L)
+added `rail_access` and `satellite_vision` to `ADAPTER_DEFAULTS` in
+`common/editorial_resolver.py`, each restating its summary prompt's limits, so a vision topic
+created without `editorial_goals` is no longer drafted under the global goal. **Lesson:** a
+template is a test of the path it feeds; follow its fields into every prompt before calling it
+complete. (#296, #298, rail PRs F2 and L)
+
+**12.20 Numbers that drifted between the spec, the comments and the code.** Writing the closing
+docs from the merged code, not the specification, found the figures each review had moved: a
+`MAX_GRAPH_NODES` of 20,000 and betweenness sampled above 800 nodes (the code: 10,000, checked
+before any graph is built, and a work budget, `BETWEENNESS_WORK`); a 300-character caption cap
+(`figures.MAX_CAPTION_CHARS` is 400); a network "near 1.5 MB" (the adapter measured 2.6 to 3 MB,
+and the comments on `vision_contract.NETWORK_LIMITS` and in `common/osm.py` still say 1.5); city
+boxes "with a 2 km margin" (`geo.py` puts them 1.0 to 3.0 km inside their squares, which is
+enough, since a tile reaches 9.8 km past its square to the east and south). Each moved in a
+reviewed PR whose prose was another document's. **Fix:** the docs quote the code; the
+specification gained a status note listing where the code differs; the two stale comments are a
+follow-up for a code PR, since this one changes no code. **Lesson:** pattern 7 again: the PR that
+closes a stack's documentation is written from `grep`, not from the spec. (#296, rail PR F2)
+
+**12.21 A staggered cadence that would have dropped most Findings.** The spec asked for the city
+topics' daily cycles staggered so each day features one city, and the first templates ran Sydney on
+Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston Thursday;
+the runsheet said each article gathers every Finding since the city's last one. The review ran the
+daily cycle's own `_window_start` over four weeks of one Finding a day: Sydney's article drafted 7
+of 28, Boston's 4. The daily cycle read the last 24 hours (`FINDINGS_WINDOW_HOURS`), never past the
+last article, and nothing else; a Finding outside every window expires after 14 days unwritten.
+F2's first fix made each city's daily cycle run every day, a minute apart: that kept the Findings
+but dropped the owner's rotation, one city a day. **Fix:** PR K (#297) added a topic's
+`findings_window_hours` (1 to 336 hours, 24 by default, never past the last article), and the
+templates rotate one city a day again, each with 192 hours: Boston's 7 days between runs, the
+longest gap, plus a day for a clock change or a late run. A test runs the same simulation with
+`_window_start` over four weeks around each of Sydney's clock changes and checks that every Finding
+is drafted exactly once, and that the old 24-hour window fails it. **Lesson:** a schedule is only
+half a pipeline; read what the scheduled run reads before deciding how often it runs. When a limit
+in the code blocks what the owner asked for, change the limit, not the request. (#296, #297, rail
+PRs F2 and K)
+
+**12.22 Clipped ways made the thinning's box the whole window, and a wall-clock guard passed the
+old code.** PR J's review built its worst cases with ways that run off the window's edges, as
+OpenStreetMap ways clipped to a city's box do. `network.thin` worked on the foreground's bounding
+box, and such ways make it the whole window: the thick parts of a network then cost up to 32 passes
+over every pixel of it, up to 7.3 s of thinning in a 28.9 s pass at 3,584 px. The first round's
+worst cases did not reach the edges, so their timings missed this. And the speed tests that bounded
+the station passes by wall time passed with the old quadratic code swapped back in. **Fix:** after
+its first pass the thinning works only within the bounding box of what the last pass removed,
+grown by `THINNING_REACH_PX` (8 px) on every side, with a byte-identical skeleton, so the same
+thinning takes 0.2 to 0.4 s with the thick parts in one place. Thick parts at both ends of the
+window keep that box most of the window on every pass, which is why that case still takes 2.0 to
+4.3 s. The guards now count the work: neighbour lookups (4,025 on the 2,000-station grid, where
+the old walk made 4,052,000), equality comparisons of station ids, and pixels handed to OpenCV
+(thinning the whole window on every pass hands it 3.29 billion); each guard was checked to fail
+with the old code. **Lesson:** a speed test must fail on the slow code, so count the work, not the
+seconds; and build the worst input from what the real source sends. (#295, rail PR J)
+
+**12.23 Reviewed one PR at a time, the seams were missed.** Every rail sub-PR had been reviewed on
+its own, most of them more than once. A review of the whole integration branch then ran one rail
+Finding end to end through the real code and found what lay between the PRs. The daily trending
+digest (`lambdas/trending_digest_handler.py`, a fourth publish path, which calls itself that) takes
+every topic's latest Finding of the last 48 hours and is held only when a contributing topic is
+financial or its compliance review fails; it never reads `force_manual_review`, which was wired
+into the daily cycle only, so it would publish vision-topic text with no person. The rail adapter
+attached the figures of sites its summary did not report; the SPA showed a figure whose copy had
+failed as a broken image; the ships adapter could start a worker call with too little of its tick
+left; the worker followed redirects off its allowlist; and a change to the compliance review's
+quote parser altered verdicts for every topic. **Fix:** rail PR L (#298): the digest leaves out
+every topic for which `compliance.requires_manual_review` is true; a Finding carries only the maps
+of the sites its summary reports; the SPA removes a figure whose image fails to load; both vision
+adapters keep one measuring rule (`vision_sites.time_to_measure`); the worker follows no redirect;
+and the longer quote readings count only when the draft holds them. **Lesson:** after the parts are
+reviewed, review the whole once more, end to end through the real code, and grep for every path a
+guarantee must hold on. (#285, #298, rail PR L)
+
+**12.24 A scanner's false positive, answered without loosening the scanner.** A docstring in rail
+PR L explained why an allowed URL prefix must end in a slash with a look-alike URL: an allowed
+prefix, then "@", then another host, written as one string. The repository's gitleaks
+email-address rule matched it, and the PR's gitleaks job went red. The fixer's first answer was a
+fingerprint for the line in `.gitleaksignore`. **Why:** the rule matches anything shaped like an
+address (some text, "@", a dotted domain) outside its allowlist of reserved domains, and a URL
+with a user part before its host is that shape. The pre-commit hook runs the same rule only where
+gitleaks is installed and the hook enabled, and neither holds in the container the rail PRs are
+built in, so CI was the first to run it. And the allowlist was the nearest lever, though the line was ours, on an
+unmerged branch, and could simply be written another way. **Fix:** the docstring was reworded
+to name the parts in words, and the unmerged sub-branch's history was squashed so no commit carries
+the line; `.gitleaksignore` is unchanged. A test,
+`test_no_python_source_trips_the_gitleaks_email_rule` in `lambdas/tests/test_terraform_wiring.py`,
+now runs the email rule from `.gitleaks.toml`, with its allowlist, over the Python sources under
+`lambdas/` and `scripts/`, so the next one shows before CI. **Lesson:** on your own unmerged branch,
+rewrite the commit; never widen a scanner's allowlist for your own text. An allowlist entry is for
+a finding already in the shared history that cannot be rewritten. (#298, rail PR L)
 
 ## Patterns worth keeping
 

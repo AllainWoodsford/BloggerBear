@@ -84,6 +84,8 @@ ADAPTER_PREFIXES = {
     "github_trending": "github_trending:",
     "hacker_news": "hacker_news:",
     "web_search": "web_search:",
+    "satellite_vision": "satellite_vision:",
+    "rail_access": "rail_access:",
 }
 # The functions that run per topic.
 TOPIC_FUNCTIONS = ("research-tick", "daily-cycle")
@@ -319,8 +321,14 @@ class Scope:
         return "every function"
 
 
+def _readable_here(component: architecture.Component, env: str) -> bool:
+    """A function of this environment whose log group this tool reads: in the home Region, and not
+    one that exists only with an optional feature on (architecture.Component.home_sweep)."""
+    return component.kind == "function" and architecture.exists_in(component, env) and component.home_sweep
+
+
 def _functions(env: str) -> list[architecture.Component]:
-    return [c for c in architecture.CATALOGUE if c.kind == "function" and architecture.exists_in(c, env)]
+    return [c for c in architecture.CATALOGUE if _readable_here(c, env)]
 
 
 def scope(function: str | None, topic: str | None, env: str) -> Scope:
@@ -337,7 +345,7 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
         adapter = item.get("adapter") if item.get("adapter") in ADAPTER_REGISTRY else None
         functions = [architecture.by_key("function", key) for key in TOPIC_FUNCTIONS]
         return Scope(
-            [c for c in functions if architecture.exists_in(c, env)],
+            [c for c in functions if _readable_here(c, env)],
             topic_id=topic,
             topic_name=_topic_label(item, topic),
             adapter=adapter,
@@ -348,6 +356,9 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
         # A near miss ("reserch tick") is taken and said; several close ones are asked about.
         resolved, took_note, did_you_mean = architecture.forgiving(function, "function")
         found = [c for c in resolved.matches if c.kind == "function" and architecture.exists_in(c, env)]
+        if found and not any(_readable_here(c, env) for c in found):
+            raise Refused("That function's logs are kept outside this Region, so I can't read them yet.")
+        found = [c for c in found if _readable_here(c, env)]
         if not found:
             raise Refused(did_you_mean or "I don't know a function by that name in this environment.")
         if resolved.asked_env is not None and resolved.asked_env not in architecture.ENVIRONMENTS:

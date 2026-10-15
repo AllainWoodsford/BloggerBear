@@ -155,6 +155,34 @@ def test_a_group_the_access_check_refuses_is_not_read(monkeypatch):
     assert "wasn't allowed to read 1" in result["spoken"]
 
 
+def without_vision(names):
+    """The access check on a deployment with vision off: the worker's log group is not there (with
+    vision on it is in the vision Region, so not in this one either). Every other group is read."""
+    gone = [n for n in names if n.endswith("-vision-worker")]
+    why = "That log group doesn't exist in this environment."
+    return [n for n in names if n not in gone], [{"log_group": n, "why": why} for n in gone]
+
+
+def test_the_default_sweep_on_a_deployment_without_vision_refuses_nothing():
+    """The vision worker (architecture.Component.home_sweep False) is left out of the sweep of this
+    Region, so a review with nothing named no longer says "I wasn't allowed to read 1 of the logs"
+    on every deployment."""
+    run = Run()
+    result = review(run, readable=without_vision)
+    assert result["refused"] == [] and "wasn't allowed" not in result["spoken"]
+    groups = run.jobs[0][2]
+    assert GROUP.format("research-tick") in groups and GROUP.format("vision-worker") not in groups
+    assert "vision-worker" not in result["scope"]["functions"]
+
+
+@pytest.mark.parametrize("name", ["vision-worker", "bloggerbear-dev-vision-worker"])
+def test_the_vision_worker_named_is_refused_with_why_and_nothing_is_read(name):
+    run = Run()
+    result = review(run, function=name)
+    assert run.jobs == [] and result["errors"] == 0
+    assert "outside this Region" in result["spoken"]
+
+
 def test_nothing_readable_reads_nothing():
     run = Run()
     result = review(
@@ -191,6 +219,26 @@ def test_a_topic_reads_its_two_functions_narrowed_to_its_id_and_adapter(monkeypa
         "note": None,
     }
     assert "crypto_feed adapter" in result["spoken"]
+
+
+@pytest.mark.parametrize("adapter", ["satellite_vision", "rail_access"])
+def test_a_vision_topic_narrows_to_the_lines_its_adapter_prints(adapter, monkeypatch):
+    # The prefix is the one the adapter's own print lines start with.
+    source = Path(log_review.__file__).resolve().parents[1] / "common" / "adapters" / f"{adapter}.py"
+    assert f'print(f"{adapter}: ' in source.read_text()
+    assert log_review.ADAPTER_PREFIXES[adapter] == f"{adapter}:"
+    monkeypatch.setattr(
+        log_review.topic_match, "get_topic", lambda topic_id: {"topic_id": topic_id, "adapter": adapter}
+    )
+    run = Run()
+    review(run, topic="cities")
+    assert f"| filter @message like /cities|{adapter}:/" in run.jobs[0][3]
+
+
+def test_every_prefix_is_a_registered_adapters():
+    from common.adapters.registry import ADAPTER_REGISTRY
+
+    assert set(log_review.ADAPTER_PREFIXES) <= set(ADAPTER_REGISTRY)
 
 
 def test_a_topic_with_an_adapter_we_do_not_know_filters_on_its_id_only(monkeypatch):

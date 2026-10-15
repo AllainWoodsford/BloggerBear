@@ -12,6 +12,7 @@ import json
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -1336,6 +1337,26 @@ def test_the_separate_accounts_guide_is_linked_and_matches_the_bootstrap():
     assert set(re.findall(r"\b\d{12}\b", page)) == {"111111111111", "123456789012", "000000000000"}
 
 
+def test_the_vision_worker_is_deployed_only_when_the_repository_variable_says_so():
+    """vision_enabled defaults to false in both roots, and CI passes it from the VISION_ENABLED variable
+    with false as the fallback, so merging the vision work deploys nothing until someone sets it."""
+    for name in ("terraform.yml", "terraform-production-release.yml"):
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        # Read as a switch: `true` in any letter case is on (GitHub expressions compare strings
+        # ignoring case); any other value, or none, reaches the bool variable as `false`, so a stray
+        # value cannot fail the apply.
+        switch = "TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}"
+        assert switch in text, name
+    for env in ("dev", "production"):
+        variables = (ROOT / "infra" / "environments" / env / "variables.tf").read_text(encoding="utf-8")
+        off = r'variable "vision_enabled" \{\s*\n\s*type\s*=\s*bool\s*\n\s*default\s*=\s*false'
+        assert re.search(off, variables), env
+    table = (ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert re.search(r"^\| `VISION_ENABLED` \| variable \| repo \|", table, re.M)
+    guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
+    assert "`VISION_ENABLED` repository variable" in guide
+
+
 def test_the_fork_guide_names_every_setting_the_workflows_read():
     guide = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8")
     # The settings table is its own page, which the guide and the README both link to.
@@ -1464,6 +1485,30 @@ def test_pull_requests_are_checked_for_personal_data_without_publishing_it():
     assert "scripts/pii_denylist_check.py --staged" in hook and "--config .gitleaks.toml" in hook
     assert b"\r" not in (ROOT / ".githooks" / "pre-commit").read_bytes()  # sh can't run CRLF
     assert re.search(r"^\.pii-denylist$", (ROOT / ".gitignore").read_text(encoding="utf-8"), re.M)
+
+
+def test_no_python_source_trips_the_gitleaks_email_rule():
+    """The gitleaks job fails a PR on any added line that its email-address rule matches outside
+    that rule's allowlist, and a URL that only looks like an address counts: #298's docstring wrote
+    an allowlist prefix, "@" and "evil.example/" as one string. The same rule over the Python
+    sources here shows it before CI; a line already in the history goes in .gitleaksignore."""
+    config = tomllib.loads((ROOT / ".gitleaks.toml").read_text(encoding="utf-8"))
+    rule = next(r for r in config["rules"] if r["id"] == "email-address")
+    pattern = re.compile(rule["regex"])
+    allowed = [re.compile(regex) for allowlist in rule["allowlists"] for regex in allowlist["regexes"]]
+    local = {".venv", "venv", "site-packages", "node_modules", "lambda-build", "__pycache__"}  # untracked
+    found = []
+    for path in sorted([*(ROOT / "lambdas").rglob("*.py"), *(ROOT / "scripts").rglob("*.py")]):
+        name = path.relative_to(ROOT)
+        if local & set(name.parts):
+            continue
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            found += [
+                f"{name}:{number}: {match.group(0)}"
+                for match in pattern.finditer(line)
+                if not any(allow.search(match.group(0)) for allow in allowed)
+            ]
+    assert found == []
 
 
 # --- the CoinGecko key: SSM Parameter Store, never Terraform state or a Lambda's environment ------
@@ -3278,7 +3323,7 @@ def test_every_module_that_names_resources_is_passed_the_prefix_by_both_environm
             block = variables.split('variable "unique_name_prefix" {')[1].split("\n}\n")[0]
             assert "default" not in re.sub(r"description\s*=.*", "", block), module
             naming.append(module)
-    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site"]
+    assert naming == ["api-cdn", "app-data", "observability", "ops-assistant", "static-site", "vision-worker"]
     for env in ("dev", "production"):
         main = (INFRA / "environments" / env / "main.tf").read_text(encoding="utf-8")
         for module in naming:

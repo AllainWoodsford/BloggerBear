@@ -12,6 +12,7 @@ import importlib.util
 import json
 import shlex
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import boto3
@@ -19,7 +20,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import create_table
 
-from common import editorial_resolver, fresh_review
+from common import editorial_resolver, findings_window, fresh_review
 from common.adapters.registry import ADAPTER_REGISTRY
 from ops_mcp import cli_guide, memory, suggestions
 
@@ -780,6 +781,7 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
         research_interval_hours=6,
         daily_cadence="cron(0 9 * * ? *)",
         daily_timezone="Australia/Sydney",
+        findings_window_hours=48,
         model_id_candidates=["model-a", "model-b"],
         is_financial=True,
         review_mode="off",
@@ -797,6 +799,7 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
         "Name": "Crypto", "Topic id": "crypto", "Adapter": "crypto_feed",
         "Research heartbeat": "rate(1 hour)", "Research interval": "6 h",
         "Daily cadence": "cron(0 9 * * ? *)", "Timezone": "Australia/Sydney",
+        "Findings window": "48 h",
         "Model": "rotates: model-a, model-b", "Financial": "yes", "Review mode": "off",
         "Last researched": "2026-10-04 11:00 UTC", "Last article": "2026-10-03 23:05 UTC",
     }  # fmt: skip
@@ -804,6 +807,19 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
     assert rows["hn"]["Review mode"] == "enforce (inherited)"
     assert rows["hn"]["Model"] == "pipeline default" and rows["hn"]["Adapter"] == "web_search"
     assert rows["hn"]["Timezone"] == "UTC" and rows["hn"]["Last researched"] == "never"
+    assert rows["hn"]["Findings window"] == "24 h (default)"
+
+
+@pytest.mark.parametrize(
+    ("stored", "shown"),
+    [(None, "24 h (default)"), (Decimal("192"), "192 h"), (336, "336 h"), (0, "24 h (default)"),
+     (1000, "24 h (default)"), ("192", "24 h (default)"), (1.5, "24 h (default)")],
+)  # fmt: skip
+def test_the_findings_window_shown_is_the_one_the_daily_cycle_would_use(stored, shown):
+    topic = {} if stored is None else {"findings_window_hours": stored}
+
+    assert cli_guide._findings_window(topic) == shown
+    assert shown.split(" ")[0] == str(findings_window.findings_window_hours(topic))
 
 
 def test_one_topic_is_shown_in_full(tables):
