@@ -697,6 +697,11 @@ All shipped and deployed; the design and decisions for each are in
   `rail_access topics` section, the friction entries, and the earlier docs brought in line with
   the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
   (#296, rail PR F2)
+- [x] The submission round, for the OpenCV AI Competition 2026: the rubric tracker
+  (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
+  step, with its status, what it needs, the evidence, the gap, what closes it and what the
+  assistant may say, updated by the PR that closes a row; a format test that fails CI on a
+  malformed row (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
 
 ## Backlog / not yet scheduled
 
