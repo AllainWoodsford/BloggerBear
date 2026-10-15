@@ -84,7 +84,10 @@ research tick ── SatelliteVisionAdapter.fetch_state
 - **No publish without review (rule 3), and no auto-publish at all** for vision topics:
   `force_manual_review` on the topic holds every draft (the risks doc's item 9).
 - **Terraform through CI only (rule 6).** Every new resource is behind `vision_enabled` (default
-  `false`), so merging scaffolding deploys nothing until the operator turns it on in tfvars.
+  `false`), so merging scaffolding deploys nothing until the operator turns it on with the
+  `VISION_ENABLED` repository variable, which CI passes as `vision_enabled`. It is never set in
+  `terraform.tfvars`, where a value would beat the variable
+  ([deployment-runsheet.md, Vision (optional)](../deployment-runsheet.md#vision-optional)).
 
 ## 3. Regions
 
@@ -98,7 +101,8 @@ Cross-region is one `lambda:InvokeFunction` from the home region's execution rol
 function. Terraform gets a second, aliased `aws` provider for the vision region. The CI deploy role
 (infra/bootstrap) today may only touch Lambdas in the home region and has no ECR or ECS rights, so
 the vision PRs add those grants to the bootstrap policy, and the operator applies the bootstrap by
-hand (it is the one manual apply rule 6 allows) **before** setting `vision_enabled = true`.
+hand (it is the one manual apply rule 6 allows) **before** turning the worker on with the
+`VISION_ENABLED` variable.
 
 Setting `vision_region` to the home region also works: the worker then reads across regions instead,
 which is slower and may cost transfer, but needs no second provider. That is the fallback if the
@@ -260,13 +264,19 @@ whether or not a Finding is written. A triage costs at most `budget + 2` Convers
 
 ## 9. What the operator has to do (nothing here is automatic)
 
-1. **Review and merge** #240, then #241 → #251 in order (each is based on the one before;
-   GitHub retargets the next to `dev` as each merges). Merging deploys nothing new:
-   `vision_enabled` is false.
+The steps, with their checks, are in
+[deployment-runsheet.md, Vision (optional)](../deployment-runsheet.md#vision-optional); in short:
+
+1. **Merge #285** into `dev`: the integration branch, which carries this stack (#240 to #254)
+   and the rail work, and supersedes merging #240 to #251 one by one. Merging deploys nothing
+   new: `vision_enabled` is false.
 2. **Re-apply `infra/bootstrap` by hand** (rule 6), with `vision_region` (default us-west-2).
-3. **Set `vision_enabled = true`** in `infra/environments/dev/terraform.tfvars` and merge.
+3. **Set the `VISION_ENABLED` repository variable to `true`** and run a deploy. Nothing in
+   `terraform.tfvars` changes: CI passes the variable as `vision_enabled`, and a value in
+   `terraform.tfvars` would beat it. The repository's value also reaches production at its next
+   release, unless the `production` environment sets `VISION_ENABLED` to `false`.
 4. **Create a topic**: `adapter: "satellite_vision"`, `sites` in `adapter_config`, an
-   `object_noun`, and editorial goals (docs/deployment-runsheet.md, "The vision worker").
+   `object_noun`, and editorial goals (docs/deployment-runsheet.md, "Vision (optional)").
 5. **COOL**: subscribe, measure, pin the fingerprint (runsheet, "The COOL backend and the
    benchmark"); unsubscribe after the trial if it isn't kept.
 

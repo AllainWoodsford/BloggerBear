@@ -125,7 +125,8 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292) | E | The `rail_access` adapter, the shared `common/vision_sites.py`, task profiles in the triage agent (`web_context`), first observation reported once, after three review rounds |
 | [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293) | H | The rail figure: flags, isolation weight and simulated links drawn, the caption and a legend in a strip under the map, a byte budget |
 | [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294) | I | Planner notes (`common/rail_notes.py`): the flags and simulated links as sentences, in the summary, the review evidence and the Finding |
-| [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295) | J | Linear station adjacency, ghost-line walk and run lengths; the rail window cap (`RAIL_MAX_WINDOW_PX`) |
+| [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295) | J | Linear station adjacency, ghost-line walk and run lengths; incremental thinning (`THINNING_REACH_PX`) and speed guards that count the work; the rail window cap (`RAIL_MAX_WINDOW_PX`) |
+| [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297) | K | A topic's `findings_window_hours` (1 to 336 h, default 24) through the admin API and CLI, read by the daily cycle and Re-Write (`common/findings_window.py`) |
 | [#296](https://github.com/AllainWoodsford/BloggerBear/pull/296) | F2 | This document for two tasks, the city topic templates, the runsheet's rail section, progress and friction |
 
 ---
@@ -144,7 +145,7 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | Scene reading | `lambdas/vision/scene.py` | Reads all bands over the site aligned to a reference band's grid: NIR at 10 m for ships, SWIR16 at 20 m for rail. A band with a COG overview at the reference's pixel size is read from it; else a finer band is read and reduced with `INTER_AREA`; SCL is never averaged (nearest `warpAffine`). `levels_used` says which level each band came from. Window cap 4096 px (rail: 3584 px, §4 contract). |
 | Built-up heat | `lambdas/vision/urban.py` | NDVI and NDBI; `built_up_mask` (NDBI above a threshold, NDVI below a cap, not SCL water, not unusable, a 3×3 opening); `heat_map`: the mask blurred with a Gaussian of a walking distance, the local share of built-up ground, never rescaled. |
 | Station reach | `lambdas/vision/access.py` | One `distanceTransformWithLabels` from the station raster: served area, `desert_mask`, desert clusters (`connectedComponentsWithStats`), each station's catchment activity and catchment coverage, intermodal counts. |
-| Rail network | `lambdas/vision/network.py` | OpenStreetMap ways rasterised (`polylines`), thinned with `MORPH_HITMISS` (core OpenCV; no `ximgproc`; after the first pass only within `THINNING_REACH_PX`, 8 px, of what the last pass removed), junctions and ends (`filter2D`), stations snapped (`DIST_LABEL_PIXEL`), the skeleton read back as a networkx graph with lengths, corridor visibility and tunnels; `station_adjacency`. |
+| Rail network | `lambdas/vision/network.py` | OpenStreetMap ways rasterised (`polylines`), thinned with `MORPH_HITMISS` (core OpenCV; no `ximgproc`; after the first pass only within the bounding box of what the last pass removed, grown by `THINNING_REACH_PX`, 8 px), junctions and ends (`filter2D`), stations snapped (`DIST_LABEL_PIXEL`), the skeleton read back as a networkx graph with lengths, corridor visibility and tunnels; `station_adjacency`. |
 | Rail analysis | `lambdas/vision/rail_analyse.py` | `RailParams`; the whole pass in order (masks, heat, network projected, reach, deserts, catchments, graph, measures, flags, simulated links); every metric rounded, JSON-clean and with its parameters echoed. |
 | Rail figure | `lambdas/vision/rail_annotate.py` | The heat map over the red band, the analysis drawn on it, the caption and legend in a strip under the map; PNG level 9 within a 2 MiB budget (§6.6). |
 | Worker | `lambdas/vision_worker_handler.py` | Validates, reads, analyses, annotates; replies with metrics, figure, build record, I/O and per-stage timings. Dispatches on `task`. Stateless. |
@@ -332,10 +333,10 @@ a config the adapter refuses fails the topic's research tick with the reason in 
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
-| `vision_enabled` | dev and production roots, from CI (`VISION_ENABLED`) | `false` | Create the worker and give the research tick its ARN and invoke right. |
+| `vision_enabled` | dev and production roots, from CI (`VISION_ENABLED`); never set in `terraform.tfvars` | `false` | Create the worker, give the research tick its ARN, and give the pipeline's shared execution role (`lambda_exec`) the right to invoke it. CI hands the variable to Terraform as `TF_VAR_vision_enabled`, and a value in `terraform.tfvars` would beat it, so the switch would no longer switch. The steps: [the runsheet's Vision (optional)](../deployment-runsheet.md#vision-optional). |
 | `vision_region` | dev and production | `"us-west-2"` | Where the worker runs. Must equal the bootstrap's. |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create `<prefix>-*-vision-*` Lambdas and log groups. |
-| `memory_size`, `timeout` | module | 2048 MB, 60 s | The worker's size; the timeout stays under the client's 90 s. |
+| `memory_size`, `timeout` | module | 2048 MB, 60 s | The worker's size; the timeout stays under the client's default 90 s. The rail adapter gives up first, at 58 s (`WORKER_READ_TIMEOUT`), by design. |
 
 The full list, with the switch, is [configuration.md, Vision and rail access](../configuration.md#vision-and-rail-access).
 
@@ -654,9 +655,11 @@ do:
 The 3,584 px budget assumes the read scales with the window's pixels; a full 30 s read on top of
 the worst case would not fit. That worst case is constructed: two 1.3 km-wide solid bars of track
 along both edges of the window, which no real network looks like. The reviewer's edge-reaching
-inputs stay within 21.9 s, and a real city's network measures about 9 s. A worker
-that times out is an `invoke` error the adapter retries on its next tick. The 1.3 factor is an
-assumption until the Graviton run (§10).
+inputs stay within 21.9 s. No real OpenStreetMap network has been timed: the "about 9 s" for a
+city is PR J's synthetic city, 180 stations and 221 nodes, 9.2 to 9.6 s at 4096 px on four cores
+(the analysis and the figure, not pinned to one core). The deployed Sydney run with the Overpass
+network (§9) will give the real figure. A worker that times out is an `invoke` error the adapter
+retries on its next tick. The 1.3 factor is an assumption until the Graviton run (§10).
 
 Tests: the full suite passed at 4412 on the stack's last PR, and 4448 with the whole stack merged
 into the latest `dev`; each rail PR added its own, with the full suite green before every push.
@@ -692,9 +695,10 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     skeleton is made with core OpenCV instead: sequential hit-or-miss thinning
     (`cv2.morphologyEx(MORPH_HITMISS)`) over the Golay L elements and their rotations, each hit
     removed before the next element, on the drawing's bounding box, at most 32 passes; after the
-    first pass, only within `THINNING_REACH_PX` (8 px) of what the last pass removed, with the
-    same skeleton pixel for pixel (PR J; friction 12.22). One-pixel `polylines` are nearly thin
-    already, so a real network needs a few passes.
+    first pass, only within the bounding box of what the last pass removed, grown by
+    `THINNING_REACH_PX` (8 px) on every side, with the same skeleton pixel for pixel (PR J;
+    friction 12.22). One-pixel `polylines` are nearly thin already, so a real network needs a few
+    passes.
 11. **Overview reads to fit a city in the window.** A 60 km city at 10 m is 6,000 px a side, past
     the reader's 4096 px window and far past the worker's time. The rail task works on SWIR16's
     20 m grid instead, and reads the 10 m red and NIR from the COG overview whose pixel is 20 m:
@@ -726,7 +730,7 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     33 s on arm64, 41 to 56 s with the read (§7). Station adjacency, the ghost-line walk and the
     run lengths were made linear first (PR J): for 2,000 stations off one junction grid, the old
     adjacency walk asked a node for its neighbours 4,052,000 times, the new pass asks 4,025 times
-    and takes up to 1.0 s; and the thinning works only where its last pass changed something
+    and takes up to 1.0 s; and the thinning works only in the box round what its last pass removed
     (lesson 10). The lesson: time a bound on the cores the target has, not the ones the build
     machine has.
 14. **The state a city costs.** A city's network at the caps is 2.6 to 3 MB of JSON, and the
@@ -752,7 +756,8 @@ None of this is automatic.
    an apply with the worker turned on is refused.
 3. **Set the `VISION_ENABLED` repository variable to `true`** and run a deploy (the
    [runsheet](../deployment-runsheet.md#vision-optional) has the steps; nothing in `terraform.tfvars`
-   changes).
+   changes). It also turns the worker on in production at the next release, unless the
+   `production` environment sets `VISION_ENABLED` to `false` until the dev trial is done.
 4. **Create the topics.** The four rail cities from `scripts/rail_topics.example.json`
    ([rail_access topics](../deployment-runsheet.md#rail_access-topics)), and a ship topic if
    wanted: `adapter: "satellite_vision"`, its `sites`, an `object_noun`, and editorial goals. Check
@@ -796,3 +801,13 @@ None of this is automatic.
     network and the retry back-off mean a city is still measured, but a first fetch that keeps
     failing leaves a city unmeasured; a self-hosted or mirrored extract would remove the
     dependency.
+12. **A Finding still being written when the daily cycle starts can be missed.** The research
+    tick stores the adapter's `fetched_at`, taken when its fetch starts, as the Finding's
+    `captured_at`, and writes the Finding at the tick's end. A Finding whose tick is still running
+    when its topic's daily cycle starts is not there for that run, and is dated before the
+    `last_article_at` that run stamps, so once that run writes an article no later window holds
+    it. Older than PR K, and for every topic; a code follow-up.
+13. **The COOL Dockerfile is not scanned.** `docker/vision-cool/Dockerfile` is covered by no IaC or
+    misconfiguration scan: Trivy `config` and Checkov scan `infra/` only.
+14. **Two stale size comments.** The comments on `NETWORK_LIMITS` (`common/vision_contract.py`) and
+    in `common/osm.py` still say a network is "near 1.5 MB"; the adapter measured 2.6 to 3 MB.

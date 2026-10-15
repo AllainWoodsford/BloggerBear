@@ -39,7 +39,7 @@ be on the `production` environment or on the repository.
 | `TF_STATE_BUCKET_PROD` | secret | `production` | The state bucket production uses. **Required for a fork.** | `yourname-bloggerbear-terraform-state` |
 | `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. Read [Deploying to another region](deployment-runsheet.md#deploying-to-another-region) before setting it. | `eu-west-1` |
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
-| `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/vision.md)). Read as a switch: exactly `true` turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the `production` environment to turn it on there alone. | `true` |
+| `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/vision.md)). Read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the repository, it also turns the worker on in production at the next release: the release job runs in the `production` environment, whose `vars.VISION_ENABLED` falls back to the repository's value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. Set to `true` on the `production` environment alone, it turns the worker on there alone. | `true` |
 | `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
@@ -247,22 +247,27 @@ settings sit in several of the tables above; this section gathers them.
 ### The switch
 
 One setting turns it on: the [`VISION_ENABLED`](#github-secrets-and-variables) repository
-variable, read as a switch. Exactly `true` turns the worker on; any other value, or unset, is
+variable, read as a switch. `true`, in any letter case, turns the worker on (GitHub Actions
+compares strings ignoring case, so `TRUE` and `True` count too); any other value, or unset, is
 read as off, and takes a deployed worker down on the next apply. CI passes it to Terraform as
 `vision_enabled` (`TF_VAR_vision_enabled: ${{ vars.VISION_ENABLED == 'true' && 'true' || 'false' }}`
 in both apply workflows); the variable defaults to `false` in both roots and is never set in
-`terraform.tfvars`. Set it on the `production` environment to turn it on there alone. The
-bootstrap must have been re-applied with `vision_region` first: that is what gives the deploy
-role the right to create the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
+`terraform.tfvars`, where a value would beat the one CI passes. Set on the repository, it also
+turns the worker on in production at the next release: `terraform-production-release.yml` runs in
+`environment: production` and reads `vars.VISION_ENABLED`, which falls back to the repository's
+value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the
+`production` environment; set it to `true` there to turn it on there alone. The bootstrap must have
+been re-applied with `vision_region` first: that is what gives the deploy role the right to create
+the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
 
 ### Terraform variables
 
 | Variable | Where | Default | What it is |
 |---|---|---|---|
-| `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN and the right to invoke it. Off, none of it exists. |
+| `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN, and the pipeline's shared execution role (`lambda_exec`, which twelve functions use) the right to invoke it. Off, none of it exists. |
 | `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too; the reads then cross instead. |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create Lambda functions and log groups named `<prefix>-*-vision-*`, and nowhere else outside `aws_region`. |
-| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so the caller sees the worker's own error, not its own. The `rail_access` adapter waits only 58 s (`WORKER_READ_TIMEOUT`), to keep the tick's 120 s for the agent and the summary; a rail run that slow is an `invoke` error to it, and the site is tried again next tick. |
+| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so a caller on that default sees the worker's own error, not its own. The `rail_access` adapter gives up first, by design: it waits only 58 s (`WORKER_READ_TIMEOUT`), to keep the tick's 120 s for the agent and the summary, so a rail run that slow is an `invoke` error to it, not the worker's, and the site is tried again next tick. |
 
 ### The worker's environment variables
 

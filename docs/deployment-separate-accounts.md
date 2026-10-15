@@ -352,11 +352,16 @@ is off by default and nothing of it exists until you turn it on. With two accoun
   turning the worker on for dev, and in the production account before production; select the
   account's workspace first (`terraform workspace select dev`). Pass the same `vision_region` to
   both if you change it.
-- **The variable, per environment.** `VISION_ENABLED` is read as a switch: exactly `true` turns
-  the worker on; any other value, or unset, is read as off. On the repository it turns the
-  worker on for dev (and for production, unless the `production` environment has its own value);
-  on the `production` environment alone it turns it on only there. Setting it to anything else,
-  or removing it, takes the worker down on the next apply; topics keep their state.
+- **The variable, per environment.** `VISION_ENABLED` is read as a switch: `true`, in any letter
+  case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or
+  unset, is read as off. On the repository it turns the worker on for dev, and for production at
+  its next release unless the `production` environment has its own value: the release job runs in
+  that environment, and its `vars.VISION_ENABLED` falls back to the repository's. To keep
+  production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production`
+  environment. On the `production` environment alone, `true` turns it on only there. Setting it
+  to anything else takes the worker down on the next apply; so does removing it, except on the
+  `production` environment, where removing it falls back to the repository's value. Topics keep
+  their state.
 
 The worker in each account reads the same public imagery and holds no state; dev's and
 production's never meet.

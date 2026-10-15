@@ -243,22 +243,28 @@ The vision worker and its topics
 ([deployment-runsheet.md, Vision (optional)](deployment-runsheet.md#vision-optional)) are off in
 production by default. **Leave it off unless the dev run was satisfactory:** a vision topic that
 ran on dev for a few ticks, with a held article whose figure and numbers you read and approved,
-and no `last_error` repeating in its running state. Then, in order:
+and no `last_error` repeating in its running state. Off by default holds only while the repository
+variable is off: the dev runsheet turns the worker on with the `VISION_ENABLED` repository
+variable, and the release job runs in the `production` environment, whose `vars.VISION_ENABLED`
+falls back to the repository's value, so the next release would turn it on here too. To keep
+production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production`
+environment. Then, when the dev run was satisfactory, in order:
 
 1. Re-apply the bootstrap by hand with `vision_region` (in the production account, if you have
    two), checking the plan touches only the deploy roles' policies.
-2. Set the `VISION_ENABLED` variable to `true` on the `production` environment (or on the
-   repository, which also covers dev) and publish a release. The worker lands in `vision_region`;
-   in the home region the research tick gets the worker's ARN (`VISION_WORKER_ARN`) and the
-   pipeline's role one policy to invoke it; nothing else in production changes.
+2. Set the `VISION_ENABLED` variable to `true` on the `production` environment and publish a
+   release. The worker lands in `vision_region`; in the home region the research tick gets the
+   worker's ARN (`VISION_WORKER_ARN`) and the pipeline's shared execution role one policy to
+   invoke it; nothing else in production changes.
 3. Create the topic in production with the same `adapter_config` that worked on dev (for the
    rail cities, the same bodies from `scripts/rail_topics.example.json`, as in the runsheet's
    [`rail_access` topics](deployment-runsheet.md#rail_access-topics)), and trigger its first tick
    by hand.
 
 `force_manual_review` is forced on every vision topic: **every vision article waits for a
-person** in the review inbox, whatever the compliance review said. Take it down again by
-removing the variable and releasing; topics keep their state.
+person** in the review inbox, whatever the compliance review said. Take it down again by setting
+the `production` environment's `VISION_ENABLED` to `false` and releasing (removing it falls back to
+the repository's value); topics keep their state.
 
 ## Rolling back
 

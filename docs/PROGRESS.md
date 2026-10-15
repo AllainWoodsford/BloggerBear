@@ -669,9 +669,10 @@ All shipped and deployed; the design and decisions for each are in
   diff summary, the review evidence and the Finding (`planner_notes`), never recommendations
   (#294; `lambdas/common/rail_notes.py`; docs/enhancements/vision.md §6.8)
 - [x] The rail analysis's time bounds: linear station adjacency, ghost-line walk and run lengths,
-  thinning only where the last pass changed something, the rail window cap `RAIL_MAX_WINDOW_PX` =
-  3,584 px from one-core measurements, and speed guards that count the work (#295;
-  `lambdas/vision/network.py`, `rail_analyse.py`, `scene.py`, `lambdas/vision_worker_handler.py`)
+  thinning only in the box round what the last pass removed, the rail window cap
+  `RAIL_MAX_WINDOW_PX` = 3,584 px from one-core measurements, and speed guards that count the work
+  (#295; `lambdas/vision/network.py`, `rail_analyse.py`, `scene.py`,
+  `lambdas/vision_worker_handler.py`)
 - [x] A topic's findings window: `findings_window_hours` (1 to 336 hours, 24 by default, never past
   the last article) through the admin API and CLI, read by the daily cycle and by Re-Write, so a
   topic that writes on some days only, like a city of the rail rotation, drafts every Finding since

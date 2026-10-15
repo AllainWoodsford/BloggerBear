@@ -82,21 +82,25 @@ group and the bucket its package is uploaded through, and nothing of ours to mig
 
 ### What is deployed
 
-**With `VISION_ENABLED` unset or anything but `true`: nothing.** The variable is read as a
-switch: exactly `true` turns the worker on; any other value, or unset, is read as off. Both
-environments call the module with `count = var.vision_enabled ? 1 : 0`; the research tick's
-`VISION_WORKER_ARN` is empty, which the client reads as "not configured", and the invoke policy
-does not exist. A vision topic created anyway runs, records `last_error` on every site, and
-writes no Finding; its first Finding comes with the first scene it measures at or above the
-coverage floor (the first observation, reported once; a cloudier scene is kept but reports
-nothing).
+**With `VISION_ENABLED` unset or anything but `true`: nothing.** The variable is read as a switch:
+`true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any
+other value, or unset, is read as off. Both environments call the module with
+`count = var.vision_enabled ? 1 : 0`; the research tick's `VISION_WORKER_ARN` is empty, which the
+client reads as "not configured", and the invoke policy does not exist. A vision topic created
+anyway runs, records `last_error` on every site, and writes no Finding; its first Finding comes with
+the first scene it measures at or above the coverage floor (the first observation, reported once; a
+cloudier scene is kept but reports nothing). One thing shows on every deployment, the worker on or
+off: the public Stats page gains a "Vision triage" row among its model-spend categories
+(`vision_triage` in `common/stats_tracking.py`), at 0 calls until a vision topic's triage agent
+runs.
 
 **With it `true`:** in `vision_region` (us-west-2 by default), the worker, its role (its own log
-group and nothing else), its log group and the artifacts bucket; in the home region, one policy
-on the pipeline's execution role allowing `lambda:InvokeFunction` on that one function, and the
-ARN in the research tick's environment. The switch is a GitHub repository variable fed to
-Terraform as `vision_enabled` (`TF_VAR_vision_enabled` in both apply workflows), never a tfvars
-edit; the bootstrap must have been re-applied with `vision_region` first. The steps are in the
+group and nothing else), its log group and the artifacts bucket; in the home region, one policy on
+the pipeline's shared execution role (`lambda_exec`, which twelve functions use) allowing
+`lambda:InvokeFunction` on that one function, and the ARN in the research tick's environment. The
+switch is a GitHub repository variable fed to Terraform as `vision_enabled` (`TF_VAR_vision_enabled`
+in both apply workflows), never a tfvars edit; the bootstrap must have been re-applied with
+`vision_region` first. The steps are in the
 [deployment runsheet](../deployment-runsheet.md#vision-optional) and the settings in
 [configuration.md](../configuration.md#vision-and-rail-access).
 
@@ -111,7 +115,7 @@ edit; the bootstrap must have been re-applied with `vision_region` first. The st
 | What is diffed | the count against the median of earlier clear scenes, past both an absolute and a relative threshold | the served share, the desert area and the station count against the baseline of earlier clear scenes measured with the same polygon and parameters |
 | Agent tools | `look_again`, `previous_scene`, `site_history` | the same, and `web_context` |
 | What the article gets | the summary | the summary with up to three planner notes, and the map |
-| Where it stands | on the integration branch (#285) | on the integration branch (#285): the core [#289](https://github.com/AllainWoodsford/BloggerBear/pull/289), the worker task [#291](https://github.com/AllainWoodsford/BloggerBear/pull/291), the adapter [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292), the figure [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293), planner notes [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294), time bounds [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295) |
+| Where it stands | on the integration branch (#285) | on the integration branch (#285): the core [#289](https://github.com/AllainWoodsford/BloggerBear/pull/289), the worker task [#291](https://github.com/AllainWoodsford/BloggerBear/pull/291), the adapter [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292), the figure [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293), planner notes [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294), time bounds [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295), the findings window [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297) |
 
 ## Part two: the trains explainer
 

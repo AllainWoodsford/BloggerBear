@@ -272,9 +272,10 @@ with `cv2.polylines(..., LINE_8)`; `thin(mask, max_iterations=32)`: sequential t
 `[[0,-1,-1],[1,1,-1],[0,1,0]]`) and their three rotations, each hit removed before the next kernel
 (that order is what keeps connectivity), on the bounding box
 of the nonzero pixels padded by one, until a pass removes nothing (as merged, PR J: every pass
-after the first works only within `THINNING_REACH_PX`, 8 px, of what the last pass removed, with
-byte-identical output); `neighbour_count(skel01)` with
-`cv2.filter2D` and the 3×3 ring kernel; `junctions_and_ends(skel01)` (count ≥ 3, count == 1);
+after the first works only within the bounding box of what the last pass removed, grown by
+`THINNING_REACH_PX`, 8 px, on every side, with byte-identical output);
+`neighbour_count(skel01)` with `cv2.filter2D` and the 3×3 ring kernel;
+`junctions_and_ends(skel01)` (count ≥ 3, count == 1);
 `snap_stations(skel01, stations_px, snap_px) -> list[(x, y) | None]` via
 `distanceTransformWithLabels(..., DIST_LABEL_PIXEL)`, whose label is the 1-based scan-order index
 of the skeleton pixel (a test proves this on a known skeleton); `build_graph(skel01, stations,

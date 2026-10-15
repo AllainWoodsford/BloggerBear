@@ -517,12 +517,19 @@ variable, not with a tfvars edit. Every setting it uses is in
 2. **Set the `VISION_ENABLED` repository variable to `true`** (GitHub → Settings → Secrets and
    variables → Actions → Variables; [configuration.md](configuration.md)) and run a deploy (merge
    anything to `dev`, or `workflow_dispatch` the Terraform workflow). Nothing in `terraform.tfvars`
-   changes. The apply creates, in `vision_region`: the worker (arm64, python3.12), its role (its
-   own log group only), its log group, and a small artifacts bucket its package is uploaded
-   through. In the home region it gives the research tick the worker's ARN (`VISION_WORKER_ARN`)
-   and the right to invoke that one function. Both apply workflows read the variable as a
-   switch: exactly `true` turns the worker on, and any other value, or unset, is read as off; a
-   value on the `production` environment turns it on for production alone.
+   changes (a `vision_enabled` there would beat the variable). The apply creates, in
+   `vision_region`: the worker (arm64, python3.12), its role (its own log group only), its log
+   group, and a small artifacts bucket its package is uploaded through. In the home region it
+   gives the research tick the worker's ARN (`VISION_WORKER_ARN`), and gives the right to invoke
+   that one function to the pipeline's shared execution role (`lambda_exec`), which twelve
+   functions use: the research tick, the daily cycle, the admin API and nine more. Both apply
+   workflows read the variable as a switch: `true`, in any letter case (GitHub Actions compares
+   strings ignoring case, so `TRUE` and `True` count too), turns the worker on, and any other
+   value, or unset, is read as off. This also turns the worker on in production at the next
+   release: `terraform-production-release.yml` runs in `environment: production` and reads
+   `vars.VISION_ENABLED`, which falls back to the repository's value. To keep production off until
+   the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. A
+   value on the `production` environment wins over the repository's, for production alone.
 3. **Create a topic.** A `satellite_vision` topic needs `adapter: "satellite_vision"` and
    `sites` in its `adapter_config` (one to ten lon/lat polygons, each with an `id` and
    optionally a `name`), and usually an `object_noun`; everything else has a default
@@ -535,10 +542,11 @@ variable, not with a tfvars edit. Every setting it uses is in
    article, is what success looks like. A tick that measures nothing (the worker off, every site
    in `last_error`), or only a scene under the floor (mostly cloud), writes no Finding.
 4. **To turn it off again:** set the variable to any value but `true`, or remove it (either is
-   read as off), and run a deploy. The next apply removes the worker, its bucket, its log group
-   and the invoke right;
-   topics keep their state and their history, and record `last_error` on each site until the
-   worker is back. Disable or delete the topics if you do not want those errors.
+   read as off; on the `production` environment, removing it falls back to the repository's
+   value, so set it to `false` there instead), and run a deploy. The next apply removes the
+   worker, its bucket, its log group and the invoke right; topics keep their state and their
+   history, and record `last_error` on each site until the worker is back. Disable or delete the
+   topics if you do not want those errors.
 
 The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` bucket, nothing
 else) and needs no key and no other access. It has no alarm of its own: observability's alarms
@@ -596,20 +604,45 @@ Each run drafts every Finding made since the city's last article, reaching back 
 gap between two of a city's runs is Boston's 7 days, and the eighth day covers a clock change or a
 late run. The window never reaches back past the topic's `last_article_at`, so no Finding is
 drafted twice: the daily cycle stamps it with the run's start time on every article it writes,
-published or held for review (every rail article is held). A run that writes nothing (no Finding,
-or no usable angle) stamps nothing; the next run then reaches back its whole 192 hours and no
-further, so after a run with no usable angle the oldest Findings it saw can drop out. Findings
-expire 14 days after they are made (`FINDING_TTL_DAYS` in `lambdas/research_tick_handler.py`),
-which is why the window is capped at 336 hours. Daylight saving no longer matters: when the clocks
-move, two runs are an hour more or less than whole days apart, and the window starts at the last
-article whatever the gap. Re-Write from the review inbox rebuilds a rail article's sources from the
-same window, looking back `findings_window_hours` from the article's creation (`_findings_for` in
-`lambdas/common/rewrite.py`, #297), so a rewritten article still sees the Findings of the city's
-off days (and may also see some an earlier article used, since the previous article is not known
-there). Rail Findings are few (the first observation, then material changes), so most runs draft
-nothing. Within a topic, which holds at most three cities, one city is measured per tick
-(`max_sites_per_tick`): those never attempted first, then the one attempted longest ago; a city
-skipped for that cap, or deferred because the tick ran short of time, keeps its place.
+published or held for review (every rail article is held). One Finding can still be missed: the
+research tick dates a Finding (`captured_at`) when its fetch starts, at the start of the tick, and
+writes it at the tick's end, so a Finding whose tick is still running when the city's daily cycle
+starts is not there for that run and, once that run has written an article, is dated before the
+next window starts. It lands in neither window. That predates PR K and is a code follow-up
+([vision.md §10](enhancements/vision.md#10-still-open)). Findings expire 14 days after they are
+made (`FINDING_TTL_DAYS` in `lambdas/research_tick_handler.py`), which is why the window is capped
+at 336 hours. Daylight saving no longer matters: when the clocks move, two runs are an hour more or
+less than whole days apart, and the window starts at the last article whatever the gap. Re-Write
+from the review inbox rebuilds a rail article's sources from the same window, looking back
+`findings_window_hours` from the article's creation (`_findings_for` in `lambdas/common/rewrite.py`,
+#297), so a rewritten article still sees the Findings of the city's off days (and may also see some
+an earlier article used, since the previous article is not known there). Rail Findings are few (the
+first observation, then material changes), so most runs draft nothing. Within a topic, which holds
+at most three cities, one city is measured per tick (`max_sites_per_tick`): those never attempted
+first, then the one attempted longest ago; a city skipped for that cap, or deferred because the
+tick ran short of time, keeps its place.
+
+**When a run writes nothing.** A run that writes nothing stamps nothing. That covers three cases:
+it found no Finding; it had no usable angle; or it ended in an error. An error is quiet: the daily
+cycle catches it and returns `"status": "error"`, so Step Functions sees a successful invoke and
+does not retry it, and nothing reaches the DLQ or an alarm. The error is in the execution's output,
+not in the function's log; the sign is a city's run day with a new Finding but no new item in the
+review inbox. The next run then still starts at the city's last article, but never more than 192
+hours back. For a two-day city that covers everything after one such run: its runs are 3 and 4
+days apart, so its last article is at most 7 days old. For Boston, the once-a-week city, or after
+two such runs in a row, Findings older than 192 hours drop out: for Boston that is about six of the
+week's seven days, and for a two-day city after two missed runs, two or three days.
+
+The remedy is to run the city's daily cycle again by hand soon after:
+
+```bash
+python scripts/admin_cli.py topics trigger rail-boston --pipeline daily_cycle
+```
+
+It reaches back to the city's last article, up to 192 hours, so for Boston run it within about 24
+hours of the run that wrote nothing, while the last article is still under 192 hours old. Leave out
+`--force`: it ignores the last article and drafts the whole 192-hour window, so it would draft
+again the Findings an earlier article already used.
 
 **What the first tick does.** Trigger it by hand rather than wait for the heartbeat:
 `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick` (a manual tick

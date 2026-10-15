@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 22 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware |
+| Vision and rail (OpenCV 2026) | 23 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed |
 
 ---
 
@@ -979,9 +979,12 @@ linear, the thinning incremental (12.22), and the rail task got its own window c
 `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at 20 m; the four starting cities need at most 3,327):
 there the worst case is 25.5 s and 1.32 GB on one core, about 33 s on arm64, 41 to 56 s with the
 read, which covers 77 % of the pixels. That case is constructed (two 1.3 km-wide bars of track
-along both edges of the window); a real city's network measures about 9 s. The comments now quote
-one-core figures and name the CPU. **Lesson:** time a bound on the hardware it bounds: pin the
-cores, set the library's threads, and write the CPU next to the number. (#295)
+along both edges of the window). No real OpenStreetMap network has been timed: the "about 9 s" for
+a city is PR J's synthetic city, 180 stations and 221 nodes, 9.2 to 9.6 s at 4096 px on four
+cores, and the deployed Sydney run with the Overpass network (vision.md §9) will give the real
+figure. The comments now quote one-core figures and name the CPU. **Lesson:** time a bound on the
+hardware it bounds: pin the cores, set the library's threads, and write the CPU next to the number.
+(#295)
 
 **12.19 The rail topics had no editorial goal of their own.** Writing the city topic templates
 meant following a topic's fields into the prompts that read them. The research summary uses the
@@ -1034,14 +1037,29 @@ box, and such ways make it the whole window: the thick parts of a network then c
 over every pixel of it, up to 7.3 s of thinning in a 28.9 s pass at 3,584 px. The first round's
 worst cases did not reach the edges, so their timings missed this. And the speed tests that bounded
 the station passes by wall time passed with the old quadratic code swapped back in. **Fix:** after
-its first pass the thinning works only within `THINNING_REACH_PX` (8 px) of what the last pass
-removed, with a byte-identical skeleton, so the same thinning takes 0.2 to 0.4 s with the thick
-parts in one place (2.0 to 4.3 s with them at both ends of the window). The guards now count the
-work: neighbour lookups (4,025 on the 2,000-station grid, where the old walk made 4,052,000),
-equality comparisons of station ids, and pixels handed to OpenCV (thinning the whole window on
-every pass hands it 3.29 billion); each guard was checked to fail with the old code. **Lesson:** a
-speed test must fail on the slow code, so count the work, not the seconds; and build the worst
-input from what the real source sends. (#295, rail PR J)
+its first pass the thinning works only within the bounding box of what the last pass removed,
+grown by `THINNING_REACH_PX` (8 px) on every side, with a byte-identical skeleton, so the same
+thinning takes 0.2 to 0.4 s with the thick parts in one place. Thick parts at both ends of the
+window keep that box most of the window on every pass, which is why that case still takes 2.0 to
+4.3 s. The guards now count the work: neighbour lookups (4,025 on the 2,000-station grid, where
+the old walk made 4,052,000), equality comparisons of station ids, and pixels handed to OpenCV
+(thinning the whole window on every pass hands it 3.29 billion); each guard was checked to fail
+with the old code. **Lesson:** a speed test must fail on the slow code, so count the work, not the
+seconds; and build the worst input from what the real source sends. (#295, rail PR J)
+
+**12.23 Reviewed one PR at a time, the seams were missed.** Every rail sub-PR had been reviewed on
+its own, most of them more than once. A review of the whole integration branch then ran one rail
+Finding end to end through the real code and found what lay between the PRs. The daily trending
+digest (`lambdas/trending_digest_handler.py`, a fourth publish path, which calls itself that) takes
+every topic's latest Finding of the last 48 hours and is held only when a contributing topic is
+financial or its compliance review fails; it never reads `force_manual_review`, which was wired
+into the daily cycle only, so it would publish vision-topic text with no person. The rail adapter
+attached the figures of sites its summary did not report; the SPA showed a figure whose copy had
+failed as a broken image; the ships adapter could start a worker call with too little of its tick
+left; the worker followed redirects off its allowlist; and a change to the compliance review's
+quote parser altered verdicts for every topic. **Fix:** rail PR L. **Lesson:** after the parts are
+reviewed, review the whole once more, end to end through the real code, and grep for every path a
+guarantee must hold on. (#285, rail PR L)
 
 ## Patterns worth keeping
 
