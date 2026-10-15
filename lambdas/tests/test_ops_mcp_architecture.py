@@ -700,7 +700,7 @@ def test_the_vision_runsheet_links_to_the_vision_region_and_says_when_vision_is_
     monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
     answer = runsheets.investigate("vision")
     assert answer["runsheet"]["id"] == "vision"
-    assert answer["assistant_tools"] == ["vision_status", "log_review"]
+    assert answer["assistant_tools"] == ["vision_status", "log_review", "topic_findings"]
     worker_log, worker, tick, state = answer["steps"]
     assert worker_log["console_url"].startswith("https://us-west-2.console.aws.amazon.com/cloudwatch/")
     assert worker["console_url"].startswith("https://us-west-2.console.aws.amazon.com/lambda/")

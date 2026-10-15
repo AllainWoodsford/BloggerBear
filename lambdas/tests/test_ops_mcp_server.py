@@ -184,7 +184,7 @@ MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 # The guide to the Admin CLI (cli_guide.py): help, how-to commands, and the topics as a table.
 GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}
 # The architecture expert (architecture.py, runsheets.py): answered from the package's catalogue.
-EXPERT_TOOLS = {"architecture", "investigate", "table_sample"}
+EXPERT_TOOLS = {"architecture", "investigate", "table_sample", "topic_findings"}
 # The tools that read this environment's logs (log_review.py), read-only like the rest.
 LOG_TOOLS = {"log_review", "api_errors"}
 
@@ -583,6 +583,75 @@ def test_vision_status_is_remembered_and_told_whether_the_caller_has_a_screen(
     assert response.json()["result"]["structuredContent"] == answer
     mock_tool.assert_called_once_with("rail sydney", screen=screen)
     mock_remember.assert_called_once()
+
+
+def test_topic_findings_says_what_it_is_for_and_what_never_to_say(client):
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    described = " ".join(tools["topic_findings"]["description"].split())
+    for phrase in (
+        "A topic's research Findings, newest first, as a table on screen",
+        "`next_article` true for the Findings the topic's next article will be written from",
+        '"what did research find for X?"',
+        "table_sample shows only one raw row",
+        "never read a table's cells aloud, and never say what a summary says",
+    ):
+        assert phrase in described, phrase
+    properties = tools["topic_findings"]["inputSchema"]["properties"]
+    assert set(properties) == {"topic", "limit", "days", "next_article"}
+    assert tools["topic_findings"]["inputSchema"]["required"] == ["topic"]
+    assert properties["limit"]["default"] == 5 and properties["next_article"]["default"] is False
+    sample = " ".join(tools["table_sample"]["description"].split())
+    assert "For a topic's research findings use topic_findings" in sample
+    guides = " ".join(tools["cli_guides"]["description"].split())
+    assert "a topic's findings and what its next article will be written from (`findings`)" in guides
+    words = " ".join(server._INSTRUCTIONS.split())
+    for phrase in (
+        "topic_findings puts a topic's research Findings on screen, newest first: say how many there "
+        "are and how old the newest is, never what one says; for what the next article will be written "
+        "from, pass `next_article` true.",
+        "for a topic's research findings use topic_findings",
+    ):
+        assert phrase in words, phrase
+
+
+@pytest.mark.parametrize(
+    ("headers", "screen"),
+    [
+        (request_context(claims={"sub": SUBJECT, "client_id": PAGE_CLIENT}), True),
+        (request_context(claims={"sub": SUBJECT, "client_id": ALEXA_CLIENT}), False),
+        ({}, False),
+    ],
+)
+def test_topic_findings_is_told_whether_the_caller_has_a_screen_and_is_not_remembered(
+    client, monkeypatch, headers, screen
+):
+    monkeypatch.setenv("OPS_SCREEN_CLIENT_IDS", PAGE_CLIENT)
+    answer = {"spoken": "Rail access: Sydney has no findings that haven't expired.", "findings": []}
+    with (
+        patch("ops_mcp.topic_findings.topic_findings", return_value=answer) as mock_tool,
+        patch("ops_mcp.memory.remember") as mock_remember,
+    ):
+        arguments = {"topic": "rail sydney", "days": 2, "next_article": False}
+        response = call(
+            client,
+            "tools/call",
+            {"name": "topic_findings", "arguments": arguments},
+            name="topic_findings",
+            headers=headers,
+        )
+        again = call(
+            client,
+            "tools/call",
+            {"name": "topic_findings", "arguments": {"topic": "crypto", "limit": 10, "next_article": True}},
+            name="topic_findings",
+            headers=headers,
+        )
+    assert response.json()["result"]["structuredContent"] == answer
+    assert again.json()["result"]["structuredContent"] == answer
+    assert mock_tool.call_args_list[0].args == ("rail sydney", 5, 2, False)
+    assert mock_tool.call_args_list[0].kwargs == {"screen": screen}
+    assert mock_tool.call_args_list[1].args == ("crypto", 10, None, True)
+    mock_remember.assert_not_called()
 
 
 def test_only_the_pages_app_client_is_a_screen_caller(monkeypatch):

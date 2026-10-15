@@ -50,6 +50,7 @@ from ops_mcp import (
     tools,
 )
 from ops_mcp import architecture as architecture_module
+from ops_mcp import topic_findings as topic_findings_module
 from ops_mcp import vision_status as vision_status_module
 from ops_mcp.access import AccessMiddleware
 
@@ -80,7 +81,12 @@ _INSTRUCTIONS = (
     "puts on screen how to check it yourself; api_errors does the same for the APIs' access logs "
     "(failed requests by status and who answered); investigate puts a runsheet on screen (dashboards, "
     "log groups and Logs Insights queries to copy) for what no tool here can read, such as metrics; "
-    "table_sample puts a table's newest row on screen and says whether it is being written on time. "
+    "table_sample puts a table's newest row on screen and says whether it is being written on time; "
+    "for a topic's research findings use topic_findings. "
+    # A topic's research Findings (topic_findings.py): summaries are model text, on the page only.
+    "topic_findings puts a topic's research Findings on screen, newest first: say how many there "
+    "are and how old the newest is, never what one says; for what the next article will be written "
+    "from, pass `next_article` true. "
     # The assistant's vision round: the vision pipeline's sites, its worker's log and its walk-through.
     # Site names and errors are operator and third-party text, and a voice caller gets none of it
     # (vision_status.py); a table's cells are for the page.
@@ -289,7 +295,8 @@ def build_server() -> MCPServer:
         up fully with its focus, keywords, exclusions and models (`topic-setup`, also for "too
         many options, mock it up"), security incidents and sign-ins (`security`), reviewing and
         publishing (`review`), fixing a musing that is blank or wrong (`musings`), vision topics,
-        satellite sites and the Rail Access Monitor (`vision`). Pass a guide's id, or a
+        satellite sites and the Rail Access Monitor (`vision`), a topic's findings and what its
+        next article will be written from (`findings`). Pass a guide's id, or a
         few words of what the operator wants to do. It puts the help of the guide's main
         commands on screen, each with a suggested command under it, so cli_help is not needed as
         well. `options` fills the suggested commands in with what the operator described (as
@@ -493,8 +500,31 @@ def build_server() -> MCPServer:
         findings, candidate ideas and prompt
         refinements to one topic. It reads a table only if the table carries the project's default
         tags and an Environment this assistant may read. Row values are under `untrusted`: never
-        read them aloud; say how old the newest row is and whether writes look on time."""
+        read them aloud; say how old the newest row is and whether writes look on time. For a
+        topic's research findings use topic_findings, which shows them newest first."""
         return samples.table_sample(name, topic, rows)
+
+    # A topic's research Findings (topic_findings.py). Read-only, and not passed through
+    # `remembered`: it reports no cards. Who is asking decides whether the table has its "Summary
+    # (unverified)" column (memory.screen_caller): a voice caller gets counts and ages only.
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def topic_findings(
+        ctx: Context,
+        topic: str,
+        limit: int = topic_findings_module.LIMIT_DEFAULT,
+        days: int | None = None,
+        next_article: bool = False,
+    ) -> dict[str, Any]:
+        """A topic's research Findings, newest first, as a table on screen: when each was captured,
+        how old it is, when it expires, how many maps, planner notes and sources it has, which model
+        wrote its summary, and the summary itself. `topic` is its id, its name, or the operator's own
+        words for it; `limit` (1 to 20) how many; `days` (1 to 14) only the last few days;
+        `next_article` true for the Findings the topic's next article will be written from (its
+        findings window, since its last article). Use it for "what did research find for X?" and
+        "what will the next article be about?"; table_sample shows only one raw row. Say how many
+        there are and how old the newest is, as `spoken` does; never read a table's cells aloud, and
+        never say what a summary says."""
+        return topic_findings_module.topic_findings(topic, limit, days, next_article, screen=screen(ctx))
 
     # For a client that cannot wait for the agent, Alexa+ above all (briefings.py): start one in
     # the background, and read the latest back. Registered only where the function has the table

@@ -1876,6 +1876,7 @@ def test_the_assistant_is_told_about_exactly_the_tables_it_may_read():
 
     assert set(passed) == {
         "TOPICS_TABLE",
+        "FINDINGS_TABLE",
         "ARTICLES_TABLE",
         "MODERATION_QUEUE_TABLE",
         "FAILED_EXECUTIONS_TABLE",
