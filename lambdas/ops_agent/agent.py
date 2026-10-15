@@ -431,15 +431,19 @@ def _hooks(ledger: policy.Ledger) -> list:
 
 
 def _answer_text(result: Any, ledger: policy.Ledger) -> str:
-    """What is spoken. The model's words when it finished an answer; otherwise (it ran out of
-    turns, or was cut off) the tools' own summaries, which code wrote and are safe to say. Either
-    way it passes the PII sweep last (redact.sweep_answer): an e-mail, a whole address, a token or
-    a key the model repeated from something it read is replaced before the operator hears it."""
+    """What is spoken. The model's words when it finished an answer, unless they repeat text a
+    tool marked as written outside this project (policy.echoes: `ledger.echoed` is then set);
+    otherwise (it ran out of turns, was cut off, or echoed) the tools' own summaries, which code
+    wrote and are safe to say. Either way it passes the PII sweep last (redact.sweep_answer): an
+    e-mail, a whole address, a token or a key the model repeated from something it read is
+    replaced before the operator hears it."""
     if result is not None and result.stop_reason == "end_turn":
         text = " ".join(
             block["text"].strip() for block in result.message.get("content", []) if block.get("text")
         ).strip()
-        if text:
+        if text and policy.echoes(text, ledger):
+            ledger.echoed = True
+        elif text:
             return redact.sweep_answer(text)
     return redact.sweep_answer(" ".join(ledger.spoken) or _NO_ANSWER)
 
@@ -481,12 +485,16 @@ def run(question: str, history: list[dict] | None, tools: list, model: Any = Non
         # What the run cost, whether it answered, was cut off or failed: tokens a failed run
         # spent were still billed. Recorded here, by code, from Strands' own count.
         _record_usage(agent)
+    spoken = _answer_text(result, ledger)
     return {
-        "answer": _answer_text(result, ledger),
+        "answer": spoken,
         "tool_calls": ledger.tool_calls,
         "findings": ledger.findings,
         "tables": ledger.tables,
         "turn": turn,
+        # For the handler's log line only (it is taken out before the answer is sent): the model's
+        # answer repeated text a tool marked as written outside this project.
+        "echo": ledger.echoed,
     }
 
 
