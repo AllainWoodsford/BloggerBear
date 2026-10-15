@@ -42,6 +42,7 @@ Two delivery steps, each its own PR.
   | `feedback` | reader feedback rejected, screening used up |
   | `costs` | spend higher than expected |
   | `assistant` | the assistant itself: sign-in, 401/403/429 |
+  | `vision` | a vision site not measured, the vision worker, the imagery: the worker's log and function in the vision Region (or "isn't deployed here" where vision is off), the research tick's log, the running state in S3 ([ops-assistant-vision.md](ops-assistant-vision.md)) |
 
   Each runsheet starts with what the assistant can check itself (`alarms`, `pipeline_health`, ...).
   Then come the places to look, in order: the project's dashboards, AWS's own generated views (the
@@ -144,11 +145,15 @@ A **feature** (`feature`) answers "how does this one thing work?": a small, logi
 parts that do one job, told as steps in the order the work flows, across the layers. The first is
 `article-research`: topic and adapter, schedules, third-party keys in SSM, the diff-first research
 tick, findings, candidate ideas, drafting, the reviews and the article in S3, then where the agents
-are. Each step's parts are catalogue resources (`kind:key`, which the tests hold to the catalogue)
-or plain words for what is not ours. The written version is
-[docs/architecture/article-research.md](../architecture/article-research.md);
+are. The second is `vision-pipeline`: the topic, its sites and the `VISION_ENABLED` switch, the
+research tick, the rail map data, the worker in its Region, the running state, the triage agent
+and the Finding, the person who approves, and where to look. Each step's parts are catalogue
+resources (`kind:key`, which the tests hold to the catalogue) or plain words for what is not ours.
+The written versions are [docs/architecture/article-research.md](../architecture/article-research.md)
+and [docs/architecture/blogger-vision.md](../architecture/blogger-vision.md);
 [docs/architecture/README.md](../architecture/README.md) says how to add the next one (for
-example "prompts as assets").
+example "prompts as assets"). A question that names both, "the vision research pipeline", goes to
+the feature whose alias is the longest found in it.
 
 ## The environment rule
 

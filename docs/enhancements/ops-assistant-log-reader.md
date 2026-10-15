@@ -42,13 +42,9 @@ narrowed to lines naming the topic or written by its adapter (`crypto_feed:`, `g
 ...). For crypto that is where "coins dropped from the pool for having no usable history" shows up,
 classified as `source_data`.
 
-One function is not read. The vision worker's log group is in `vision_region`, outside the home
-Region these queries run in, and exists only when vision is on, so `log_review` leaves it out of
-its default sweep (`Component.home_sweep` in `ops_mcp/architecture.py`, #298) rather than report it
-refused on every deployment. Asked for it by name, it answers with a fixed refusal: "That
-function's logs are kept outside this Region, so I can't read them yet." A vision topic's deep
-dive still reads its research-tick and daily-cycle lines (`satellite_vision:`, `rail_access:`).
-Reading the worker's logs and the vision state is planned work, the assistant's vision round.
+One function lives in another Region: the vision worker, in `vision_region`, and only where vision
+is on. `log_review` reads it there; see [A second Region: the vision worker](#a-second-region-the-vision-worker)
+below.
 
 ## The rules, and where each is held
 
@@ -170,3 +166,38 @@ has not been timed.
 **Where another "already actioned" sign would go.** `memory.ACTION_SIGNS` and `action_sign`: a key,
 its words for the card and for speech, and a check that reads only ids and statuses. Today the
 signs are for the kinds fixed by a rewrite; the other kinds clear by themselves once fixed.
+
+## A second Region: the vision worker
+
+The vision worker runs in `vision_region` (us-west-2 by default, beside the Sentinel-2 imagery)
+and exists only where vision is on. Until the assistant's vision round its log could not be read:
+the role's `StartQuery` was granted in the home Region only, so #298 left the worker out of the
+default sweep. Now `log_review` reads it where it is
+([ops-assistant-vision.md](ops-assistant-vision.md)):
+
+- **Which Region.** The architecture catalogue says which variable names a component's Region
+  (`Component.region_env`); the worker's is `OPS_VISION_REGION`, which Terraform sets to
+  `vision_region` where vision is on and to "" elsewhere. Every other component is in the home
+  Region. `component_region` and `exists_in` in `ops_mcp/architecture.py` answer from that.
+- **Grouped by Region.** The queries run once per (Region, filter) group: the pipeline's functions
+  in the home Region under the topic filter, the worker in its own Region with no filter (its lines
+  name neither the topic nor, mostly, the site). Two groups even when the Regions are the same.
+  Rows merge per query kind, a refused group is reported as refused without hiding the other's
+  answer, and the result is complete only when every group answered. Each group gets its own
+  check-it-yourself cards; the worker's card ids end `-vision-worker`.
+- **A topic deep dive** of a vision topic (its adapter's `uses_vision_worker` hook) adds the worker,
+  and says its lines are for every vision topic.
+- **With vision off** the sweep neither reads nor refuses the worker, and naming it says "The
+  vision worker isn't deployed in this environment: vision is off."
+- **A new cause, `scene_unreadable`** ("unreadable scene" in the worker's line), sits ahead of the
+  source and permission causes, so a slow or refused range read of a scene is a transient error of
+  the imagery host, not a source timeout or a Terraform fix. A worker timeout or out-of-memory
+  points at `infra/modules/vision-worker`, not the roots' functions.
+- **The tag cache** (`logs.py`) is keyed by Region and name.
+
+The permission is its own policy, `infra/modules/ops-assistant/vision.tf`, only where
+`vision_enabled`: `StartQuery` and `ListTagsForResource` on the worker's one log group by ARN in
+`vision_region`, with the same tag conditions as `logs.tf` and `Environment` exactly this
+environment (the worker is never shared). `GetQueryResults` and `StopQuery` are already granted on
+`*` by `logs.tf`. The runsheet `investigate("vision")` links the worker's log and function in the
+vision Region.

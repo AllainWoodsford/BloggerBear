@@ -12,16 +12,12 @@ and one specification per pull request are in
 [rail-access-monitor.md](../enhancements/rail-access-monitor.md). This page describes what is on
 the integration branch (#285), every rail pull request included.
 
-**The operator's assistant and vision.** Unlike [article research](article-research.md), the
-assistant has no `feature` entry for it yet. What it knows today: its architecture catalogue lists
-the vision worker (in the vision Region, existing only when vision is on); its CLI guide knows both
-adapters; and a topic deep dive (`log_review` with a topic) reads a vision topic's research-tick and
-daily-cycle lines like any topic's. Its log review leaves the worker out of its default sweep
-(`Component.home_sweep`, #298), because the worker's log group is in `vision_region` and the
-assistant reads the home Region; asked for the worker by name, it answers with a fixed refusal,
-"That function's logs are kept outside this Region, so I can't read them yet." Reading the worker's
-logs and the vision state (each site's history, `last_error` and the agent's trails) is planned
-work, the assistant's vision round.
+**The operator's assistant and vision.** Like [article research](article-research.md), this page
+has a `feature` entry in the assistant: `architecture(feature="vision-pipeline")` walks through the
+same steps with this environment's resource names. Where vision is on, the assistant also reads
+each vision topic's running state and the worker's log in `vision_region`; see
+[Asking the assistant](#asking-the-assistant) below, and the design in
+[ops-assistant-vision.md](../enhancements/ops-assistant-vision.md).
 
 The rules this follows are the README's: research is diff-first, nothing is published without a
 review, and new sources are adapters. One more is the vision work's own: **not measured is never
@@ -125,6 +121,30 @@ in both apply workflows), never a tfvars edit; the bootstrap must have been re-a
 | Agent tools | `look_again`, `previous_scene`, `site_history` | the same, and `web_context` |
 | What the article gets | the summary | the summary with up to three planner notes, and the map |
 | Where it stands | on the integration branch (#285) | on the integration branch (#285): the core [#289](https://github.com/AllainWoodsford/BloggerBear/pull/289), the worker task [#291](https://github.com/AllainWoodsford/BloggerBear/pull/291), the adapter [#292](https://github.com/AllainWoodsford/BloggerBear/pull/292), the figure [#293](https://github.com/AllainWoodsford/BloggerBear/pull/293), planner notes [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294), time bounds [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295), the findings window [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297), the integration review's fixes [#298](https://github.com/AllainWoodsford/BloggerBear/pull/298) |
+
+### Asking the assistant
+
+The operator's assistant (the ask page, and Alexa+) reads the vision pipeline but never changes it
+([ops-assistant-vision.md](../enhancements/ops-assistant-vision.md)):
+
+- **"How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney
+  measured?"** `vision_status` says whether the worker is on and in which Region, and for each
+  vision topic how many sites were measured and why the others were not, from each topic's
+  running state (`snapshots/<topic>/running-state.json`): the worker off, a sites config that
+  cannot be used, a site the worker refuses as set up, a worker or source error, no clear scene
+  yet, or sites that keep waiting for time. Each problem is a card with its fix. Site names and
+  error text are on the page only, in "(unverified)" columns; Alexa+ hears counts and reasons.
+  "What needs my attention?" (`pipeline_health`) says the same in one sentence.
+- **"Any errors in the vision worker?"** `log_review` reads the worker's log group in
+  `vision_region` beside the home Region's functions; a vision topic's deep dive reads it too.
+  A scene the worker could not read is its own cause, `scene_unreadable`.
+- **"How can I check it myself?"** `investigate("vision")`: the worker's log and function with
+  console links in the vision Region, the research tick's log, and the running state in S3.
+- **"How do I set up a rail topic?"** `cli_guides("vision")`. The assistant never fills in a
+  sites config: that JSON is written by hand from `scripts/rail_topics.example.json`.
+
+With vision off it reads no running state and no worker log, and says the worker is off and that
+turning it on is the `VISION_ENABLED` setting.
 
 ## Part two: the trains explainer
 

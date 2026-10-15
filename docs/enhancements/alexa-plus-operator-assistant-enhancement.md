@@ -282,13 +282,14 @@ which is also what the judges get (section 6).
 
 | Tool | Reads | Returns |
 |---|---|---|
-| `pipeline_health(topic?)` | Topics (`last_research_at`, `last_article_at`), Step Functions executions, FailedExecutions | per topic: researched, published, held or failed today; with a topic, the failed step and error class |
+| `pipeline_health(topic?)` | Topics (`last_research_at`, `last_article_at`), Step Functions executions, FailedExecutions; where vision is on, each vision topic's running state (bounded, 3 s) | per topic: researched, published, held or failed today; with a topic, the failed step and error class; one sentence on the vision topics whose sites were not measured, or whose worker is off, with a card per problem |
 | `admin_inbox(topic?, limit=5)` | ModerationQueue (`status` + `created_at` index) | count, then each held article: topic, age, hold reasons ("draft truncated", "financial topic") |
 | `content_checks(days=7)` | Articles (published in the last `days`, 1 to 30; the newest 40), their bodies in S3 (one read each), Musings | published things that look wrong: a musing with an article link but no text; an article whose title carries markup (`**`, a leading `#`, a backtick, an HTML tag, quotes around the whole of it); an article whose body is one code fence; a musing that links to an article that is not published |
 | `security_events(days=7)` | SecurityEvents (open, last seen in the last `days`, 1 to 30) | how many at each severity; per incident its category, request count, first and last seen, and the playbook's next steps. Only a high-severity incident is a finding |
 | `alarms()` | CloudWatch `DescribeAlarms` (this environment's only: `bloggerbear-<env>-*`; with no environment configured it refuses) | anything in ALARM, and since when |
 | `spend(period)` | the Stats rows (Bedrock tracking + the Cost Explorer poll) | AI spend, in AUD, for the `week` so far or the `month` (the last four weeks); this week against a typical one (the median of the last eight complete weeks). A finding only above twice a typical week. The whole AWS bill too, the same way, **only where the module's `account_wide_data` is on** (production); elsewhere it says the bill is not available from this environment (section 6) |
-| `log_review(function?, topic?, hours=24, start?, end?)` | fixed Logs Insights queries over this environment's Lambda log groups (by name and tag), plus the 7-day baseline | per function: error lines, each one's root cause and fix type, whether it is unusual, runs, duration and memory; check-it-yourself cards. **Not the firewall.** Built: [the log reader](ops-assistant-log-reader.md) |
+| `log_review(function?, topic?, hours=24, start?, end?)` | fixed Logs Insights queries over this environment's Lambda log groups (by name and tag), plus the 7-day baseline | per function: error lines, each one's root cause and fix type, whether it is unusual, runs, duration and memory; check-it-yourself cards. **Not the firewall.** Where vision is on, also the vision worker's log group in `vision_region`, read as its own group. Built: [the log reader](ops-assistant-log-reader.md) |
+| `vision_status(topic?)` | Topics (one Scan), and where vision is on each vision topic's running state (`snapshots/<topic>/running-state.json`, bounded in bytes and time) | whether the worker is on and where; per vision topic and site: last measured, the newest scene, and why a site was not measured, each problem a card with its fix. Site names and error text only in "(unverified)" columns, only for the page; Alexa+ gets counts and reasons. Built: [the assistant's vision round](ops-assistant-vision.md) |
 | `api_errors(api?, status?, hours=24, start?, end?)` | fixed queries over the APIs' access logs | errors by status and who answered, root cause and fix type, error rate, first and peak hour |
 | `follow_up()` | OperatorSuggestions (the caller's rows), then the source tables to re-check each open suggestion with the same code that found it | `fixed` (reported, and the row deleted), `cleared` (the same, for the kinds that stop being true by themselves: section 4), `open` (each with how long it has waited) and, as `findings`, the open ones again with their suggestions rebuilt from the catalogue (section 4) |
 | `dismiss(kind, id)` | writes OperatorSuggestions | "leave that one": the row is marked dismissed, and the tool that finds it leaves it out of `findings` from then on |
@@ -364,6 +365,11 @@ given the values.
   on most days nobody needs them. The agent Lambda enforces it in code, not just in the prompt: a
   deep-dive tool is only offered to the model on a follow-up turn, never on the briefing turn.
   More deep dives (one topic's whole history, one function's errors) can be added the same way.
+- **`vision_status` is not a deep dive.** It reads the project's own state (one Scan, then one
+  bounded read per vision topic), its text is scrubbed, and none of it goes to a voice caller, so
+  it is offered on every turn, like `table_sample`. Briefings get vision through `pipeline_health`,
+  which carries code-derived fields only. The vision worker's log is read by `log_review`, not by a
+  deep dive of its own.
 - **`firewall_review` will be registered only where `account_wide_data` is on.** The firewall it
   reads serves both sites, so what it reports is not one environment's. When it is built, the
   server registers it only under that flag (production); dev's assistant will not have the tool
@@ -390,7 +396,7 @@ longer answers "check CloudWatch yourself". Full write-up:
 | Tool | Reads | Returns |
 |---|---|---|
 | `architecture(name?, kind?)` | nothing: the catalogue in `lambdas/ops_mcp/architecture.py` | what a resource is for in **this** environment: keys, indexes, TTL, who writes and reads it, its log groups, dashboards, alarms and a console link, as a `table`. A name from the other environment is answered for this one (`rewritten`); a name for neither environment is described but `data_allowed` is false |
-| `investigate(symptom?, status?, api?)` | nothing: the runsheets in `lambdas/ops_mcp/runsheets.py` | a runsheet as a `table`: what the assistant can check itself first, then dashboards, AWS's own console dashboards, log groups and console links in order, with each Logs Insights query as a `how_to` card to copy |
+| `investigate(symptom?, status?, api?)` | nothing: the runsheets in `lambdas/ops_mcp/runsheets.py` | a runsheet as a `table`: what the assistant can check itself first, then dashboards, AWS's own console dashboards, log groups and console links in order, with each Logs Insights query as a `how_to` card to copy. `vision` links the worker's log and function in the vision Region |
 | `table_sample(name, topic?, rows=1)` | the named table, if it carries the project's default tags and an Environment this assistant may read (checked by IAM and in code; never `ops-briefings`) | the newest row(s), redacted, as a `table`, and for findings and candidate ideas whether each topic's newest row is on time. SecurityEvents' `untrusted` payload and `client_hash` are never fetched |
 
 ### 2. The briefing: the agent orchestrates
@@ -744,6 +750,7 @@ to keep, not something the account gives for free.
 | Tracked AI spend (what the pipeline counted itself) | dev's | production's |
 | The whole AWS bill | no: "not available from this environment" | yes (both environments together; it cannot be split) |
 | Firewall deep dive (`firewall_review`) | no: not registered | yes (the firewall serves both sites) |
+| Vision (`vision_status`, the worker's log) | where `vision_enabled` is on: dev's worker and running states | where `vision_enabled` is on: production's worker and running states (never shared) |
 
 How it is kept, in four layers (`infra/modules/ops-assistant/isolation.tf` has the detail):
 

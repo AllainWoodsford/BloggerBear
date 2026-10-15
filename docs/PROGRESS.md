@@ -697,6 +697,17 @@ All shipped and deployed; the design and decisions for each are in
   `rail_access topics` section, the friction entries, and the earlier docs brought in line with
   the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
   (#296, rail PR F2)
+- [x] The assistant's vision round: the operator's assistant and Alexa+ see the vision pipeline,
+  read-only and only where vision is on. `vision_status` (is the worker on and where, which sites
+  were measured and why the others were not, a card per problem), vision topics in
+  `pipeline_health` and the topic watch, the worker's log read in `vision_region`, the
+  `vision-pipeline` feature, the `vision` guide and runsheet; site names and error text only in
+  "(unverified)" columns for the page, never to a voice caller; no list change and no echo after
+  text written outside the project, held in code; `redact.scrub` withholds instructions however
+  they are spaced or spelt; a sites config is never filled in (#300, on the integration branch
+  for the assistant's work after #285; `lambdas/ops_mcp/vision_status.py`,
+  `lambdas/common/adapters/base.py`, `lambdas/ops_agent/policy.py`,
+  `infra/modules/ops-assistant/vision.tf`; [design](enhancements/ops-assistant-vision.md))
 
 ## Backlog / not yet scheduled
 
