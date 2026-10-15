@@ -13,11 +13,18 @@ forced is_financial logic, so they can't drift apart.
 
 from __future__ import annotations
 
-from . import CRYPTO_FEED_ADAPTER_KEY, WEB_SEARCH_ADAPTER_KEY
+from . import (
+    CRYPTO_FEED_ADAPTER_KEY,
+    RAIL_ACCESS_ADAPTER_KEY,
+    SATELLITE_VISION_ADAPTER_KEY,
+    WEB_SEARCH_ADAPTER_KEY,
+)
 from .base import Adapter
 from .crypto_feed import CryptoFeedAdapter
 from .github_trending import GitHubTrendingAdapter
 from .hacker_news import HackerNewsAdapter
+from .rail_access import RailAccessAdapter
+from .satellite_vision import SatelliteVisionAdapter
 from .web_search import WebSearchAdapter
 
 ADAPTER_REGISTRY: dict[str, type[Adapter]] = {
@@ -25,4 +32,6 @@ ADAPTER_REGISTRY: dict[str, type[Adapter]] = {
     "hacker_news": HackerNewsAdapter,
     CRYPTO_FEED_ADAPTER_KEY: CryptoFeedAdapter,
     WEB_SEARCH_ADAPTER_KEY: WebSearchAdapter,
+    SATELLITE_VISION_ADAPTER_KEY: SatelliteVisionAdapter,
+    RAIL_ACCESS_ADAPTER_KEY: RailAccessAdapter,
 }

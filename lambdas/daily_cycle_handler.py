@@ -6,9 +6,11 @@ on a schedule is Phase 3 and is intentionally not built here.
 Flow (see docs/project-plan.md §4 "Daily Authoring Cycle" and §5 data
 model):
 1. Load topic.
-2. Load every finding since the topic's previous article, at most
-   FINDINGS_WINDOW_HOURS back (the whole window the research loop covered, not
-   just the newest few); bail out if there's nothing new to write about.
+2. Load every finding since the topic's previous article, at most the topic's
+   findings window back (FINDINGS_WINDOW_HOURS unless it sets its own
+   `findings_window_hours`, see common/findings_window.py; the whole window the
+   research loop covered, not just the newest few); bail out if there's nothing
+   new to write about.
    Topics with a daily editorial goal (the crypto feed -- see
    common/editorial_goals.py) resolve today's goal here and keep only the
    findings that belong to it; its mandate and article style are folded into
@@ -71,6 +73,12 @@ from common.editorial_resolver import (
     resolve_editorial_goals,
 )
 from common.fact_check import fact_check_label
+from common.figures import figures_for_findings
+from common.findings_window import (
+    FINDINGS_WINDOW_HOURS,
+    findings_window_error,
+    findings_window_hours,
+)
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.musings import generate_and_store_article_musing
@@ -86,9 +94,13 @@ from common.stats_tracking import record_article_lineage, refresh_articles_snaps
 
 # An article is written from everything the research loop found since the last
 # daily run, not from the few newest findings: the window is the day the run
-# covers, the count is a safety cap, and the character budget keeps a busy
-# topic's prompt bounded (the oldest findings drop out first).
-FINDINGS_WINDOW_HOURS = 24
+# covers (FINDINGS_WINDOW_HOURS, or the topic's own findings_window_hours, up to
+# MAX_FINDINGS_WINDOW_HOURS: both from common/findings_window.py), the count is a
+# safety cap, and the character budget keeps a busy topic's prompt bounded (the
+# oldest findings drop out first). list_recent_findings is a descending Query on
+# captured_at with this as its Limit, so when a wide window holds more findings
+# than the cap it is the oldest that are left out, never the newest
+# (tests/test_findings_window.py, tests/test_daily_cycle_handler.py).
 MAX_WINDOW_FINDINGS = 48
 SUMMARIES_MAX_CHARS = 40_000
 # An article draft is a few paragraphs to a few pages; the 1,024-token default cut real
@@ -206,16 +218,32 @@ def _handle(event: dict) -> dict:
         return {"status": "error", "topic_id": topic_id, "error": str(exc)}
 
 
+def _window_hours(topic: dict) -> int:
+    """The topic's findings window in hours (common/findings_window.py). A stored value that is
+    not a whole number of hours in range is said in the log and the default used, never raised:
+    a hand-edited topic must not stop its articles."""
+    stored = topic.get("findings_window_hours")
+    problem = findings_window_error(stored)
+    if problem:
+        print(
+            f"daily_cycle_handler: topic_id={topic.get('topic_id')} findings_window_hours "
+            f"{stored!r:.40} {problem}; using the default {FINDINGS_WINDOW_HOURS} h"
+        )
+    return findings_window_hours(topic)
+
+
 def _window_start(topic: dict, run_started: datetime, force: bool) -> str:
     """ISO timestamp findings must be captured at or after to feed this article.
 
-    The window is the last FINDINGS_WINDOW_HOURS, but never reaches back past the
-    topic's previous article (`last_article_at`), so a second run with nothing
-    found since the last one has nothing to write about instead of rewriting the
-    same findings. `force` ignores the previous article (an operator asking for
-    a fresh take on the whole window).
+    The window is the topic's findings window (the last FINDINGS_WINDOW_HOURS
+    unless it sets `findings_window_hours`, e.g. a topic that writes on some days
+    only), but never reaches back past the topic's previous article
+    (`last_article_at`), so a second run with nothing found since the last one
+    has nothing to write about instead of rewriting the same findings. `force`
+    ignores the previous article (an operator asking for a fresh take on the
+    whole window); the window itself still applies.
     """
-    floor = run_started - timedelta(hours=FINDINGS_WINDOW_HOURS)
+    floor = run_started - timedelta(hours=_window_hours(topic))
     last_article_at = None if force else topic.get("last_article_at")
     if last_article_at:
         try:
@@ -252,7 +280,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     since = _window_start(topic, run_started, force)
     findings = list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
     if not findings:
-        # Nothing new since the topic's last article (or in the last day): better
+        # Nothing new since the topic's last article (or in its findings window): better
         # no article than one rewritten from findings a previous run already used.
         return {"status": "no_findings", "topic_id": topic_id}
 
@@ -330,6 +358,8 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         hold_reasons.append(TRUNCATED_DRAFT_REASON)
     if not title_is_plausible:
         hold_reasons.append(IMPLAUSIBLE_TITLE_REASON)
+    if compliance.requires_manual_review(topic):
+        hold_reasons.append(compliance.MANUAL_REVIEW_REASON)
     if hold_reasons:
         print(f"daily_cycle_handler: holding {hold_reasons} for topic_id={topic_id}")
 
@@ -1002,6 +1032,9 @@ def _publish_or_moderate(
     for finding in findings:
         source_refs.extend(finding.get("source_refs") or [])
     source_refs = dedupe_source_refs(source_refs)
+    # The pictures those findings came with (common/figures.py): the newest few, each once,
+    # stored on the article and copied onto its page when it is published.
+    figures = figures_for_findings(findings)
 
     compliant = review["compliant"] and not hold_reasons
     reasons = hold_reasons + list(review["reasons"])
@@ -1021,6 +1054,7 @@ def _publish_or_moderate(
         **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
         **({"equipment_used": equipment_used} if equipment_used is not None else {}),
         **({"attribution": attribution} if attribution is not None else {}),
+        figures=figures,
     )
 
     if compliant:
@@ -1041,6 +1075,7 @@ def _publish_or_moderate(
             fact_check=fact_check_label(fresh_review_record, "ai_only"),
             equipment_used=equipment_used,
             attribution=attribution,
+            figures=figures,
         )
         generate_and_store_article_musing(
             article_id=article_id,

@@ -702,6 +702,26 @@ a {
   margin-top: -14px;
 }
 
+/* A figure the pipeline attached to an article (lambdas/common/figures.py): a map or a chart
+   between the credit line and the body. The image is a block that fills the column and keeps
+   its proportions; the caption sits under it in the muted colour, a little smaller than the
+   body. No inline styles anywhere: the site's CSP forbids them. */
+.article-figure {
+  margin: 0 0 1.5em;
+}
+
+.article-figure img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.article-figure figcaption {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 0.4em;
+}
+
 /* Full lineage stats footer -- same treatment as .sources-footer, with a
    definition list for the label/value rows. */
 .lineage-footer {

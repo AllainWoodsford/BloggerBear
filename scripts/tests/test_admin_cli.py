@@ -409,7 +409,10 @@ def test_topics_trigger_daily_cycle_times_out(monkeypatch, capsys):
     monkeypatch.setattr(admin_cli, "_POLL_INTERVAL_SECONDS", 0.01)
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"candidates": []})):
         _run(["topics", "trigger", "my-topic", "--pipeline", "daily_cycle"])
-    assert "No new candidates after" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "No new candidates after" in err
+    # --force reaches back the topic's own findings window, not always a day.
+    assert "findings_window_hours" in err and "last-24h" not in err
 
 
 def test_topics_findings_calls_get():
@@ -753,6 +756,52 @@ def test_a_non_numeric_research_interval_is_refused_before_any_request(capsys):
     assert exc_info.value.code != 0
     m.assert_not_called()
     assert "whole number of hours" in capsys.readouterr().err
+
+
+def test_topics_create_sends_a_findings_window():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(
+            ["topics", "create", "--topic-id", "rail-sydney", "--name", "Sydney rail",
+             "--findings-window-hours", "192"]
+        )
+    assert m.call_args.kwargs["body"]["findings_window_hours"] == 192
+
+
+def test_topics_create_without_a_findings_window_sends_none():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(201, {})) as m:
+        _run(["topics", "create", "--topic-id", "rail-sydney", "--name", "Sydney rail"])
+    assert "findings_window_hours" not in m.call_args.kwargs["body"]
+
+
+def test_topics_update_sets_a_findings_window():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "rail-sydney", "--findings-window-hours", "192"])
+    assert m.call_args.args[:3] == ("PUT", "https://api.example.com", "/topics/rail-sydney")
+    assert m.call_args.kwargs["body"] == {"findings_window_hours": 192}
+
+
+def test_topics_update_clears_a_findings_window_with_an_empty_string():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "update", "rail-sydney", "--findings-window-hours", ""])
+    assert m.call_args.kwargs["body"] == {"findings_window_hours": None}
+
+
+def test_a_findings_window_and_a_research_interval_go_together():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(
+            ["topics", "update", "rail-sydney", "--research-interval-hours", "24",
+             "--findings-window-hours", "192"]
+        )
+    assert m.call_args.kwargs["body"] == {"research_interval_hours": 24, "findings_window_hours": 192}
+
+
+def test_a_non_numeric_findings_window_is_refused_before_any_request_and_named(capsys):
+    with patch("admin_cli.signed_request") as m:
+        with pytest.raises(SystemExit) as exc_info:
+            _run(["topics", "update", "rail-sydney", "--findings-window-hours", "a week"])
+    assert exc_info.value.code != 0
+    m.assert_not_called()
+    assert "--findings-window-hours must be a whole number of hours" in capsys.readouterr().err
 
 
 def test_pipeline_config_get():

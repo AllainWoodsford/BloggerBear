@@ -113,6 +113,8 @@ def put_finding(
     raw_snapshot_s3_key: str,
     source_refs: list[dict],
     research_call: dict | None = None,
+    figures: list[dict] | None = None,
+    planner_notes: list[dict] | None = None,
 ) -> None:
     """Write a Finding item to the Findings table.
 
@@ -124,6 +126,15 @@ def put_finding(
     the Finding so the research spend can be tallied into whichever article the
     Finding ends up feeding (common/costing.py's build_research_lineage). A
     Finding written before research tracking has none.
+
+    `figures` is what the adapter drew for this observation (common/figures.py:
+    [{"key", "caption", "alt"}], the key a PNG in the content bucket), stored only
+    when there is at least one: most sources draw nothing, and an absent field reads
+    the same as an empty list everywhere it is used.
+
+    `planner_notes` is the adapter's rule-based notes on what it measured
+    (Adapter.planner_notes: the rail adapter's flags and simulations), DynamoDB-ready
+    (numbers as Decimal), stored likewise only when there is at least one.
     """
     table = get_table(os.environ["FINDINGS_TABLE"])
     item = {
@@ -136,6 +147,10 @@ def put_finding(
     }
     if research_call is not None:
         item["research_call"] = research_call
+    if figures:
+        item["figures"] = figures
+    if planner_notes:
+        item["planner_notes"] = planner_notes
     table.put_item(Item=item)
 
 
@@ -283,6 +298,7 @@ def put_article(
     body_original_s3_key: str | None = None,
     equipment_used: list[dict] | None = None,
     attribution: list[dict] | None = None,
+    figures: list[dict] | None = None,
 ) -> dict:
     """Write an Articles item and return it.
 
@@ -291,6 +307,11 @@ def put_article(
     showing the credit it was published with even if the adapter's declaration changes. An empty
     list means it was drafted with nothing to credit; absent means it predates this and readers
     of it fall back to the topic's adapter.
+
+    `figures` are the pictures the article shows (common/figures.py: [{"key", "caption", "alt"}],
+    gathered from the findings it was written from), stored only when there is at least one. The
+    count of them is what a take-down needs to remove the copies on the site, so the list is
+    fixed here and never edited afterwards.
 
     `equipment_used` is the gear whose guidance was in the prompts that wrote this article
     (common/equipment.py: [{"topic_id", "version", "slot"}]); an empty list means it was written
@@ -332,6 +353,8 @@ def put_article(
         item["equipment_used"] = equipment_used
     if attribution is not None:
         item["attribution"] = attribution
+    if figures:
+        item["figures"] = figures
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 

@@ -78,6 +78,7 @@ from common.dynamo import (
     update_article_net_votes,
 )
 from common.fact_check import fact_check_label
+from common.figures import public_figures
 from common.source_refs import dedupe_source_refs
 from common.static_pages import equipment_snapshot
 from common.stats import build_stats, rewindow_daily
@@ -441,6 +442,10 @@ def _get_article_detail(event: dict) -> dict:
             "equipment_used": equipment_snapshot(article.get("equipment_used")),
             # The source credit shown under the title: [{"text", "label", "url"}], nothing else.
             "attribution": _article_attribution(article),
+            # The pictures under the credit line, as site paths (common/figures.py): always
+            # present, empty for the many articles that have none; the content-bucket key never
+            # leaves the pipeline.
+            "figures": public_figures(article["article_id"], article.get("figures")),
         },
         # Its view_count can be a minute behind; the page shows the live count the view POST returns.
         cache_seconds=_LISTING_CACHE_SECONDS,

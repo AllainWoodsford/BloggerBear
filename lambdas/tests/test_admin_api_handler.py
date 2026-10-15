@@ -11,6 +11,7 @@ from moto import mock_aws
 from table_schemas import create_table
 
 import admin_api_handler
+from common.adapters import MANUAL_REVIEW_ADAPTERS
 
 REGION = "ap-southeast-2"
 
@@ -1248,9 +1249,9 @@ def test_unpublish_takes_a_published_article_down(aws_resources):
         "musings_removed": 1,
         "cache_invalidated": True,
     }
-    mock_remove.assert_called_once_with("article-1")
+    mock_remove.assert_called_once_with("article-1", figure_count=0)
     mock_musings.assert_called_once_with("article-1")
-    mock_invalidate.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1", figure_count=0)
 
     article = boto3.resource("dynamodb", region_name=REGION).Table("Articles").get_item(
         Key={"article_id": "article-1"}
@@ -1339,9 +1340,9 @@ def test_unpublish_can_be_repeated_on_an_already_rejected_article(aws_resources)
     result, mock_remove, mock_musings, mock_invalidate = _unpublish()
 
     assert result["statusCode"] == 200
-    mock_remove.assert_called_once_with("article-1")
+    mock_remove.assert_called_once_with("article-1", figure_count=0)
     mock_musings.assert_called_once_with("article-1")
-    mock_invalidate.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1", figure_count=0)
 
 
 def test_unpublish_refuses_an_article_still_awaiting_moderation(aws_resources):
@@ -2481,6 +2482,96 @@ def test_something_that_is_not_a_number_still_fails_loudly():
         admin_api_handler._response(200, {"when": object()})
 
 
+# --- A topic's findings window (common/findings_window.py) ----------------------------------------
+#
+# How far back the daily article reads findings: validated exactly as research_interval_hours is,
+# stored only when set, and cleared with null.
+
+
+def _stored_topic(topic_id):
+    return boto3.resource("dynamodb", region_name=REGION).Table("Topics").get_item(
+        Key={"topic_id": topic_id}
+    ).get("Item")
+
+
+@pytest.mark.parametrize("hours", [1, 192, 336])
+def test_a_topic_can_be_created_with_a_findings_window(aws_resources, hours):
+    result = _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": hours})
+
+    assert result["statusCode"] == 201
+    assert json.loads(result["body"])["findings_window_hours"] == hours
+    assert _stored_topic("rail-sydney")["findings_window_hours"] == hours
+
+
+def test_a_topic_created_without_a_findings_window_stores_none(aws_resources):
+    _create({"topic_id": "rail-sydney", "name": "Sydney rail"})
+    _create({"topic_id": "rail-boston", "name": "Boston rail", "findings_window_hours": None})
+
+    assert "findings_window_hours" not in _stored_topic("rail-sydney")
+    assert "findings_window_hours" not in _stored_topic("rail-boston")
+
+
+@pytest.mark.parametrize("bad", [0, 337, 1.5, "24", True, -1, [24]])
+def test_an_invalid_findings_window_is_refused_on_create(aws_resources, bad):
+    result = _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": bad})
+
+    assert result["statusCode"] == 400
+    assert json.loads(result["body"])["error"] == (
+        "'findings_window_hours' must be a whole number of hours from 1 to 336, or null for the "
+        "default (24)"
+    )
+    assert _stored_topic("rail-sydney") is None
+
+
+def test_a_findings_window_can_be_set_changed_and_cleared_on_update(aws_resources):
+    _put_topic()
+
+    for hours in (192, 336):
+        result = _update("github-trending", {"findings_window_hours": hours})
+        assert result["statusCode"] == 200
+        assert _stored_topic("github-trending")["findings_window_hours"] == hours
+
+    cleared = _update("github-trending", {"findings_window_hours": None})
+
+    assert cleared["statusCode"] == 200
+    assert "findings_window_hours" not in json.loads(cleared["body"])
+    assert "findings_window_hours" not in _stored_topic("github-trending")  # back to the default day
+
+
+@pytest.mark.parametrize("bad", [0, 337, 1.5, "24", True])
+def test_an_invalid_findings_window_is_refused_on_update_and_changes_nothing(aws_resources, bad):
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+
+    result = _update("github-trending", {"findings_window_hours": bad})
+
+    assert result["statusCode"] == 400
+    assert "'findings_window_hours' must be a whole number of hours" in json.loads(result["body"])["error"]
+    assert _stored_topic("github-trending")["findings_window_hours"] == 192
+
+
+def test_an_unrelated_update_keeps_the_findings_window(aws_resources):
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+
+    _update("github-trending", {"name": "Renamed"})
+
+    assert _stored_topic("github-trending")["findings_window_hours"] == 192
+
+
+def test_a_topic_s_findings_window_is_fetched_and_listed_as_a_whole_number(aws_resources):
+    _create({"topic_id": "rail-sydney", "name": "Sydney rail", "findings_window_hours": 192})
+
+    fetched = admin_api_handler.handler(
+        _event("GET /topics/{topic_id}", path_params={"topic_id": "rail-sydney"}), None
+    )
+    listed = admin_api_handler.handler(_event("GET /topics"), None)
+
+    assert fetched["statusCode"] == 200 and listed["statusCode"] == 200
+    window = json.loads(fetched["body"])["findings_window_hours"]
+    assert window == 192 and isinstance(window, int)
+    (topic,) = json.loads(listed["body"])["topics"]
+    assert topic["findings_window_hours"] == 192 and isinstance(topic["findings_window_hours"], int)
+
+
 # --- Creating and deleting gear by hand ------------------------------------------------------
 
 
@@ -3118,8 +3209,8 @@ def test_force_takes_a_published_article_down_before_rewriting_it(aws_resources)
     assert result["statusCode"] == 202
     assert body["unpublished"] is True and body["musings_removed"] == 2 and body["cache_invalidated"] is True
     assert body["model_id"] == "anthropic.claude-3-haiku-20240307-v1:0"  # the topic's (here: the default)
-    mocks["remove"].assert_called_once_with("article-1")
-    mocks["invalidate"].assert_called_once_with("article-1")
+    mocks["remove"].assert_called_once_with("article-1", figure_count=0)
+    mocks["invalidate"].assert_called_once_with("article-1", figure_count=0)
     assert _article_row()["status"] == "pending_moderation"
     rows = _queue_rows()
     assert rows["queue-1"]["status"] == "approved"  # the old decision is history, left alone
@@ -3272,3 +3363,191 @@ def test_a_stored_assistant_access_nobody_understands_is_shown_as_off(aws_resour
 
     assert body["assistant_access"] == "locked"
     assert body["effective_assistant_access"] == "off"
+
+
+POLYGON = [[151.2, -33.97], [151.3, -33.97], [151.3, -34.0]]
+
+
+def test_create_topic_satellite_vision_forces_manual_review(aws_resources):
+    body = {
+        "topic_id": "anchorages",
+        "name": "Anchorages",
+        "adapter": "satellite_vision",
+        "adapter_config": {"sites": [{"id": "a", "polygon": POLYGON}]},
+        "force_manual_review": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["force_manual_review"] is True
+    # Floats in the config are stored (as Decimals) and come back as the same numbers.
+    assert created["adapter_config"]["sites"][0]["polygon"] == POLYGON
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    stored = table.get_item(Key={"topic_id": "anchorages"})
+    assert stored["Item"]["adapter_config"]["sites"][0]["polygon"][0][0] == Decimal("151.2")
+
+
+def test_update_topic_accepts_floats_in_adapter_config(aws_resources):
+    _put_topic()
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter_config": {"weights": [0.25, 1.5]}},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["adapter_config"] == {"weights": [0.25, 1.5]}
+
+
+def test_force_manual_review_can_be_set_on_any_topic_and_must_be_a_boolean(aws_resources):
+    _put_topic()
+    path = {"topic_id": "github-trending"}
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        on = admin_api_handler.handler(
+            _event("PUT /topics/{topic_id}", path_params=path, body={"force_manual_review": True}), None
+        )
+        bad = admin_api_handler.handler(
+            _event("PUT /topics/{topic_id}", path_params=path, body={"force_manual_review": "yes"}), None
+        )
+        bad_create = admin_api_handler.handler(
+            _event("POST /topics", body={"topic_id": "x", "name": "X", "force_manual_review": 1}), None
+        )
+    assert json.loads(on["body"])["force_manual_review"] is True
+    assert bad["statusCode"] == 400 and bad_create["statusCode"] == 400
+
+
+def test_update_cannot_unset_manual_review_on_a_satellite_vision_topic(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "sv", "adapter": "satellite_vision", "force_manual_review": True})
+    event = _event(
+        "PUT /topics/{topic_id}", path_params={"topic_id": "sv"}, body={"force_manual_review": False}
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+RAIL_CONFIG = {"sites": [{"id": "sydney", "name": "Sydney", "polygon": POLYGON}], "reach_m": 1000}
+
+
+def test_the_manual_review_adapters_are_the_two_vision_ones():
+    assert MANUAL_REVIEW_ADAPTERS == frozenset({"satellite_vision", "rail_access"})
+
+
+def test_create_topic_rail_access_forces_manual_review(aws_resources):
+    body = {
+        "topic_id": "rail",
+        "name": "Rail access",
+        "adapter": "rail_access",
+        "adapter_config": RAIL_CONFIG,
+        "force_manual_review": False,
+    }
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(_event("POST /topics", body=body), None)
+    assert result["statusCode"] == 201
+    created = json.loads(result["body"])
+    assert created["force_manual_review"] is True
+    assert created["adapter_config"]["reach_m"] == 1000
+
+
+def test_update_cannot_unset_manual_review_on_a_rail_access_topic(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "rail", "adapter": "rail_access", "force_manual_review": True})
+    event = _event(
+        "PUT /topics/{topic_id}", path_params={"topic_id": "rail"}, body={"force_manual_review": False}
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+@pytest.mark.parametrize("adapter", sorted(MANUAL_REVIEW_ADAPTERS))
+def test_switching_a_topic_onto_a_manual_review_adapter_forces_the_flag(aws_resources, adapter):
+    _put_topic()  # github-trending, with no flag at all
+    event = _event(
+        "PUT /topics/{topic_id}",
+        path_params={"topic_id": "github-trending"},
+        body={"adapter": adapter, "adapter_config": RAIL_CONFIG},
+    )
+    with patch("admin_api_handler.upsert_topic_schedules"):
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 200
+    assert json.loads(result["body"])["force_manual_review"] is True
+
+
+# --- figures (common/figures.py) ------------------------------------------------------------------
+
+_FIGURES = [
+    {"key": "vision/t/s/a.png", "caption": "A map", "alt": "The map"},
+    {"key": "vision/t/s/b.png", "caption": "A chart", "alt": "The chart"},
+    {"key": "vision/t/s/c.png", "caption": "Another", "alt": "Another"},
+]
+
+
+def _store_figures(article_id="article-1", figures=_FIGURES):
+    boto3.resource("dynamodb", region_name=REGION).Table("Articles").update_item(
+        Key={"article_id": article_id},
+        UpdateExpression="SET figures = :f",
+        ExpressionAttributeValues={":f": figures},
+    )
+
+
+def test_unpublish_removes_the_articles_figures_with_its_page(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+    _store_figures()
+
+    result, mock_remove, _, mock_invalidate = _unpublish()
+
+    assert result["statusCode"] == 200
+    mock_remove.assert_called_once_with("article-1", figure_count=3)
+    mock_invalidate.assert_called_once_with("article-1", figure_count=3)  # and /articles/figures/article-1/*
+
+
+def test_a_forced_rewrite_takes_the_figures_down_with_the_page(aws_resources):
+    _put_article(status="published")
+    _put_moderation_item(status="approved")
+    _store_figures()
+
+    result, _, _, mocks = _rewrite_article(body={"instructions": "Out of date.", "force": True})
+
+    assert result["statusCode"] == 202
+    mocks["remove"].assert_called_once_with("article-1", figure_count=3)
+    mocks["invalidate"].assert_called_once_with("article-1", figure_count=3)
+
+
+def test_publishing_renders_the_page_with_the_stored_figures_so_they_are_copied_again(aws_resources):
+    _put_article(status="pending_moderation")
+    _put_topic()
+    _store_figures()
+
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page") as mock_render_page,
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 200
+    assert mock_render_page.call_args.kwargs["figures"] == _FIGURES
+
+
+def test_get_article_shows_the_figures_the_page_will_and_where_they_come_from(aws_resources):
+    _put_article()
+    _store_figures(figures=[*_FIGURES[:1], {"key": "../x.png", "caption": "x", "alt": "x"}])
+
+    with patch("admin_api_handler.read_article_body", return_value="# Body"):
+        code, body = _get_article_route()
+
+    assert code == 200
+    assert body["figures"] == _FIGURES[:1]  # the one that is well-formed, with its content-bucket key
+
+
+def test_get_article_has_an_empty_figures_list_when_there_are_none(aws_resources):
+    _put_article()
+
+    with patch("admin_api_handler.read_article_body", return_value="# Body"):
+        _, body = _get_article_route()
+
+    assert body["figures"] == []

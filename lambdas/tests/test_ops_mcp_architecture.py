@@ -38,9 +38,11 @@ def _of_kind(kind: str) -> dict[str, architecture.Component]:
     return {c.key: c for c in CATALOGUE if c.kind == kind}
 
 
-# The functions the ops-assistant module makes. Every other function is made by an environment root
-# and handed to observability, which gives it an errors and a throttles alarm.
-MODULE_FUNCTIONS = {"ops-agent", "ops-mcp"}
+# The functions modules make: the ops-assistant module's two, and the vision-worker module's (in the
+# vision Region, so observability's alarms in the home Region can't watch it). Every other function
+# is made by an environment root and handed to observability, which gives it an errors and a
+# throttles alarm.
+MODULE_FUNCTIONS = {"ops-agent", "ops-mcp", "vision-worker"}
 
 
 def _template(terraform_name: str) -> str:

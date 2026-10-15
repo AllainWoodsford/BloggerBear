@@ -56,7 +56,7 @@ In the order you are likely to need them.
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
 | [Repository protection](docs/todo/public-repo-runsheet.md) | The GitHub settings for a public repository: rulesets, required reviewers, secret scanning. |
 | [Alexa+ add-on](alexa/README.md) | Optional: putting the operator's assistant on Alexa+. |
-| [Architecture by feature](docs/architecture/README.md) | The project one feature at a time, across the layers. First: [article research](docs/architecture/article-research.md), from a data source and its API keys to an article in S3. |
+| [Architecture by feature](docs/architecture/README.md) | The project one feature at a time, across the layers. First: [article research](docs/architecture/article-research.md), from a data source and its API keys to an article in S3. Then [vision](docs/architecture/blogger-vision.md), from a satellite scene to a map on the page, with the rail concepts explained. |
 | [Project plan](docs/project-plan.md) | The design and the reasons behind it. Long; read it before a non-trivial change. |
 | [Friction log](docs/friction.md) | Problems met while building and deploying this, and what fixed them. |
 | [Contributing](CONTRIBUTING.md) and [Security](SECURITY.md) | How to take part, and how to report a vulnerability. |
@@ -220,8 +220,9 @@ Held articles wait in the review inbox (`admin_cli approve`), where they can be 
 rejected, or **re-written** in the background by a chosen model, which runs the reviews again.
 
 More jobs run on fixed, Terraform-managed schedules: a **daily cross-topic digest** ("Trending
-Everywhere") that publishes through the same review path; a **weekly reflection** that reads
-reader feedback and proposes prompt refinements, which become **gear** the bear wears once
+Everywhere") that publishes through the same review path, leaving out any topic whose articles
+always wait for a person (`force_manual_review`, the vision topics); a **weekly reflection** that
+reads reader feedback and proposes prompt refinements, which become **gear** the bear wears once
 approved; **musings** (BloggerBear's short reflections on articles and feedback); a weekly
 **Stats rollover**; and a daily **Cost Explorer poll**.
 
@@ -328,6 +329,39 @@ admin-create-user`, then `admin-set-user-password --permanent`), open `<site>/as
 Edge, sign in, press **Test voice**, then **What needs my attention?**. The Alexa+ add-on is a
 one-time bootstrap per environment: [alexa/README.md](alexa/README.md).
 
+## Vision: satellite imagery and the Rail Access Monitor
+
+BloggerBear can watch places as well as feeds. A vision topic names a few sites as lon/lat
+polygons. On each research tick its adapter finds the newest Sentinel-2 scene over each site
+and asks a small **vision worker** (OpenCV 5 on an arm64 Lambda in us-west-2, beside the
+imagery) to measure it; the worker reads only the tiles under the site and keeps nothing. The
+numbers are diffed against the site's own baseline, so no model is called unless something
+moved (rule 2). A bounded **triage agent** then looks at the figure, may re-measure the scene,
+and says "real" or "artefact"; anything unsure is an artefact. A person approves every article
+(`force_manual_review`; the daily digest leaves these topics out), which carries the data
+credits; the rail task's map reaches the page through the figures path, with a caption that says
+what its symbols are.
+
+Two tasks share the worker:
+
+- **`ships`**: bright, elongated objects on water at a fixed site, counted scene by scene.
+- **`rail_access`**, the Rail Access Monitor: a city's built-up density from the imagery, the
+  walking reach of its stations, and its rail network as a graph from OpenStreetMap, reported
+  as the served share, the transit deserts, the hubs, the isolated stations and simulated links,
+  with the flags and simulations also written out as plain sentences (planner notes). Four
+  starting cities, Sydney, Melbourne, Singapore and Boston, are ready-made topics in
+  [`scripts/rail_topics.example.json`](scripts/rail_topics.example.json).
+
+Deployment is **opt-in and off by default**: nothing of it is created until the `VISION_ENABLED`
+repository variable is `true`
+([configuration](docs/configuration.md#vision-and-rail-access),
+[runsheet](docs/deployment-runsheet.md#vision-optional)). It was built for the
+[OpenCV AI Competition 2026](https://opencv26.devpost.com). The pipeline step by step, and the
+rail concepts in plain words: [docs/architecture/blogger-vision.md](docs/architecture/blogger-vision.md).
+The design, every setting and what was measured: [docs/enhancements/vision.md](docs/enhancements/vision.md).
+The rail task and one specification per pull request:
+[docs/enhancements/rail-access-monitor.md](docs/enhancements/rail-access-monitor.md).
+
 ## What's in the repo
 
 ```
@@ -344,6 +378,12 @@ lambdas/                    Python 3.11, one shared deployment package
   stats_rollover_handler.py      weekly: roll Stats into history
   cost_explorer_poll_handler.py  daily: the AWS bill, every service
   security_events_handler.py     WAF blocks -> SecurityEvents incidents
+  vision_worker_handler.py    the vision worker: OpenCV on one site in one
+                                scene, in its own package, in us-west-2
+  vision/                     the vision core: masks, detection, figures,
+                                the GeoTIFF reader and UTM; the rail task's
+                                built-up heat, reach, network graph and map;
+                                no AWS
   ops_agent_handler.py        the assistant's POST /ask, and its async briefings
   ops_agent/                  the Strands agent and its policy (budget, deep dives)
   ops_mcp/                    the ops MCP server: tools, memory, briefings,
@@ -351,7 +391,14 @@ lambdas/                    Python 3.11, one shared deployment package
   common/                     shared modules; the main ones:
     adapters/                  base.py (contract), registry.py, and one
                                 module per domain: github_trending.py,
-                                hacker_news.py, crypto_feed.py, web_search.py
+                                hacker_news.py, crypto_feed.py, web_search.py,
+                                satellite_vision.py, rail_access.py
+    vision_contract.py, vision_client.py, vision_triage.py
+                                the worker's contract, its caller, the agent
+    vision_sites.py            what the two vision adapters share
+    rail_notes.py              the rail flags and simulations in words
+    osm.py                     OpenStreetMap rail networks through Overpass
+    figures.py                 figures from Findings to article pages
     bedrock.py                 every Bedrock call (Converse API)
     model_routing.py, costing.py, stats_tracking.py
                                 which model, what it cost, weekly totals
@@ -377,6 +424,8 @@ infra/
     ops-assistant/             the operator's assistant: MCP server, agent,
                                 Cognito, OAuth metadata for Alexa+, briefings,
                                 firewall_review (production), isolation
+    vision-worker/             the vision worker in us-west-2, only when
+                                VISION_ENABLED is true
   environments/
     dev/                       auto-deploys on push to `dev`
     production/                deploys only on a GitHub Release from `prod`
@@ -403,6 +452,9 @@ scripts/
   generate_cli_reference.py  rewrites the CLI reference the assistant reads
   pii_denylist_check.py      CI: refuses a change that adds the owner's own
                               personal strings
+  vision_benchmark.py        times the vision worker's OpenCV work (stock
+                              against COOL); fetches a rail scene's network
+  rail_topics.example.json   the Rail Access Monitor's four city topics
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
 
@@ -443,6 +495,7 @@ docs/
   specs/                        the original Phase 0 build spec
   risks/                        known weaknesses, e.g. scaling-findings-01.md
   enhancements/                 designs, built and not yet built
+  hackathon/                    the OpenCV AI Competition 2026 submission draft
 ```
 
 ### Branch & release model
@@ -478,10 +531,13 @@ apply to you. The credits each source asks for are below; keep them wherever the
 | Source | Used by | Credit and terms |
 |---|---|---|
 | **CoinGecko** | The crypto adapter (`lambdas/common/adapters/crypto_feed.py`): prices and market data | Data provided by [CoinGecko](https://www.coingecko.com). Their [attribution guide](https://brand.coingecko.com/resources/attribution-guide) asks for one of a few set phrases, linked to their site, "in a visible location, close to where the data is displayed". An API key is optional ([how to store one](docs/deployment-runsheet.md#api-keys-for-the-data-sources)); the credit is required either way. |
-| **The GDELT Project** | Web search (`lambdas/common/web_search.py`), for topics that search the news | News data from [the GDELT Project](https://www.gdeltproject.org/). Its terms allow any use without fee and say "any use or redistribution of the data must include a citation to the GDELT Project and a link to this website". |
+| **The GDELT Project** | Web search (`lambdas/common/web_search.py`), for topics that search the news, and the rail triage agent's `web_context` tool | News data from [the GDELT Project](https://www.gdeltproject.org/). Its terms allow any use without fee and say "any use or redistribution of the data must include a citation to the GDELT Project and a link to this website". |
 | **GitHub** | The GitHub adapter (`lambdas/common/adapters/github_trending.py`) | Source: [GitHub Trending](https://github.com/trending). The Trending page has no API, so the adapter asks GitHub's documented [REST Search API](https://docs.github.com/en/rest/search/search#search-repositories) the closest question: which recently created repositories have the most stars. Articles link to the repositories they mention. Use of the API is governed by GitHub's [Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) and [Acceptable Use Policies](https://docs.github.com/en/site-policy/acceptable-use-policies/github-acceptable-use-policies). A token is optional ([how to store one](docs/deployment-runsheet.md#api-keys-for-the-data-sources)). |
 | **Hacker News** | The Hacker News adapter (`lambdas/common/adapters/hacker_news.py`) | Stories from [Hacker News](https://news.ycombinator.com/), through its [official API](https://github.com/HackerNews/API). The API's documentation sets no attribution requirement; articles credit and link to the stories they draw on. |
 | **Amazon Bedrock AgentCore web search** | Web search, as the fallback and for topics that ask for it | An AWS service, used under the AWS Customer Agreement. Articles link to the pages they cite. |
+| **Copernicus Sentinel-2** | The vision topics (`lambdas/common/adapters/satellite_vision.py` and `rail_access.py`): the imagery the vision worker measures | Contains modified Copernicus Sentinel data [year]. Free, full and open under the [Copernicus Sentinel data legal notice](https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice), which asks derived products to carry that sentence with the year of the data. The credit sits under each vision article and on the About page (the adapters' `sources`); the ship figure carries a "Processed imagery" notice; the rail figure carries the sentence with the year in the strip under the map, and its page caption repeats it. No key. |
+| **Registry of Open Data on AWS** | The same: the worker reads Sentinel-2 Cloud-Optimized GeoTIFFs from the public `sentinel-cogs` bucket, and the adapter finds scenes through the Earth Search STAC API | Sentinel-2 Cloud-Optimized GeoTIFFs accessed from the [Registry of Open Data on AWS](https://registry.opendata.aws/sentinel-2-l2a-cogs/), which asks to be cited as the source of the copy. No key. |
+| **OpenStreetMap** | The Rail Access Monitor (`lambdas/common/osm.py`, `lambdas/common/adapters/rail_access.py`): rail lines, stations and intermodal points through the Overpass API | Map data © OpenStreetMap contributors, available under the [Open Database Licence](https://www.openstreetmap.org/copyright), which asks for that credit wherever the data is shown: in the rail figure's caption strip (as "(c)": its font has no ©), in its page caption, under each rail article and on the About page (the rail adapter's `sources`). No key. |
 
 Articles are written by a language model through Amazon Bedrock, and every article lists the
 sources it drew on and says how it was written and reviewed.
@@ -495,5 +551,6 @@ Built with, among others: [Requests](https://requests.readthedocs.io/),
 licence; the pinned versions are in `lambdas/requirements*.txt` and `scripts/requirements.txt`.
 
 BloggerBear is an independent project. It is not affiliated with, sponsored by or endorsed by
-CoinGecko, the GDELT Project, GitHub, Y Combinator or Amazon. Their names and marks belong to
+CoinGecko, the GDELT Project, GitHub, Y Combinator, Amazon, the Copernicus programme, the
+European Space Agency, the OpenStreetMap Foundation or OpenCV. Their names and marks belong to
 their owners and are used here only to say where data comes from and what the project runs on.

@@ -56,6 +56,7 @@ from pathlib import Path
 
 from common.dynamo import get_pipeline_config, list_topics
 from common.editorial_resolver import GOAL_FIELDS, validate_editorial_goals
+from common.findings_window import findings_window_error, findings_window_hours
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import topic_match
@@ -736,6 +737,13 @@ ADAPTERS = {
     "hacker_news": "reads Hacker News's top stories",
     # common/adapters/crypto_feed.py; admin_api_handler._create_topic forces is_financial for it.
     "crypto_feed": "reads crypto market data; always treated as financial",
+    # common/adapters/satellite_vision.py: counts what the vision worker sees at the sites in its
+    # config, in each new Sentinel-2 scene.
+    "satellite_vision": "counts objects at fixed sites in new satellite scenes (needs sites in its config)",
+    # common/adapters/rail_access.py: built-up density from each new Sentinel-2 scene against the
+    # OpenStreetMap rail network of each city in its config; admin_api_handler forces
+    # force_manual_review for it, as for satellite_vision.
+    "rail_access": "maps rail access from satellite imagery and OpenStreetMap for the cities in its config",
 }
 
 # The owner's worked example for an editorial goal. `exclusion_criteria` because the validator
@@ -1336,7 +1344,8 @@ def cli_guides(topic: str | None = None, options: Mapping | None = None) -> dict
 
 OVERVIEW_COLUMNS = [
     "Name", "Topic id", "Adapter", "Research heartbeat", "Research interval", "Daily cadence",
-    "Timezone", "Model", "Financial", "Review mode", "Last researched", "Last article",
+    "Timezone", "Findings window", "Model", "Financial", "Review mode", "Last researched",
+    "Last article",
 ]  # fmt: skip
 
 
@@ -1358,6 +1367,16 @@ def _interval(topic: dict, config: dict | None) -> str:
         topic, {"research_interval_hours": 2}
     )
     return f"{hours} h" if own else f"{hours} h (inherited)"
+
+
+def _findings_window(topic: dict) -> str:
+    """How far back the daily article reads findings (common/findings_window.py): the topic's own
+    window, else the default. A stored value the daily cycle would not use is shown as the default
+    it gets instead."""
+    hours = findings_window_hours(topic)
+    stored = topic.get("findings_window_hours")
+    own = stored is not None and findings_window_error(stored) is None
+    return f"{hours} h" if own else f"{hours} h (default)"
 
 
 def _model(topic: dict) -> str:
@@ -1388,6 +1407,7 @@ def _overview_row(topic: dict, config: dict | None) -> list[str]:
         _cell(topic.get("daily_cadence")),
         # A topic created before the option existed has none and runs on UTC (admin_cli's help).
         _cell(topic.get("daily_timezone")) or "UTC",
+        _findings_window(topic),
         _model(topic),
         "yes" if topic.get("is_financial") else "no",
         _review(topic, config),
