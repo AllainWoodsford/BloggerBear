@@ -26,9 +26,11 @@ a topic watches is configuration, not code:
 **Per tick**, for each site in turn (those never visited first, then the longest unvisited, so a
 topic with more sites than it measures per tick rotates through them): find the newest Sentinel-2
 L2A scene over it (Earth Search STAC, free, no key); if it is one the site already has, do nothing;
-otherwise ask the worker to measure it and append the result to the site's history. A site that
-can't be searched or measured keeps its history and records `last_error`: not measured is never
-"nothing there".
+otherwise ask the worker to measure it and append the result to the site's history. The worker is
+asked only while common/vision_sites.MEASURE_RESERVE_SECONDS of the budget remain, and waited on for
+WORKER_READ_TIMEOUT (vision_sites.time_to_measure, the rule rail_access keeps too); a site left
+without time is deferred to the next tick and keeps its place. A site that can't be searched or
+measured keeps its history and records `last_error`: not measured is never "nothing there".
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py) looks at the figure and the evidence, may re-measure the
@@ -180,14 +182,21 @@ class SatelliteVisionAdapter(Adapter):
             if budget.exhausted():
                 record["last_error"] = {"at": now.isoformat(), "code": "time_budget", "detail": "next tick"}
                 continue
-            record["last_attempt_at"] = now.isoformat()
             try:
                 scene = search_newest_scene(site, config, now, http_post=self.http_post)
             except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
+                record["last_attempt_at"] = now.isoformat()
                 record["last_error"] = {"at": now.isoformat(), "code": "search", "detail": str(exc)[:300]}
                 continue
             known = {entry.get("scene_id") for entry in record["history"]}
-            if scene is None or scene["id"] in known:
+            new_scene = scene is not None and scene["id"] not in known
+            if new_scene and not vision_sites.time_to_measure(budget):
+                # Too little of the budget left to wait on the worker (rail_access keeps the same
+                # rule): not an attempt, so the site keeps its place and goes first next tick.
+                record["last_error"] = {"at": now.isoformat(), "code": "time_budget", "detail": "next tick"}
+                continue
+            record["last_attempt_at"] = now.isoformat()
+            if not new_scene:
                 record.pop("last_error", None)
                 continue
             try:
@@ -197,6 +206,7 @@ class SatelliteVisionAdapter(Adapter):
                     backend=config["backend"],
                     params=config["params"],
                     coverage_floor=config["coverage_floor"],
+                    read_timeout=vision_sites.WORKER_READ_TIMEOUT,
                 )
             except vision_client.VisionError as exc:
                 record["last_error"] = {"at": now.isoformat(), "code": exc.code, "detail": exc.detail[:300]}
@@ -341,6 +351,7 @@ class SatelliteVisionAdapter(Adapter):
                     max_tool_calls=config["triage_max_tool_calls"],
                     deadline=deadline,
                     clock=self.clock,
+                    read_timeout=vision_sites.WORKER_READ_TIMEOUT,
                 )
             trails[verdict["site_id"]] = outcome
             latest["triage"] = {"verdict": outcome["verdict"], "reason": outcome["reason"]}

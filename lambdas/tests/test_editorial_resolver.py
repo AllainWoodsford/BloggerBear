@@ -42,6 +42,27 @@ def test_with_no_topic_goal_the_adapter_default_applies(adapter):
     assert resolved == f"Adapter-Specific Standard Goal: {ADAPTER_DEFAULTS[adapter]}"
 
 
+def test_a_rail_topic_without_goals_drafts_under_its_own_limits_not_the_global_sample():
+    topic = {"topic_id": "rail-sydney", "name": "Rail access in Sydney", "adapter": "rail_access"}
+    resolved = resolve_editorial_goals(topic)
+
+    assert resolved == f"Adapter-Specific Standard Goal: {ADAPTER_DEFAULTS['rail_access']}"
+    assert GLOBAL_DEFAULT_GOAL not in resolved and "randomly sampling" not in resolved
+    # Its summary prompt's limits: proxies from imagery and OpenStreetMap; no ridership, cost,
+    # cause, forecast or recommendation; nothing that is not in the findings.
+    for limit in ("Sentinel-2 imagery and OpenStreetMap", "proxies", "ridership", "cost", "cause",
+                  "forecast", "recommendation", "not in the findings"):  # fmt: skip
+        assert limit in resolved, limit
+
+
+def test_a_satellite_vision_topic_without_goals_drafts_under_its_own_limits():
+    resolved = resolve_editorial_goals({"topic_id": "anchorages", "adapter": "satellite_vision"})
+
+    assert resolved == f"Adapter-Specific Standard Goal: {ADAPTER_DEFAULTS['satellite_vision']}"
+    for limit in ("Sentinel-2 imagery", "Name no ship", "cause", "forecast", "not in the findings"):
+        assert limit in resolved, limit
+
+
 @pytest.mark.parametrize("adapter", ["web_search", "hacker_news", "some_future_adapter"])
 def test_an_adapter_without_a_default_falls_back_to_the_global_goal(adapter):
     resolved = resolve_editorial_goals(_topic(adapter))

@@ -33,6 +33,7 @@ import math
 import re
 import unicodedata
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 VERSION = 1
 BACKENDS = ("opencv", "cool")
@@ -40,6 +41,31 @@ DEFAULT_TASK = "ships"
 
 # Sentinel-2 L2A COGs on AWS Open Data (us-west-2). Earth Search's STAC items link to this host.
 DEFAULT_ALLOWED_URL_PREFIXES = ("https://sentinel-cogs.s3.us-west-2.amazonaws.com/",)
+
+
+def allowed_prefixes(raw: str | None) -> tuple[str, ...]:
+    """VISION_ALLOWED_URL_PREFIXES (comma-separated) as the prefixes an asset URL must start with:
+    DEFAULT_ALLOWED_URL_PREFIXES when it is unset or keeps none. The worker and the pipeline's client
+    both read it here. An entry is kept only when it is https with a host and a path that starts
+    with "/" (urlsplit): the check is a plain startswith, so "https://sentinel-cogs.s3.us-west-2.
+    amazonaws.com" without its slash would admit "...amazonaws.com.evil.example/", and the same
+    prefix followed by "@" and "evil.example/" (another host, behind userinfo). Any other entry is
+    skipped, with a printed line."""
+    kept = []
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        try:
+            parts = urlsplit(entry)
+        except ValueError:
+            parts = None
+        if parts is None or parts.scheme != "https" or not parts.netloc or not parts.path.startswith("/"):
+            print(f"vision_contract: skipped the allowed URL prefix {entry!r}: it must be https://<host>/...")
+            continue
+        kept.append(entry)
+    return tuple(kept) or DEFAULT_ALLOWED_URL_PREFIXES
+
 
 ERROR_CODES = (
     "bad_request",  # the request doesn't match this contract

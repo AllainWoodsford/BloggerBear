@@ -12,7 +12,8 @@ import re
 import pytest
 from terraform_text import INFRA, ROOT
 
-from common import vision_client
+from common import vision_client, vision_sites
+from common.adapters import rail_access
 
 MODULE = (INFRA / "modules" / "vision-worker" / "main.tf").read_text(encoding="utf-8")
 MODULE_VARS = (INFRA / "modules" / "vision-worker" / "variables.tf").read_text(encoding="utf-8")
@@ -140,6 +141,24 @@ def test_the_role_can_write_its_logs_and_nothing_else():
 def test_the_worker_times_out_before_the_client_gives_up():
     timeout = int(variable_default(MODULE_VARS, "timeout"))
     assert timeout < vision_client._CLIENT_CONFIG.read_timeout
+
+
+@pytest.mark.parametrize("env", ENVS)
+def test_the_adapters_read_timeout_fits_the_research_tick_and_the_worker_stays_under_a_minute(env):
+    """The adapters (rail_access since PR E; satellite_vision now too, through common/vision_sites.py)
+    wait WORKER_READ_TIMEOUT, 58 s, and give up before the worker's own timeout, by design. A worker
+    call starts with at least MEASURE_RESERVE_SECONDS of a budget of at most MAX_TIME_BUDGET_SECONDS
+    left, and may take the connect allowance before its read begins: even the latest one ends inside
+    the research tick's Lambda timeout. The worker's timeout stays at or under 60 s."""
+    assert rail_access.WORKER_READ_TIMEOUT == vision_sites.WORKER_READ_TIMEOUT == 58.0
+    assert rail_access.MEASURE_RESERVE_SECONDS == vision_sites.MEASURE_RESERVE_SECONDS
+    tick = resource(MAIN[env], "aws_lambda_function", "research_tick")
+    tick_timeout = int(re.search(r"^\s*timeout\s*=\s*(\d+)\s*$", tick, re.M).group(1))
+    latest_start = vision_sites.MAX_TIME_BUDGET_SECONDS - vision_sites.MEASURE_RESERVE_SECONDS
+    latest_end = latest_start + vision_sites.WORKER_READ_TIMEOUT + vision_client.CONNECT_TIMEOUT_SECONDS
+    assert latest_end < tick_timeout, (latest_end, tick_timeout)
+    worker_timeout = int(variable_default(MODULE_VARS, "timeout"))
+    assert vision_sites.WORKER_READ_TIMEOUT < worker_timeout <= 60
 
 
 # --- the environments ----------------------------------------------------------------------------

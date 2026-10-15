@@ -1251,7 +1251,7 @@ def test_unpublish_takes_a_published_article_down(aws_resources):
     }
     mock_remove.assert_called_once_with("article-1", figure_count=0)
     mock_musings.assert_called_once_with("article-1")
-    mock_invalidate.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1", figure_count=0)
 
     article = boto3.resource("dynamodb", region_name=REGION).Table("Articles").get_item(
         Key={"article_id": "article-1"}
@@ -1342,7 +1342,7 @@ def test_unpublish_can_be_repeated_on_an_already_rejected_article(aws_resources)
     assert result["statusCode"] == 200
     mock_remove.assert_called_once_with("article-1", figure_count=0)
     mock_musings.assert_called_once_with("article-1")
-    mock_invalidate.assert_called_once_with("article-1")
+    mock_invalidate.assert_called_once_with("article-1", figure_count=0)
 
 
 def test_unpublish_refuses_an_article_still_awaiting_moderation(aws_resources):
@@ -3210,7 +3210,7 @@ def test_force_takes_a_published_article_down_before_rewriting_it(aws_resources)
     assert body["unpublished"] is True and body["musings_removed"] == 2 and body["cache_invalidated"] is True
     assert body["model_id"] == "anthropic.claude-3-haiku-20240307-v1:0"  # the topic's (here: the default)
     mocks["remove"].assert_called_once_with("article-1", figure_count=0)
-    mocks["invalidate"].assert_called_once_with("article-1")
+    mocks["invalidate"].assert_called_once_with("article-1", figure_count=0)
     assert _article_row()["status"] == "pending_moderation"
     rows = _queue_rows()
     assert rows["queue-1"]["status"] == "approved"  # the old decision is history, left alone
@@ -3501,7 +3501,7 @@ def test_unpublish_removes_the_articles_figures_with_its_page(aws_resources):
 
     assert result["statusCode"] == 200
     mock_remove.assert_called_once_with("article-1", figure_count=3)
-    mock_invalidate.assert_called_once_with("article-1")  # covers /articles/figures/article-1/* too
+    mock_invalidate.assert_called_once_with("article-1", figure_count=3)  # and /articles/figures/article-1/*
 
 
 def test_a_forced_rewrite_takes_the_figures_down_with_the_page(aws_resources):
@@ -3513,6 +3513,7 @@ def test_a_forced_rewrite_takes_the_figures_down_with_the_page(aws_resources):
 
     assert result["statusCode"] == 202
     mocks["remove"].assert_called_once_with("article-1", figure_count=3)
+    mocks["invalidate"].assert_called_once_with("article-1", figure_count=3)
 
 
 def test_publishing_renders_the_page_with_the_stored_figures_so_they_are_copied_again(aws_resources):

@@ -124,7 +124,8 @@ _QUOTED_CLAIM = re.compile(r"[\"“](.+?)[\"”]")
 # A nominated quote is everything up to the closing quotation mark before its " | why": a draft
 # sentence that itself holds quoted text (a quoted station name, the vision agent's quoted note)
 # is taken whole, not cut at its first inner quotation mark. Without a reason, the whole quoted
-# line; failing both, the first quoted span.
+# line; failing both, the first quoted span. Either longer reading counts only when the draft holds
+# it word for word (_nominated_quote).
 _QUOTE_BEFORE_REASON = re.compile(r"^\s*[\"“](.+?)[\"”]\s*\|")
 _WHOLE_QUOTE = re.compile(r"^\s*[\"“](.+)[\"”]\s*$")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -229,7 +230,7 @@ def _review_verdict(response: str, source: str, draft: str) -> dict:
         if label == "NOTE":
             notes.append(f"NOTE: {text}")
             continue
-        quote = _nominated_quote(text)
+        quote = _nominated_quote(text, draft)
         if quote is not None and _item_stands(label, quote, source):
             standing.append(f"{_ITEM_TITLES[label]}: {text}")
         else:
@@ -244,13 +245,20 @@ def _review_verdict(response: str, source: str, draft: str) -> dict:
     return {"compliant": False, "reasons": [response.strip()]}
 
 
-def _nominated_quote(text: str) -> str | None:
-    """The draft text a labelled line quotes (see _QUOTE_BEFORE_REASON); None when it quotes nothing."""
-    for pattern in (_QUOTE_BEFORE_REASON, _WHOLE_QUOTE, _QUOTED_CLAIM):
+def _nominated_quote(text: str, draft: str | None = None) -> str | None:
+    """The draft text a labelled line quotes (see _QUOTE_BEFORE_REASON); None when it quotes nothing.
+
+    The longer readings (_QUOTE_BEFORE_REASON, _WHOLE_QUOTE) are taken only when `draft` holds
+    them word for word: with no " | why", the whole-line reading runs from the first quotation mark
+    to the last, and on `"x" is commentary, not a call to "buy"` would take in the reviewer's own
+    words. Otherwise the first quoted span is the quote, as it always was. With no `draft`, the
+    longer readings are taken unchecked."""
+    for pattern in (_QUOTE_BEFORE_REASON, _WHOLE_QUOTE):
         match = pattern.search(text)
-        if match is not None:
+        if match is not None and (draft is None or match.group(1) in draft):
             return match.group(1)
-    return None
+    match = _QUOTED_CLAIM.search(text)
+    return match.group(1) if match is not None else None
 
 
 def is_financial_topic(topic: dict) -> bool:

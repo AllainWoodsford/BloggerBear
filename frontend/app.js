@@ -2009,15 +2009,23 @@
         return;
       }
       var block = el("figure", { className: "article-figure" });
-      block.appendChild(
-        el("img", {
-          attrs: {
-            src: figure.src,
-            alt: typeof figure.alt === "string" ? figure.alt : "",
-            loading: "lazy",
-          },
-        })
-      );
+      var image = el("img", {
+        attrs: {
+          src: figure.src,
+          alt: typeof figure.alt === "string" ? figure.alt : "",
+          loading: "lazy",
+        },
+      });
+      // The API lists every figure the article stores, but one whose copy failed is not on the
+      // site (static_pages.publish_figures skips it, as the static page does): rather than a
+      // broken image, its whole <figure> comes out. Set here, not as an onerror= attribute,
+      // which the CSP forbids.
+      image.addEventListener("error", function () {
+        if (block.parentNode) {
+          block.parentNode.removeChild(block);
+        }
+      });
+      block.appendChild(image);
       if (typeof figure.caption === "string" && figure.caption !== "") {
         block.appendChild(el("figcaption", { text: figure.caption }));
       }

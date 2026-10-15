@@ -461,3 +461,44 @@ def test_a_nominated_quote_holding_quoted_names_is_checked_whole():
     assert compliance._nominated_quote('"a "b" c"') == 'a "b" c'
     assert compliance._nominated_quote('"x" | the "y" part') == "x"
     assert compliance._nominated_quote("no quote here") is None
+
+
+# The integration review's two probes: a labelled line with no " | why" and two quoted spans.
+TWO_SPAN_PROBES = [
+    (
+        "The token rallied 12% this week.",
+        'ADVICE: "The token rallied 12%" is commentary, not a call to "buy"',
+        "Investment advice",
+        "The token rallied 12%",
+    ),
+    (
+        "Acme shipped Fast 2.0 on Monday.",
+        'FABRICATED: "Acme shipped Fast 2.0" is in the sources, unlike "Zeta Labs"',
+        "Fabricated claim",
+        "Acme shipped Fast 2.0",
+    ),
+]
+
+
+def test_a_line_with_two_quoted_spans_and_no_reason_is_read_as_its_first_quote():
+    """With no " | why", reading the line from its first quotation mark to its last takes in the
+    reviewer's own words between two quotes ("buy", "Zeta Labs"). That whole-line reading is the
+    quote only when the draft holds it word for word; here it does not, so the first quoted span
+    is, as before PR I, and the item is a note that holds nothing."""
+    for draft, line, title, first_quote in TWO_SPAN_PROBES:
+        verdict = compliance._review_verdict(line, draft, draft)
+        assert verdict == {
+            "compliant": True,
+            "reasons": [f"{title} flagged but not held: {line.split(': ', 1)[1]}"],
+        }, line
+        assert compliance._nominated_quote(line.split(": ", 1)[1], draft) == first_quote
+
+
+def test_a_whole_quote_is_read_whole_only_when_the_draft_holds_it():
+    draft = 'Trains stop at "Central" and at "Redfern" every 5 minutes.'
+    whole = 'Trains stop at "Central" and at "Redfern" every 5 minutes.'
+    # In the draft: the quote with its inner quotation marks, whole (PR I's fix).
+    assert compliance._nominated_quote(f'"{whole}"', draft) == whole
+    assert compliance._nominated_quote(f'"{whole}" | why', draft) == whole
+    # Not in the draft (the reviewer's words between two quotes): the first quoted span.
+    assert compliance._nominated_quote('"Trains stop at" the station "Central"', draft) == "Trains stop at"
