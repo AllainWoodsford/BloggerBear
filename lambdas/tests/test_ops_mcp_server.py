@@ -360,6 +360,7 @@ def test_the_guide_tools_say_when_to_use_each_and_never_to_write_a_command(clien
     assert "never invent a value" in described["cli_command"]
     assert "never write one in your answer" in described["cli_command"]
     assert "Use it first" in described["cli_guides"] and "editorial-goals" in described["cli_guides"]
+    assert "vision topics, satellite sites and the Rail Access Monitor (`vision`)" in described["cli_guides"]
     assert "list topics" in described["topics_overview"]
     # The model picks command paths from the description: every one is in it.
     from ops_mcp import cli_guide
@@ -512,6 +513,15 @@ SUBJECT = "0b8f5c1e-4d5a-4b6c-9e7f-0a1b2c3d4e5f"
 
 def request_context(**authorizer) -> dict[str, str]:
     return {"x-amzn-request-context": json.dumps({"requestId": "r-1", "authorizer": authorizer})}
+
+
+def test_the_architecture_feature_enum_is_the_catalogues_features(client):
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    schema = json.dumps(tools["architecture"]["inputSchema"]["properties"]["feature"])
+    offered = {word for word in schema.split('"') if word in architecture.FEATURE_KEYS or "-" in word}
+    assert offered == set(architecture.FEATURE_KEYS) == {"article-research", "vision-pipeline"}
+    described = " ".join(tools["architecture"]["description"].split())
+    assert '"how does the vision pipeline work?"' in described
 
 
 def test_the_instructions_carry_the_vision_round_for_clients_that_read_only_them():

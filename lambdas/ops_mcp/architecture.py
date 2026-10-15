@@ -1076,8 +1076,10 @@ def resolve_layer(raw) -> str | None:
 # The owner's ask: a layer answers "what is this made of?", not "how does this one thing work?".
 # A feature is a smaller, logical grouping that cuts across the layers: the parts that together
 # make one thing the project does, told in the order the work flows through them. The first is
-# article research (from a topic's data source to an article in S3); more can be added the same
-# way ("prompts as assets" is the next one the owner has in mind) by adding a Feature below.
+# article research (from a topic's data source to an article in S3); the second the vision pipeline
+# (from a satellite site to a map in an article, docs/architecture/blogger-vision.md). More can be
+# added the same way ("prompts as assets" is the next one the owner has in mind) by adding a
+# Feature below; resolve_feature picks the feature with the longest alias the words hold.
 #
 # A step's `parts` are catalogue resources as "kind:key" (tests/test_ops_mcp_architecture.py
 # holds that each exists, so a feature cannot name a resource the catalogue lost) and, for what is
@@ -1116,7 +1118,8 @@ FEATURES: tuple[Feature, ...] = (
                 "Topic and adapter",
                 "A topic is a row of settings, made with the Admin CLI: which adapter reads its "
                 "source, how often to research, its model and review mode. The adapter is the only "
-                "code that knows the source: GitHub, Hacker News, CoinGecko or web search.",
+                "code that knows the source: GitHub, Hacker News, CoinGecko or web search, or "
+                "satellite imagery (see the vision pipeline).",
                 ("table:topics", "Adapters (common/adapters/)"),
             ),
             # common/scheduler.py, from admin_api_handler.py on topic create, update and delete.
@@ -1221,6 +1224,95 @@ FEATURES: tuple[Feature, ...] = (
             "candidate ideas",
         ),
     ),
+    # docs/architecture/blogger-vision.md's steps, as the assistant tells them.
+    Feature(
+        key="vision-pipeline",
+        title="The vision pipeline (from a satellite site to a map in an article)",
+        said="the vision pipeline",
+        summary="How a topic that watches fixed sites in satellite imagery becomes an article with a "
+        "map: a worker in the vision Region measures each new scene, an agent judges a change, and "
+        "a person approves.",
+        steps=(
+            # common/adapters/satellite_vision.py, rail_access.py; MANUAL_REVIEW_ADAPTERS.
+            Step(
+                "Topic, sites and the switch",
+                "A vision topic's sites are polygons written by hand in its config, measured only "
+                "where the deployment sets VISION_ENABLED. Every vision article waits for a person "
+                "(force_manual_review).",
+                (
+                    "table:topics",
+                    "common/adapters/satellite_vision.py and rail_access.py",
+                    "VISION_ENABLED",
+                ),
+            ),
+            # common/vision_sites.py: order_sites, Budget, time_to_measure.
+            Step(
+                "Research tick: sites take turns, inside a time budget",
+                "The tick finds the newest clear Sentinel-2 scene over each site, the longest "
+                "waiting site first; a site left without time waits for the next tick.",
+                ("function:research-tick", "Earth Search STAC (Sentinel-2 L2A)"),
+            ),
+            # common/osm.py; rail_access.py's network cache.
+            Step(
+                "Map data (rail)",
+                "A rail topic reads each city's rail network from OpenStreetMap through the "
+                "Overpass API and keeps it in the running state for osm_ttl_days.",
+                ("OpenStreetMap Overpass API",),
+            ),
+            # vision_worker_handler.py, lambdas/vision/, common/vision_client.py.
+            Step(
+                "The worker measures",
+                "A stateless worker in the vision Region range-reads only the tiles under the site "
+                "and measures them with OpenCV, across Regions: it returns metrics, a figure and its "
+                "build, and keeps nothing.",
+                (
+                    "function:vision-worker",
+                    "Sentinel-2 COGs (sentinel-cogs, us-west-2)",
+                    "OpenCV 5 on arm64",
+                ),
+            ),
+            # research_tick_handler._running_state_key; common/vision_sites.store_image.
+            Step(
+                "Running state and figures",
+                "Every tick keeps the topic's running state, with each site's history and last "
+                "error, and the figures are PNGs under vision/ in the content bucket.",
+                ("bucket:content",),
+            ),
+            # material_diff, then common/vision_triage.py; the spend is vision_triage.
+            Step(
+                "Diff first, then the triage agent",
+                "A change against the site's usual range is only a candidate until the triage agent "
+                "judges it real; unsure is an artefact, and no change calls no model.",
+                ("Amazon Bedrock (the triage agent's Converse loop)", "table:stats-current"),
+            ),
+            Step(
+                "A Finding",
+                "A real change, or the first clear scene, is written as a Finding with its figures "
+                "and, for rail, its planner notes.",
+                ("table:findings",),
+            ),
+            # daily_cycle_handler.py; common/static_pages.publish_figures.
+            Step(
+                "The article waits for a person",
+                "The daily cycle drafts and reviews the article and holds it; once a person "
+                "approves it, its figures are copied to articles/figures/ in the site bucket.",
+                ("function:daily-cycle", "table:moderation-queue", "bucket:site"),
+            ),
+            # ops_mcp/vision_status.py, log_review.py.
+            Step(
+                "Where to look",
+                "This assistant's vision_status reads each site's running state, and log_review "
+                "reads the worker's log in the vision Region.",
+                ("function:ops-mcp",),
+            ),
+        ),
+        aliases=(
+            "vision", "vision pipeline", "vision research", "vision research pipeline",
+            "vision findings", "satellite", "satellite vision", "satellite imagery",
+            "satellite research", "rail", "rail access", "rail access monitor", "rail findings",
+            "opencv", "sentinel", "ships",
+        ),
+    ),
 )
 FEATURE_KEYS = tuple(feature.key for feature in FEATURES)
 
@@ -1238,10 +1330,17 @@ def resolve_feature(raw) -> str | None:
         names = {feature.key.replace("-", " "), feature.said, *feature.aliases}
         if words in names:
             return feature.key
+    # Otherwise every alias is scored, each as whole words in what was said ("the" is gone from
+    # the words, so no alias holds it), and the feature with the longest one wins; a tie goes to
+    # the earlier feature. "vision research pipeline" so goes to the vision pipeline, though it
+    # holds article research's "research pipeline".
+    best, length = None, 0
+    padded = f" {words} "
     for feature in FEATURES:
-        if any(alias in words for alias in (feature.said, *feature.aliases) if " " in alias):
-            return feature.key
-    return None
+        for alias in (feature.said, *feature.aliases):
+            if f" {alias} " in padded and len(alias) > length:
+                best, length = feature.key, len(alias)
+    return best
 
 
 # --- The environment ------------------------------------------------------------------------------

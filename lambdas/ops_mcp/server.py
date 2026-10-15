@@ -288,7 +288,8 @@ def build_server() -> MCPServer:
         (`editorial-goals`), getting started with a first topic (`first-topic`), setting a topic
         up fully with its focus, keywords, exclusions and models (`topic-setup`, also for "too
         many options, mock it up"), security incidents and sign-ins (`security`), reviewing and
-        publishing (`review`), fixing a musing that is blank or wrong (`musings`). Pass a guide's id, or a
+        publishing (`review`), fixing a musing that is blank or wrong (`musings`), vision topics,
+        satellite sites and the Rail Access Monitor (`vision`). Pass a guide's id, or a
         few words of what the operator wants to do. It puts the help of the guide's main
         commands on screen, each with a suggested command under it, so cli_help is not needed as
         well. `options` fills the suggested commands in with what the operator described (as
@@ -359,7 +360,7 @@ def build_server() -> MCPServer:
             "everything",
         ]
         | None = None,
-        feature: Literal["article-research"] | None = None,
+        feature: Literal["article-research", "vision-pipeline"] | None = None,
     ) -> dict[str, Any]:
         """How BloggerBear is built, and what each of its AWS resources is for. With no arguments
         (for "how does the project work?" or "tell me about the architecture"): the layers, one
@@ -373,7 +374,11 @@ def build_server() -> MCPServer:
         feature such as gear, which cli_guides explains): article-research
         (how a topic's source, its adapter and API keys, the research tick, findings, candidate
         ideas, Bedrock drafting and the reviews become an article in S3; for "how is an article
-        researched/written?" or "how does the research pipeline make articles?").
+        researched/written?" or "how does the research pipeline make articles?"); vision-pipeline
+        (how a topic that watches fixed sites in satellite imagery becomes an article with a map:
+        the sites, the research tick, the vision worker in its own Region, the running state, the
+        triage agent, the Finding and the person who approves it; for "how does the vision
+        pipeline work?" or "how is rail access measured?").
         What one of BloggerBear's AWS resources is for, in this environment: a DynamoDB table
         (its keys, indexes, TTL, who writes and reads it), a Lambda, an API, a dashboard, a log
         group, an alarm's resource, a queue, a schedule or a bucket, with the log groups,
