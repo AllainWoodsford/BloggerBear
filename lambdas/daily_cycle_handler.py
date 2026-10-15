@@ -96,6 +96,13 @@ SUMMARIES_MAX_CHARS = 40_000
 # long draft, and one automatic retry with more if a reply still runs out.
 DRAFT_MAX_TOKENS = 4096
 DRAFT_RETRY_MAX_TOKENS = 8192
+# Three short angles never need this much. A reasoning model (MiniMax M2 in production) spends
+# its budget *thinking* first, and that counts against maxTokens: at the 1,024 default it thought
+# for all 1,024 and sent back no text at all, nine days running, and the run bailed out with
+# "no usable angles" each time (docs/friction.md). Room for the thinking, one retry with more,
+# and a reply that still has no text in it is treated as the failure it is (see _ideate).
+IDEATION_MAX_TOKENS = 4096
+IDEATION_RETRY_MAX_TOKENS = 8192
 TRUNCATED_DRAFT_REASON = (
     "draft truncated: the model ran out of output tokens before finishing the article"
 )
@@ -287,7 +294,18 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         # angles based on these findings...") rather than producing anything usable -- better no
         # article today than one built around a candidate that was never really an angle. Same
         # shape as the "nothing new since last run" bail-out above.
-        print(f"daily_cycle_handler: ideation had no usable angles for topic_id={topic_id}")
+        # Say what came back, so the next person reading the logs can tell a refusal (text, no
+        # angles in it) from a reply with no text in it (a reasoning model that ran out of
+        # tokens), without re-running the model to find out.
+        print(
+            f"daily_cycle_handler: ideation had no usable angles for topic_id={topic_id} "
+            f"model_id={ideate_call['model_id']} stop_reason={ideate_call.get('stop_reason')} "
+            f"output_tokens={ideate_call['output_tokens']} reply_chars={ideate_call['reply_chars']}"
+        )
+        # A model that can't propose angles for this topic must not keep the topic: the roll
+        # forward used to happen only after a publish, so a topic whose model never published
+        # stayed on that model for good (two production topics, nine days each).
+        _assign_rotated_model(topic_id)
         return {"status": "no_usable_angles", "topic_id": topic_id}
     selected = _select_and_store_candidates(topic_id, angles)
 
@@ -711,7 +729,36 @@ def _ideate(
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
         prompt += f"\n\n{_FINANCIAL_GUIDANCE_HEADER}\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
-    result = invoke_model_tracked(prompt, model_id, fallback_model_id=fallback_model_id)
+    result = invoke_model_tracked(
+        prompt,
+        model_id,
+        fallback_model_id=fallback_model_id,
+        max_tokens=IDEATION_MAX_TOKENS,
+        retry_max_tokens=IDEATION_RETRY_MAX_TOKENS,
+    )
+    if _reply_is_all_thinking(result) and fallback_model_id and not result["used_fallback"]:
+        # The model ran out of tokens before it had written a single word (a reasoning model
+        # that never finished thinking). Bedrock reports that as a normal reply with no text,
+        # not as an error, so the fallback that an exception would have reached never ran.
+        # Reach it here: a wasted call costs the same as a failed one.
+        print(
+            f"daily_cycle_handler: ideation on {result['model_id']} stopped at its token limit "
+            f"with no text (output_tokens={result['output_tokens']}); trying {fallback_model_id}"
+        )
+        first = result
+        result = invoke_model_tracked(
+            prompt,
+            fallback_model_id,
+            max_tokens=IDEATION_MAX_TOKENS,
+            retry_max_tokens=IDEATION_RETRY_MAX_TOKENS,
+        )
+        result = {
+            **result,
+            "input_tokens": first["input_tokens"] + result["input_tokens"],
+            "output_tokens": first["output_tokens"] + result["output_tokens"],
+            "attempts": first.get("attempts", 1) + result.get("attempts", 1),
+            "used_fallback": True,
+        }
     response = result["text"]
 
     angles = []
@@ -737,8 +784,18 @@ def _ideate(
         "input_tokens": result["input_tokens"],
         "output_tokens": result["output_tokens"],
         "used_fallback": result["used_fallback"],
+        "stop_reason": result.get("stop_reason"),
+        "reply_chars": len(response),
     }
+    if result.get("attempts", 1) > 1:
+        lineage_call["attempts"] = result["attempts"]
     return angles[:_NUM_CANDIDATE_ANGLES], lineage_call
+
+
+def _reply_is_all_thinking(result: dict) -> bool:
+    """A reply that hit its token limit and has no text: every token went on reasoning that
+    the Converse API returns in a block of its own, which the caller never sees."""
+    return result.get("stop_reason") == "max_tokens" and not result["text"].strip()
 
 
 def _select_and_store_candidates(topic_id: str, angles: list[str]) -> dict:
@@ -867,11 +924,12 @@ def _draft_title(angle: str, model_id: str, fallback_model_id: str | None) -> tu
 
 
 def _assign_rotated_model(topic_id: str) -> None:
-    """Once a topic has published an article, roll its `model_id` (Topics table) forward to a
-    random pick from the shared rotation pool -- common/dynamo.py's "model-rotation" ModelConfig
-    row -- so the *next* run for this topic tries a different model, without a Terraform apply or
-    an admin edit. No candidates configured is a valid state: rotation then does nothing, same as
-    before this existed.
+    """Once a topic has published an article -- or its model has just failed to propose any
+    angle at all -- roll its `model_id` (Topics table) forward to a random pick from the shared
+    rotation pool -- common/dynamo.py's "model-rotation" ModelConfig row -- so the *next* run
+    for this topic tries a different model, without a Terraform apply or an admin edit. No
+    candidates configured is a valid state: rotation then does nothing, same as before this
+    existed.
 
     Deliberately only ever writes `model_id`, the next rung down in common/model_routing.py's
     resolve_model precedence -- a topic with its own `model_id_candidates` already rerolls every
