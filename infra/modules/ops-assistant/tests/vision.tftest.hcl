@@ -148,11 +148,14 @@ run "production_reads_only_productions_worker_never_shared" {
   }
 
   assert {
-    condition = one([
+    # The same idiom as environment_isolation.tftest.hcl: each condition as one string, compared
+    # as sets, since a list of condition.values and a tuple literal are different types.
+    condition = toset(one([
       for statement in data.aws_iam_policy_document.ops_mcp_vision[0].statement : [
-        for condition in statement.condition : condition.values if condition.variable == "aws:ResourceTag/Environment"
+        for condition in statement.condition : "${condition.test} ${condition.variable} ${join(",", condition.values)}"
+        if condition.variable == "aws:ResourceTag/Environment"
       ] if statement.sid == "QueryVisionWorkerLog"
-    ]) == [["production"]]
+    ])) == toset(["StringEquals aws:ResourceTag/Environment production"])
     error_message = "the worker is never shared: production's Environment tag is production's alone"
   }
 
