@@ -797,6 +797,29 @@ under #278's branch; it was caught and redone before the push. **Lesson:** after
 merges, check the newest deploy run, not each one; and scratch commits belong in a scratch branch
 that is never pushed.
 
+## 12. The silent topic (2026-10-15)
+
+**#299 · Nine days of "no usable angles", and nothing was wrong.** `wow-forever` stopped
+publishing after 5 October; so did `tech-market-news`. Research was fine (a Finding every four
+hours), Step Functions said every daily run succeeded, the moderation queue and failed-executions
+table were empty, and no alarm fired, because the run's answer, `no_usable_angles`, is a valid
+outcome. Rotation had put both topics on MiniMax M2, a reasoning model, and on Bedrock its thinking
+counts against `maxTokens`. Ideation used the 1,024-token default. With the topic's approved
+guidance in the prompt the model thought for all 1,024 tokens and sent back a `reasoningContent`
+block and no text; three runs of the exact production prompt did the same, each in about nine
+seconds, which is what the Lambda's unvarying 9.2 s had been saying all along. The parser found no
+angles and bailed, and because the roll to the next model only ran after a publish, a topic whose
+model never published kept that model for good. **AWS friction:** a reply cut off mid-thought is
+reported as a normal reply (`stopReason: max_tokens`, empty text), not an error, so the fallback
+that an exception reaches never ran; and with no invocation logging configured, the reply could only
+be reproduced, not read back. **Fix:** ideation gets the draft's budget (4,096, one retry at 8,192);
+a reply that stopped at its limit with no text tries the fallback model; the bail-out line logs the
+model, stop reason, output tokens and reply length; and a bail-out rolls the model forward too. By
+hand: both topics set to Nova Micro, and MiniMax removed from the registry and the rotation pool
+in both environments. **Lesson:** a run that "succeeds" by writing nothing needs the same alarm as
+one that fails (1.9, 11's #265 again), and a constant duration is a symptom: a model that takes
+exactly as long every day is hitting a limit, not finishing.
+
 ---
 
 ## Patterns worth keeping
