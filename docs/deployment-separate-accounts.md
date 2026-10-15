@@ -276,7 +276,9 @@ Both deploy roles carry the same policy, which allows what a deploy needs on res
 "Anything of the other environment's" is decided three ways:
 
 - **By name:** any resource whose name starts `<prefix>-production-` (or `<prefix>-dev-`):
-  tables, functions, roles, queues, alarms, dashboards, schedules, log groups, buckets.
+  tables, functions, roles, queues, topics, alarms, dashboards, schedules, state machines,
+  log groups, web ACLs, buckets. IAM needs the service spelled out in each ARN, so the policy
+  lists those services one by one; a service missing from the list is separated by tag only.
 - **By tag:** any resource tagged `Environment = production` (or `dev`). This is for what has
   no name of yours in its address: CloudFront distributions, REST APIs, user pools,
   certificates. Every resource Terraform makes carries the tag.
