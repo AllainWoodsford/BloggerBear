@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 23 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed |
+| Vision and rail (OpenCV 2026) | 24 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed; a scanner's false positive met first with its allowlist |
 
 ---
 
@@ -991,14 +991,17 @@ and write the CPU next to the number. (#295)
 meant following a topic's fields into the prompts that read them. The research summary uses the
 adapter's own prompt, but the daily cycle's ideation and drafting resolve the topic's editorial
 goal: the topic's own, else the adapter's default, else the global one, and `rail_access` (like
-`satellite_vision`) has no adapter default. A rail topic created as the runsheet first described
+`satellite_vision`) had no adapter default then. A rail topic created as the runsheet first described
 it would have been ideated and drafted under "independent web research ... sampling 5 to 10
 highly relevant articles", around a measurement. **Fix:** each body in
 `scripts/rail_topics.example.json` carries `editorial_goals` (the measured figures, the capture
 date and what was not measured; no ridership, cost, recommendation or cause), and the runsheet
-says why. An adapter default in `common/editorial_resolver.py` would cover topics made by hand;
-that is a code change, left for a later PR. **Lesson:** a template is a test of the path it
-feeds; follow its fields into every prompt before calling it complete. (#296, rail PR F2)
+says why. The follow-up, an adapter default for topics made by hand, is done: #298 (rail PR L)
+added `rail_access` and `satellite_vision` to `ADAPTER_DEFAULTS` in
+`common/editorial_resolver.py`, each restating its summary prompt's limits, so a vision topic
+created without `editorial_goals` is no longer drafted under the global goal. **Lesson:** a
+template is a test of the path it feeds; follow its fields into every prompt before calling it
+complete. (#296, #298, rail PRs F2 and L)
 
 **12.20 Numbers that drifted between the spec, the comments and the code.** Writing the closing
 docs from the merged code, not the specification, found the figures each review had moved: a
@@ -1058,9 +1061,31 @@ into the daily cycle only, so it would publish vision-topic text with no person.
 attached the figures of sites its summary did not report; the SPA showed a figure whose copy had
 failed as a broken image; the ships adapter could start a worker call with too little of its tick
 left; the worker followed redirects off its allowlist; and a change to the compliance review's
-quote parser altered verdicts for every topic. **Fix:** rail PR L. **Lesson:** after the parts are
+quote parser altered verdicts for every topic. **Fix:** rail PR L (#298): the digest leaves out
+every topic for which `compliance.requires_manual_review` is true; a Finding carries only the maps
+of the sites its summary reports; the SPA removes a figure whose image fails to load; both vision
+adapters keep one measuring rule (`vision_sites.time_to_measure`); the worker follows no redirect;
+and the longer quote readings count only when the draft holds them. **Lesson:** after the parts are
 reviewed, review the whole once more, end to end through the real code, and grep for every path a
-guarantee must hold on. (#285, rail PR L)
+guarantee must hold on. (#285, #298, rail PR L)
+
+**12.24 A scanner's false positive, answered without loosening the scanner.** A docstring in rail
+PR L explained why an allowed URL prefix must end in a slash with a look-alike URL: an allowed
+prefix, then "@", then another host, written as one string. The repository's gitleaks
+email-address rule matched it, and the PR's gitleaks job went red. The fixer's first answer was a
+fingerprint for the line in `.gitleaksignore`. **Why:** the rule matches anything shaped like an
+address (some text, "@", a dotted domain) outside its allowlist of reserved domains, and a URL
+with a user part before its host is that shape. The pre-commit hook runs the same rule only where
+gitleaks is installed and the hook enabled, and neither holds in the container the rail PRs are
+built in, so CI was the first to run it. And the allowlist was the nearest lever, though the line was ours, on an
+unmerged branch, and could simply be written another way. **Fix:** the docstring was reworded
+to name the parts in words, and the unmerged sub-branch's history was squashed so no commit carries
+the line; `.gitleaksignore` is unchanged. A test,
+`test_no_python_source_trips_the_gitleaks_email_rule` in `lambdas/tests/test_terraform_wiring.py`,
+now runs the email rule from `.gitleaks.toml`, with its allowlist, over the Python sources under
+`lambdas/` and `scripts/`, so the next one shows before CI. **Lesson:** on your own unmerged branch,
+rewrite the commit; never widen a scanner's allowlist for your own text. An allowlist entry is for
+a finding already in the shared history that cannot be rewritten. (#298, rail PR L)
 
 ## Patterns worth keeping
 

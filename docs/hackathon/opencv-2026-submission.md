@@ -61,11 +61,15 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
   synthetic city, 180 stations and 221 nodes, 9.2 to 9.6 s at 4096 px on four cores, and the
   deployed Sydney run with the Overpass network will give the real figure. The speed tests count
   the work (neighbour lookups, comparisons, pixels handed to OpenCV), not the time, so they fail on
-  the slow code.
+  the slow code. And one rule keeps both vision adapters inside the research tick's 120 s: the
+  worker is asked only with 45 s of the measuring budget left and waited on for at most 58 s.
 - **A contract, not a convention.** Every request is validated (version, asset URL allowlist,
   parameter bounds, polygon size; the task's assets and the network's shape and caps); every
   failure is a code; every reply echoes the parameters it was measured with, the OpenCV build
-  record and per-stage timings, so a result is reproducible and a COOL result is provable.
+  record and per-stage timings, so a result is reproducible and a COOL result is provable. The
+  worker reads only from allow-listed URLs: it follows no redirect (a 3xx is `unreadable_scene`,
+  its body unread), and reads no further than the byte range it asked for, even from a server
+  that ignores `Range`.
 - **Tested without the network.** 128 new tests in the stack and more per rail PR, on
   synthetic scenes built in the tests; moto for S3 and DynamoDB; scripted fakes for the worker,
   the model and the sources. CI is green on every pull request.
@@ -113,14 +117,17 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
   them, stations as white rings, larger the busier their catchment and thicker in the top quarter
   of isolation weight, hubs as green diamonds, flagged stations with a red ring, ghost lines in
   red, simulated links dashed in green. Nothing else is drawn on the map: a dark strip under it
-  holds the three caption lines with the credits and a legend of the symbols. The static page and
-  the single-page app show the figure under the credit line, above the article text, with a
-  caption that says what the colours and lines are and repeats the credits with the year.
+  holds the three caption lines with the credits and a legend of the symbols ("simulated link"
+  among them, never "suggested"). The static page and the single-page app show the figure under
+  the credit line, above the article text, with a caption that says what the colours and lines are
+  and repeats the credits with the year; an article shows the maps of the cities its summary
+  reports and no others, and a figure whose image fails to load is removed, not shown broken.
 - The article is two to four plain sentences (three to six with planner notes) with the station
   and line names exactly as mapped, the served share, the area beyond reach, the capture date,
   and what was not measured.
 - Adding a city is adding a topic with the admin CLI; the operator's assistant reports what
-  needs attention.
+  needs attention in the pipeline's home Region (reading the worker's logs and the vision state is
+  its planned vision round).
 
 ### Documentation
 
@@ -169,7 +176,8 @@ The loop is **perception → diff → agent → person**, and each arrow is boun
    agent's verdict: the agent decides whether a change is real; code, not a model, writes what the
    network's flags and simulations say.
 4. **Person.** `force_manual_review` is forced on every vision topic; no vision article is
-   published without someone approving it in the review inbox.
+   published without someone approving it in the review inbox. That holds on every publish path:
+   the daily cross-topic digest, which publishes with no person, leaves these topics out.
 
 Observability: every reply carries timings, the build record and the quality flags; every site
 records `last_error` rather than a quiet zero; the agent's trail can be replayed from the state.

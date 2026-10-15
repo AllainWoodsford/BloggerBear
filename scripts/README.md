@@ -249,12 +249,13 @@ attribution) and wrong for a mass refresh. There is no command that only re-rend
 follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
 article's stored `published_at` and `published_by` and does nothing else.
 
-`articles unpublish` is the inverse: it deletes the article's static page,
-marks the article and its moderation-queue item `rejected` (so it leaves every
-public listing), removes the musings written about it, and asks CloudFront to
-drop its cached page. The markdown body is kept, so `articles publish` can
-bring it back. An article still waiting in moderation is refused (use
-`moderation reject`). If it fails part-way, run it again -- every step is
+`articles unpublish` is the inverse: it deletes the article's static page (and
+its figures, if it has any), marks the article and its moderation-queue item
+`rejected` (so it leaves every public listing), removes the musings written
+about it, and asks CloudFront to drop its cached page (and, only for an article
+with figures, `/articles/figures/<id>/*`). The markdown body is kept, so
+`articles publish` can bring it back. An article still waiting in moderation is
+refused (use `moderation reject`). If it fails part-way, run it again -- every step is
 safe to repeat. `cache_invalidated: false` in the response means CloudFront
 wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.

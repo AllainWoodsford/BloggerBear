@@ -264,7 +264,11 @@ satisfactory, in order:
    by hand.
 
 `force_manual_review` is forced on every vision topic: **every vision article waits for a
-person** in the review inbox, whatever the compliance review said. Take it down again by setting
+person** in the review inbox, whatever the compliance review said, and that holds on every publish
+path: the daily cycle holds the article, the daily trending digest (which publishes with no
+person) leaves out every topic with `force_manual_review` (#298), and approving or force-publishing
+is a person's act. A vision topic created without `editorial_goals` is drafted under its adapter's
+default goal (#298), not the global one. Take it down again by setting
 the `production` environment's `VISION_ENABLED` to `false` and releasing (removing it falls back to
 the repository's value); topics keep their state.
 

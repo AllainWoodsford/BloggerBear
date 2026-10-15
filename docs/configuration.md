@@ -267,7 +267,7 @@ the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
 | `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN, and the pipeline's shared execution role (`lambda_exec`, which twelve functions use) the right to invoke it. Off, none of it exists. |
 | `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too; the reads then cross instead. |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create Lambda functions and log groups named `<prefix>-*-vision-*`, and nowhere else outside `aws_region`. |
-| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so a caller on that default sees the worker's own error, not its own. The `rail_access` adapter gives up first, by design: it waits only 58 s (`WORKER_READ_TIMEOUT`), to keep the tick's 120 s for the agent and the summary, so a rail run that slow is an `invoke` error to it, not the worker's, and the site is tried again next tick. |
+| `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so a caller on that default sees the worker's own error, not its own. Both vision adapters give up first, by design: they wait only 58 s (`WORKER_READ_TIMEOUT` in `common/vision_sites.py`, one rule for `rail_access` and `satellite_vision` since #298), to keep the tick's 120 s for the agent and the summary, so a run that slow is an `invoke` error to them, not the worker's, and the site is tried again next tick. |
 
 ### The worker's environment variables
 
@@ -279,7 +279,7 @@ future COOL module):
 |---|---|---|
 | `VISION_BACKEND` | the worker | `opencv` (stock `opencv-python-headless`) or `cool` (OpenCV's COOL build): what this deployment is. A request for the other backend is refused (`backend_mismatch`), so a result never claims a build it did not run on. The module sets `opencv`. |
 | `COOL_BUILD_SHA256` | a COOL worker only | The fingerprint of the pinned COOL build (`lambdas/vision/build.py`). A `cool` worker whose `cv2` does not match refuses every request (`not_cool`). |
-| `VISION_ALLOWED_URL_PREFIXES` | the worker, and the research tick | Optional, comma-separated: the URL prefixes an asset may be read from. Unset, the public `sentinel-cogs` bucket. The research tick's client checks the same list before it sends a request. |
+| `VISION_ALLOWED_URL_PREFIXES` | the worker, and the research tick | Optional, comma-separated: the URL prefixes an asset may be read from. Each entry must be `https://<host>/` and a path (`https://<host>/<path>`, the slash after the host required, since the check is a plain prefix match); any other entry is skipped, and a line naming it is printed. Unset, or with every entry skipped, the public `sentinel-cogs` bucket (`https://sentinel-cogs.s3.us-west-2.amazonaws.com/`). The worker and the research tick's client read it with one parser (`vision_contract.allowed_prefixes`), so a request the client sends is one the worker accepts. The worker follows no redirect, whatever the list: a 3xx is `unreadable_scene`. |
 
 ### The research tick's environment variables
 
@@ -292,7 +292,13 @@ future COOL module):
 
 Every key is in `adapter_config`, documented in the adapter's docstring
 (`lambdas/common/adapters/satellite_vision.py`). `force_manual_review` is forced on and cannot
-be unset.
+be unset. A topic created without `editorial_goals` (or without a `primary_focus` in them) is
+drafted under the adapter's default goal (`ADAPTER_DEFAULTS` in
+`lambdas/common/editorial_resolver.py`, #298), not the global "randomly sampling 5 to 10 highly
+relevant articles": report only the measured counts with their capture dates, name no ship,
+vessel, owner, company or person, give no cause, forecast, price, market or trading view, never
+call an area safe, clear or unaffected, and use no number or place name that is not in the
+findings.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -306,8 +312,8 @@ be unset.
 | `history_size` | 8 | Scenes kept per site. |
 | `min_baseline` | 2 | Earlier clear scenes needed before a change can be material. |
 | `relative_threshold`, `absolute_threshold` | 0.35, 5 | Both must be crossed against the baseline median. |
-| `max_sites_per_tick` | 5 | Bound on worker calls per tick. |
-| `time_budget_seconds` | 60 | Stop measuring new sites after this, more than 0 and at most 80 (the research tick has 120 s). |
+| `max_sites_per_tick` | 5 | Bound on worker calls per tick; the time budget usually allows fewer (next row). |
+| `time_budget_seconds` | 60 | The measuring budget, 45 to 80 s (the research tick has 120 s). The worker is asked only with 45 s of it left (`MEASURE_RESERVE_SECONDS`) and waited on for at most 58 s (`vision_sites.time_to_measure`, the rule `rail_access` keeps too), so with the default 60 a tick asks the worker only in about its first 15 s: expect one or two sites measured per tick, not up to five. The rest rotate to later ticks and keep their place. Under 45, no tick could ever ask the worker, so it is refused. |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget; it gets that plus two model turns. |
 | `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered; out of time is "artefact". |
@@ -317,12 +323,18 @@ be unset.
 Every key is in `adapter_config`, with the defaults of the adapter's `DEFAULTS`
 (`lambdas/common/adapters/rail_access.py`, whose docstring documents them). This table is the one
 list of them; [vision.md](enhancements/vision.md#5-configuration) points here.
-`force_manual_review` is forced on and cannot be unset. Four ready topic bodies, one per starting
-city, are in `scripts/rail_topics.example.json`: the cities take turns, one a day, and each sets
-the topic field `findings_window_hours` to 192 ([DynamoDB
-settings](#dynamodb-settings-changed-with-no-deploy)), so each article drafts every Finding since
-the city's last. The runsheet's [rail_access topics](deployment-runsheet.md#rail_access-topics)
-creates them and says how to add a city.
+`force_manual_review` is forced on and cannot be unset. A topic created without
+`editorial_goals` (or without a `primary_focus` in them) is drafted under the adapter's default
+goal (`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`, #298), not the global one:
+report only what was measured, with the capture dates; give no ridership, patronage, journey time,
+cost, cause, forecast or recommendation (the flags and simulations are proxies, never
+recommendations); use no number or place name that is not in the findings. Four ready topic
+bodies, one per starting city, are in `scripts/rail_topics.example.json`, each with a goal of its
+own: the cities take turns, one a day, and each sets the topic field `findings_window_hours` to 192
+([DynamoDB settings](#dynamodb-settings-changed-with-no-deploy)), so each article drafts every
+Finding since the city's last. The runsheet's
+[rail_access topics](deployment-runsheet.md#rail_access-topics) creates them and says how to add a
+city.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -339,7 +351,7 @@ creates them and says how to add a city.
 | `served_share_threshold` | 0.02 | A move of the served share of at least this from the baseline median is material. Not negative. |
 | `desert_relative_threshold` | 0.10 | A move of the desert area of at least this times the baseline median (at least 1 km²) is material. Not negative. A changed station count is material on its own. |
 | `max_sites_per_tick` | 1 | 1 to 3. One city per tick: the network fetch, the worker and the agent share the tick's 120 s. A site skipped for this cap, or deferred for time, keeps its place in the rotation. |
-| `time_budget_seconds` | 70 | The measuring budget, more than 0 and at most 80. The network is fetched only with 30 s of it left, the worker asked only with 45 s left. |
+| `time_budget_seconds` | 70 | The measuring budget, 45 to 80 s. The network is fetched only with 30 s of it left, the worker asked only with 45 s left (`vision_sites.time_to_measure`, the rule `satellite_vision` keeps too) and waited on for at most 58 s. |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget, 0 to 5; it gets that plus two model turns. |
 | `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered, more than 0 and at most 90; out of time is "artefact". |

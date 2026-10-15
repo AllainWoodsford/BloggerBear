@@ -678,13 +678,25 @@ All shipped and deployed; the design and decisions for each are in
   topic that writes on some days only, like a city of the rail rotation, drafts every Finding since
   its last article (#297; `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/rewrite.py`, `scripts/admin_cli.py`)
+- [x] Fixes from the review of the whole integration branch: the daily trending digest leaves out
+  every topic whose articles always wait for a person, so vision text never reaches an
+  auto-published page; a rail Finding carries only the maps of the sites its summary reports; the
+  SPA removes a figure whose image fails to load; one measuring rule for both vision adapters
+  (`time_budget_seconds` 45 to 80); the worker follows no redirect and reads only its byte range;
+  one parser for `VISION_ALLOWED_URL_PREFIXES`; editorial defaults for both vision adapters; the
+  compliance review's verdicts restored for every topic; the ops assistant's log review leaves the
+  worker out of its default sweep; a test runs the gitleaks email rule over the Python sources
+  (#298, rail PR L; `lambdas/trending_digest_handler.py`, `lambdas/common/vision_sites.py`,
+  `lambdas/vision_worker_handler.py`, `lambdas/common/vision_contract.py`,
+  `lambdas/common/editorial_resolver.py`, `lambdas/common/compliance.py`, `frontend/app.js`)
 - [x] Documentation: the vision pipeline page (docs/architecture/blogger-vision.md), the README
   section and data-source rows, the configuration and deployment sections, the submission draft
   (#290, rail PR F1)
 - [x] Documentation: vision.md for two tasks, the four city topics rotating one a day with a
   192-hour findings window (`scripts/rail_topics.example.json`) and the runsheet's
   `rail_access topics` section, the friction entries, and the earlier docs brought in line with
-  the merged code (#296, rail PR F2)
+  the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
+  (#296, rail PR F2)
 
 ## Backlog / not yet scheduled
 

@@ -533,10 +533,14 @@ variable, not with a tfvars edit. Every setting it uses is in
 3. **Create a topic.** A `satellite_vision` topic needs `adapter: "satellite_vision"` and
    `sites` in its `adapter_config` (one to ten lon/lat polygons, each with an `id` and
    optionally a `name`), and usually an `object_noun`; everything else has a default
-   (`common/adapters/satellite_vision.py` documents every key). A `rail_access` topic is one
-   city inside one Sentinel-2 tile: [`rail_access` topics](#rail_access-topics), below, creates
-   the four starting cities from a file. Both get `force_manual_review` whether you ask or not:
-   every article waits for `admin_cli approve`. Trigger the first tick by hand
+   (`common/adapters/satellite_vision.py` documents every key), the editorial goal included
+   (the adapter's own since #298). With the default 60 s `time_budget_seconds`, a tick asks the
+   worker only in about its first 15 s, so expect one or two sites measured per tick; the rest
+   rotate to later ticks and keep their place. A `rail_access` topic is one city inside one
+   Sentinel-2 tile: [`rail_access` topics](#rail_access-topics), below, creates the four
+   starting cities from a file. Both get `force_manual_review` whether you ask or not:
+   every article waits for `admin_cli approve`, and the daily trending digest, which publishes
+   with no person, leaves these topics out (#298). Trigger the first tick by hand
    (`topics trigger <id> --pipeline research_tick`); the first scene measured at or above the
    topic's coverage floor is its first observation, reported once, so a Finding, then a held
    article, is what success looks like. A tick that measures nothing (the worker off, every site
@@ -551,7 +555,10 @@ variable, not with a tfvars edit. Every setting it uses is in
 The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` bucket, nothing
 else) and needs no key and no other access. It has no alarm of its own: observability's alarms
 are in the home Region, and the worker is not; read its log group,
-`/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`.
+`/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`. The ops assistant does not read it
+either: its log review leaves the worker out (its logs are outside the home Region), and asked for
+it by name it says "That function's logs are kept outside this Region, so I can't read them yet."
+Reading them is planned work, the assistant's vision round.
 
 ### `rail_access` topics
 
@@ -580,11 +587,14 @@ python scripts/admin_cli.py topics get rail-sydney
 ```
 
 Each answer shows `"force_manual_review": true`, which was not sent: the admin API forces it for
-this adapter. The editorial goals matter more than they look: the `rail_access` adapter has no
-default goal of its own, so a rail topic created without one is ideated and drafted under the
-global default ("independent web research ... sampling 5 to 10 articles"), which does not fit a
-measurement. The example's goal asks for the measured figures, the capture date and what was not
-measured, and rules out ridership, cost, recommendations and causes.
+this adapter. The example's editorial goal is the city's own: it asks for the measured figures,
+the capture date and the coverage, and rules out ridership, cost, recommendations and causes. A
+rail topic created without one is no longer drafted under the global default ("independent web
+research ... randomly sampling 5 to 10 highly relevant articles"), which does not fit a
+measurement: since #298 the `rail_access` adapter has a default goal of its own
+(`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`), which restates the summary
+prompt's limits (only what was measured, with the capture dates; no ridership, journey time, cost,
+cause, forecast or recommendation). A topic's own goal wins over it.
 
 **How the cadence works.** Like every topic, each city has two schedules. The research heartbeat
 (`rate(1 hour)` by default) asks whether the topic is due (its `research_interval_hours`, else the
@@ -626,17 +636,18 @@ tick ran short of time, keeps its place.
 it found no Finding; it had no usable angle; or it ended in an error. An error the handler catches
 is quiet: the daily cycle returns `"status": "error"`, so Step Functions sees a successful invoke
 and does not retry it, and nothing reaches the DLQ or an alarm. The error is in the execution's
-output, not in the function's log; the sign is a city's run day with a new Finding but no new item
-in the review inbox. A timeout (the function's `timeout` is 300 s) or a crash is not caught: the
-state machine retries it twice and then sends it to the DLQ (`admin_cli failed-executions list`),
-so it is not silent. The next run then still starts at the city's last article, but never more
-than 192 hours back. A run that found no Finding loses nothing: its window was empty, and the next
-run's 192 hours reach back past it (no city's runs are more than 7 days apart), so they cover
-everything made since. After either of the other two, a two-day city still gets everything on its
-next run: its runs are 3 and 4 days apart, so its last article is at most 7 days old. For Boston,
-the once-a-week city, or after two such runs in a row, Findings older than 192 hours drop out: for
-Boston that is about six of the week's seven days, and for a two-day city after two missed runs,
-two or three days.
+output, not in the function's log (the handler's top-level guard prints nothing, a code follow-up
+in [vision.md §10](enhancements/vision.md#10-still-open)); the sign is a city's run day with a new
+Finding but no new item in the review inbox. A timeout (the function's `timeout` is 300 s) or a
+crash is not caught: the state machine retries it twice and then sends it to the DLQ
+(`admin_cli failed-executions list`), so it is not silent. The next run then still starts at the
+city's last article, but never more than 192 hours back. A run that found no Finding loses
+nothing: its window was empty, and the next run's 192 hours reach back past it (no city's runs are
+more than 7 days apart), so they cover everything made since. After either of the other two, a
+two-day city still gets everything on its next run: its runs are 3 and 4 days apart, so its last
+article is at most 7 days old. For Boston, the once-a-week city, or after two such runs in a row,
+Findings older than 192 hours drop out: for Boston that is about six of the week's seven days, and
+for a two-day city after two missed runs, two or three days.
 
 After a run that had no usable angle or ended in an error, the remedy is to run the city's daily
 cycle again by hand soon after:
@@ -658,10 +669,11 @@ Overpass API, since none is cached (within 30 s, both endpoints included; a fail
 budget remain, the worker measures the newest scene with that network (if the fetch was slow, the
 measurement is deferred to the next tick, which uses the cached network). If the scene's coverage
 is at least 0.6, that is the first observation: a Finding, its summary written by the model from
-"First observation. Sydney: served share …, … stations, … km² beyond 1 km of a station (coverage
-…)" and the planner notes, with the figure attached, and no triage (there is no baseline to check
-against; a person reads every article anyway). A scene under the floor
-writes no Finding, and the next clear one is the first observation. Then
+"First observation. Sydney: served share … %, … stations, … km² beyond 1 km of a station
+(coverage … %)" (the area beyond reach printed to one decimal, such as 12.3 km²) and the planner
+notes, with the figure attached, and no triage (there is no baseline to check against; a person
+reads every article anyway). A scene under the floor writes no Finding, and the next clear one is
+the first observation. Then
 `topics trigger rail-sydney --pipeline daily_cycle` drafts the article, which the
 `force_manual_review` hold keeps in the review inbox for `admin_cli approve`, whatever the
 compliance review says.

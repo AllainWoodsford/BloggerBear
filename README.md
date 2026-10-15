@@ -220,8 +220,9 @@ Held articles wait in the review inbox (`admin_cli approve`), where they can be 
 rejected, or **re-written** in the background by a chosen model, which runs the reviews again.
 
 More jobs run on fixed, Terraform-managed schedules: a **daily cross-topic digest** ("Trending
-Everywhere") that publishes through the same review path; a **weekly reflection** that reads
-reader feedback and proposes prompt refinements, which become **gear** the bear wears once
+Everywhere") that publishes through the same review path, leaving out any topic whose articles
+always wait for a person (`force_manual_review`, the vision topics); a **weekly reflection** that
+reads reader feedback and proposes prompt refinements, which become **gear** the bear wears once
 approved; **musings** (BloggerBear's short reflections on articles and feedback); a weekly
 **Stats rollover**; and a daily **Cost Explorer poll**.
 
@@ -337,8 +338,9 @@ imagery) to measure it; the worker reads only the tiles under the site and keeps
 numbers are diffed against the site's own baseline, so no model is called unless something
 moved (rule 2). A bounded **triage agent** then looks at the figure, may re-measure the scene,
 and says "real" or "artefact"; anything unsure is an artefact. A person approves every article
-(`force_manual_review`), which carries the data credits; the rail task's map reaches the page
-through the figures path, with a caption that says what its symbols are.
+(`force_manual_review`; the daily digest leaves these topics out), which carries the data
+credits; the rail task's map reaches the page through the figures path, with a caption that says
+what its symbols are.
 
 Two tasks share the worker:
 

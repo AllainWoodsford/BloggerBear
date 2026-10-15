@@ -4,11 +4,12 @@
 **Deadline:** 26 October 2026, 11:45 pm PDT · **Builds on:** [vision.md](vision.md) (the agentic vision
 stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agentic-vision-enhancement.md)
 
-> **Status, 2026-10-14: every PR has landed** on the integration branch (#285): 0, A (#289),
+> **Status, 2026-10-15: every PR has landed** on the integration branch (#285): 0, A (#289),
 > B (#287), C (#288), D (#291), E (#292), G (#286) and F (#290, and its closing half F2, #296),
-> and four PRs the reviews added: H (#293, the figure), I (#294, planner notes), J (#295, time
-> bounds) and K (#297, a topic's `findings_window_hours`, so a city's rotation day drafts every
-> Finding since its last article).
+> and five PRs the reviews added: H (#293, the figure), I (#294, planner notes), J (#295, time
+> bounds), K (#297, a topic's `findings_window_hours`, so a city's rotation day drafts every
+> Finding since its last article) and L (#298, the fixes from the review of the whole branch:
+> the digest, the figures, the tick budgets, the worker's redirects, and smaller ones).
 > This document is the record of what was specified and why; the living page, which describes the
 > code as merged, is [vision.md](vision.md). Where the code differs from a specification below, the
 > code is right; the differences that matter:
@@ -23,10 +24,17 @@ stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agenti
 > - **PR A and E, the figure (PR H):** the caption lines and a legend are in a strip under the map,
 >   the map draws the flags, isolation weight and simulated links, and the page caption reads
 >   "Rail access in {name}, Sentinel-2 {date}: …" ([vision.md §6.6](vision.md#66-attribution)).
-> - **PR C:** `MAX_CAPTION_CHARS` is 400.
+> - **PR C:** `MAX_CAPTION_CHARS` is 400. `invalidate_article_page(article_id, figure_count=0)`
+>   asks for `/articles/figures/<id>/*` only when the article has figures (PR L), and the SPA
+>   removes a `<figure>` whose image fails to load, as the static page leaves off a failed copy.
+>   The daily trending digest, which C left alone, leaves out every topic for which
+>   `compliance.requires_manual_review` is true (PR L), so no vision text is published unseen.
 > - **PR D:** only a parameter dataclass's refusal (built before any read) is `bad_request`; any
 >   other `ValueError` is `internal` and logged. The rail task's window cap is 3,584 px
->   (`RAIL_MAX_WINDOW_PX`, PR J), not the reader's 4096.
+>   (`RAIL_MAX_WINDOW_PX`, PR J), not the reader's 4096. The worker follows no redirect (a 3xx is
+>   `unreadable_scene`, unread) and reads only the byte range it asked for, and an entry of
+>   `VISION_ALLOWED_URL_PREFIXES` that is not `https://<host>/` and a path is skipped
+>   (`vision_contract.allowed_prefixes`, PR L).
 > - **PR E:** the tick works scene first (a new scene is measured with the cached network even
 >   past its TTL; a stale network is refreshed only on a tick with nothing new, with a 6-hour
 >   back-off after a failure); a topic holds 1 to 3 cities; the first observation is reported once,
@@ -36,6 +44,14 @@ stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agenti
 >   recorded (`failed_scene`), and one the worker refused as `window_too_large`,
 >   `site_outside_scene` or `bad_request` is not sent again until a newer scene appears, 6 hours
 >   pass, or the site's polygon or parameters change; any other failure is retried on the next tick.
+> - **PR E, after PR L:** the measuring rule is shared with `satellite_vision`
+>   (`vision_sites.time_to_measure`: 45 s left to ask the worker, 58 s to wait), and
+>   `time_budget_seconds` must be 45 to 80 (under 45 is refused too, not only over 80);
+>   `figures` returns the maps of the sites the summary reports only (`_reported_scenes`, the
+>   planner notes' rule), not one per measured site; desert areas print to one decimal
+>   ("111.0 km²"); the figure's legend says "simulated link"; and the adapter has an editorial
+>   default (`ADAPTER_DEFAULTS`), so a topic made without `editorial_goals` is not drafted under
+>   the global goal.
 > - **PR F:** the cities rotate one a day as specified (Sydney Monday and Friday, Melbourne Tuesday
 >   and Saturday, Singapore Wednesday and Sunday, Boston Thursday, all at 09:05 Sydney time), and
 >   each topic sets `findings_window_hours` to 192 (PR K): the daily cycle reads 24 hours back by
@@ -640,7 +656,7 @@ served_share| ≥ served_share_threshold`, or `|Δ desert_km2| ≥ desert_relati
 max(median desert, 1)`, or the station count differs from the previous entry's; reasons "served
 share moved", "desert area moved", "station count changed", "coverage below the floor", "baseline
 still building", "within the usual range". The first tick is material: "First observation.
-<name>: served share 73 %, 178 stations, 111 km² beyond 1 km of a station (coverage 93 %)".
+<name>: served share 73 %, 178 stations, 111.0 km² beyond 1 km of a station (coverage 93 %)".
 `figures`: one per measured site with an `image_key`; caption "Rail access heat map of {name} from
 the Sentinel-2 scene captured {date}: built-up density (warm colours), areas more than {reach} m
 from a station (outlined), rail lines and stations from OpenStreetMap. Processed imagery; contains

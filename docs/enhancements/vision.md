@@ -127,7 +127,8 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | [#294](https://github.com/AllainWoodsford/BloggerBear/pull/294) | I | Planner notes (`common/rail_notes.py`): the flags and simulated links as sentences, in the summary, the review evidence and the Finding |
 | [#295](https://github.com/AllainWoodsford/BloggerBear/pull/295) | J | Linear station adjacency, ghost-line walk and run lengths; incremental thinning (`THINNING_REACH_PX`) and speed guards that count the work; the rail window cap (`RAIL_MAX_WINDOW_PX`) |
 | [#297](https://github.com/AllainWoodsford/BloggerBear/pull/297) | K | A topic's `findings_window_hours` (1 to 336 h, default 24) through the admin API and CLI, read by the daily cycle and Re-Write (`common/findings_window.py`) |
-| [#296](https://github.com/AllainWoodsford/BloggerBear/pull/296) | F2 | This document for two tasks, the city topic templates, the runsheet's rail section, progress and friction |
+| [#298](https://github.com/AllainWoodsford/BloggerBear/pull/298) | L | The integration review's fixes: the daily trending digest leaves out every topic for which `compliance.requires_manual_review` is true; a rail Finding carries only the maps of the sites its summary reports; the SPA removes a figure whose image fails to load; one measuring rule for both vision adapters (`vision_sites.time_to_measure`; `time_budget_seconds` 45 to 80); the worker follows no redirect and reads only its byte range; one parser for `VISION_ALLOWED_URL_PREFIXES` (`vision_contract.allowed_prefixes`); editorial defaults for both vision adapters; the compliance review's longer quote readings only when the draft holds them; the ops assistant's log review leaves the worker out of its default sweep; desert areas to one decimal, "simulated link" in the legend, figure invalidation only for an article with figures |
+| [#296](https://github.com/AllainWoodsford/BloggerBear/pull/296) | F2 | This document for two tasks, the city topic templates, the runsheet's rail section, progress and friction, and PR L documented: the documentation cut-off for the vision pipeline |
 
 ---
 
@@ -148,15 +149,15 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | Rail network | `lambdas/vision/network.py` | OpenStreetMap ways rasterised (`polylines`), thinned with `MORPH_HITMISS` (core OpenCV; no `ximgproc`; after the first pass only within the bounding box of what the last pass removed, grown by `THINNING_REACH_PX`, 8 px), junctions and ends (`filter2D`), stations snapped (`DIST_LABEL_PIXEL`), the skeleton read back as a networkx graph with lengths, corridor visibility and tunnels; `station_adjacency`. |
 | Rail analysis | `lambdas/vision/rail_analyse.py` | `RailParams`; the whole pass in order (masks, heat, network projected, reach, deserts, catchments, graph, measures, flags, simulated links); every metric rounded, JSON-clean and with its parameters echoed. |
 | Rail figure | `lambdas/vision/rail_annotate.py` | The heat map over the red band, the analysis drawn on it, the caption and legend in a strip under the map; PNG level 9 within a 2 MiB budget (§6.6). |
-| Worker | `lambdas/vision_worker_handler.py` | Validates, reads, analyses, annotates; replies with metrics, figure, build record, I/O and per-stage timings. Dispatches on `task`. Stateless. |
-| Contract | `lambdas/common/vision_contract.py` | Request/reply schema shared by both sides; `TASKS`; asset URL allowlist; parameter bounds per task; the rail network's shape and caps (`validate_network`, `NETWORK_LIMITS`); error codes. |
+| Worker | `lambdas/vision_worker_handler.py` | Validates, reads, analyses, annotates; replies with metrics, figure, build record, I/O and per-stage timings. Dispatches on `task`. Stateless. Never follows a redirect: any 3xx is `unreadable_scene`, its body unread and its `Location` unparsed (`_NoRedirectSession`); a body is streamed and read no further than the end of the byte range asked for (at most one 64 KB chunk past it, `_READ_CHUNK_BYTES`), even from a server that ignores `Range` and answers 200 with the whole file. |
+| Contract | `lambdas/common/vision_contract.py` | Request/reply schema shared by both sides; `TASKS`; asset URL allowlist (`allowed_prefixes`, the one parser of `VISION_ALLOWED_URL_PREFIXES` for the worker and the client); parameter bounds per task; the rail network's shape and caps (`validate_network`, `NETWORK_LIMITS`); error codes. |
 | Client | `lambdas/common/vision_client.py` | Invokes the worker in the region its ARN names; sends the task and network; validates every reply; every failure is `VisionError`. |
 | OpenStreetMap | `lambdas/common/osm.py` | The Overpass query, two allow-listed endpoints and one fallback hop, decimation to 20 m, caps, a streamed body under 20 MB, coded errors (`OsmError`), `is_stale`, the credit (`OSM_SOURCE`). No numpy or OpenCV. |
-| Shared site machinery | `lambdas/common/vision_sites.py` | What both vision adapters share: config checks and bounds, the STAC search and choice of scene, the figure store, clear entries, the time `Budget`, the site order, `site_key`, the first-observation rule, the credits. |
+| Shared site machinery | `lambdas/common/vision_sites.py` | What both vision adapters share: config checks and bounds, the STAC search and choice of scene, the figure store, clear entries, the time `Budget` and when a tick may still ask the worker (`time_to_measure`: `MEASURE_RESERVE_SECONDS`, 45 s, of the budget left; waited on for at most `WORKER_READ_TIMEOUT`, 58 s), the site order, `site_key`, the first-observation rule, the credits. |
 | Ship adapter | `lambdas/common/adapters/satellite_vision.py` | Sites, history, the count diff, triage hook, attribution, summary prompt, review evidence. |
-| Rail adapter | `lambdas/common/adapters/rail_access.py` | One city per site: scene search, the cached network, the worker call, history, the served-share, desert and station-count diff, triage, figures, source references, summary prompt, review evidence, planner notes. |
+| Rail adapter | `lambdas/common/adapters/rail_access.py` | One city per site: scene search, the cached network, the worker call, history, the served-share, desert and station-count diff, triage, figures and planner notes (of the sites its summary reports, `_reported_scenes`), source references, summary prompt, review evidence. |
 | Planner notes | `lambdas/common/rail_notes.py` | The rail flags and simulated links as one generated sentence each (§6.8). |
-| Figures path | `lambdas/common/figures.py` | Shapes and checks `[{"key", "caption", "alt"}]` from adapter to Finding to article; the site key `articles/figures/<article>/<n>.png`; `static_pages.publish_figures` does the copy. |
+| Figures path | `lambdas/common/figures.py` | Shapes and checks `[{"key", "caption", "alt"}]` from adapter to Finding to article; the site key `articles/figures/<article>/<n>.png`; `static_pages.publish_figures` does the copy and leaves a failed copy off the static page; the SPA (`frontend/app.js`) removes a `<figure>` whose image fails to load, so it shows what the static page shows. |
 | Triage agent | `lambdas/common/vision_triage.py` | Converse with the figure and the task profile's tools (three for ships, four for rail); bounded; a deadline; fail closed; trail returned. |
 | Terraform | `infra/modules/vision-worker/` | The worker, its role, log group and artifacts bucket in `var.region`. |
 | Benchmark | `scripts/vision_benchmark.py` | `kernels`, `scenes`, `worker` and `fetch-network` modes; reports CPU generation and build fingerprint. |
@@ -297,8 +298,8 @@ automatically and cannot be unset.
 | `min_baseline` | 2 | Earlier clear scenes needed before a change can be material. |
 | `relative_threshold` | 0.35 | Both this … |
 | `absolute_threshold` | 5 | … and this must be crossed against the baseline median. |
-| `max_sites_per_tick` | 5 | Bound on worker calls per tick. |
-| `time_budget_seconds` | 60 | Stop measuring new sites after this (the research tick times out at 120 s). |
+| `max_sites_per_tick` | 5 | Bound on worker calls per tick; the time budget usually allows fewer (next row). |
+| `time_budget_seconds` | 60 | The measuring budget, 45 to 80 s (the research tick times out at 120 s). The worker is asked only with 45 s of it left (`vision_sites.time_to_measure`), so with the default 60 a tick asks it only in about its first 15 s: expect one or two sites measured per tick, not five. The rest rotate to later ticks and keep their place. |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget. |
 | `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered. |
@@ -322,7 +323,8 @@ thresholds.
 ### Bounds every vision topic shares
 
 `common/vision_sites.parse_site_config` refuses a config the tick could not keep to, before any
-call: numbers must be finite; `time_budget_seconds` in (0, 80] (the tick has 120 s);
+call: numbers must be finite; `time_budget_seconds` in [45, 80] (the tick has 120 s, and under
+`MEASURE_RESERVE_SECONDS`, 45 s, no tick could ever ask the worker);
 `triage_deadline_seconds` in (0, 90]; `triage_max_tool_calls` 0 to 5; `history_size` 2 to 20;
 `min_baseline` at least 1 and under `history_size`; `max_sites_per_tick` 1 to the adapter's site cap;
 `coverage_floor` in [0, 1]; no negative `*_threshold`; `triage` and `web_context` true or false; a
@@ -337,7 +339,7 @@ a config the adapter refuses fails the topic's research tick with the reason in 
 | `vision_enabled` | dev and production roots, from CI (`VISION_ENABLED`); never set in `terraform.tfvars` | `false` | Create the worker, give the research tick its ARN, and give the pipeline's shared execution role (`lambda_exec`) the right to invoke it. CI hands the variable to Terraform as `TF_VAR_vision_enabled`, and a value in `terraform.tfvars` would beat it, so the switch would no longer switch. The steps: [the runsheet's Vision (optional)](../deployment-runsheet.md#vision-optional). |
 | `vision_region` | dev and production | `"us-west-2"` | Where the worker runs. Must equal the bootstrap's. |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create `<prefix>-*-vision-*` Lambdas and log groups. |
-| `memory_size`, `timeout` | module | 2048 MB, 60 s | The worker's size; the timeout stays under the client's default 90 s. The rail adapter gives up first, at 58 s (`WORKER_READ_TIMEOUT`), by design. |
+| `memory_size`, `timeout` | module | 2048 MB, 60 s | The worker's size; the timeout stays under the client's default 90 s. Both vision adapters give up first, at 58 s (`vision_sites.WORKER_READ_TIMEOUT`), by design. |
 
 The full list, with the switch, is [configuration.md, Vision and rail access](../configuration.md#vision-and-rail-access).
 
@@ -349,7 +351,7 @@ The full list, with the switch, is [configuration.md, Vision and rail access](..
 | `VISION_COOL_WORKER_ARN` | research tick | The COOL worker, once it exists. |
 | `VISION_BACKEND` | worker | `opencv` or `cool`: what this deployment is. |
 | `COOL_BUILD_SHA256` | COOL worker | The pinned COOL build fingerprint. |
-| `VISION_ALLOWED_URL_PREFIXES` | worker, research tick | Optional; defaults to the `sentinel-cogs` bucket. |
+| `VISION_ALLOWED_URL_PREFIXES` | worker, research tick | Optional, comma-separated; defaults to the `sentinel-cogs` bucket. Each entry must be `https://<host>/` and a path; any other entry is skipped, with a printed line, and if every entry is skipped the default applies (`vision_contract.allowed_prefixes`, read by both). |
 
 The rail task adds none: Earth Search, the `sentinel-cogs` bucket, Overpass and GDELT need no key.
 
@@ -358,8 +360,21 @@ The rail task adds none: Earth Search, the `sentinel-cogs` bucket, Overpass and 
 Any topic may set it; `satellite_vision` and `rail_access` topics always have it (the admin API
 forces it for every adapter in `MANUAL_REVIEW_ADAPTERS`, on create and on update). The daily cycle
 adds "this topic's articles are always reviewed by a person before publishing" to the hold
-reasons, so nothing auto-publishes. Unlike `is_financial`, drafting is unchanged and the
-compliance review still runs, so the moderator sees its verdict. Stored only when true.
+reasons, and the daily trending digest, which publishes with no person, leaves out every topic
+for which `compliance.requires_manual_review` is true (#298), so no text of such a topic is
+published without a person on any publish path. Unlike `is_financial`, drafting is unchanged and
+the compliance review still runs, so the moderator sees its verdict. Stored only when true.
+
+### Editorial goal
+
+A topic created without `editorial_goals` (or without a `primary_focus` in them) is ideated and
+drafted under its adapter's default goal (`ADAPTER_DEFAULTS` in `common/editorial_resolver.py`,
+#298), not the global one's "randomly sampling 5 to 10 highly relevant articles". Both vision
+defaults restate their summary prompt's limits: report only what was measured, with the capture
+dates, and use no number or place name that is not in the findings; the rail one gives no
+ridership, patronage, journey time, cost, cause, forecast or recommendation, and the ship one names
+no ship, vessel, owner, company or person, gives no cause, forecast, price, market or trading view,
+and never calls an area safe, clear or unaffected. A topic's own `primary_focus` wins over it.
 
 ### Where things are stored
 
@@ -369,8 +384,8 @@ compliance review still runs, so the moderator sees its verdict. Stored only whe
 | The rail task's cached OpenStreetMap network, per site, with its polygon's `site_key`, `network_error` after a failed refresh, and `failed_scene` after a refusal | The same running state (never in a prompt or the review evidence) |
 | When the topic's first observation was reported | `first_observed_at` in the running state |
 | Figures, as the worker drew them | `vision/<topic>/<site>/<scene>.png` in the content bucket (private) |
-| A Finding's figures and planner notes | `figures` (`[{"key", "caption", "alt"}]`) and, for rail, `planner_notes` (at most 7) on the Finding |
-| A published article's figures | `articles/figures/<article>/<n>.png` in the site bucket (copied at publish, removed on unpublish and take-down), and `figures` on the article row |
+| A Finding's figures and planner notes | `figures` (`[{"key", "caption", "alt"}]`) and, for rail, `planner_notes` (at most 7) on the Finding, both only for the sites its summary reports |
+| A published article's figures | `articles/figures/<article>/<n>.png` in the site bucket (copied at publish; removed on unpublish and take-down, which also ask the CDN to drop `/articles/figures/<article>/*` for an article with figures), and `figures` on the article row |
 | Triage spend | Stats page, category `vision_triage` |
 | Worker package | `<prefix>-<env>-vision-artifacts-<account>-<region>` bucket, `vision-worker/<md5>.zip`, 14-day expiry |
 
@@ -400,7 +415,9 @@ are tried again on the next tick. A measurement clears both.
 
 - **Rule 2, diff-first:** OpenCV measures every new scene; Bedrock is only called after a numeric
   material change (the triage), and then for the summary.
-- **Rule 3 and the risks doc's item 9:** no vision article publishes without a person.
+- **Rule 3 and the risks doc's item 9:** no vision article publishes without a person, on any
+  publish path: the daily cycle holds every one, the daily trending digest leaves these topics out
+  (#298), and approving or force-publishing is a person's act.
 - **Rule 5, adapters:** the handlers learned nothing about imagery; the one research-tick change
   is a generic opt-in, and the figures path and planner notes are generic hooks too.
 - **Rule 6, Terraform:** everything is behind `vision_enabled`; the bootstrap change is applied
@@ -415,13 +432,18 @@ A ship site is material when its new scene's coverage is at least the floor, the
 `absolute_threshold` **and** `relative_threshold`.
 
 A rail site is material when its new scene's coverage is at least the floor, there are at least
-`min_baseline` earlier clear scenes **measured the same way** (the same polygon's `site_key` and
-the same echoed parameters, so an edited reach or polygon starts a new baseline, reported as
-"baseline still building", rather than reading as a change in the city), and any of: the served
-share moved by at least `served_share_threshold` from their median; the desert area moved by at
-least `desert_relative_threshold` times the larger of its median and 1 km²; the station count
-differs from that of the previous scene measured the same way (clear or not: a station count does
-not depend on cloud). Values are compared as stored, to 4 decimal places.
+`min_baseline` earlier clear scenes **measured the same way** (the same polygon's `site_key` and the
+same echoed parameters, so an edited reach or polygon starts a new baseline, reported as "baseline
+still building", rather than reading as a change in the city), and any of: the served share moved by
+at least `served_share_threshold` from their median; the desert area moved by at least
+`desert_relative_threshold` times the larger of its median and 1 km²; the station count differs from
+that of the previous scene measured the same way (clear or not: a station count does not depend on
+cloud). Values are compared as stored, to 4 decimal places. The diff summary prints shares as whole
+percentages and desert areas to one decimal at every size (`_area`, #298: "12.3 km² beyond 1 km of a
+station against 10.7 km² (+15%)"), since whole square kilometres could print a material move as no
+move. One decimal shows any move of more than 0.1 km², and the default threshold (0.10 of a median
+of at least 1 km²) is never under 0.1 km²; a topic with a lower `desert_relative_threshold` can
+still see one area printed twice, with the percentage beside it.
 
 **The first observation, both adapters** (`vision_sites.first_observation`): the first tick that
 measures a scene at or above the coverage floor is the topic's first observation, material and
@@ -449,7 +471,8 @@ call:
 Bounds are in code: at most `triage_max_tool_calls` tool calls, at most that plus two model turns,
 a deadline (`triage_deadline_seconds` after the tick started) under which no model turn starts with
 less than 10 s left, and a strict JSON answer `{"verdict": "real" | "artefact", "reason": "…"}`.
-`look_again` waits on the worker for at most the client's read timeout, cut to the deadline less
+`look_again` waits on the worker for at most the adapters' read timeout (58 s,
+`vision_sites.WORKER_READ_TIMEOUT`, for both since #298), cut to the deadline less
 the 10 s answer turn and the 5 s connect allowance, rounded down to 5 s; under 10 s (ships) or 30 s
 (rail: a city's run takes 20 to 40 s and a worker call that cannot finish is still billed) it is
 refused and the model told to answer. A malformed answer, an unknown verdict, a Bedrock error, no
@@ -506,9 +529,12 @@ stations; simulated links dashed in green. Its words are in a dark strip under t
 never cover a station: three caption lines ("Processed imagery - BloggerBear", "Contains modified
 Copernicus Sentinel data {year}", "Map data (c) OpenStreetMap contributors"; Hershey fonts have no
 ©), a 1 px rule, and a legend in one to three columns by width, on every figure at least 256 px
-wide. The PNG is written at zlib's level 9 and kept within a 2 MiB budget by drawing it again at 0.8
-times the size, down to a 512 px map (the client refuses a figure over 3 MiB). The page caption (at
-most 400 characters, `figures.MAX_CAPTION_CHARS`) is:
+wide. The legend's entries (`LEGEND_ENTRIES`): "station, larger = busier catchment, thick ring =
+high isolation weight", "hub", "flagged (isolated high demand, single point of failure, ghost
+line)", "simulated link" (#298; "simulated", as the caption and the planner notes say, never
+"suggested") and "beyond walking reach". The PNG is written at zlib's level 9 and kept within a
+2 MiB budget by drawing it again at 0.8 times the size, down to a 512 px map (the client refuses a
+figure over 3 MiB). The page caption (at most 400 characters, `figures.MAX_CAPTION_CHARS`) is:
 
 > Rail access in {name}, Sentinel-2 {date}: built-up density (warm colours), areas beyond {reach}
 > of a station (outlined), OpenStreetMap rail lines and stations, flagged stations (red rings) and
@@ -579,8 +605,10 @@ written); a figure read from sampled betweenness says "about". The notes follow 
 diff (introduced as "Rule-based flags and simulations (proxies, not recommendations):"), so the
 summary prompt and the article may use them; they are in the review evidence (`planner_notes`, per
 site); and the Finding keeps a structured copy (`planner_notes`, at most seven, each with its site,
-kind, type, stations and text), which leaves out a scene the agent judged an artefact. The figure
-draws the same flags and links (§6.6).
+kind, type, stations and text), which leaves out a scene the agent judged an artefact. The
+Finding's figures take the same rule (`_reported_scenes`, #298): a map only for a site its summary
+reports, never for one under the coverage floor or one the agent doubted. The figure draws the
+same flags and links (§6.6).
 
 ---
 
@@ -710,11 +738,14 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
 12. **The tick's 120 s, shared between Overpass, the worker and the agent.** The research tick has
     120 s and 512 MB for everything: the STAC search, a network fetch, the worker, the agent, the
     summary call and the stores. The split, in code: one city per tick (`max_sites_per_tick` 1); a
-    70 s measuring budget (`time_budget_seconds`, never over 80); the network fetched only with
+    70 s measuring budget (`time_budget_seconds`, 45 to 80); the network fetched only with
     30 s of it left and finished within them, both Overpass hops included (`OSM_RESERVE_SECONDS`,
     25 s per hop); the worker asked only with 45 s left (`MEASURE_RESERVE_SECONDS`) and waited on
     for 58 s (`WORKER_READ_TIMEOUT`, under its own 60 s timeout; the client's default 90 s would
-    run the tick out); the agent's answer due 85 s after the tick started
+    run the tick out), a rule the ship adapter lacked until the integration review found it could
+    run the tick out of time, so both adapters now keep it in one place
+    (`vision_sites.time_to_measure`, #298) and a budget under 45 s is refused; the agent's answer
+    due 85 s after the tick started
     (`triage_deadline_seconds`, never over 90), no model turn with under 10 s left, `look_again`
     cut to the time left and refused under 30 s, `web_context` within 10 s; at least the last 30 s
     for the summary call and the stores. And the order of work keeps a slow Overpass from costing a
@@ -762,7 +793,8 @@ None of this is automatic.
    `production` environment sets `VISION_ENABLED` to `false` until the dev trial is done.
 4. **Create the topics.** The four rail cities from `scripts/rail_topics.example.json`
    ([rail_access topics](../deployment-runsheet.md#rail_access-topics)), and a ship topic if
-   wanted: `adapter: "satellite_vision"`, its `sites`, an `object_noun`, and editorial goals. Check
+   wanted: `adapter: "satellite_vision"`, its `sites`, an `object_noun`, and editorial goals if the
+   adapter's default (§5, "Editorial goal") is not what you want. Check
    `docs/risks/opencv-bushfire-watch-01.md` against it.
 5. **Run Sydney for real:** a tick with the Overpass network on the deployed worker, for the
    measurements the submission needs (its table in `docs/hackathon/opencv-2026-submission.md`).
@@ -814,3 +846,9 @@ None of this is automatic.
     misconfiguration scan: Trivy `config` and Checkov scan `infra/` only.
 14. **Two stale size comments.** The comments on `NETWORK_LIMITS` (`common/vision_contract.py`) and
     in `common/osm.py` still say a network is "near 1.5 MB"; the adapter measured 2.6 to 3 MB.
+15. **`common/osm.py` reads a redirect before refusing it.** It passes `allow_redirects=False` to
+    `requests.post`, but `requests` still reads a 3xx's body and parses its `Location` before the
+    status reaches `_request`, the behaviour the worker now avoids with `_NoRedirectSession` (#298).
+16. **The daily cycle never prints the error its top-level guard catches.** `_handle` returns it as
+    `{"status": "error", "error": ...}` with no log line, so it shows only in the Step Functions
+    execution's output, not in the function's log.

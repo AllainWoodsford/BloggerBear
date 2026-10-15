@@ -82,7 +82,8 @@ research tick ── SatelliteVisionAdapter.fetch_state
   to the snapshot. No bucket or table exists in the vision region, so nothing needs migrating and a
   vision region can be torn down at any time.
 - **No publish without review (rule 3), and no auto-publish at all** for vision topics:
-  `force_manual_review` on the topic holds every draft (the risks doc's item 9).
+  `force_manual_review` on the topic holds every draft (the risks doc's item 9), and the daily
+  trending digest, which publishes with no person, leaves such topics out (#298).
 - **Terraform through CI only (rule 6).** Every new resource is behind `vision_enabled` (default
   `false`), so merging scaffolding deploys nothing until the operator turns it on with the
   `VISION_ENABLED` repository variable, which CI passes as `vision_enabled`. It is never set in
