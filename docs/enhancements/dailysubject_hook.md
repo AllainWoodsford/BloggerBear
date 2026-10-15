@@ -1,0 +1,306 @@
+# The day-subject hook: one topic that rotates through the cities it is configured to watch
+
+**Status:** S1 in review (this PR); S2 not started · **Date:** 2026-10-15 · **Pick up after:** the assistant's
+vision round (PR M, PR N) and before the competition report (Phase 3), or after the deadline ·
+**Builds on:** [rail-access-monitor.md](rail-access-monitor.md), [vision.md](vision.md) §5,
+`common/editorial_goals.py` (the crypto feed's day goals), PR K (`findings_window_hours`, #297)
+
+> **The ask.** "My problem with the vision topic is it's set up to target one city, so I would
+> have to spawn 4 topics. Why can't I have one topic that rotates daily to write about the cities
+> it's configured to grab, like crypto has market days or altcoin days?"
+
+This document says what one rotating topic needs, why it was not built that way the first
+time, and how to build it in two PRs without changing any other topic's behaviour. Every file
+reference is at `dev` 7552942 (the vision integration branch, #285, merged); re-grep before
+editing, since PR M and PR N move some of these lines.
+
+---
+
+## 1. Why it is four topics today
+
+The crypto feed varies its subject day by day with a trick worth copying: **the day's goal is a
+pure function of the date**. `editorial_goals.goal_for_date` seeds a random draw with the UTC
+date, so the research tick (which fetches what the goal needs, hourly) and the daily cycle (which
+writes the article) compute the same goal without any stored state, and the daily cycle keeps only
+the Findings captured on that day (`daily_cycle_handler._select_goal_and_findings`, line 583).
+Only the crypto adapter has goals: `resolve_goal_for_topic` returns `None` for every other adapter
+(`editorial_goals.py:134`), so nothing else in the pipeline knows the idea.
+
+Nothing in the rail work generalised that. Three things pushed it towards one topic per city:
+
+1. **`MAX_RAIL_SITES = 3`** (`common/adapters/rail_access.py:167`). The research tick loads the
+   topic's whole running state every hour (`research_tick_handler._load_running_state`), and each
+   city's OpenStreetMap network is about 3 MB of JSON in that state (the module docstring, lines
+   70-79, and `common/osm.py`'s caps). Four cities did not fit the 512 MB tick comfortably, so the
+   cap stayed at three.
+2. **"One city a day" was mapped onto per-topic schedules.** Each city topic has its own
+   `daily_cadence` cron (`scripts/rail_topics.example.json`: Sydney Mon/Fri, Melbourne Tue/Sat,
+   Singapore Wed/Sun, Boston Thu) and a 192-hour `findings_window_hours`.
+3. **`last_article_at` is one stamp per topic.** The daily cycle never reads back past the
+   topic's previous article (`_window_start`, line 227). One shared topic writing about Sydney on
+   Monday would have cut off Melbourne's and Boston's Findings made before Monday; that is the
+   bug PR K fixed for the rotation *between* topics, and it reappears *inside* one topic.
+
+So four topics was the shape that needed no pipeline change. It works, it is deployed, and the
+measurements, figures and planner notes are the same either way. What it costs the owner is four
+topics to create and four to read, and a weaker story: "four topics" rather than "one topic, one
+adapter, N subjects".
+
+## 2. The design in one paragraph
+
+A **day subject** is to a multi-city topic what the day goal is to crypto: a subject chosen from
+the topic's own configuration as a function of the date, agreed on by the research tick and the
+daily cycle without stored state. An adapter may expose it through one hook; a Finding records
+which subjects it reports; the daily cycle keeps only today's subject's Findings, folds the
+subject's name into the editorial mandate, and remembers the last article **per subject**. The
+rail adapter uses it with a fixed weekly rota (not a random draw: the owner wants to know which
+city is Tuesday's). The cap on cities per topic is lifted by keeping each city's network out of
+the running state. Every topic without the hook behaves byte-for-byte as before, including crypto.
+
+## 3. PR S1: the generic hook (pipeline, rule 5)
+
+### 3.1 `Adapter.day_subject` (`common/adapters/base.py`)
+
+```python
+@dataclass(frozen=True)
+class DaySubject:
+    key: str        # stable id, e.g. a site id: "sydney"
+    label: str      # how the subject is named in prompts and logs: "Sydney"
+    mandate: str    # the day's editorial mandate, code-written, with the label folded in
+    style: str      # the article style line, like editorial_goals.ARTICLE_STYLES
+
+def day_subject(self, topic_config: dict, day: date) -> DaySubject | None:
+    """Today's subject for a topic that rotates through several, or None (the default)."""
+    return None
+
+def subjects(self, new_state: dict) -> list[str]:
+    """The subject keys this observation reports (default: none)."""
+    return []
+```
+
+- `day_subject` is pure: config and date in, subject out. The tick and the daily cycle call it
+  independently and must agree, exactly as `goal_for_date` is used today.
+- `subjects` is the Finding-side half: the rail adapter returns the site ids its summary reports,
+  the same list `figures` and `planner_notes` already follow (`_reported_scenes`,
+  `rail_access.py:545`).
+- `mandate` and `style` are **data from the adapter**, never branches in the daily cycle. For
+  rail they are the templates' editorial goal with the city's name substituted (the text now in
+  `editorial_resolver.ADAPTER_DEFAULTS["rail_access"]`, plus "for Sydney").
+
+### 3.2 The Finding records its subjects (`research_tick_handler.py:320-345`, `dynamo.put_finding`)
+
+- The tick calls `adapter.subjects(new_state)` beside `figures` and `planner_notes`, cleans the
+  result (strings, `SITE_ID`-shaped, at most `MAX_SUBJECTS_PER_FINDING = 10`, de-duplicated) and
+  passes it to `put_finding(..., subjects=...)`, stored only when non-empty, like `figures`. A
+  hook that raises costs the subjects, never the Finding (the `_planner_notes` pattern, line 137).
+- `list_recent_findings` is unchanged; the field rides along.
+
+### 3.3 The daily cycle picks the day's subject (`daily_cycle_handler.py`)
+
+Generalise `_select_goal_and_findings` (line 583) into `_select_subject_and_findings`:
+
+1. Resolve the crypto goal as today (unchanged path, unchanged bytes).
+2. Otherwise `subject = registry_adapter(topic).day_subject(topic["adapter_config"], today)`.
+   If `None`, return `(None, findings)` as now.
+3. Keep `[f for f in findings if subject.key in (f.get("subjects") or [])]`.
+4. If nothing is left: return `no_findings` for this run **without** stamping `last_article_at`
+   (the "a day with no new Finding stops before any model call" rule the runsheet already
+   promises). Do not borrow crypto's "follow the newest Finding's day" fallback: a Monday article
+   about Boston because Sydney had nothing is exactly what the owner does not want.
+5. The prompts: `_ideate` (line 735) and `_draft_article` index `EDITORIAL_MANDATES[goal]` and
+   `ARTICLE_STYLES[goal]` by enum. Give them one small seam: a `goal` argument that is either an
+   `EditorialGoal` (looked up as now) or a `DaySubject` (its own `mandate` and `style`). A test
+   asserts the crypto prompts are byte-identical before and after.
+6. `resolve_editorial_goals(topic, daily_goal)` (`editorial_resolver.py:92`): a `DaySubject` is
+   inside the adapter's domain, so the adapter default is kept (unlike `MARKET_NEWS`).
+7. Log one line: `daily_cycle_handler: day_subject=sydney topic_id=...`, like the goal line (291).
+8. The article stores `subject` (the key) beside `editorial_goal`, so Re-Write and the ops
+   assistant can see what it was about.
+
+### 3.4 The last article, per subject (`_window_start`, `dynamo.set_topic_last_article_at`)
+
+The one real design change. Today: `floor = run_started - window; start = max(floor,
+last_article_at)`. With subjects:
+
+- The topic item gains `last_article_by_subject: {"<key>": "<ISO UTC>"}` (a map; DynamoDB stores
+  it as `M`). `last_article_at` stays as the topic-wide stamp, so every existing display
+  (`cli_guide`, `topics_overview`, `pipeline_health`) keeps working.
+- `_window_start(topic, run_started, force, subject_key=None)`: when a subject is in play, the
+  bound is `last_article_by_subject.get(key)`; absent means "never written about this subject",
+  so the window alone bounds it. `force` ignores both stamps, as now.
+- `_record_article_written(topic_id, run_started, subject_key=None)`: one `UpdateExpression`
+  that sets `last_article_at` and, when a key is given, `last_article_by_subject.#k`
+  (`SET last_article_by_subject = if_not_exists(last_article_by_subject, :empty)` first, then the
+  key; two statements in one transaction are not needed, two sequential updates are fine).
+- **A known gap, not widened here:** `admin_api._update_topic` reads the topic and writes it
+  back whole (`put_item`), so an edit that lands between the stamp and the read restores the old
+  stamps (vision.md §10). With a map it is the same race on more fields. Fixing it is a
+  conditional update in `_update_topic`; list it as a follow-up unless S1 wants to take it.
+- `findings_window_hours` for a rotating topic must cover the rota: `24 × (longest gap in days)
+  + 24`. For a 4-city weekly rota with two slots each it is 96 h or 120 h; for one slot each
+  (Boston today), 192 h. The rotation test (3.9) asserts it.
+
+### 3.5 Re-Write (`common/rewrite.py:255`)
+
+`_findings_for(article, topic)` keeps only Findings whose `subjects` contain the article's
+`subject` when the article has one; otherwise unchanged. The fresh-data review and the
+compliance review then see the city's own research, not its neighbours'.
+
+### 3.6 The research tick side (optional, small)
+
+`vision_sites.order_sites` (line 310) rotates one site per tick by `last_attempt_at`. With N
+sites and an hourly heartbeat every city is attempted within N hours, and Sentinel-2 passes every
+few days, so Findings for each city accumulate inside the window regardless of the rota. S1 does
+**not** need the tick to know the subject. If an owner wants today's city measured first (a fresh
+scene on its own day), a later option is `order_sites(..., first=subject.key)` when the config
+sets `measure_subject_first: true`. Leave it out of S1.
+
+### 3.7 Configuration (`adapter_config`, validated in the adapter's `parse_config`)
+
+```json
+"rotation": {"MON": "sydney", "TUE": "melbourne", "WED": "singapore", "THU": "boston",
+             "FRI": "sydney", "SAT": "melbourne", "SUN": "singapore"},
+"rotation_timezone": "Australia/Sydney"
+```
+
+- Keys are weekday names; values are site ids in `sites`. A list form
+  (`["sydney", "melbourne", ...]`, cycled by `(date - 1970-01-01).days mod N`) is allowed for
+  rotas that are not weekly. Every site in `sites` must appear at least once (a city nobody ever
+  writes about is a misconfiguration); a value that is not a site id is a `ConfigError`.
+- The day is the **local calendar day** in `rotation_timezone` (default UTC), so "Tuesday" is
+  Tuesday in Sydney. The daily cycle's `today` must be computed in that zone; the tick uses the
+  same helper. (The topic's `daily_timezone` is the schedule's zone and may differ; do not
+  conflate them, but default `rotation_timezone` to `daily_timezone` when unset.)
+- The admin API does not validate `adapter_config` beyond "an object" (`admin_api_handler.py:249`)
+  and the adapter's `parse_config` runs at tick time, recording a `ConfigError` on the topic's
+  `last_error` as today. Leave that as it is; the CLI reference and `configuration.md` document
+  the keys.
+
+### 3.8 What must not change
+
+- Any topic whose adapter returns `None` from `day_subject` (every adapter but rail after S2):
+  the daily cycle's prompts, Findings, Articles, stamps and return values are byte-identical.
+  The regression probe from the integration review (dev vs branch on github-trending,
+  hacker_news, web_search and crypto, `PYTHONHASHSEED=0`) is the test.
+- The crypto feed keeps `editorial_goals.py` as its implementation; the `DaySubject` seam is
+  additive. Migrating crypto onto the hook is possible later and is not part of S1.
+- `satellite_vision` is unchanged (one anchorage per topic is its normal shape; it may adopt the
+  hook later with no pipeline change).
+
+### 3.9 Tests (S1)
+
+- `test_daily_cycle_handler.py`: a two-subject topic over a fortnight with the real
+  `_window_start`, `_select_subject_and_findings` and `_record_article_written` (moto):
+  every Finding is drafted exactly once, on its subject's day; a subject with no new Findings
+  gives `no_findings` and stamps nothing; `force` keeps the subject filter but ignores the
+  stamps; the rota is read in `rotation_timezone` across a clock change; Decimal values from
+  DynamoDB; a Finding with no `subjects` field is never drafted by a rotating topic (and still
+  is by a plain one).
+- `test_rewrite.py`: an article with `subject` sees only its subject's Findings.
+- `test_research_tick_handler.py`: `subjects` stored only when non-empty, capped, a raising hook
+  loses the subjects and keeps the Finding.
+- `test_editorial_goals.py` / prompts: crypto's ideation and draft prompts byte-identical.
+- `test_admin_api_handler.py`: `last_article_by_subject` survives an unrelated update; GET
+  returns it.
+- `test_ops_mcp_*`: `topics_overview` and `cli_guide` ignore the new map (or show it, if PR M's
+  overview already lists `last_article_at`; decide then).
+
+## 4. PR S2: the rail adapter rotates (after S1)
+
+### 4.1 Lift `MAX_RAIL_SITES` by keeping networks out of the running state
+
+- The network is the heavy part of a site's record (about 3 MB each; the scene history is tens
+  of KB). Store it as its own object, `snapshots/<topic>/sites/<site>/network.json`, next to the
+  figures the adapter already writes to the content bucket (`vision_sites.store_image`); add
+  `store_blob` / `load_blob` beside it with the same bucket and error handling.
+- The record keeps `network_fetched_at`, `network_key` and `network_stale`; `fetch_state` loads
+  the one network it needs for the site it measures this tick, and refreshes it on quiet ticks
+  exactly as now (`NETWORK_RETRY_HOURS`, `OSM_RESERVE_SECONDS` unchanged).
+- The running state then holds histories only, so `MAX_RAIL_SITES` can rise to **8** (a week
+  plus one): measure the state size and the tick's peak RSS at 8 sites with 6-entry histories
+  and say the numbers in the comment, as every bound in this module does.
+- `vision_status` (PR M) reads the running state with byte budgets; a smaller state only helps.
+  It reports "network age" from `network_fetched_at`, which stays in the record. Check PR M's
+  `status()` hook for any read of `record["network"]` and route it through the new key.
+- The worker request still carries the network inline (the worker is stateless and has no S3
+  access by design); nothing changes on that side.
+
+### 4.2 `RailAccessAdapter.day_subject` and `subjects`
+
+- `day_subject`: the rota of 3.7, read in `rotation_timezone`; `label` is the site's `name`
+  (cleaned through `rail_notes`' name rule: no markup, one line); `mandate` is
+  `ADAPTER_DEFAULTS["rail_access"]` with "for <label>" folded in; `style` as the templates'
+  goal text today.
+- `subjects`: `_reported_scenes` site ids. A multi-site tick that reports two cities yields a
+  Finding with two subjects; each city's day drafts it (the summary names both, which is
+  honest), so most ticks should keep `max_sites_per_tick: 1` as the default already is.
+
+### 4.3 Templates, runsheet, docs
+
+- `scripts/rail_topics.example.json` becomes **one** topic, `rail-cities`, with the four sites,
+  the rota above, `daily_cadence` every day at 09:05 `Australia/Sydney`,
+  `findings_window_hours` covering the rota (120 h for the two-slot rota above; the test checks
+  the arithmetic), and one editorial goal that names no city (the subject's mandate adds it).
+- `deployment-runsheet.md` "`rail_access` topics": one `topics create`; "How the cadence works"
+  rewritten for the rota and the per-subject stamp; "Adding a city" is adding a site and a rota
+  slot (`topics update --adapter-config-json` replaces the whole config: read, edit, send back,
+  as the runsheet already says).
+- `configuration.md`: the `rotation` and `rotation_timezone` rows; `MAX_RAIL_SITES` 8.
+- `vision.md` §5 and §6, `blogger-vision.md` step 6, the submission's "Cities" paragraph and
+  sketch line (`daily_cadence: one city a day` becomes `rotation: one city a day`), and
+  `rail-access-monitor.md`'s status note.
+- `test_rail_access_adapter.py`: the rotation test becomes a one-topic simulation (every
+  weekday has a city, every Finding drafted once, the window covers the longest gap).
+
+### 4.4 Migrating the four deployed topics
+
+The simple way: create `rail-cities`, let its first tick per city be a first observation again
+(the baseline needs `min_baseline` = 1 earlier scene, so each city is back to diffing after its
+second clear scene, a few days), then disable the four city topics (`topics update --disabled`
+or delete them). Their articles stay published under their own topic ids. The alternative, a
+one-off script that copies each old topic's `sites[<city>]` record into the new running state,
+keeps the baselines but is more code than it saves; only do it if a week of first observations
+matters for the demo.
+
+## 5. Edge cases (each with a test)
+
+- A subject in the rota that is not in `sites`, or a site not in the rota: `ConfigError`.
+- A Finding reporting two subjects: drafted on both days; neither day re-drafts it after its own
+  stamp.
+- The rota's day changes while the tick runs (23:59 → 00:00 local): the tick does not read the
+  subject, so nothing to agree on; the daily cycle reads it once at `run_started`.
+- `rotation_timezone` invalid: `ConfigError` (reuse `scheduler.validate_timezone`).
+- An article `subject` the topic no longer has (a city removed): Re-Write filters to nothing and
+  falls back to the unfiltered window with a printed line, never an empty prompt.
+- A Finding older than the subject's stamp but newer than the topic's: not drafted (the subject
+  stamp wins when present).
+- `force`: ignores both stamps, keeps the subject filter.
+
+## 6. Order, size and where it sits
+
+| PR | Scope | Size | Depends on |
+|---|---|---|---|
+| S1 | the hook, Finding subjects, per-subject stamps, daily cycle and Re-Write, config keys, tests, docs for the generic part | about a day of agent work with two review rounds (it touches the window logic PR K just changed, so the regression probe is mandatory) | PR M merged (`vision_status` reads the topic item; avoid parallel edits to `tools.py`) |
+| S2 | per-site network objects, `MAX_RAIL_SITES` 8, the rail hook, one-topic templates, runsheet, migration note | about a day | S1 |
+
+Both target the Phase 2 branch (`claude/vibrant-albattani-rjbsao-p2-integration`) or `dev`
+once that has merged, under the same build-review-refute-fix loop as the rail PRs. If the
+deadline (26 Oct) leaves no room, ship Phase 3 against the four-topic shape and build S1/S2
+afterwards: nothing in the report depends on it except the "Cities" paragraph.
+
+## 7. Decisions for the owner
+
+1. **Fixed rota or random draw?** This spec assumes a fixed weekly rota (predictable). Crypto's
+   seeded random draw is one line away if variety is wanted (`random.Random(f"{topic_id}:{day}")`).
+2. **Two slots a week per city or one?** Two slots (the current templates') halves the window
+   and doubles the articles; one slot (seven cities) is the other natural shape.
+3. **Migrate state or restart?** §4.4 recommends restarting.
+4. **Keep the four topics in production for the demo** until S2 lands, or wait for S2 before
+   creating any rail topic? The first is safe: the topics are independent, and S2 does not
+   change what they measure.
+
+---
+
+*Rule 5 check: the pipeline gains one adapter hook and one Finding field, both optional, and no
+adapter name. The rota, its timezone, the mandate text and the per-city state live in the rail
+adapter.*
