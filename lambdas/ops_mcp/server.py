@@ -208,7 +208,8 @@ def build_server() -> MCPServer:
     @server.tool(annotations=_READ_ONLY, structured_output=True)
     def pipeline_health(ctx: Context, topic: str | None = None) -> dict[str, Any]:
         """Per topic: whether research ran on time, and what became of its daily run in the last
-        26 hours (published, held for review, rejected, failed, or nothing written). Start a
+        26 hours (published, held for review, rejected, failed, or nothing written), and, for
+        topics that watch satellite imagery, whether their sites were measured. Start a
         briefing here. Pass `topic` (its id, its name, or the operator's own words for it) to look at one
         topic and get the error of a run
         that failed."""

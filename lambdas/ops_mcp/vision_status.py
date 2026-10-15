@@ -699,9 +699,11 @@ def site_health(
     counts and read state, and the cards (cards above). Code-derived only, nothing from a state's
     text. Nothing is read with the worker off; a topic with no adapter, or one that watches no
     sites, is left out."""
+    found = site_topics(topics, now)
+    if not found:
+        return {"on": None, "topics": {}, "findings": []}
     env = architecture.environment()
     on = worker_on()
-    found = site_topics(topics, now)
     surveyed = survey(found, now, on=on, seconds=budget_seconds, max_bytes=max_bytes, config=config)
     rows = {}
     for entry in surveyed:

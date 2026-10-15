@@ -538,6 +538,8 @@ def test_vision_status_says_what_it_is_for_and_what_never_to_say(client):
     ):
         assert phrase in described, phrase
     assert set(tools["vision_status"]["inputSchema"]["properties"]) == {"topic"}
+    health = " ".join(tools["pipeline_health"]["description"].split())
+    assert "for topics that watch satellite imagery, whether their sites were measured" in health
 
 
 @pytest.mark.parametrize(

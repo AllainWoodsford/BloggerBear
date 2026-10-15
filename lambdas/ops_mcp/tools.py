@@ -217,9 +217,16 @@ def _topic_check(
     return row, findings
 
 
-def pipeline_health(topic: str | None = None, *, now: datetime | None = None) -> dict:
+def pipeline_health(topic: str | None = None, *, now: datetime | None = None, sites: bool = True) -> dict:
     """Per topic: was it researched on time, and what became of its daily run in the last 26
-    hours. With `topic`, that topic alone, and the error of a run that failed."""
+    hours. With `topic`, that topic alone, and the error of a run that failed.
+
+    And, with `sites` (the memory's topic watch passes False and reads the sites itself), for a
+    topic whose adapter watches sites (the vision topics): whether they were measured on the last
+    try, from its running state, read within HEALTH_READ_SECONDS and nothing over
+    LARGE_STATE_BYTES (vision_status.site_health). Only code-derived fields are added (labels,
+    counts, class words, ids) and at most one sentence: this opens every briefing, and a briefing
+    is spoken back by Alexa. With no such topic the result is what it always was."""
     now = _now(now)
     matched = None
     if topic is not None:
@@ -239,7 +246,27 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None) ->
         rows.append(row)
         findings.extend(found)
 
-    result = {"spoken": _health_spoken(rows), "findings": findings, "topics": rows, "as_of": now.isoformat()}
+    spoken = _health_spoken(rows)
+    if sites:
+        # Imported here, as topic_match imports this module: vision_status imports these helpers.
+        from ops_mcp import vision_status
+
+        health = vision_status.site_health(
+            topics,
+            now,
+            budget_seconds=vision_status.HEALTH_READ_SECONDS,
+            max_bytes=vision_status.LARGE_STATE_BYTES,
+            config=config,
+        )
+        for row in rows:
+            if row["topic_id"] in health["topics"]:
+                row["sites"] = health["topics"][row["topic_id"]]["sites"]
+        findings.extend(health["findings"])
+        said = _vision_spoken(health)
+        if said:
+            spoken = f"{spoken} {said}"
+
+    result = {"spoken": spoken, "findings": findings, "topics": rows, "as_of": now.isoformat()}
     if matched is not None:
         result["matched_topic"] = matched
         result["spoken"] = topic_match.took(matched) + result["spoken"]
@@ -270,6 +297,40 @@ def _health_spoken(rows: list[dict]) -> str:
     elif len(rows) > 1:
         sentences.append("Research is on time for every topic.")
     return " ".join(sentences)
+
+
+# The classes of a vision site that mean it was not measured on its last try (vision_status.py).
+_SITE_PROBLEMS = ("worker_error", "source_error", "refused", "site_problem", "starved", "config_error")
+
+
+def _vision_spoken(health: dict) -> str:
+    """At most one sentence about the vision topics, the first that holds: the worker is off; a
+    topic has a site that was not measured; some topics' sites were not checked this time."""
+    topics = list(health["topics"].values())
+    if not topics:
+        return ""
+    off = [entry["label"] for entry in topics if entry["uses_worker"] and entry["state"] == "worker_off"]
+    if off:
+        return f"The vision worker is off, so {_few(off)} can't be measured."
+    failing = [entry["label"] for entry in topics if any(entry["sites"][name] for name in _SITE_PROBLEMS)]
+    if failing:
+        verb = "has" if len(failing) == 1 else "have"
+        return (
+            f"{_few(failing)} {verb} a site that wasn't measured on the last try; ask about the vision "
+            "pipeline for why."
+        )
+    unchecked = sum(1 for entry in topics if entry["state"] in ("not_checked", "too_large", "unreadable"))
+    if unchecked:
+        topics_word = "topic" if unchecked == 1 else "topics"
+        return f"I didn't check the sites of {unchecked} vision {topics_word} this time."
+    return ""
+
+
+def _few(labels: list[str]) -> str:
+    """At most three labels, then "and {k} more"."""
+    if len(labels) <= 3:
+        return _join(labels)
+    return f"{', '.join(labels[:3])} and {len(labels) - 3} more"
 
 
 # --- admin_inbox ---------------------------------------------------------------------------------
