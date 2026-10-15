@@ -41,7 +41,7 @@ Decide these before you start, and write them down. Each one is used several tim
 | Placeholder | What it is | Example shape | Rules |
 |---|---|---|---|
 | `<your-github-owner>/<your-fork>` | Your fork's `owner/repo` on GitHub | `octo-dev/my-blog-bot` | Exactly as GitHub shows it |
-| `<your-prefix>` | What every AWS resource name starts with: `<your-prefix>-dev-topics` | `acme-blog` | Lowercase letters, digits, hyphens; starts with a letter; at most 14 characters; **no** hyphen at the end. **Never change it after the first deploy.** |
+| `<your-prefix>` | What every AWS resource name starts with: `<your-prefix>-dev-topics` | `acme-blog` | Lowercase letters, digits, hyphens; starts with a letter; at most 14 characters (12 if the vision worker will run in production: [configuration.md](configuration.md#environment-terraform-variables)); **no** hyphen at the end. **Never change it after the first deploy.** |
 | `<your-region>` | The AWS region everything runs in | `ap-southeast-2` | Must offer Amazon Bedrock and the model you choose ([step 3](#3d-make-sure-your-account-can-call-the-model)) |
 | `<your-dev-account-id>` | The 12-digit AWS account for dev | `111111111111` | `aws sts get-caller-identity` shows it |
 | `<your-prod-account-id>` | The account for production (the same as dev's if you use one account) | `123456789012` | Same |

@@ -42,6 +42,14 @@ narrowed to lines naming the topic or written by its adapter (`crypto_feed:`, `g
 ...). For crypto that is where "coins dropped from the pool for having no usable history" shows up,
 classified as `source_data`.
 
+One function is not read. The vision worker's log group is in `vision_region`, outside the home
+Region these queries run in, and exists only when vision is on, so `log_review` leaves it out of
+its default sweep (`Component.home_sweep` in `ops_mcp/architecture.py`, #298) rather than report it
+refused on every deployment. Asked for it by name, it answers with a fixed refusal: "That
+function's logs are kept outside this Region, so I can't read them yet." A vision topic's deep
+dive still reads its research-tick and daily-cycle lines (`satellite_vision:`, `rail_access:`).
+Reading the worker's logs and the vision state is planned work, the assistant's vision round.
+
 ## The rules, and where each is held
 
 **Read-only, except the assistant's own list.** The MCP server's role may `logs:StartQuery`,

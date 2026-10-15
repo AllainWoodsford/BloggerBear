@@ -23,8 +23,8 @@ flowchart LR
     end
     subgraph research["4-5. Research tick (heartbeat)"]
         tick["Lambda research-tick"]
-        adapter["Adapter<br/>github_trending, hacker_news,<br/>crypto_feed, web_search"]
-        src[["Third-party sources<br/>GitHub, HN, CoinGecko,<br/>GDELT, AgentCore"]]
+        adapter["Adapter<br/>github_trending, hacker_news,<br/>crypto_feed, web_search,<br/>satellite_vision, rail_access"]
+        src[["Third-party sources<br/>GitHub, HN, CoinGecko,<br/>GDELT, AgentCore,<br/>Sentinel-2, OpenStreetMap"]]
         snap[("S3 content bucket<br/>snapshots/")]
         findings[("findings table<br/>14-day TTL")]
     end
@@ -68,7 +68,7 @@ flowchart LR
 |---|---|---|---|
 | 1 | **Topic and adapter** | A topic is a row of settings created with the admin CLI: which adapter reads its source, how often to research, its model and review mode. The adapter is the only code that knows anything about the source. | `topics` table; `lambdas/common/adapters/` (`base.py` is the contract, `registry.py` maps names to classes) |
 | 2 | **Schedules** | Creating a topic creates two EventBridge Scheduler schedules: a research heartbeat at its interval, and the daily cycle at its time and timezone. Topics are runtime data, not Terraform. | `lambdas/common/scheduler.py`, called by `admin_api_handler.py`; `<prefix>-<env>-<topic_id>-research-tick` / `-daily-cycle` |
-| 3 | **Third-party sources and their keys** | API keys are SecureStrings in SSM Parameter Store. Terraform sets an environment variable that holds each parameter's *name*, and the Lambda reads the value at cold start. Keys are never in code, tables or logs. Both keys are optional. News search uses GDELT, which needs no key, and falls back to Bedrock AgentCore web search, which the Lambda's IAM role authorises. | `COINGECKO_API_KEY_PARAMETER` (`crypto_feed.py`), `GITHUB_API_TOKEN_PARAMETER` (`github_trending.py`), `lambdas/common/web_search.py`; [how to store a key](../deployment-runsheet.md#api-keys-for-the-data-sources) |
+| 3 | **Third-party sources and their keys** | API keys are SecureStrings in SSM Parameter Store. Terraform sets an environment variable that holds each parameter's *name*, and the Lambda reads the value at cold start. Keys are never in code, tables or logs. Both keys are optional. News search uses GDELT, which needs no key, and falls back to Bedrock AgentCore web search, which the Lambda's IAM role authorises. The vision topics' sources need no key either: Sentinel-2 scenes through the Earth Search STAC API and the public `sentinel-cogs` bucket (`satellite_vision`, `rail_access`), and OpenStreetMap's rail lines and stations through the Overpass API (`rail_access`); their measuring is done by the vision worker ([vision](blogger-vision.md)). | `COINGECKO_API_KEY_PARAMETER` (`crypto_feed.py`), `GITHUB_API_TOKEN_PARAMETER` (`github_trending.py`), `lambdas/common/web_search.py`, `lambdas/common/vision_sites.py`, `lambdas/common/osm.py`; [how to store a key](../deployment-runsheet.md#api-keys-for-the-data-sources) |
 | 4 | **Research tick: diff first** | The adapter fetches the source and `material_diff` compares it with the last snapshot. If nothing is new, the tick stops and no model is called. If something is new, the raw snapshot is stored. | `lambdas/research_tick_handler.py`; `<prefix>-<env>-content` bucket, `snapshots/<topic_id>/<captured_at>.json` (expires after 21 days) |
 | 5 | **Findings** | Bedrock summarises only what is new. The summary is written as a finding, along with where its snapshot is and its source references. | `<prefix>-<env>-findings` (expires after 14 days) |
 | 6 | **Candidate ideas** | Once a day, the daily cycle runs through its state machine (two retries, then the dead-letter queue). It reads every finding since the topic's last article and asks Bedrock for three candidate angles. It stores them as candidate ideas and selects one. | `lambdas/daily_cycle_handler.py`; `<prefix>-<env>-daily-cycle` state machine; `<prefix>-<env>-candidate-ideas` (expires after 7 days) |
@@ -86,10 +86,14 @@ Lambda: a summary, three angles, a draft, a review. The pipeline decides what ha
 in code, not by asking a model, which is why rules like "diff first" and "financial topics always
 go to a person" cannot be talked around.
 
-The one agent is the **operator's assistant**: a Strands agent (`<prefix>-<env>-ops-agent`) that
-calls the MCP server's read-only tools (`<prefix>-<env>-ops-mcp`). Those tools read the same topics,
-findings, candidate ideas and articles described here. They report what needs attention and
-suggest admin CLI commands, but change nothing.
+There are two agents. The **operator's assistant** is a Strands agent (`<prefix>-<env>-ops-agent`)
+that calls the MCP server's read-only tools (`<prefix>-<env>-ops-mcp`). Those tools read the same
+topics, findings, candidate ideas and articles described here. They report what needs attention
+and suggest admin CLI commands, but change nothing. The **vision triage agent** runs inside a
+vision topic's research tick (step 4), only after a measured change has passed its thresholds: it
+looks at the worker's figure, may re-measure or check the news with a few bounded tools, and
+answers "real" or "artefact"; anything unsure is an artefact, and no Finding is written. Its page
+is [vision](blogger-vision.md).
 
 ## Adding a source
 

@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 11 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue |
+| Vision and rail (OpenCV 2026) | 24 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed; a scanner's false positive met first with its allowlist |
 
 ---
 
@@ -941,6 +941,151 @@ were fixed in the PR; the station passes became their own PR (J), so the worker 
 **Lesson:** a fix changes the code a review looked at; review the fix too, with a lens for
 bounds as well as regressions, and split out what would hold the rest back. (#291, #292, rail
 PR J)
+
+**12.16 A city did not fit the worker's window at 10 m.** The ship task reads 10 m bands over a
+site a few kilometres across. A city is 60 to 70 km across: at 10 m that is 6,000 to 7,000 px a
+side, past the reader's 4096 px window, and four times the pixels the analysis would then thin and
+label. Reading at 10 m and resampling afterwards would have fetched every tile only to throw three
+quarters of it away. **Fix:** the rail task works on SWIR16's 20 m grid and reads the 10 m red
+and NIR from the COG overview whose pixel is 20 m: the reader follows the IFD chain and keeps each
+reduced image as a level, a band without one is read whole and reduced with `INTER_AREA`, and the
+scene classification is never averaged. Sydney's 66 km box is 3,327 × 3,306 px, 54 MB in 192
+range requests. **Lesson:** a COG already holds the coarser grid; ask the file for the resolution
+the analysis uses before reading the one it was delivered at. (#289, #291)
+
+**12.17 The tick's 120 s, shared three ways.** The research tick is one Lambda with 120 s for
+everything a rail city needs: the scene search, an Overpass fetch (25 s a hop, a second hop on
+failure), a worker call that may take most of its own 60 s, an agent with several turns and a
+worker call of its own, then the summary call and the stores. Each part had its own timeout, and
+the timeouts added up to well over 120 s, so a slow Overpass and a slow worker in one tick would
+have killed it and lost what it had measured. **Fix:** the split is in code, all counted from the
+tick's start: the network fetched only with 30 s of the 70 s measuring budget left and finished
+within them, the worker asked only with 45 s left and waited on for 58 s, the agent's answer due
+at 85 s, `look_again` cut to the time left and refused under 30 s, `web_context` within 10 s. And
+the order of work keeps a slow source from costing a measurement: the scene first, a new scene
+measured with the cached network even past its TTL, a stale network refreshed only on a tick with
+nothing new, and not again for 6 hours after a failure. **Lesson:** callers that share one
+deadline need one ledger: give each a reserve and a deadline from the same start, not a timeout
+of its own. (#285, #292; vision.md §8, lesson 12)
+
+**12.18 Timed on four cores, deployed on one.** The rail analysis's worst cases were first timed in
+the build container: 20 to 21 s at a 4096 px window, inside the worker's 60 s with room for the
+read. The container has four cores and OpenCV spreads its work over them; the worker, at 2048 MB,
+has one vCPU. Pinned to one core (`taskset -c 0`, `cv2.setNumThreads(1)`) and run through
+`lambda_handler` with ways that reach the window's edges (12.22), the worst contract-valid networks
+take up to 37.5 s at 4096 px, about 49 s on an arm64 core taken as 1.3 times slower, which with a
+10 to 30 s read is 59 to 79 s, past the adapter's 58 s wait. **Fix:** the station passes were made
+linear, the thinning incremental (12.22), and the rail task got its own window cap,
+`RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at 20 m; the four starting cities need at most 3,327):
+there the slowest case takes 25.5 s and the largest peaks at 1.32 GB on one core; the slowest is
+about 33 s on arm64, 41 to 56 s with the read, which covers 77 % of the pixels. That slowest case
+is constructed (two 1.3 km-wide bars of track along both edges of the window); the 1.32 GB peak is
+another network, 2 px-apart full-width ways, which takes 12.2 to 13.1 s. No real OpenStreetMap
+network has been timed: the "about 9 s" for a city is PR J's synthetic city, 180 stations and 221
+nodes, 9.2 to 9.6 s at 4096 px on four cores, and the deployed Sydney run with the Overpass network
+(vision.md §9) will give the real figure. The comments now quote one-core figures and name the
+CPU. **Lesson:** time a bound on the hardware it bounds: pin the cores, set the library's threads,
+and write the CPU next to the number. (#295)
+
+**12.19 The rail topics had no editorial goal of their own.** Writing the city topic templates
+meant following a topic's fields into the prompts that read them. The research summary uses the
+adapter's own prompt, but the daily cycle's ideation and drafting resolve the topic's editorial
+goal: the topic's own, else the adapter's default, else the global one, and `rail_access` (like
+`satellite_vision`) had no adapter default then. A rail topic created as the runsheet first described
+it would have been ideated and drafted under "independent web research ... sampling 5 to 10
+highly relevant articles", around a measurement. **Fix:** each body in
+`scripts/rail_topics.example.json` carries `editorial_goals` (the measured figures, the capture
+date and what was not measured; no ridership, cost, recommendation or cause), and the runsheet
+says why. The follow-up, an adapter default for topics made by hand, is done: #298 (rail PR L)
+added `rail_access` and `satellite_vision` to `ADAPTER_DEFAULTS` in
+`common/editorial_resolver.py`, each restating its summary prompt's limits, so a vision topic
+created without `editorial_goals` is no longer drafted under the global goal. **Lesson:** a
+template is a test of the path it feeds; follow its fields into every prompt before calling it
+complete. (#296, #298, rail PRs F2 and L)
+
+**12.20 Numbers that drifted between the spec, the comments and the code.** Writing the closing
+docs from the merged code, not the specification, found the figures each review had moved: a
+`MAX_GRAPH_NODES` of 20,000 and betweenness sampled above 800 nodes (the code: 10,000, checked
+before any graph is built, and a work budget, `BETWEENNESS_WORK`); a 300-character caption cap
+(`figures.MAX_CAPTION_CHARS` is 400); a network "near 1.5 MB" (the adapter measured 2.6 to 3 MB,
+and the comments on `vision_contract.NETWORK_LIMITS` and in `common/osm.py` still say 1.5); city
+boxes "with a 2 km margin" (`geo.py` puts them 1.0 to 3.0 km inside their squares, which is
+enough, since a tile reaches 9.8 km past its square to the east and south). Each moved in a
+reviewed PR whose prose was another document's. **Fix:** the docs quote the code; the
+specification gained a status note listing where the code differs; the two stale comments are a
+follow-up for a code PR, since this one changes no code. **Lesson:** pattern 7 again: the PR that
+closes a stack's documentation is written from `grep`, not from the spec. (#296, rail PR F2)
+
+**12.21 A staggered cadence that would have dropped most Findings.** The spec asked for the city
+topics' daily cycles staggered so each day features one city, and the first templates ran Sydney on
+Monday and Friday, Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston Thursday;
+the runsheet said each article gathers every Finding since the city's last one. The review ran the
+daily cycle's own `_window_start` over four weeks of one Finding a day: Sydney's article drafted 7
+of 28, Boston's 4. The daily cycle read the last 24 hours (`FINDINGS_WINDOW_HOURS`), never past the
+last article, and nothing else; a Finding outside every window expires after 14 days unwritten.
+F2's first fix made each city's daily cycle run every day, a minute apart: that kept the Findings
+but dropped the owner's rotation, one city a day. **Fix:** PR K (#297) added a topic's
+`findings_window_hours` (1 to 336 hours, 24 by default, never past the last article), and the
+templates rotate one city a day again, each with 192 hours: Boston's 7 days between runs, the
+longest gap, plus a day for a clock change or a late run. A test runs the same simulation with
+`_window_start` over four weeks around each of Sydney's clock changes and checks that every Finding
+is drafted exactly once, and that the old 24-hour window fails it. **Lesson:** a schedule is only
+half a pipeline; read what the scheduled run reads before deciding how often it runs. When a limit
+in the code blocks what the owner asked for, change the limit, not the request. (#296, #297, rail
+PRs F2 and K)
+
+**12.22 Clipped ways made the thinning's box the whole window, and a wall-clock guard passed the
+old code.** PR J's review built its worst cases with ways that run off the window's edges, as
+OpenStreetMap ways clipped to a city's box do. `network.thin` worked on the foreground's bounding
+box, and such ways make it the whole window: the thick parts of a network then cost up to 32 passes
+over every pixel of it, up to 7.3 s of thinning in a 28.9 s pass at 3,584 px. The first round's
+worst cases did not reach the edges, so their timings missed this. And the speed tests that bounded
+the station passes by wall time passed with the old quadratic code swapped back in. **Fix:** after
+its first pass the thinning works only within the bounding box of what the last pass removed,
+grown by `THINNING_REACH_PX` (8 px) on every side, with a byte-identical skeleton, so the same
+thinning takes 0.2 to 0.4 s with the thick parts in one place. Thick parts at both ends of the
+window keep that box most of the window on every pass, which is why that case still takes 2.0 to
+4.3 s. The guards now count the work: neighbour lookups (4,025 on the 2,000-station grid, where
+the old walk made 4,052,000), equality comparisons of station ids, and pixels handed to OpenCV
+(thinning the whole window on every pass hands it 3.29 billion); each guard was checked to fail
+with the old code. **Lesson:** a speed test must fail on the slow code, so count the work, not the
+seconds; and build the worst input from what the real source sends. (#295, rail PR J)
+
+**12.23 Reviewed one PR at a time, the seams were missed.** Every rail sub-PR had been reviewed on
+its own, most of them more than once. A review of the whole integration branch then ran one rail
+Finding end to end through the real code and found what lay between the PRs. The daily trending
+digest (`lambdas/trending_digest_handler.py`, a fourth publish path, which calls itself that) takes
+every topic's latest Finding of the last 48 hours and is held only when a contributing topic is
+financial or its compliance review fails; it never reads `force_manual_review`, which was wired
+into the daily cycle only, so it would publish vision-topic text with no person. The rail adapter
+attached the figures of sites its summary did not report; the SPA showed a figure whose copy had
+failed as a broken image; the ships adapter could start a worker call with too little of its tick
+left; the worker followed redirects off its allowlist; and a change to the compliance review's
+quote parser altered verdicts for every topic. **Fix:** rail PR L (#298): the digest leaves out
+every topic for which `compliance.requires_manual_review` is true; a Finding carries only the maps
+of the sites its summary reports; the SPA removes a figure whose image fails to load; both vision
+adapters keep one measuring rule (`vision_sites.time_to_measure`); the worker follows no redirect;
+and the longer quote readings count only when the draft holds them. **Lesson:** after the parts are
+reviewed, review the whole once more, end to end through the real code, and grep for every path a
+guarantee must hold on. (#285, #298, rail PR L)
+
+**12.24 A scanner's false positive, answered without loosening the scanner.** A docstring in rail
+PR L explained why an allowed URL prefix must end in a slash with a look-alike URL: an allowed
+prefix, then "@", then another host, written as one string. The repository's gitleaks
+email-address rule matched it, and the PR's gitleaks job went red. The fixer's first answer was a
+fingerprint for the line in `.gitleaksignore`. **Why:** the rule matches anything shaped like an
+address (some text, "@", a dotted domain) outside its allowlist of reserved domains, and a URL
+with a user part before its host is that shape. The pre-commit hook runs the same rule only where
+gitleaks is installed and the hook enabled, and neither holds in the container the rail PRs are
+built in, so CI was the first to run it. And the allowlist was the nearest lever, though the line was ours, on an
+unmerged branch, and could simply be written another way. **Fix:** the docstring was reworded
+to name the parts in words, and the unmerged sub-branch's history was squashed so no commit carries
+the line; `.gitleaksignore` is unchanged. A test,
+`test_no_python_source_trips_the_gitleaks_email_rule` in `lambdas/tests/test_terraform_wiring.py`,
+now runs the email rule from `.gitleaks.toml`, with its allowlist, over the Python sources under
+`lambdas/` and `scripts/`, so the next one shows before CI. **Lesson:** on your own unmerged branch,
+rewrite the commit; never widen a scanner's allowlist for your own text. An allowlist entry is for
+a finding already in the shared history that cannot be rewritten. (#298, rail PR L)
 
 ## Patterns worth keeping
 

@@ -649,17 +649,54 @@ All shipped and deployed; the design and decisions for each are in
 - [x] Figures from Findings to articles: `Adapter.figures`, the list on the Finding and the
   article, one server-side copy per PNG to `articles/figures/<article>/<n>.png`, the `<figure>`
   on the static page and in the SPA, removed on take-down (#288)
-- [ ] The rail access vision core: built-up heat, station reach and deserts, the rail network
+- [x] The rail access vision core: built-up heat, station reach and deserts, the rail network
   graph from OpenStreetMap ways, flags and simulated links, the figure; COG overviews and the
-  UTM inverse (#289, in review)
-- [ ] Worker tasks: `rail_access` beside `ships` in the contract, the handler, the scene reader's
-  overview reads and the benchmark kernels (rail PR D)
-- [ ] The `rail_access` adapter, the shared `vision_sites` module and task-aware triage with
-  `web_context` (rail PR E)
-- [ ] Documentation: the vision pipeline page (docs/architecture/blogger-vision.md), the README
+  UTM inverse (#289; `lambdas/vision/urban.py`, `access.py`, `network.py`, `rail_analyse.py`,
+  `rail_annotate.py`)
+- [x] Worker tasks: `rail_access` beside `ships` in the contract, the handler, the scene reader's
+  overview reads, the network caps, bounded betweenness and graph size, and the benchmark's rail
+  kernels and `fetch-network` (#291; `lambdas/vision_worker_handler.py`,
+  `lambdas/common/vision_contract.py`, `scripts/vision_benchmark.py`)
+- [x] The `rail_access` adapter, the shared `vision_sites` module and task-aware triage with
+  `web_context`; the first observation reported once; refused scenes and failed network refreshes
+  not retried every tick; only the newest history entry keeps the lists (#292;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/common/vision_sites.py`,
+  `lambdas/common/vision_triage.py`)
+- [x] The rail figure: flags in red rings, isolation weight as ring thickness, ghost lines and
+  dashed simulated links, the caption and a legend in a strip under the map, PNG level 9 within a
+  2 MiB budget (#293; `lambdas/vision/rail_annotate.py`)
+- [x] Planner notes: the rail network's flags and simulated links as generated sentences in the
+  diff summary, the review evidence and the Finding (`planner_notes`), never recommendations
+  (#294; `lambdas/common/rail_notes.py`; docs/enhancements/vision.md §6.8)
+- [x] The rail analysis's time bounds: linear station adjacency, ghost-line walk and run lengths,
+  thinning only in the box round what the last pass removed, the rail window cap
+  `RAIL_MAX_WINDOW_PX` = 3,584 px from one-core measurements, and speed guards that count the work
+  (#295; `lambdas/vision/network.py`, `rail_analyse.py`, `scene.py`,
+  `lambdas/vision_worker_handler.py`)
+- [x] A topic's findings window: `findings_window_hours` (1 to 336 hours, 24 by default, never past
+  the last article) through the admin API and CLI, read by the daily cycle and by Re-Write, so a
+  topic that writes on some days only, like a city of the rail rotation, drafts every Finding since
+  its last article (#297; `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
+  `lambdas/common/rewrite.py`, `scripts/admin_cli.py`)
+- [x] Fixes from the review of the whole integration branch: the daily trending digest leaves out
+  every topic whose articles always wait for a person, so vision text never reaches an
+  auto-published page; a rail Finding carries only the maps of the sites its summary reports; the
+  SPA removes a figure whose image fails to load; one measuring rule for both vision adapters
+  (`time_budget_seconds` 45 to 80); the worker follows no redirect and reads only its byte range;
+  one parser for `VISION_ALLOWED_URL_PREFIXES`; editorial defaults for both vision adapters; the
+  compliance review's verdicts restored for every topic; the ops assistant's log review leaves the
+  worker out of its default sweep; a test runs the gitleaks email rule over the Python sources
+  (#298, rail PR L; `lambdas/trending_digest_handler.py`, `lambdas/common/vision_sites.py`,
+  `lambdas/vision_worker_handler.py`, `lambdas/common/vision_contract.py`,
+  `lambdas/common/editorial_resolver.py`, `lambdas/common/compliance.py`, `frontend/app.js`)
+- [x] Documentation: the vision pipeline page (docs/architecture/blogger-vision.md), the README
   section and data-source rows, the configuration and deployment sections, the submission draft
-  (#290, rail PR F1); vision.md for two tasks, the city topic templates and the friction
-  entries (rail PR F, after E)
+  (#290, rail PR F1)
+- [x] Documentation: vision.md for two tasks, the four city topics rotating one a day with a
+  192-hour findings window (`scripts/rail_topics.example.json`) and the runsheet's
+  `rail_access topics` section, the friction entries, and the earlier docs brought in line with
+  the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
+  (#296, rail PR F2)
 
 ## Backlog / not yet scheduled
 

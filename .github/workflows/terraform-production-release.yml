@@ -55,10 +55,10 @@ jobs:
     # repository's; unset in both, the region is the one this project has always used.
     # TF_VAR_vision_enabled: whether the vision worker (infra/modules/vision-worker, the OpenCV
     # work) is deployed at all. A plain VISION_ENABLED variable, because it is a switch and not a
-    # secret. It is read as a switch: exactly `true` turns the worker on, and any other value, or
-    # none, is handed to Terraform as `false` (also the variable's own default), so a deployment
-    # that never set it never creates the worker, and a stray value cannot fail the apply
-    # (docs/configuration.md).
+    # secret. It is read as a switch: `true`, in any letter case (Actions compares strings ignoring
+    # case), turns the worker on, and any other value, or none, is handed to Terraform as `false`
+    # (also the variable's own default), so a deployment that never set it never creates the
+    # worker, and a stray value cannot fail the apply (docs/configuration.md).
     env:
       TF_VAR_admin_allowed_cidrs: ${{ secrets.ADMIN_ALLOWED_CIDRS_PROD }}
       TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL_PROD || vars.ALERT_EMAIL_PROD }}

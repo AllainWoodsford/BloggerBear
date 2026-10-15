@@ -202,6 +202,14 @@ python scripts/admin_cli.py topics update github-trending     --model-candidates
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
+**The Rail Access Monitor's topics.** The four `rail_access` city topics (Sydney, Melbourne,
+Singapore and Boston, each with its box, reach and editorial goal; the cities take turns, one a
+day, and each has a 192-hour `findings_window_hours`, so its article drafts every Finding since
+its last one) are complete admin API topic bodies in
+[`rail_topics.example.json`](rail_topics.example.json). `topics create` takes a topic as flags, not
+a file: [docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
+has the loop that reads each field out of the file, and how to check a new city's box.
+
 Setting the registry up on a new deployment, with a sample `model-config` item, is in
 [docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
 
@@ -241,12 +249,13 @@ attribution) and wrong for a mass refresh. There is no command that only re-rend
 follow-up is an `articles rerender <article_id>` route that calls the same renderer with the
 article's stored `published_at` and `published_by` and does nothing else.
 
-`articles unpublish` is the inverse: it deletes the article's static page,
-marks the article and its moderation-queue item `rejected` (so it leaves every
-public listing), removes the musings written about it, and asks CloudFront to
-drop its cached page. The markdown body is kept, so `articles publish` can
-bring it back. An article still waiting in moderation is refused (use
-`moderation reject`). If it fails part-way, run it again -- every step is
+`articles unpublish` is the inverse: it deletes the article's static page (and
+its figures, if it has any), marks the article and its moderation-queue item
+`rejected` (so it leaves every public listing), removes the musings written
+about it, and asks CloudFront to drop its cached page (and, only for an article
+with figures, `/articles/figures/<id>/*`). The markdown body is kept, so
+`articles publish` can bring it back. An article still waiting in moderation is
+refused (use `moderation reject`). If it fails part-way, run it again -- every step is
 safe to repeat. `cache_invalidated: false` in the response means CloudFront
 wasn't asked (or the request failed); a cached copy can then linger until the
 CDN's TTL expires.
@@ -539,6 +548,13 @@ enter it. `scenes` and `worker` run the scenes pinned in `vision_benchmark_scene
 scenes; never change one, or old reports stop being comparable). Every report records the OpenCV
 build fingerprint and the CPU generation.
 
+The options, as `--help` gives them: `kernels`, `scenes` and `worker` take `--repeats` (timed runs
+per case; 20, 3 and 5 when left out) and `--out FILE` (the report as JSON; a Markdown table is
+always printed); `kernels` takes `--size` (the synthetic images' side, 2048 px); `scenes` and
+`worker` take `--scenes-file` and `--backend opencv|cool`, and `worker` needs `--arn`;
+`fetch-network` takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one
+vCPU, so a CPU's rows are closest to it with the run pinned to one core (`taskset -c 0` on Linux).
+
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
 request. `fetch-network` asks Overpass for the scene's polygon (`lambdas/common/osm.py`, the same
 client the adapter uses) and writes the scene's `network_file`, a path relative to the scenes file
@@ -615,5 +631,16 @@ new output -- a new Finding for `research_tick`, a new candidate idea for
 `daily_cycle` -- or times out (30s / 90s respectively) and says so. Pass
 `--no-wait` to skip this and get the old immediate-return behavior back.
 This also means running `daily_cycle` right after `research_tick` for the
-same topic is safe without a manual delay in between; running it beforehand
-still isn't -- `daily_cycle` needs a Finding to already exist.
+same topic is safe without a manual delay in between, for a tick that ends
+within those 30s; running it beforehand still isn't -- `daily_cycle` needs a
+Finding to already exist. A vision topic's tick (`satellite_vision`,
+`rail_access`) that measures a new scene, the one that can write a Finding,
+can run well past 30s: the scene search, a network fetch, up to 58s of the
+vision worker, the triage agent and the summary, inside the function's 120s.
+For those, "No new Finding after 30s" is expected and does not mean the
+tick failed: wait about two minutes, or until `topics findings <id>` shows
+the new Finding, before `daily_cycle`. A daily cycle started while the tick
+still runs drafts without that Finding, and if it writes an article from
+other Findings, no later window holds it
+([docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics),
+"One Finding can still be missed").
