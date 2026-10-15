@@ -107,7 +107,10 @@ hand (it is the one manual apply rule 6 allows) **before** turning the worker on
 
 Setting `vision_region` to the home region also works: the worker then reads across regions instead,
 which is slower and may cost transfer, but needs no second provider. That is the fallback if the
-operator would rather not grant the deploy role a second region.
+operator would rather not grant the deploy role a second region. In production a long home-Region
+name needs a short prefix: the worker's bucket name ends with `vision_region`, and with
+`ap-southeast-2` it passes S3's 63 characters unless the prefix is 7 characters or fewer
+([configuration.md](../configuration.md#environment-terraform-variables)).
 
 ## 4. COOL: the path that scores, and the baseline that proves it
 
@@ -245,8 +248,11 @@ The decision step runs inside the adapter's `material_diff`, after the numeric t
 same adapter instance that fetched (so it knows the topic's model and the sites). The research
 tick stays topic-agnostic; it stores the state after the diff, so the agent's trail is kept
 whether or not a Finding is written. A triage costs at most `budget + 2` Converse calls plus up to
-`budget` worker calls; with the defaults that fits inside the research tick's 120 s beside the
-60 s fetch budget, but a topic with many sites should lower `max_sites_per_tick`.
+`budget` worker calls. The number of sites does not decide whether that fits the research tick's
+120 s: since #298 the measuring loop asks the worker only with 45 s of its budget left and waits
+on it for at most 58 s (`vision_sites.time_to_measure`), and every site's triage answers by one
+deadline, `triage_deadline_seconds` (85 s) from the tick's start, so a topic with many sites is
+measured over more ticks rather than running a tick out of time.
 
 ## 8. Open questions
 

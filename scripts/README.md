@@ -631,5 +631,16 @@ new output -- a new Finding for `research_tick`, a new candidate idea for
 `daily_cycle` -- or times out (30s / 90s respectively) and says so. Pass
 `--no-wait` to skip this and get the old immediate-return behavior back.
 This also means running `daily_cycle` right after `research_tick` for the
-same topic is safe without a manual delay in between; running it beforehand
-still isn't -- `daily_cycle` needs a Finding to already exist.
+same topic is safe without a manual delay in between, for a tick that ends
+within those 30s; running it beforehand still isn't -- `daily_cycle` needs a
+Finding to already exist. A vision topic's tick (`satellite_vision`,
+`rail_access`) that measures a new scene, the one that can write a Finding,
+can run well past 30s: the scene search, a network fetch, up to 58s of the
+vision worker, the triage agent and the summary, inside the function's 120s.
+For those, "No new Finding after 30s" is expected and does not mean the
+tick failed: wait about two minutes, or until `topics findings <id>` shows
+the new Finding, before `daily_cycle`. A daily cycle started while the tick
+still runs drafts without that Finding, and if it writes an article from
+other Findings, no later window holds it
+([docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics),
+"One Finding can still be missed").

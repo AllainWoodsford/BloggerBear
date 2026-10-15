@@ -40,7 +40,7 @@ be on the `production` environment or on the repository.
 | `AWS_REGION` | variable | repo | The region everything is deployed to. Optional: unset, it is `ap-southeast-2`. Read [Deploying to another region](deployment-runsheet.md#deploying-to-another-region) before setting it. | `eu-west-1` |
 | `TF_STATE_REGION` | variable | repo | The region of the state bucket, only if it is not `AWS_REGION`. Optional, and rarely needed. | `eu-west-1` |
 | `VISION_ENABLED` | variable | repo | Set to `true` to deploy the vision worker (OpenCV on arm64 in `vision_region`, for the `satellite_vision` and `rail_access` topics; [the vision docs](enhancements/vision.md)). Read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or unset, is read as off, so nothing of it is created and a deployed worker is removed on the next apply. The bootstrap must have been re-applied with `vision_region` first. Set on the repository, it also turns the worker on in production at the next release: the release job runs in the `production` environment, whose `vars.VISION_ENABLED` falls back to the repository's value. To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production` environment. Set to `true` on the `production` environment alone, it turns the worker on there alone. | `true` |
-| `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end. Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
+| `UNIQUE_NAME_PREFIX` | variable | repo | What every resource name starts with: `<prefix>-<env>-<resource>`. Optional: unset, it is `bloggerbear`. **Required for a fork.** Bucket names and the sign-in host name must be unique across all of AWS, and the default ones are taken. Lowercase letters, digits and hyphens, starting with a letter, at most 14, with no hyphen at the end (at most 12 if the vision worker will run in production: [the bucket that limits it](#environment-terraform-variables)). Must be the same as bootstrap's `unique_name_prefix`. Set it before the first deploy and never change it. | `acme-blog` |
 | `ADMIN_ALLOWED_CIDRS_DEV` | secret | repo | Your public IP, as a Terraform list. Without it nothing can call dev's admin API. | `["203.0.113.7/32"]` |
 | `ADMIN_ALLOWED_CIDRS_PROD` | secret | `production` | The same, for production. | `["203.0.113.7/32"]` |
 | `ALERT_EMAIL_DEV` | secret | repo | Where dev's alarm emails go. Optional: without it the alarms still fire, but nobody is told. | `you@example.com` |
@@ -115,7 +115,7 @@ only production's domain.
 | `ops_alexa_redirect_uris` | both | Alexa's account-linking redirect URLs, for the Alexa+ add-on ([alexa/README.md](../alexa/README.md)). | empty: no Alexa client |
 | `ops_assistant_mfa` | dev | MFA on the assistant's sign-in: `"OFF"`, `"OPTIONAL"` or `"ON"`. Production always requires it. | `"OPTIONAL"` |
 | `force_destroy` | dev | Whether dev's site bucket can be destroyed while not empty. | `true` |
-| `vision_region` | both | Where the vision worker runs, beside the Sentinel-2 imagery. Must match the bootstrap's `vision_region`. | `"us-west-2"` |
+| `vision_region` | both | Where the vision worker runs, beside the Sentinel-2 imagery. Must match the bootstrap's `vision_region`. In production, with the worker on, it and the prefix must fit one bucket name (below). | `"us-west-2"` |
 
 Do not set these in `terraform.tfvars`; CI supplies them from the GitHub settings above:
 `admin_allowed_cidrs`, `alert_email`, `aws_account_id`, `unique_name_prefix`, `aws_region`,
@@ -128,6 +128,18 @@ name that sets that limit is a topic's schedule in production,
 characters: 14 leaves a topic id 24, and a shorter prefix leaves more (the default leaves 27).
 It also decides the `Project` tag on every resource: `BloggerBear` with the default prefix, and
 the prefix itself with any other.
+
+**With the vision worker on in production, the prefix is at most 12 characters.** The worker's
+artifacts bucket is `<prefix>-<env>-vision-artifacts-<account id>-<vision_region>`
+(`infra/modules/vision-worker/main.tf`), and S3 allows 63 characters. In production, with the
+12-digit account id, that leaves 21 for the prefix and `vision_region` together: with `us-west-2`
+(the default, 9 characters) or any other 9-character Region, a prefix of at most 12; with
+`ap-southeast-2` (14), at most 7, so not even the default `bloggerbear` (11) fits. A longer name
+fails the production apply that creates the worker. Dev (`-dev-`) leaves 28, so every allowed
+prefix fits there with a Region name of up to 14 characters, `ap-southeast-2` included. No test
+checks this bucket's length yet, and the variable's description in `variables.tf` ("every other
+name has room to spare at 14") predates the worker; shortening the name, and testing it, is a code
+follow-up ([vision.md §10](enhancements/vision.md#10-still-open)).
 
 The times of the fixed jobs (the weekly reflection, the Stats rollover, the daily digest and the
 cost poll) are not variables: they are written in each environment's `main.tf`.
@@ -265,7 +277,7 @@ the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
 | Variable | Where | Default | What it is |
 |---|---|---|---|
 | `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN, and the pipeline's shared execution role (`lambda_exec`, which twelve functions use) the right to invoke it. Off, none of it exists. |
-| `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too; the reads then cross instead. |
+| `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too, the reads then crossing instead, but in production only if the prefix and the Region fit the worker's bucket name: their lengths together at most 21, so `ap-southeast-2` fits only a prefix of 7 characters or fewer ([the limit](#environment-terraform-variables)). |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create Lambda functions and log groups named `<prefix>-*-vision-*`, and nowhere else outside `aws_region`. |
 | `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so a caller on that default sees the worker's own error, not its own. Both vision adapters give up first, by design: they wait only 58 s (`WORKER_READ_TIMEOUT` in `common/vision_sites.py`, one rule for `rail_access` and `satellite_vision` since #298), to keep the tick's 120 s for the agent and the summary, so a run that slow is an `invoke` error to them, not the worker's, and the site is tried again next tick. |
 
@@ -273,7 +285,13 @@ the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
 
 Read by `lambdas/vision_worker_handler.py` on `<prefix>-<env>-vision-worker`, whose docstring
 documents them. Terraform sets only `VISION_BACKEND`; the other two are set by hand (or by a
-future COOL module):
+future COOL module). Terraform owns the stock worker's and the research tick's whole environment
+(no `ignore_changes`), so a value added to either in the console lasts only until the next apply,
+and a dev apply runs on every push to `dev` that touches `infra/`, `lambdas/` or `frontend/`. A
+hand-set `VISION_ALLOWED_URL_PREFIXES` is then dropped from both, and both fall back to the
+`sentinel-cogs` default without notice; keeping one needs a Terraform variable passed to both
+functions, a follow-up ([vision.md §10](enhancements/vision.md#10-still-open)). A COOL worker,
+which Terraform does not create yet, keeps what is set on it:
 
 | Variable | Set on | Meaning |
 |---|---|---|
@@ -313,7 +331,7 @@ findings.
 | `min_baseline` | 2 | Earlier clear scenes needed before a change can be material. |
 | `relative_threshold`, `absolute_threshold` | 0.35, 5 | Both must be crossed against the baseline median. |
 | `max_sites_per_tick` | 5 | Bound on worker calls per tick; the time budget usually allows fewer (next row). |
-| `time_budget_seconds` | 60 | The measuring budget, 45 to 80 s (the research tick has 120 s). The worker is asked only with 45 s of it left (`MEASURE_RESERVE_SECONDS`) and waited on for at most 58 s (`vision_sites.time_to_measure`, the rule `rail_access` keeps too), so with the default 60 a tick asks the worker only in about its first 15 s: expect one or two sites measured per tick, not up to five. The rest rotate to later ticks and keep their place. Under 45, no tick could ever ask the worker, so it is refused. |
+| `time_budget_seconds` | 60 | The measuring budget, 45 to 80 s (the research tick has 120 s). The worker is asked only with 45 s of it left (`MEASURE_RESERVE_SECONDS`) and waited on for at most 58 s (`vision_sites.time_to_measure`, the rule `rail_access` keeps too), so with the default 60 a tick asks the worker only in about its first 15 s: only the sites whose new scene is found by then are measured, and how many that is depends on the search's and the worker's times, often fewer than `max_sites_per_tick`. The rest rotate to later ticks and keep their place. Under 45, no tick could ever ask the worker, so it is refused. |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget; it gets that plus two model turns. |
 | `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered; out of time is "artefact". |
@@ -361,7 +379,11 @@ Every number must be finite, a site id is letters, digits, `_` and `-` (at most 
 the topic, and a site name is 1 to 80 characters of plain text, used in articles exactly as given.
 The admin API stores `adapter_config` as given: a config the adapter refuses fails the topic's
 research tick, with the reason in the research tick's log, until it is fixed with
-`topics update <id> --adapter-config-json '...'`.
+`topics update <id> --adapter-config-json '...'`. That flag replaces the whole `adapter_config`,
+not the keys it names: `'{"time_budget_seconds": 70}'` alone drops `sites`, and the tick then
+fails on that instead. Read the config with `topics get <id>`, edit it, and send all of it back;
+for a rail city, keep its `sites` entry with the same `id` and polygon, so its history and cached
+network still match.
 
 ### No keys
 

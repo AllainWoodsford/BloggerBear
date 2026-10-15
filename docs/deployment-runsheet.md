@@ -193,7 +193,12 @@ with it, and a bucket or a table cannot be renamed: changing the prefix later ma
 delete them and create empty ones. Write it without a hyphen at the end (`acme-blog`, not
 `acme-blog-`). Lowercase letters, digits and hyphens, starting with a letter, at most 14
 characters: a topic's schedule is named `<prefix>-production-<topic_id>-research-tick` and AWS
-allows 64, so a 14-character prefix leaves a topic id 24 and a shorter one leaves more.
+allows 64, so a 14-character prefix leaves a topic id 24 and a shorter one leaves more. If the
+vision worker will run in production, keep it to 12: the worker's bucket,
+`<prefix>-production-vision-artifacts-<account id>-<vision_region>`, must fit S3's 63 characters,
+which leaves the prefix and `vision_region` 21 together (12 beside the default `us-west-2`; a
+home-Region `ap-southeast-2` fits only a prefix of 7 or fewer;
+[configuration.md](configuration.md#environment-terraform-variables)).
 
 **Protecting the branches.** Require a pull request on `dev` and `prod`, and block force-pushes
 and deletions. GitHub offers rulesets and branch protection only on public repositories or paid
@@ -476,7 +481,8 @@ this deployment's `Project`, and an `Environment` that assistant may read (dev: 
 production: `production` and `shared`). Unlike DynamoDB there is no account setting to switch on.
 
 - **Check it** after the first apply: ask the assistant "any errors in the logs?". It answers with
-  counts, or "I found no errors", for every function.
+  counts, or "I found no errors", for every function in the home Region (the vision worker, in
+  `vision_region`, is left out; see [Vision (optional)](#vision-optional)).
 - **If it says AWS refused**, or names a log group it was not allowed to read: that group is
   missing a tag. Usually a Lambda wrote its first log before Terraform made the group, so the group
   is not Terraform's: delete the empty group and apply again, or import it. CloudWatch console →
@@ -515,9 +521,11 @@ variable, not with a tfvars edit. Every setting it uses is in
    change `vision_region`, pass the same value to the bootstrap and to the environment. Until
    this is done, an apply with the worker turned on is refused.
 2. **Set the `VISION_ENABLED` repository variable to `true`** (GitHub → Settings → Secrets and
-   variables → Actions → Variables; [configuration.md](configuration.md)) and run a deploy (merge
-   anything to `dev`, or `workflow_dispatch` the Terraform workflow). Nothing in `terraform.tfvars`
-   changes (a `vision_enabled` there would beat the variable). The apply creates, in
+   variables → Actions → Variables; [configuration.md](configuration.md)) and run a deploy: merge
+   a change under `infra/`, `lambdas/` or `frontend/` to `dev` (the Terraform workflow's paths
+   filter starts no apply for a docs-only merge), or `workflow_dispatch` the Terraform workflow
+   from the `dev` branch. Nothing in `terraform.tfvars` changes (a `vision_enabled` there would
+   beat the variable). The apply creates, in
    `vision_region`: the worker (arm64, python3.12), its role (its own log group only), its log
    group, and a small artifacts bucket its package is uploaded through. In the home region it
    gives the research tick the worker's ARN (`VISION_WORKER_ARN`), and gives the right to invoke
@@ -533,18 +541,25 @@ variable, not with a tfvars edit. Every setting it uses is in
 3. **Create a topic.** A `satellite_vision` topic needs `adapter: "satellite_vision"` and
    `sites` in its `adapter_config` (one to ten lon/lat polygons, each with an `id` and
    optionally a `name`), and usually an `object_noun`; everything else has a default
-   (`common/adapters/satellite_vision.py` documents every key), the editorial goal included
-   (the adapter's own since #298). With the default 60 s `time_budget_seconds`, a tick asks the
-   worker only in about its first 15 s, so expect one or two sites measured per tick; the rest
-   rotate to later ticks and keep their place. A `rail_access` topic is one city inside one
-   Sentinel-2 tile: [`rail_access` topics](#rail_access-topics), below, creates the four
-   starting cities from a file. Both get `force_manual_review` whether you ask or not:
+   (`common/adapters/satellite_vision.py` documents every key); a topic without
+   `editorial_goals` is drafted under the adapter's default goal (`ADAPTER_DEFAULTS` in
+   `common/editorial_resolver.py`, #298). With the default 60 s `time_budget_seconds`, a tick
+   asks the worker only while 45 s of the budget remain, so in about its first 15 s: only the
+   sites whose new scene is found by then are measured, how many depending on the search's and
+   the worker's times (often fewer than `max_sites_per_tick`); the rest rotate to later ticks and
+   keep their place. A `rail_access` topic is one city inside one Sentinel-2 tile:
+   [`rail_access` topics](#rail_access-topics), below, creates the four starting cities from a
+   file. Both get `force_manual_review` whether you ask or not:
    every article waits for `admin_cli approve`, and the daily trending digest, which publishes
    with no person, leaves these topics out (#298). Trigger the first tick by hand
    (`topics trigger <id> --pipeline research_tick`); the first scene measured at or above the
    topic's coverage floor is its first observation, reported once, so a Finding, then a held
-   article, is what success looks like. A tick that measures nothing (the worker off, every site
-   in `last_error`), or only a scene under the floor (mostly cloud), writes no Finding.
+   article, is what success looks like. The CLI waits only 30 s for the Finding, and a tick that
+   measures a scene can run longer (up to 58 s of it is the worker, inside the function's 120 s),
+   so "No new Finding after 30s" is expected here: wait about two minutes, or until
+   `topics findings <id>` shows the Finding, before you trigger the daily cycle. A tick that
+   measures nothing (the worker off, every site in `last_error`), or only a scene under the floor
+   (mostly cloud), writes no Finding.
 4. **To turn it off again:** set the variable to `false` (any value other than `true` in any
    letter case), or remove it (either is read as off; on the `production` environment, removing
    it falls back to the repository's value, so set it to `false` there instead), and run a
@@ -673,10 +688,16 @@ is at least 0.6, that is the first observation: a Finding, its summary written b
 (coverage … %)" (the area beyond reach printed to one decimal, such as 12.3 km²) and the planner
 notes, with the figure attached, and no triage (there is no baseline to check against; a person
 reads every article anyway). A scene under the floor writes no Finding, and the next clear one is
-the first observation. Then
+the first observation. All of that takes longer than the CLI's 30 s wait (`topics trigger` polls
+for a new Finding for 30 s, `_RESEARCH_TICK_TIMEOUT_SECONDS` in `scripts/admin_cli.py`; the tick
+has 120 s), so the CLI printing "No new Finding after 30s. This can be a legitimate outcome …" does
+not mean it failed. Wait about two minutes, or until
+`python scripts/admin_cli.py topics findings rail-sydney` shows the new Finding. Then
 `topics trigger rail-sydney --pipeline daily_cycle` drafts the article, which the
 `force_manual_review` hold keeps in the review inbox for `admin_cli approve`, whatever the
-compliance review says.
+compliance review says. A daily cycle started before the Finding is written finds nothing to
+draft on a first tick (run it again); on a later tick, with other Findings in the window, it
+drafts without the new one, which is then lost ("One Finding can still be missed", above).
 
 **Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
 drew it, `vision/<topic>/<site>/<scene>.png` (for example
@@ -736,10 +757,16 @@ cover only part of a tile; the search skips those and waits for one that holds t
 12-minute walk) unless there is a reason: the served share and the deserts are only comparable
 between cities at the same reach, and a larger reach describes stations people drive or ride a
 bus to. Changing it, or the polygon, on a running topic starts a new baseline: the next scene
-reports "baseline still building" rather than a change. A topic may hold up to three cities
-(`MAX_RAIL_SITES`), measured one per tick, each with its own network in the running state; one
-city per topic is the design, since each city's network is about 3 MB of the state and articles
-are about one city.
+reports "baseline still building" rather than a change. Either is changed with
+`topics update <id> --adapter-config-json '...'`, which replaces the whole `adapter_config`, not
+the keys it names: read it with `topics get <id>`, edit it, and send all of it back, keeping the
+city's `sites` entry with the same `id` (and polygon, unless that is what changes). Sent with
+only the changed key, the config loses `sites` and every tick fails until it is whole again; any
+other key left out falls back to its default; a city under a new `id` starts with no history.
+
+A topic may hold up to three cities (`MAX_RAIL_SITES`), measured one per tick, each with its own
+network in the running state; one city per topic is the design, since each city's network is
+about 3 MB of the state and articles are about one city.
 
 ### The COOL backend and the benchmark
 
@@ -753,11 +780,17 @@ measured against the stock worker above. Nothing here is in Terraform yet; these
 
    ```sh
    git clone <this repository> && cd BloggerBear
-   python3 -m pip install requests                      # COOL's cv2 and numpy are already there
+   python3 -m pip install networkx==3.4.2               # COOL's cv2 and numpy are already there
    python3 scripts/vision_benchmark.py kernels --out cool-g4.json
    python3 -m venv stock && stock/bin/pip install -r lambdas/requirements-vision.txt
    stock/bin/python scripts/vision_benchmark.py kernels --out stock-g4.json
    ```
+
+   `kernels` imports networkx for the rail kernels (`vision/network.py`, `vision/rail_analyse.py`),
+   and COOL does not bring it (`lambdas/requirements-vision-cool.txt` adds it to the COOL worker
+   image for the same reason); without it the run stops with `ModuleNotFoundError`. Install only
+   networkx, at that file's pin: never `opencv-python-headless` or `numpy`, which would shadow
+   COOL's build of them.
 
    Each report names its CPU (Neoverse V2 = Graviton4) and its OpenCV build's fingerprint. Add the
    deployed stock worker end to end (`worker --arn <VISION_WORKER_ARN>`) and an x86 run for the

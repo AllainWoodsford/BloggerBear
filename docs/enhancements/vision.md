@@ -299,7 +299,7 @@ automatically and cannot be unset.
 | `relative_threshold` | 0.35 | Both this … |
 | `absolute_threshold` | 5 | … and this must be crossed against the baseline median. |
 | `max_sites_per_tick` | 5 | Bound on worker calls per tick; the time budget usually allows fewer (next row). |
-| `time_budget_seconds` | 60 | The measuring budget, 45 to 80 s (the research tick times out at 120 s). The worker is asked only with 45 s of it left (`vision_sites.time_to_measure`), so with the default 60 a tick asks it only in about its first 15 s: expect one or two sites measured per tick, not five. The rest rotate to later ticks and keep their place. |
+| `time_budget_seconds` | 60 | The measuring budget, 45 to 80 s (the research tick times out at 120 s). The worker is asked only with 45 s of it left (`vision_sites.time_to_measure`), so with the default 60 a tick asks it only in about its first 15 s: only the sites whose new scene is found by then are measured (how many depends on the search's and the worker's times; often fewer than `max_sites_per_tick`). The rest rotate to later ticks and keep their place. |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget. |
 | `triage_deadline_seconds` | 85 | Seconds after the tick started by which the agent must have answered. |
@@ -337,7 +337,7 @@ a config the adapter refuses fails the topic's research tick with the reason in 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
 | `vision_enabled` | dev and production roots, from CI (`VISION_ENABLED`); never set in `terraform.tfvars` | `false` | Create the worker, give the research tick its ARN, and give the pipeline's shared execution role (`lambda_exec`) the right to invoke it. CI hands the variable to Terraform as `TF_VAR_vision_enabled`, and a value in `terraform.tfvars` would beat it, so the switch would no longer switch. The steps: [the runsheet's Vision (optional)](../deployment-runsheet.md#vision-optional). |
-| `vision_region` | dev and production | `"us-west-2"` | Where the worker runs. Must equal the bootstrap's. |
+| `vision_region` | dev and production | `"us-west-2"` | Where the worker runs. Must equal the bootstrap's. In production it and the prefix must fit the worker's bucket name, 21 characters together ([configuration.md](../configuration.md#environment-terraform-variables)). |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create `<prefix>-*-vision-*` Lambdas and log groups. |
 | `memory_size`, `timeout` | module | 2048 MB, 60 s | The worker's size; the timeout stays under the client's default 90 s. Both vision adapters give up first, at 58 s (`vision_sites.WORKER_READ_TIMEOUT`), by design. |
 
@@ -351,7 +351,7 @@ The full list, with the switch, is [configuration.md, Vision and rail access](..
 | `VISION_COOL_WORKER_ARN` | research tick | The COOL worker, once it exists. |
 | `VISION_BACKEND` | worker | `opencv` or `cool`: what this deployment is. |
 | `COOL_BUILD_SHA256` | COOL worker | The pinned COOL build fingerprint. |
-| `VISION_ALLOWED_URL_PREFIXES` | worker, research tick | Optional, comma-separated; defaults to the `sentinel-cogs` bucket. Each entry must be `https://<host>/` and a path; any other entry is skipped, with a printed line, and if every entry is skipped the default applies (`vision_contract.allowed_prefixes`, read by both). |
+| `VISION_ALLOWED_URL_PREFIXES` | worker, research tick | Optional, comma-separated; defaults to the `sentinel-cogs` bucket. Each entry must be `https://<host>/` and a path; any other entry is skipped, with a printed line, and if every entry is skipped the default applies (`vision_contract.allowed_prefixes`, read by both). No Terraform variable sets it, and Terraform owns both functions' environment, so a value set by hand lasts only until the next apply (§10). |
 
 The rail task adds none: Earth Search, the `sentinel-cogs` bucket, Overpass and GDELT need no key.
 
@@ -799,7 +799,8 @@ None of this is automatic.
 5. **Run Sydney for real:** a tick with the Overpass network on the deployed worker, for the
    measurements the submission needs (its table in `docs/hackathon/opencv-2026-submission.md`).
 6. **COOL:** subscribe to *Cloud Optimized OpenCV For AWS Graviton4* on Marketplace (7-day trial,
-   then usage pricing); on a `c8g` from the COOL AMI run
+   then usage pricing); on a `c8g` from the COOL AMI install networkx (the runsheet's step has
+   the pin; nothing else, so COOL's cv2 and numpy are not shadowed) and run
    `python3 scripts/vision_benchmark.py kernels --out cool-g4.json`, and the same with a stock
    OpenCV venv; pin the COOL `build_sha256` as `COOL_BUILD_SHA256`; terminate the instance and
    unsubscribe if not kept. `docs/deployment-runsheet.md` has the steps.
@@ -852,3 +853,20 @@ None of this is automatic.
 16. **The daily cycle never prints the error its top-level guard catches.** `_handle` returns it as
     `{"status": "error", "error": ...}` with no log line, so it shows only in the Step Functions
     execution's output, not in the function's log.
+17. **The worker's bucket name can pass S3's 63 characters in production.** It is
+    `<prefix>-<env>-vision-artifacts-<account id>-<vision_region>`
+    (`infra/modules/vision-worker/main.tf`), so production needs the prefix and `vision_region` 21
+    characters together: a 13- or 14-character prefix, which the prefix rule allows, or a
+    home-Region `ap-southeast-2` with the default prefix, fails the apply. The docs state the limit
+    ([configuration.md](../configuration.md#environment-terraform-variables)); a shorter name (no
+    Region, or a short hash) and the module's bucket in
+    `test_the_longest_names_still_fit_with_the_longest_prefix` would remove it.
+18. **The admin CLI stops waiting for a research tick after 30 s** (`_RESEARCH_TICK_TIMEOUT_SECONDS`
+    in `scripts/admin_cli.py`), and a vision tick that measures a scene can run longer (a rail
+    city's Overpass fetch, up to 58 s of worker, triage, the summary; the function has 120 s).
+    The runsheet tells the operator to wait; a wait that covers the tick's 120 s would make "No
+    new Finding after 30s" mean what it says.
+19. **`VISION_ALLOWED_URL_PREFIXES` has no Terraform variable.** Terraform owns the worker's and the
+    research tick's whole environment, so a value set in the console lasts until the next apply,
+    and both then fall back to the `sentinel-cogs` default. Keeping one needs a variable passed to
+    both functions.

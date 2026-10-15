@@ -253,7 +253,12 @@ the `production` environment before you set the repository variable. Then, when 
 satisfactory, in order:
 
 1. Re-apply the bootstrap by hand with `vision_region` (in the production account, if you have
-   two), checking the plan touches only the deploy roles' policies.
+   two), checking the plan touches only the deploy roles' policies. First check the worker's
+   bucket name fits: `<prefix>-production-vision-artifacts-<account id>-<vision_region>` must be
+   at most 63 characters, so the prefix and `vision_region` together at most 21 (a prefix of 12
+   or fewer beside `us-west-2`; a home-Region `ap-southeast-2` fits only a prefix of 7 or fewer).
+   Otherwise the release's apply fails on that bucket
+   ([configuration.md](configuration.md#environment-terraform-variables)).
 2. Set the `VISION_ENABLED` variable to `true` on the `production` environment and publish a
    release. The worker lands in `vision_region`; in the home region the research tick gets the
    worker's ARN (`VISION_WORKER_ARN`) and the pipeline's shared execution role one policy to
@@ -261,7 +266,9 @@ satisfactory, in order:
 3. Create the topic in production with the same `adapter_config` that worked on dev (for the
    rail cities, the same bodies from `scripts/rail_topics.example.json`, as in the runsheet's
    [`rail_access` topics](deployment-runsheet.md#rail_access-topics)), and trigger its first tick
-   by hand.
+   by hand. The CLI waits 30 s for the Finding and a vision tick that measures a scene can run
+   longer, so "No new Finding after 30s" is expected: wait about two minutes, or until
+   `topics findings <id>` shows the Finding, before you trigger its daily cycle.
 
 `force_manual_review` is forced on every vision topic: **every vision article waits for a
 person** in the review inbox, whatever the compliance review said, and that holds on every publish

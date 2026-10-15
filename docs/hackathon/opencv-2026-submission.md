@@ -296,11 +296,12 @@ kept is numbers and one map per scene.
 ## Reproduction
 
 1. **Deploy with the switch.** Re-apply `infra/bootstrap` by hand with `vision_region`
-   (`us-west-2`), set the `VISION_ENABLED` repository variable to `true`, and merge or dispatch
-   a deploy. The worker, its bucket and log group appear in us-west-2; in the home region the
-   shared execution role gets one invoke policy and the research tick gets the worker's ARN. The
-   repository variable also turns the worker on in production at the next release, unless the
-   `production` environment sets `VISION_ENABLED` to `false`.
+   (`us-west-2`), set the `VISION_ENABLED` repository variable to `true`, and deploy dev: merge a
+   change under `infra/`, `lambdas/` or `frontend/` to `dev` (a docs-only merge starts no apply),
+   or dispatch the Terraform workflow from `dev`. The worker, its bucket and log group appear in
+   us-west-2; in the home region the shared execution role gets one invoke policy and the research
+   tick gets the worker's ARN. The repository variable also turns the worker on in production at
+   the next release, unless the `production` environment sets `VISION_ENABLED` to `false`.
    ([runsheet](../deployment-runsheet.md#vision-optional))
 2. **Create the topics.** The four city topics are complete topic bodies in
    `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,
@@ -315,14 +316,20 @@ kept is numbers and one map per scene.
    map and the planner notes (a cloudy scene reports nothing, and the next clear one is first).
    The figure is in the content bucket under `vision/<topic>/<site>/<scene>.png`, and the running
    state at `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and
-   timings, the cached network and, from the second clear scene on, the agent's trail.
-4. **Run the daily cycle** (`--pipeline daily_cycle`) and open the inbox
-   (`python scripts/admin_cli.py inbox`): the article is held for you.
+   timings, the cached network and, from the second clear scene on, the agent's trail. The CLI
+   waits only 30 s for the Finding, and a tick that measures a scene can run longer (the network
+   fetch, up to 58 s of worker, then the summary, inside 120 s), so its "No new Finding after 30s"
+   is expected: wait about two minutes, or until
+   `python scripts/admin_cli.py topics findings rail-sydney` shows it.
+4. **Run the daily cycle** (`--pipeline daily_cycle`) once the Finding is there, and open the
+   inbox (`python scripts/admin_cli.py inbox`): the article is held for you.
    `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; the page
    shows the map at `articles/figures/<article>/1.png` with its caption and the credits.
 5. **The benchmark.** `python scripts/vision_benchmark.py kernels --out stock-x86.json` on any
-   machine with `requirements-vision.txt`; the same on a `c8g` from the COOL AMI and in a stock
-   venv beside it; `worker --arn <VISION_WORKER_ARN>` for the deployed worker.
+   machine with `requirements-vision.txt`; the same on a `c8g` from the COOL AMI, after installing
+   networkx alone there (the rail kernels import it; the
+   [runsheet's COOL steps](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) have the
+   pin), and in a stock venv beside it; `worker --arn <VISION_WORKER_ARN>` for the deployed worker.
 
 ## Video shot list
 
