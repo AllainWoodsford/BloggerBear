@@ -37,7 +37,7 @@ import os
 import random
 import re
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 
 import boto3
 
@@ -78,6 +78,7 @@ from common.findings_window import (
     FINDINGS_WINDOW_HOURS,
     findings_window_error,
     findings_window_hours,
+    window_start,
 )
 from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
@@ -226,28 +227,12 @@ def _window_hours(topic: dict) -> int:
 
 
 def _window_start(topic: dict, run_started: datetime, force: bool) -> str:
-    """ISO timestamp findings must be captured at or after to feed this article.
-
-    The window is the topic's findings window (the last FINDINGS_WINDOW_HOURS
-    unless it sets `findings_window_hours`, e.g. a topic that writes on some days
-    only), but never reaches back past the topic's previous article
-    (`last_article_at`), so a second run with nothing found since the last one
-    has nothing to write about instead of rewriting the same findings. `force`
-    ignores the previous article (an operator asking for a fresh take on the
-    whole window); the window itself still applies.
-    """
-    floor = run_started - timedelta(hours=_window_hours(topic))
-    last_article_at = None if force else topic.get("last_article_at")
-    if last_article_at:
-        try:
-            previous = datetime.fromisoformat(last_article_at)
-        except (TypeError, ValueError):
-            previous = None
-        if previous is not None:
-            if previous.tzinfo is None:
-                previous = previous.replace(tzinfo=UTC)  # stored in UTC
-            return max(floor, previous).isoformat()
-    return floor.isoformat()
+    """ISO timestamp findings must be captured at or after to feed this article: the topic's
+    findings window, never reaching back past its previous article, as common/findings_window.py's
+    `window_start` works it out (the one rule, shared with the assistant's topic_findings and the
+    Admin API's findings route). `_window_hours` says in the log when a stored window is not
+    valid; the rule itself is the shared one."""
+    return window_start(topic, run_started, force=force, hours=_window_hours(topic))
 
 
 def _record_article_written(topic_id: str, run_started: datetime) -> None:

@@ -1,12 +1,18 @@
-"""list_recent_findings' optional `since` window (the daily cycle's article input)."""
+"""list_recent_findings' optional `since` window (the daily cycle's article input), and the one
+rule for where that window starts (common/findings_window.py's `window_start`, which the daily
+cycle, the assistant's topic_findings and the Admin API's findings route share)."""
 
 from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import boto3
 import pytest
 from moto import mock_aws
 
 import common.dynamo as dynamo
+from common import findings_window
 from common.adapters.base import SEEN_KEY, Adapter
 
 REGION = "ap-southeast-2"
@@ -179,3 +185,60 @@ def test_delete_musings_for_article_removes_only_that_articles(musings_table):
 def test_delete_musings_for_an_article_with_none_is_a_no_op(musings_table):
     assert dynamo.delete_musings_for_article("nope") == 0
     assert len(musings_table.scan()["Items"]) == 4
+
+
+# --- window_start: the one rule for where a topic's findings window starts ---------------------
+
+RUN = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
+
+
+def _hours_before(hours: int) -> str:
+    return (RUN - timedelta(hours=hours)).isoformat()
+
+
+def test_the_window_is_the_topics_own_or_the_default_day_when_there_is_no_previous_article():
+    assert findings_window.window_start({}, RUN) == _hours_before(24)
+    assert findings_window.window_start({"findings_window_hours": 192}, RUN) == _hours_before(192)
+    assert findings_window.window_start({"findings_window_hours": Decimal("48")}, RUN) == _hours_before(48)
+    # `hours` given wins over the stored window: the daily cycle passes the one it logged about.
+    assert findings_window.window_start({"findings_window_hours": 192}, RUN, hours=6) == _hours_before(6)
+
+
+def test_the_window_is_bounded_by_the_last_article_when_that_is_within_it():
+    last = RUN - timedelta(hours=3)
+
+    assert findings_window.window_start({"last_article_at": last.isoformat()}, RUN) == last.isoformat()
+    older = RUN - timedelta(days=10)  # past a 192-hour (8-day) window
+    topic = {"last_article_at": older.isoformat(), "findings_window_hours": 192}
+    assert findings_window.window_start(topic, RUN) == _hours_before(192)
+
+
+def test_force_ignores_the_last_article_but_keeps_the_window():
+    last = RUN - timedelta(hours=3)
+    topic = {"last_article_at": last.isoformat(), "findings_window_hours": 192}
+
+    assert findings_window.window_start(topic, RUN, force=True) == _hours_before(192)
+    only_last = {"last_article_at": last.isoformat()}
+    assert findings_window.window_start(only_last, RUN, force=True) == _hours_before(24)
+
+
+def test_a_naive_last_article_is_read_as_utc_and_an_unreadable_one_leaves_the_window_alone():
+    naive = (RUN - timedelta(hours=2)).replace(tzinfo=None)
+
+    assert findings_window.window_start({"last_article_at": naive.isoformat()}, RUN) == (
+        naive.replace(tzinfo=UTC).isoformat()
+    )
+    for bad in ("not a date", 12345, "", None):
+        assert findings_window.window_start({"last_article_at": bad}, RUN) == _hours_before(24)
+    # A last article in the future bounds the window there: nothing before it is read.
+    ahead = RUN + timedelta(hours=1)
+    assert findings_window.window_start({"last_article_at": ahead.isoformat()}, RUN) == ahead.isoformat()
+
+
+@pytest.mark.parametrize("bad", [0, -24, 337, "x", "", "192", 1.5, 192.0, True, Decimal("NaN"), [192]])
+def test_an_invalid_stored_window_falls_back_to_the_default_day(bad):
+    assert findings_window.window_start({"findings_window_hours": bad}, RUN) == _hours_before(24)
+
+
+def test_it_is_pure_and_takes_no_topic_at_all():
+    assert findings_window.window_start(None, RUN) == _hours_before(24)
