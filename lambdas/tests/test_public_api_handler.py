@@ -408,6 +408,7 @@ def test_topic_activity_false_when_no_findings(aws_resources):
     assert json.loads(result["body"]) == {
         "topic_id": "github-trending",
         "researching": False,
+        "paused": False,
         "pending_review_count": 0,
         "pipeline_items": [],
     }
@@ -422,6 +423,7 @@ def test_topic_activity_true_when_finding_exists(aws_resources):
     assert json.loads(result["body"]) == {
         "topic_id": "github-trending",
         "researching": True,
+        "paused": False,
         "pending_review_count": 0,
         "pipeline_items": [
             {
@@ -509,7 +511,13 @@ def test_topic_activity_never_leaks_raw_finding_or_moderation_content(aws_resour
     event = _event("GET /topics/{topic_id}/activity", path_params={"topic_id": "github-trending"})
     result = public_api_handler.handler(event, None)
     body = json.loads(result["body"])
-    assert set(body.keys()) == {"topic_id", "researching", "pending_review_count", "pipeline_items"}
+    assert set(body.keys()) == {
+        "topic_id",
+        "researching",
+        "paused",
+        "pending_review_count",
+        "pipeline_items",
+    }
     # Nothing from the pending ModerationQueue item -- not its article_id,
     # not its reasons, not its queue_id -- appears anywhere in the response.
     body_text = result["body"]
@@ -573,6 +581,35 @@ def test_researching_compares_urls_before_titles(aws_resources):
     )
 
     assert _researching_item(_activity())["title"] == "Update"
+
+
+# --- a paused topic (admin CLI `topics pause`) says so instead of "Researching" ---------
+
+
+PAUSED_TOPIC = {**TOPIC, "paused": True, "paused_at": "2026-10-13T09:00:00+00:00"}
+
+
+def test_a_paused_topic_says_paused_in_the_pipeline_box_instead_of_researching(aws_resources):
+    _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
+    _put_topic(PAUSED_TOPIC)
+
+    activity = _activity()
+
+    assert activity["paused"] is True and activity["researching"] is False
+    assert activity["pipeline_items"] == [
+        {"status": "paused", "label": "Paused", "title": "", "since": "2026-10-13T09:00:00+00:00"}
+    ]
+    assert "example/x" not in json.dumps(activity)
+
+
+def test_a_running_topic_is_not_paused(aws_resources):
+    _put_finding(source_refs=[{"url": "https://github.com/example/x", "title": "example/x"}])
+    _put_topic(TOPIC)
+
+    activity = _activity()
+
+    assert activity["paused"] is False and activity["researching"] is True
+    assert activity["pipeline_items"][0]["status"] == "researching"
 
 
 def test_researching_reports_when_the_topic_was_last_checked(aws_resources):

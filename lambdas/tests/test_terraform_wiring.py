@@ -58,10 +58,20 @@ def test_every_api_that_names_a_web_acl_also_says_to_associate_it(env):
 
     assert len(blocks) == 2, "expected the admin and public APIs"
     for block in blocks:
-        assert re.search(r"^\s*web_acl_id\s*=", block, re.M), block[:80]
-        assert re.search(
-            r"^\s*associate_web_acl\s*=\s*true\s*$", block, re.M
-        ), f"{env}: a rest-api module names a web_acl_id but does not set associate_web_acl = true"
+        acl = re.search(r"^\s*web_acl_id\s*=\s*(.+?)\s*$", block, re.M)
+        assert acl, block[:80]
+        flag = re.search(r"^\s*associate_web_acl\s*=\s*(.+?)\s*$", block, re.M)
+        assert flag, f"{env}: a rest-api module names a web_acl_id but does not set associate_web_acl"
+        # Always on (`true`), or on exactly when the ACL exists: the cost-saving switch
+        # (docs/cost-saving.md) that decides the ACL's count also decides the flag, as
+        # `web_acl_id = <switch> ? aws_wafv2_web_acl.<acl>[0].arn : ""`.
+        switch = re.fullmatch(
+            r"((?:local|var)\.\w+)\s*\?\s*aws_wafv2_web_acl\.\w+\[0\]\.arn\s*:\s*\"\"", acl.group(1)
+        )
+        assert flag.group(1) == "true" or (switch and flag.group(1) == switch.group(1)), (
+            f"{env}: associate_web_acl must be true, or the switch web_acl_id is decided by: "
+            f"{acl.group(1)!r} vs {flag.group(1)!r}"
+        )
 
 
 def test_the_association_is_decided_by_the_flag_never_by_the_arn():
@@ -709,9 +719,16 @@ def test_both_dashboards_cover_both_apis_and_every_web_acl(env):
         assert f"api_name         = module.{api}.api_name" in block
         assert f"access_log_group = module.{api}.access_log_group_name" in block
     assert "distribution_id            = module.public_api_cdn.distribution_id" in block
-    assert "aws_wafv2_web_acl.public_api.visibility_config[0].metric_name" in block
-    assert "aws_wafv2_web_acl.admin.visibility_config[0].metric_name" in block
-    assert "waf_cloudfront_acl = {" in block
+    # Each regional ACL is on the dashboard exactly when its cost-saving switch has it exist
+    # (docs/cost-saving.md): the `for _ in (switch ? [1] : [])` idiom around its entry.
+    assert "aws_wafv2_web_acl.public_api[0].visibility_config[0].metric_name" in block
+    assert "aws_wafv2_web_acl.admin[0].visibility_config[0].metric_name" in block
+    assert "for _ in(local.waf_public_api_enabled ? [1] : [])" in block
+    assert "for _ in(local.waf_admin_enabled ? [1] : [])" in block
+    if env == "production":
+        assert "waf_cloudfront_acl = var.waf_site_enabled ? {" in block
+    else:
+        assert "waf_cloudfront_acl = {" in block
 
 
 def test_every_cloudfront_widget_reads_us_east_1_with_the_global_region_dimension():
@@ -1596,8 +1613,11 @@ def test_both_regional_waf_log_groups_feed_the_security_events_lambda_blocks_onl
     text = _read("environments", env, "main.tf")
 
     assert 'handler       = "security_events_handler.handler"' in text
-    assert "public_api = aws_cloudwatch_log_group.waf_public_api" in text
-    assert "admin      = aws_cloudwatch_log_group.waf_admin" in text
+    # Each log is subscribed exactly when its cost-saving switch has it exist (docs/cost-saving.md).
+    assert "{ public_api = aws_cloudwatch_log_group.waf_public_api[0] }" in text
+    assert "{ admin = aws_cloudwatch_log_group.waf_admin[0] }" in text
+    assert "for _ in(local.waf_public_api_enabled ? [1] : [])" in text
+    assert "for _ in(local.waf_admin_enabled ? [1] : [])" in text
     assert 'filter_pattern  = "{ $.action = \\"BLOCK\\" }"' in text
     assert 'principal     = "logs.amazonaws.com"' in text
     assert 'source_arn    = "${each.value.arn}:*"' in text

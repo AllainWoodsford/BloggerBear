@@ -75,6 +75,7 @@ from common.dynamo import (
     set_musing_text,
     set_prompt_refinement_equipment,
     set_prompt_refinement_fields,
+    set_topic_fields,
     update_article_lineage,
     update_article_status,
     update_moderation_status,
@@ -98,6 +99,7 @@ from common.musings import (
     MAX_MUSING_CHARS,
     generate_and_store_article_musing,
     generate_and_store_loot_musing,
+    generate_and_store_pause_musing,
     generate_and_store_rejection_musing,
     regenerate_article_musing_text,
 )
@@ -114,10 +116,23 @@ from common.scheduler import (
     DEFAULT_TIMEZONE,
     _validate_schedule_expression,
     delete_topic_schedules,
+    set_topic_schedules_state,
     upsert_topic_schedules,
     validate_timezone,
 )
 from common.source_refs import dedupe_source_refs
+from common.stagger import (
+    DEFAULT_STAGGER_MINUTES,
+    describe_expression,
+    effective_schedules,
+    first_free_slot,
+    next_free_slot,
+    resolve_stagger_minutes,
+    slot_error,
+    stagger_error,
+    topic_slot,
+    used_slots,
+)
 from common.static_pages import (
     invalidate_article_page,
     read_article_body,
@@ -297,8 +312,22 @@ def _create_topic(event: dict) -> dict:
     if candidates_error:
         return _error(400, candidates_error)
 
+    # The topic's turn in the stagger (common/stagger.py): a slot of its own, else the next
+    # free one. Slot 1's research heartbeat runs at :05 past, slot 2's at :10, and so on.
+    stagger_slot = body.get("stagger_slot")
+    slot_problem = slot_error(stagger_slot)
+    if slot_problem:
+        return _error(400, f"'stagger_slot' {slot_problem}")
+
     if get_topic(topic_id) is not None:
         return _error(409, f"topic '{topic_id}' already exists")
+
+    topics = list_topics()
+    taken = used_slots(topics)
+    if stagger_slot is None:
+        stagger_slot = next_free_slot(topics)
+    elif stagger_slot in taken:
+        return _error(409, f"stagger slot {stagger_slot} is taken by topic '{taken[stagger_slot]}'")
 
     item = {
         "topic_id": topic_id,
@@ -312,6 +341,7 @@ def _create_topic(event: dict) -> dict:
         "model_id": model_id,
         "fallback_model_id": fallback_model_id,
         "model_id_candidates": model_id_candidates,
+        "stagger_slot": stagger_slot,
     }
     # Only stored when provided, so a topic without one simply inherits its
     # adapter's/the global default goal (common/editorial_resolver.py).
@@ -323,7 +353,7 @@ def _create_topic(event: dict) -> dict:
         item["review_mode"] = review_mode
     put_topic(item)
     try:
-        upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
+        _apply_topic_schedules(item, topics=[*topics, item])
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(201, item)
@@ -420,6 +450,24 @@ def _update_topic(event: dict) -> dict:
         if candidates_error:
             return _error(400, candidates_error)
 
+    # The stagger slot (common/stagger.py): set it, clear it (null) for the next free one, or
+    # leave it; a topic from before slots existed is given one the first time it is edited.
+    if "stagger_slot" in body:
+        slot_problem = slot_error(body["stagger_slot"])
+        if slot_problem:
+            return _error(400, f"'stagger_slot' {slot_problem}")
+    topics = list_topics()
+    if "stagger_slot" in body:
+        taken = used_slots(topics, exclude=topic_id)
+        wanted = body["stagger_slot"]
+        if wanted is None:
+            wanted = next_free_slot(topics, exclude=topic_id)
+        elif wanted in taken:
+            return _error(409, f"stagger slot {wanted} is taken by topic '{taken[wanted]}'")
+        updated["stagger_slot"] = wanted
+    elif topic_slot(updated) is None:
+        updated["stagger_slot"] = next_free_slot(topics, exclude=topic_id)
+
     research_cadence = updated.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
     daily_cadence = updated.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
     # Not the new-topic default: a topic with no stored zone has a UTC schedule,
@@ -434,7 +482,7 @@ def _update_topic(event: dict) -> dict:
 
     put_topic(updated)
     try:
-        upsert_topic_schedules(topic_id, research_cadence, daily_cadence, daily_timezone)
+        _apply_topic_schedules(updated, topics=topics)
     except ValueError as exc:
         return _error(400, str(exc))
     return _response(200, updated)
@@ -447,6 +495,205 @@ def _delete_topic(event: dict) -> dict:
     delete_topic_schedules(topic_id)
     delete_topic(topic_id)
     return _response(200, {"deleted": topic_id})
+
+
+def _read_pipeline_config_quietly() -> dict | None:
+    """The pipeline config row, or None if it cannot be read: a schedule written with the default
+    stagger is better than a topic with no schedules."""
+    try:
+        return get_pipeline_config()
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"admin_api_handler: could not read the pipeline config, using its defaults: {exc!r}")
+        return None
+
+
+def _apply_topic_schedules(topic: dict, *, topics: list[dict], config=None) -> dict:
+    """Write the topic's two EventBridge Scheduler schedules with its stagger slot applied
+    (common/stagger.py), DISABLED while the topic is paused, and record what was written on its
+    row (`research_schedule`, `daily_schedule`), so the minute it really runs at can be read in
+    DynamoDB and by `topics schedule`. `topics` is every topic, this one included: how many
+    there are is what delays the daily cycles past the hour's research heartbeats.
+
+    Raises ValueError for a cadence or zone EventBridge Scheduler would refuse, before any AWS
+    call, as upsert_topic_schedules does. Returns the effective schedules.
+    """
+    if config is None:
+        config = _read_pipeline_config_quietly()
+    effective = effective_schedules(
+        research_cadence=topic["research_cadence"],
+        daily_cadence=topic["daily_cadence"],
+        slot=topic_slot(topic),
+        stagger_minutes=resolve_stagger_minutes(config),
+        topic_count=len(topics),
+    )
+    upsert_topic_schedules(
+        topic["topic_id"],
+        effective["research"],
+        effective["daily"],
+        topic.get("daily_timezone", _LEGACY_DAILY_TIMEZONE),
+        enabled=topic.get("paused") is not True,
+    )
+    written = {"research_schedule": effective["research"], "daily_schedule": effective["daily"]}
+    set_topic_fields(topic["topic_id"], written)
+    topic.update(written)
+    return effective
+
+
+def _schedule_view(topic: dict, effective: dict | None = None) -> dict:
+    """One topic's schedules as `topics schedule` shows them: the slot, whether it is paused, the
+    expressions written to EventBridge Scheduler and the same in plain words."""
+    effective = effective or {}
+    research = effective.get("research") or topic.get("research_schedule") or topic.get("research_cadence")
+    daily = effective.get("daily") or topic.get("daily_schedule") or topic.get("daily_cadence")
+    return {
+        "topic_id": topic.get("topic_id"),
+        "name": topic.get("name"),
+        "stagger_slot": topic_slot(topic),
+        "paused": topic.get("paused") is True,
+        "research_schedule": research,
+        "research_schedule_text": describe_expression(research or ""),
+        "daily_schedule": daily,
+        "daily_schedule_text": describe_expression(daily or ""),
+        "daily_timezone": topic.get("daily_timezone", _LEGACY_DAILY_TIMEZONE),
+        "research_interval_hours": topic.get("research_interval_hours"),
+        "last_research_at": topic.get("last_research_at"),
+        "last_article_at": topic.get("last_article_at"),
+    }
+
+
+def _topics_schedule(event: dict) -> dict:
+    """Every topic's schedules as they stand (what `topics schedule` prints): the stagger
+    setting, how many topics there are and the delay that gives the daily cycles, then one
+    row per topic in topic-id order with its slot, whether it is paused, the two expressions
+    last written to EventBridge Scheduler and the same in plain words."""
+    config = _read_pipeline_config_quietly()
+    stagger_minutes = resolve_stagger_minutes(config)
+    topics = sorted(list_topics(), key=lambda item: item.get("topic_id") or "")
+    return _response(
+        200,
+        {
+            "stagger_minutes": stagger_minutes,
+            "topic_count": len(topics),
+            "daily_delay_minutes": len(topics) * stagger_minutes,
+            "topics": [_schedule_view(topic) for topic in topics],
+        },
+    )
+
+
+def _reschedule_topics(event: dict) -> dict:
+    """Rewrite every topic's two schedules with the stagger as it is now (common/stagger.py).
+
+    Run after `stagger_minutes` changes, after a topic is added or deleted (the daily cycles'
+    delay is the number of topics), or to give topics from before slots existed their slots. A
+    topic keeps a valid slot it already has; one with none, an invalid one, or one another topic
+    also holds is given the next free slot, in topic-id order. `{"dry_run": true}` computes and
+    reports without writing anything. A topic whose stored cadence EventBridge Scheduler would
+    refuse is reported with its error and skipped, so one bad topic never stops the rest.
+    """
+    try:
+        body = _parse_body(event)
+    except (json.JSONDecodeError, TypeError):
+        return _error(400, "request body must be valid JSON")
+    dry_run = body.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        return _error(400, "'dry_run' must be a boolean if provided")
+
+    config = _read_pipeline_config_quietly()
+    stagger_minutes = resolve_stagger_minutes(config)
+    topics = sorted(list_topics(), key=lambda item: item.get("topic_id") or "")
+
+    taken: dict[int, str] = {}
+    for topic in topics:
+        slot = topic_slot(topic)
+        if slot is not None and slot not in taken:
+            taken[slot] = topic["topic_id"]
+    for topic in topics:
+        if taken.get(topic_slot(topic)) != topic["topic_id"]:
+            slot = first_free_slot(taken)
+            taken[slot] = topic["topic_id"]
+            topic["stagger_slot"] = slot
+
+    rows = []
+    for topic in topics:
+        topic.setdefault("research_cadence", _DEFAULT_RESEARCH_CADENCE)
+        topic.setdefault("daily_cadence", _DEFAULT_DAILY_CADENCE)
+        try:
+            if dry_run:
+                effective = effective_schedules(
+                    research_cadence=topic["research_cadence"],
+                    daily_cadence=topic["daily_cadence"],
+                    slot=topic_slot(topic),
+                    stagger_minutes=stagger_minutes,
+                    topic_count=len(topics),
+                )
+            else:
+                set_topic_fields(topic["topic_id"], {"stagger_slot": topic["stagger_slot"]})
+                effective = _apply_topic_schedules(topic, topics=topics, config=config)
+            rows.append(_schedule_view(topic, effective))
+        except Exception as exc:  # noqa: BLE001 - one topic's bad cadence must not stop the rest
+            print(f"admin_api_handler: could not reschedule {topic['topic_id']}: {exc!r}")
+            rows.append({**_schedule_view(topic), "error": str(exc)})
+
+    return _response(
+        200,
+        {
+            "dry_run": dry_run,
+            "stagger_minutes": stagger_minutes,
+            "topic_count": len(topics),
+            "daily_delay_minutes": len(topics) * stagger_minutes,
+            "topics": rows,
+        },
+    )
+
+
+def _post_pause_musing(topic_id: str, *, paused: bool) -> None:
+    """BloggerBear's musing about a topic paused or resumed (common/musings.py). The change has
+    already been made by now, so a failure here is logged and swallowed, like the rejection
+    musing's: it must never turn a successful pause into an error."""
+    try:
+        generate_and_store_pause_musing(
+            topic_id=topic_id,
+            topic_name=_topic_display_name(topic_id),
+            paused=paused,
+            model_id=os.environ["BEDROCK_MODEL_ID"],
+        )
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"admin_api_handler: could not post the pause/resume musing: {exc!r}")
+
+
+def _set_topic_paused(event: dict, *, paused: bool) -> dict:
+    """Pause a topic (nothing of it runs until it is resumed: no research tick, no candidate
+    ideas, no daily article) or resume it. The Topics row is the source of truth: `paused` is
+    written first, and both handlers refuse a paused topic whatever invoked them. Its two
+    schedules are then set DISABLED or ENABLED so the heartbeats stop costing invocations; a
+    schedule that could not be changed is said so in the answer, and the handlers' own check
+    still holds. The bear muses about it either way. Doing it again is a no-op."""
+    topic_id = _path_param(event, "topic_id")
+    topic = get_topic(topic_id)
+    if topic is None:
+        return _error(404, f"topic '{topic_id}' not found")
+    if (topic.get("paused") is True) == paused:
+        return _response(200, {"topic_id": topic_id, "paused": paused, "changed": False})
+
+    now = datetime.now(UTC).isoformat()
+    set_topic_fields(topic_id, {"paused": paused, "paused_at" if paused else "resumed_at": now})
+    payload = {"topic_id": topic_id, "paused": paused, "changed": True, "at": now}
+    try:
+        payload["schedules"] = set_topic_schedules_state(topic_id, enabled=not paused)
+    except Exception as exc:  # noqa: BLE001 - the row is written; the handlers refuse a paused topic
+        print(f"admin_api_handler: could not change the schedules of {topic_id}: {exc!r}")
+        payload["schedules"] = []
+        payload["schedules_error"] = str(exc)
+    _post_pause_musing(topic_id, paused=paused)
+    return _response(200, payload)
+
+
+def _pause_topic(event: dict) -> dict:
+    return _set_topic_paused(event, paused=True)
+
+
+def _resume_topic(event: dict) -> dict:
+    return _set_topic_paused(event, paused=False)
 
 
 _PIPELINE_FUNCTION_ENV_VARS = {
@@ -467,8 +714,12 @@ def _trigger_topic(event: dict) -> dict:
     if pipeline not in _PIPELINE_FUNCTION_ENV_VARS:
         return _error(400, "'pipeline' must be one of: research_tick, daily_cycle")
 
-    if get_topic(topic_id) is None:
+    topic = get_topic(topic_id)
+    if topic is None:
         return _error(404, f"topic '{topic_id}' not found")
+    # A paused topic runs nothing, by hand or by schedule: the handlers would refuse it anyway.
+    if topic.get("paused") is True:
+        return _error(409, f"topic '{topic_id}' is paused: resume it first (topics resume {topic_id})")
 
     payload = {"topic_id": topic_id}
     # A manual research_tick is "check now": it must not be refused because the
@@ -1954,6 +2205,9 @@ def _get_pipeline_config_route(event: dict) -> dict:
             "effective_review_on_unavailable": resolve_on_unavailable(config),
             "assistant_access": config.get("assistant_access"),
             "effective_assistant_access": effective_assistant_access(config),
+            "stagger_minutes": config.get("stagger_minutes"),
+            "effective_stagger_minutes": resolve_stagger_minutes(config),
+            "default_stagger_minutes": DEFAULT_STAGGER_MINUTES,
         },
     )
 
@@ -1970,6 +2224,9 @@ def _put_pipeline_config_route(event: dict) -> dict:
     - `assistant_access`: who may reach the operator's assistant: `open` (any signed-in
       caller, the default), `allowlist` (only from the operator's addresses) or `off`
       (nobody). The assistant reads it on every request, so it applies without a deploy.
+    - `stagger_minutes`: the minutes between one topic's schedules and the next
+      (common/stagger.py; 0 turns staggering off). Takes effect on each topic's next write,
+      or on every topic at once with POST /topics/reschedule.
 
     A setting that isn't in the body is left as it is.
     """
@@ -1999,11 +2256,16 @@ def _put_pipeline_config_route(event: dict) -> dict:
         if access_problem:
             return _error(400, f"'assistant_access' {access_problem}")
         updates["assistant_access"] = body["assistant_access"]
+    if "stagger_minutes" in body:
+        stagger_problem = stagger_error(body["stagger_minutes"])
+        if stagger_problem:
+            return _error(400, f"'stagger_minutes' {stagger_problem}")
+        updates["stagger_minutes"] = body["stagger_minutes"]
     if not updates:
         return _error(
             400,
-            "send 'research_interval_hours', 'review_mode', 'review_on_unavailable' and/or "
-            "'assistant_access' (null clears a setting)",
+            "send 'research_interval_hours', 'review_mode', 'review_on_unavailable', "
+            "'assistant_access' and/or 'stagger_minutes' (null clears a setting)",
         )
 
     put_pipeline_config(**updates)
@@ -2125,6 +2387,10 @@ _ROUTES = {
     "PUT /topics/{topic_id}": _update_topic,
     "DELETE /topics/{topic_id}": _delete_topic,
     "POST /topics/{topic_id}/trigger": _trigger_topic,
+    "POST /topics/{topic_id}/pause": _pause_topic,
+    "POST /topics/{topic_id}/resume": _resume_topic,
+    "GET /topics/schedule": _topics_schedule,
+    "POST /topics/reschedule": _reschedule_topics,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
     "GET /articles/{article_id}": _get_article,

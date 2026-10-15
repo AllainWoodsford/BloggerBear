@@ -194,6 +194,12 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
+    if topic.get("paused") is True:
+        # Paused by the operator (the Admin API's pause route, `topics pause`): nothing is
+        # fetched and nothing recorded, whatever the heartbeat or a manual trigger asks, until
+        # it is resumed. The Topics row decides; the disabled schedule only saves invocations.
+        print(f"research_tick_handler: {topic_id} is paused; nothing fetched")
+        return {"status": "paused", "topic_id": topic_id}
 
     run_started = datetime.now(UTC)
     if not force:

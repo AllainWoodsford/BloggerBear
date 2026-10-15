@@ -1,6 +1,6 @@
 output "wafv2_web_acl_arn" {
-  value       = aws_wafv2_web_acl.this.arn
-  description = "ARN of the shared WAF Web ACL. Copy this into infra/environments/dev/terraform.tfvars as web_acl_arn so dev shares the same ACL."
+  value       = one(aws_wafv2_web_acl.this[*].arn)
+  description = "ARN of the shared WAF Web ACL. Copy this into infra/environments/dev/terraform.tfvars as web_acl_arn so dev shares the same ACL. Null when the waf_site_enabled switch is off (docs/cost-saving.md); dev's web_acl_arn must then stay empty."
 }
 
 output "distribution_domain_name" {

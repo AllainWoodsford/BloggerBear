@@ -59,6 +59,11 @@ WAF tuning -- `docs/PROGRESS.md` tracks them.
 5. If changed: summarize with Bedrock and store findings
 
 Current schedules (runtime data, set through the Admin API, not Terraform):
+- **The minute is the slot's** (§11, "Staggered schedules by slot"): the Admin API writes each
+  topic's heartbeat at `stagger_slot × stagger_minutes` past its hour, and its daily cycle
+  `topics × stagger_minutes` after its hour, then one slot apart. The hand-kept minutes below
+  stand until `topics reschedule` is run. A paused topic's schedules are disabled and the tick
+  refuses it.
 - **Production:** every topic researches every 4 hours on a fixed UTC cron, staggered a
   minute apart (github-trending `:01`, crypto `:02`, tech-market-news `:03`, wow-forever
   `:04`, at 00/04/08/12/16/20 UTC), with a 4-hour interval.
@@ -1716,6 +1721,8 @@ table.**
 ### Staggered schedules
 
 **Status: applied in production and dev** (runtime data via the Admin API, not code; see §4).
+**Superseded** by "Staggered schedules by slot, pausing a topic, and the digest's steering" below:
+the minutes are now set from each topic's slot, not kept by hand.
 
 Every production topic researches every 4 hours on a fixed UTC cron a minute apart, and the daily articles
 run a minute apart from 09:00 Sydney, so no two topics start their external calls at the same moment. The
@@ -2048,3 +2055,112 @@ only the newest `PIPELINE_PENDING_LIMIT` (3) in `pipeline_items`, so it reads at
 nothing for a reader to open (pending articles have not cleared review). The Researching row stays
 below it. The frontend caps at three as well, so an older API response cannot flood the box.
 
+### Staggered schedules by slot, pausing a topic, and the digest's steering
+
+**Status: built** (this PR, `claude/clever-einstein-r6qclu`; design for the next step in
+docs/enhancements/dispatcher-sqs-enhancement.md).
+
+**Problem.** Every topic's two schedules were staggered by hand, a minute apart, so a new topic
+needed a free minute chosen by a person, and a topic could not be stopped without deleting it.
+With every topic's research heartbeat and daily cycle a few minutes apart, the source APIs and
+Bedrock get one caller at a time instead of all of them at once, which is the strategy against
+rate limits until the dispatcher lands.
+
+**The stagger.** Two settings, both in DynamoDB and both on the admin CLI (`common/stagger.py`):
+
+- `stagger_minutes` on the `pipeline` config row (`pipeline-config set --stagger-minutes N`;
+  5 by default, 0 turns it off, at most 30);
+- `stagger_slot` on each topic row (`topics create|update --stagger-slot N`; the next free slot
+  when a topic is created or first edited; a slot no other topic holds).
+
+From them the Admin API writes the *effective* schedules: the research heartbeat of slot *k*
+at `k × stagger` past the hour it would run anyway (slot 1 at :05, slot 2 at :10, so "every 4
+hours" is 00:05, 04:05, 08:05 ... for slot 1 and 00:10, 04:10 ... for slot 2), and the daily
+cycle (the candidate ideas, the draft, the reviews) of every topic first delayed by `topics ×
+stagger`, so it starts after the hour's heartbeats have had their turn, and then one slot
+apart: with four topics, 09:00 becomes 09:20, 09:25, 09:30 and 09:35. The slot decides the
+**minute**; the topic's own cadence still decides the hour pattern, the day and the time zone.
+A `rate(N hours)` heartbeat is written as the cron it amounts to (`cron(5 */4 * * ? *)`),
+because a rate has no minute to set; a cadence whose minute field is not a single number
+(`*/15`) cannot be staggered and is written as it is. Offsets of an hour or more carry into the
+hour field for the shapes a cadence uses (`9`, `*/4`, `9,21`, `9-17`).
+
+What was written is recorded on the topic row (`research_schedule`, `daily_schedule`), so
+DynamoDB shows the minute a topic really runs at. `topics schedule` prints every topic's slot,
+state, both schedules in plain words ("every 4 hours at :05 past", "daily at 09:20") and as
+written; `topics reschedule` rewrites every topic's schedules with the stagger as it is now
+(after a change to `stagger_minutes`, after a topic is added or deleted, or to give topics from
+before slots existed their slots, in topic-id order; `--dry-run` shows the plan). Twelve
+five-minute slots fill an hour: beyond that the dispatcher is the answer, not a shorter gap.
+
+**Pausing a topic.** `topics pause <id>` writes `paused = true` (and `paused_at`) on the Topics
+row, which is the source of truth: the research tick and the daily cycle refuse a paused topic
+whatever invoked them (`{"status": "paused"}`), so there is no research, no candidate ideas and
+no article until `topics resume`. The Admin API also sets the topic's two EventBridge schedules
+DISABLED (resumed: ENABLED again) so the heartbeats stop costing invocations, and refuses
+`topics trigger` on a paused topic. An edit or a reschedule of a paused topic keeps its
+schedules disabled. The topic page's "Articles in the Pipeline" says **Paused** (with how long
+ago) where it would say Researching, with the spinner held still; articles still waiting for
+review stay listed above it. The bear muses about it each way: a reflective "setting it down
+for a while" on a pause, an excited "back on it" on a resume (`common/musings.py`, kinds `pause`
+and `resume`, reusing moods that already have their bear).
+
+**The digest's steering.** Trending Everywhere is a survey for readers who follow none of the
+topics closely, so it is told to stay general (what kind of thing is moving and in which
+direction, no particulars) and to carry **no figures**: no prices, amounts, percentages, counts,
+rankings, dates or version numbers. The rule is held to in code (`common/digest.py`'s
+`without_figures`): a sentence with a figure in it is dropped from the model's lines and from
+the fallback taken from a finding's own summary, before the digest is composed. Because the
+digest carries nothing a person would have to check (no price, no forecast, no advice), a
+financial contributor no longer holds it for a person unconditionally: it is reviewed as the
+non-financial piece it is and published when the review passes. The compliance review itself
+still runs on every digest (hard constraint #3), the financial drafting guidance is still in the
+prompt and the disclaimer still appended whenever a contributor is financial, and a topic whose
+articles always wait for a person (`force_manual_review`, the vision topics on #285) is still
+left out of it.
+
+**Compatibility with the vision stack (#285).** Nothing here touches the adapters, the Finding
+or the article: the pause check sits before the tick fetches anything, the stagger only changes
+the minute a schedule fires, and the handlers' event shapes are unchanged. The dispatcher design
+says what the next step has to keep (one research run per topic at a time, the tick's 120 s).
+
+### Cost saving: optional firewall switches, hardened by default
+
+**Status: built** (this PR, `claude/clever-einstein-r6qclu`). The page is docs/cost-saving.md.
+
+**Problem.** The firewall is the biggest fixed line on the bill: five web ACLs and fourteen
+rules, about US$39 a month at list price, whether one request or a million goes through. A
+deployment that only tries the project out pays the same as one that stores readers' data.
+
+**Four switches, every one `true` by default.** Each is a bool Terraform variable fed from a
+GitHub variable by the deploy workflows (`<SWITCH>_DEV` / `<SWITCH>_PROD`, else the shared
+`<SWITCH>`, else `true`), so the default plan is the firewall exactly as it was:
+
+| Switch | `false` means | Saves |
+|---|---|---|
+| `waf_regional_enabled` | no regional web ACLs for the environment (public and admin API) | about US$16 a month per environment |
+| `waf_admin_allowlist` | the admin allowlist by resource policy only, no admin web ACL | about US$6 per environment |
+| `waf_site_enabled` (production) | no shared CloudFront ACL on the site and the API CDN | about US$7 |
+| `waf_log_all_requests` | the admin ACL logs blocks and counts only | CloudWatch Logs ingestion |
+
+Every firewall resource that gained a `count` has a `moved` block to its new index, so the
+first apply shows nothing to destroy or create. The lists built from those resources (the edge
+dashboard's ACLs, the security-events subscriptions, the assistant's firewall log groups) are
+conditional on the same switches, with the `for _ in (switch ? [1] : [])` idiom the
+observability module already uses, so a switched-off ACL is never read.
+
+**The admin API's allowlist is always on.** The key decision: the operator's addresses
+(`admin_allowed_cidrs`, the same sensitive secret the IP set is built from) are now also the
+admin API's own **resource policy** (`infra/modules/rest-api`, `resource_policy`): a Deny of
+every `execute-api:Invoke` from any other address, and a Deny of every call while the list is
+empty, which is the admin web ACL's fail-closed default block, for free. Deny-only, so `AWS_IAM`
+stays what admits a caller. With the admin ACL on, that is two layers instead of one; with it
+off, refused calls show in the admin API's access log, which the security-events Lambda already
+counts. The policy is `sensitive`, so the plan prints it as `(sensitive value)`; no output
+carries it; a 403 shows nothing. API Gateway enforces a resource policy only from the next
+deployment, so the module puts the policy's hash in the deployment's triggers.
+
+**Validation.** `terraform validate` on both roots (with the providers mirrored from the
+release host, since the registry is behind this environment's proxy), `terraform fmt`, and
+`lambdas/tests/test_terraform_cost_switches.py`, which holds the switches, the counts, the
+moved blocks, the workflows and the docs to each other.
