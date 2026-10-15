@@ -1211,3 +1211,19 @@ four had tests, because the tests were written from the same understanding as th
 day-constrained cron is left alone past midnight; the module writes the full ARN. **Lesson:** a
 test written by the author of the code checks the author's intent, not the world; have someone
 try to refute the intent too.
+
+**13.10 · Checkov loses a counted ACL's logging configuration unless the reference says
+`count.index`.** The first CI run of this pull request failed only on Checkov: CKV2_AWS_31
+("Ensure WAF2 has a Logging Configuration") on `aws_wafv2_web_acl.public_api[0]` in both roots
+and on production's `aws_wafv2_web_acl.this[0]`, each with a logging configuration two hundred
+lines below it. The admin ACL passed, which was the clue: its `count` is `var.a && var.b`, which
+Checkov's renderer cannot evaluate, so it stays one unexpanded resource; the others' `count`
+evaluates to 1, Checkov expands them to `[0]` copies, and then the logging configuration's
+`aws_wafv2_web_acl.public_api[0].arn` no longer finds the copy. Ten small variants against
+the pinned 3.3.25 showed what does: `aws_wafv2_web_acl.public_api[count.index].arn`, which the
+expansion rewrites to the copy's own index (`one(...[*].arn)` and `[*].arn[0]` fail the same
+way). **Fix:** every logging configuration names its ACL and its log group by `count.index`, with
+a comment saying why, and the repo-config scan is 904 passed, 0 failed.
+No skip: the check is right to want the link, and a `checkov:skip` would hide a real loss of it.
+**Lesson:** when a graph check fails on a resource that plainly has the connection, reproduce it
+on a few lines and vary the reference, not the resource; the passing sibling says what differs.

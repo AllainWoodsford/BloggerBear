@@ -45,6 +45,16 @@ does.
 The Terraform variables are `bool`, so a typo (`ture`, `yes`) fails the plan with "a bool is
 required" instead of quietly picking a mode. Use `true` or `false`.
 
+So each environment is set on its own, in either direction. A hardened production beside a cheap
+dev is `WAF_REGIONAL_ENABLED_DEV=false` (and, if the admin ACL should go too,
+`WAF_ADMIN_ALLOWLIST_DEV=false`) with nothing set for production: production keeps every ACL and
+every rule, dev keeps only what costs nothing (the admin API's resource-policy allowlist, API
+Gateway's throttling). The other way round is the same names with `_PROD`, and dev left at its
+default. A shared name without a suffix sets both environments, and a suffixed name beside it
+wins for that environment only. The one switch with no `_DEV` name is `WAF_SITE_ENABLED`: the
+CloudFront ACL is production's, dev only borrows it (`web_acl_arn`), so dev pays nothing for it
+either way.
+
 To undo any switch, delete the variable (or set it back to `true`) and re-run the deploy. The
 resources come back exactly as they were, under the same names.
 

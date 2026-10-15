@@ -2008,8 +2008,10 @@ resource "aws_cloudwatch_log_resource_policy" "waf_logs" {
 resource "aws_wafv2_web_acl_logging_configuration" "admin" {
   count = local.waf_admin_enabled ? 1 : 0
 
-  resource_arn            = aws_wafv2_web_acl.admin[0].arn
-  log_destination_configs = [aws_cloudwatch_log_group.waf_admin[0].arn]
+  # [count.index], not [0]: Checkov's CKV2_AWS_31 (every web ACL has a logging configuration)
+  # follows a reference into a counted ACL only in this form (docs/friction.md, 13.10).
+  resource_arn            = aws_wafv2_web_acl.admin[count.index].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_admin[count.index].arn]
 
   # Cost saving (docs/cost-saving.md): with waf_log_all_requests off, this log keeps only what a
   # rule blocked or counted, as the visitor ACLs' logs do. On (the default), every request from
@@ -2044,8 +2046,10 @@ resource "aws_wafv2_web_acl_logging_configuration" "admin" {
 resource "aws_wafv2_web_acl_logging_configuration" "public_api" {
   count = local.waf_public_api_enabled ? 1 : 0
 
-  resource_arn            = aws_wafv2_web_acl.public_api[0].arn
-  log_destination_configs = [aws_cloudwatch_log_group.waf_public_api[0].arn]
+  # [count.index], not [0]: Checkov's CKV2_AWS_31 (every web ACL has a logging configuration)
+  # follows a reference into a counted ACL only in this form (docs/friction.md, 13.10).
+  resource_arn            = aws_wafv2_web_acl.public_api[count.index].arn
+  log_destination_configs = [aws_cloudwatch_log_group.waf_public_api[count.index].arn]
 
   dynamic "redacted_fields" {
     for_each = local.waf_log_redacted_headers
