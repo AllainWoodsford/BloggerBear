@@ -429,6 +429,62 @@ def test_topics_findings_calls_get():
     )
 
 
+def _findings_list(argv):
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {"findings": []})) as m:
+        _run(["findings", "list", *argv])
+    m.assert_called_once()
+    method, api_url, path, region = m.call_args.args
+    assert (method, api_url, region) == ("GET", "https://api.example.com", "ap-southeast-2")
+    assert m.call_args.kwargs == {"body": None}
+    return path
+
+
+def test_findings_list_gets_the_topics_findings_with_no_query_by_default():
+    assert _findings_list(["my-topic"]) == "/topics/my-topic/findings"
+
+
+@pytest.mark.parametrize(
+    ("argv", "query"),
+    [
+        (["--limit", "10"], "limit=10"),
+        (["--days", "2"], "days=2"),
+        (["--days", "2", "--limit", "10"], "limit=10&days=2"),
+        (["--since", "2026-10-01T00:00:00+00:00"], "since=2026-10-01T00%3A00%3A00%2B00%3A00"),
+        (["--next-article"], "next_article=true"),
+        (["--next-article", "--limit", "20"], "limit=20&next_article=true"),
+    ],
+)
+def test_findings_list_builds_the_query_string(argv, query):
+    assert _findings_list(["rail-sydney", *argv]) == f"/topics/rail-sydney/findings?{query}"
+
+
+def test_findings_list_percent_encodes_the_topic_id_in_the_path():
+    assert _findings_list(["a/b?c d"]) == "/topics/a%2Fb%3Fc%20d/findings"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--days", "2", "--since", "2026-10-01"],
+        ["--days", "2", "--next-article"],
+        ["--since", "2026-10-01", "--next-article"],
+        ["--days", "two"],
+        [],
+    ],
+)
+def test_findings_list_window_flags_are_exclusive_and_typed(argv):
+    with patch("admin_cli.signed_request") as m, pytest.raises(SystemExit) as raised:
+        _run(["findings", "list", *(["rail-sydney"] if argv else []), *argv])
+    assert raised.value.code == 2
+    m.assert_not_called()
+
+
+def test_topics_findings_is_still_the_latest_route_that_the_trigger_polls():
+    with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
+        _run(["topics", "findings", "a/b"])
+    assert m.call_args.args[2] == "/topics/a/b/findings/latest"
+
+
 def test_topics_candidates_calls_get():
     with patch("admin_cli.signed_request", return_value=FakeResponse(200, {})) as m:
         _run(["topics", "candidates", "my-topic"])
