@@ -672,3 +672,224 @@ def test_an_artefact_tick_is_kept_as_running_state_without_a_finding(tick_env, m
     state = running_state()
     assert state["triage"]["botany"]["reason"] == "glint"
     assert [e["count"] for e in state["sites"]["botany"]["history"]] == [10, 11, 12, 40]
+
+
+# --- what the operator's assistant may show (status) ---------------------------------------------
+
+STATUS_NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def no_egress():
+    """status is pure: an AWS client, an HTTP request or a socket would fail the test."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("status reached outside the process")
+
+    with (
+        patch("boto3.client", refuse),
+        patch("requests.Session.request", refuse),
+        patch("requests.post", refuse),
+        patch("socket.socket.connect", refuse),
+    ):
+        yield
+
+
+def said(status):
+    """Every phrase a status offers to be spoken: codes' and verdicts' words, and labels."""
+    found = []
+    for site in status["sites"]:
+        found += [site[key]["words"] for key in ("error", "last_verdict", "refused") if site[key]]
+        found += [site["measure"]["label"]] if site["measure"] else []
+        for entry in site["inputs"]:
+            found += [entry["label"]] + ([entry["error"]["words"]] if entry["error"] else [])
+    return found
+
+
+def test_status_after_a_measured_tick(adapter, no_egress):
+    adapter.http_post = None
+    state = history_state(adapter, [10, 12, 11, 13])
+    status = adapter.status(topic(object_noun="large vessels"), state, now=STATUS_NOW)
+    assert status["config_error"] is None and status["backend"] == "opencv"
+    assert status["fetched_at"] == state["fetched_at"]
+    assert status["first_observed_at"] == state["first_observed_at"] is not None
+    (site,) = status["sites"]
+    assert site["site_id"] == "botany" and site["name"] == SITE_NAME
+    assert site["order"] == 1 and site["scenes"] == 4
+    assert site["last_scene"] == {
+        "scene_id": "S3",
+        "captured_at": "2026-09-13T00:00:00Z",
+        "coverage": 0.95,
+        "triage": None,
+        "quality_flags": [],
+        "backend": "opencv",
+        "build": "ab" * 6,
+        "figure_stored": True,
+    }
+    assert site["last_verdict"] == {"code": "within_range", "words": "within the usual range"}
+    # Fixed words, never the operator's object_noun.
+    assert site["measure"] == {"label": "objects counted", "value": 13}
+    assert "large vessels" not in json.dumps(status)
+    assert site["last_attempt_at"] == state["fetched_at"]
+    assert site["error"] is None and site["refused"] is None and site["inputs"] == []
+    assert set(said(status)) <= sv.SatelliteVisionAdapter.status_vocabulary()
+    json.dumps(status, allow_nan=False)
+
+
+def test_the_research_tick_never_asks_for_status(adapter):
+    with patch.object(sv.SatelliteVisionAdapter, "status", side_effect=AssertionError("called")):
+        state = history_state(adapter, [10, 12])
+        adapter.material_diff(EARLIER, state)
+
+
+@pytest.mark.parametrize(
+    ("counts", "coverage", "agent", "verdict"),
+    [
+        ([10], {0: 0.3}, None, "below_floor"),
+        ([10], None, None, "baseline_building"),
+        ([10, 12, 11, 13], None, None, "within_range"),
+        ([10, 12, 11, 30], None, FakeAgent("real"), "reported"),
+        ([10, 12, 11, 30], None, FakeAgent("artefact", "a thin cloud edge"), "artefact"),
+    ],
+)
+def test_the_newest_scenes_verdict_is_assess_s_rule(adapter, no_egress, counts, coverage, agent, verdict):
+    state = history_state(adapter, counts, coverage)
+    if agent:
+        adapter.triage_agent = agent
+        adapter.material_diff(EARLIER, state)
+    site = adapter.status(topic(), state, now=STATUS_NOW)["sites"][0]
+    assert site["last_verdict"]["code"] == verdict
+    assert site["last_verdict"]["words"] in sv.SatelliteVisionAdapter.status_vocabulary()
+    # The agent's reason is never in a status: it wrote it after reading news results.
+    assert "cloud edge" not in json.dumps(site) and "open water" not in json.dumps(site)
+
+
+def test_a_change_with_triage_off_is_reported(adapter, no_egress):
+    state = history_state(adapter, [10, 12, 11, 30], triage=False)
+    site = adapter.status(topic(triage=False), state, now=STATUS_NOW)["sites"][0]
+    assert site["last_verdict"]["code"] == "reported"
+
+
+@pytest.mark.parametrize(
+    ("error", "code", "kind"),
+    [
+        (vision_client.VisionError("unreadable_scene", "HTTP 503"), "unreadable_scene", "worker"),
+        (vision_client.VisionError("invoke", "ReadTimeout"), "invoke", "worker"),
+        (vision_client.VisionError("site_outside_scene", "no overlap"), "site_outside_scene", "site"),
+        (vision_client.VisionError("throttled", "who knows"), "throttled", "other"),
+    ],
+)
+def test_a_failed_tick_reports_its_code_kind_and_words(adapter, no_egress, error, code, kind):
+    first = run(adapter, FakeStac([item("S1", "2026-10-03T00:00:00Z")]), FakeWorker({"S1": 12}))
+    stac = FakeStac([item("S2", "2026-10-08T00:00:00Z")])
+    failed = run(adapter, stac, FakeWorker({}, error=error), previous=first)
+    site = adapter.status(topic(), failed, now=STATUS_NOW)["sites"][0]
+    words = dict(sv.vision_sites.STATUS_WORDS).get(code, sv.vision_sites.OTHER_ERROR)[1]
+    assert site["error"] == {
+        "code": code,
+        "kind": kind,
+        "words": words,
+        "at": failed["fetched_at"],
+        "detail": error.detail,
+    }
+    assert site["last_scene"]["scene_id"] == "S1" and site["scenes"] == 1
+
+
+def test_a_failed_search_is_a_source_error(adapter, no_egress):
+    first = run(adapter, FakeStac([item("S1", "2026-10-03T00:00:00Z")]), FakeWorker({"S1": 12}))
+    searched = run(adapter, FakeStac(error=TimeoutError("stac down")), FakeWorker({}), previous=first)
+    error = adapter.status(topic(), searched, now=STATUS_NOW)["sites"][0]["error"]
+    assert (error["code"], error["kind"]) == ("search", "source")
+    assert error["words"] == "the satellite image search failed"
+
+
+def test_a_cool_topic_with_no_cool_worker_is_told_apart(adapter, no_egress, monkeypatch):
+    """vision_client's own words for a backend with no worker ARN (Terraform sets none for COOL)."""
+    monkeypatch.delenv("VISION_COOL_WORKER_ARN", raising=False)
+    adapter.measure = sv.vision_client.measure
+    adapter.http_post = FakeStac([item("S1", "2026-10-03T00:00:00Z")])
+    state = adapter.fetch_state(topic(backend="cool"))
+    status = adapter.status(topic(backend="cool"), state, now=STATUS_NOW)
+    assert status["backend"] == "cool"
+    error = status["sites"][0]["error"]
+    assert (error["code"], error["words"]) == ("no_cool_worker", "no COOL worker is deployed")
+
+
+def test_a_deferred_site_is_waiting_for_time(adapter, no_egress):
+    clock = Clock()
+    adapter.clock = clock
+    sites = [{"id": "a", "polygon": POLY}, {"id": "b", "polygon": POLY}]
+    adapter.http_post = FakeStac([item("S1", "2026-10-03T00:00:00Z")])
+    adapter.measure = FakeWorker({"S1": 1}, takes=20.0, clock=clock)
+    config = {"sites": sites, "max_sites_per_tick": 2, "time_budget_seconds": 60}
+    state = adapter.fetch_state({"topic_id": "t", "adapter_config": config})
+    status = adapter.status({"adapter_config": config}, state, now=STATUS_NOW)
+    a, b = status["sites"]
+    assert b["error"]["kind"] == "deferred" and b["error"]["words"] == "waiting for time in the tick"
+    assert b["last_attempt_at"] is None and b["last_scene"] is None
+    # The deferred site goes first next tick (order_sites), and a no longer leads.
+    assert (a["order"], b["order"]) == (2, 1)
+
+
+def test_a_bad_config_is_reported_and_its_sites_still_listed(no_egress):
+    adapter = sv.SatelliteVisionAdapter()
+    config = {
+        "sites": [{"id": "botany", "name": SITE_NAME, "polygon": POLY}, {"id": "bad id!", "polygon": POLY}],
+        "backend": "cool",
+    }
+    status = adapter.status({"adapter_config": config}, None, now=STATUS_NOW)
+    assert status["config_error"] and "site id" in status["config_error"]
+    assert [site["site_id"] for site in status["sites"]] == ["botany"] and status["backend"] == "cool"
+    assert adapter.status({"adapter_config": "not a dict"}, None, now=STATUS_NOW)["config_error"]
+    assert adapter.status({"adapter_config": {"sites": [1, None]}}, None, now=STATUS_NOW)["sites"] == []
+
+
+def test_an_old_state_reads_and_sites_follow_the_config(adapter, no_egress):
+    """A state from before first_observed_at, history entries missing what newer ticks write, a site
+    added since the last tick (never tried, first in line) and one removed from the config."""
+    old = {
+        "fetched_at": "2026-09-01T00:00:00+00:00",
+        "sites": {
+            "botany": {"history": [{"scene_id": "S0", "count": 4, "coverage": 0.9}], "last_attempt_at": "x"},
+            "gone": {"history": [{"scene_id": "S0", "count": 1, "coverage": 0.9}]},
+            "junk": "not a record",
+        },
+    }
+    sites = [{"id": "botany", "polygon": POLY}, {"id": "new", "name": "New anchorage", "polygon": POLY}]
+    status = adapter.status({"adapter_config": {"sites": sites}}, old, now=STATUS_NOW)
+    assert status["first_observed_at"] is None
+    botany, new = status["sites"]
+    assert botany["last_scene"]["build"] is None and botany["last_scene"]["figure_stored"] is False
+    assert botany["last_verdict"]["code"] == "baseline_building" and botany["name"] == "botany"
+    assert new == {
+        "site_id": "new",
+        "name": "New anchorage",
+        "scenes": 0,
+        "last_scene": None,
+        "last_verdict": None,
+        "measure": None,
+        "last_attempt_at": None,
+        "error": None,
+        "refused": None,
+        "inputs": [],
+        "order": 1,
+    }
+    assert "gone" not in json.dumps(status)
+    unreadable = {"sites": {"botany": {"history": [{"scene_id": "S0"}, "x"]}}}
+    assert adapter.status({"adapter_config": {"sites": sites}}, unreadable, now=STATUS_NOW)["sites"][0][
+        "last_verdict"
+    ] is None
+
+
+def test_assess_is_unchanged_by_the_shared_rule(adapter):
+    """assess and status share _judge: the verdicts assess gives are the ones it always gave."""
+    state = history_state(adapter, [10, 12, 11, 30], {3: 0.95})
+    (verdict,) = adapter.assess(state)
+    assert {key: verdict[key] for key in ("baseline", "baseline_scenes", "delta", "material", "reason")} == {
+        "baseline": 11,
+        "baseline_scenes": 3,
+        "delta": 19,
+        "material": True,
+        "reason": "changed against the baseline",
+    }
+    assert list(verdict)[-6:] == ["baseline", "baseline_scenes", "delta", "relative", "material", "reason"]

@@ -30,7 +30,10 @@ operator searches the console with.
 "you are now", "system prompt", a fake tool call, and the like. Such a line is not shown at all:
 it is replaced by WITHHELD, and the result says how many were withheld. The model reading the
 result never sees the words, so they cannot steer it, and the operator still learns that a line
-like that was in the log (which is itself worth knowing: someone is probing).
+like that was in the log (which is itself worth knowing: someone is probing). The phrase is looked
+for in a normalised copy (NFKC, format characters removed, whitespace collapsed), so a line break,
+a tab, a no-break or em space, a zero-width joiner or fullwidth letters between or inside the
+words do not hide it.
 
 Pure functions and regular expressions: no AWS, no model.
 """
@@ -39,6 +42,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 from collections.abc import Mapping
 
 from common.security_events import untrusted_text
@@ -65,6 +69,13 @@ _CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 _PHONE = re.compile(r"(?<![\w+])\+\d{1,3}[ -]?\(?\d{1,4}\)?(?:[ -]?\d{2,4}){2,4}(?!\d)")
 _LONG_SECRET = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/=_-])")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# Removed from what scrub returns: zero-width spaces, the bidi marks, overrides and isolates (U+202E
+# would reverse the text shown after it) and the other invisible characters, as common/figures.py's
+# _INVISIBLE, restated here so the redaction module imports nothing of the pipeline's. Except
+# U+200C and U+200D: Persian and Indic OpenStreetMap names are spelt with those two joiners
+# (common/rail_notes.py keeps them), and they cannot reorder text. The instruction check removes
+# them too, from its own copy (_for_the_check).
+_INVISIBLE = re.compile("[\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
 
 # Phrases that are addressed to a model, not written by a program. Matched case-insensitively,
 # anywhere in a line. Deliberately broad: a false positive only hides one log line, and says so.
@@ -156,19 +167,32 @@ def _long_secret(match: re.Match) -> str:
     return text
 
 
+def _for_the_check(text: str) -> str:
+    """The copy the instruction rule reads: compatibility forms folded (fullwidth letters, a no-break
+    or em space become plain), every format character removed (zero-width joiners, bidi marks, a
+    soft hyphen: they can sit inside a word and hide it), and whitespace collapsed to single spaces,
+    since _INSTRUCTION_LIKE is written with single spaces and a model's text spans lines."""
+    folded = unicodedata.normalize("NFKC", text)
+    folded = "".join(char for char in folded if unicodedata.category(char) != "Cf")
+    return " ".join(folded.split())
+
+
 def looks_like_instructions(text) -> bool:
-    """Whether the text reads like something written to steer a model."""
-    return bool(_INSTRUCTION_LIKE.search(str(text or "")))
+    """Whether the text reads like something written to steer a model, however it is spaced or
+    spelt (_for_the_check)."""
+    return bool(_INSTRUCTION_LIKE.search(_for_the_check(str(text or ""))))
 
 
 def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
     """One piece of text from a log, safe to put in a result: instructions withheld, personal data
-    and secrets replaced, control characters gone, whitespace collapsed, cut to `limit`.
+    and secrets replaced, control and invisible characters gone (the two joiners kept, _INVISIBLE),
+    whitespace collapsed, cut to `limit`.
 
     The order matters: tokens and keys before the generic long-secret rule (so a JWT says [token]),
     cards before account ids (a 16-digit card holds 12 digits in a row), addresses last of the
     numeric rules."""
     text = _CONTROL.sub(" ", str(value if value is not None else ""))
+    text = _INVISIBLE.sub("", text)
     if looks_like_instructions(text):
         return WITHHELD
     return untrusted_text(_personal(text), limit)

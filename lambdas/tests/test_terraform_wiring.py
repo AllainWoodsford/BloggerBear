@@ -1989,6 +1989,9 @@ def test_the_assistants_only_write_is_on_its_own_suggestions_table():
                     ("firewall.tf", "ops_mcp_firewall"),
                     # Reading this environment's logs (the test below holds what it may do).
                     ("logs.tf", "ops_mcp_logs"),
+                    # The vision worker's log and the running states, only where vision is on
+                    # (the test below holds what it may do).
+                    ("vision.tf", "ops_mcp_vision"),
                 }
         if path.name not in ("memory.tf", "briefings.tf"):
             for write in ("PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "TransactWriteItems"):
@@ -2071,6 +2074,82 @@ def test_the_logs_policy_queries_readable_environments_logs_by_tag_and_nothing_e
     assert re.search(on_star, text), "only the query-id actions are on *"
     assert text.count('["*"]') == 1
     assert not re.search(r"^\s*count\s*=", text, re.M), "every environment's assistant reads its own logs"
+
+
+def test_the_vision_policy_reads_one_workers_log_and_the_running_states_only_where_vision_is_on():
+    """The assistant's vision round (vision.tf; docs/enhancements/ops-assistant-vision.md). Only
+    where the root deploys the worker: StartQuery and ListTagsForResource on the worker's one log
+    group in vision_region, under the project's tags and exactly this environment (the worker is
+    never shared), and GetObject on the running states; nothing on "*", no other action, and vision
+    on without a Region refused at plan. The module's tests/vision.tftest.hcl checks the planned
+    values."""
+    raw = _read("modules", "ops-assistant", "vision.tf")
+    text = _uncommented(raw)
+
+    assert set(re.findall(r'"([a-z0-9-]+:[A-Za-z*]+)"', text)) == {
+        "logs:StartQuery",
+        "logs:ListTagsForResource",
+        "s3:GetObject",
+    }
+    assert len(re.findall(r"^  count = var\.vision_enabled \? 1 : 0$", text, re.M)) == 2
+    assert _resource_block(text, "aws_iam_role_policy", "ops_mcp_vision")
+    assert '"*"' not in text  # no statement is on every resource
+    assert "not_actions" not in text and "not_resources" not in text and "Deny" not in text
+    assert len(re.findall(r'effect\s*=\s*"Allow"', text)) == text.count("statement {") == 2
+
+    # The worker's log group, by ARN in vision_region, in both forms.
+    arn = r"local\.vision_worker_log_group_arn"
+    assert re.search(rf'resources = \[{arn}, "\$\{{{arn}\}}:\*"\]', text)
+    assert (
+        'vision_worker_log_group_arn = "arn:aws:logs:${coalesce(var.vision_region, "unset")}:'
+        '${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${local.vision_worker_name}"'
+        in text
+    )
+    conditions = re.findall(
+        r'condition \{\n\s*test\s*=\s*"([^"]+)"\n\s*variable\s*=\s*"([^"]+)"\n\s*values\s*=\s*([^\n]+)', text
+    )
+    assert sorted(conditions) == [
+        ("StringEquals", "aws:ResourceTag/Environment", "[var.environment_name]"),
+        ("StringEquals", "aws:ResourceTag/ManagedBy", '[var.default_tags["ManagedBy"]]'),
+        ("StringEquals", "aws:ResourceTag/Project", '[var.default_tags["Project"]]'),
+    ]
+    # The running states, and nothing else under snapshots/ (never the per-capture snapshots).
+    assert re.findall(r"resources = \[\"\$\{var\.content_bucket_arn\}/([^\"]+)\"\]", text) == [
+        "snapshots/*/running-state.json"
+    ]
+    assert re.search(
+        r"precondition \{\n\s*condition\s*=\s*var\.vision_region != null\n", text
+    ), "vision on without a Region is refused at plan"
+
+    # The worker's name is the vision-worker module's own.
+    ours = re.search(r'vision_worker_name\s*=\s*"([^"]+)"', text).group(1)
+    worker = _read("modules", "vision-worker", "main.tf")
+    theirs = re.search(r'^  name\s*=\s*"([^"]+)"', worker, re.M).group(1)
+    # (_read writes the default prefix in; both sides are read the same way.)
+    assert ours == theirs == "bloggerbear-${var.environment_name}-vision-worker"
+
+    # Both roots pass the switch and the Region they deploy the worker with.
+    for environment in ("dev", "production"):
+        call = _uncommented(
+            _module_blocks(_read("environments", environment, "main.tf"), "modules/ops-assistant")[0]
+        )
+        assert re.search(r"^\s*vision_enabled = var\.vision_enabled$", call, re.M), environment
+        assert re.search(r"^\s*vision_region  = var\.vision_region$", call, re.M), environment
+
+    # The function waits for the policy, and is told the Region only where vision is on, and
+    # which app client is the page's.
+    function = _resource_block(_ops_module(), "aws_lambda_function", "ops_mcp")
+    assert "aws_iam_role_policy.ops_mcp_vision" in re.search(r"depends_on\s*=\s*\[(.*?)\]", function).group(1)
+    assert (
+        'OPS_VISION_REGION = var.vision_enabled && var.vision_region != null ? var.vision_region : ""'
+        in function
+    )
+    assert "OPS_SCREEN_CLIENT_IDS = aws_cognito_user_pool_client.page.id" in function
+    vision_status = (ROOT / "lambdas" / "ops_mcp" / "vision_status.py").read_text(encoding="utf-8")
+    architecture = (ROOT / "lambdas" / "ops_mcp" / "architecture.py").read_text(encoding="utf-8")
+    memory = (ROOT / "lambdas" / "ops_mcp" / "memory.py").read_text(encoding="utf-8")
+    assert 'region_env="OPS_VISION_REGION"' in architecture and "component_region" in vision_status
+    assert 'SCREEN_CLIENT_IDS_ENV = "OPS_SCREEN_CLIENT_IDS"' in memory
 
 
 # One environment each (infra/modules/ops-assistant/isolation.tf; the design's section 6). Dev and

@@ -300,7 +300,19 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
 - **A feature, step by step:** "how is an article researched?" walks through
   [article research](docs/architecture/article-research.md) across the layers, from the topic,
   its adapter and API keys, through the research tick, findings and candidate ideas, to the
-  drafted, reviewed article in S3, with this environment's resource names on screen.
+  drafted, reviewed article in S3, with this environment's resource names on screen. "How does
+  the vision pipeline work?" walks through [the vision pipeline](docs/architecture/blogger-vision.md)
+  the same way.
+- **The vision pipeline** ([design](docs/enhancements/ops-assistant-vision.md)), where vision is
+  on: `vision_status` says whether the worker is on and in which Region, and for each vision topic
+  how many sites were measured and why the others were not (the worker off, a sites config that
+  cannot be used, a site the worker refuses, a worker or source error, sites waiting for time),
+  each problem a card with its fix; "what needs my attention?" includes it. `log_review` reads the
+  vision worker's log in the vision Region beside the home Region's functions, and
+  `investigate("vision")` and `cli_guides("vision")` cover checking it yourself and setting up a
+  topic. Site names and error text are on the page only, in "(unverified)" columns; Alexa+ hears
+  counts and reasons. The assistant never fills in a sites config, and after reading text written
+  outside the project it changes no list and repeats none of that text aloud.
 - **Findings you have dealt with:** every finding's card has a **Dismiss** button (no model call;
   it changes only the assistant's own list). Where the pipeline's tables show you have already
   acted, such as an article sent for a rewrite that has not replaced the old one yet, the finding

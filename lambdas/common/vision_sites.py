@@ -406,3 +406,178 @@ def site_errors(state: dict) -> str:
         if error:
             parts.append(f"{record.get('name') or site_id}: {error.get('code')}")
     return "; ".join(parts)
+
+
+# --- what the operator's assistant may show (Adapter.status, read by ops_mcp/vision_status.py) ----
+
+# The words the assistant says for each code a site's `last_error` can carry, in both vision
+# adapters, with the code's kind: "deferred" (waiting for time: rotation, not a failure), "source"
+# (the image search or a map source: usually passes by itself), "worker" (the vision worker, or
+# what it answered), "site" (the worker refuses the request as the site is set up). Fixed words:
+# the assistant may speak them. The detail beside a code is exception or server text and is shown
+# on screen only. Sources: common/vision_client.py (invoke, bad_request, reply) and
+# common/vision_contract.ERROR_CODES (the worker's own), the adapters (time_budget, search).
+STATUS_WORDS = {
+    "time_budget": ("deferred", "waiting for time in the tick"),
+    "search": ("source", "the satellite image search failed"),
+    "invoke": ("worker", "the vision worker couldn't be called"),
+    # Not a code anything records: an "invoke" whose detail is vision_client's own words for a COOL
+    # worker that is not configured (Terraform never sets VISION_COOL_WORKER_ARN), so a topic that
+    # asks for backend "cool" is told apart from a worker that failed (error_status).
+    "no_cool_worker": ("worker", "no COOL worker is deployed"),
+    "reply": ("worker", "the worker's answer couldn't be used"),
+    "internal": ("worker", "the worker failed"),
+    "unreadable_scene": ("worker", "the scene couldn't be read"),
+    "backend_mismatch": ("worker", "the worker is the wrong build"),
+    "not_cool": ("worker", "the worker is the wrong build"),
+    "bad_request": ("site", "the request didn't fit the worker's contract"),
+    "site_outside_scene": ("site", "the site is outside the scene"),
+    "window_too_large": ("site", "the site is too big for the worker's window"),
+}
+# Any code not in an adapter's words: said as this, so a new code is never spoken as itself.
+OTHER_ERROR = ("other", "another error")
+# vision_client.measure's detail for a backend with no worker ARN: code-written, so it can be read.
+_NO_COOL_WORKER_DETAIL = "no worker is configured for backend 'cool'"
+# The verdict of a site's newest scene by its adapter's own rules (`verdict_status`), in words.
+VERDICT_WORDS = {
+    "below_floor": "too cloudy to count",
+    "baseline_building": "still building its baseline",
+    "within_range": "within the usual range",
+    "artefact": "changed, and the triage agent judged it an artefact",
+    "reported": "changed, and reported",
+}
+# Every phrase the shared part of a status may carry: an adapter's status_vocabulary adds its own.
+STATUS_VOCABULARY = frozenset(
+    {words for _kind, words in STATUS_WORDS.values()} | {OTHER_ERROR[1]} | set(VERDICT_WORDS.values())
+)
+_HEX = re.compile(r"[0-9a-f]+")
+
+
+def error_status(error, words: dict) -> dict | None:
+    """A recorded error ({"at", "code", "detail"}) as Adapter.status reports it: its code, the code's
+    kind and words from `words` (OTHER_ERROR for a code not in them), when, and the detail (on
+    screen only). None when there is no error. Reads with .get, so any older shape still reads."""
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code") if isinstance(error.get("code"), str) else "other"
+    detail = error.get("detail") if isinstance(error.get("detail"), str) else ""
+    if code == "invoke" and detail.startswith(_NO_COOL_WORKER_DETAIL):
+        code = "no_cool_worker"
+    kind, said = words.get(code, OTHER_ERROR)
+    at = error.get("at") if isinstance(error.get("at"), str) else None
+    return {"code": code, "kind": kind, "words": said, "at": at, "detail": detail[:300]}
+
+
+def scene_status(entry: dict) -> dict:
+    """A history entry as Adapter.status reports it: the scene, when, its coverage, the triage
+    agent's verdict (never its reason: the agent wrote it after reading news results), the quality
+    flags, the backend and build that measured it, and whether its figure was stored."""
+    flags = entry.get("quality_flags")
+    build = entry.get("build_sha256")
+    build = build[:12] if isinstance(build, str) and _HEX.fullmatch(build[:12] or "-") else None
+    triage = entry.get("triage") if isinstance(entry.get("triage"), dict) else {}
+    return {
+        "scene_id": entry.get("scene_id") if isinstance(entry.get("scene_id"), str) else None,
+        "captured_at": entry.get("captured_at") if isinstance(entry.get("captured_at"), str) else None,
+        "coverage": entry.get("coverage"),
+        "triage": triage.get("verdict") if triage.get("verdict") in ("real", "artefact") else None,
+        "quality_flags": [flag for flag in flags if isinstance(flag, str)] if isinstance(flags, list) else [],
+        "backend": entry.get("backend") if isinstance(entry.get("backend"), str) else None,
+        "build": build,
+        "figure_stored": entry.get("image_key") is not None,
+    }
+
+
+def site_status(site: dict, record, *, words: dict) -> dict:
+    """The part of one site's status both vision adapters share (Adapter.status): its id and name
+    (the operator's: on screen only), how many scenes its history keeps, the newest of them, when it
+    was last attempted, and its last error in `words`. `record` is the site's entry in the running
+    state, or None (a site added since the last tick, or no state yet). Reads with .get throughout,
+    so a state written before a key existed still reads."""
+    record = record if isinstance(record, dict) else {}
+    history = record.get("history") if isinstance(record.get("history"), list) else []
+    history = [entry for entry in history if isinstance(entry, dict)]
+    name = site.get("name") if isinstance(site.get("name"), str) else record.get("name")
+    attempted = record.get("last_attempt_at")
+    return {
+        "site_id": site.get("id"),
+        "name": name if isinstance(name, str) and name else site.get("id"),
+        "scenes": len(history),
+        "last_scene": scene_status(history[-1]) if history else None,
+        "last_verdict": None,
+        "measure": None,
+        "last_attempt_at": attempted if isinstance(attempted, str) else None,
+        "error": error_status(record.get("last_error"), words),
+        "refused": None,
+        "inputs": [],
+    }
+
+
+def verdict_status(code: str | None, latest: dict) -> dict | None:
+    """The verdict an adapter's own rule gave the newest scene (`code`: below_floor,
+    baseline_building, within_range, or "changed"), in VERDICT_WORDS. A change is "reported" unless
+    the triage agent judged it an artefact (recorded on the entry)."""
+    if code is None:
+        return None
+    if code == "changed":
+        triage = latest.get("triage") if isinstance(latest.get("triage"), dict) else {}
+        code = "artefact" if triage.get("verdict") not in (None, "real") else "reported"
+    return {"code": code, "words": VERDICT_WORDS[code]} if code in VERDICT_WORDS else None
+
+
+def topic_status(topic_config: dict, state, *, parse, words: dict, more) -> dict:
+    """The Adapter.status both vision adapters return, from the topic's config and running state
+    (None before the first tick): the config's error if it does not parse (then the sites are the
+    raw config's ids that match SITE_ID), the backend, when the state was stored and when the first
+    observation was, and one entry per configured site in config order, each with its `order` (its
+    place in the next tick's turn, order_sites) and what `more(site, record, config)` adds (the
+    adapter's verdict, measure, refusal and inputs; `config` is None when it does not parse). A
+    site in the state but no longer in the config is not shown. Pure: no AWS, no network."""
+    raw = topic_config.get("adapter_config") if isinstance(topic_config, dict) else None
+    config, config_error = None, None
+    try:
+        config = parse(raw)
+    except ConfigError as exc:
+        config_error = str(exc)[:300]
+    except (TypeError, ValueError, AttributeError, KeyError):
+        config_error = "adapter_config isn't in the shape a vision topic needs"
+    sites = config["sites"] if config else _raw_sites(raw)
+    state = state if isinstance(state, dict) else {}
+    records = state.get("sites") if isinstance(state.get("sites"), dict) else {}
+    records = {key: value for key, value in records.items() if isinstance(value, dict)}
+    # order_sites compares the stamps as text: only text stamps go into the ordering.
+    stamps = {
+        key: {"last_attempt_at": value["last_attempt_at"]}
+        for key, value in records.items()
+        if isinstance(value.get("last_attempt_at"), str)
+    }
+    order = {site["id"]: number for number, site in enumerate(order_sites(sites, stamps), start=1)}
+    backend = config["backend"] if config else (raw.get("backend") if isinstance(raw, dict) else None)
+    shown = []
+    for site in sites:
+        record = records.get(site["id"])
+        entry = site_status(site, record, words=words)
+        entry["order"] = order[site["id"]]
+        entry.update(more(site, record or {}, config))
+        shown.append(entry)
+    fetched_at, first = state.get("fetched_at"), state.get(FIRST_OBSERVED_KEY)
+    return {
+        "config_error": config_error,
+        "backend": backend if backend in ("opencv", "cool") else None,
+        "fetched_at": fetched_at if isinstance(fetched_at, str) else None,
+        "first_observed_at": first if isinstance(first, str) else None,
+        "sites": shown,
+    }
+
+
+def _raw_sites(adapter_config) -> list[dict]:
+    """The sites of a config that does not parse, as far as they can be told apart: each a dict
+    whose id matches SITE_ID, the first of a repeated id, at most MAX_SITES."""
+    raw = adapter_config.get("sites") if isinstance(adapter_config, dict) else None
+    sites, seen = [], set()
+    for site in raw if isinstance(raw, list) else []:
+        site_id = site.get("id") if isinstance(site, dict) else None
+        if isinstance(site_id, str) and SITE_ID.fullmatch(site_id) and site_id not in seen:
+            seen.add(site_id)
+            sites.append(site)
+    return sites[:MAX_SITES]

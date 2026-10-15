@@ -258,3 +258,22 @@ variable "agent_daily_question_cap" {
     error_message = "agent_daily_question_cap must be a whole number, 1 or more."
   }
 }
+
+variable "vision_enabled" {
+  type        = bool
+  default     = false
+  description = "Whether the root deploys the vision worker (its var.vision_enabled). Only then may the assistant read the worker's log group in vision_region and each topic's running state (vision.tf), and is it told the Region (OPS_VISION_REGION)."
+}
+
+# No default Region: a root that turns vision on must say where, so the grant and the env var can
+# never point at a Region the worker is not in. The precondition in vision.tf refuses the plan.
+variable "vision_region" {
+  type        = string
+  default     = null
+  description = "Where the vision worker runs (the root's var.vision_region). Required when vision_enabled."
+
+  validation {
+    condition     = var.vision_region == null || can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.vision_region))
+    error_message = "vision_region must look like an AWS region, e.g. us-west-2."
+  }
+}

@@ -104,9 +104,10 @@ class Component:
     are templates too: where to look for this resource. `only_in` lists the environments that have
     it, when not every one does. `assistant_reads` is whether the assistant's own role may read it
     (for a table: its rows), which test_ops_mcp_architecture.py holds to the Terraform.
-    `home_sweep` is False for one the assistant's log reads (log_review.py) leave out: it is not in
-    the stack's home Region, or exists only when an optional feature is on. Reading the home Region
-    for it would only report a log group it was refused."""
+    `region_env` names the environment variable that holds the Region this component lives in, for
+    one outside the stack's home Region (the vision worker: OPS_VISION_REGION). Such a component
+    exists only while that variable holds a Region (component_region), and its console links and
+    log reads go to that Region."""
 
     kind: str
     key: str
@@ -119,7 +120,7 @@ class Component:
     alarms: tuple[str, ...] = ()
     only_in: tuple[str, ...] = ()
     assistant_reads: bool = False
-    home_sweep: bool = True
+    region_env: str | None = None
     keys: tuple[str, ...] = field(default=())  # a table's hash key, then its range key if any
     indexes: tuple[str, ...] = ()
     ttl: str | None = None  # a table's TTL attribute
@@ -536,13 +537,18 @@ CATALOGUE: tuple[Component, ...] = (
         "on each call from the research tick of a satellite_vision or rail_access topic, across Regions",
         alarmed=False,
         details=(
-            ("Region", "the vision Region (us-west-2, beside the imagery), not the stack's"),
+            (
+                "Region",
+                "the vision Region (OPS_VISION_REGION; us-west-2 unless the roots set vision_region), "
+                "beside the imagery",
+            ),
             ("Exists", "only when the environment sets vision_enabled"),
         ),
         aliases=("vision", "opencv"),
-        # Its log group is in the vision Region, and only when vision is on: a log review of the
-        # home Region leaves it out rather than report it refused on every deployment.
-        home_sweep=False,
+        # It lives in the vision Region, and only when vision is on (the deployment sets
+        # OPS_VISION_REGION then, and "" otherwise): its log is read there, and with vision off it
+        # is not deployed here at all, so a log review neither reads nor refuses it.
+        region_env="OPS_VISION_REGION",
     ),
     # --- API Gateway ---------------------------------------------------------------------------
     Component(
@@ -753,7 +759,12 @@ CATALOGUE: tuple[Component, ...] = (
         kind="bucket",
         key="content",
         name=f"{PREFIX}{ENV}-content",
-        purpose="Article bodies (articles/) and the raw source snapshots research works from.",
+        purpose=(
+            "Article bodies (articles/), the raw source snapshots research works from (snapshots/, "
+            "expiring after 21 days), each vision topic's running state "
+            "(snapshots/<topic>/running-state.json) and the vision figures "
+            "(vision/<topic>/<site>/<scene>.png)."
+        ),
         details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
         aliases=("content-bucket", "s3"),
     ),
@@ -1065,8 +1076,10 @@ def resolve_layer(raw) -> str | None:
 # The owner's ask: a layer answers "what is this made of?", not "how does this one thing work?".
 # A feature is a smaller, logical grouping that cuts across the layers: the parts that together
 # make one thing the project does, told in the order the work flows through them. The first is
-# article research (from a topic's data source to an article in S3); more can be added the same
-# way ("prompts as assets" is the next one the owner has in mind) by adding a Feature below.
+# article research (from a topic's data source to an article in S3); the second the vision pipeline
+# (from a satellite site to a map in an article, docs/architecture/blogger-vision.md). More can be
+# added the same way ("prompts as assets" is the next one the owner has in mind) by adding a
+# Feature below; resolve_feature picks the feature with the longest alias the words hold.
 #
 # A step's `parts` are catalogue resources as "kind:key" (tests/test_ops_mcp_architecture.py
 # holds that each exists, so a feature cannot name a resource the catalogue lost) and, for what is
@@ -1105,7 +1118,8 @@ FEATURES: tuple[Feature, ...] = (
                 "Topic and adapter",
                 "A topic is a row of settings, made with the Admin CLI: which adapter reads its "
                 "source, how often to research, its model and review mode. The adapter is the only "
-                "code that knows the source: GitHub, Hacker News, CoinGecko or web search.",
+                "code that knows the source: GitHub, Hacker News, CoinGecko or web search, or "
+                "satellite imagery (see the vision pipeline).",
                 ("table:topics", "Adapters (common/adapters/)"),
             ),
             # common/scheduler.py, from admin_api_handler.py on topic create, update and delete.
@@ -1210,6 +1224,95 @@ FEATURES: tuple[Feature, ...] = (
             "candidate ideas",
         ),
     ),
+    # docs/architecture/blogger-vision.md's steps, as the assistant tells them.
+    Feature(
+        key="vision-pipeline",
+        title="The vision pipeline (from a satellite site to a map in an article)",
+        said="the vision pipeline",
+        summary="How a topic that watches fixed sites in satellite imagery becomes an article with a "
+        "map: a worker in the vision Region measures each new scene, an agent judges a change, and "
+        "a person approves.",
+        steps=(
+            # common/adapters/satellite_vision.py, rail_access.py; MANUAL_REVIEW_ADAPTERS.
+            Step(
+                "Topic, sites and the switch",
+                "A vision topic's sites are polygons written by hand in its config, measured only "
+                "where the deployment sets VISION_ENABLED. Every vision article waits for a person "
+                "(force_manual_review).",
+                (
+                    "table:topics",
+                    "common/adapters/satellite_vision.py and rail_access.py",
+                    "VISION_ENABLED",
+                ),
+            ),
+            # common/vision_sites.py: order_sites, Budget, time_to_measure.
+            Step(
+                "Research tick: sites take turns, inside a time budget",
+                "The tick finds the newest clear Sentinel-2 scene over each site, the longest "
+                "waiting site first; a site left without time waits for the next tick.",
+                ("function:research-tick", "Earth Search STAC (Sentinel-2 L2A)"),
+            ),
+            # common/osm.py; rail_access.py's network cache.
+            Step(
+                "Map data (rail)",
+                "A rail topic reads each city's rail network from OpenStreetMap through the "
+                "Overpass API and keeps it in the running state for osm_ttl_days.",
+                ("OpenStreetMap Overpass API",),
+            ),
+            # vision_worker_handler.py, lambdas/vision/, common/vision_client.py.
+            Step(
+                "The worker measures",
+                "A stateless worker in the vision Region range-reads only the tiles under the site "
+                "and measures them with OpenCV, across Regions: it returns metrics, a figure and its "
+                "build, and keeps nothing.",
+                (
+                    "function:vision-worker",
+                    "Sentinel-2 COGs (sentinel-cogs, us-west-2)",
+                    "OpenCV 5 on arm64",
+                ),
+            ),
+            # research_tick_handler._running_state_key; common/vision_sites.store_image.
+            Step(
+                "Running state and figures",
+                "Every tick keeps the topic's running state, with each site's history and last "
+                "error, and the figures are PNGs under vision/ in the content bucket.",
+                ("bucket:content",),
+            ),
+            # material_diff, then common/vision_triage.py; the spend is vision_triage.
+            Step(
+                "Diff first, then the triage agent",
+                "A change against the site's usual range is only a candidate until the triage agent "
+                "judges it real; unsure is an artefact, and no change calls no model.",
+                ("Amazon Bedrock (the triage agent's Converse loop)", "table:stats-current"),
+            ),
+            Step(
+                "A Finding",
+                "A real change, or the first clear scene, is written as a Finding with its figures "
+                "and, for rail, its planner notes.",
+                ("table:findings",),
+            ),
+            # daily_cycle_handler.py; common/static_pages.publish_figures.
+            Step(
+                "The article waits for a person",
+                "The daily cycle drafts and reviews the article and holds it; once a person "
+                "approves it, its figures are copied to articles/figures/ in the site bucket.",
+                ("function:daily-cycle", "table:moderation-queue", "bucket:site"),
+            ),
+            # ops_mcp/vision_status.py, log_review.py.
+            Step(
+                "Where to look",
+                "This assistant's vision_status reads each site's running state, and log_review "
+                "reads the worker's log in the vision Region.",
+                ("function:ops-mcp",),
+            ),
+        ),
+        aliases=(
+            "vision", "vision pipeline", "vision research", "vision research pipeline",
+            "vision findings", "satellite", "satellite vision", "satellite imagery",
+            "satellite research", "rail", "rail access", "rail access monitor", "rail findings",
+            "opencv", "sentinel", "ships",
+        ),
+    ),
 )
 FEATURE_KEYS = tuple(feature.key for feature in FEATURES)
 
@@ -1227,10 +1330,17 @@ def resolve_feature(raw) -> str | None:
         names = {feature.key.replace("-", " "), feature.said, *feature.aliases}
         if words in names:
             return feature.key
+    # Otherwise every alias is scored, each as whole words in what was said ("the" is gone from
+    # the words, so no alias holds it), and the feature with the longest one wins; a tie goes to
+    # the earlier feature. "vision research pipeline" so goes to the vision pipeline, though it
+    # holds article research's "research pipeline".
+    best, length = None, 0
+    padded = f" {words} "
     for feature in FEATURES:
-        if any(alias in words for alias in (feature.said, *feature.aliases) if " " in alias):
-            return feature.key
-    return None
+        for alias in (feature.said, *feature.aliases):
+            if f" {alias} " in padded and len(alias) > length:
+                best, length = feature.key, len(alias)
+    return best
 
 
 # --- The environment ------------------------------------------------------------------------------
@@ -1243,10 +1353,17 @@ def environment() -> str | None:
     return name if _ENVIRONMENT_NAME.fullmatch(name) else None
 
 
+_REGION = re.compile(r"[a-z]{2}(-[a-z]+)+-\d+")
+
+
+def valid_region(value) -> str | None:
+    """`value` when it is shaped like an AWS Region (us-west-2), else None."""
+    return value if isinstance(value, str) and _REGION.fullmatch(value) else None
+
+
 def region() -> str | None:
     """The region this runs in, which is where everything but CloudFront lives."""
-    value = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
-    return value if re.fullmatch(r"[a-z]{2}(-[a-z]+)+-\d+", value) else None
+    return valid_region(os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "")
 
 
 def fill(template: str, env: str | None) -> str:
@@ -1255,8 +1372,25 @@ def fill(template: str, env: str | None) -> str:
     return template.replace(ENV, env or "<environment>")
 
 
+def component_region(component: Component) -> str | None:
+    """The Region a component lives in: for one with `region_env`, the Region that variable holds
+    (None when it holds none: the component is not deployed here); for any other, region()."""
+    if component.region_env is not None:
+        return valid_region(os.environ.get(component.region_env, ""))
+    return region()
+
+
 def exists_in(component: Component, env: str | None) -> bool:
-    return not component.only_in or env in component.only_in
+    return (not component.only_in or env in component.only_in) and (
+        component.region_env is None or component_region(component) is not None
+    )
+
+
+def _absent(component: Component, env: str | None) -> str:
+    """Why a component is not in this environment, in a few words for a table."""
+    if component.only_in and env not in component.only_in:
+        return f"only in {', '.join(component.only_in)}"
+    return "not deployed here"
 
 
 # --- Finding a component by whatever name the operator pasted -------------------------------------
@@ -1410,10 +1544,17 @@ def console_url(kind: str, name: str, where: str | None = None) -> str | None:
 
 
 def log_group_region(name: str) -> str | None:
-    """Where a log group lives: the shared CloudFront firewall's is in us-east-1, everything else
-    in this region."""
+    """Where a log group lives: the shared CloudFront firewall's is in us-east-1; one of a component
+    with `region_env` (the vision worker's) in that component's Region; everything else in this
+    region."""
     # A CLOUDFRONT-scope web ACL, with its log group, can only be created in us-east-1.
-    return "us-east-1" if name == SHARED_WAF_LOG_GROUP else region()
+    if name == SHARED_WAF_LOG_GROUP:
+        return "us-east-1"
+    env = environment()
+    for component in CATALOGUE:
+        if component.region_env and name in (fill(group, env) for group in component.log_groups):
+            return component_region(component)
+    return region()
 
 
 # --- The tool ---------------------------------------------------------------------------------------
@@ -1476,9 +1617,11 @@ def describe(component: Component, env: str | None) -> dict:
             ]
         )
     present = exists_in(component, env)
-    if not present:
-        rows.append(["In this environment", f"no: only in {', '.join(component.only_in)}"])
-    url = console_url(component.kind, name)
+    if not present and component.region_env and _absent(component, env) == "not deployed here":
+        rows.append(["In this environment", "no: only where vision is on (VISION_ENABLED)"])
+    elif not present:
+        rows.append(["In this environment", f"no: {_absent(component, env)}"])
+    url = console_url(component.kind, name, component_region(component)) if present else None
     if url:
         rows.append(["Open", url])
     return {
@@ -1541,7 +1684,7 @@ def _layer_detail(layer: Layer, env: str | None) -> dict:
         [
             fill(c.name, env),
             KIND_LABELS[c.kind],
-            c.purpose if exists_in(c, env) else f"(only in {', '.join(c.only_in)}) {c.purpose}",
+            c.purpose if exists_in(c, env) else f"({_absent(c, env)}) {c.purpose}",
         ]
         for c in components
     ][: OVERVIEW_MAX_ROWS - len(rows)]
@@ -1619,7 +1762,7 @@ def _overview(kind: str | None, env: str | None) -> dict:
         [
             fill(c.name, env),
             KIND_LABELS[c.kind],
-            c.purpose if exists_in(c, env) else f"(only in {', '.join(c.only_in)}) {c.purpose}",
+            c.purpose if exists_in(c, env) else f"({_absent(c, env)}) {c.purpose}",
         ]
         for c in components
     ][:OVERVIEW_MAX_ROWS]

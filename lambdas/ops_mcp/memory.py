@@ -118,6 +118,11 @@ SPEND_IDS = ("ai", "aws")
 
 # A Cognito subject is a UUID. Anything else in the claim is not used as a key.
 USER_ID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# The app clients whose callers have a screen (infra/modules/ops-assistant/main.tf sets the page's,
+# aws_cognito_user_pool_client.page): only they are sent operator and third-party text, in a
+# table's "(unverified)" columns (screen_caller). A Cognito app client id is letters and digits.
+SCREEN_CLIENT_IDS_ENV = "OPS_SCREEN_CLIENT_IDS"
+CLIENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{1,128}$")
 
 NEEDS_USER = "I need a signed-in user to remember anything, and I can't tell who is asking."
 _REQUEST_CONTEXT = REQUEST_CONTEXT_HEADER.decode()
@@ -140,6 +145,10 @@ SINCE_MAX_HOURS = 168
 # logs, each waiting at most LOG_READ_WAIT_SECONDS; past that a row is left open, unchecked this
 # time, and checked first next time (the oldest rows are checked first).
 LOG_READS_MAX = 2
+# A watched topic whose adapter watches sites has its running state read as well
+# (vision_status.site_health), WATCH_READ_SECONDS each and nothing over LARGE_STATE_BYTES, at most
+# this many per call; past that its sites are said not to be checked this time.
+STATE_READS_MAX = 2
 LOG_READ_WAIT_SECONDS = 8
 
 SELF_CLEARING_KINDS = frozenset({"research_overdue", "no_article_today", "run_failed"}) | LOGGED_KINDS
@@ -177,28 +186,58 @@ def user_id_from_headers(headers) -> str | None:
     names in lower case, or None when there is no HTTP request. The header must appear exactly
     once, as in access.py: the adapter sets one, so two means something else built the request.
     """
+    for claims in _claims(headers):  # REST API, then HTTP API
+        subject = claims.get("sub")
+        if isinstance(subject, str) and USER_ID_PATTERN.match(subject):
+            return subject
+    return None
+
+
+def client_id_from_headers(headers) -> str | None:
+    """The caller's Cognito app client id (`client_id`, which every access token carries) from the
+    same verified claims `user_id_from_headers` reads, or None when they cannot be read."""
+    for claims in _claims(headers):
+        client_id = claims.get("client_id")
+        if isinstance(client_id, str) and CLIENT_ID_PATTERN.match(client_id):
+            return client_id
+    return None
+
+
+def screen_caller(headers) -> bool:
+    """Whether the caller reads a screen: True only when its app client id is read and is one of
+    OPS_SCREEN_CLIENT_IDS (the page's; the agent calls the tools with the page's own token).
+    Everything else is a voice caller: Alexa+ (its own client), the briefing Alexa+ starts (it runs
+    with the Alexa token), any later client, and a request whose claims cannot be read. Fail
+    closed: a voice caller is never sent a table's "(unverified)" columns."""
+    try:
+        client_id = client_id_from_headers(headers)
+    except Exception:  # noqa: BLE001 - not knowing who is asking is a voice caller
+        return False
+    allowed = {value.strip() for value in os.environ.get(SCREEN_CLIENT_IDS_ENV, "").split(",")} - {""}
+    return client_id is not None and client_id in allowed
+
+
+def _claims(headers) -> list[dict]:
+    """The verified claims in the forwarded request context, REST API's first, then HTTP API's;
+    none when the header is missing, repeated or unreadable (as `user_id_from_headers` reads it)."""
     if headers is None:
-        return None
+        return []
     getlist = getattr(headers, "getlist", None)
     if getlist is not None:
         values = list(getlist(_REQUEST_CONTEXT))
     else:
         values = [value for name, value in headers.items() if str(name).lower() == _REQUEST_CONTEXT]
     if len(values) != 1:
-        return None
+        return []
     try:
         context = json.loads(values[0])
     except ValueError:
-        return None
+        return []
     authorizer = context.get("authorizer") if isinstance(context, dict) else None
     if not isinstance(authorizer, dict):
-        return None
+        return []
     jwt = authorizer.get("jwt") if isinstance(authorizer.get("jwt"), dict) else {}
-    for claims in (authorizer.get("claims"), jwt.get("claims")):  # REST API, then HTTP API
-        subject = claims.get("sub") if isinstance(claims, dict) else None
-        if isinstance(subject, str) and USER_ID_PATTERN.match(subject):
-            return subject
-    return None
+    return [claims for claims in (authorizer.get("claims"), jwt.get("claims")) if isinstance(claims, dict)]
 
 
 def _needs_user() -> dict:
@@ -1051,12 +1090,51 @@ def _watched_table(target_id: str, now: datetime) -> tuple[dict, str]:
     return state, words
 
 
+def _watched_sites(topic_id: str, now: datetime, state_reads: list[int]) -> tuple[dict | None, str]:
+    """For a watched topic whose adapter watches sites: how they did on the last try, as a clause
+    for its words, so a watched rail topic whose every site fails does not say only "research is
+    on time". (None, "") for any other topic. One running-state read, counted in `state_reads`."""
+    from ops_mcp import vision_status  # it imports tools, which this module does too
+
+    topic = get_topic(topic_id)
+    if topic is None or not vision_status.site_topics([topic], now):
+        return None, ""
+    if state_reads[0] >= STATE_READS_MAX:
+        return {"state": "not_checked"}, "; its sites weren't checked this time"
+    state_reads[0] += 1
+    health = vision_status.site_health(
+        [topic],
+        now,
+        budget_seconds=vision_status.WATCH_READ_SECONDS,
+        max_bytes=vision_status.LARGE_STATE_BYTES,
+    )
+    entry = health["topics"].get(topic_id)
+    if entry is None:
+        return None, ""
+    sites = entry["sites"]
+    if entry["uses_worker"] and entry["state"] == "worker_off" and not sites["config_error"]:
+        return sites, "; its sites can't be measured while the vision worker is off"
+    failing = sum(sites[name] for name in tools._SITE_PROBLEMS)
+    if failing:
+        if sites["total"] == 1:
+            return sites, "; its site wasn't measured on the last try"
+        verb = "wasn't" if failing == 1 else "weren't"
+        return sites, f"; {failing} of its {sites['total']} sites {verb} measured on the last try"
+    if entry["state"] in ("not_checked", "too_large", "unreadable"):
+        return sites, "; its sites weren't checked this time"
+    return sites, ""
+
+
 def _watched_state(
-    kind: str, target_id: str, now: datetime, flagged: list[dict] | None = None
+    kind: str,
+    target_id: str,
+    now: datetime,
+    flagged: list[dict] | None = None,
+    state_reads: list[int] | None = None,
 ) -> tuple[dict, str]:
     """A watched item's state now, from the tool that reads it, and a few words for speech."""
     if kind == "topic":
-        rows = tools.pipeline_health(target_id, now=now).get("topics") or []
+        rows = tools.pipeline_health(target_id, now=now, sites=False).get("topics") or []
         if not rows:
             return {"state": "gone"}, "a topic that no longer exists"
         row = rows[0]
@@ -1069,7 +1147,10 @@ def _watched_state(
             "none": "has no article in the last day",
         }[row["article"]["state"]]
         state = {"state": "read", "research": row["research"], "article": row["article"]}
-        return state, f"{row['name']} {article}, and {research}"
+        sites, clause = _watched_sites(row["topic_id"], now, state_reads if state_reads is not None else [0])
+        if sites is not None:
+            state["sites"] = sites
+        return state, f"{row['name']} {article}, and {research}{clause}"
     if kind == "spend":
         # A watch on the bill kept from before this environment stopped reporting it: said to be
         # unavailable, never "not unusual", which nothing here could know.
@@ -1106,6 +1187,7 @@ def watch_list(user_id: str | None, *, now: datetime | None = None) -> dict:
             if suggestion["kind"] in LOGGED_KINDS and not suggestion.get("dismissed"):
                 flagged.setdefault(suggestion["target_id"], []).append(suggestion)
     function_reads = 0
+    state_reads = [0]  # running-state reads for watched vision topics (STATE_READS_MAX)
     for row in watched:
         kind, target_id = row["kind"], row["target_id"]
         try:
@@ -1114,7 +1196,7 @@ def watch_list(user_id: str | None, *, now: datetime | None = None) -> dict:
                 if function_reads > LOG_READS_MAX:
                     # Each one is a Logs Insights read: past the budget it is listed, not read.
                     raise RuntimeError("the log read budget for this call is spent")
-            state, said = _watched_state(kind, target_id, now, flagged.get(target_id))
+            state, said = _watched_state(kind, target_id, now, flagged.get(target_id), state_reads)
         except Exception as exc:  # noqa: BLE001 - one item that can't be read must not hide the rest
             print(f"ops_memory: could not read a watched {kind} ({type(exc).__name__})")
             state, said = {"state": "unreadable"}, f"a {kind} I could not read"

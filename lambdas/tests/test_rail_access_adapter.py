@@ -1866,3 +1866,210 @@ def test_the_finding_keeps_the_notes_and_the_prompt_asks_for_them(tick_env, monk
     (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
     expected = [{"site_id": "sydney", **note} for note in latest_notes(running_state())]
     assert finding["planner_notes"] == expected and len(expected) == 5
+
+
+# --- what the operator's assistant may show (status) ---------------------------------------------
+
+
+@pytest.fixture
+def no_egress():
+    """status is pure: an AWS client, an HTTP request or a socket would fail the test."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("status reached outside the process")
+
+    with (
+        patch("boto3.client", refuse),
+        patch("requests.Session.request", refuse),
+        patch("requests.post", refuse),
+        patch("socket.socket.connect", refuse),
+    ):
+        yield
+
+
+def said(status):
+    """Every phrase a status offers to be spoken: codes' and verdicts' words, and labels."""
+    found = []
+    for site in status["sites"]:
+        found += [site[key]["words"] for key in ("error", "last_verdict", "refused") if site[key]]
+        found += [site["measure"]["label"]] if site["measure"] else []
+        for entry in site["inputs"]:
+            found += [entry["label"]] + ([entry["error"]["words"]] if entry["error"] else [])
+    return found
+
+
+def status_of(adapter, state, **config):
+    return adapter.status(topic(**config), state, now=datetime.now(UTC))
+
+
+# Never copied into a status: the network's lists, the per-scene lists, and what the worker needs.
+NEVER_IN_STATUS = ("ways", "stations", "pois", *ra.NEWEST_ONLY_KEYS, "assets", "params", "site_key", "hubs")
+
+
+def keys_of(value):
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in keys_of(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in keys_of(item)}
+    return set()
+
+
+def test_status_after_a_measured_tick(adapter, no_egress):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    status = status_of(adapter, state)
+    assert status["config_error"] is None and status["backend"] == "opencv"
+    (site,) = status["sites"]
+    assert (site["site_id"], site["name"], site["order"], site["scenes"]) == ("sydney", "Sydney", 1, 1)
+    assert site["measure"] == {"label": "built-up area served (%)", "value": 73.0}
+    assert site["last_verdict"] == {"code": "baseline_building", "words": "still building its baseline"}
+    assert site["last_scene"]["scene_id"] == "S1" and site["last_scene"]["figure_stored"] is True
+    assert site["inputs"] == [
+        {
+            "label": "OpenStreetMap rail network",
+            "fetched_at": state["fetched_at"],
+            "stale": False,
+            "error": None,
+        }
+    ]
+    assert site["error"] is None and site["refused"] is None
+    assert not keys_of(status) & set(NEVER_IN_STATUS)
+    assert set(said(status)) <= ra.RailAccessAdapter.status_vocabulary()
+
+
+def test_a_big_network_never_reaches_the_status(adapter, no_egress):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    record = state["sites"]["sydney"]
+    way = {"points": [[151.2, -33.9]] * 30, "name": "Line"}
+    record["network"]["ways"] = [{"id": f"w{n}", **way} for n in range(5000)]
+    assert len(json.dumps(state)) > 2_000_000
+    status = status_of(adapter, state)
+    assert len(json.dumps(status)) < 2_000 and not keys_of(status) & set(NEVER_IN_STATUS)
+
+
+def test_a_stale_network_and_a_failed_refresh_with_a_cached_copy(adapter, no_egress):
+    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    assert status_of(adapter, first)["sites"][0]["inputs"][0]["stale"] is True
+    failing = FakeOverpass(osm.OsmError("rate_limited", "HTTP 429 from overpass-api.de", transient=True))
+    state = run(adapter, scene(1), FakeRailWorker({}), failing, previous=first)
+    site = status_of(adapter, state)["sites"][0]
+    (network_input,) = site["inputs"]
+    assert network_input["fetched_at"] == first["sites"]["sydney"]["network"]["fetched_at"]
+    assert network_input["stale"] is True
+    assert network_input["error"] == {
+        "code": "rate_limited",
+        "kind": "source",
+        "words": "OpenStreetMap rate-limited the request",
+        "at": state["fetched_at"],
+        "detail": "HTTP 429 from overpass-api.de",
+    }
+    assert site["error"] is None  # the cached copy serves: the site is not failing
+    assert set(said(status_of(adapter, state))) <= ra.RailAccessAdapter.status_vocabulary()
+
+
+def test_no_network_is_a_source_error_with_no_cached_copy(adapter, no_egress):
+    failing = FakeOverpass(osm.OsmError("timeout", "no answer from either endpoint", transient=True))
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), failing)
+    site = status_of(adapter, state)["sites"][0]
+    assert (site["error"]["code"], site["error"]["kind"]) == ("osm", "source")
+    assert site["error"]["words"] == "its OpenStreetMap rail data couldn't be fetched"
+    assert site["inputs"][0]["fetched_at"] is None and site["inputs"][0]["stale"] is None
+    assert site["inputs"][0]["error"]["words"] == "OpenStreetMap timed out"
+    broken = run(adapter, scene(1), FakeRailWorker({}), FakeOverpass(ValueError("bad polygon")))
+    assert status_of(adapter, broken)["sites"][0]["inputs"][0]["error"]["words"] == "OpenStreetMap failed"
+
+
+def test_the_old_polygons_network_is_not_a_cached_copy(adapter, no_egress):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    wider = [{"id": "sydney", "name": "Sydney", "polygon": [[150.5, -34.3], *SYDNEY[1:]]}]
+    assert status_of(adapter, state, sites=wider)["sites"][0]["inputs"][0]["fetched_at"] is None
+
+
+@pytest.mark.parametrize("code", ra.REFUSED_SCENE_CODES)
+def test_a_refused_scene_is_reported_while_the_refusal_holds(adapter, no_egress, code):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    refusing = FakeRailWorker({}, error=vision_client.VisionError(code, "the worker's detail"))
+    failed = run(adapter, scene(2), refusing, previous=first)
+    site = status_of(adapter, failed)["sites"][0]
+    at = datetime.fromisoformat(failed["fetched_at"])
+    assert site["refused"] == {
+        "scene_id": "S2",
+        "code": code,
+        "words": ra.STATUS_WORDS[code][1],
+        "at": failed["fetched_at"],
+        "retry_at": (at + timedelta(hours=6)).isoformat(),
+    }
+    assert site["error"]["kind"] == "site"
+    # Past NETWORK_RETRY_HOURS, or for an edited polygon or reach, it is no longer refused.
+    later = json.loads(json.dumps(failed))
+    later["sites"]["sydney"]["failed_scene"]["at"] = (datetime.now(UTC) - timedelta(hours=7)).isoformat()
+    assert status_of(adapter, later)["sites"][0]["refused"] is None
+    assert status_of(adapter, failed, reach_m=800)["sites"][0]["refused"] is None
+    moved = [{"id": "sydney", "name": "Sydney", "polygon": [[150.8, -34.2], *SYDNEY[1:]]}]
+    assert status_of(adapter, failed, sites=moved)["sites"][0]["refused"] is None
+
+
+def test_a_transient_worker_failure_is_not_refused(adapter, no_egress):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    failing = FakeRailWorker({}, error=vision_client.VisionError("unreadable_scene", "read timed out"))
+    failed = run(adapter, scene(2), failing, previous=first)
+    site = status_of(adapter, failed)["sites"][0]
+    assert site["refused"] is None
+    assert (site["error"]["code"], site["error"]["kind"]) == ("unreadable_scene", "worker")
+
+
+@pytest.mark.parametrize(
+    ("latest", "verdict"),
+    [
+        (metrics(coverage=0.3), "below_floor"),
+        (metrics(), "within_range"),
+        (metrics(served_share=0.80), "reported"),
+    ],
+)
+def test_the_newest_scenes_verdict_is_assess_s_rule(adapter, no_egress, latest, verdict):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    state = run(adapter, scene(2, day=4), FakeRailWorker({"S2": latest}), previous=first)
+    adapter.material_diff(first, state)
+    assert status_of(adapter, state)["sites"][0]["last_verdict"]["code"] == verdict
+
+
+def test_a_change_the_agent_doubted_is_an_artefact(adapter, no_egress):
+    adapter.triage_agent = FakeAgent("artefact", "the extra line is a shadow")
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    state = run(adapter, scene(2, day=4), FakeRailWorker({"S2": metrics(served_share=0.80)}), previous=first)
+    adapter.material_diff(first, state)
+    site = status_of(adapter, state)["sites"][0]
+    assert site["last_verdict"]["code"] == "artefact" and site["last_scene"]["triage"] == "artefact"
+    assert "shadow" not in json.dumps(site)
+
+
+def test_a_rail_entry_from_before_the_newest_only_keys_still_reads(adapter, no_egress):
+    old = {
+        "sites": {
+            "sydney": {
+                "history": [
+                    {"scene_id": "S0", "coverage": 0.9, "served_share": 0.7, "stations": [{"id": "n1"}]},
+                    {"scene_id": "S1", "coverage": 0.9, "served_share": 0.71, "flags": []},
+                ],
+                "network": {"fetched_at": "2026-09-01T00:00:00+00:00"},
+            }
+        }
+    }
+    site = status_of(adapter, old)["sites"][0]
+    assert site["scenes"] == 2 and site["measure"]["value"] == 71.0
+    assert site["inputs"][0]["fetched_at"] is None  # no site_key: not the polygon's network
+    assert not keys_of(site) & set(NEVER_IN_STATUS)
+
+
+def test_a_bad_rail_config_is_reported(no_egress):
+    status = ra.RailAccessAdapter().status(topic(reach_m=-5), None, now=datetime.now(UTC))
+    assert "reach_m" in status["config_error"] and status["sites"][0]["site_id"] == "sydney"
+    assert status["sites"][0]["refused"] is None and status["sites"][0]["inputs"][0]["stale"] is None
+
+
+def test_assess_is_unchanged_by_the_shared_rule(adapter):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    state = run(adapter, scene(2, day=4), FakeRailWorker({"S2": metrics(served_share=0.80)}), previous=first)
+    (verdict,) = adapter.assess(state)
+    assert verdict["material"] and verdict["reason"] == "served share moved"
+    assert verdict["baseline"]["served_share"] == 0.73 and verdict["delta"]["served_share"] == 0.07
+    assert list(verdict)[-6:] == ["baseline", "baseline_scenes", "delta", "relative", "material", "reason"]

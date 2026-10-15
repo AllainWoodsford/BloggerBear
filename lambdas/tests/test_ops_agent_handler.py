@@ -686,8 +686,9 @@ def test_the_logs_hold_tool_names_and_counts_and_no_words(monkeypatch, capsys, c
     assert result["findings"] == held["findings"]  # all three shapes, unchanged
     assert printed.out.strip() == (
         "ops_agent: turn=follow_up tool_calls=2 tools=pipeline_health,admin_inbox findings=3 fixes=1 "
-        "tables=0"
+        "tables=0 echo=0"
     )
+    assert "echo" not in result  # for the log line only
     assert result["tables"] == []
 
 

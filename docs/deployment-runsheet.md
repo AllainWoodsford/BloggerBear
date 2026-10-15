@@ -479,10 +479,15 @@ Its permission is written like `table_sample`'s: `logs:StartQuery` on `/aws/lamb
 and `/aws/apigateway/<prefix>-<env>-*` only when the log group is tagged `ManagedBy = Terraform`,
 this deployment's `Project`, and an `Environment` that assistant may read (dev: `dev`;
 production: `production` and `shared`). Unlike DynamoDB there is no account setting to switch on.
+With vision on ([Vision (optional)](#vision-optional)), it may also query the worker's log group,
+`/aws/lambda/<prefix>-<env>-vision-worker` in `vision_region`, under the same tags with
+`Environment` exactly this environment, and read each vision topic's running state,
+`snapshots/*/running-state.json` in the content bucket (`infra/modules/ops-assistant/vision.tf`).
+No manual step: the same apply that turns the worker on grants it.
 
 - **Check it** after the first apply: ask the assistant "any errors in the logs?". It answers with
-  counts, or "I found no errors", for every function in the home Region (the vision worker, in
-  `vision_region`, is left out; see [Vision (optional)](#vision-optional)).
+  counts, or "I found no errors", for every function in the home Region, and for the vision worker
+  in `vision_region` where vision is on.
 - **If it says AWS refused**, or names a log group it was not allowed to read: that group is
   missing a tag. Usually a Lambda wrote its first log before Terraform made the group, so the group
   is not Terraform's: delete the empty group and apply again, or import it. CloudWatch console →
@@ -570,10 +575,11 @@ variable, not with a tfvars edit. Every setting it uses is in
 The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` bucket, nothing
 else) and needs no key and no other access. It has no alarm of its own: observability's alarms
 are in the home Region, and the worker is not; read its log group,
-`/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`. The ops assistant does not read it
-either: its log review leaves the worker out (its logs are outside the home Region), and asked for
-it by name it says "That function's logs are kept outside this Region, so I can't read them yet."
-Reading them is planned work, the assistant's vision round.
+`/aws/lambda/<prefix>-<env>-vision-worker`, in `vision_region`. The ops assistant reads it there
+(`log_review`, "any errors in the vision worker?"), and each topic's running state (`vision_status`,
+"how is the vision pipeline doing?"), granted by the same apply: nothing to do by hand
+([ops-assistant-vision.md](enhancements/ops-assistant-vision.md)). After turning vision on, ask it
+"is the satellite worker on?": it should say on, and in which Region.
 
 ### `rail_access` topics
 

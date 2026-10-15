@@ -23,6 +23,7 @@ and the two hours over a day allow for a daily run that starts a little later th
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from common.dynamo import (
@@ -37,7 +38,8 @@ from common.dynamo import (
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import topic_match
-from ops_mcp.suggestions import finding
+from ops_mcp.redact import looks_like_instructions, personal_data_kinds
+from ops_mcp.suggestions import ID_PATTERN, finding
 
 DAY_WINDOW = timedelta(hours=26)
 # Research is late once two of its intervals have passed with no check: one missed heartbeat is
@@ -114,6 +116,35 @@ def _topic_label(topic: dict | None, topic_id: str) -> str:
     return untrusted_text((topic or {}).get("name") or topic_id, 60)
 
 
+# What a topic's name may be made of to be spoken: topic_match._SAYABLE's characters, and ":" as
+# well, since the rail city topics are named "Rail access: Sydney" and so on
+# (scripts/rail_topics.example.json). A test holds the two patterns to that one difference.
+SPOKEN_NAME = re.compile(r"^[A-Za-z0-9 &'’_.,()/+:-]+$")
+SPOKEN_NAME_MAX_CHARS = 60
+
+
+def spoken_label(topic: dict | None) -> str:
+    """A topic as the assistant may say it aloud: its name when it is made only of SPOKEN_NAME's
+    characters, does not read like instructions (redact.looks_like_instructions) and holds no
+    personal data (an address, a phone number: redact.personal_data_kinds), cut to 60;
+    otherwise its id with "-" and "_" read as spaces, when the id is one (ID_PATTERN) and does not
+    read like instructions either; otherwise "a topic". Every template of the assistant's vision
+    round names a topic with this; `_topic_label` stays for the older ones."""
+    topic = topic or {}
+    name = topic.get("name")
+    if isinstance(name, str):
+        name = " ".join(name.split())
+        safe = name and SPOKEN_NAME.match(name) and not personal_data_kinds(name)
+        if safe and not looks_like_instructions(name):
+            return name[:SPOKEN_NAME_MAX_CHARS].rstrip()
+    topic_id = topic.get("topic_id")
+    if isinstance(topic_id, str) and ID_PATTERN.match(topic_id):
+        said = " ".join(topic_id.replace("-", " ").replace("_", " ").split())
+        if said and not looks_like_instructions(said):
+            return said[:SPOKEN_NAME_MAX_CHARS].rstrip()
+    return "a topic"
+
+
 # --- pipeline_health -----------------------------------------------------------------------------
 
 
@@ -186,9 +217,16 @@ def _topic_check(
     return row, findings
 
 
-def pipeline_health(topic: str | None = None, *, now: datetime | None = None) -> dict:
+def pipeline_health(topic: str | None = None, *, now: datetime | None = None, sites: bool = True) -> dict:
     """Per topic: was it researched on time, and what became of its daily run in the last 26
-    hours. With `topic`, that topic alone, and the error of a run that failed."""
+    hours. With `topic`, that topic alone, and the error of a run that failed.
+
+    And, with `sites` (the memory's topic watch passes False and reads the sites itself), for a
+    topic whose adapter watches sites (the vision topics): whether they were measured on the last
+    try, from its running state, read within HEALTH_READ_SECONDS and nothing over
+    LARGE_STATE_BYTES (vision_status.site_health). Only code-derived fields are added (labels,
+    counts, class words, ids) and at most one sentence: this opens every briefing, and a briefing
+    is spoken back by Alexa. With no such topic the result is what it always was."""
     now = _now(now)
     matched = None
     if topic is not None:
@@ -208,7 +246,27 @@ def pipeline_health(topic: str | None = None, *, now: datetime | None = None) ->
         rows.append(row)
         findings.extend(found)
 
-    result = {"spoken": _health_spoken(rows), "findings": findings, "topics": rows, "as_of": now.isoformat()}
+    spoken = _health_spoken(rows)
+    if sites:
+        # Imported here, as topic_match imports this module: vision_status imports these helpers.
+        from ops_mcp import vision_status
+
+        health = vision_status.site_health(
+            topics,
+            now,
+            budget_seconds=vision_status.HEALTH_READ_SECONDS,
+            max_bytes=vision_status.LARGE_STATE_BYTES,
+            config=config,
+        )
+        for row in rows:
+            if row["topic_id"] in health["topics"]:
+                row["sites"] = health["topics"][row["topic_id"]]["sites"]
+        findings.extend(health["findings"])
+        said = _vision_spoken(health)
+        if said:
+            spoken = f"{spoken} {said}"
+
+    result = {"spoken": spoken, "findings": findings, "topics": rows, "as_of": now.isoformat()}
     if matched is not None:
         result["matched_topic"] = matched
         result["spoken"] = topic_match.took(matched) + result["spoken"]
@@ -239,6 +297,40 @@ def _health_spoken(rows: list[dict]) -> str:
     elif len(rows) > 1:
         sentences.append("Research is on time for every topic.")
     return " ".join(sentences)
+
+
+# The classes of a vision site that mean it was not measured on its last try (vision_status.py).
+_SITE_PROBLEMS = ("worker_error", "source_error", "refused", "site_problem", "starved", "config_error")
+
+
+def _vision_spoken(health: dict) -> str:
+    """At most one sentence about the vision topics, the first that holds: the worker is off; a
+    topic has a site that was not measured; some topics' sites were not checked this time."""
+    topics = list(health["topics"].values())
+    if not topics:
+        return ""
+    off = [entry["label"] for entry in topics if entry["uses_worker"] and entry["state"] == "worker_off"]
+    if off:
+        return f"The vision worker is off, so {_few(off)} can't be measured."
+    failing = [entry["label"] for entry in topics if any(entry["sites"][name] for name in _SITE_PROBLEMS)]
+    if failing:
+        verb = "has" if len(failing) == 1 else "have"
+        return (
+            f"{_few(failing)} {verb} a site that wasn't measured on the last try; ask about the vision "
+            "pipeline for why."
+        )
+    unchecked = sum(1 for entry in topics if entry["state"] in ("not_checked", "too_large", "unreadable"))
+    if unchecked:
+        topics_word = "topic" if unchecked == 1 else "topics"
+        return f"I didn't check the sites of {unchecked} vision {topics_word} this time."
+    return ""
+
+
+def _few(labels: list[str]) -> str:
+    """At most three labels, then "and {k} more"."""
+    if len(labels) <= 3:
+        return _join(labels)
+    return f"{', '.join(labels[:3])} and {len(labels) - 3} more"
 
 
 # --- admin_inbox ---------------------------------------------------------------------------------

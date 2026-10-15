@@ -151,7 +151,8 @@ SYSTEM_PROMPT = "\n".join(
         "Four other first questions are not briefings either, so do not check the pipeline for "
         "them. Asked what you can do: call no tool, and say in a few sentences that you report "
         "what needs attention in the pipeline, including security incidents and sign-ins to "
-        "this assistant, remember what you suggested before, explain the "
+        "this assistant and how the vision pipeline's satellite sites are doing, remember what "
+        "you suggested before, explain the "
         "Admin CLI and what each AWS resource is for, and never run anything. Asked what you "
         "suggested before: call follow_up, and say what is still waiting and what has been "
         "fixed. Asked where someone new should start: call cli_guides with `first-topic`. Asked "
@@ -180,7 +181,8 @@ SYSTEM_PROMPT = "\n".join(
         # cli_guides and cli_help put it on screen, as the CLI prints it; the model's part is to
         # point at the right command and the right option, in a sentence or two.
         "For a how-to question, show the help first: cli_guides when it is about a feature "
-        "(costs, gear, editorial goals, a first topic, reviewing, musings), cli_help with the command "
+        "(costs, gear, editorial goals, a first topic, vision topics, reviewing, musings), cli_help "
+        "with the command "
         "paths when it is about a command. Then say which command it is, which option answers "
         "the question, and that its help is on screen. Never read the help aloud.",
         # The owner's ask: under the help, a suggested exact command, filled in from what they
@@ -257,6 +259,17 @@ SYSTEM_PROMPT = "\n".join(
         "X\", say that first (\"I took that to mean Crypto & Investing, stop me if not\") and "
         "then what it found. If it asks \"did you mean A or B?\", ask the operator that, and "
         "look again with their answer.",
+        # The owner's ask: the agent and Alexa+ can see the vision pipeline. Its per-site state is
+        # only in the running state, which vision_status reads; site names and errors are operator
+        # and third-party text.
+        "For the vision pipeline (satellite or rail topics, their sites, the vision worker) call "
+        "vision_status, with `topic=` for one topic or one site. Say whether the worker is on, how "
+        "many sites were measured and how recently, and what stopped any that were not, as its "
+        "`spoken` says; the sites are on screen. Never say a site's name, an error's text or a "
+        "table's cells. In a briefing, say what pipeline_health says about vision and call "
+        "vision_status only when the operator asks. For the worker's own errors call log_review "
+        "with `function` \"vision-worker\"; asked how the vision pipeline works, call architecture "
+        "with `feature` \"vision-pipeline\".",
         # The architecture tool answers for this environment whatever name is pasted; the model
         # only has to pass the name as given and repeat what came back about the environment.
         "When the operator asks what a table, function, log group, dashboard or other AWS "
@@ -418,15 +431,19 @@ def _hooks(ledger: policy.Ledger) -> list:
 
 
 def _answer_text(result: Any, ledger: policy.Ledger) -> str:
-    """What is spoken. The model's words when it finished an answer; otherwise (it ran out of
-    turns, or was cut off) the tools' own summaries, which code wrote and are safe to say. Either
-    way it passes the PII sweep last (redact.sweep_answer): an e-mail, a whole address, a token or
-    a key the model repeated from something it read is replaced before the operator hears it."""
+    """What is spoken. The model's words when it finished an answer, unless they repeat text a
+    tool marked as written outside this project (policy.echoes: `ledger.echoed` is then set);
+    otherwise (it ran out of turns, was cut off, or echoed) the tools' own summaries, which code
+    wrote and are safe to say. Either way it passes the PII sweep last (redact.sweep_answer): an
+    e-mail, a whole address, a token or a key the model repeated from something it read is
+    replaced before the operator hears it."""
     if result is not None and result.stop_reason == "end_turn":
         text = " ".join(
             block["text"].strip() for block in result.message.get("content", []) if block.get("text")
         ).strip()
-        if text:
+        if text and policy.echoes(text, ledger):
+            ledger.echoed = True
+        elif text:
             return redact.sweep_answer(text)
     return redact.sweep_answer(" ".join(ledger.spoken) or _NO_ANSWER)
 
@@ -468,12 +485,16 @@ def run(question: str, history: list[dict] | None, tools: list, model: Any = Non
         # What the run cost, whether it answered, was cut off or failed: tokens a failed run
         # spent were still billed. Recorded here, by code, from Strands' own count.
         _record_usage(agent)
+    spoken = _answer_text(result, ledger)
     return {
-        "answer": _answer_text(result, ledger),
+        "answer": spoken,
         "tool_calls": ledger.tool_calls,
         "findings": ledger.findings,
         "tables": ledger.tables,
         "turn": turn,
+        # For the handler's log line only (it is taken out before the answer is sent): the model's
+        # answer repeated text a tool marked as written outside this project.
+        "echo": ledger.echoed,
     }
 
 

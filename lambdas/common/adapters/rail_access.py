@@ -182,6 +182,18 @@ MAX_HISTORY_STATIONS = 2000
 # so twenty scenes of a big city cost little more than one.
 NEWEST_ONLY_KEYS = ("stations", "flags", "suggestions", "deserts")
 
+# What the operator's assistant may say about a rail topic's sites (status): the shared codes, and
+# this adapter's own "osm" (a site with no usable network, so it waits). The network's own
+# refresh failures are an input's errors, in osm.ERROR_WORDS (a code not in them: "another error").
+STATUS_WORDS = {
+    **vision_sites.STATUS_WORDS,
+    "osm": ("source", "its OpenStreetMap rail data couldn't be fetched"),
+}
+_NETWORK_WORDS = {code: ("source", words) for code, words in osm.ERROR_WORDS.items()}
+# Fixed words for the measure and the input the status reports.
+MEASURE_LABEL = "built-up area served (%)"
+NETWORK_LABEL = "OpenStreetMap rail network"
+
 
 def parse_config(adapter_config: dict | None) -> dict:
     """adapter_config with defaults filled in, or ConfigError: the checks every vision topic
@@ -215,6 +227,9 @@ def worker_network(network: dict) -> dict:
 class RailAccessAdapter(Adapter):
     uses_previous_state = True
     keeps_running_state = True
+    # Measures through the vision worker, and its sites are written by hand (base.py says why).
+    uses_vision_worker = True
+    config_by_hand = True
     sources = (COPERNICUS_SOURCE, AWS_OPEN_DATA_SOURCE, osm.OSM_SOURCE)
 
     # Injected by tests; the defaults talk to Earth Search, Overpass, the worker, S3, the news
@@ -401,9 +416,6 @@ class RailAccessAdapter(Adapter):
             if not history or history[-1].get("scene_id") != m["scene_id"]:
                 continue
             latest, earlier = history[-1], history[:-1]
-            # Only scenes measured the same way are compared: the same polygon and parameters.
-            comparable = [e for e in earlier if _comparable(e, latest)]
-            baseline_entries = clear_entries(comparable, config["coverage_floor"], value_key="served_share")
             verdict = {
                 "site_id": m["site_id"],
                 "name": record.get("name") or m["site_id"],
@@ -416,53 +428,8 @@ class RailAccessAdapter(Adapter):
                 "reach_m": _reach_m(latest),
                 # The scene before was measured another way (an edited reach, polygon or parameter).
                 "params_changed": bool(earlier) and not _comparable(earlier[-1], latest),
-                "baseline": None,
-                "baseline_scenes": len(baseline_entries),
-                "delta": None,
-                "relative": None,
-                "material": False,
-                "reason": "",
             }
-            if latest["coverage"] < config["coverage_floor"]:
-                verdict["reason"] = "coverage below the floor"
-            elif len(baseline_entries) < config["min_baseline"]:
-                verdict["reason"] = "baseline still building"
-            else:
-                share_baseline = statistics.median(e["served_share"] for e in baseline_entries)
-                desert_baseline = statistics.median(_km2(e) for e in baseline_entries)
-                previous_stations = comparable[-1].get("station_count")
-                share_delta = latest["served_share"] - share_baseline
-                desert_delta = _km2(latest) - desert_baseline
-                desert_scale = max(desert_baseline, 1.0)
-                stations_delta = None
-                if previous_stations is not None and latest.get("station_count") is not None:
-                    stations_delta = latest["station_count"] - previous_stations
-                verdict.update(
-                    baseline={
-                        "served_share": round(share_baseline, 4),
-                        "desert_km2": round(desert_baseline, 4),
-                        "station_count": previous_stations,
-                    },
-                    delta={
-                        "served_share": round(share_delta, 4),
-                        "desert_km2": round(desert_delta, 4),
-                        "station_count": stations_delta,
-                    },
-                    relative={"desert_km2": round(desert_delta / desert_scale, 3)},
-                )
-                # Compared as stored (4 decimal places), so a move of exactly the threshold is one.
-                reasons = []
-                if round(abs(share_delta), 4) >= config["served_share_threshold"]:
-                    reasons.append("served share moved")
-                desert_threshold = round(config["desert_relative_threshold"] * desert_scale, 4)
-                if round(abs(desert_delta), 4) >= desert_threshold:
-                    reasons.append("desert area moved")
-                if stations_delta:
-                    reasons.append("station count changed")
-                if reasons:
-                    verdict.update(material=True, reason=", ".join(reasons))
-                else:
-                    verdict["reason"] = "within the usual range"
+            verdict.update(_judge(latest, earlier, config)[1])
             verdicts.append(verdict)
         return verdicts
 
@@ -665,6 +632,48 @@ class RailAccessAdapter(Adapter):
         )
         return _with_notes_rule(prompt, diff_summary)
 
+    @classmethod
+    def status_vocabulary(cls) -> frozenset[str]:
+        return (
+            vision_sites.STATUS_VOCABULARY
+            | {words for _kind, words in STATUS_WORDS.values()}
+            | set(osm.ERROR_WORDS.values())
+            | {MEASURE_LABEL, NETWORK_LABEL}
+        )
+
+    def status(self, topic_config: dict, state: dict | None, *, now: datetime) -> dict | None:
+        """Each site's last scene, its verdict by `assess`'s rule (`_judge`), its served share, its
+        last error, a scene the worker refused while that refusal holds (`_refused_before`: within
+        NETWORK_RETRY_HOURS, for the same polygon and params), and its OpenStreetMap network as an
+        input: when it was fetched, whether it is past `osm_ttl_days`, and a failed refresh. Never
+        the network's lists, NEWEST_ONLY_KEYS, `assets`, `params` or `site_key`: the assistant reads
+        this for every site topic, and needs none of them (Adapter.status has the contract). Pure:
+        reads only `topic_config` and `state`, with `now` passed in."""
+        thresholds = _thresholds(state if isinstance(state, dict) else {})
+
+        def more(site: dict, record: dict, config: dict | None) -> dict:
+            history = record.get("history") if isinstance(record.get("history"), list) else []
+            history = [entry for entry in history if isinstance(entry, dict)]
+            shown = {"refused": None, "inputs": [_network_status(site, record, config, now)]}
+            if config is not None:
+                shown["refused"] = _refusal_status(site, record, config, now)
+            if not history:
+                return shown
+            latest = history[-1]
+            try:
+                code = _judge(latest, history[:-1], thresholds)[0]
+            except (KeyError, TypeError, ValueError, statistics.StatisticsError):
+                code = None  # an entry this rule cannot read is given no verdict
+            share = latest.get("served_share")
+            if isinstance(share, int | float) and not isinstance(share, bool):
+                shown["measure"] = {"label": MEASURE_LABEL, "value": round(share * 100, 1)}
+            shown["last_verdict"] = vision_sites.verdict_status(code, latest)
+            return shown
+
+        return vision_sites.topic_status(
+            topic_config, state, parse=parse_config, words=STATUS_WORDS, more=more
+        )
+
     def planner_notes(self, new_state: dict) -> list[dict]:
         """The rule-based flags and simulations (common/rail_notes.py) of each site the diff summary
         reported, each with its site's id, for the Finding: at most rail_notes.MAX_NOTES in all, so
@@ -679,6 +688,49 @@ class RailAccessAdapter(Adapter):
         return notes[: rail_notes.MAX_NOTES]
 
 
+def _network_status(site: dict, record: dict, config: dict | None, now: datetime) -> dict:
+    """The site's OpenStreetMap network as an input in Adapter.status: when the copy that serves
+    this polygon was fetched (None when there is none: no network yet, or only the old polygon's),
+    whether it is past the topic's TTL (None when that cannot be told), and the last refresh that
+    failed, in osm.ERROR_WORDS."""
+    network = record.get("network") if isinstance(record.get("network"), dict) else None
+    usable = network is not None and network.get("site_key") == site_key(site.get("polygon"))
+    fetched_at = network.get("fetched_at") if usable else None
+    stale = None
+    if usable and config is not None:
+        stale = _is_stale(network, now, config["osm_ttl_days"])
+    error = vision_sites.error_status(record.get("network_error"), _NETWORK_WORDS)
+    if error is not None:
+        error["kind"] = "source"  # an input's error is always its source's, whatever the code
+    return {
+        "label": NETWORK_LABEL,
+        "fetched_at": fetched_at if isinstance(fetched_at, str) else None,
+        "stale": stale,
+        "error": error,
+    }
+
+
+def _refusal_status(site: dict, record: dict, config: dict, now: datetime) -> dict | None:
+    """The scene the worker refused for what it is, while that refusal holds (`_refused_before`:
+    within NETWORK_RETRY_HOURS, for this polygon and these params), with when it may be sent again;
+    None otherwise. An older or superseded refusal is not reported: the next tick sends the scene."""
+    failed = record.get("failed_scene")
+    if not isinstance(failed, dict) or not isinstance(failed.get("id"), str):
+        return None
+    if not _refused_before(record, failed["id"], now, site_key(site["polygon"]), worker_params(config)):
+        return None
+    at = datetime.fromisoformat(failed["at"])
+    at = at if at.tzinfo else at.replace(tzinfo=UTC)
+    kind_words = STATUS_WORDS.get(failed.get("code"), vision_sites.OTHER_ERROR)
+    return {
+        "scene_id": failed["id"],
+        "code": failed["code"],
+        "words": kind_words[1],
+        "at": failed["at"],
+        "retry_at": (at + timedelta(hours=NETWORK_RETRY_HOURS)).isoformat(),
+    }
+
+
 def _error(now: datetime, code: str, detail: str) -> dict:
     return {"at": now.isoformat(), "code": code, "detail": (detail or "")[:300]}
 
@@ -686,6 +738,67 @@ def _error(now: datetime, code: str, detail: str) -> dict:
 def _thresholds(state: dict) -> dict:
     """The thresholds the diff uses: the topic's, as stored in the state, over the defaults."""
     return {**{key: DEFAULTS[key] for key in THRESHOLD_KEYS}, **(state.get("thresholds") or {})}
+
+
+def _judge(latest: dict, earlier: list[dict], config: dict) -> tuple[str, dict]:
+    """The verdict rule for a site's newest history entry against its earlier ones measured the
+    same way (`_comparable`), by the thresholds in `config`: below the coverage floor, a baseline
+    still building, within the usual range, or changed (material, with its reasons). Returns that
+    code and the verdict's fields. `assess` builds its verdicts from it and `status` reports the
+    newest scene's by it, so the two cannot drift."""
+    # Only scenes measured the same way are compared: the same polygon and parameters.
+    comparable = [e for e in earlier if _comparable(e, latest)]
+    baseline_entries = clear_entries(comparable, config["coverage_floor"], value_key="served_share")
+    fields = {
+        "baseline": None,
+        "baseline_scenes": len(baseline_entries),
+        "delta": None,
+        "relative": None,
+        "material": False,
+        "reason": "",
+    }
+    if latest["coverage"] < config["coverage_floor"]:
+        fields["reason"] = "coverage below the floor"
+        return "below_floor", fields
+    if len(baseline_entries) < config["min_baseline"]:
+        fields["reason"] = "baseline still building"
+        return "baseline_building", fields
+    share_baseline = statistics.median(e["served_share"] for e in baseline_entries)
+    desert_baseline = statistics.median(_km2(e) for e in baseline_entries)
+    previous_stations = comparable[-1].get("station_count")
+    share_delta = latest["served_share"] - share_baseline
+    desert_delta = _km2(latest) - desert_baseline
+    desert_scale = max(desert_baseline, 1.0)
+    stations_delta = None
+    if previous_stations is not None and latest.get("station_count") is not None:
+        stations_delta = latest["station_count"] - previous_stations
+    fields.update(
+        baseline={
+            "served_share": round(share_baseline, 4),
+            "desert_km2": round(desert_baseline, 4),
+            "station_count": previous_stations,
+        },
+        delta={
+            "served_share": round(share_delta, 4),
+            "desert_km2": round(desert_delta, 4),
+            "station_count": stations_delta,
+        },
+        relative={"desert_km2": round(desert_delta / desert_scale, 3)},
+    )
+    # Compared as stored (4 decimal places), so a move of exactly the threshold is one.
+    reasons = []
+    if round(abs(share_delta), 4) >= config["served_share_threshold"]:
+        reasons.append("served share moved")
+    desert_threshold = round(config["desert_relative_threshold"] * desert_scale, 4)
+    if round(abs(desert_delta), 4) >= desert_threshold:
+        reasons.append("desert area moved")
+    if stations_delta:
+        reasons.append("station count changed")
+    if reasons:
+        fields.update(material=True, reason=", ".join(reasons))
+        return "changed", fields
+    fields["reason"] = "within the usual range"
+    return "within_range", fields
 
 
 def _is_stale(network: dict, now: datetime, ttl_days) -> bool:

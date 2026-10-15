@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from abc import ABC, abstractmethod
+from datetime import datetime
 
 # Reserved snapshot key. The research tick records, in every snapshot it
 # stores, which items it has already reported (item key -> the UTC date it was
@@ -50,6 +51,16 @@ class Adapter(ABC):
     # `previous_state` and as `old_state` to `material_diff`. Without it, a no-change tick's
     # state is dropped and the next tick sees the last *reported* snapshot.
     keeps_running_state: bool = False
+
+    # Opt-in: an adapter that measures through the vision worker (infra/modules/vision-worker) says
+    # so, so the operator's assistant can say a topic cannot be measured while the worker is off
+    # without knowing any adapter by name (rule 5).
+    uses_vision_worker: bool = False
+
+    # Opt-in: the topic's adapter_config is written by hand (polygons, thresholds, the triage and
+    # web_context switches). The assistant never fills it in from what a model passes: it shows a
+    # template with a <placeholder> (ops_mcp/cli_guide.py), so text the model read cannot move a site.
+    config_by_hand: bool = False
 
     # Required: where this adapter's data comes from, as the credit shown to readers (see
     # common/attribution.py). One {"text", "label", "url"} dict per source: `text` is the whole
@@ -159,6 +170,48 @@ class Adapter(ABC):
         nothing renders them. The default, for a source with no such rules, is none.
         """
         return []
+
+    @classmethod
+    def status_vocabulary(cls) -> frozenset[str]:
+        """Every phrase `status` may return as a code's words, a verdict's words or a label. The
+        assistant speaks a phrase only if it is in some adapter's vocabulary. Empty by default."""
+        return frozenset()
+
+    def status(self, topic_config: dict, state: dict | None, *, now: datetime) -> dict | None:
+        """What the operator's assistant may show about this topic's sites (lambdas/ops_mcp/
+        vision_status.py), from its config and its running state (None before the first tick).
+        None, the default: the adapter watches no sites. Pure: no AWS, no network, no cv2/numpy;
+        `now` is passed in. The research tick never calls it. Every value is code-derived and
+        JSON-plain, except the fields marked "on screen only", which are operator or third-party
+        text the caller scrubs and never speaks. The caller re-checks every field and drops
+        anything outside this contract:
+
+            {"config_error": str | None,        # the config's error, cut to 300: on screen only
+             "backend": "opencv" | "cool" | None,
+             "fetched_at": iso | None,          # when the last tick stored the state
+             "first_observed_at": iso | None,
+             "sites": [{                        # one per CONFIGURED site, in config order
+                "site_id": str, "name": str,    # name: the operator's, on screen only
+                "order": int,                   # 1-based place in the next tick's turn
+                "scenes": int,                  # how many scenes the history keeps
+                "last_scene": None | {"scene_id", "captured_at", "coverage",
+                                      "triage": "real" | "artefact" | None,
+                                      "quality_flags": [str], "backend", "build",
+                                      "figure_stored": bool},
+                "last_verdict": None | {"code": str, "words": str},
+                "measure": None | {"label": str, "value": int | float},
+                "last_attempt_at": iso | None,
+                "error": None | {"code", "kind", "words", "at",
+                                 "detail"},     # kind: worker | source | site | deferred | other;
+                                                # detail: on screen only
+                "refused": None | {"scene_id", "code", "words", "at", "retry_at"},
+                "inputs": [{"label", "fetched_at", "stale": bool | None,
+                            "error": None | {"code", "kind": "source", "words", "at", "detail"}}],
+             }]}
+
+        Never a triage agent's reason (it wrote it after reading news results), never a network's
+        lists or anything else bulky: the assistant reads this for every site topic at once."""
+        return None
 
     def build_summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict

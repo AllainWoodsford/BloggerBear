@@ -131,6 +131,9 @@ DEFAULTS = {
     "triage_deadline_seconds": 85,
 }
 _FLOAT_KEYS = vision_sites.FLOAT_KEYS + ("relative_threshold", "absolute_threshold")
+# What the operator's assistant calls a site's count (status): fixed words, never `object_noun`,
+# which is the operator's own text and is never spoken.
+MEASURE_LABEL = "objects counted"
 
 
 def parse_config(adapter_config: dict | None) -> dict:
@@ -142,6 +145,9 @@ def parse_config(adapter_config: dict | None) -> dict:
 class SatelliteVisionAdapter(Adapter):
     uses_previous_state = True
     keeps_running_state = True
+    # Measures through the vision worker, and its sites are written by hand (base.py says why).
+    uses_vision_worker = True
+    config_by_hand = True
     sources = (COPERNICUS_SOURCE, AWS_OPEN_DATA_SOURCE)
 
     # Injected by tests; the defaults talk to Earth Search, the worker, S3 and Bedrock.
@@ -256,7 +262,7 @@ class SatelliteVisionAdapter(Adapter):
     def assess(self, new_state: dict) -> list[dict]:
         """One verdict per site measured this tick: its count against its baseline, and whether
         that is material, by the thresholds stored in the state."""
-        config = {**{key: DEFAULTS[key] for key in THRESHOLD_KEYS}, **(new_state.get("thresholds") or {})}
+        config = _thresholds(new_state)
         verdicts = []
         for m in new_state.get("measured") or []:
             record = (new_state.get("sites") or {}).get(m["site_id"]) or {}
@@ -264,7 +270,6 @@ class SatelliteVisionAdapter(Adapter):
             if not history or history[-1].get("scene_id") != m["scene_id"]:
                 continue
             latest, earlier = history[-1], history[:-1]
-            baseline_entries = clear_entries(earlier, config["coverage_floor"])
             verdict = {
                 "site_id": m["site_id"],
                 "name": record.get("name") or m["site_id"],
@@ -272,27 +277,8 @@ class SatelliteVisionAdapter(Adapter):
                 "captured_at": latest.get("captured_at"),
                 "count": latest["count"],
                 "coverage": latest["coverage"],
-                "baseline": None,
-                "baseline_scenes": len(baseline_entries),
-                "delta": None,
-                "relative": None,
-                "material": False,
-                "reason": "",
             }
-            if latest["coverage"] < config["coverage_floor"]:
-                verdict["reason"] = "coverage below the floor"
-            elif len(baseline_entries) < config["min_baseline"]:
-                verdict["reason"] = "baseline still building"
-            else:
-                baseline = statistics.median(e["count"] for e in baseline_entries)
-                delta = latest["count"] - baseline
-                relative = delta / max(baseline, 1.0)
-                verdict.update(baseline=baseline, delta=delta, relative=round(relative, 3))
-                big_enough = abs(delta) >= config["absolute_threshold"]
-                if big_enough and abs(relative) >= config["relative_threshold"]:
-                    verdict.update(material=True, reason="changed against the baseline")
-                else:
-                    verdict["reason"] = "within the usual range"
+            verdict.update(_judge(latest, earlier, config)[1])
             verdicts.append(verdict)
         return verdicts
 
@@ -364,6 +350,36 @@ class SatelliteVisionAdapter(Adapter):
     def source_refs(self, new_state: dict) -> list[dict]:
         return vision_sites.stac_refs(new_state.get("measured") or [], new_state.get("fetched_at"))
 
+    @classmethod
+    def status_vocabulary(cls) -> frozenset[str]:
+        return vision_sites.STATUS_VOCABULARY | {MEASURE_LABEL}
+
+    def status(self, topic_config: dict, state: dict | None, *, now: datetime) -> dict | None:
+        """Each site's last scene, its verdict by `assess`'s rule (`_judge`), its count under fixed
+        words (never `object_noun`, which is the operator's) and its last error, for the operator's
+        assistant (Adapter.status has the contract). Pure: reads only `topic_config` and `state`."""
+        thresholds = _thresholds(state if isinstance(state, dict) else {})
+
+        def more(site: dict, record: dict, config: dict | None) -> dict:
+            history = record.get("history") if isinstance(record.get("history"), list) else []
+            history = [entry for entry in history if isinstance(entry, dict)]
+            if not history:
+                return {}
+            latest = history[-1]
+            try:
+                code = _judge(latest, history[:-1], thresholds)[0]
+            except (KeyError, TypeError, ValueError, statistics.StatisticsError):
+                code = None  # an entry this rule cannot read is given no verdict
+            count = latest.get("count")
+            measure = None
+            if isinstance(count, int | float) and not isinstance(count, bool):
+                measure = {"label": MEASURE_LABEL, "value": count}
+            return {"last_verdict": vision_sites.verdict_status(code, latest), "measure": measure}
+
+        return vision_sites.topic_status(
+            topic_config, state, parse=parse_config, words=vision_sites.STATUS_WORDS, more=more
+        )
+
     def review_evidence(self, topic_config: dict, latest_state: dict | None) -> str | None:
         """What was measured, from the stored state: re-running the worker for a review would
         cost a cross-region call and measure the same scenes again."""
@@ -398,6 +414,43 @@ class SatelliteVisionAdapter(Adapter):
             "no cause, prediction, price, market or trading view; do not say any area is safe, clear "
             "or unaffected; do not invent place names or numbers that are not given above."
         )
+
+
+def _thresholds(state: dict) -> dict:
+    """The thresholds the diff uses: the topic's, as stored in the state, over the defaults."""
+    return {**{key: DEFAULTS[key] for key in THRESHOLD_KEYS}, **(state.get("thresholds") or {})}
+
+
+def _judge(latest: dict, earlier: list[dict], config: dict) -> tuple[str, dict]:
+    """The verdict rule for a site's newest history entry against its earlier ones, by the
+    thresholds in `config`: below the coverage floor, a baseline still building, within the usual
+    range, or changed (material). Returns that code and the verdict's fields. `assess` builds its
+    verdicts from it and `status` reports the newest scene's by it, so the two cannot drift."""
+    baseline_entries = clear_entries(earlier, config["coverage_floor"])
+    fields = {
+        "baseline": None,
+        "baseline_scenes": len(baseline_entries),
+        "delta": None,
+        "relative": None,
+        "material": False,
+        "reason": "",
+    }
+    if latest["coverage"] < config["coverage_floor"]:
+        fields["reason"] = "coverage below the floor"
+        return "below_floor", fields
+    if len(baseline_entries) < config["min_baseline"]:
+        fields["reason"] = "baseline still building"
+        return "baseline_building", fields
+    baseline = statistics.median(e["count"] for e in baseline_entries)
+    delta = latest["count"] - baseline
+    relative = delta / max(baseline, 1.0)
+    fields.update(baseline=baseline, delta=delta, relative=round(relative, 3))
+    big_enough = abs(delta) >= config["absolute_threshold"]
+    if big_enough and abs(relative) >= config["relative_threshold"]:
+        fields.update(material=True, reason="changed against the baseline")
+        return "changed", fields
+    fields["reason"] = "within the usual range"
+    return "within_range", fields
 
 
 def _describe(v: dict, noun: str) -> str:
