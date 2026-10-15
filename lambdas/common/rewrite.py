@@ -234,16 +234,18 @@ def _take_down(article: dict) -> str | None:
     return None
 
 
-def _clear_traces(article_id: str) -> dict:
-    """What is left of a taken-down article: the musings written about it, and its page in the
-    CDN's cache (as admin_api_handler.py's unpublish does). Best effort: the article is already
-    down and in the inbox."""
+def _clear_traces(article: dict) -> dict:
+    """What is left of a taken-down article: the musings written about it, and its page (and its
+    figures, if it has any) in the CDN's cache (as admin_api_handler.py's unpublish does). Best
+    effort: the article is already down and in the inbox."""
+    article_id = article["article_id"]
     try:
         musings_removed = delete_musings_for_article(article_id)
     except Exception as exc:  # noqa: BLE001
         print(f"rewrite: could not remove the musings about {article_id}: {exc!r}")
         musings_removed = 0
-    return {"musings_removed": musings_removed, "cache_invalidated": invalidate_article_page(article_id)}
+    invalidated = invalidate_article_page(article_id, figure_count=len(article.get("figures") or []))
+    return {"musings_removed": musings_removed, "cache_invalidated": invalidated}
 
 
 def _strip_disclaimer(body: str) -> tuple[str, bool]:
@@ -513,7 +515,7 @@ def run_rewrite(queue_id: str, rewrite_id: str) -> dict:
         "article_id": article["article_id"],
     }
     if was_live:
-        result.update({"unpublished": True, **_clear_traces(article["article_id"])})
+        result.update({"unpublished": True, **_clear_traces(article)})
     return result
 
 

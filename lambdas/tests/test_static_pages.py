@@ -361,7 +361,7 @@ def test_remove_article_page_is_safe_to_repeat(s3):
     static_pages.remove_article_page("a1")  # already gone: not an error
 
 
-def test_invalidate_article_page_asks_cloudfront_to_drop_the_page_and_its_figures(monkeypatch):
+def test_invalidate_article_page_asks_cloudfront_to_drop_that_path(monkeypatch):
     from unittest.mock import MagicMock
 
     client = MagicMock()
@@ -369,6 +369,24 @@ def test_invalidate_article_page_asks_cloudfront_to_drop_the_page_and_its_figure
     monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E123")
 
     assert static_pages.invalidate_article_page("a1") is True
+
+    kwargs = client.create_invalidation.call_args.kwargs
+    assert kwargs["DistributionId"] == "E123"
+    # An article without figures: its page alone, as on dev.
+    assert kwargs["InvalidationBatch"]["Paths"] == {"Quantity": 1, "Items": ["/articles/a1.html"]}
+    assert kwargs["InvalidationBatch"]["CallerReference"].startswith("unpublish-a1-")
+    static_pages.invalidate_article_page("a1", figure_count=0)
+    assert client.create_invalidation.call_args.kwargs["InvalidationBatch"]["Paths"]["Quantity"] == 1
+
+
+def test_invalidate_article_page_asks_cloudfront_to_drop_the_page_and_its_figures(monkeypatch):
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    monkeypatch.setattr(static_pages, "_get_cloudfront_client", lambda: client)
+    monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E123")
+
+    assert static_pages.invalidate_article_page("a1", figure_count=2) is True
 
     kwargs = client.create_invalidation.call_args.kwargs
     assert kwargs["DistributionId"] == "E123"

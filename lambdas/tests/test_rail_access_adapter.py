@@ -964,7 +964,7 @@ def test_the_first_tick_is_material_with_a_plain_summary(adapter):
     changed, summary = adapter.material_diff(None, state)
     assert changed
     assert summary == (
-        "First observation. Sydney: served share 73 %, 178 stations, 111 km² beyond 1 km of a station "
+        "First observation. Sydney: served share 73 %, 178 stations, 111.3 km² beyond 1 km of a station "
         "(coverage 93 %)"
         # The worker's flag, as a planner note (common/rail_notes.py).
         '. Sydney: Rule-based flags and simulations (proxies, not recommendations): "Station 0" lies on 2.4 '
@@ -976,7 +976,27 @@ def test_the_first_tick_is_material_with_a_plain_summary(adapter):
 
     # The reach is named as measured: in metres when it is not whole kilometres.
     state = history_state(adapter, [(0.5, 240.0, 12)], reach_m=800)
-    assert "240 km² beyond 800 m of a station" in adapter.material_diff(None, state)[1]
+    assert "240.0 km² beyond 800 m of a station" in adapter.material_diff(None, state)[1]
+
+
+def test_a_desert_area_is_said_to_one_decimal_so_a_material_move_shows(adapter):
+    # 2.0 km² to 2.3 km² is a 15 % move, over the 10 % threshold: in whole km² it read
+    # "2 km² against 2 km² (+15%)". The area keeps one decimal at every size.
+    state = history_state(adapter, [(0.73, 2.0, 178)])
+    assert "served share 73 %, 178 stations, 2.0 km² beyond 1 km" in adapter.material_diff(None, state)[1]
+    state = history_state(adapter, [(0.73, 2.0, 178), (0.73, 2.3, 178)])
+    changed, summary = adapter.material_diff(EARLIER, state)
+    assert changed and "desert area moved" in summary
+    said = "from 1 earlier clear scene (+0.0 points); 2.3 km² beyond 1 km of a station against 2.0 km² (+15%)"
+    assert said in summary
+    # Above 10 km² too: a topic may lower desert_relative_threshold, and 11.6 to 12.2 km² (+5 %) is
+    # then material, which whole km² read as "12 km² against 12 km²".
+    state = history_state(adapter, [(0.73, 11.6, 178), (0.73, 12.2, 178)], desert_relative_threshold=0.05)
+    changed, summary = adapter.material_diff(EARLIER, state)
+    assert changed and "desert area moved" in summary
+    assert "12.2 km² beyond 1 km of a station against 11.6 km² (+5%)" in summary
+    assert ra._area(9.96) == "10.0 km²" and ra._area(10.04) == "10.0 km²" and ra._area(111.3) == "111.3 km²"
+    assert ra._scenes(1) == "1 earlier clear scene" and ra._scenes(2) == "2 earlier clear scenes"
 
 
 def test_the_first_observation_is_the_first_clear_scene(adapter):
@@ -1492,14 +1512,15 @@ def quiet(**changes):
 
 
 FIRST_LINE = (
-    "First observation. Sydney: served share 73 %, 178 stations, 111 km² beyond 1 km of a station "
+    "First observation. Sydney: served share 73 %, 178 stations, 111.3 km² beyond 1 km of a station "
     "(coverage 93 %)"
 )
 # PR E's material-change summary for the two scenes these tests measure (rail_access._describe),
-# the agent's reason quoted as its note: what a summary without planner notes still is.
+# the agent's reason quoted as its note: what a summary without planner notes still is (with one
+# baseline scene said in the singular).
 MATERIAL_LINE = (
     "Sydney: served share 70 % in scene S1 (captured 2026-10-11T00:00:00Z), against a baseline of 73 % "
-    "from 1 earlier clear scenes (-3.0 points); 111 km² beyond 1 km of a station against 111 km² (+0%); "
+    "from 1 earlier clear scene (-3.0 points); 111.3 km² beyond 1 km of a station against 111.3 km² (+0%); "
     f'178 stations against 178; coverage 93 %; served share moved; {NOTE}"the new line is in the news and '
     'on the map"'
 )
@@ -1671,6 +1692,49 @@ def test_the_finding_gets_the_notes_of_the_sites_the_summary_reports(adapter):
     # Before any diff on this instance, the notes are every measured scene's.
     undiffed = ra.RailAccessAdapter().planner_notes(state)
     assert [n["site_id"] for n in undiffed] == ["melbourne"] * 5 + ["sydney"] * 2
+
+
+def figure_sites(figures):
+    return [figure["key"].split("/")[2] for figure in figures]
+
+
+def test_the_finding_gets_the_figures_of_the_sites_the_summary_reports(adapter):
+    # The figures follow planner_notes' rule: a site measured this tick that the summary left out
+    # gives the article no map. Two cases, both with Melbourne measured first.
+    two = [{"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}, *SITES]
+    sydney = {"S0": noted(served_share=0.73), "S1": noted(served_share=0.6)}
+
+    # (1) Melbourne's new scene is below the coverage floor.
+    worker = SiteRailWorker({"melbourne": {"S0": noted(), "S1": noted(coverage=0.2)}, "sydney": sydney})
+    first = run(adapter, scene(0, day=10), worker, sites=two, max_sites_per_tick=2)
+    assert adapter.material_diff(None, first)[0]
+    assert figure_sites(adapter.figures(first)) == ["melbourne", "sydney"]  # both reported
+    state = run(adapter, scene(1, day=11), worker, previous=first, sites=two, max_sites_per_tick=2)
+    assert [m["site_id"] for m in state["measured"]] == ["melbourne", "sydney"]
+    assert all(state["sites"][site]["history"][-1]["image_key"] for site in ("melbourne", "sydney"))
+    changed, summary = adapter.material_diff(first, state)
+    assert changed and "Melbourne" not in summary
+    assert figure_sites(adapter.figures(state)) == ["sydney"]
+    # Before any diff on this instance, the figures are every measured scene's, as the notes are.
+    assert figure_sites(ra.RailAccessAdapter().figures(state)) == ["melbourne", "sydney"]
+
+    # (2) Both moved, and the agent judged Melbourne's an artefact.
+    def agent(**kwargs):
+        doubted = kwargs["site"]["id"] == "melbourne"
+        return {"verdict": "artefact" if doubted else "real", "reason": "a cloud bank" if doubted else "seen",
+                "tool_calls": [], "model_calls": 1}  # fmt: skip
+
+    adapter.triage_agent = agent
+    worker = SiteRailWorker({"melbourne": sydney, "sydney": sydney})
+    first = run(adapter, scene(0, day=10), worker, sites=two, max_sites_per_tick=2)
+    adapter.material_diff(None, first)
+    state = run(adapter, scene(1, day=11), worker, previous=first, sites=two, max_sites_per_tick=2)
+    changed, summary = adapter.material_diff(first, state)
+    assert changed and "Melbourne" not in summary
+    assert state["sites"]["melbourne"]["history"][-1]["triage"]["verdict"] == "artefact"
+    assert figure_sites(adapter.figures(state)) == ["sydney"]
+    # The doubted scene stays out even before a diff: its triage verdict is in its history entry.
+    assert figure_sites(ra.RailAccessAdapter().figures(state)) == ["sydney"]
 
 
 def test_a_first_observation_carries_only_the_clear_scenes_notes(adapter):

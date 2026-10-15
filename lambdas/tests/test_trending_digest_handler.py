@@ -254,6 +254,104 @@ def test_publishes_digest_with_deduped_source_refs(s3_bucket):
     ]
 
 
+# A vision topic: admin_api_handler sets force_manual_review on it, so its every article waits for a
+# person (common/compliance.requires_manual_review). The digest has no person, so it leaves it out.
+RAIL_TOPIC = {
+    "topic_id": "rail-sydney",
+    "name": "Rail access in Sydney",
+    "is_financial": False,
+    "adapter": "rail_access",
+    "force_manual_review": True,
+}
+RAIL_FINDING = _finding(
+    "Sydney: served share 70 %, 111 km² beyond 1 km of a station.",
+    source_refs=[{"url": "https://earth-search.example/items/S1", "title": "Sentinel-2 L2A scene S1"}],
+)
+
+
+def test_a_topic_held_for_a_person_is_left_out_and_the_digest_publishes_as_before(s3_bucket, capsys):
+    findings_by_topic = {
+        "github-trending": _finding(
+            "Repo X is trending.", source_refs=[{"url": "https://github.com/x", "title": "x"}]
+        ),
+        "rail-sydney": RAIL_FINDING,
+    }
+    topics = [{**GITHUB_TOPIC, "adapter": "github_trending"}, RAIL_TOPIC]
+
+    with (
+        patch("trending_digest_handler.list_topics", return_value=topics),
+        patch(
+            "trending_digest_handler.get_latest_finding",
+            side_effect=lambda topic_id: findings_by_topic[topic_id],
+        ),
+        patch("trending_digest_handler.resolve_model", return_value=("anthropic.claude-test-model", None)),
+        patch("trending_digest_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch(
+            "trending_digest_handler.invoke_model_tracked",
+            return_value=_tracked_result("OVERVIEW: A synthesized digest."),
+        ) as mock_invoke,
+        patch(
+            "trending_digest_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ) as mock_review,
+        patch("trending_digest_handler.put_article") as mock_put_article,
+        patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
+        patch("trending_digest_handler.render_and_publish_article_page") as mock_render_page,
+        patch("trending_digest_handler.generate_and_store_article_musing"),
+        patch("trending_digest_handler.record_article_lineage"),
+    ):
+        result = trending_digest_handler.handler({}, None)
+
+    # Published as it is on dev with only the GitHub topic fresh: automatically, by the AI alone.
+    assert result["status"] == "published"
+    mock_put_moderation.assert_not_called()
+    article_kwargs = mock_put_article.call_args.kwargs
+    assert article_kwargs["status"] == "published" and article_kwargs["published_by"] == "ai_only"
+    assert mock_review.call_args.args[1] == {"is_financial": False}
+
+    # Built from the GitHub topic only: the rail topic is in none of what was written or stored.
+    prompt = mock_invoke.call_args.args[0]
+    assert "Repo X is trending." in prompt
+    body = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=article_kwargs["body_s3_key"])
+    body = body["Body"].read().decode("utf-8")
+    assert body == "A synthesized digest.\n\n## GitHub Trending\n\nRepo X is trending."
+    assert article_kwargs["source_refs"] == [{"url": "https://github.com/x", "title": "x"}]
+    credits = [source["text"] for source in article_kwargs["attribution"]]
+    assert credits == ["Data sourced from GitHub Trending"]
+    written = repr([prompt, body, article_kwargs, mock_render_page.call_args.kwargs])
+    for mention in ("rail-sydney", "Rail access", "served share", "earth-search", "Copernicus"):
+        assert mention not in written
+
+    # One log line names what was left out.
+    assert "left out rail-sydney" in capsys.readouterr().out
+
+
+def test_with_only_topics_held_for_a_person_fresh_there_is_no_digest(s3_bucket, capsys):
+    satellite = {**RAIL_TOPIC, "topic_id": "anchorages", "adapter": "satellite_vision"}
+    findings_by_topic = {"rail-sydney": RAIL_FINDING, "anchorages": RAIL_FINDING, "github-trending": None}
+
+    with (
+        patch("trending_digest_handler.list_topics", return_value=[RAIL_TOPIC, GITHUB_TOPIC, satellite]),
+        patch(
+            "trending_digest_handler.get_latest_finding",
+            side_effect=lambda topic_id: findings_by_topic[topic_id],
+        ),
+        patch("trending_digest_handler.invoke_model_tracked") as mock_invoke,
+        patch("trending_digest_handler.put_article") as mock_put_article,
+        patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
+        patch("trending_digest_handler.refresh_articles_snapshot") as refresh,
+    ):
+        result = trending_digest_handler.handler({}, None)
+
+    # Exactly what a day with no fresh Finding at all gives: nothing written, no model call.
+    assert result == {"status": "no_recent_findings"}
+    mock_invoke.assert_not_called()
+    mock_put_article.assert_not_called()
+    mock_put_moderation.assert_not_called()
+    refresh.assert_not_called()
+    assert "left out rail-sydney, anchorages" in capsys.readouterr().out
+
+
 def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     findings_by_topic = {
         "github-trending": _finding("Repo X is trending."),

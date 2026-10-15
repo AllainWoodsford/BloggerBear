@@ -8,10 +8,12 @@ parser at all: a caption can only ever arrive as a text node, and an image only 
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 
 import pytest
-from test_frontend_attribution import APP_JS, FRONTEND, GITHUB, _content, _flat, needs_node
+from test_frontend_attribution import _HARNESS, APP_JS, FRONTEND, GITHUB, NODE, _content, _flat, needs_node
 
 MAP = {
     "src": "/articles/figures/a1/1.png",
@@ -147,6 +149,93 @@ def test_a_figure_without_a_caption_has_no_empty_caption_and_its_alt_is_never_mi
 
     (image,) = figure["children"]
     assert image["tag"] == "img" and image["attributes"]["alt"] == ""
+
+
+# The stand-in DOM, plus what an image that fails to load needs: each element keeps its listeners
+# and its parent, and once the page has rendered, every <img> whose src is in the API's `broken`
+# list is sent an "error" event, as a browser sends one when the GET for it 404s.
+_BROKEN_IMAGE_EDITS = (
+    ("dataset: {},", "dataset: {}, listeners: {},"),
+    (
+        "appendChild(child) { this.children.push(child); return child; },",
+        "appendChild(child) { this.children.push(child); child.parentNode = this; return child; },",
+    ),
+    (
+        "removeChild(child) { this.children.splice(this.children.indexOf(child), 1); return child; },",
+        "removeChild(child) { this.children.splice(this.children.indexOf(child), 1); child.parentNode = null;"
+        " return child; },",
+    ),
+    (
+        "addEventListener() {}, focus() {}",
+        "addEventListener(name, fn) { (this.listeners[name] = this.listeners[name] || []).push(fn); },"
+        " focus() {}",
+    ),
+    (
+        "setTimeout(() => {\n",
+        "setTimeout(() => {\n"
+        "  (function fire(node) {\n"
+        "    (node.children || []).slice().forEach(fire);\n"
+        "    if (node.tagName === 'img' && api.broken.includes(node.attributes.src)) {\n"
+        "      const event = { type: 'error', target: node };\n"
+        "      (node.listeners.error || []).forEach((fn) => fn.call(node, event));\n"
+        "    }\n"
+        "  })(byId['content']);\n",
+    ),
+)
+
+
+def _broken_image_harness() -> str:
+    harness = _HARNESS
+    for old, new in _BROKEN_IMAGE_EDITS:
+        assert harness.count(old) == 1, old  # the stand-in DOM still has what this extends
+        harness = harness.replace(old, new)
+    return harness
+
+
+def _article_page_with_broken_images(figures, broken, *, attribution=None) -> list[dict]:
+    api = {
+        "hash": "#/article/a1",
+        "responses": {"/topics": {"topics": []}, "/articles/a1": _article(figures, attribution=attribution)},
+        "broken": broken,
+    }
+    result = subprocess.run(
+        [NODE, "-e", _broken_image_harness(), str(APP_JS), json.dumps(api)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        timeout=30,
+    )
+    return json.loads(result.stdout)
+
+
+@needs_node
+def test_a_figure_whose_image_fails_to_load_is_taken_out_whole():
+    """The API lists every stored figure (common/figures.public_figures), but a copy that failed is
+    not on the site (static_pages.publish_figures skips it): its <img> 404s. Its whole <figure>,
+    caption and all, comes out, by a listener set in script (the CSP forbids an onerror= attribute);
+    the other figures, the credit line and the body stay as they were."""
+    children = _article_page_with_broken_images([MAP, CHART], [MAP["src"]], attribution=[GITHUB])
+
+    (figure,) = _figures(children)
+    assert figure["children"][0]["attributes"]["src"] == CHART["src"]
+    assert MAP["caption"] not in json.dumps(children)
+    classes = _classes(children)
+    at = classes.index("source-attribution")
+    assert classes[at + 1 : at + 3] == ["article-figure", "article-body"]
+    # No inline handler: the image carries only the three attributes it always had.
+    assert set(figure["children"][0]["attributes"]) == {"src", "alt", "loading"}
+
+    # Every figure broken: none left, and the page reads as one without figures.
+    children = _article_page_with_broken_images([MAP, CHART], [MAP["src"], CHART["src"]])
+    assert _figures(children) == []
+    assert _classes(children)[:4] == ["h1", "article-meta", "lineage-summary", "article-body"]
+    # Nothing broken: both stay.
+    assert len(_figures(_article_page_with_broken_images([MAP, CHART], []))) == 2
+    # In the source: a listener, never an inline handler.
+    section = _section()
+    assert 'addEventListener("error"' in section
+    assert not re.search(r"onerror\s*:|\.onerror\b|[\"']onerror[\"']", section)  # attrs key or property
 
 
 @needs_node

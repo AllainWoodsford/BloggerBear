@@ -1269,6 +1269,13 @@ def test_the_legend_never_loses_a_column_as_the_figure_widens(monkeypatch):
     assert counts == sorted(counts) and counts[0] == 1 and counts[-1] == 3
 
 
+def test_the_legend_calls_the_dashed_line_a_simulated_link_as_the_caption_does():
+    # The caption and the planner notes say "simulated" and never "recommendation": so does the figure.
+    words = [line for _, lines in rail_annotate.LEGEND_ENTRIES for line in lines]
+    assert dict(rail_annotate.LEGEND_ENTRIES)["suggestion"] == ("simulated link",)
+    assert not any("suggest" in line or "recommend" in line for line in words)
+
+
 def test_a_wide_short_figure_has_a_legend(analysis):
     # 1024 x 320: the old legend, kept to a quarter of the height, did not fit; the strip does.
     def wide(layer, interpolation):

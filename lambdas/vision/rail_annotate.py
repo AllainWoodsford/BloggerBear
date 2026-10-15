@@ -89,7 +89,8 @@ LEGEND_ENTRIES = (
     ("station", ("station, larger = busier catchment,", "thick ring = high isolation weight")),
     ("hub", ("hub",)),
     ("flag", ("flagged (isolated high demand,", "single point of failure, ghost line)")),
-    ("suggestion", ("suggested link",)),
+    # "simulated", as the caption and the planner notes say: a what-if, never a recommendation.
+    ("suggestion", ("simulated link",)),
     ("desert", ("beyond walking reach",)),
 )
 CAPTION_LINES = (
@@ -120,7 +121,7 @@ def annotate_rail(analysis: RailAnalysis, red: np.ndarray, year: str | int, max_
     """PNG bytes of the figure: the map, scaled so its longer side is at most `max_side`, with the
     strip (`figure_strip`: the caption, then the legend) stacked under it, so the image is taller
     than the map by the strip's height and nothing but the analysis is drawn on the map. Drawn on
-    the map in this order: deserts, edges, suggested links, ghost lines, stations, flag rings,
+    the map in this order: deserts, edges, simulated links, ghost lines, stations, flag rings,
     hubs. A flag or suggestion naming a station without a position, or an id the graph does not
     hold, draws nothing; every other part of it is still drawn. A figure over FIGURE_BYTE_BUDGET
     is drawn again with its map FIGURE_SHRINK times as large, until it fits or the map's longer

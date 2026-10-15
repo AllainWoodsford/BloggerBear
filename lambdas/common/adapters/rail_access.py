@@ -137,11 +137,11 @@ _FLOAT_KEYS = vision_sites.FLOAT_KEYS + (
 # The tick's 120 s, shared out (docs §5 risk 1): the network is fetched only with this much of the
 # measuring budget left and must finish within it (both Overpass hops included) ...
 OSM_RESERVE_SECONDS = 30.0
-# ... the worker is asked only with this much left ...
-MEASURE_RESERVE_SECONDS = 45.0
+# ... the worker is asked only with this much left (vision_sites.time_to_measure) ...
+MEASURE_RESERVE_SECONDS = vision_sites.MEASURE_RESERVE_SECONDS
 # ... and is waited on for at most this long (its own timeout is 60 s; the client's default 90 s
-# would run the tick out of time).
-WORKER_READ_TIMEOUT = 58.0
+# would run the tick out of time). Both are the rule satellite_vision keeps too, in vision_sites.
+WORKER_READ_TIMEOUT = vision_sites.WORKER_READ_TIMEOUT
 # After a refresh of a stale network fails, the cached one keeps serving and the refresh waits
 # this long: Overpass fails in spells (429s, 504s, timeouts), each try may take OSM_RESERVE_SECONDS
 # of a tick, and a struggling mirror asked again every hour only stays struggling. Four tries a day
@@ -332,7 +332,7 @@ class RailAccessAdapter(Adapter):
             if not refused:
                 record.pop("last_error", None)
             return None
-        if budget.remaining() < MEASURE_RESERVE_SECONDS:
+        if not vision_sites.time_to_measure(budget):
             return DEFERRED
         try:
             result = self.measure(
@@ -542,20 +542,31 @@ class RailAccessAdapter(Adapter):
         self._reported = [v["site_id"] for v in verdicts]
         return _with_planner_notes(summary, verdicts, new_state)
 
-    def figures(self, new_state: dict) -> list[dict]:
-        """One figure per site measured this tick that has one: the worker's heat map, with a
-        caption that says what the colours, outlines and lines are and carries the two credits,
-        and alt text for a screen reader."""
-        figures = []
+    def _reported_scenes(self, new_state: dict):
+        """(site id, newest history entry) for each scene measured this tick that the diff summary
+        reported (`_reported`; before material_diff has run on this instance, every one), leaving
+        out a scene the agent judged an artefact (its measurements are what it doubted).
+        planner_notes and figures both take this rule, so the Finding never carries the notes or the
+        map of a site its summary did not report (one below the coverage floor, one doubted)."""
         for m in new_state.get("measured") or []:
-            record = (new_state.get("sites") or {}).get(m["site_id"]) or {}
-            history = record.get("history") or []
-            if not history or history[-1].get("scene_id") != m["scene_id"]:
+            if self._reported is not None and m["site_id"] not in self._reported:
                 continue
-            latest = history[-1]
+            latest = _latest_entry(new_state, m["site_id"])
+            doubted = (latest.get("triage") or {}).get("verdict", "real") != "real"
+            if latest.get("scene_id") != m["scene_id"] or doubted:
+                continue
+            yield m["site_id"], latest
+
+    def figures(self, new_state: dict) -> list[dict]:
+        """One figure per scene the diff summary reported that has one (`_reported_scenes`): the
+        worker's heat map, with a caption that says what the colours, outlines and lines are and
+        carries the two credits, and alt text for a screen reader."""
+        figures = []
+        for site_id, latest in self._reported_scenes(new_state):
             if not latest.get("image_key"):
                 continue
-            name = record.get("name") or m["site_id"]
+            record = (new_state.get("sites") or {}).get(site_id) or {}
+            name = record.get("name") or site_id
             captured_at = latest.get("captured_at") or ""
             date = captured_at[:10] or "(date unknown)"
             year = captured_at[:4] or (new_state.get("fetched_at") or "")[:4]
@@ -660,16 +671,11 @@ class RailAccessAdapter(Adapter):
         a site measured this tick that the summary left out (not material, below the coverage
         floor) never takes the reported site's places. Before material_diff has run on this
         instance, those of every scene measured this tick. A scene the agent judged an artefact is
-        left out (its measurements are what it doubted)."""
+        left out (its measurements are what it doubted). The rule is `_reported_scenes`, which
+        figures takes too."""
         notes = []
-        for m in new_state.get("measured") or []:
-            if self._reported is not None and m["site_id"] not in self._reported:
-                continue
-            latest = _latest_entry(new_state, m["site_id"])
-            doubted = (latest.get("triage") or {}).get("verdict", "real") != "real"
-            if latest.get("scene_id") != m["scene_id"] or doubted:
-                continue
-            notes += [{"site_id": m["site_id"], **note} for note in rail_notes.planner_notes(latest)]
+        for site_id, latest in self._reported_scenes(new_state):
+            notes += [{"site_id": site_id, **note} for note in rail_notes.planner_notes(latest)]
         return notes[: rail_notes.MAX_NOTES]
 
 
@@ -833,6 +839,19 @@ def _pct(share: float) -> str:
     return f"{share * 100:.0f} %"
 
 
+def _area(km2: float) -> str:
+    """A desert area as the summaries print it: one decimal at every size, since whole numbers
+    could read a material move as no move ("2 km² against 2 km² (+15%)"). One decimal shows any move
+    of more than 0.1 km², and the default threshold (desert_relative_threshold 0.10 of a median of at
+    least 1 km²) is never under 0.1 km². A topic that sets a lower desert_relative_threshold can
+    still see the same area printed twice for a small median; the percentage beside it shows the move."""
+    return f"{km2:.1f} km²"
+
+
+def _scenes(count: int) -> str:
+    return f"{count} earlier clear scene{'' if count == 1 else 's'}"
+
+
 def _within(limit: int, render, name: str) -> str:
     """`render(name)`, with the name cut (and marked) so the text fits `limit`: the wording and
     the two credits are fixed, and a long site name must not cost the article its figure
@@ -848,7 +867,7 @@ def _within(limit: int, render, name: str) -> str:
 def _first_line(v: dict) -> str:
     return (
         f"{v['name']}: served share {_pct(v['served_share'])}, {v['station_count']} stations, "
-        f"{v['desert_km2']:.0f} km² beyond {_reach_text(v['reach_m'])} of a station "
+        f"{_area(v['desert_km2'])} beyond {_reach_text(v['reach_m'])} of a station "
         f"(coverage {_pct(v['coverage'])})"
     )
 
@@ -861,9 +880,9 @@ def _describe(v: dict) -> str:
     text = (
         f"{v['name']}: served share {_pct(v['served_share'])} in scene {v['scene_id']} "
         f"(captured {v['captured_at']}), against a baseline of {_pct(baseline['served_share'])} from "
-        f"{v['baseline_scenes']} earlier clear scenes ({sign}{share_points:.1f} points); "
-        f"{v['desert_km2']:.0f} km² beyond {_reach_text(v['reach_m'])} of a station against "
-        f"{baseline['desert_km2']:.0f} km² ({desert_sign}{relative['desert_km2']:.0%}); "
+        f"{_scenes(v['baseline_scenes'])} ({sign}{share_points:.1f} points); "
+        f"{_area(v['desert_km2'])} beyond {_reach_text(v['reach_m'])} of a station against "
+        f"{_area(baseline['desert_km2'])} ({desert_sign}{relative['desert_km2']:.0%}); "
         f"{v['station_count']} stations"
     )
     if baseline["station_count"] is not None:

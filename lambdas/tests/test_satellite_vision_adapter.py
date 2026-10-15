@@ -56,13 +56,18 @@ class FakeStac:
 
 
 class FakeWorker:
-    """Answers with counts from a dict keyed by scene id."""
+    """Answers with counts from a dict keyed by scene id; with a `clock`, each call takes `takes`
+    seconds of it, as a real worker call does."""
 
-    def __init__(self, counts, coverage=None, error=None):
+    def __init__(self, counts, coverage=None, error=None, takes=0.0, clock=None):
         self.counts, self.coverage, self.error, self.calls = counts, coverage or {}, error, []
+        self.takes, self.clock, self.read_timeouts = takes, clock, []
 
-    def __call__(self, site, scene, backend, params, coverage_floor):
+    def __call__(self, site, scene, backend, params, coverage_floor, read_timeout=None):
         self.calls.append((site["id"], scene["id"], backend, params))
+        self.read_timeouts.append(read_timeout)
+        if self.clock:
+            self.clock.now += self.takes
         if self.error:
             raise self.error
         reply = {
@@ -251,13 +256,52 @@ def test_sites_per_tick_and_time_budget_are_bounded(adapter):
     state = adapter.fetch_state({"topic_id": "t", "adapter_config": config})
     assert len(state["measured"]) == 2 and len(state["sites"]) == 4
 
-    ticks = iter([0.0, 0.0, 100.0, 100.0, 100.0, 100.0])
+    # The budget's start, then the first site's two readings (is the budget spent; is there time to
+    # measure: vision_sites.time_to_measure), then one per later site, by then past the budget.
+    ticks = iter([0.0, 0.0, 0.0, 100.0, 100.0, 100.0, 100.0])
     adapter.clock = lambda: next(ticks)
     worker.calls.clear()
     config = {"sites": sites, "time_budget_seconds": 60}
     state = adapter.fetch_state({"topic_id": "t", "adapter_config": config})
     assert len(worker.calls) == 1
     assert state["sites"]["s1"]["last_error"]["code"] == "time_budget"
+
+
+class Clock:
+    """The adapter's clock, which the fake worker advances."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_a_site_the_budget_cannot_fit_is_deferred_not_measured_and_keeps_its_place(adapter):
+    """The rule rail_access keeps, in common/vision_sites.py: the worker is asked only with
+    MEASURE_RESERVE_SECONDS of the budget left, and waited on for WORKER_READ_TIMEOUT (under its own
+    60 s), so a site started near the end of the budget cannot run the 120 s tick out of time."""
+    clock = Clock()
+    adapter.clock = clock
+    sites = [{"id": "a", "polygon": POLY}, {"id": "b", "polygon": POLY}]
+    # The first measurement takes 20 s of a 60 s budget: 40 s are left, under the 45 s reserve.
+    worker = FakeWorker({"S1": 1}, takes=20.0, clock=clock)
+    adapter.http_post, adapter.measure = FakeStac([item("S1", "2026-10-03T00:00:00Z")]), worker
+    config = {"sites": sites, "max_sites_per_tick": 2, "time_budget_seconds": 60}
+    assert sv.vision_sites.MEASURE_RESERVE_SECONDS == 45.0 and sv.vision_sites.WORKER_READ_TIMEOUT == 58.0
+
+    first = adapter.fetch_state({"topic_id": "t", "adapter_config": config})
+    assert [m["site_id"] for m in first["measured"]] == ["a"] and [c[0] for c in worker.calls] == ["a"]
+    assert worker.read_timeouts == [58.0]
+    # b was searched (its new scene found) but not measured: deferred, which is not an attempt.
+    b = first["sites"]["b"]
+    assert b["last_error"]["code"] == "time_budget" and b["history"] == []
+    assert "last_attempt_at" not in b and first["sites"]["a"]["last_attempt_at"] == first["fetched_at"]
+
+    # Next tick b goes first and is measured; a has nothing new.
+    second = adapter.fetch_state({"topic_id": "t", "adapter_config": config}, previous_state=first)
+    assert [m["site_id"] for m in second["measured"]] == ["b"] and [c[0] for c in worker.calls] == ["a", "b"]
+    assert "last_error" not in second["sites"]["b"] and worker.read_timeouts == [58.0, 58.0]
 
 
 def test_sites_rotate_one_per_tick_with_the_unvisited_first(adapter):

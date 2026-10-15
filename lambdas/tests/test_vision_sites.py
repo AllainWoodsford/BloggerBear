@@ -103,6 +103,8 @@ def test_defaults_are_filled_and_the_numbers_typed():
         {"sites": SITES, "time_budget_seconds": "nan"},
         {"sites": SITES, "time_budget_seconds": "inf"},
         {"sites": SITES, "time_budget_seconds": -5},
+        # Under the measuring reserve no tick could ever ask the worker (time_to_measure).
+        {"sites": SITES, "time_budget_seconds": 44.9},
         {"sites": SITES, "triage_deadline_seconds": "nan"},
         {"sites": SITES, "triage_deadline_seconds": 1e9},
         {"sites": SITES, "triage_deadline_seconds": 0},
@@ -152,6 +154,10 @@ def test_site_ids_and_names_are_what_a_figure_key_and_a_caption_can_carry():
             "triage_max_tool_calls": 5, "history_size": 20, "min_baseline": 19, "max_sites_per_tick": 10,
             "coverage_floor": 0, "own_threshold": 0, "triage": False}  # fmt: skip
     assert vs.parse_site_config(edge, DEFAULTS, floats=FLOATS)["triage"] is False
+    # The budget's floor is the measuring reserve itself: one site can still be asked for.
+    low = vs.parse_site_config({"sites": SITES, "time_budget_seconds": vs.MEASURE_RESERVE_SECONDS},
+                               DEFAULTS, floats=FLOATS)
+    assert low["time_budget_seconds"] == vs.MEASURE_RESERVE_SECONDS == 45.0
 
 
 def test_the_budget_cap_is_the_ticks_and_the_site_cap_is_a_parameter():

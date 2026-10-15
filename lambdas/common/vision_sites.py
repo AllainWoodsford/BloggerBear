@@ -4,7 +4,8 @@ docs/enhancements/rail-access-monitor.md §3 and §4 (PR E). Two adapters watch 
 Sentinel-2 scenes: satellite_vision (the ships task) and rail_access. This module is the part of
 the first that the second needed as it was: the config checks every vision topic shares, the
 Earth Search STAC search and the choice of scene, the figure store in the content bucket, the
-baseline's clear entries, the budget a tick measures within, the STAC source references, the rule
+baseline's clear entries, the budget a tick measures within and when it may still ask the worker
+(time_to_measure, with the worker's read timeout), the STAC source references, the rule
 that the first observation is the first scene at or above the coverage floor (a tick that measured
 nothing, or only below it, is not) and is reported once (`first_observed_at`, carried in the
 running state), a polygon's `site_key`, and the order sites are visited in, so a topic with several
@@ -112,7 +113,8 @@ def parse_site_config(
     the worker contract before any call; here only its shape), ids unique, a name (when given) of
     one plain line within MAX_SITE_NAME_CHARS, a known backend, `whole` keys as ints and `floats`
     as finite floats, `triage` and `web_context` as booleans, and every bound below: a time budget
-    in (0, MAX_TIME_BUDGET_SECONDS], the agent's deadline in (0, MAX_TRIAGE_DEADLINE_SECONDS], its
+    in [MEASURE_RESERVE_SECONDS, MAX_TIME_BUDGET_SECONDS] (under the reserve no tick could ever
+    ask the worker, time_to_measure), the agent's deadline in (0, MAX_TRIAGE_DEADLINE_SECONDS], its
     tool calls 0 to MAX_TRIAGE_TOOL_CALLS, a history of 2 to MAX_HISTORY_SIZE with a baseline of
     at least 1 and fewer scenes than the history keeps, 1 to `max_sites` sites per tick, a coverage
     floor in [0, 1] and no negative `*_threshold`."""
@@ -151,7 +153,7 @@ def parse_site_config(
     for key in ("triage", "web_context"):
         if key in config and not isinstance(config[key], bool):
             raise ConfigError(f"{key} must be true or false")
-    _within(config, "time_budget_seconds", 0, MAX_TIME_BUDGET_SECONDS, low_open=True)
+    _within(config, "time_budget_seconds", MEASURE_RESERVE_SECONDS, MAX_TIME_BUDGET_SECONDS)
     _within(config, "triage_deadline_seconds", 0, MAX_TRIAGE_DEADLINE_SECONDS, low_open=True)
     _within(config, "triage_max_tool_calls", 0, MAX_TRIAGE_TOOL_CALLS)
     _within(config, "history_size", 2, MAX_HISTORY_SIZE)
@@ -274,6 +276,23 @@ class Budget:
 
     def exhausted(self) -> bool:
         return self.elapsed() > self.seconds
+
+
+# When a tick may ask the worker to measure a scene, one rule for both vision adapters so neither
+# can drift (the research tick has 120 s, the worker times out at 60 s): only with this much of the
+# measuring budget left ...
+MEASURE_RESERVE_SECONDS = 45.0
+# ... and it is waited on for at most this long, under the worker's own 60 s. The client's default
+# 90 s would let a site started near the end of the budget spend 20 s in the STAC search and 60 s in
+# the worker, past the tick's 120 s.
+WORKER_READ_TIMEOUT = 58.0
+
+
+def time_to_measure(budget: Budget) -> bool:
+    """Whether the tick may still ask the worker for a scene: MEASURE_RESERVE_SECONDS of `budget`
+    left. A site that may not is deferred: not an attempt (no `last_attempt_at`), so it keeps its
+    place and goes first next tick."""
+    return budget.remaining() >= MEASURE_RESERVE_SECONDS
 
 
 def stac_refs(measured: list[dict], fetched_at: str | None) -> list[dict]:

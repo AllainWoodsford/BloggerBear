@@ -767,15 +767,19 @@ def _unpublish_article(event: dict) -> dict:
         update_moderation_status(moderation_item["queue_id"], "rejected")
 
     refresh_articles_snapshot()
-    return _response(200, {"unpublished": article_id, **_clear_article_traces(article_id)})
+    return _response(200, {"unpublished": article_id, **_clear_article_traces(article)})
 
 
-def _clear_article_traces(article_id: str) -> dict:
+def _clear_article_traces(article: dict) -> dict:
     """What is left of an article once its page is gone: the musings written about it, and its
-    page in the CDN's cache. Shared by unpublish and a rewrite of a published article."""
+    page (and its figures, if it has any) in the CDN's cache. Shared by unpublish and a rewrite of
+    a published article."""
+    article_id = article["article_id"]
     return {
         "musings_removed": delete_musings_for_article(article_id),
-        "cache_invalidated": invalidate_article_page(article_id),
+        "cache_invalidated": invalidate_article_page(
+            article_id, figure_count=len(article.get("figures") or [])
+        ),
     }
 
 
@@ -1113,7 +1117,7 @@ def _rewrite_article(event: dict) -> dict:
         # not half-up.
         remove_article_page(article_id, figure_count=len(article.get("figures") or []))
         update_article_status(article_id, "pending_moderation")
-        extra = {"unpublished": True, **_clear_article_traces(article_id)}
+        extra = {"unpublished": True, **_clear_article_traces(article)}
     elif status == "rejected":
         update_article_status(article_id, "pending_moderation")
 

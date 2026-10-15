@@ -94,8 +94,9 @@ def remove_article_page(article_id: str, figure_count: int = 0) -> str:
     return key
 
 
-def invalidate_article_page(article_id: str) -> bool:
-    """Ask CloudFront to drop its cached copy of an article's page, and of its figures.
+def invalidate_article_page(article_id: str, figure_count: int = 0) -> bool:
+    """Ask CloudFront to drop its cached copy of an article's page, and of its figures when it has
+    any (`figure_count`, as for remove_article_page: how many figures the article stores).
 
     Best effort, and it never raises: by the time this is called the page is
     already gone from the origin, so a failure only means viewers may keep a
@@ -105,9 +106,12 @@ def invalidate_article_page(article_id: str) -> bool:
     distribution_id = os.environ.get("CLOUDFRONT_DISTRIBUTION_ID")
     if not distribution_id:
         return False
-    # The figures are cached for a day (publish_figures), unlike the page, which revalidates on
-    # every load: a wildcard covers however many the article had.
-    paths = [f"/{article_page_key(article_id)}", f"/{PUBLIC_FIGURE_PREFIX}{article_id}/*"]
+    paths = [f"/{article_page_key(article_id)}"]
+    if figure_count > 0:
+        # The figures are cached for a day (publish_figures), unlike the page, which revalidates on
+        # every load: a wildcard covers however many the article had. An article without figures
+        # asks for its page alone, as it did before figures existed.
+        paths.append(f"/{PUBLIC_FIGURE_PREFIX}{article_id}/*")
     try:
         _get_cloudfront_client().create_invalidation(
             DistributionId=distribution_id,

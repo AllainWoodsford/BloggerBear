@@ -103,7 +103,10 @@ class Component:
     (label, text) pairs for the page, in the order shown. `log_groups`, `dashboards` and `alarms`
     are templates too: where to look for this resource. `only_in` lists the environments that have
     it, when not every one does. `assistant_reads` is whether the assistant's own role may read it
-    (for a table: its rows), which test_ops_mcp_architecture.py holds to the Terraform."""
+    (for a table: its rows), which test_ops_mcp_architecture.py holds to the Terraform.
+    `home_sweep` is False for one the assistant's log reads (log_review.py) leave out: it is not in
+    the stack's home Region, or exists only when an optional feature is on. Reading the home Region
+    for it would only report a log group it was refused."""
 
     kind: str
     key: str
@@ -116,6 +119,7 @@ class Component:
     alarms: tuple[str, ...] = ()
     only_in: tuple[str, ...] = ()
     assistant_reads: bool = False
+    home_sweep: bool = True
     keys: tuple[str, ...] = field(default=())  # a table's hash key, then its range key if any
     indexes: tuple[str, ...] = ()
     ttl: str | None = None  # a table's TTL attribute
@@ -536,6 +540,9 @@ CATALOGUE: tuple[Component, ...] = (
             ("Exists", "only when the environment sets vision_enabled"),
         ),
         aliases=("vision", "opencv"),
+        # Its log group is in the vision Region, and only when vision is on: a log review of the
+        # home Region leaves it out rather than report it refused on every deployment.
+        home_sweep=False,
     ),
     # --- API Gateway ---------------------------------------------------------------------------
     Component(
