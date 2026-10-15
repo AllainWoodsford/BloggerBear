@@ -142,6 +142,13 @@ The operator's assistant (the ask page, and Alexa+) reads the vision pipeline bu
   console links in the vision Region, the research tick's log, and the running state in S3.
 - **"How do I set up a rail topic?"** `cli_guides("vision")`. The assistant never fills in a
   sites config: that JSON is written by hand from `scripts/rail_topics.example.json`.
+- **"What did research find for rail Sydney?", "What will its next article be written from?"**
+  `topic_findings` puts the topic's Findings on screen newest first: when each was captured and
+  expires, how many maps and planner notes it carries, which model wrote its summary (and whether
+  it was cut off), and the summary itself in a "(unverified)" column; `next_article` shows exactly
+  what the next daily run reads. It says counts and ages, never what a summary says. The same
+  Findings in full: `python scripts/admin_cli.py findings list rail-sydney`, and the
+  `topic-findings` Claude Code skill.
 
 With vision off it reads no running state and no worker log, and says the worker is off and that
 turning it on is the `VISION_ENABLED` setting.

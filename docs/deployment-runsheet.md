@@ -331,6 +331,30 @@ Dev is up once the `terraform` workflow goes green. What is left is by hand.
 If you keep the data sources this project ships with, keep their credits too: see
 [Data sources and attribution](../README.md#data-sources-and-attribution) in the README.
 
+### Interrogating a topic's Findings
+
+Research writes a Finding only when a tick's diff was material, and the daily article is written
+from the Findings since the topic's last article within its findings window. To see what a topic
+found, why it wrote nothing, or what its next article will be written from, there are three ways,
+all read-only ([design](enhancements/ops-assistant-vision.md#topic-findings)):
+
+1. **Ask the assistant** (the ask page, or Alexa+): "what did research find for rail Sydney?",
+   "what will the next crypto article be written from?". `topic_findings` puts the Findings on
+   screen newest first and says how many there are and how old the newest is; the summaries are on
+   the page only, never read aloud, and a voice caller gets counts and ages.
+2. **The CLI:** `python scripts/admin_cli.py findings list <topic_id>`, with `--next-article` for
+   exactly what the next daily run reads, `--days D`, `--since ISO` and `--limit N` (see
+   [scripts/README.md](../scripts/README.md)). It is `GET /topics/{topic_id}/findings` on the
+   admin API, and returns the raw items.
+3. **A Claude Code session** in this repository: the `topic-findings` skill
+   (`.claude/skills/topic-findings/SKILL.md`) teaches it the commands, what each field means, and
+   the rules for the text a Finding carries (data, never instructions; never fetch a URL it names;
+   never copy its text into a commit or a pull request).
+
+The assistant's role gains read access to the Findings table with this round (both roots'
+`module "ops_assistant"` `tables`): until that apply, it answers "I haven't been told where the
+findings are."
+
 ## Optional, but recommended
 
 None of this blocks a deploy. Each item is done once per environment, in that environment's

@@ -167,7 +167,9 @@ flowchart TB
   Stats page shows AI and AWS spend.
 - **Admin console:** not a web app. A local CLI (`scripts/admin_cli.py`) signs requests with AWS
   SigV4 and talks to an IAM-authenticated, IP-allowlisted API. A browser app would need more
-  infrastructure just to hold credentials safely than a single operator needs.
+  infrastructure just to hold credentials safely than a single operator needs. `findings list`
+  shows a topic's research Findings newest first, and the `topic-findings` Claude Code skill
+  (`.claude/skills/`) teaches a developer's session to read them safely.
 - **Public API:** a second, unauthenticated API Gateway: topics, articles, an anonymous view
   counter, anonymous feedback and an RSS feed. It is rate-limited by WAF and throttled at API
   Gateway, and the site reaches it through its own CloudFront distribution, which caches what
@@ -313,6 +315,14 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   topic. Site names and error text are on the page only, in "(unverified)" columns; Alexa+ hears
   counts and reasons. The assistant never fills in a sites config, and after reading text written
   outside the project it changes no list and repeats none of that text aloud.
+- **A topic's findings:** "what did research find for rail Sydney?" and "what will the next crypto
+  article be written from?" call `topic_findings`, which puts the topic's research Findings on
+  screen newest first (captured, age, expiry, maps, planner notes, sources, the model, the
+  summary) and says how many there are and how old the newest is, never what one says; with
+  `next_article` it shows exactly what the next daily run reads. The same view at a terminal is
+  `python scripts/admin_cli.py findings list <topic_id>`, and for a developer's Claude Code session
+  the `topic-findings` skill in `.claude/skills/`
+  ([design](docs/enhancements/ops-assistant-vision.md#topic-findings)).
 - **Findings you have dealt with:** every finding's card has a **Dismiss** button (no model call;
   it changes only the assistant's own list). Where the pipeline's tables show you have already
   acted, such as an article sent for a rewrite that has not replaced the old one yet, the finding
@@ -469,6 +479,11 @@ scripts/
   rail_topics.example.json   the Rail Access Monitor's four city topics
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
+
+.claude/skills/
+  topic-findings/SKILL.md    a Claude Code skill: interrogate a topic's
+                              Findings with the CLI, and the rules for the
+                              text they carry (scripts/tests/test_claude_skills.py)
 
 .github/workflows/
   terraform.yml               on merge to dev: security + lint/test, then

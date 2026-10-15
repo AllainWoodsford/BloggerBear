@@ -315,7 +315,8 @@ Set by Terraform on the assistant's MCP server (`<prefix>-<env>-ops-mcp`,
 | Variable | Set on | Meaning |
 |---|---|---|
 | `OPS_VISION_REGION` | the ops MCP server | `vision_region` where `vision_enabled` is true, `""` elsewhere: one variable is both the switch and the Region. Empty, `vision_status` reads no running state and says the worker is off, and `log_review` neither reads nor refuses the worker. The IAM that lets it read the worker's log there and the running states (`vision.tf`) exists only when it is set. |
-| `OPS_SCREEN_CLIENT_IDS` | the ops MCP server | The ask page's Cognito app client id. Only a caller whose token was issued to one of these clients is sent a table's "(unverified)" columns (site names, error text); any other client, Alexa+ among them, gets counts and reasons only. Comma-separated; empty, every caller is a voice caller. |
+| `OPS_SCREEN_CLIENT_IDS` | the ops MCP server | The ask page's Cognito app client id. Only a caller whose token was issued to one of these clients is sent a table's "(unverified)" columns (site names, error text, a Finding's summary); any other client, Alexa+ among them, gets counts and reasons only. Comma-separated; empty, every caller is a voice caller. |
+| `FINDINGS_TABLE` | the ops MCP server | One of the `tables` map every root passes to `module "ops_assistant"` (each key is both the environment variable that names the table and the read grant on its ARN). Findings is among them for `topic_findings`, which Queries one topic's rows; without it the tool answers "I haven't been told where the findings are." |
 
 ### A `satellite_vision` topic
 
