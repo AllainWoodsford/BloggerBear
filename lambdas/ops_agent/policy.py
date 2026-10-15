@@ -50,11 +50,10 @@ guide tools are ordinary tools, offered on every turn.
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from ops_mcp.redact import WITHHELD
+from ops_mcp.redact import WITHHELD, normalised
 
 BRIEFING = "briefing"
 FOLLOW_UP = "follow_up"
@@ -319,9 +318,12 @@ def _under_untrusted(value: Any, depth: int, inside: bool = False):
 
 
 def _normal(text: str) -> str:
-    """Text as the echo rule compares it: compatibility forms folded, case folded, whitespace
-    collapsed."""
-    return " ".join(unicodedata.normalize("NFKC", str(text)).casefold().split())
+    """Text as the echo rule compares it: the instruction check's copy (redact.normalised:
+    compatibility forms folded, format characters such as the two joiners redact.scrub keeps
+    removed, control characters read as spaces, whitespace collapsed), case folded. Both sides
+    alike, so a zero-width non-joiner after every word of an "(unverified)" cell does not hide its
+    repeat."""
+    return " ".join(normalised(text).casefold().split())
 
 
 def echoes(answer: str, ledger: Ledger) -> bool:

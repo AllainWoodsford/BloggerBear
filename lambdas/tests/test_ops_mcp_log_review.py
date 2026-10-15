@@ -55,8 +55,12 @@ class Run:
         self.jobs: list = []
 
     def __call__(self, jobs):
+        """`missing` names a kind of query ("baseline") or one group's ("vision-worker", "baseline")."""
         self.jobs = jobs
-        return {key: (None if key[1] in self.missing else self.answers[key[1]]) for key, *_ in jobs}
+        return {
+            key: (None if key[1] in self.missing or key in self.missing else self.answers[key[1]])
+            for key, *_ in jobs
+        }
 
 
 def review(run, **kwargs):
@@ -261,6 +265,31 @@ def test_a_rail_topic_deep_dive_reads_the_worker_unfiltered(monkeypatch, vision_
     assert by_group["vision-worker"][3] == log_review.queries()["sample"]
     assert "The vision worker's lines are for every vision topic: they don't name one." in result["spoken"]
     assert result["scope"]["functions"] == ["research-tick", "daily-cycle", "vision-worker"]
+    # Distinct card ids for the two groups, even in one Region.
+    ids = [card["id"] for card in result["findings"] if card["kind"] == "how_to"]
+    assert ids == [
+        "log-review-sample",
+        "log-review-totals",
+        "log-review-sample-vision-worker",
+        "log-review-totals-vision-worker",
+    ]
+    assert len({(card["kind"], card["id"]) for card in result["findings"]}) == len(result["findings"])
+
+
+def test_a_group_whose_baseline_did_not_answer_has_no_typical_and_is_not_unusual(monkeypatch):
+    """The baseline is known per group: the worker's (in another Region) timing out while the home
+    Region's answered leaves the worker with no typical, not a typical of zero."""
+    monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
+    errors = [{"@log": at("vision-worker"), "errors": "10", "first_seen": "x", "last_seen": "y"}]
+    baseline = [{"@log": at("vision-worker"), "bin(1d)": f"2026-09-2{i}", "errors": "10"} for i in range(7)]
+    answered = review(Run(totals=errors, baseline=baseline), hours=24)
+    row = next(row for row in answered["functions"] if row["function"] == "vision-worker")
+    assert row["typical_errors"] == 10.0 and not row["unusual"]
+    result = review(Run(totals=errors, baseline=baseline, missing={("vision-worker", "baseline")}), hours=24)
+    row = next(row for row in result["functions"] if row["function"] == "vision-worker")
+    assert result["complete"] is False
+    assert row["typical_errors"] is None and not row["unusual"]
+    assert "more than usual" not in result["spoken"]
 
 
 def test_a_vision_topic_with_vision_off_reads_only_the_pipeline(monkeypatch):

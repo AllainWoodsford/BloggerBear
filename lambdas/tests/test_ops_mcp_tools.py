@@ -465,7 +465,12 @@ def test_the_briefing_carries_no_untrusted_text_from_a_vision_topic(tables, visi
     broken = vision.topic_item("broken", "Broken", "satellite_vision", {"sites": "nope"})
     vision.put_topic(tables, broken)
     with patch.object(vision.sv, "parse_config", side_effect=vision.sv.ConfigError(text)):
-        whole = json.dumps(tools.pipeline_health(now=now), ensure_ascii=False)
+        result = tools.pipeline_health(now=now)
+    whole = json.dumps(result, ensure_ascii=False)
+    # The planted config error is read: the topic whose sites list doesn't parse is counted and carded.
+    broken_row = next(row for row in result["topics"] if row["topic_id"] == "broken")
+    assert broken_row["sites"]["config_error"] == 1 and broken_row["sites"]["total"] == 0
+    assert ("vision_config_error", "broken") in {(card["kind"], card["id"]) for card in result["findings"]}
     assert '"untrusted"' not in whole
     for needle in ("previous", "jane.doe", "203.0.113.77", "[email]", "203.XXX", "withheld"):
         assert needle not in whole

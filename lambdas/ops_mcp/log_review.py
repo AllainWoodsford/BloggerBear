@@ -507,10 +507,19 @@ def review(
     parts = {kind: [results.get((group["name"], kind)) for group in groups] for kind in QUERY_KINDS}
     complete = all(part is not None for found in parts.values() for part in found)
     merged = {kind: [row for part in found if part for row in part] for kind, found in parts.items()}
-    # The baseline is "not known" only when no group's answered.
-    baseline = merged["baseline"] if any(part is not None for part in parts["baseline"]) else None
+    # The baseline is known per group: a function whose group's baseline didn't answer has no
+    # "typical", rather than a typical of zero that would make its errors look unusual.
+    known = {
+        _function_key(name, env)
+        for group, part in zip(groups, parts["baseline"], strict=True)
+        if part is not None
+        for name in group["allowed"]
+    }
+    baseline = merged["baseline"] if known else None
 
-    per_function = _work_out(merged["sample"], merged["totals"], merged["runs"], baseline, env, when)
+    per_function = _work_out(
+        merged["sample"], merged["totals"], merged["runs"], baseline, env, when, known=known
+    )
     findings = _findings(per_function, chosen, when)
     total = sum(row["errors"] for row in per_function.values())
     examples_withheld = sum(row["withheld"] for row in per_function.values())
@@ -550,9 +559,10 @@ def _refusal(spoken: str, **more) -> dict:
     return {"spoken": spoken, "findings": [], "errors": 0, "functions": [], **more}
 
 
-def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
+def _work_out(sample, totals, runs, baseline, env, when, *, known=None) -> dict[str, dict]:
     """Per function: error lines, the share of each cause (scaled to the total), examples
-    (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline."""
+    (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline. `known`
+    is the functions whose baseline answered (None: all of them); the others have no typical."""
     rows: dict[str, dict] = {}
 
     def row(group: str) -> dict:
@@ -606,6 +616,8 @@ def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
             key = _function_key(logs.group_of(line.get("@log")), env)
             daily.setdefault(key, []).append(logs.count(line.get("errors")))
         for key, row_ in rows.items():
+            if known is not None and key not in known:
+                continue
             days = daily.get(key, [])
             days = days + [0] * max(0, BASELINE_DAYS - len(days))
             row_["typical"] = round(median(days) * when.hours / 24, 1)

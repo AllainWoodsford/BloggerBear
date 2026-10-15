@@ -243,11 +243,12 @@ _IN_FLIGHT = _ByteBudget(IN_FLIGHT_BYTES)
 
 def _s3(read_timeout: float):
     """An S3 client for one call: a one-second connect, a short read, and no retry (the next
-    question asks again; the call's deadline is what binds)."""
+    question asks again; the call's deadline is what binds). One attempt in all: botocore reads
+    `max_attempts` as the number of retries, so it is `total_max_attempts` that says one."""
     config = Config(
         connect_timeout=CONNECT_TIMEOUT_SECONDS,
         read_timeout=max(read_timeout, 0.1),
-        retries={"max_attempts": 1, "mode": "standard"},
+        retries={"total_max_attempts": 1, "mode": "standard"},
     )
     with _s3_lock:  # creating a client from the default session is not thread-safe
         return boto3.client("s3", config=config)
@@ -498,6 +499,28 @@ def checked(raw: dict, words: frozenset | None = None) -> dict:
 
 # --- classifying each site ---------------------------------------------------------------------------
 
+# Marks the one row a topic gets when its sites list itself doesn't parse (missing, not a list, or
+# no usable site id): no site to classify, yet the research tick stops on its config every tick, so
+# the config error still needs its row, card and sentence. Not counted as a site.
+WHOLE_TOPIC = "whole_topic"
+
+
+def _whole_topic_row() -> dict:
+    return {
+        "site_id": None,
+        "name": "",
+        "order": None,
+        "scenes": 0,
+        "last_scene": None,
+        "last_verdict": None,
+        "measure": None,
+        "last_attempt_at": None,
+        "error": None,
+        "refused": None,
+        "inputs": [],
+        WHOLE_TOPIC: True,
+    }
+
 
 def _starved(status: dict, interval_hours: float, now: datetime) -> bool:
     """Whether the topic's ticks run (its state is fresh) but none of its sites has been worked on
@@ -565,6 +588,8 @@ def survey(found: list[dict], now: datetime, *, on: bool, seconds: float, max_by
         else:
             hooked, state = None, "worker_off"
         status = checked(hooked if hooked is not None else entry["config_only"])
+        if status["config_error"] and not status["sites"]:
+            status["sites"] = [_whole_topic_row()]  # its class is config_error (classify's first rule)
         interval = resolve_interval_hours(item, config)
         starved = _starved(status, interval, now)
         classes = [classify(site, status, state=state, starved=starved) for site in status["sites"]]
@@ -584,7 +609,9 @@ def survey(found: list[dict], now: datetime, *, on: bool, seconds: float, max_by
 
 
 def counts(entry: dict) -> dict:
-    found = {"total": len(entry["classes"])}
+    """How many sites the topic has, and how many are in each class. A topic whose sites list
+    doesn't parse has no site and one config_error (WHOLE_TOPIC)."""
+    found = {"total": sum(1 for site in entry["status"]["sites"] if not site.get(WHOLE_TOPIC))}
     for name in CLASSES:
         found[name] = entry["classes"].count(name)
     return found
@@ -645,7 +672,7 @@ def cards(surveyed: list[dict], env: str | None, *, on: bool) -> list[dict]:
     needing = [entry for entry in surveyed if entry["uses_worker"]]
     if not on and needing:
         labels = [entry["label"] for entry in needing]
-        sites = sum(len(entry["classes"]) for entry in needing)
+        sites = sum(counts(entry)["total"] for entry in needing)
         found.append(
             finding(
                 "vision_worker_off",
@@ -985,8 +1012,10 @@ def _spoken(
         ]
         config = [said for name, said in _problem_sentences(surveyed, now) if name == "config_error"]
         return _fit(opening, config, closing, one or "")
-    sites = sum(len(entry["classes"]) for entry in surveyed)
-    measured = sum(entry["classes"].count("measured") for entry in surveyed)
+    sites = sum(counts(entry)["total"] for entry in surveyed)
+    # Measured at least once: a site whose last try failed still has its newest scene (the problem
+    # sentences say why the last try didn't measure it).
+    measured = sum(1 for entry in surveyed for site in entry["status"]["sites"] if site["last_scene"])
     captured = [
         _parse((site["last_scene"] or {}).get("captured_at"))
         for entry in surveyed
@@ -1009,19 +1038,28 @@ def _spoken(
         problems.append(f"{entry['label']} found no new scene for {_plural(k, 'site')} in its lookback.")
     if one is not None and len(surveyed) == 1:
         entry = surveyed[0]
-        sites = entry["status"]["sites"]
-        verdicts = [site["last_verdict"]["words"] for site in sites if site["last_verdict"]]
-        if verdicts:
-            closing.insert(0, f"Its newest scene: {verdicts[0]}.")
+        verdict = _newest_verdict(entry["status"]["sites"])
+        if verdict:
+            closing.insert(0, f"Its newest scene: {verdict}.")
         due = next_due_at(entry["item"].get("last_research_at"), entry["interval_hours"])
         if due is not None:
             when = f"in {_age(now, due)}" if due > now else "now"
             closing.insert(
-                1 if verdicts else 0,
+                1 if verdict else 0,
                 f"Its next research is due {when}; the sites take turns, the longest waiting first.",
             )
     closing.append("The sites are on screen.")
     return _fit(opening, problems, closing, one or "")
+
+
+def _newest_verdict(sites: list[dict]) -> str | None:
+    """The verdict words of the topic's newest scene: the site whose last scene was captured last.
+    None when that site has no verdict, or no scene has a capture time."""
+    dated = [(at, site) for site in sites if (at := _parse((site["last_scene"] or {}).get("captured_at")))]
+    if not dated:
+        return None
+    newest = max(dated, key=lambda pair: pair[0])[1]
+    return newest["last_verdict"]["words"] if newest["last_verdict"] else None
 
 
 def _find_site(asked: str, found: list[dict]) -> list[dict]:

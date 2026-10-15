@@ -22,6 +22,7 @@ import boto3
 import pytest
 import test_rail_access_adapter as rail
 import test_satellite_vision_adapter as ships
+from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 from moto import mock_aws
 from test_ops_mcp_redact import BYPASSES
@@ -361,6 +362,25 @@ def two_topics(aws):
     return aws
 
 
+def test_one_topic_speaks_the_verdict_of_its_newest_scene_not_its_first_sites(aws):
+    """A ships topic watches several sites: the newest scene is the site whose last scene was
+    captured last, wherever it is in the config."""
+    two = {"sites": [{"id": "a", "polygon": ships.POLY}, {"id": "b", "polygon": ships.POLY}]}
+    topic = topic_item("anchorages", "Anchorages", "satellite_vision", two, last_research_at=recent())
+    put_topic(aws, topic)
+    state = ships_state(topic=topic)
+    older = state["sites"]["a"]["history"][-1]
+    older["captured_at"], older["coverage"] = "2026-09-01T00:00:00Z", 0.1
+    put_state("anchorages", state)
+    result = status("anchorages")
+    assert [cell.split("; ")[-1] for cell in table_column(result, "Measure")] == [
+        "too cloudy to count",
+        "still building its baseline",
+    ]
+    assert "Its newest scene: still building its baseline." in result["spoken"]
+    assert "too cloudy" not in result["spoken"]
+
+
 def test_one_topic_by_its_id_says_its_verdict_and_next_research(two_topics):
     result = status("rail-sydney")
     assert [row["topic_id"] for row in result["topics"]] == ["rail-sydney"]
@@ -460,6 +480,8 @@ def test_every_worker_code_has_its_words_kind_and_class(aws, code, kind, site_cl
     assert (site["error_code"], site["class"]) == (code, site_class)
     assert words in table_column(result, "State")[0]
     assert words in result["spoken"] and result["findings"][0]["where"]["reasons"] == words
+    # Measured before: the opening counts it, and the problem sentence says the last try failed.
+    assert "1 vision topic watches 1 site: 1 measured, the newest scene" in result["spoken"]
     assert result["findings"][0]["kind"] == {
         "worker_error": "vision_worker_error",
         "site_problem": "vision_site_refused",
@@ -499,6 +521,40 @@ def test_a_config_that_does_not_parse_is_a_config_error_even_with_vision_off(aws
     assert "Anchorages' sites setting doesn't parse" in result["spoken"]
     assert {card["kind"] for card in result["findings"]} == {"vision_worker_off", "vision_config_error"}
     assert "coverage_floor" in table_column(result, "Error (unverified)")[0]
+
+
+@pytest.mark.parametrize("adapter", ["satellite_vision", "rail_access"])
+@pytest.mark.parametrize(
+    "config", [None, {"sites": "nope"}, {"sites": []}, {"sites": [{"id": "bad id!", "polygon": ships.POLY}]}]
+)
+def test_a_sites_list_that_does_not_parse_is_still_a_config_error(aws, monkeypatch, adapter, config):
+    """No site can be told apart, yet the research tick stops on this config every tick: the topic
+    gets one row, its card and its sentence, and counts no site."""
+    from ops_mcp import tools
+
+    topic = topic_item("broken", "Broken", adapter, config, last_research_at=recent())
+    put_topic(aws, topic)
+    result = status()
+    assert [row["class"] for row in result["sites"]] == ["config_error"]
+    assert [(card["kind"], card["id"]) for card in result["findings"]] == [("vision_config_error", "broken")]
+    assert result["findings"][0]["where"]["reasons"] == "the sites setting doesn't parse"
+    assert "1 vision topic watches 0 sites: none measured yet." in result["spoken"]
+    assert "Broken's sites setting doesn't parse, so its research stops before measuring." in result["spoken"]
+    assert result["topics"][0]["sites"]["total"] == 0 and result["topics"][0]["sites"]["config_error"] == 1
+    row = dict(zip(result["table"]["columns"], result["table"]["rows"][0], strict=True))
+    assert row["Site"] == "-" and row["State"] == "the sites setting doesn't parse"
+    assert row["Error (unverified)"]  # the parser's message, scrubbed, on screen only
+    health = vision_status.site_health([topic], datetime.now(UTC), budget_seconds=3)
+    assert health["topics"]["broken"]["sites"]["config_error"] == 1
+    assert [card["kind"] for card in health["findings"]] == ["vision_config_error"]
+    assert tools._vision_spoken(health).startswith("Broken has a site that wasn't measured")
+    # With the worker off it is said too, beside the worker-off card.
+    monkeypatch.setenv("OPS_VISION_REGION", "")
+    off = status()
+    assert {card["kind"] for card in off["findings"]} == {"vision_worker_off", "vision_config_error"}
+    assert "Broken's sites setting doesn't parse" in off["spoken"]
+    worker_off = next(card for card in off["findings"] if card["kind"] == "vision_worker_off")
+    assert worker_off["where"]["sites"] == 0
 
 
 def test_deferred_is_rotation_and_starved_is_a_card(aws):
@@ -684,9 +740,13 @@ def marker(text: str) -> str | None:
     return None
 
 
-def _planted_everywhere(aws, text):
+BROKEN = {"sites": "nope"}
+
+
+def _planted_everywhere(aws, text, monkeypatch):
     """A ships topic whose site name, worker error detail and topic name carry `text`, a rail
-    topic whose OpenStreetMap error carries it, and a third whose config error does."""
+    topic whose OpenStreetMap error carries it, and a third whose config error does: its sites list
+    doesn't parse, and the parser's message is `text` (only for that topic's config)."""
     named = {"sites": [{"id": "botany", "name": " ".join(text.split())[:80] or "x", "polygon": ships.POLY}]}
     ships_item = topic_item("anchorages", text, "satellite_vision", named, last_research_at=recent())
     put_topic(aws, ships_item)
@@ -696,12 +756,29 @@ def _planted_everywhere(aws, text):
     put_topic(aws, rail_topic(last_research_at=recent()))
     refusing = rail.FakeOverpass(osm.OsmError("rate_limited", text, transient=True))
     put_state("rail-sydney", rail_state(rail.aged(rail_state(), 31), overpass=refusing))
-    put_topic(aws, topic_item("broken", "Broken", "satellite_vision", {"sites": "nope"}))
+    put_topic(aws, topic_item("broken", "Broken", "satellite_vision", BROKEN))
+    parse = sv.parse_config
+
+    def planted_parse(raw):
+        if raw == BROKEN:
+            raise sv.ConfigError(text)
+        return parse(raw)
+
+    monkeypatch.setattr(sv, "parse_config", planted_parse)
+
+
+def scrubbed_as(text: str, cell: str) -> bool:
+    """Whether `cell` is what redact.scrub makes of planted `text`: masked or withheld."""
+    if "@" in text:
+        return "[email]" in cell and "jane.doe" not in cell
+    if "203." in text:
+        return "203.XXX.XXX.77" in cell and "203.0.113.77" not in cell
+    return cell == redact.WITHHELD
 
 
 @pytest.mark.parametrize("text", PLANTED)
 def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkeypatch):
-    _planted_everywhere(aws, text)
+    _planted_everywhere(aws, text, monkeypatch)
     result = status()
     whole = json.dumps(result, ensure_ascii=False)
     elsewhere = everything_but_unverified(result)
@@ -720,13 +797,16 @@ def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkey
         assert any("203.XXX.XXX.77" in cell for cell in unverified)
     else:
         assert redact.WITHHELD in unverified
+    # The config error is in its topic's one row, scrubbed like every other field.
+    errors = dict(zip(table_column(result, "Topic"), table_column(result, "Error (unverified)"), strict=True))
+    assert scrubbed_as(text, errors["Broken"]), errors["Broken"]
     # The topic named with planted text is spoken by its id.
     assert "anchorages" in result["spoken"].lower()
 
 
 @pytest.mark.parametrize("text", PLANTED)
-def test_a_voice_caller_gets_no_unverified_column_and_none_of_the_text(aws, text):
-    _planted_everywhere(aws, text)
+def test_a_voice_caller_gets_no_unverified_column_and_none_of_the_text(aws, text, monkeypatch):
+    _planted_everywhere(aws, text, monkeypatch)
     result = status(screen=False)
     assert result["table"]["columns"] == vision_status.COLUMNS_VOICE and len(result["table"]["columns"]) == 12
     whole = json.dumps(result, ensure_ascii=False)
@@ -857,10 +937,27 @@ def test_a_stalled_body_is_closed_at_the_deadline_and_no_thread_is_left(monkeypa
     assert set(threading.enumerate()) == before
 
 
+class _Raw:
+    def stream(self, **kwargs):
+        yield b""
+
+
 def test_s3_is_asked_with_a_short_timeout_and_no_retry(monkeypatch):
-    made = []
-    monkeypatch.setattr(vision_status.boto3, "client", lambda name, config: made.append(config) or object())
-    vision_status._s3(5)
-    (config,) = made
-    assert config.connect_timeout == 1 and config.read_timeout == 5
-    assert config.retries == {"max_attempts": 1, "mode": "standard"}
+    """What botocore resolves, not the dict handed to it: its `max_attempts` counts retries, so
+    a GetObject that fails with a 500 is sent once, not twice with a backoff between."""
+    for name, value in {"AWS_DEFAULT_REGION": REGION, "AWS_ACCESS_KEY_ID": "testing",
+                        "AWS_SECRET_ACCESS_KEY": "testing"}.items():  # fmt: skip
+        monkeypatch.setenv(name, value)
+    client = vision_status._s3(5)
+    assert client.meta.config.connect_timeout == 1 and client.meta.config.read_timeout == 5
+    assert client.meta.config.retries["total_max_attempts"] == 1
+    sent = []
+
+    def answer(request, **kwargs):
+        sent.append(request.url)
+        return AWSResponse(request.url, 500, {}, _Raw())
+
+    client.meta.events.register("before-send.s3.GetObject", answer)
+    with pytest.raises(ClientError):
+        client.get_object(Bucket=BUCKET, Key=key("anchorages"))
+    assert len(sent) == 1

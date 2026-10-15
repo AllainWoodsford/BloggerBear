@@ -50,7 +50,7 @@ from common.dynamo import get_pipeline_config, get_table, list_topics
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import architecture, topic_match
-from ops_mcp.redact import WITHHELD, looks_like_instructions
+from ops_mcp.redact import WITHHELD, looks_like_instructions, visible
 from ops_mcp.suggestions import ID_PATTERN
 from ops_mcp.tools import DAY_WINDOW, _age, _join, _parse, _topic_label
 
@@ -234,7 +234,10 @@ def redact(value: Any, key: str = "") -> Any:
 def _redact_text(text: str) -> str:
     # A value that reads like instructions to a model (a Finding's summary is a model's words from
     # source data) is not shown at all: the same rule, and the same normalisation, as the log tools'
-    # (redact.looks_like_instructions). This module keeps its own [ip] masking.
+    # (redact.looks_like_instructions). What nobody sees (format characters such as the tag
+    # characters, which can spell an instruction the check never reads) is dropped first, as
+    # redact.scrub drops it. This module keeps its own [ip] masking.
+    text = visible(text)
     if looks_like_instructions(text):
         return WITHHELD
     text = _EMAIL.sub("[email]", text)

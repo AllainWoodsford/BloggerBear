@@ -1007,6 +1007,22 @@ def test_a_draft_never_fills_in_a_vision_topics_config(tables):
     assert "triage" not in json.dumps(guided["findings"])
 
 
+@pytest.mark.parametrize(
+    ("words", "guide"),
+    [
+        ("how do I publish an article to the site", "review"),
+        ("how do I review what goes on the site", "review"),
+        ("what shows on the site", None),
+        ("how do I add a satellite site", "vision"),
+        ("create a topic for rail", "vision"),
+        ("how do I set up a rail topic", "vision"),
+    ],
+)
+def test_the_website_is_not_a_vision_site(words, guide):
+    """"site" is also the public website: only vision words send a question to the vision guide."""
+    assert cli_guide._guide_for(words) == guide
+
+
 def test_the_vision_guide_says_how_it_works_in_plain_words(tables):
     result = cli_guide.cli_guides("vision")
     guide = result["guide"]

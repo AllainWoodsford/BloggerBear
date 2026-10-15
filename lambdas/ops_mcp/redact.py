@@ -31,9 +31,12 @@ operator searches the console with.
 it is replaced by WITHHELD, and the result says how many were withheld. The model reading the
 result never sees the words, so they cannot steer it, and the operator still learns that a line
 like that was in the log (which is itself worth knowing: someone is probing). The phrase is looked
-for in a normalised copy (NFKC, format characters removed, whitespace collapsed), so a line break,
-a tab, a no-break or em space, a zero-width joiner or fullwidth letters between or inside the
-words do not hide it.
+for in a normalised copy (NFKC, format characters removed, control characters and whitespace
+collapsed to single spaces), so a line break, a tab, a C1 control, a no-break or em space, a
+zero-width joiner or fullwidth letters between or inside the words do not hide it. What scrub
+returns has no character the check did not read: every format character (the two joiners aside),
+surrogate, private-use or unassigned code point is removed from it, so nothing invisible, such as
+an instruction spelt in Unicode tag characters, reaches the result.
 
 Pure functions and regular expressions: no AWS, no model.
 """
@@ -68,14 +71,22 @@ _ACCOUNT = re.compile(r"(?<![\d-])\d{12}(?![\d-])")
 _CARD = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 _PHONE = re.compile(r"(?<![\w+])\+\d{1,3}[ -]?\(?\d{1,4}\)?(?:[ -]?\d{2,4}){2,4}(?!\d)")
 _LONG_SECRET = re.compile(r"(?<![A-Za-z0-9+/=_-])[A-Za-z0-9+/_-]{40,}={0,2}(?![A-Za-z0-9+/=_-])")
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-# Removed from what scrub returns: zero-width spaces, the bidi marks, overrides and isolates (U+202E
-# would reverse the text shown after it) and the other invisible characters, as common/figures.py's
-# _INVISIBLE, restated here so the redaction module imports nothing of the pipeline's. Except
-# U+200C and U+200D: Persian and Indic OpenStreetMap names are spelt with those two joiners
-# (common/rail_notes.py keeps them), and they cannot reorder text. The instruction check removes
-# them too, from its own copy (_for_the_check).
-_INVISIBLE = re.compile("[\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]")
+# C0 and C1 controls (tab and line feed are whitespace, collapsed later). C1 too: str.split() does
+# not split on U+0080-U+0084 or U+0086-U+009F, and untrusted_text turns them into spaces, so between
+# words they would hide a phrase from the check and come back as its clean form.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+# Removed from what scrub returns, and from the copy the instruction check reads: every format
+# character (zero-width spaces, the bidi marks, overrides and isolates, of which U+202E would reverse
+# the text shown after it, a soft hyphen, and the tag characters U+E0000-E007F, which spell ASCII
+# nobody sees), surrogates, private-use and unassigned code points: common/osm.py's rule for names,
+# restated here so the redaction module imports nothing of the pipeline's. Except U+200C and
+# U+200D: Persian and Indic OpenStreetMap names are spelt with those two joiners (common/
+# rail_notes.py keeps them), and they cannot reorder text. The check removes them too, from its own
+# copy (normalised).
+_DROPPED_CATEGORIES = frozenset({"Cf", "Cs", "Co", "Cn"})
+_KEPT_JOINERS = frozenset("\u200c\u200d")
+# What the check reads as a space: control characters and the line and paragraph separators.
+_SPACE_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
 
 # Phrases that are addressed to a model, not written by a program. Matched case-insensitively,
 # anywhere in a line. Deliberately broad: a false positive only hides one log line, and says so.
@@ -167,32 +178,50 @@ def _long_secret(match: re.Match) -> str:
     return text
 
 
-def _for_the_check(text: str) -> str:
-    """The copy the instruction rule reads: compatibility forms folded (fullwidth letters, a no-break
-    or em space become plain), every format character removed (zero-width joiners, bidi marks, a
-    soft hyphen: they can sit inside a word and hide it), and whitespace collapsed to single spaces,
-    since _INSTRUCTION_LIKE is written with single spaces and a model's text spans lines."""
-    folded = unicodedata.normalize("NFKC", text)
-    folded = "".join(char for char in folded if unicodedata.category(char) != "Cf")
-    return " ".join(folded.split())
+def visible(text: str) -> str:
+    """The text without the characters nobody sees (_DROPPED_CATEGORIES), the two joiners kept."""
+    if text.isascii():
+        return text
+    return "".join(
+        char
+        for char in text
+        if char in _KEPT_JOINERS or unicodedata.category(char) not in _DROPPED_CATEGORIES
+    )
+
+
+def normalised(text) -> str:
+    """The copy the instruction rule reads (and the agent's echo rule compares, ops_agent/policy.py):
+    compatibility forms folded (fullwidth letters, a no-break or em space become plain), every
+    character `visible` drops removed and the two joiners with them (they can sit inside a word and
+    hide it), control characters and line separators read as spaces, and whitespace collapsed to
+    single spaces, since _INSTRUCTION_LIKE is written with single spaces and a model's text spans
+    lines."""
+    folded = unicodedata.normalize("NFKC", str(text if text is not None else ""))
+    kept = []
+    for char in folded:
+        category = unicodedata.category(char)
+        if category in _SPACE_CATEGORIES:
+            kept.append(" ")
+        elif category not in _DROPPED_CATEGORIES:
+            kept.append(char)
+    return " ".join("".join(kept).split())
 
 
 def looks_like_instructions(text) -> bool:
     """Whether the text reads like something written to steer a model, however it is spaced or
-    spelt (_for_the_check)."""
-    return bool(_INSTRUCTION_LIKE.search(_for_the_check(str(text or ""))))
+    spelt (normalised)."""
+    return bool(_INSTRUCTION_LIKE.search(normalised(text or "")))
 
 
 def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
     """One piece of text from a log, safe to put in a result: instructions withheld, personal data
-    and secrets replaced, control and invisible characters gone (the two joiners kept, _INVISIBLE),
+    and secrets replaced, control and invisible characters gone (the two joiners kept, `visible`),
     whitespace collapsed, cut to `limit`.
 
     The order matters: tokens and keys before the generic long-secret rule (so a JWT says [token]),
     cards before account ids (a 16-digit card holds 12 digits in a row), addresses last of the
     numeric rules."""
-    text = _CONTROL.sub(" ", str(value if value is not None else ""))
-    text = _INVISIBLE.sub("", text)
+    text = visible(_CONTROL.sub(" ", str(value if value is not None else "")))
     if looks_like_instructions(text):
         return WITHHELD
     return untrusted_text(_personal(text), limit)
