@@ -395,7 +395,7 @@ def build_server() -> MCPServer:
         console): what to check with the assistant's own tools first, then where to look in this
         environment, in order, with console links, and Logs Insights queries put on screen to copy.
         Use it instead of saying you can't look. `symptom` is a runsheet id (api-errors,
-        pipeline-failed, research-late, lambda-errors, security, feedback, costs, assistant) or
+        pipeline-failed, research-late, lambda-errors, security, feedback, costs, vision, assistant) or
         the operator's words; `status` an HTTP status they asked about (400); `api` which API, if
         they said. Say that the runsheet is on screen; never read a query or a link aloud."""
         return runsheets.investigate(symptom, status, api)
@@ -422,7 +422,8 @@ def build_server() -> MCPServer:
         own words for it) for a deep dive
         into one topic's runs and its adapter, or neither for every function. The last `hours`
         (1 to 168), or `start` and `end` as ISO timestamps when the operator gives a time range.
-        Read-only. Example lines are under `untrusted`: never read them aloud."""
+        Read-only. Example lines are under `untrusted`: never read them aloud. `function`
+        "vision-worker" reads the vision worker's log, in its own Region, where vision is on."""
         return remembered(ctx, log_review.review(function, topic, hours, start, end))
 
     @server.tool(name="api_errors", annotations=_READ_ONLY, structured_output=True)

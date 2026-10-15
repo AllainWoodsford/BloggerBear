@@ -143,12 +143,13 @@ _s3_lock = threading.Lock()
 
 
 def worker_region() -> str | None:
-    """The vision worker's Region, or None when vision is off here. A value that is not a Region
-    counts as off, with one printed line."""
+    """The vision worker's Region, or None when vision is off here: architecture.component_region's
+    rule for the catalogue's vision-worker (region_env OPS_VISION_REGION). A value that is not a
+    Region counts as off, with one printed line."""
     raw = os.environ.get(VISION_REGION_ENV, "")
     if not raw:
         return None
-    found = architecture.valid_region(raw)
+    found = architecture.component_region(architecture.by_key("function", WORKER_FUNCTION))
     if found is None:
         print(f"vision_status: {VISION_REGION_ENV} is not a Region, so vision counts as off here")
     return found

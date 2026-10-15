@@ -37,7 +37,7 @@ def dev(monkeypatch):
     )
 
 
-def everything_readable(names):
+def everything_readable(names, region=None):
     return list(names), []
 
 
@@ -147,7 +147,7 @@ def test_a_name_that_is_not_a_function_here_is_refused_and_nothing_is_read(name)
 def test_a_group_the_access_check_refuses_is_not_read(monkeypatch):
     run = Run()
 
-    def only_daily(names):
+    def only_daily(names, region=None):
         return [n for n in names if n.endswith("daily-cycle")], [{"log_group": "x", "why": "no"}]
 
     result = review(run, readable=only_daily)
@@ -155,18 +155,18 @@ def test_a_group_the_access_check_refuses_is_not_read(monkeypatch):
     assert "wasn't allowed to read 1" in result["spoken"]
 
 
-def without_vision(names):
-    """The access check on a deployment with vision off: the worker's log group is not there (with
-    vision on it is in the vision Region, so not in this one either). Every other group is read."""
+def without_vision(names, region=None):
+    """The access check on a deployment with vision off: the worker's log group is not there.
+    Every other group is read."""
     gone = [n for n in names if n.endswith("-vision-worker")]
     why = "That log group doesn't exist in this environment."
     return [n for n in names if n not in gone], [{"log_group": n, "why": why} for n in gone]
 
 
 def test_the_default_sweep_on_a_deployment_without_vision_refuses_nothing():
-    """The vision worker (architecture.Component.home_sweep False) is left out of the sweep of this
-    Region, so a review with nothing named no longer says "I wasn't allowed to read 1 of the logs"
-    on every deployment."""
+    """The vision worker exists only where vision is on (architecture.Component.region_env), so a
+    review with nothing named on a deployment without it neither reads nor refuses it: it never
+    says "I wasn't allowed to read 1 of the logs"."""
     run = Run()
     result = review(run, readable=without_vision)
     assert result["refused"] == [] and "wasn't allowed" not in result["spoken"]
@@ -176,17 +176,148 @@ def test_the_default_sweep_on_a_deployment_without_vision_refuses_nothing():
 
 
 @pytest.mark.parametrize("name", ["vision-worker", "bloggerbear-dev-vision-worker"])
-def test_the_vision_worker_named_is_refused_with_why_and_nothing_is_read(name):
+def test_the_vision_worker_named_is_refused_with_why_and_nothing_is_read(name, monkeypatch):
+    """With vision off it is not deployed, and says so; with OPS_VISION_REGION set, every job runs
+    in that Region."""
     run = Run()
     result = review(run, function=name)
     assert run.jobs == [] and result["errors"] == 0
-    assert "outside this Region" in result["spoken"]
+    assert result["spoken"] == "The vision worker isn't deployed in this environment: vision is off."
+
+    monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
+    asked = []
+    result = review(run, function=name, readable=lambda names, region: asked.append(region) or (names, []))
+    assert asked == ["us-west-2"] and {job[1] for job in run.jobs} == {"us-west-2"}
+    assert run.jobs[0][2] == (GROUP.format("vision-worker"),)
+    assert [job[0][0] for job in run.jobs] == ["vision-worker"] * 4
+    cards = [card for card in result["findings"] if card["kind"] == "how_to"]
+    assert [card["id"] for card in cards] == [
+        "log-review-sample-vision-worker",
+        "log-review-totals-vision-worker",
+    ]
+    assert cards[0]["where"]["open"].startswith("https://us-west-2.console.aws.amazon.com/")
+
+
+def test_the_default_sweep_with_vision_on_reads_two_regions_with_cards_for_each(monkeypatch):
+    monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
+    run = Run()
+    asked = []
+
+    def readable(names, region):
+        asked.append((region, list(names)))
+        return list(names), []
+
+    result = review(run, readable=readable)
+    assert [region for region, _ in asked] == ["ap-southeast-2", "us-west-2"]
+    assert asked[1][1] == [GROUP.format("vision-worker")]
+    assert GROUP.format("vision-worker") not in asked[0][1]
+    assert {(job[0][0], job[1]) for job in run.jobs} == {
+        ("home", "ap-southeast-2"),
+        ("vision-worker", "us-west-2"),
+    }
+    assert len(run.jobs) == 8 and "vision-worker" in result["scope"]["functions"]
+    ids = [card["id"] for card in result["findings"] if card["kind"] == "how_to"]
+    assert ids == [
+        "log-review-sample",
+        "log-review-totals",
+        "log-review-sample-vision-worker",
+        "log-review-totals-vision-worker",
+    ]
+
+
+def test_a_refused_group_in_one_region_is_reported_and_the_other_still_read(monkeypatch):
+    monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
+    run = Run()
+
+    def worker_refused(names, region):
+        if region == "us-west-2":
+            return [], [{"log_group": names[0], "why": "That log group doesn't exist in this environment."}]
+        return list(names), []
+
+    result = review(run, readable=worker_refused)
+    assert {job[1] for job in run.jobs} == {"ap-southeast-2"}
+    assert len(result["refused"]) == 1 and "wasn't allowed to read 1" in result["spoken"]
+
+
+@pytest.mark.parametrize("vision_region", ["us-west-2", "ap-southeast-2"])
+def test_a_rail_topic_deep_dive_reads_the_worker_unfiltered(monkeypatch, vision_region):
+    """The worker's lines name neither the topic nor, mostly, the site: under the topic filter
+    every one would be dropped. Two groups even when both are in the same Region."""
+    monkeypatch.setenv("OPS_VISION_REGION", vision_region)
+    monkeypatch.setattr(
+        log_review.topic_match,
+        "get_topic",
+        lambda topic_id: {"topic_id": topic_id, "name": "Rail access: Sydney", "adapter": "rail_access"},
+    )
+    run = Run()
+    result = review(run, topic="rail-sydney")
+    by_group = {job[0][0]: job for job in run.jobs if job[0][1] == "sample"}
+    assert set(by_group) == {"home", "vision-worker"}
+    assert by_group["home"][2] == (GROUP.format("research-tick"), GROUP.format("daily-cycle"))
+    assert "| filter @message like /rail\\-sydney|rail_access:/" in by_group["home"][3]
+    assert by_group["vision-worker"][2] == (GROUP.format("vision-worker"),)
+    assert by_group["vision-worker"][1] == vision_region
+    assert "rail-sydney" not in by_group["vision-worker"][3]
+    assert by_group["vision-worker"][3] == log_review.queries()["sample"]
+    assert "The vision worker's lines are for every vision topic: they don't name one." in result["spoken"]
+    assert result["scope"]["functions"] == ["research-tick", "daily-cycle", "vision-worker"]
+
+
+def test_a_vision_topic_with_vision_off_reads_only_the_pipeline(monkeypatch):
+    monkeypatch.setattr(
+        log_review.topic_match, "get_topic", lambda topic_id: {"topic_id": topic_id, "adapter": "rail_access"}
+    )
+    run = Run()
+    result = review(run, topic="rail-sydney")
+    assert {job[0][0] for job in run.jobs} == {"home"}
+    assert "vision worker" not in result["spoken"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "[WARNING]\t2026-10-05T01:00:00Z\t3f2b\tunreadable scene S2B_56HLH_20261003_0_L2A: "
+        "HTTPSConnectionPool(host='sentinel-cogs.s3.us-west-2.amazonaws.com', port=443): Read timed out.",
+        "[WARNING]\t2026-10-05T01:00:00Z\t3f2b\tunreadable scene S2B_56HLH_20261003_0_L2A: "
+        "HTTP 403 Forbidden: AccessDenied",
+    ],
+)
+def test_a_worker_line_about_an_unreadable_scene_is_its_own_cause(line):
+    found = log_review.classify(line)
+    assert (found.key, found.fix_type) == ("scene_unreadable", "transient")
+    assert "unreadable scene" in log_review.ERROR_PATTERN
+    keys = [cause.key for cause in log_review.CAUSES]
+    assert keys.index("scene_unreadable") == keys.index("packaging") + 1
+
+
+@pytest.mark.parametrize(
+    ("message", "cause", "where"),
+    [
+        ("Task timed out after 60.00 seconds", "lambda_timeout", "var.timeout in"),
+        ("Runtime exited with error: signal: killed", "out_of_memory", "var.memory_size in"),
+    ],
+)
+def test_the_workers_own_settings_are_where_its_timeout_and_memory_are_changed(
+    monkeypatch, message, cause, where
+):
+    where += " infra/modules/vision-worker"
+    monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
+    run = Run(sample=[{"@log": at("vision-worker"), "@message": message}])
+    result = review(run, function="vision-worker")
+    (found,) = (f for f in result["findings"] if f["kind"] == f"log_{cause}")
+    assert found["root_cause"]["change_where"].startswith(where)
+    assert result["table"]["rows"][0][5].startswith(where)
+    tick = Run(sample=[{"@log": at("research-tick"), "@message": message}])
+    other = review(tick, function="research-tick")
+    (found,) = (f for f in other["findings"] if f["kind"] == f"log_{cause}")
+    assert "infra/environments/<env>/main.tf" in found["root_cause"]["change_where"]
 
 
 def test_nothing_readable_reads_nothing():
     run = Run()
     result = review(
-        run, readable=lambda names: ([], [{"log_group": "x", "why": "That log group is tagged for another."}])
+        run,
+        readable=lambda names, region: ([], [{"log_group": "x", "why": "It is tagged elsewhere."}]),
     )
     assert run.jobs == []
     assert "not allowed" in result["spoken"]

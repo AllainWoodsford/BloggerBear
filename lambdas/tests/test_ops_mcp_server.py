@@ -540,6 +540,10 @@ def test_vision_status_says_what_it_is_for_and_what_never_to_say(client):
     assert set(tools["vision_status"]["inputSchema"]["properties"]) == {"topic"}
     health = " ".join(tools["pipeline_health"]["description"].split())
     assert "for topics that watch satellite imagery, whether their sites were measured" in health
+    logs = " ".join(tools["log_review"]["description"].split())
+    said = '`function` "vision-worker" reads the vision worker\'s log, in its own Region, where vision is on'
+    assert said in logs
+    assert "costs, vision, assistant" in " ".join(tools["investigate"]["description"].split())
 
 
 @pytest.mark.parametrize(

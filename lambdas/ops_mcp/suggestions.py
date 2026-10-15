@@ -221,6 +221,10 @@ CATALOGUE: dict[str, Suggestion] = {
     ),
     "log_out_of_memory": Suggestion(action="Raise the function's memory_size in Terraform"),
     "log_packaging": Suggestion(action="Add the missing dependency to the requirements, then redeploy"),
+    "log_scene_unreadable": Suggestion(
+        action="Usually passes: the next tick reads the scene again. If every scene fails, check the "
+        "worker's allowed URL prefixes and the imagery bucket",
+    ),
     "log_access_denied": Suggestion(action="Add the refused action to the function's role in Terraform"),
     "log_model_throttled": Suggestion(
         action="Usually passes; if it keeps happening, spread the topics' schedules or raise the quota",

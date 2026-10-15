@@ -17,7 +17,9 @@ a log and changes nothing. `how_to` is not in the suggestion catalogue, so memor
 one, and server.py does not pass this tool through it.
 
 **Per environment.** A step about something only one environment has (the edge dashboard is only
-created in production) is replaced by what to do instead in the other.
+created in production) is replaced by what to do instead in the other. A step about a component
+that lives in another Region (the vision worker, architecture.Component.region_env) links to that
+Region, and says it is not deployed where vision is off.
 """
 
 from __future__ import annotations
@@ -25,7 +27,17 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from ops_mcp.architecture import ENV, PREFIX, console_url, environment, fill, log_group_region
+from ops_mcp.architecture import (
+    ENV,
+    PREFIX,
+    by_key,
+    component_region,
+    console_url,
+    environment,
+    exists_in,
+    fill,
+    log_group_region,
+)
 
 HOW_TO = "how_to"
 QUERIES_MAX = 4
@@ -37,6 +49,8 @@ _ERRORS_QUERY = (
     "| sort @timestamp desc\n"
     "| limit 50"
 )
+# The vision worker logs an unreadable scene at WARNING, with no error word in the line.
+_WORKER_ERRORS_QUERY = _ERRORS_QUERY.replace("|Task timed out/", "|Task timed out|unreadable scene/")
 _DURATION_QUERY = (
     'filter @type = "REPORT"\n'
     "| stats count(*) as runs, avg(@duration) as avg_ms, max(@duration) as max_ms,\n"
@@ -82,7 +96,8 @@ class Step:
     """One place to look. `where` is a name template ({env}); `kind` says what it is, which picks
     the console link (architecture.console_url). `query` is a Logs Insights query for a log group.
     `only_in` and `instead`: a step about something not every environment has, and what to do
-    where it is missing."""
+    where it is missing. `component` ("function:vision-worker") names the catalogue component the
+    step is about, when that one may not be deployed here or lives in another Region."""
 
     where: str
     kind: str
@@ -90,6 +105,7 @@ class Step:
     query: str | None = None
     only_in: tuple[str, ...] = ()
     instead: str | None = None
+    component: str | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +475,58 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
             ),
         ),
         Runsheet(
+            "vision",
+            "The vision pipeline: a site not measured, the worker, the imagery",
+            (
+                "vision",
+                "satellite",
+                "sentinel",
+                "worker",
+                "opencv",
+                "rail",
+                "site",
+                "sites",
+                "scene",
+                "overpass",
+                "openstreetmap",
+                "osm",
+                "triage",
+            ),
+            "Vision topics measure fixed sites in new Sentinel-2 scenes with a worker in the vision "
+            "Region; why a site was not measured is in the topic's running state, which vision_status "
+            "reads.",
+            ("vision_status", "log_review"),
+            (
+                Step(
+                    f"/aws/lambda/{PREFIX}{ENV}-vision-worker",
+                    "log_group",
+                    "The worker's errors, in the vision Region: scenes it could not read, a wrong "
+                    "build, timeouts.",
+                    query=_WORKER_ERRORS_QUERY,
+                    component="function:vision-worker",
+                ),
+                Step(
+                    f"{PREFIX}{ENV}-vision-worker",
+                    "function",
+                    "Lambda console > Monitor, in the vision Region: duration against its 60 s "
+                    "timeout, and errors.",
+                    component="function:vision-worker",
+                ),
+                Step(
+                    f"/aws/lambda/{PREFIX}{ENV}-research-tick",
+                    "log_group",
+                    "The research tick's errors: the vision adapters print as satellite_vision: "
+                    "and rail_access:.",
+                    query=_ERRORS_QUERY,
+                ),
+                Step(
+                    f"S3 console > {PREFIX}{ENV}-content > snapshots/<topic_id>/running-state.json",
+                    "console",
+                    "Each site's last_error, last_attempt_at and history.",
+                ),
+            ),
+        ),
+        Runsheet(
             "assistant",
             "The assistant itself: sign-in, 401, 403, 429 or slow answers",
             (
@@ -516,11 +584,20 @@ def _choose(sheets: tuple[Runsheet, ...], symptom: str) -> Runsheet | None:
     return best[2] if best[0] > 0 else None
 
 
+NOT_DEPLOYED = "The vision worker isn't deployed here: VISION_ENABLED is off."
+
+
 def _render(step: Step, env: str | None) -> dict:
     present = not step.only_in or env in step.only_in
     where = fill(step.where, env)
     look_for = step.look_for if present else (step.instead or f"Not in {env}.")
-    url = console_url(step.kind, where, log_group_region(where) if step.kind == "log_group" else None)
+    region = log_group_region(where) if step.kind == "log_group" else None
+    if step.component is not None:
+        component = by_key(*step.component.split(":", 1))
+        region = component_region(component)
+        if not exists_in(component, env):
+            present, look_for = False, NOT_DEPLOYED
+    url = console_url(step.kind, where, region) if present else None
     return {
         "where": where,
         "kind": step.kind,

@@ -104,9 +104,10 @@ class Component:
     are templates too: where to look for this resource. `only_in` lists the environments that have
     it, when not every one does. `assistant_reads` is whether the assistant's own role may read it
     (for a table: its rows), which test_ops_mcp_architecture.py holds to the Terraform.
-    `home_sweep` is False for one the assistant's log reads (log_review.py) leave out: it is not in
-    the stack's home Region, or exists only when an optional feature is on. Reading the home Region
-    for it would only report a log group it was refused."""
+    `region_env` names the environment variable that holds the Region this component lives in, for
+    one outside the stack's home Region (the vision worker: OPS_VISION_REGION). Such a component
+    exists only while that variable holds a Region (component_region), and its console links and
+    log reads go to that Region."""
 
     kind: str
     key: str
@@ -119,7 +120,7 @@ class Component:
     alarms: tuple[str, ...] = ()
     only_in: tuple[str, ...] = ()
     assistant_reads: bool = False
-    home_sweep: bool = True
+    region_env: str | None = None
     keys: tuple[str, ...] = field(default=())  # a table's hash key, then its range key if any
     indexes: tuple[str, ...] = ()
     ttl: str | None = None  # a table's TTL attribute
@@ -536,13 +537,18 @@ CATALOGUE: tuple[Component, ...] = (
         "on each call from the research tick of a satellite_vision or rail_access topic, across Regions",
         alarmed=False,
         details=(
-            ("Region", "the vision Region (us-west-2, beside the imagery), not the stack's"),
+            (
+                "Region",
+                "the vision Region (OPS_VISION_REGION; us-west-2 unless the roots set vision_region), "
+                "beside the imagery",
+            ),
             ("Exists", "only when the environment sets vision_enabled"),
         ),
         aliases=("vision", "opencv"),
-        # Its log group is in the vision Region, and only when vision is on: a log review of the
-        # home Region leaves it out rather than report it refused on every deployment.
-        home_sweep=False,
+        # It lives in the vision Region, and only when vision is on (the deployment sets
+        # OPS_VISION_REGION then, and "" otherwise): its log is read there, and with vision off it
+        # is not deployed here at all, so a log review neither reads nor refuses it.
+        region_env="OPS_VISION_REGION",
     ),
     # --- API Gateway ---------------------------------------------------------------------------
     Component(
@@ -753,7 +759,12 @@ CATALOGUE: tuple[Component, ...] = (
         kind="bucket",
         key="content",
         name=f"{PREFIX}{ENV}-content",
-        purpose="Article bodies (articles/) and the raw source snapshots research works from.",
+        purpose=(
+            "Article bodies (articles/), the raw source snapshots research works from (snapshots/, "
+            "expiring after 21 days), each vision topic's running state "
+            "(snapshots/<topic>/running-state.json) and the vision figures "
+            "(vision/<topic>/<site>/<scene>.png)."
+        ),
         details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
         aliases=("content-bucket", "s3"),
     ),
@@ -1262,8 +1273,25 @@ def fill(template: str, env: str | None) -> str:
     return template.replace(ENV, env or "<environment>")
 
 
+def component_region(component: Component) -> str | None:
+    """The Region a component lives in: for one with `region_env`, the Region that variable holds
+    (None when it holds none: the component is not deployed here); for any other, region()."""
+    if component.region_env is not None:
+        return valid_region(os.environ.get(component.region_env, ""))
+    return region()
+
+
 def exists_in(component: Component, env: str | None) -> bool:
-    return not component.only_in or env in component.only_in
+    return (not component.only_in or env in component.only_in) and (
+        component.region_env is None or component_region(component) is not None
+    )
+
+
+def _absent(component: Component, env: str | None) -> str:
+    """Why a component is not in this environment, in a few words for a table."""
+    if component.only_in and env not in component.only_in:
+        return f"only in {', '.join(component.only_in)}"
+    return "not deployed here"
 
 
 # --- Finding a component by whatever name the operator pasted -------------------------------------
@@ -1417,10 +1445,17 @@ def console_url(kind: str, name: str, where: str | None = None) -> str | None:
 
 
 def log_group_region(name: str) -> str | None:
-    """Where a log group lives: the shared CloudFront firewall's is in us-east-1, everything else
-    in this region."""
+    """Where a log group lives: the shared CloudFront firewall's is in us-east-1; one of a component
+    with `region_env` (the vision worker's) in that component's Region; everything else in this
+    region."""
     # A CLOUDFRONT-scope web ACL, with its log group, can only be created in us-east-1.
-    return "us-east-1" if name == SHARED_WAF_LOG_GROUP else region()
+    if name == SHARED_WAF_LOG_GROUP:
+        return "us-east-1"
+    env = environment()
+    for component in CATALOGUE:
+        if component.region_env and name in (fill(group, env) for group in component.log_groups):
+            return component_region(component)
+    return region()
 
 
 # --- The tool ---------------------------------------------------------------------------------------
@@ -1483,9 +1518,11 @@ def describe(component: Component, env: str | None) -> dict:
             ]
         )
     present = exists_in(component, env)
-    if not present:
-        rows.append(["In this environment", f"no: only in {', '.join(component.only_in)}"])
-    url = console_url(component.kind, name)
+    if not present and component.region_env and _absent(component, env) == "not deployed here":
+        rows.append(["In this environment", "no: only where vision is on (VISION_ENABLED)"])
+    elif not present:
+        rows.append(["In this environment", f"no: {_absent(component, env)}"])
+    url = console_url(component.kind, name, component_region(component)) if present else None
     if url:
         rows.append(["Open", url])
     return {
@@ -1548,7 +1585,7 @@ def _layer_detail(layer: Layer, env: str | None) -> dict:
         [
             fill(c.name, env),
             KIND_LABELS[c.kind],
-            c.purpose if exists_in(c, env) else f"(only in {', '.join(c.only_in)}) {c.purpose}",
+            c.purpose if exists_in(c, env) else f"({_absent(c, env)}) {c.purpose}",
         ]
         for c in components
     ][: OVERVIEW_MAX_ROWS - len(rows)]
@@ -1626,7 +1663,7 @@ def _overview(kind: str | None, env: str | None) -> dict:
         [
             fill(c.name, env),
             KIND_LABELS[c.kind],
-            c.purpose if exists_in(c, env) else f"(only in {', '.join(c.only_in)}) {c.purpose}",
+            c.purpose if exists_in(c, env) else f"({_absent(c, env)}) {c.purpose}",
         ]
         for c in components
     ][:OVERVIEW_MAX_ROWS]
