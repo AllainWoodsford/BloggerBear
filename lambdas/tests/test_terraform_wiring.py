@@ -1241,11 +1241,21 @@ def test_each_deploy_role_is_refused_the_other_environment_and_never_its_own():
     switched = "for_each = var.separate_environment_permissions ? local.deploy_role_other_environment : {}"
     assert switched in document
 
-    # Deny only. Not one Allow: what a role may do stays in the shared policy, untouched.
-    assert document.count('effect    = "Deny"') + document.count('effect      = "Deny"') == 3
+    # Deny only. Not one Allow: what a role may do stays in the shared policy, untouched. Counted
+    # by a pattern, not by the spaces fmt puts before "=": those follow the longest attribute in
+    # each statement, and #301 lengthened one statement's and shortened another's.
+    assert len(re.findall(r'^\s*effect\s*=\s*"Deny"\s*$', document, re.M)) == 3
     assert "Allow" not in document
-    # By name: the other environment's, never a pattern that could match the role's own.
-    assert 'resources = ["arn:aws:*:*:*:*${var.unique_name_prefix}-${each.value}-*"]' in document
+    # By name: the other environment's, never a pattern that could match the role's own, in the
+    # shapes IAM accepts (#301): one ARN per service whose names are ours, plus IAM's roles and
+    # policies and S3's buckets, each ending in "<prefix>-<other environment>-*".
+    assert '"arn:aws:${service}:*:*:*${var.unique_name_prefix}-${each.value}-*"' in document
+    for arn in (
+        "arn:aws:iam::*:role/${var.unique_name_prefix}-${each.value}-*",
+        "arn:aws:iam::*:policy/${var.unique_name_prefix}-${each.value}-*",
+        "arn:aws:s3:::${var.unique_name_prefix}-${each.value}-*",
+    ):
+        assert f'"{arn}"' in document, arn
     assert "${each.key}" not in document
     # By tag, for what has no name of ours in its ARN, leaving WAF out for the shared web ACL.
     assert 'variable = "aws:ResourceTag/Environment"' in document and "values   = [each.value]" in document
