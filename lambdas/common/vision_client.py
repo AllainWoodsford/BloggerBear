@@ -53,17 +53,23 @@ _clients: dict[tuple[str, float | None], object] = {}
 
 
 class VisionError(RuntimeError):
-    """The site could not be measured. `code` is the worker's error code, or "invoke" / "reply"."""
+    """The site could not be measured. `code` is the worker's error code, or "invoke" / "reply".
+    `request_id` is the worker invocation's Lambda request id when the invoke answered (a
+    refusal, a malformed or mismatched reply, a function error), so the failure still joins the
+    worker's own log line; None before an answer (a bad request, a read timeout)."""
 
-    def __init__(self, code: str, detail: str = ""):
+    def __init__(self, code: str, detail: str = "", request_id: str | None = None):
         super().__init__(f"{code}: {detail}" if detail else code)
-        self.code, self.detail = code, detail
+        self.code, self.detail, self.request_id = code, detail, request_id
 
 
 @dataclass
 class VisionResult:
     reply: dict
     image_png: bytes | None
+    # The worker invocation's Lambda request id (ResponseMetadata.RequestId), the key that joins
+    # the measurement to the worker's log line and its REPORT line; None from a fake or a local run.
+    request_id: str | None = None
 
     @property
     def metrics(self) -> dict:
@@ -145,21 +151,39 @@ def measure(
         body = response["Payload"].read()
     except Exception as exc:  # botocore's errors, timeouts and throttles alike
         raise VisionError("invoke", str(exc)) from exc
+    # Read once, right after the invoke answered: every failure from here on carries it, so a
+    # refused or mismatched request still joins the worker's log line (the id keys its REPORT line).
+    request_id = _request_id(response)
     if response.get("FunctionError"):
-        raise VisionError("invoke", f"worker raised: {body[:300]!r}")
+        raise VisionError("invoke", f"worker raised: {body[:300]!r}", request_id)
 
     try:
         reply = contract.validate_reply(json.loads(body))
     except (ValueError, contract.ContractError) as exc:
-        raise VisionError("reply", str(exc)) from exc
+        raise VisionError("reply", str(exc), request_id) from exc
     if not reply["ok"]:
-        raise VisionError(reply["error"], reply.get("detail", ""))
+        raise VisionError(reply["error"], reply.get("detail", ""), request_id)
     answered = (reply["backend"], reply.get("site_id"), reply.get("scene_id"))
     if answered != (backend, site.get("id"), scene.get("id")):
-        raise VisionError("reply", "the reply is for a different backend, site or scene")
+        raise VisionError("reply", "the reply is for a different backend, site or scene", request_id)
     if reply.get("task", contract.DEFAULT_TASK) != task:
-        raise VisionError("reply", "the reply is for a different task")
-    return VisionResult(reply=reply, image_png=_decode_image(reply.get("image_png_b64")))
+        raise VisionError("reply", "the reply is for a different task", request_id)
+    try:
+        image = _decode_image(reply.get("image_png_b64"))
+    except VisionError as exc:
+        exc.request_id = request_id
+        raise
+    return VisionResult(reply=reply, image_png=image, request_id=request_id)
+
+
+def _request_id(response) -> str | None:
+    """The Lambda request id of an invoke's response (ResponseMetadata.RequestId), or None when
+    the response (a fake's, say) has none."""
+    try:
+        request_id = (response.get("ResponseMetadata") or {}).get("RequestId")
+    except AttributeError:
+        return None
+    return request_id if isinstance(request_id, str) and request_id else None
 
 
 def _decode_image(b64: str | None) -> bytes | None:

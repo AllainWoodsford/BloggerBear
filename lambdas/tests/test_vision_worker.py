@@ -912,8 +912,12 @@ def test_replies_are_checked_per_task():
 ARN = "arn:aws:lambda:us-west-2:123456789012:function:bloggerbear-dev-vision-worker"
 
 
+REQUEST_ID = "7c1d2e3f-0000-4000-8000-00000000abcd"
+
+
 class FakeLambda:
-    """Invokes the real handler in-process, the way Lambda would."""
+    """Invokes the real handler in-process, the way Lambda would, answering with Lambda's
+    ResponseMetadata.RequestId (REQUEST_ID) as boto3 does."""
 
     def __init__(self, blobs=None, reply=None, function_error=None, raises=None):
         self.blobs, self.reply, self.function_error, self.raises = blobs, reply, function_error, raises
@@ -928,7 +932,7 @@ class FakeLambda:
         else:
             reply = worker.lambda_handler(json.loads(Payload), None, fetch=fetch_from(self.blobs))
             body = json.dumps(reply).encode()
-        out = {"Payload": io.BytesIO(body), "StatusCode": 200}
+        out = {"Payload": io.BytesIO(body), "StatusCode": 200, "ResponseMetadata": {"RequestId": REQUEST_ID}}
         if self.function_error:
             out["FunctionError"] = self.function_error
         return out
@@ -949,9 +953,51 @@ def test_client_round_trip(files, configured):
     result = vision_client.measure(SITE, SCENE, client=fake)
     assert result.metrics["count"] == 3
     assert result.image_png.startswith(vision_client.PNG_SIGNATURE)
+    assert result.request_id == REQUEST_ID  # the key that joins it to the worker's own log line
     name, payload = fake.calls[0]
     assert name == ARN
     assert payload["backend"] == "opencv" and payload["version"] == 1
+
+
+class NoMetadata(FakeLambda):
+    """A Lambda client whose response carries no ResponseMetadata (a stand-in's)."""
+
+    def invoke(self, FunctionName, InvocationType, Payload):
+        out = super().invoke(FunctionName, InvocationType, Payload)
+        del out["ResponseMetadata"]
+        return out
+
+
+def test_the_request_id_is_carried_on_every_failure_after_the_invoke_answered(files, configured):
+    """A refusal, a function error, a malformed reply, each mismatch and a bad image all carry the
+    worker invocation's request id; a read timeout (the invoke itself raised) and a request refused
+    at home carry none; a result from a client with no metadata has None."""
+    blobs = dict(files["blobs"])
+    del blobs[NIR_URL]
+    answered = [
+        FakeLambda(blobs=blobs),  # the worker refused: unreadable_scene
+        FakeLambda(reply={"errorMessage": "boom"}, function_error="Unhandled"),
+        FakeLambda(reply=b"not json"),
+        FakeLambda(reply={"version": 1, "ok": True, "metrics": {}}),
+        FakeLambda(reply=good_reply(site_id="elsewhere")),
+        FakeLambda(reply=good_reply(backend="cool")),
+        FakeLambda(reply=rail_reply(site_id=SITE["id"], scene_id=SCENE["id"])),  # the other task
+        FakeLambda(reply=good_reply(image_png_b64="***")),
+    ]
+    for fake in answered:
+        with pytest.raises(vision_client.VisionError) as err:
+            vision_client.measure(SITE, SCENE, client=fake)
+        assert err.value.request_id == REQUEST_ID, err.value
+    with pytest.raises(vision_client.VisionError) as err:
+        vision_client.measure(SITE, SCENE, client=FakeLambda(raises=TimeoutError("read timeout")))
+    assert err.value.code == "invoke" and err.value.request_id is None
+    with pytest.raises(vision_client.VisionError) as err:
+        vision_client.measure({"id": "x", "polygon": [[0, 0]]}, SCENE, client=FakeLambda())
+    assert err.value.code == "bad_request" and err.value.request_id is None
+    assert vision_client.measure(SITE, SCENE, client=NoMetadata(blobs=files["blobs"])).request_id is None
+    # Defaulted, so every fake that builds a result or raises still works.
+    assert vision_client.VisionResult(reply={}, image_png=None).request_id is None
+    assert vision_client.VisionError("invoke", "x").request_id is None
 
 
 def test_client_region_comes_from_the_arn():
