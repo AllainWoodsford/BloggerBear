@@ -177,5 +177,6 @@ def _decode_image(b64: str | None) -> bytes | None:
 
 
 def _allowed_prefixes() -> tuple[str, ...]:
-    raw = os.environ.get("VISION_ALLOWED_URL_PREFIXES", "")
-    return tuple(p.strip() for p in raw.split(",") if p.strip()) or contract.DEFAULT_ALLOWED_URL_PREFIXES
+    """The worker's own rule (vision_contract.allowed_prefixes), so a request the client lets
+    through is one the worker accepts."""
+    return contract.allowed_prefixes(os.environ.get("VISION_ALLOWED_URL_PREFIXES"))

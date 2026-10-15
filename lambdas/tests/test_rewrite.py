@@ -613,6 +613,6 @@ def test_taking_a_published_article_down_removes_as_many_figures_as_it_stores(aw
 
     assert result["status"] == "rewritten" and result["unpublished"] is True
     mocks["remove"].assert_called_once_with("a1", figure_count=2)
-    mocks["invalidate"].assert_called_once_with("a1")  # covers /articles/figures/a1/* too
+    mocks["invalidate"].assert_called_once_with("a1", figure_count=2)  # and /articles/figures/a1/*
     # The stored list is untouched: approving the rewrite renders the page with them again.
     assert _table("Articles").get_item(Key={"article_id": "a1"})["Item"]["figures"] == figures

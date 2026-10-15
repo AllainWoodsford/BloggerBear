@@ -32,5 +32,5 @@ variable "memory_size" {
 variable "timeout" {
   type        = number
   default     = 60
-  description = "Seconds. A site is read in a few seconds; this is the ceiling for a slow read. Keep it under common/vision_client.py's 90 s read timeout so the client sees the worker's own error, not its own."
+  description = "Seconds, at most 60. A site is read in a few seconds; this is the ceiling for a slow read. It is under common/vision_client.py's default 90 s read timeout, but the research tick's adapters (rail_access and satellite_vision) wait only 58 s (WORKER_READ_TIMEOUT in common/vision_sites.py), so their client gives up first, by design: the tick must keep time to finish, and a scene left unmeasured is tried again next tick."
 }

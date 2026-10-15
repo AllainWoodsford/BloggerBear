@@ -20,6 +20,7 @@ import time
 import cv2
 import numpy as np
 import pytest
+import requests
 from vision_fakes import fetcher, write_tiff
 
 import vision_worker_handler as worker
@@ -280,6 +281,65 @@ def test_asset_hosts_can_be_configured(files, monkeypatch):
     assert reply["error"] == "bad_request"
 
 
+SENTINEL_HOST = "https://sentinel-cogs.s3.us-west-2.amazonaws.com"
+# What a prefix without its trailing slash would let through a plain startswith.
+LOOKALIKES = (f"{SENTINEL_HOST}.evil.example/x/", f"{SENTINEL_HOST}@evil.example/x/")
+# Entries the parser skips: no path (the look-alike hole), not https, no scheme, no host.
+BAD_PREFIXES = (
+    SENTINEL_HOST,
+    "http://sentinel-cogs.s3.us-west-2.amazonaws.com/",
+    "sentinel-cogs.s3.us-west-2.amazonaws.com/",
+    "https://",
+    "https:///x/",
+    "ftp://mirror.example/",
+)
+
+
+def lookalike_request(host):
+    scene = {**request()["scene"], "assets": {band: f"{host}{band}.tif" for band in ("nir", "green")}}
+    return request(scene=scene)
+
+
+@pytest.mark.parametrize("bad", BAD_PREFIXES)
+def test_the_allowlist_takes_only_https_prefixes_with_a_path(bad, capsys):
+    good = "https://mirror.example/cogs/"
+    assert contract.allowed_prefixes(f"{bad}, {good}") == (good,)
+    assert f"skipped the allowed URL prefix {bad!r}" in capsys.readouterr().out
+    # Nothing usable left: the default, as when the variable is unset.
+    assert contract.allowed_prefixes(bad) == contract.DEFAULT_ALLOWED_URL_PREFIXES
+    for unset in (None, "", " , "):
+        assert contract.allowed_prefixes(unset) == contract.DEFAULT_ALLOWED_URL_PREFIXES
+    assert contract.allowed_prefixes(f"{SENTINEL_HOST}/") == (f"{SENTINEL_HOST}/",)
+
+
+@pytest.mark.parametrize("host", LOOKALIKES)
+def test_the_worker_refuses_a_lookalike_host_when_a_prefix_lacks_its_slash(files, monkeypatch, capsys, host):
+    monkeypatch.setenv("VISION_ALLOWED_URL_PREFIXES", SENTINEL_HOST)
+    fetched = []
+
+    def fetch(url, start, end):
+        fetched.append(url)
+        return fetch_from(files["blobs"])(url, start, end)
+
+    reply = worker.lambda_handler(lookalike_request(host), None, fetch=fetch)
+    assert reply["error"] == "bad_request" and "allowed location" in reply["detail"]
+    assert fetched == [] and "skipped the allowed URL prefix" in capsys.readouterr().out
+    # The default it fell back to still reads the real bucket.
+    assert worker.lambda_handler(request(), None, fetch=fetch_from(files["blobs"]))["ok"] is True
+
+
+@pytest.mark.parametrize("host", LOOKALIKES)
+def test_the_client_refuses_a_lookalike_host_when_a_prefix_lacks_its_slash(configured, monkeypatch, host):
+    monkeypatch.setenv("VISION_ALLOWED_URL_PREFIXES", f"{SENTINEL_HOST},https://mirror.example/cogs/")
+    assert vision_client._allowed_prefixes() == ("https://mirror.example/cogs/",)
+    scene = {**SCENE, "assets": {band: f"{host}{band}.tif" for band in ("nir", "green")}}
+    fake = FakeLambda(reply={})
+    with pytest.raises(vision_client.VisionError) as raised:
+        vision_client.measure(SITE, scene, client=fake)
+    assert raised.value.code == "bad_request"
+    assert fake.calls == []  # refused in the home region, before any invoke
+
+
 def test_backend_mismatch(files):
     reply = worker.lambda_handler(request(backend="cool"), None, fetch=fetch_from(files["blobs"]))
     assert reply["error"] == "backend_mismatch"
@@ -397,18 +457,52 @@ def test_unexpected_failures_are_internal_and_quiet(files, monkeypatch):
     assert "secret" not in reply["detail"]
 
 
-class FakeResponse:
-    def __init__(self, status, content):
-        self.status_code, self.content = status, content
+class Body(io.RawIOBase):
+    """A reply body that counts what is read from it, `size` bytes of `fill` (made as they are read,
+    so a "whole object" can be large without being held)."""
+
+    def __init__(self, size, fill=b"\0"):
+        self.left, self.fill, self.served = size, fill, 0
+
+    def readable(self):
+        return True
+
+    def read(self, n=-1):
+        n = self.left if n is None or n < 0 else min(n, self.left)
+        start = self.served
+        self.left -= n
+        self.served += n
+        return bytes(self.fill[(start + i) % len(self.fill)] for i in range(n))
 
 
-class FakeSession:
-    def __init__(self, response):
-        self.response, self.headers = response, None
+class FakeHttp(requests.adapters.BaseAdapter):
+    """A transport adapter mounted on the worker's kind of requests.Session (no network): answers
+    each request with `answer(request)` -> (status, headers, body), and records every URL sent."""
 
-    def get(self, url, headers, timeout):
-        self.headers = headers
-        return self.response
+    def __init__(self, answer):
+        super().__init__()
+        self.answer, self.sent = answer, []
+
+    def send(self, request, **kwargs):
+        self.sent.append((request.url, dict(request.headers)))
+        status, headers, body = self.answer(request)
+        response = requests.Response()
+        response.status_code, response.headers = status, requests.structures.CaseInsensitiveDict(headers)
+        response.raw = body if isinstance(body, io.IOBase) else io.BytesIO(body)
+        response.url, response.request = request.url, request
+        return response
+
+    def close(self):
+        pass
+
+
+def mount(monkeypatch, answer) -> FakeHttp:
+    http = FakeHttp(answer)
+    session = worker._NoRedirectSession()  # what http_fetch builds
+    session.mount("https://", http)
+    session.mount("http://", http)
+    monkeypatch.setattr(worker, "_session", session)
+    return http
 
 
 @pytest.mark.parametrize(
@@ -416,16 +510,98 @@ class FakeSession:
     [(206, b"abc", b"abc"), (200, b"0123456789", b"234")],
 )
 def test_http_fetch_handles_ranged_and_whole_replies(monkeypatch, status, content, expected):
-    session = FakeSession(FakeResponse(status, content))
-    monkeypatch.setattr(worker, "_session", session)
-    assert worker.http_fetch("u", 2, 4) == expected
-    assert session.headers == {"Range": "bytes=2-4"}
+    http = mount(monkeypatch, lambda request: (status, {}, content))
+    assert worker.http_fetch(NIR_URL, 2, 4) == expected
+    ((url, headers),) = http.sent
+    assert url == NIR_URL and headers["Range"] == "bytes=2-4"
 
 
 def test_http_fetch_errors_are_unreadable(monkeypatch):
-    monkeypatch.setattr(worker, "_session", FakeSession(FakeResponse(403, b"denied")))
+    mount(monkeypatch, lambda request: (403, {}, b"denied"))
     with pytest.raises(cog.CogError, match="403"):
-        worker.http_fetch("u", 0, 1)
+        worker.http_fetch(NIR_URL, 0, 1)
+
+
+RUNTIME_API = "http://127.0.0.1:9001/2018-06-01/runtime/invocation/next"
+
+
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+def test_a_redirect_is_never_followed_and_the_scene_is_unreadable(files, monkeypatch, status):
+    """A 3xx from an allowlisted URL could point anywhere: here the Lambda Runtime API, whose reply
+    would otherwise come back as the band's bytes. No second request is made, and the caller gets
+    `unreadable_scene`, as common/osm.py treats a redirect."""
+
+    def answer(request):
+        if request.url.startswith(PREFIX):
+            return status, {"Location": RUNTIME_API}, b""
+        return 200, {}, b"the runtime's next event"
+
+    http = mount(monkeypatch, answer)
+    with pytest.raises(cog.CogError, match=f"HTTP {status} redirect"):
+        worker.http_fetch(NIR_URL, 0, 15)
+    assert [url for url, _ in http.sent] == [NIR_URL]
+
+    http.sent.clear()
+    reply = worker.lambda_handler(request(), None)  # the real fetch, through the same session
+    assert reply["error"] == "unreadable_scene" and "redirect" in reply["detail"]
+    assert len(http.sent) == 1 and http.sent[0][0].startswith(PREFIX)
+
+
+@pytest.mark.parametrize("location", [RUNTIME_API, "http://[::1/x"])
+def test_a_redirect_is_refused_unread_whatever_its_body_or_location(monkeypatch, location):
+    """With allow_redirects=False, a plain requests.Session still reads a 3xx's whole body and parses
+    its Location before http_fetch sees the status (Session.send's resolve_redirects). The worker's
+    session never starts that: the body is not read, and a Location that does not parse is still
+    `unreadable_scene`, not a ValueError (`internal`)."""
+    bodies = []
+
+    def answer(request):
+        bodies.append(Body(1024 * 1024))
+        return 302, {"Location": location}, bodies[-1]
+
+    http = mount(monkeypatch, answer)
+    with pytest.raises(cog.CogError, match="HTTP 302 redirect"):
+        worker.http_fetch(NIR_URL, 0, 15)
+    reply = worker.lambda_handler(request(), None)
+    assert reply["error"] == "unreadable_scene" and "redirect" in reply["detail"]
+    assert len(http.sent) == 2 and [body.served for body in bodies] == [0, 0]
+
+    # The session http_fetch builds itself is that kind (requests' own transport, faked).
+    monkeypatch.setattr(worker, "_session", None)
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", lambda self, req, **kw: http.send(req, **kw))
+    with pytest.raises(cog.CogError, match="HTTP 302 redirect"):
+        worker.http_fetch(NIR_URL, 0, 15)
+    assert isinstance(worker._session, worker._NoRedirectSession) and bodies[-1].served == 0
+
+
+def test_a_whole_object_sent_for_a_range_is_read_only_as_far_as_the_range(monkeypatch):
+    """A server that ignores Range answers 200 with the whole object: only end + 1 bytes of it are
+    read (at most a chunk more), never the object."""
+    body = Body(512 * 1024 * 1024, fill=b"0123456789")  # 512 MiB, never made whole
+    mount(monkeypatch, lambda request: (200, {}, body))
+    assert worker.http_fetch(NIR_URL, 2, 4) == b"234"
+    assert body.served <= 5 + worker._READ_CHUNK_BYTES
+
+    big = Body(512 * 1024 * 1024)
+    mount(monkeypatch, lambda request: (200, {}, big))
+    assert len(worker.http_fetch(NIR_URL, 1000, 199_999)) == 199_000
+    assert big.served <= 200_000 + worker._READ_CHUNK_BYTES
+
+    # A 206 longer than its range (a broken server) is cut to the range too.
+    longer = Body(10 * 1024 * 1024, fill=b"x")
+    mount(monkeypatch, lambda request: (206, {}, longer))
+    assert worker.http_fetch(NIR_URL, 100, 199) == b"x" * 100
+    assert longer.served <= 100 + worker._READ_CHUNK_BYTES
+
+
+def test_a_range_reply_is_read_to_its_end_so_its_connection_can_be_reused(monkeypatch):
+    """A well-formed 206 is read to its end (requests then hands its connection back to the
+    session's pool rather than closing it): the stream must not be cut at exactly the range."""
+    reply = Body(300_000)
+    mount(monkeypatch, lambda request: (206, {}, reply))
+    response = worker._session.get(NIR_URL, stream=True)
+    assert len(worker._read_at_most(response, 300_000)) == 300_000
+    assert response._content_consumed and reply.left == 0
 
 
 # --- the rail access task ------------------------------------------------------------------------
