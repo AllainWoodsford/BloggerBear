@@ -599,7 +599,17 @@ All shipped and deployed; the design and decisions for each are in
 - [x] Crypto research looks up 2 to 5 altcoins a tick, not 5 to 10 (#267)
 - [x] Each deploy role is refused the other environment's resources, by a Deny-only
   policy beside the shared one (bootstrap; needs a hand apply)
+- [x] Cost saving: four firewall switches, every one on by default (`WAF_REGIONAL_ENABLED`,
+  `WAF_ADMIN_ALLOWLIST`, `WAF_SITE_ENABLED`, `WAF_LOG_ALL_REQUESTS`, each `_DEV`/`_PROD` first),
+  with the admin API's address allowlist always on as its resource policy and `moved` blocks so
+  the default plan changes nothing (docs/cost-saving.md; project-plan §11)
 - [x] Staggered research and authoring schedules (production and dev)
+- [x] Staggered schedules by slot: `stagger_minutes` on the pipeline row, `stagger_slot` on each
+  topic, the effective schedules written at the slot's minute and recorded on the row, `topics
+  schedule` / `topics reschedule`; `topics pause` / `resume` (schedules disabled, the handlers
+  refuse, "Paused" on the topic page, a musing each way); the digest kept general with no
+  figures and no longer held for a person on a financial contributor alone (project-plan §11;
+  the dispatcher design revised for it, docs/enhancements/dispatcher-sqs-enhancement.md)
 - [x] Render-blocking CSS kept on purpose; async preload reverted (#127)
 - [x] GitHub Trending no longer scrapes `github.com/trending`: it calls the
   official REST Search API (most-starred repos created in the last week),

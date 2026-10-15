@@ -482,6 +482,10 @@
   //
   var PENDING_REVIEW_LABEL = "Pending review";
   var RESEARCHING_LABEL = "Researching";
+  // A topic the operator has paused (admin CLI `topics pause`): the API sends a "paused" item in
+  // place of the researching one, with `since` (when it was paused). The box then reads "Paused"
+  // and holds its spinner still, so a quiet topic is not shown as busy.
+  var PAUSED_LABEL = "Paused";
   // At most this many articles awaiting review are listed; any beyond them become one plain
   // "...more" line (text, not a control). Matches public_api_handler.py's PIPELINE_PENDING_LIMIT,
   // which already sends no more than this -- capped here too so an older API can't flood the box.
@@ -494,11 +498,15 @@
     if (activity && Array.isArray(activity.pipeline_items) && activity.pipeline_items.length > 0) {
       activity.pipeline_items.forEach(function (item) {
         var isPending = item.status === "pending_review";
+        var isPaused = item.status === "paused";
         (isPending ? pending : others).push({
-          label: item.label || (isPending ? PENDING_REVIEW_LABEL : RESEARCHING_LABEL),
+          label: item.label || (isPending ? PENDING_REVIEW_LABEL : isPaused ? PAUSED_LABEL : RESEARCHING_LABEL),
           title: item.title || "",
+          paused: isPaused,
           // Only the researching item has one: when its source was last checked.
           checkedAt: item.checked_at || "",
+          // Only the paused item has one: when the operator paused the topic.
+          since: isPaused ? item.since || "" : "",
         });
       });
     } else {
@@ -506,7 +514,9 @@
       for (var i = 0; i < Math.min(count, PIPELINE_PENDING_LIMIT); i++) {
         pending.push({ label: PENDING_REVIEW_LABEL, title: "" });
       }
-      if (activity && activity.researching) {
+      if (activity && activity.paused) {
+        others.push({ label: PAUSED_LABEL, title: "", paused: true });
+      } else if (activity && activity.researching) {
         others.push({ label: RESEARCHING_LABEL, title: "" });
       }
     }
@@ -520,30 +530,41 @@
     return items.concat(others);
   }
 
-  // "checked 38 min ago" for an ISO timestamp, "" if it can't be read. A time slightly in the
-  // future (clock skew between the server and this browser) reads as "just now".
-  function formatChecked(isoString) {
+  // "checked 38 min ago" (or "paused 2 days ago") for an ISO timestamp, "" if it can't be read.
+  // A time slightly in the future (clock skew between the server and this browser) reads as
+  // "just now".
+  function formatAgo(verb, isoString) {
     var then = new Date(isoString).getTime();
     if (isNaN(then)) {
       return "";
     }
     var minutes = Math.floor((Date.now() - then) / 60000);
     if (minutes < 1) {
-      return "checked just now";
+      return verb + " just now";
     }
     if (minutes < 60) {
-      return "checked " + minutes + " min ago";
+      return verb + " " + minutes + " min ago";
     }
     var hours = Math.floor(minutes / 60);
     if (hours < 24) {
-      return "checked " + hours + (hours === 1 ? " hour ago" : " hours ago");
+      return verb + " " + hours + (hours === 1 ? " hour ago" : " hours ago");
     }
     var days = Math.floor(hours / 24);
-    return "checked " + days + (days === 1 ? " day ago" : " days ago");
+    return verb + " " + days + (days === 1 ? " day ago" : " days ago");
+  }
+
+  function formatChecked(isoString) {
+    return formatAgo("checked", isoString);
   }
 
   function renderPipelineSection(items) {
-    var box = el("section", { className: "pipeline-box", attrs: { "aria-label": "Articles in the pipeline" } });
+    var paused = items.some(function (item) {
+      return item.paused;
+    });
+    var box = el("section", {
+      className: paused ? "pipeline-box pipeline-box--paused" : "pipeline-box",
+      attrs: { "aria-label": "Articles in the pipeline" },
+    });
 
     var titleBar = el("div", { className: "pipeline-titlebar" });
     // Decorative spinner -- aria-hidden so a screen reader doesn't
@@ -561,19 +582,26 @@
         return;
       }
       var row = el("li");
-      row.appendChild(el("span", { className: "pipeline-status", text: item.label }));
+      row.appendChild(
+        el("span", {
+          className: item.paused ? "pipeline-status pipeline-status--paused" : "pipeline-status",
+          text: item.label,
+        })
+      );
       if (item.title) {
         row.appendChild(el("span", { className: "pipeline-item-title", text: item.title }));
       }
       var checked = item.checkedAt ? formatChecked(item.checkedAt) : "";
-      if (checked) {
+      var since = item.since ? formatAgo("paused", item.since) : "";
+      if (checked || since) {
         // The exact time is in the tooltip; the row says how long ago, so a quiet hour
-        // (a check that found nothing new) still reads as alive rather than stuck.
+        // (a check that found nothing new) still reads as alive rather than stuck, and a
+        // paused topic says how long it has been resting.
         row.appendChild(
           el("span", {
             className: "pipeline-item-meta",
-            text: checked,
-            attrs: { title: new Date(item.checkedAt).toLocaleString() },
+            text: checked || since,
+            attrs: { title: new Date(item.checkedAt || item.since).toLocaleString() },
           })
         );
       }
