@@ -327,7 +327,7 @@ resource "aws_lambda_function" "ops_mcp" {
   function_name = local.name
   # The log group first (see it), and the policy too: a function that exists before its role can
   # read anything would answer its first requests with AccessDenied.
-  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings, aws_iam_role_policy.ops_mcp_firewall, aws_iam_role_policy.ops_mcp_logs]
+  depends_on    = [aws_cloudwatch_log_group.lambda, aws_iam_role_policy.ops_mcp, aws_iam_role_policy.ops_mcp_memory, aws_iam_role_policy.ops_mcp_briefings, aws_iam_role_policy.ops_mcp_firewall, aws_iam_role_policy.ops_mcp_logs, aws_iam_role_policy.ops_mcp_vision]
   role          = aws_iam_role.ops_mcp.arn
   handler       = "run.sh"
   runtime       = "python3.11"
@@ -404,6 +404,17 @@ resource "aws_lambda_function" "ops_mcp" {
         # The firewall's log groups, as "<region>:<name>", only where firewall_review may exist
         # (firewall.tf); empty everywhere else, and then the tool is not registered.
         OPS_WAF_LOG_GROUPS = local.firewall_enabled ? join(",", [for group in var.waf_log_groups : "${group.region}:${group.name}"]) : ""
+
+        # The vision worker's Region where the root deploys it, and "" where it does not: the one
+        # switch the assistant's vision tools read (ops_mcp/vision_status.py, and the catalogue's
+        # region_env). With it empty nothing of the vision pipeline is read, matching vision.tf,
+        # which grants nothing then.
+        OPS_VISION_REGION = var.vision_enabled && var.vision_region != null ? var.vision_region : ""
+
+        # The page's app client: only its callers see operator and third-party text, in a table's
+        # "(unverified)" columns (memory.screen_caller). Alexa+, and any other client, is a voice
+        # caller and gets counts and code words only.
+        OPS_SCREEN_CLIENT_IDS = aws_cognito_user_pool_client.page.id
 
         # The SDK refuses any request whose Host header is not on this list (421), and an empty
         # list refuses everything (ops_mcp/server.py). Behind API Gateway the Host a caller sends

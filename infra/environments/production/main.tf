@@ -2777,6 +2777,12 @@ module "ops_assistant" {
   agent_allowed_origin = local.site_url
 
   agent_forward_key = random_password.ops_agent_forward_key.result
+
+  # The assistant's vision round (vision.tf in the module): where the worker runs, it may read the
+  # worker's log there and each topic's running state, and is told the Region. Known at plan time;
+  # nothing here waits on module.vision_worker.
+  vision_enabled = var.vision_enabled
+  vision_region  = var.vision_region
 }
 
 # Made once and kept in state, as in dev: the key the agent sends the MCP server so that

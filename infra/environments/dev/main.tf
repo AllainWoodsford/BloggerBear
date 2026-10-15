@@ -2625,6 +2625,12 @@ module "ops_assistant" {
   # The key the agent sends the MCP server with the operator's address, so that "allowlist"
   # admits a question asked through the agent (the server otherwise sees Lambda's address).
   agent_forward_key = random_password.ops_agent_forward_key.result
+
+  # The assistant's vision round (vision.tf in the module): where the worker runs, it may read the
+  # worker's log there and each topic's running state, and is told the Region. Known at plan time;
+  # nothing here waits on module.vision_worker.
+  vision_enabled = var.vision_enabled
+  vision_region  = var.vision_region
 }
 
 # Made once and kept in state, like random_password.api_origin_verify: both functions are given
