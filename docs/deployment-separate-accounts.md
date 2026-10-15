@@ -356,12 +356,14 @@ is off by default and nothing of it exists until you turn it on. With two accoun
   case (GitHub Actions compares strings ignoring case), turns the worker on; any other value, or
   unset, is read as off. On the repository it turns the worker on for dev, and for production at
   its next release unless the `production` environment has its own value: the release job runs in
-  that environment, and its `vars.VISION_ENABLED` falls back to the repository's. To keep
-  production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production`
-  environment. On the `production` environment alone, `true` turns it on only there. Setting it
-  to anything else takes the worker down on the next apply; so does removing it, except on the
-  `production` environment, where removing it falls back to the repository's value. Topics keep
-  their state.
+  that environment, and its `vars.VISION_ENABLED` falls back to the repository's. With two
+  accounts, until the production account's bootstrap has been re-applied, the next release's
+  apply is refused instead (the production deploy role has no rights in `vision_region` yet), so
+  set `VISION_ENABLED` to `false` on the `production` environment before you set the repository
+  variable. The same setting keeps production off until the dev trial is done. On the
+  `production` environment alone, `true` turns it on only there. Setting it to anything else
+  takes the worker down on the next apply; so does removing it, except on the `production`
+  environment, where removing it falls back to the repository's value. Topics keep their state.
 
 The worker in each account reads the same public imagery and holds no state; dev's and
 production's never meet.

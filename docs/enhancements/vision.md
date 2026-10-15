@@ -214,10 +214,11 @@ inside the worker, a `ValueError` from the analysis included, is `internal` and 
   20 m), under the reader's 4096 px for ships: its compute grows with the window and the worker
   has one vCPU. On one core, through `lambda_handler`, the worst contract-valid networks (ways
   reaching the window's edges) take up to 37.5 s at 4096 px, about 49 s on arm64 and 59 to 79 s
-  with the read, past the client's 58 s; at 3,584 px up to 25.5 s at 1.32 GB, about 33 s on arm64
-  and 41 to 56 s with the read, within it (§7, §8 lesson 13). The four starting cities need at
-  most 3,327 × 3,306 px (Sydney) with the reader's 16 px pad. A larger site is
-  `window_too_large` once the reference band's header is read, before any tile.
+  with the read, past the client's 58 s; at 3,584 px up to 25.5 s and up to 1.32 GB (two
+  different networks), about 33 s on arm64 and 41 to 56 s with the read, within it (§7, §8
+  lesson 13). The four starting cities need at most 3,327 × 3,306 px (Sydney) with the reader's
+  16 px pad. A larger site is `window_too_large` once the reference band's header is read, before
+  any tile.
 - **`network`.** Required for rail and refused for ships: the shape `common/osm.py` returns, checked
   by `validate_network` against `NETWORK_LIMITS` (60,000 way points in all, 5,000 ways, 2,000
   stations, 5,000 points of interest, names cut at 80 characters), every lon/lat checked as a
@@ -654,12 +655,13 @@ do:
 
 The 3,584 px budget assumes the read scales with the window's pixels; a full 30 s read on top of
 the worst case would not fit. That worst case is constructed: two 1.3 km-wide solid bars of track
-along both edges of the window, which no real network looks like. The reviewer's edge-reaching
-inputs stay within 21.9 s. No real OpenStreetMap network has been timed: the "about 9 s" for a
-city is PR J's synthetic city, 180 stations and 221 nodes, 9.2 to 9.6 s at 4096 px on four cores
-(the analysis and the figure, not pinned to one core). The deployed Sydney run with the Overpass
-network (§9) will give the real figure. A worker that times out is an `invoke` error the adapter
-retries on its next tick. The 1.3 factor is an assumption until the Graviton run (§10).
+along both edges of the window, which no real network looks like. At 3,584 px, the reviewer's
+edge-reaching inputs with at most one bar stay within 21.9 s. No real OpenStreetMap network has
+been timed: the "about 9 s" for a city is PR J's synthetic city, 180 stations and 221 nodes, 9.2
+to 9.6 s at 4096 px on four cores (the analysis and the figure, not pinned to one core). The
+deployed Sydney run with the Overpass network (§9) will give the real figure. A worker that times
+out is an `invoke` error the adapter retries on its next tick. The 1.3 factor is an assumption
+until the Graviton run (§10).
 
 Tests: the full suite passed at 4412 on the stack's last PR, and 4448 with the whole stack merged
 into the latest `dev`; each rail PR added its own, with the full suite green before every push.
@@ -726,13 +728,13 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     edges, the worst contract-valid networks take up to 37.5 s at 4096 px, about 49 s at an assumed
     1.3 times slower arm64 core, which with a 10 to 30 s read is 59 to 79 s, past the client's
     58 s. So the rail task got its own window cap, `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at
-    20 m; Sydney needs 3,327): there the same inputs take at most 25.5 s at 1.32 GB peak, about
-    33 s on arm64, 41 to 56 s with the read (§7). Station adjacency, the ghost-line walk and the
-    run lengths were made linear first (PR J): for 2,000 stations off one junction grid, the old
-    adjacency walk asked a node for its neighbours 4,052,000 times, the new pass asks 4,025 times
-    and takes up to 1.0 s; and the thinning works only in the box round what its last pass removed
-    (lesson 10). The lesson: time a bound on the cores the target has, not the ones the build
-    machine has.
+    20 m; Sydney needs 3,327): there the same inputs take at most 25.5 s (about 33 s on arm64,
+    41 to 56 s with the read) and peak at 1.32 GB at most, on another network (§7). Station
+    adjacency, the ghost-line walk and the run lengths were made linear first (PR J): for 2,000
+    stations off one junction grid, the old adjacency walk asked a node for its neighbours
+    4,052,000 times, the new pass asks 4,025 times and takes up to 1.0 s; and the thinning works
+    only in the box round what its last pass removed (lesson 10). The lesson: time a bound on the
+    cores the target has, not the ones the build machine has.
 14. **The state a city costs.** A city's network at the caps is 2.6 to 3 MB of JSON, and the
     first state kept every scene's station list: three cities, twenty scenes each, made a 54 MB
     state and a 390 MB peak in the 512 MB tick. Only the newest entry now keeps the lists
@@ -802,11 +804,12 @@ None of this is automatic.
     failing leaves a city unmeasured; a self-hosted or mirrored extract would remove the
     dependency.
 12. **A Finding still being written when the daily cycle starts can be missed.** The research
-    tick stores the adapter's `fetched_at`, taken when its fetch starts, as the Finding's
-    `captured_at`, and writes the Finding at the tick's end. A Finding whose tick is still running
-    when its topic's daily cycle starts is not there for that run, and is dated before the
-    `last_article_at` that run stamps, so once that run writes an article no later window holds
-    it. Older than PR K, and for every topic; a code follow-up.
+    tick stores the adapter's `fetched_at`, taken during its fetch (at its start for the vision
+    adapters), before the summary call and the write, as the Finding's `captured_at`, and writes
+    the Finding at the tick's end. A Finding whose tick is still running when its topic's daily
+    cycle starts is not there for that run, and is dated before the `last_article_at` that run
+    stamps, so once that run writes an article no later window holds it. Older than PR K, and for
+    every topic; a code follow-up.
 13. **The COOL Dockerfile is not scanned.** `docker/vision-cool/Dockerfile` is covered by no IaC or
     misconfiguration scan: Trivy `config` and Checkov scan `infra/` only.
 14. **Two stale size comments.** The comments on `NETWORK_LIMITS` (`common/vision_contract.py`) and

@@ -541,12 +541,12 @@ variable, not with a tfvars edit. Every setting it uses is in
    topic's coverage floor is its first observation, reported once, so a Finding, then a held
    article, is what success looks like. A tick that measures nothing (the worker off, every site
    in `last_error`), or only a scene under the floor (mostly cloud), writes no Finding.
-4. **To turn it off again:** set the variable to any value but `true`, or remove it (either is
-   read as off; on the `production` environment, removing it falls back to the repository's
-   value, so set it to `false` there instead), and run a deploy. The next apply removes the
-   worker, its bucket, its log group and the invoke right; topics keep their state and their
-   history, and record `last_error` on each site until the worker is back. Disable or delete the
-   topics if you do not want those errors.
+4. **To turn it off again:** set the variable to `false` (any value other than `true` in any
+   letter case), or remove it (either is read as off; on the `production` environment, removing
+   it falls back to the repository's value, so set it to `false` there instead), and run a
+   deploy. The next apply removes the worker, its bucket, its log group and the invoke right;
+   topics keep their state and their history, and record `last_error` on each site until the
+   worker is back. Disable or delete the topics if you do not want those errors.
 
 The worker reads public data over HTTPS (Sentinel-2 from the `sentinel-cogs` bucket, nothing
 else) and needs no key and no other access. It has no alarm of its own: observability's alarms
@@ -623,17 +623,23 @@ first, then the one attempted longest ago; a city skipped for that cap, or defer
 tick ran short of time, keeps its place.
 
 **When a run writes nothing.** A run that writes nothing stamps nothing. That covers three cases:
-it found no Finding; it had no usable angle; or it ended in an error. An error is quiet: the daily
-cycle catches it and returns `"status": "error"`, so Step Functions sees a successful invoke and
-does not retry it, and nothing reaches the DLQ or an alarm. The error is in the execution's output,
-not in the function's log; the sign is a city's run day with a new Finding but no new item in the
-review inbox. The next run then still starts at the city's last article, but never more than 192
-hours back. For a two-day city that covers everything after one such run: its runs are 3 and 4
-days apart, so its last article is at most 7 days old. For Boston, the once-a-week city, or after
-two such runs in a row, Findings older than 192 hours drop out: for Boston that is about six of the
-week's seven days, and for a two-day city after two missed runs, two or three days.
+it found no Finding; it had no usable angle; or it ended in an error. An error the handler catches
+is quiet: the daily cycle returns `"status": "error"`, so Step Functions sees a successful invoke
+and does not retry it, and nothing reaches the DLQ or an alarm. The error is in the execution's
+output, not in the function's log; the sign is a city's run day with a new Finding but no new item
+in the review inbox. A timeout (the function's `timeout` is 300 s) or a crash is not caught: the
+state machine retries it twice and then sends it to the DLQ (`admin_cli failed-executions list`),
+so it is not silent. The next run then still starts at the city's last article, but never more
+than 192 hours back. A run that found no Finding loses nothing: its window was empty, and the next
+run's 192 hours reach back past it (no city's runs are more than 7 days apart), so they cover
+everything made since. After either of the other two, a two-day city still gets everything on its
+next run: its runs are 3 and 4 days apart, so its last article is at most 7 days old. For Boston,
+the once-a-week city, or after two such runs in a row, Findings older than 192 hours drop out: for
+Boston that is about six of the week's seven days, and for a two-day city after two missed runs,
+two or three days.
 
-The remedy is to run the city's daily cycle again by hand soon after:
+After a run that had no usable angle or ended in an error, the remedy is to run the city's daily
+cycle again by hand soon after:
 
 ```bash
 python scripts/admin_cli.py topics trigger rail-boston --pipeline daily_cycle

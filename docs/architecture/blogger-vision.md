@@ -82,11 +82,11 @@ group and the bucket its package is uploaded through, and nothing of ours to mig
 
 ### What is deployed
 
-**With `VISION_ENABLED` unset or anything but `true`: nothing.** The variable is read as a switch:
-`true`, in any letter case (GitHub Actions compares strings ignoring case), turns the worker on; any
-other value, or unset, is read as off. Both environments call the module with
-`count = var.vision_enabled ? 1 : 0`; the research tick's `VISION_WORKER_ARN` is empty, which the
-client reads as "not configured", and the invoke policy does not exist. A vision topic created
+**With `VISION_ENABLED` unset or anything but `true` (in any letter case): nothing.** The variable
+is read as a switch: `true`, in any letter case (GitHub Actions compares strings ignoring case),
+turns the worker on; any other value, or unset, is read as off. Both environments call the module
+with `count = var.vision_enabled ? 1 : 0`; the research tick's `VISION_WORKER_ARN` is empty, which
+the client reads as "not configured", and the invoke policy does not exist. A vision topic created
 anyway runs, records `last_error` on every site, and writes no Finding; its first Finding comes with
 the first scene it measures at or above the coverage floor (the first observation, reported once; a
 cloudier scene is kept but reports nothing). One thing shows on every deployment, the worker on or

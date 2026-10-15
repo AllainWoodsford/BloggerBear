@@ -977,14 +977,15 @@ take up to 37.5 s at 4096 px, about 49 s on an arm64 core taken as 1.3 times slo
 10 to 30 s read is 59 to 79 s, past the adapter's 58 s wait. **Fix:** the station passes were made
 linear, the thinning incremental (12.22), and the rail task got its own window cap,
 `RAIL_MAX_WINDOW_PX` = 3,584 px (71.7 km at 20 m; the four starting cities need at most 3,327):
-there the worst case is 25.5 s and 1.32 GB on one core, about 33 s on arm64, 41 to 56 s with the
-read, which covers 77 % of the pixels. That case is constructed (two 1.3 km-wide bars of track
-along both edges of the window). No real OpenStreetMap network has been timed: the "about 9 s" for
-a city is PR J's synthetic city, 180 stations and 221 nodes, 9.2 to 9.6 s at 4096 px on four
-cores, and the deployed Sydney run with the Overpass network (vision.md §9) will give the real
-figure. The comments now quote one-core figures and name the CPU. **Lesson:** time a bound on the
-hardware it bounds: pin the cores, set the library's threads, and write the CPU next to the number.
-(#295)
+there the slowest case takes 25.5 s and the largest peaks at 1.32 GB on one core; the slowest is
+about 33 s on arm64, 41 to 56 s with the read, which covers 77 % of the pixels. That slowest case
+is constructed (two 1.3 km-wide bars of track along both edges of the window); the 1.32 GB peak is
+another network, 2 px-apart full-width ways, which takes 12.2 to 13.1 s. No real OpenStreetMap
+network has been timed: the "about 9 s" for a city is PR J's synthetic city, 180 stations and 221
+nodes, 9.2 to 9.6 s at 4096 px on four cores, and the deployed Sydney run with the Overpass network
+(vision.md §9) will give the real figure. The comments now quote one-core figures and name the
+CPU. **Lesson:** time a bound on the hardware it bounds: pin the cores, set the library's threads,
+and write the CPU next to the number. (#295)
 
 **12.19 The rail topics had no editorial goal of their own.** Writing the city topic templates
 meant following a topic's fields into the prompts that read them. The research summary uses the

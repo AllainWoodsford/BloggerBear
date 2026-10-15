@@ -289,7 +289,10 @@ kept is numbers and one map per scene.
 
 1. **Deploy with the switch.** Re-apply `infra/bootstrap` by hand with `vision_region`
    (`us-west-2`), set the `VISION_ENABLED` repository variable to `true`, and merge or dispatch
-   a deploy. The worker, its bucket and log group appear in us-west-2; nothing else changes.
+   a deploy. The worker, its bucket and log group appear in us-west-2; in the home region the
+   shared execution role gets one invoke policy and the research tick gets the worker's ARN. The
+   repository variable also turns the worker on in production at the next release, unless the
+   `production` environment sets `VISION_ENABLED` to `false`.
    ([runsheet](../deployment-runsheet.md#vision-optional))
 2. **Create the topics.** The four city topics are complete topic bodies in
    `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,

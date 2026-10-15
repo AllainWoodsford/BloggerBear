@@ -246,9 +246,11 @@ ran on dev for a few ticks, with a held article whose figure and numbers you rea
 and no `last_error` repeating in its running state. Off by default holds only while the repository
 variable is off: the dev runsheet turns the worker on with the `VISION_ENABLED` repository
 variable, and the release job runs in the `production` environment, whose `vars.VISION_ENABLED`
-falls back to the repository's value, so the next release would turn it on here too. To keep
-production off until the dev trial is done, set `VISION_ENABLED` to `false` on the `production`
-environment. Then, when the dev run was satisfactory, in order:
+falls back to the repository's value, so the next release would turn it on here too (with two
+accounts, until step 1 below is done in the production account, that release's apply is refused
+instead). To keep production off until the dev trial is done, set `VISION_ENABLED` to `false` on
+the `production` environment before you set the repository variable. Then, when the dev run was
+satisfactory, in order:
 
 1. Re-apply the bootstrap by hand with `vision_region` (in the production account, if you have
    two), checking the plan touches only the deploy roles' policies.
