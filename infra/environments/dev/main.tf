@@ -882,6 +882,9 @@ module "admin_api" {
     # out when it's actually finished, since there's no dedicated job-
     # status system. See admin_api_handler.py's _get_latest_finding_route.
     "GET /topics/{topic_id}/findings/latest",
+    # A topic's Findings, newest first (`findings list`): the admin_api_handler.py route the
+    # assistant's topic_findings and the topic-findings Claude Code skill mirror.
+    "GET /topics/{topic_id}/findings",
     # Force-publish override -- publishes an article regardless of its
     # current status, unlike the moderation approve/reject routes below
     # which only act on a pending ModerationQueue item. See

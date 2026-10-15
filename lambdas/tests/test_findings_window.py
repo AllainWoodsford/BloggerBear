@@ -242,3 +242,70 @@ def test_an_invalid_stored_window_falls_back_to_the_default_day(bad):
 
 def test_it_is_pure_and_takes_no_topic_at_all():
     assert findings_window.window_start(None, RUN) == _hours_before(24)
+
+
+# --- the paged readers behind topic_findings and the Admin API's findings route -------------------
+
+
+def _epoch(**delta) -> int:
+    return int((datetime.now(UTC) + timedelta(**delta)).timestamp())
+
+
+def _set_expiry(table, hour: int, expires_at) -> None:
+    table.update_item(
+        Key={"topic_id": "t", "captured_at": f"2026-09-20T{hour:02d}:00:00+00:00"},
+        UpdateExpression="SET expires_at = :e",
+        ExpressionAttributeValues={":e": expires_at},
+    )
+
+
+def test_list_findings_pages_until_it_has_kept_enough_and_says_whether_more_remain(findings_table):
+    for hour in (3, 4):  # two of the ten are expired, not yet deleted
+        _set_expiry(findings_table, hour, _epoch(days=-1))
+    for hour in (5, 6):
+        _set_expiry(findings_table, hour, Decimal(_epoch(days=1)))
+    now = _epoch()
+
+    kept, expired, more = dynamo.list_findings("t", limit=4, unexpired_at=now)
+    assert [f["summary"] for f in kept] == [f"finding {h}" for h in (9, 8, 7, 6)] and more is True
+    assert expired == 0  # the newest four are alive: the expired ones were never reached
+
+    kept, expired, more = dynamo.list_findings("t", limit=7, unexpired_at=now)
+    assert [f["summary"] for f in kept] == [f"finding {h}" for h in (9, 8, 7, 6, 5, 2, 1)]
+    assert expired == 2 and more is True
+
+    kept, expired, more = dynamo.list_findings("t", limit=20, unexpired_at=now)
+    assert len(kept) == 8 and expired == 2 and more is False
+    # The daily run's reading: no expiry filter at all.
+    kept, expired, more = dynamo.list_findings("t", limit=20, unexpired_at=None)
+    assert len(kept) == 10 and expired == 0 and more is False
+    # The page budget: one page of one item at a time reaches only so far.
+    kept, expired, more = dynamo.list_findings("t", limit=1, unexpired_at=now, max_pages=1)
+    assert [f["summary"] for f in kept] == ["finding 9"] and more is True
+    kept, _, more = dynamo.list_findings("t", since="2026-09-20T08:00:00+00:00", limit=5, unexpired_at=now)
+    assert [f["summary"] for f in kept] == ["finding 9", "finding 8"] and more is False
+
+
+def test_count_findings_counts_the_unexpired_in_the_window_and_knows_when_it_stopped_short(findings_table):
+    for hour in (0, 1):
+        _set_expiry(findings_table, hour, _epoch(days=-2))
+    now = _epoch()
+
+    assert dynamo.count_findings("t", unexpired_at=now) == (8, True)
+    assert dynamo.count_findings("t", unexpired_at=None) == (10, True)
+    assert dynamo.count_findings("t", since="2026-09-20T07:00:00+00:00", unexpired_at=now) == (3, True)
+    assert dynamo.count_findings("other", unexpired_at=now) == (1, True)
+    assert dynamo.count_findings("nobody", unexpired_at=now) == (0, True)
+    # Capped: at most `most` are counted, and the count is then a floor.
+    assert dynamo.count_findings("t", unexpired_at=None, most=4) == (4, False)
+    assert dynamo.count_findings("t", unexpired_at=None, most=10) == (10, True)
+    assert dynamo.count_findings("t", unexpired_at=None, most=50) == (10, True)
+
+
+def test_finding_is_expired_reads_only_a_number_at_or_before_now():
+    assert dynamo.finding_is_expired({"expires_at": 10}, 10) is True
+    assert dynamo.finding_is_expired({"expires_at": Decimal("9")}, 10) is True
+    assert dynamo.finding_is_expired({"expires_at": 11}, 10) is False
+    assert dynamo.finding_is_expired({"expires_at": 5}, None) is False
+    for odd in ({}, {"expires_at": None}, {"expires_at": "5"}, {"expires_at": True}):
+        assert dynamo.finding_is_expired(odd, 10) is False
