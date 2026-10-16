@@ -595,10 +595,12 @@ def test_topic_findings_says_what_it_is_for_and_what_never_to_say(client):
         '"what did research find for X?"',
         "table_sample shows only one raw row",
         "never read a table's cells aloud, and never say what a summary says",
+        # The day-subject round (common/day_subject.py): only with next_article.
+        "with it, `subject` (a subject key) for a topic that rotates through subjects",
     ):
         assert phrase in described, phrase
     properties = tools["topic_findings"]["inputSchema"]["properties"]
-    assert set(properties) == {"topic", "limit", "days", "next_article"}
+    assert set(properties) == {"topic", "limit", "days", "next_article", "subject"}
     assert tools["topic_findings"]["inputSchema"]["required"] == ["topic"]
     assert properties["limit"]["default"] == 5 and properties["next_article"]["default"] is False
     sample = " ".join(tools["table_sample"]["description"].split())
@@ -647,11 +649,24 @@ def test_topic_findings_is_told_whether_the_caller_has_a_screen_and_is_not_remem
             name="topic_findings",
             headers=headers,
         )
+        on_subject = call(
+            client,
+            "tools/call",
+            {
+                "name": "topic_findings",
+                "arguments": {"topic": "rail", "next_article": True, "subject": "sydney"},
+            },
+            name="topic_findings",
+            headers=headers,
+        )
     assert response.json()["result"]["structuredContent"] == answer
     assert again.json()["result"]["structuredContent"] == answer
+    assert on_subject.json()["result"]["structuredContent"] == answer
     assert mock_tool.call_args_list[0].args == ("rail sydney", 5, 2, False)
-    assert mock_tool.call_args_list[0].kwargs == {"screen": screen}
+    assert mock_tool.call_args_list[0].kwargs == {"screen": screen, "subject": None}
     assert mock_tool.call_args_list[1].args == ("crypto", 10, None, True)
+    assert mock_tool.call_args_list[2].args == ("rail", 5, None, True)
+    assert mock_tool.call_args_list[2].kwargs == {"screen": screen, "subject": "sydney"}
     mock_remember.assert_not_called()
 
 
@@ -663,12 +678,13 @@ VISION_EVIDENCE_DOC = (
     "range and from which input, what the triage agent did (its tools, including OpenCV "
     "re-measurements, and its verdict), whether a finding was written, and whether its article was "
     'approved. Pass `topic` for one topic, `scene` (a scene id, or "latest") for one decision step by '
-    "step, and `days` for the window (up to 90). Say its counts as `spoken` does and that the rows are "
-    "on screen; never read a table's cells aloud."
+    "step, and `days` for the window (up to 90). Say what `spoken` says; it says when rows are on "
+    "screen. Never read a table's cells aloud."
 )
 VISION_EVIDENCE_INSTRUCTION = (
     "vision_evidence says what the vision pipeline measured and decided and what a person did about it, "
-    "and with `scene` walks one decision step by step. Say its counts and that the rows are on screen."
+    "and with `scene` walks one decision step by step. Say what `spoken` says; it says when rows are on "
+    "screen."
 )
 
 

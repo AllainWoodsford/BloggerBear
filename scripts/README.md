@@ -110,6 +110,20 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 # 14 days); '' clears it. Also on `topics create`. Editing `findings_window_hours` in DynamoDB works too.
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours 192
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
+# A topic that rotates through its subjects, one a day (docs/enhancements/dailysubject_hook.md;
+# read by an adapter that names a day subject: rail_access, whose sites are the subjects). Two
+# keys of its adapter_config (--config-json on create, --adapter-config-json on update, each the
+# whole config: read it with `topics get`, edit it, send all of it back):
+#   "rotation": the seven weekdays each naming a subject, every subject at least once,
+#       {"MON": "sydney", "TUE": "melbourne", "WED": "singapore", "THU": "boston",
+#        "FRI": "sydney", "SAT": "melbourne", "SUN": "singapore"},
+#     or a list of subjects cycled one a day: ["sydney", "melbourne", "singapore", "boston"]
+#   "rotation_timezone": the IANA zone whose calendar day decides, e.g. "Australia/Sydney"
+#     (unset: the topic's daily_timezone when its adapter passes it, else UTC)
+# Set --findings-window-hours to the longest gap between one subject's days, plus a day (24 h a
+# day). Give a rota to a new topic, not to one that has published: each subject's first window
+# starts from the findings window, not from the topic's last article, so it would draft again
+# Findings the last article used (docs/configuration.md).
 # Fresh-data review of each draft before it is checked and published. `shadow` (the
 # default) runs it and records the result on the article and, if it goes to moderation,
 # on its queue item (`review_notes`, shown by `moderation list`) without changing any
@@ -154,6 +168,8 @@ python scripts/admin_cli.py topics findings github-trending
 # Expired ones are left out, except with --next-article, which lists exactly what the next
 # daily article will be written from: since the topic's last article, within its findings
 # window, at most 48. --limit is 1 to 20 (default 5); --days 1 to 14; --since an ISO timestamp.
+# With --next-article, --subject KEY is for a topic that rotates through subjects: what its next
+# article on that subject reads (from that subject's last article, its Findings only).
 # The ops assistant's topic_findings tool and the topic-findings Claude Code skill
 # (.claude/skills/) show the same window.
 python scripts/admin_cli.py findings list rail-sydney
@@ -211,13 +227,14 @@ python scripts/admin_cli.py topics update github-trending     --model-candidates
 python scripts/admin_cli.py topics update github-trending --model-candidates ""
 ```
 
-**The Rail Access Monitor's topics.** The four `rail_access` city topics (Sydney, Melbourne,
-Singapore and Boston, each with its box, reach and editorial goal; the cities take turns, one a
-day, and each has a 192-hour `findings_window_hours`, so its article drafts every Finding since
-its last one) are complete admin API topic bodies in
-[`rail_topics.example.json`](rail_topics.example.json). `topics create` takes a topic as flags, not
-a file: [docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
-has the loop that reads each field out of the file, and how to check a new city's box.
+**The Rail Access Monitor's topic.** One `rail_access` topic, `rail-cities`, over the four
+starting cities (Sydney, Melbourne, Singapore and Boston, each with its box; the reach, an editorial
+goal that names no city, and a `rotation` that writes about one city a day, with a 192-hour
+`findings_window_hours`, so each city's article drafts every Finding about it since its last one)
+is a complete admin API topic body in [`rail_topics.example.json`](rail_topics.example.json).
+`topics create` takes a topic as flags, not a file:
+[docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics)
+has the lines that read each field out of the file, and how to add a city and check its box.
 
 Setting the registry up on a new deployment, with a sample `model-config` item, is in
 [docs/deployment-runsheet.md](../docs/deployment-runsheet.md#the-model-registry-seeding-and-rotation).
@@ -660,8 +677,8 @@ CPU's rows are closest to it with the run pinned to one core.
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
 request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes; the
 directory's `NOTICE.md` carries the Open Database Licence attribution and the row to fill in when
-the file lands (the runsheet's COOL section says how to take it from the deployed running state,
-or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
+the file lands (the runsheet's COOL section says how to take it from the deployed city's network
+object, or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
 same client the adapter uses). Until the file exists, the rail scenes' rows read
 `error: network_file missing`. Overpass is not reachable from the build containers, so the file
 is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and

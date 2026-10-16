@@ -38,6 +38,17 @@ def _of_kind(kind: str) -> dict[str, architecture.Component]:
     return {c.key: c for c in CATALOGUE if c.kind == kind}
 
 
+def test_the_catalogue_names_the_fields_a_rotating_topic_stores():
+    """The day-subject round's stored fields (common/day_subject.py): the topic's per-subject
+    stamps, the Finding's subjects and the article's subject, where the assistant reads what each
+    table holds and what the daily cycle writes."""
+    tables = _of_kind("table")
+    assert "last_article_by_subject" in dict(tables["topics"].details)["Written by"]
+    assert "subjects (the subject keys it reports" in dict(tables["findings"].details)["Holds"]
+    assert "subject: " in dict(tables["articles"].details)["Day subject"]
+    assert "topics.last_article_by_subject" in dict(_of_kind("function")["daily-cycle"].details)["Writes"]
+
+
 # The functions modules make: the ops-assistant module's two, and the vision-worker module's (in the
 # vision Region, so observability's alarms in the home Region can't watch it). Every other function
 # is made by an environment root and handed to observability, which gives it an errors and a
@@ -412,7 +423,10 @@ def test_the_vision_pipeline_walks_from_a_site_to_the_person_who_approves(dev, m
     keys = {(c["kind"], c["key"]) for c in answer["components"]}
     assert {("function", "vision-worker"), ("bucket", "content"), ("table", "findings")} <= keys
     text = " ".join(" ".join(row) for row in answer["table"]["rows"])
-    for words in ("force_manual_review", "VISION_ENABLED", "osm_ttl_days", "vision_status", "log_review"):
+    for words in (
+        "force_manual_review", "VISION_ENABLED", "osm_ttl_days", "vision_status", "log_review",
+        "vision_evidence reads what the pipeline decided from its evidence lines",
+    ):  # fmt: skip
         assert words in text, words
     research = architecture.FEATURES[0].steps[0].what
     assert "or satellite imagery (see the vision pipeline)" in research
@@ -700,7 +714,7 @@ def test_the_vision_runsheet_links_to_the_vision_region_and_says_when_vision_is_
     monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
     answer = runsheets.investigate("vision")
     assert answer["runsheet"]["id"] == "vision"
-    assert answer["assistant_tools"] == ["vision_status", "log_review", "topic_findings"]
+    assert answer["assistant_tools"] == ["vision_status", "log_review", "topic_findings", "vision_evidence"]
     worker_log, worker, tick, state = answer["steps"]
     assert worker_log["console_url"].startswith("https://us-west-2.console.aws.amazon.com/cloudwatch/")
     assert worker["console_url"].startswith("https://us-west-2.console.aws.amazon.com/lambda/")

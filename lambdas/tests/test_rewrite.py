@@ -11,6 +11,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import create_table
 
+import common.dynamo as dynamo
 import daily_cycle_handler
 from common import compliance, rewrite
 
@@ -254,6 +255,227 @@ def test_a_topic_without_one_is_rewritten_from_the_day_before_its_article(aws):
 
     prompt = mock_invoke.call_args.args[0]
     assert "Bitcoin was at $81,000" in prompt and "Four days earlier" not in prompt
+
+
+def _seed_on_subject(subject):
+    """A held article a rotating topic wrote on its day subject (common/day_subject.py), stored the
+    way the daily cycle stores it, and Findings on its subject, on another, and on none."""
+    _seed(topic={**TOPIC, "findings_window_hours": 96})
+    dynamo.put_article(
+        article_id="a1",
+        topic_id=TOPIC["topic_id"],
+        title="Buy Bitcoin Now",
+        body_s3_key="articles/a1.md",
+        status="pending_moderation",
+        created_at="2026-09-26T09:00:00+00:00",
+        lineage={"calls": [{"stage": "draft", "model_id": MODEL, "input_tokens": 100, "output_tokens": 50}]},
+        subject=subject,
+    )
+    assert _table("Articles").get_item(Key={"article_id": "a1"})["Item"].get("subject") == subject
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": "2026-09-25T08:00:00+00:00",
+            "summary": "North: a new station opened.",
+            "subjects": ["north"],
+        }
+    )
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": "2026-09-24T08:00:00+00:00",
+            "summary": "Both: the shared line reopened.",
+            "subjects": ["south", "north"],
+        }
+    )
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": "2026-09-23T08:00:00+00:00",
+            "summary": "South: a depot closed.",
+            "subjects": ["south"],
+        }
+    )
+
+
+def test_an_article_on_a_subject_is_rewritten_from_its_own_subjects_findings_only(aws):
+    _seed_on_subject("north")
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    assert "North: a new station opened." in prompt and "Both: the shared line reopened." in prompt
+    assert "South: a depot closed." not in prompt
+    assert "Bitcoin was at $81,000" not in prompt  # _seed's Finding reports no subject
+
+
+def test_an_article_whose_subject_has_no_findings_falls_back_to_the_whole_window_and_says_so(aws, capsys):
+    _seed_on_subject("east")  # a subject no longer in the topic's rota
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    for summary in ("North: a new station opened.", "South: a depot closed.", "Bitcoin was at $81,000"):
+        assert summary in prompt
+    assert "rewrite: no findings on the article's subject 'east' in its window" in capsys.readouterr().out
+
+
+def test_an_article_on_a_subject_keeps_its_older_findings_behind_another_subjects_newer_48(aws):
+    """The reviewer's probe, as Re-Write reads it: 60 newer north Findings fill the window's newest
+    48, and the south article is still rewritten from both of south's, as its run drafted it."""
+    _seed_on_subject("south")
+    created = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
+    for n in range(60):
+        _table("Findings").put_item(
+            Item={
+                "topic_id": TOPIC["topic_id"],
+                "captured_at": (created - timedelta(hours=45) + timedelta(minutes=30 * n)).isoformat(),
+                "summary": f"North {n:02d}.",
+                "subjects": ["north"],
+            }
+        )
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": (created - timedelta(hours=1)).isoformat(),
+            "summary": "South: a platform reopened.",
+            "subjects": ["south"],
+        }
+    )
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    assert "South: a platform reopened." in prompt and "South: a depot closed." in prompt
+    assert "North 59." not in prompt
+
+
+# Re-Write's reads for an article on a subject, called directly: the article as the daily cycle
+# stores it, on a topic whose window reaches back two weeks.
+_CREATED = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
+_WIDE_TOPIC = {**TOPIC, "findings_window_hours": 336}
+
+
+def _on(subject):
+    return {"topic_id": TOPIC["topic_id"], "created_at": _CREATED.isoformat(), "subject": subject}
+
+
+def _put_subject_findings(subject, count, *, hours_before=60, prefix=None):
+    """`count` Findings on `subject`, one every 30 minutes up to `hours_before` the article."""
+    for n in range(count):
+        captured = _CREATED - timedelta(hours=hours_before) + timedelta(minutes=30 * n)
+        _table("Findings").put_item(
+            Item={
+                "topic_id": TOPIC["topic_id"],
+                "captured_at": captured.isoformat(),
+                "summary": f"{prefix or subject} {n:03d}",
+                "subjects": [subject],
+            }
+        )
+
+
+def test_an_article_on_a_subject_with_more_than_48_of_its_own_is_rewritten_from_the_newest_48(aws):
+    """The daily cycle drafted from the subject's newest 48 (MAX_WINDOW_FINDINGS): Re-Write keeps
+    those, not the 50 the window holds."""
+    _put_subject_findings("south", 50)
+
+    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == [f"south {n:03d}" for n in range(49, 1, -1)]
+    assert rewrite.MAX_FINDINGS == daily_cycle_handler.MAX_WINDOW_FINDINGS == 48
+
+
+def test_with_none_on_its_subject_it_falls_back_to_the_windows_newest_48_and_says_so(aws, capsys):
+    _put_subject_findings("north", 50)
+
+    findings = rewrite._findings_for(_on("east"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == [f"north {n:03d}" for n in range(49, 1, -1)]
+    assert (
+        "rewrite: no findings on the article's subject 'east' in its window; rewriting from the "
+        "window's 48 newest findings instead"
+    ) in capsys.readouterr().out
+
+
+def test_a_read_that_stops_at_its_limit_or_the_page_cap_says_so(aws, capsys, monkeypatch):
+    """As the daily cycle's: a window holding more than SUBJECT_READ_LIMIT, or more than the read's
+    pages hold, leaves the subject's older Findings unread, and the log says where it stopped."""
+    _put_subject_findings("south", 1, hours_before=200, prefix="south old")
+    _put_subject_findings("north", rewrite.SUBJECT_READ_LIMIT, hours_before=100)
+    _put_subject_findings("south", 1, hours_before=1, prefix="south new")
+
+    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == ["south new 000"]
+    assert (
+        "rewrite: subject 'south' topic_id=github-trending read 192 findings of its window and stopped "
+        "at its read limit (192); any of its older ones were not read"
+    ) in capsys.readouterr().out
+
+    page = dynamo.list_findings_page
+
+    def ten_a_page(topic_id, *, since=None, until=None, limit, start_key=None):  # a megabyte of big Findings
+        return page(topic_id, since=since, until=until, limit=min(limit, 10), start_key=start_key)
+
+    monkeypatch.setattr(dynamo, "list_findings_page", ten_a_page)
+    rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+    assert (
+        f"rewrite: subject 'south' topic_id=github-trending read {dynamo.FINDINGS_PAGES_MAX * 10} "
+        "findings of its window and stopped at the page cap; any of its older ones were not read"
+    ) in capsys.readouterr().out
+
+
+def test_a_read_that_holds_the_whole_window_says_nothing_of_stopping(aws, capsys):
+    _seed_on_subject("south")
+
+    rewrite._findings_for(_on("south"), {**TOPIC, "findings_window_hours": 96})
+
+    assert "stopped at" not in capsys.readouterr().out
+
+
+def test_a_late_rewrite_reads_the_articles_window_not_the_findings_captured_since(aws, capsys):
+    """Re-Write may run days after the article (a rail topic's article waits for a person). The
+    read ends at the article's created_at, so the SUBJECT_READ_LIMIT Findings captured since, more
+    than the whole read, spend none of it: the subject's Findings in the window, the one captured
+    as the article was created among them, are all found, and nothing is said of stopping."""
+    _put_subject_findings("south", 3, hours_before=10)
+    _put_subject_findings("north", 5, hours_before=8)
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": _CREATED.isoformat(),  # the window's end is its own
+            "summary": "south at creation",
+            "subjects": ["south"],
+        }
+    )
+    for n in range(rewrite.SUBJECT_READ_LIMIT + 8):  # one an hour since: eight days of them
+        _table("Findings").put_item(
+            Item={
+                "topic_id": TOPIC["topic_id"],
+                "captured_at": (_CREATED + timedelta(hours=1 + n)).isoformat(),
+                "summary": f"since {n:03d}",
+                "subjects": ["south" if n % 7 == 0 else "north"],
+            }
+        )
+
+    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == ["south at creation", "south 002", "south 001", "south 000"]
+    assert "stopped at" not in capsys.readouterr().out
+
+
+def test_an_article_without_a_subject_keeps_every_finding_in_its_window(aws):
+    _seed_on_subject(None)
+
+    _, mock_invoke, _ = _run()
+
+    prompt = mock_invoke.call_args.args[0]
+    for summary in ("North: a new station opened.", "South: a depot closed.", "Bitcoin was at $81,000"):
+        assert summary in prompt
+    assert "subject" not in _table("Articles").get_item(Key={"article_id": "a1"})["Item"]
 
 
 def test_a_steered_rewrite_follows_the_persons_note_and_records_it(aws):

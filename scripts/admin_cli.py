@@ -543,6 +543,8 @@ def _cmd_findings_list(args: argparse.Namespace) -> None:
         query["since"] = args.since
     if args.next_article:
         query["next_article"] = "true"
+    if args.subject is not None:
+        query["subject"] = args.subject
     path = f"/topics/{urllib.parse.quote(args.topic_id, safe='')}/findings"
     if query:
         path += "?" + urllib.parse.urlencode(query)
@@ -1368,7 +1370,18 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "what the topic's next article will be written from: every Finding since its last "
             "article within its findings window (--findings-window-hours), at most 48, expired "
-            "or not; `count` says how many and `more` whether some were not listed"
+            "or not; `count` says how many and `more` whether some were not listed. A topic that "
+            "rotates through subjects: today's subject's Findings since that subject's last "
+            "article (`subject` names it)"
+        ),
+    )
+    findings_list_parser.add_argument(
+        "--subject",
+        default=None,
+        help=(
+            "with --next-article, for a topic that rotates through subjects: what its next article "
+            "on this subject reads (from that subject's last article, its Findings only); without "
+            "it, today's subject"
         ),
     )
     findings_list_parser.set_defaults(func=_cmd_findings_list)

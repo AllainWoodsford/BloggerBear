@@ -25,6 +25,9 @@ from test_ops_mcp_redact import BYPASSES
 import daily_cycle_handler
 import research_tick_handler
 from common import findings_window
+from common.adapters.base import DaySubject
+from common.adapters.github_trending import GitHubTrendingAdapter
+from common.adapters.registry import ADAPTER_REGISTRY
 from ops_agent import policy
 from ops_mcp import redact, topic_findings
 
@@ -75,7 +78,18 @@ def aws(monkeypatch):
     dynamo_module._dynamodb_resource = None
 
 
+# A real rail topic's config: one city and no rota. Since S2 the rail adapter reads its config to
+# name the day's subject, so a rail topic stored without sites would be refused as misconfigured.
+RAIL_CONFIG = json.loads(
+    '{"sites": [{"id": "sydney", "name": "Sydney",'
+    ' "polygon": [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58], [150.86, -33.58]]}]}',
+    parse_float=Decimal,
+)
+
+
 def put_topic(aws, topic_id="rail-sydney", name="Rail access: Sydney", adapter="rail_access", **more):
+    if adapter == "rail_access":
+        more.setdefault("adapter_config", RAIL_CONFIG)
     aws.Table("Topics").put_item(Item={"topic_id": topic_id, "name": name, "adapter": adapter, **more})
 
 
@@ -334,6 +348,232 @@ def test_the_next_articles_window_follows_the_daily_runs_rule(aws, topic, since)
     said = "since its last article" in result["spoken"]
     bounded_by_article = since not in (NOW - timedelta(hours=24), NOW - timedelta(hours=192))
     assert said == ("last_article_at" in topic and bounded_by_article)
+
+
+# --- the next article on one subject (a topic that rotates, common/day_subject.py) -------------------
+
+
+def _rotating(aws):
+    """A topic whose last article (on any subject) was 2 hours ago, and on north 30 hours ago."""
+    put_topic(
+        aws,
+        findings_window_hours=96,
+        last_article_at=(NOW - timedelta(hours=2)).isoformat(),
+        last_article_by_subject={"north": (NOW - timedelta(hours=30)).isoformat()},
+    )
+    put_finding(aws, 1, subjects=["north"])
+    put_finding(aws, 5, subjects=["south"])
+    put_finding(aws, 10, subjects=["north", "south"])
+    put_finding(aws, 20)  # no subjects: a rotating topic's run never drafts it
+    put_finding(aws, 40, subjects=["north"])  # before north's last article
+
+
+def test_a_subject_reads_what_the_next_article_on_it_reads_as_the_daily_run_does(aws):
+    _rotating(aws)
+
+    result = ask(next_article=True, subject="north")
+
+    since = (NOW - timedelta(hours=30)).isoformat()
+    assert result["window"] == {
+        "since": since, "until": NOW.isoformat(), "rule": "next_article", "subject": "north",
+    }  # fmt: skip
+    stored = aws.Table("Topics").get_item(Key={"topic_id": "rail-sydney"})["Item"]
+    assert since == findings_window.window_start(stored, NOW, subject_key="north")  # the one rule
+    assert [row["age"] for row in result["rows"]] == ["60 minutes", "10 hours"]
+    assert result["count"] == 2 and result["count_is_at_least"] is False and result["more"] is False
+    assert result["spoken"] == (
+        "Rail access: Sydney has 2 findings for its next article on that subject since its last one, "
+        "the newest 60 minutes ago. They're on screen."
+    )
+    assert "north" not in result["spoken"]  # the operator's own text is never spoken
+
+
+def test_a_subject_never_written_about_reads_the_whole_window(aws):
+    _rotating(aws)
+
+    result = ask(next_article=True, subject="south")
+
+    assert result["window"]["since"] == (NOW - timedelta(hours=96)).isoformat()
+    assert [row["age"] for row in result["rows"]] == ["5 hours", "10 hours"]
+    assert result["spoken"].startswith(
+        "Rail access: Sydney has 2 findings for its next article on that subject, the newest 5 hours ago."
+    )
+
+
+def test_without_a_subject_the_next_article_is_what_it_always_was(aws):
+    _rotating(aws)
+
+    result = ask(next_article=True)
+
+    assert result["window"] == {
+        "since": (NOW - timedelta(hours=2)).isoformat(), "until": NOW.isoformat(), "rule": "next_article",
+    }  # fmt: skip
+    assert result["count"] == 1 and "subject" not in result["spoken"]
+
+
+def test_a_subject_counts_its_own_findings_in_the_window_not_those_in_the_first_48(aws):
+    """The run reads further than its cap, keeps the subject's Findings, then caps those: so the
+    count is the subject's, whatever the other subjects added."""
+    put_topic(aws, findings_window_hours=192)
+    for minutes in range(50):
+        put_finding(aws, minutes / 60, subjects=["north"] if minutes % 2 else ["south"])
+
+    result = ask(next_article=True, subject="north", limit=3)
+
+    assert result["count"] == 25 and result["count_is_at_least"] is False  # every north one
+    assert len(result["rows"]) == 3 and result["more"] is True
+
+
+def test_a_subjects_older_finding_behind_another_subjects_48_newer_ones_is_still_read(aws):
+    """The reviewer's probe: 60 newer Findings for north fill the first 48 of the window, and
+    south's older one is still what south's next article reads, as the daily run reads it."""
+    put_topic(aws, findings_window_hours=96)
+    put_finding(aws, 50, subjects=["south"], summary="south old")
+    for n in range(60):
+        put_finding(aws, 45 - n * 0.5, subjects=["north"], summary=f"north {n:02d}")
+    put_finding(aws, 1, subjects=["south"], summary="south new")
+
+    result = ask(next_article=True, subject="south")
+
+    assert result["count"] == 2 and result["count_is_at_least"] is False
+    assert [row["age"] for row in result["rows"]] == ["60 minutes", "2 days"]
+    assert column(result, "Summary (unverified)") == ["south new", "south old"]
+
+
+def test_a_subjects_draft_budget_counts_only_the_48_the_run_drafts(aws):
+    """over_draft_limit is the run's: the summaries of the subject's newest 48, which the daily
+    run drafts from, not of every one of its Findings the read held."""
+    put_topic(aws, findings_window_hours=192)
+    for minutes in range(48):
+        put_finding(aws, minutes / 60, subjects=["north"], summary="n" * 500)  # 24,000 characters
+    for hours in (2, 3):
+        put_finding(aws, hours, subjects=["north"], summary="o" * 20_000)  # past the run's 48th
+
+    result = ask(next_article=True, subject="north", limit=3)
+
+    assert result["count"] == 50 and result["over_draft_limit"] is False
+    assert "longer than the draft reads" not in result["spoken"]
+
+    put_finding(aws, 0.5 / 60, subjects=["north"], summary="w" * 20_000)  # now among the newest 48
+    assert ask(next_article=True, subject="north", limit=3)["over_draft_limit"] is True
+
+
+def test_a_subject_with_more_findings_than_the_run_reads_says_the_run_reads_48(aws, monkeypatch):
+    put_topic(aws, findings_window_hours=192)
+    for minutes in range(52):
+        put_finding(aws, minutes / 60, subjects=["north"])
+    put_finding(aws, 60, subjects=["south"])
+
+    result = ask(next_article=True, subject="north", limit=3)
+
+    assert result["count"] == 52 and result["count_is_at_least"] is False and result["more"] is True
+    assert "The newest 3 are on screen. The next article reads at most 48." in result["spoken"]
+
+    # A read that stopped at its own limit gives a floor, and says so.
+    monkeypatch.setattr(topic_findings, "SUBJECT_READ_LIMIT", 10)
+    result = ask(next_article=True, subject="north", limit=3)
+    assert result["count"] == 10 and result["count_is_at_least"] is True
+    assert "has at least 10 findings for its next article on that subject" in result["spoken"]
+
+
+# --- a rotating topic asked about its next article with no subject: today's subject's -------------
+
+
+class _SouthToday(GitHubTrendingAdapter):
+    """A topic whose rota says today is south's day, as an adapter that rotates would."""
+
+    asked: list = []
+
+    def day_subject(self, topic_config, at):
+        type(self).asked.append(at)
+        return DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+
+
+@pytest.fixture
+def south_today(monkeypatch):
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rota_test", _SouthToday)
+    monkeypatch.setattr(_SouthToday, "asked", [])
+    return _SouthToday
+
+
+def _south_day(aws):
+    """The reviewer's repro: the last article (on north) 2 hours ago; a north Finding since, and two
+    south ones before it. South's run today reads its own window, not the topic-wide one."""
+    put_topic(
+        aws,
+        topic_id="two-cities",
+        name="Two cities",
+        adapter="rota_test",
+        findings_window_hours=96,
+        last_article_at=(NOW - timedelta(hours=2)).isoformat(),
+        last_article_by_subject={"north": (NOW - timedelta(hours=2)).isoformat()},
+    )
+    put_finding(aws, 1, topic_id="two-cities", subjects=["north"])
+    put_finding(aws, 5, topic_id="two-cities", subjects=["south"])
+    put_finding(aws, 10, topic_id="two-cities", subjects=["south"])
+
+
+def test_a_rotating_topics_next_article_is_todays_subjects_as_the_daily_run_reads_it(aws, south_today):
+    _south_day(aws)
+
+    result = ask("two-cities", next_article=True)
+
+    assert south_today.asked == [NOW]  # asked as the daily cycle asks it, at this moment
+    assert result["window"] == {
+        "since": (NOW - timedelta(hours=96)).isoformat(), "until": NOW.isoformat(),
+        "rule": "next_article", "subject": "south",
+    }  # fmt: skip
+    assert [row["age"] for row in result["rows"]] == ["5 hours", "10 hours"]
+    assert result["count"] == 2 and result["count_is_at_least"] is False
+    assert result["spoken"] == (
+        "Two cities has 2 findings for its next article on today's subject, the newest 5 hours ago. "
+        "They're on screen. It rotates through subjects, so a run on another day reads that day's "
+        "subject instead."
+    )
+    assert "south" not in result["spoken"].lower()  # named on screen, never spoken
+    # Exactly what asking about south by name reads.
+    named = ask("two-cities", next_article=True, subject="south")
+    for key in ("window", "count", "count_is_at_least", "rows", "table", "over_draft_limit", "more"):
+        assert result[key] == named[key], key
+
+
+def test_a_rotating_topics_hook_that_raises_is_an_error_never_the_topic_wide_window(
+    aws, south_today, monkeypatch
+):
+    _south_day(aws)
+
+    def broken(self, topic_config, at):
+        raise ValueError("the rota broke")
+
+    monkeypatch.setattr(_SouthToday, "day_subject", broken)
+    with no_reads(), pytest.raises(ValueError, match="the rota broke"):
+        ask("two-cities", next_article=True)
+
+
+def test_a_rotating_topic_is_asked_only_for_its_next_article(aws, south_today):
+    _south_day(aws)
+
+    result = ask("two-cities", days=1)
+
+    assert south_today.asked == [] and "subject" not in result["window"]
+    assert result["count"] == 3
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "spoken"),
+    [
+        ({"next_article": True, "subject": "no rth"}, topic_findings.NOT_A_SUBJECT),
+        ({"next_article": True, "subject": "x" * 65}, topic_findings.NOT_A_SUBJECT),
+        ({"next_article": True, "subject": 7}, topic_findings.NOT_A_SUBJECT),
+        ({"subject": "north"}, topic_findings.SUBJECT_NEEDS_NEXT_ARTICLE),
+        ({"days": 2, "subject": "north"}, topic_findings.SUBJECT_NEEDS_NEXT_ARTICLE),
+    ],
+)
+def test_a_subject_that_is_not_one_or_without_next_article_reads_nothing(aws, kwargs, spoken):
+    _rotating(aws)
+    with no_reads(), patch.object(topic_findings, "count_findings", side_effect=AssertionError("counted")):
+        result = ask(**kwargs)
+    assert result == {"spoken": spoken, "findings": [], "rows": [], "matched_topic": None}
 
 
 def test_more_than_the_daily_runs_cap_and_summaries_past_its_draft_budget(aws):

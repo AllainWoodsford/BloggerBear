@@ -1103,6 +1103,9 @@ GUIDES: dict[str, dict] = {
             "The next article reads every finding since the topic's last article, within its "
             "findings window, at most 48, newest first; a topic with editorial goals may use only "
             "some.",
+            # common/day_subject.py, findings_window.next_article_subject: a topic that rotates.
+            "A topic that rotates through subjects writes about the day's subject: its next article "
+            "reads only that subject's findings, since that subject's last article.",
             # common/figures.py, Adapter.planner_notes: what a vision Finding carries besides its summary.
             "A finding's summary is written by a model; a vision finding also carries maps and "
             "planner notes.",
@@ -1633,6 +1636,17 @@ def _as_json(value) -> str:
     return _cell(json.dumps(value, default=str, ensure_ascii=False), DETAIL_MAX_CHARS) if value else ""
 
 
+def _last_article_by_subject(topic: dict) -> str:
+    """A rotating topic's last article per subject (common/day_subject.py, the daily cycle's
+    `last_article_by_subject`), as one cell: "<subject> <when>; ...", by subject. Empty for every
+    other topic, whose single-topic view then has no such row."""
+    stamps = topic.get("last_article_by_subject")
+    if not isinstance(stamps, dict) or not stamps:
+        return ""
+    text = "; ".join(f"{key} {_when(stamps[key])}" for key in sorted(stamps, key=str))
+    return _cell(text, DETAIL_MAX_CHARS)
+
+
 def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = None) -> dict:
     """The topics and their settings as a table: the first `limit` (1 to 50) by topic id, and how
     many more there are. With `topic` (a topic id), that topic alone, every setting."""
@@ -1650,6 +1664,9 @@ def topics_overview(limit: int = OVERVIEW_DEFAULT_LIMIT, topic: str | None = Non
                 ["Adapter config", _as_json(one.get("adapter_config")) or "none"],
             ]
         )
+        by_subject = _last_article_by_subject(one)
+        if by_subject:
+            rows.append(["Last article by subject", by_subject])
         name = rows[0][1]
         return {
             "spoken": f"{topic_match.took(matched)}{name}'s settings are on screen.",

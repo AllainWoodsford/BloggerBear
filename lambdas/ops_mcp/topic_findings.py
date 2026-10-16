@@ -12,7 +12,14 @@ count_findings; a test holds the table to `query`). Three windows: everything th
 next daily run reads: from the topic's last article within its findings window (the one rule,
 common/findings_window.window_start), expired or not, at most MAX_WINDOW_FINDINGS. `limit` (1 to
 20) is how many rows go on screen; the count covers the window. Nothing in S3 is read: no snapshot,
-no figure.
+no figure. With `next_article`, `subject` (a topic that rotates through subjects,
+common/day_subject.py) narrows it to what the next article on that subject's day reads, as the
+daily cycle reads it: the window from that subject's own last article (read up to
+SUBJECT_READ_LIMIT), only the Findings that report it, and the run's cap of those. Without
+`subject`, a rotating topic is asked for today's subject the way the daily cycle asks it
+(findings_window.next_article_subject), so the answer is what the next run today reads, never the
+topic-wide window no run reads; a topic that does not rotate is read as it always was. The subject
+is never spoken (it is the operator's own text, or its adapter's); the result echoes it.
 
 **Why the reads are bounded.** A Finding's summary can be 16 KB, so a result holds at most
 LIMIT_MAX rows, each summary cell is cut to SUMMARY_CELL_CHARS and the result's "(unverified)"
@@ -42,10 +49,12 @@ from decimal import Decimal
 
 from botocore.exceptions import BotoCoreError, ClientError
 
+from common.adapters.base import SUBJECT_KEY
+from common.day_subject import subject_findings
 from common.dynamo import count_findings, finding_is_expired, list_findings
 from common.editorial_goals import resolve_goal_for_topic
 from common.figures import clean_figure
-from common.findings_window import window_start
+from common.findings_window import SUBJECT_READ_LIMIT, last_article_at, next_article_subject, window_start
 from common.model_pricing import canonical_model_id
 from ops_mcp import redact, topic_match
 from ops_mcp.suggestions import ID_PATTERN
@@ -67,6 +76,12 @@ LEFT_OUT = "(left out: ask for fewer)"
 
 # The windows, as `window.rule` names them.
 RULE_DAYS, RULE_NEXT_ARTICLE, RULE_UNEXPIRED = "days", "next_article", "unexpired"
+# Where the next article's subject came from, for the spoken words: the operator's, or the topic's
+# own day subject (a rotating topic asked with none).
+SUBJECT_ASKED, SUBJECT_TODAY = "asked", "today"
+# Said for a rotating topic asked about its next article with no subject: today's run is the one
+# described, and its subject is the day's.
+ROTATES = "It rotates through subjects, so a run on another day reads that day's subject instead."
 # A research call's stop reason is one of Bedrock's; anything else is "other".
 STOP_REASONS = ("end_turn", "max_tokens", "stop_sequence", "tool_use")
 NOTE_KINDS = ("flag", "simulation")
@@ -90,6 +105,8 @@ COLUMNS_VOICE = [column for column in COLUMNS_SCREEN if not column.endswith("(un
 
 NO_TABLE = "I haven't been told where the findings are."
 NOT_AN_ID = "That topic's id isn't one I can look up."
+NOT_A_SUBJECT = "That subject isn't one I can look up."
+SUBJECT_NEEDS_NEXT_ARTICLE = "A subject narrows only what the next article reads: ask with next_article."
 REFUSED_ACCESS = "AWS refused to let me read the findings table."
 REFUSED_MISSING = "The findings table isn't where I was told it is."
 REFUSED_OTHER = "I couldn't read the findings just now."
@@ -258,9 +275,18 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def _window_words(rule: str, days: int | None, *, since_last_article: bool, one: bool) -> str:
+def _window_words(
+    rule: str, days: int | None, *, since_last_article: bool, one: bool, subject: str | None = None
+) -> str:
     if rule == RULE_DAYS:
         return "in the last day" if days == 1 else f"in the last {days} days"
+    if rule == RULE_NEXT_ARTICLE and subject == SUBJECT_TODAY:
+        # The day's subject, asked of the topic's adapter: on screen, never spoken.
+        since = " since its last one" if since_last_article else ""
+        return f"for its next article on today's subject{since}"
+    if rule == RULE_NEXT_ARTICLE and subject:
+        # The subject itself is never spoken: it is the operator's text, and on screen already.
+        return "for its next article on that subject" + (" since its last one" if since_last_article else "")
     if rule == RULE_NEXT_ARTICLE:
         return "for its next article" + (" since its last article" if since_last_article else "")
     return "that hasn't expired" if one else "that haven't expired"
@@ -277,6 +303,7 @@ def _spoken(
     over_draft_limit: bool,
     now: datetime,
     prefix: str,
+    rotates: bool = False,
 ) -> str:
     """The spoken answer, from fixed templates (the module docstring says what is never in it),
     under SPOKEN_MAX_WORDS."""
@@ -323,6 +350,8 @@ def _spoken(
             )
         if resolve_goal_for_topic(topic, now.date()) is not None:
             sentences.append("A topic with editorial goals may use only some of them.")
+        if rotates:
+            sentences.append(ROTATES)
     # The cap drops sentences from the end, never the first two. The paused sentence is the most
     # decisive thing the answer says, so it is kept out of what the cap drops: the others are
     # trimmed to leave it room, then it is added. Words add up exactly over a join with one space,
@@ -368,11 +397,18 @@ def topic_findings(
     *,
     screen: bool,
     now: datetime | None = None,
+    subject: str | None = None,
 ) -> dict:
     """A topic's research Findings, newest first: the unexpired ones, the last `days`, or with
-    `next_article` what the next daily run reads. `screen` is whether the caller reads a screen
+    `next_article` what the next daily run reads (with `subject`, the next run on that subject's
+    day, for a topic that rotates; without it, a rotating topic's run today, on today's subject).
+    `screen` is whether the caller reads a screen
     (memory.screen_caller): a voice caller's table has no "Summary (unverified)" column."""
     now = now or datetime.now(UTC)
+    if subject is not None and (not isinstance(subject, str) or not SUBJECT_KEY.fullmatch(subject)):
+        return _refusal(NOT_A_SUBJECT, None)
+    if subject is not None and not next_article:
+        return _refusal(SUBJECT_NEEDS_NEXT_ARTICLE, None)
     one, matched, refusal = topic_match.pick_spoken(topic)
     if one is None:
         return _refusal(refusal, matched)
@@ -387,8 +423,32 @@ def topic_findings(
     days = _clamp(days, 1, DAYS_MAX, 1) if days is not None else None
     since_last_article = False
     over_draft_limit = False
+    subject_from = SUBJECT_ASKED if subject is not None else None
+    if next_article and subject is None:
+        # A topic that rotates writes its next article on the day's subject: ask its adapter, as
+        # the daily cycle does. None for every other topic, whose answer is what it always was. A
+        # hook that raises is raised: never the topic-wide window, which no run of it reads.
+        today = next_article_subject(one, now)
+        if today is not None:
+            subject, subject_from = today.key, SUBJECT_TODAY
     try:
-        if next_article:
+        if next_article and subject is not None:
+            # What the daily run on the subject's day reads: from the subject's last article within
+            # the window, expired or not, read further than the run's cap (SUBJECT_READ_LIMIT), then
+            # only the Findings that report the subject, and the run's cap of those. `count` is how
+            # many of the subject's the read held, a floor when the read stopped at its limit.
+            rule, since = RULE_NEXT_ARTICLE, window_start(one, now, subject_key=subject)
+            previous = _parse(last_article_at(one, subject))
+            since_last_article = previous is not None and previous.isoformat() == since
+            window_items, expired_left_out, cut = list_findings(
+                topic_id, since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None
+            )
+            own = subject_findings(window_items, subject)
+            read = own[:MAX_WINDOW_FINDINGS]
+            count, at_least = len(own), cut
+            over_draft_limit = sum(len(each.get("summary") or "") for each in read) > SUMMARIES_MAX_CHARS
+            items = read[:limit]
+        elif next_article:
             # What the daily run reads: from the last article within the window, expired or not, at
             # most the cap (one more is read, to know whether there are more than it reads).
             rule, since = RULE_NEXT_ARTICLE, window_start(one, now)
@@ -420,7 +480,9 @@ def topic_findings(
 
     rows = [row(item, now) for item in items]
     table, untrusted_left_out = _table(spoken_label(one), rows, items, screen=screen)
-    window = _window_words(rule, days, since_last_article=since_last_article, one=count == 1)
+    window = _window_words(
+        rule, days, since_last_article=since_last_article, one=count == 1, subject=subject_from
+    )
     return {
         "spoken": _spoken(
             one,
@@ -432,11 +494,17 @@ def topic_findings(
             over_draft_limit=over_draft_limit,
             now=now,
             prefix=prefix,
+            rotates=subject_from == SUBJECT_TODAY,
         ),
         "findings": [],
         "matched_topic": matched,
         "topic_id": topic_id,
-        "window": {"since": since, "until": now.isoformat(), "rule": rule},
+        "window": {
+            "since": since,
+            "until": now.isoformat(),
+            "rule": rule,
+            **({"subject": subject} if subject is not None else {}),
+        },
         "count": count,
         "count_is_at_least": at_least,
         "expired_left_out": expired_left_out,

@@ -8,14 +8,20 @@ once."""
 from __future__ import annotations
 
 import re
+import socket
+import threading
+import time
 from datetime import UTC, datetime
 from decimal import Decimal
 
 import boto3
 import pytest
+from botocore.config import Config
+from botocore.exceptions import ReadTimeoutError
 from moto import mock_aws
 
 from common import vision_sites as vs
+from common.adapters import rail_access
 from common.figures import clean_figure
 
 POLY = [[151.20, -33.97], [151.26, -33.97], [151.26, -34.02], [151.20, -34.02]]
@@ -240,6 +246,75 @@ def test_the_figure_store_round_trips_through_the_content_bucket(monkeypatch):
         stored = s3.get_object(Bucket="content-test", Key=key)
         assert stored["ContentType"] == "image/png"
         assert vs.load_image(key) == b"\x89PNG\r\n\x1a\nfigure"
+
+
+def test_the_content_buckets_calls_are_bounded_so_a_stalled_read_ends_inside_the_tick():
+    """S3_CONFIG: a few seconds to connect, 15 s on a read, two attempts in all. Two attempts that
+    each stall to their limits, with standard mode's wait of under a second before the second,
+    still answer the tick's first visit (its scene search first) inside rail_access's default
+    budget, and so well inside the research tick's 120 s Lambda: the site is deferred and the
+    state stored. botocore's defaults took about 308 s."""
+    config = vs.S3_CONFIG
+    assert (config.connect_timeout, config.read_timeout) == (vs.S3_CONNECT_TIMEOUT_SECONDS, 15)
+    assert vs.S3_CONNECT_TIMEOUT_SECONDS <= 5
+    assert config.retries == {"total_max_attempts": 2, "mode": "standard"}
+    two_attempts = 2 * (vs.S3_CONNECT_TIMEOUT_SECONDS + vs.S3_READ_TIMEOUT_SECONDS) + 1
+    assert vs.STAC_TIMEOUT_SECONDS + two_attempts < rail_access.DEFAULTS["time_budget_seconds"] < 120
+
+
+@pytest.fixture
+def stalled_s3(monkeypatch):
+    """A loopback socket that accepts and never answers, as the content bucket's endpoint. Yields
+    the connections it accepted (one per attempt)."""
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    for key in ("AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"):
+        monkeypatch.delenv(key, raising=False)
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    server.settimeout(0.2)
+    accepted, stop = [], threading.Event()
+
+    def hold():
+        while not stop.is_set():
+            try:
+                accepted.append(server.accept()[0])  # held open, never answered
+            except OSError:
+                continue
+
+    for key, value in {
+        "AWS_DEFAULT_REGION": "ap-southeast-2", "AWS_ACCESS_KEY_ID": "testing",
+        "AWS_SECRET_ACCESS_KEY": "testing", "CONTENT_BUCKET": "content-test",
+        "AWS_ENDPOINT_URL_S3": f"http://127.0.0.1:{server.getsockname()[1]}",
+    }.items():  # fmt: skip
+        monkeypatch.setenv(key, value)
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    try:
+        yield accepted
+    finally:
+        stop.set()
+        holder.join(timeout=2)
+        for each in accepted:
+            each.close()
+        server.close()
+
+
+def test_a_stalled_network_read_raises_after_two_bounded_attempts(stalled_s3, monkeypatch):
+    """For real: load_network's client against an endpoint that never answers, with S3_CONFIG's
+    retries and its read timeout scaled down to 0.3 s. It raises (rail_access then defers the site,
+    NETWORK_READ_ERROR) after two attempts of one read timeout each and the wait between them."""
+    read = 0.3
+    monkeypatch.setattr(vs, "S3_CONFIG", vs.S3_CONFIG.merge(Config(read_timeout=read)))
+
+    began = time.monotonic()
+    with pytest.raises(ReadTimeoutError):
+        vs.load_network("rail", "sydney")
+    took = time.monotonic() - began
+
+    assert len(stalled_s3) == 2  # two attempts in all
+    assert 2 * read <= took < 2 * read + 1 + 1.5  # standard mode waits under 1 s before the second
 
 
 # --- the baseline --------------------------------------------------------------------------------

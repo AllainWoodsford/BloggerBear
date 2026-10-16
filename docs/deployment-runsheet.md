@@ -576,9 +576,10 @@ variable, not with a tfvars edit. Every setting it uses is in
    asks the worker only while 45 s of the budget remain, so in about its first 15 s: only the
    sites whose new scene is found by then are measured, how many depending on the search's and
    the worker's times (often fewer than `max_sites_per_tick`); the rest rotate to later ticks and
-   keep their place. A `rail_access` topic is one city inside one Sentinel-2 tile:
-   [`rail_access` topics](#rail_access-topics), below, creates the four starting cities from a
-   file. Both get `force_manual_review` whether you ask or not:
+   keep their place. A `rail_access` topic watches up to eight cities, each inside one Sentinel-2
+   tile, and writes about one of them a day: [`rail_access` topics](#rail_access-topics), below,
+   creates one topic over the four starting cities from a file. Both get `force_manual_review`
+   whether you ask or not:
    every article waits for `admin_cli approve`, and the daily trending digest, which publishes
    with no person, leaves these topics out (#298). Trigger the first tick by hand
    (`topics trigger <id> --pipeline research_tick`); the first scene measured at or above the
@@ -607,206 +608,262 @@ are in the home Region, and the worker is not; read its log group,
 
 ### `rail_access` topics
 
-The Rail Access Monitor is one topic per city
-([what it measures](architecture/blogger-vision.md#part-two-the-trains-explainer); every key and
-default: [configuration.md](configuration.md#a-rail_access-topic)). Turn the worker on first
-(above): without it each tick records `last_error` on the city and writes nothing.
+The Rail Access Monitor is one topic that watches several cities and writes about one of them a
+day, by a fixed weekly rota ([what it measures](architecture/blogger-vision.md#part-two-the-trains-explainer);
+every key and default: [configuration.md](configuration.md#a-rail_access-topic); the design:
+[dailysubject_hook.md](enhancements/dailysubject_hook.md)). Turn the worker on first (above):
+without it each tick records `last_error` on the city and writes nothing.
 
-**Create the four city topics.** `scripts/rail_topics.example.json` holds four complete admin API
-topic bodies, Sydney, Melbourne, Singapore and Boston: each city's box from
-[rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards),
-`reach_m` 1000 (and for Sydney the 80 s `time_budget_seconds` cap: see "A large city's first
-network can take a minute", below), an editorial goal, the city's days of the week
-(`daily_cadence`) and a findings window of 192 hours (`findings_window_hours`). `topics create`
-takes a topic as flags, not as a file, so read each field out of it, from the repository root:
+**Create the topic.** `scripts/rail_topics.example.json` holds one complete admin API topic body,
+`rail-cities`: the four starting cities (Sydney, Melbourne, Singapore and Boston, each with its box
+from [rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards)),
+`reach_m` 1000, the 80 s `time_budget_seconds` cap (see "A large city's first network can take a
+minute", below), the rota (`rotation`, read in `rotation_timezone`), an editorial goal, a daily run
+every day and a findings window of 192 hours (`findings_window_hours`). `topics create` takes a
+topic as flags, not as a file, so read each field out of it, from the repository root:
 
 ```bash
-field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.example.json"))["topics"][int(sys.argv[1])][sys.argv[2]]; print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"; }
-for i in 0 1 2 3; do
-  python scripts/admin_cli.py topics create --topic-id "$(field $i topic_id)" --name "$(field $i name)" \
-      --adapter rail_access --config-json "$(field $i adapter_config)" \
-      --editorial-goals-json "$(field $i editorial_goals)" \
-      --daily-cadence "$(field $i daily_cadence)" --daily-timezone "$(field $i daily_timezone)" \
-      --findings-window-hours "$(field $i findings_window_hours)"
-done
-python scripts/admin_cli.py topics get rail-sydney
+field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.example.json"))["topics"][0][sys.argv[1]]; print(v if isinstance(v, str) else json.dumps(v))' "$1"; }
+python scripts/admin_cli.py topics create --topic-id "$(field topic_id)" --name "$(field name)" \
+    --adapter rail_access --config-json "$(field adapter_config)" \
+    --editorial-goals-json "$(field editorial_goals)" \
+    --daily-cadence "$(field daily_cadence)" --daily-timezone "$(field daily_timezone)" \
+    --findings-window-hours "$(field findings_window_hours)"
+python scripts/admin_cli.py topics get rail-cities
 ```
 
-Each answer shows `"force_manual_review": true`, which was not sent: the admin API forces it for
-this adapter. The example's editorial goal is the city's own: it asks for the measured figures,
-the capture date and the coverage, and rules out ridership, cost, recommendations and causes. A
-rail topic created without one is no longer drafted under the global default ("independent web
-research ... randomly sampling 5 to 10 highly relevant articles"), which does not fit a
-measurement: since #298 the `rail_access` adapter has a default goal of its own
-(`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`), which restates the summary
-prompt's limits (only what was measured, with the capture dates; no ridership, journey time, cost,
-cause, forecast or recommendation). A topic's own goal wins over it.
+The answer shows `"force_manual_review": true`, which was not sent: the admin API forces it for
+this adapter. The example's editorial goal names no city: it asks for the measured figures of "the
+day's city", the capture date and the coverage, and rules out ridership, cost, recommendations and
+causes; each day's mandate names the city (below). A rail topic created without a goal is drafted
+under the adapter's own (`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`, #298), which
+restates the summary prompt's limits (only what was measured, with the capture dates; no
+ridership, journey time, cost, cause, forecast or recommendation). A topic's own goal wins over it.
 
-**How the cadence works.** Like every topic, each city has two schedules. The research heartbeat
-(`rate(1 hour)` by default) asks whether the topic is due (its `research_interval_hours`, else the
-pipeline-wide interval) and, when it is, the adapter searches Earth Search for the newest scene
-over the whole city in the last 20 days. Sentinel-2 passes every few days, so most ticks find a
-scene the city already has: nothing is measured, no model is called, and the tick may instead
-refresh a network past its 30-day TTL. A new scene is measured; only a material change (or the
-first observation) makes a Finding. The daily cycle runs on `daily_cadence` in `daily_timezone`,
-and the cities take turns, one a day, each at 09:05 Sydney time, after the other topics' 09:00 to
-09:03: Sydney on Monday and Friday (`cron(5 9 ? * MON,FRI *)`), Melbourne on Tuesday and Saturday,
-Singapore on Wednesday and Sunday, Boston on Thursday. More cities can join the rotation (see
-"Adding a city" below).
+**The first-deploy check: one tick per city.** Trigger `topics trigger rail-cities --pipeline
+research_tick` once per city, a few minutes apart, and once more for each city whose first tick
+only fetched its network: each tick works on the city whose turn it is (one never attempted first,
+in the config's order: Sydney, Melbourne, Singapore, Boston), and a city whose first network took
+the time it had to measure keeps its place and is measured on the next tick ("A large city's first
+network can take a minute", below), so four to eight ticks cover the four. Then the ops assistant's
+vision status (or the running state, "Where things land") should show each city with a network
+fetched, and `topics findings rail-cities` a first-observation Finding for each city that had a
+clear scene, each listing its city in `subjects`.
 
-Each run drafts every Finding made since the city's last article, reaching back at most the topic's
-`findings_window_hours` (`lambdas/common/findings_window.py`; 24 hours when it is not set, at most
-336); with none, it stops before any model call. The example sets 192 hours, 8 days: the longest
-gap between two of a city's runs is Boston's 7 days, and the eighth day covers a clock change or a
-late run. The window never reaches back past the topic's `last_article_at`, so no Finding is
-drafted twice: the daily cycle stamps it with the run's start time on every article it writes,
-published or held for review (every rail article is held). One Finding can still be missed: the
-research tick dates a Finding (`captured_at`) when its fetch starts, at the start of the tick, and
-writes it at the tick's end, so a Finding whose tick is still running when the city's daily cycle
-starts is not there for that run and, once that run has written an article, is dated before the
-next window starts. It lands in neither window. That predates PR K and is a code follow-up
+**How the cadence works.** Like every topic, `rail-cities` has two schedules. The research
+heartbeat (`rate(1 hour)` by default) asks whether the topic is due (its `research_interval_hours`,
+else the pipeline-wide interval) and, when it is, the adapter takes the cities in order (the one
+never attempted first, else the one attempted longest ago) and each tick looks at the cities in that
+order until it has measured one new scene (`max_sites_per_tick` 1 caps measured scenes, not
+cities looked at). For each it searches Earth Search for the newest scene over the whole city in
+the last 20 days. Sentinel-2 passes every few days, so most visits find a scene the city already
+has: nothing is measured, no model is called, the tick may instead refresh a network past its
+30-day TTL, and it goes on to the next city. A new scene is measured; only a material change (or
+the first observation) makes a Finding, and the Finding lists the city it reports in `subjects`.
+The tick never reads the rota: with an hourly heartbeat every city is looked at about every hour,
+and at least one is measured when it has a new scene, whatever the day, so its Findings are
+waiting when its day comes.
+
+The daily cycle runs on `daily_cadence` in `daily_timezone`, every day at 09:05 Sydney time, after
+the other topics' 09:00 to 09:03. At the start of each run it asks the rota whose day it is, on the
+calendar of `rotation_timezone` (Sydney's, so "Tuesday" is Tuesday in Sydney): Sydney on Monday and
+Friday, Melbourne on Tuesday and Saturday, Singapore on Wednesday and Sunday, Boston on Thursday.
+The run writes about that city alone: it drafts the Findings that list the city in `subjects`, made
+since the topic's last article **on that city** (`last_article_by_subject` on the topic item, beside
+`last_article_at`), reaching back at most `findings_window_hours`
+(`lambdas/common/findings_window.py`; 24 hours when it is not set, at most 336). The day's mandate
+in its prompts names the city. With no new Finding about the day's city it stops before any model
+call (`no_findings`, naming the city) and stamps nothing, and it never borrows another city's
+Findings. A Finding that reports two cities (a tick that measured two) is drafted on each one's
+day. The log says `daily_cycle_handler: day_subject=<city> topic_id=rail-cities`, and the held
+article keeps the city as its `subject`.
+
+The window must cover the longest gap between two of a city's days, plus a day for a clock change
+or a late run: 24 hours a day of it. The two-day cities are at most 4 days apart (120 hours would
+do), but Boston's Thursday is 7 days from the next, so the example sets 192 hours, 8 days. Four
+cities cannot all have two of the seven days; a list rota (`"rotation": ["sydney", "melbourne",
+"singapore", "boston"]`) gives each one day in four and needs 120 hours, but no city has a fixed
+weekday. The window never reaches back past the city's own last article, so no Finding is drafted
+twice: the daily cycle stamps the city and the topic with the run's start time on every article it
+writes, published or held for review (every rail article is held). One Finding can still be
+missed: the research tick dates a Finding (`captured_at`) when its fetch starts, at the start of
+the tick, and writes it at the tick's end, so a Finding whose tick is still running when the daily
+cycle starts is not there for that run and, once that run has written an article on its city, is
+dated before that city's next window starts. That predates PR K and is a code follow-up
 ([vision.md §10](enhancements/vision.md#10-still-open)). Findings expire 14 days after they are
 made (`FINDING_TTL_DAYS` in `lambdas/research_tick_handler.py`), which is why the window is capped
-at 336 hours. Daylight saving no longer matters: when the clocks move, two runs are an hour more or
-less than whole days apart, and the window starts at the last article whatever the gap. Re-Write
-from the review inbox rebuilds a rail article's sources from the same window, looking back
-`findings_window_hours` from the article's creation (`_findings_for` in `lambdas/common/rewrite.py`,
-#297), so a rewritten article still sees the Findings of the city's off days (and may also see some
-an earlier article used, since the previous article is not known there). Rail Findings are few (the
-first observation, then material changes), so most runs draft nothing. Within a topic, which holds
-at most three cities, one city is measured per tick (`max_sites_per_tick`): those never attempted
-first, then the one attempted longest ago; a city skipped for that cap, or deferred because the
-tick ran short of time, keeps its place.
+at 336 hours. Daylight saving does not matter: the rota reads Sydney's calendar, and the window
+starts at the city's last article whatever the gap. Re-Write from the review inbox rebuilds a rail
+article's sources from the Findings of the article's own city in the same window, looking back
+`findings_window_hours` from the article's creation (`_findings_for` in
+`lambdas/common/rewrite.py`), and falls back to the whole window, saying so in its log, if none
+are left (a city since removed). Rail Findings are few (the first observation, then material
+changes), so most runs draft nothing.
 
 **When a run writes nothing.** A run that writes nothing stamps nothing. That covers three cases:
-it found no Finding; it had no usable angle; or it ended in an error. An error the handler catches
-is quiet: the daily cycle returns `"status": "error"`, so Step Functions sees a successful invoke
-and does not retry it, and nothing reaches the DLQ or an alarm. The error is in the execution's
-output, not in the function's log (the handler's top-level guard prints nothing, a code follow-up
-in [vision.md §10](enhancements/vision.md#10-still-open)); the sign is a city's run day with a new
-Finding but no new item in the review inbox. A timeout (the function's `timeout` is 300 s) or a
-crash is not caught: the state machine retries it twice and then sends it to the DLQ
-(`admin_cli failed-executions list`), so it is not silent. The next run then still starts at the
-city's last article, but never more than 192 hours back. A run that found no Finding loses
-nothing: its window was empty, and the next run's 192 hours reach back past it (no city's runs are
-more than 7 days apart), so they cover everything made since. After either of the other two, a
-two-day city still gets everything on its next run: its runs are 3 and 4 days apart, so its last
-article is at most 7 days old. For Boston, the once-a-week city, or after two such runs in a row,
+it found no Finding about the day's city; it had no usable angle; or it ended in an error. An
+error the handler catches is quiet: the daily cycle returns `"status": "error"`, so Step Functions
+sees a successful invoke and does not retry it, and nothing reaches the DLQ or an alarm. The error
+is in the execution's output, not in the function's log (the handler's top-level guard prints
+nothing, a code follow-up in [vision.md §10](enhancements/vision.md#10-still-open)); the sign is a
+city's day with a new Finding but no new item in the review inbox. A broken rota (a slot that is
+not a site, a site with no day, a zone that is not one) is such an error on every day, and the
+research tick records it on the topic's `last_error` too. A timeout (the function's `timeout` is
+300 s) or a crash is not caught: the state machine retries it twice and then sends it to the DLQ
+(`admin_cli failed-executions list`), so it is not silent. The city's next day then still starts at
+its last article, but never more than 192 hours back. A run that found no Finding loses nothing:
+its window was empty, and the city's next run reaches back past it. After either of the other two,
+a two-day city still gets everything on its next day (its days are 3 and 4 days apart, so its last
+article is at most 7 days old). For Boston, the once-a-week city, or after two such days in a row,
 Findings older than 192 hours drop out: for Boston that is about six of the week's seven days, and
-for a two-day city after two missed runs, two or three days.
+for a two-day city after two missed days, two or three days.
 
-After a run that had no usable angle or ended in an error, the remedy is to run the city's daily
-cycle again by hand soon after:
+After a run that had no usable angle or ended in an error, run the daily cycle again by hand the
+same day, before midnight Sydney time: a run writes about the day's city, so the next day's run
+would be about another city.
 
 ```bash
-python scripts/admin_cli.py topics trigger rail-boston --pipeline daily_cycle
+python scripts/admin_cli.py topics trigger rail-cities --pipeline daily_cycle
 ```
 
-It reaches back to the city's last article, up to 192 hours, so for Boston run it within about 24
-hours of the run that wrote nothing, while the last article is still under 192 hours old. Leave out
-`--force`: it ignores the last article and drafts the whole 192-hour window, so it would draft
-again the Findings an earlier article already used.
+It reaches back to the city's last article, up to 192 hours. Leave out `--force`: it ignores both
+stamps and drafts the city's whole 192-hour window, so it would draft again the Findings an earlier
+article on the city already used (it still keeps to the day's city).
 
 **What the first tick does.** Trigger it by hand rather than wait for the heartbeat:
-`python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick` (a manual tick
-ignores the interval). In order: the scene search; the city's OpenStreetMap network from the
-Overpass API, since none is cached (started when 30 s of the 70 s measuring budget remain, and
-given the rest of the budget less 10 s, both endpoints included: about 60 s; a failure is
-`last_error` `osm` and the city waits for the next tick); then, if 45 s of the budget remain, the
-worker measures the newest scene with that network (if the fetch was slow, the measurement is
-deferred to the next tick, which uses the cached network). If the scene's coverage
-is at least 0.6, that is the first observation: a Finding, its summary written by the model from
-"First observation. Sydney: served share … %, … stations, … km² beyond 1 km of a station
-(coverage … %)" (the area beyond reach printed to one decimal, such as 12.3 km²) and the planner
-notes, with the figure attached, and no triage (there is no baseline to check against; a person
-reads every article anyway). A scene under the floor writes no Finding, and the next clear one is
-the first observation. All of that takes longer than the CLI's 30 s wait (`topics trigger` polls
-for a new Finding for 30 s, `_RESEARCH_TICK_TIMEOUT_SECONDS` in `scripts/admin_cli.py`; the tick
-has 120 s), so the CLI printing "No new Finding after 30s. This can be a legitimate outcome …" does
-not mean it failed. Wait about two minutes, or until
-`python scripts/admin_cli.py topics findings rail-sydney` shows the new Finding. Then
-`topics trigger rail-sydney --pipeline daily_cycle` drafts the article, which the
-`force_manual_review` hold keeps in the review inbox for `admin_cli approve`, whatever the
-compliance review says. A daily cycle started before the Finding is written finds nothing to
-draft on a first tick (run it again); on a later tick, with other Findings in the window, it
-drafts without the new one, which is then lost ("One Finding can still be missed", above).
+`python scripts/admin_cli.py topics trigger rail-cities --pipeline research_tick` (a manual tick
+ignores the interval). In order: the scene search for the city whose turn it is (Sydney, first in
+the config, on a new topic); the city's OpenStreetMap network from the Overpass API, since none is
+stored (started when 30 s of the measuring budget remain, and given the rest of the budget less
+10 s, both endpoints included: about 70 s at the example's 80 s budget; a failure is `last_error`
+`osm` and the city waits for its next turn); then, if 45 s of the budget remain, the worker measures
+the newest scene with that network (if the fetch was slow, the measurement is deferred to the
+city's next turn, which reads the stored network). If the scene's coverage is at least 0.6, that is
+the topic's first observation: a Finding, its summary written by the model from "First observation.
+Sydney: served share … %, … stations, … km² beyond 1 km of a station (coverage … %)" (the area
+beyond reach printed to one decimal, such as 12.3 km²) and the planner notes, with the figure
+attached, `subjects` ["sydney"], and no triage (there is no baseline to check against; a person
+reads every article anyway). Each other city's first clear scene is its own first observation,
+reported once in the same way ("First observation. Melbourne: …"), so each city's day has an
+article to start with; after that a city is reported when it changes. A scene under the floor
+writes no Finding, and the city's next clear one is its first observation. All of that takes longer than
+the CLI's 30 s wait (`topics trigger` polls for a new Finding for 30 s,
+`_RESEARCH_TICK_TIMEOUT_SECONDS` in `scripts/admin_cli.py`; the tick has 120 s), so the CLI
+printing "No new Finding after 30s. This can be a legitimate outcome …" does not mean it failed.
+Wait about two minutes, or until `python scripts/admin_cli.py topics findings rail-cities` shows
+the new Finding. Then `topics trigger rail-cities --pipeline daily_cycle` drafts the article **if
+it is that city's day** (on Sydney's days, Monday and Friday, for Sydney's first Finding; on any
+other day the run says `no_findings` for the day's city, and Sydney's Finding waits for Sydney's
+day). The `force_manual_review` hold keeps the article in the review inbox for `admin_cli approve`,
+whatever the compliance review says. A daily cycle started before the Finding is written finds
+nothing to draft (run it again); on a later day, with other Findings about the city in its window,
+it drafts without the new one, which is then lost ("One Finding can still be missed", above).
 
 **A large city's first network can take a minute.** Overpass answers a big city's rail query
 slowly: Sydney's took 54 s from a workstation on 16 October (5,925 elements, 5.5 MB). So the first
-fetch gets the tick's measuring time, not the 30 s a refresh of a cached network gets (#312): the
+fetch gets the tick's measuring time, not the 30 s a refresh of a stored network gets (#312): the
 rest of the budget less 10 s, each Overpass hop reading for as long as that leaves and the query
 asking the server for the same (`FIRST_FETCH_MARGIN_SECONDS` and `FIRST_FETCH_TIMEOUT_SECONDS` in
 `lambdas/common/adapters/rail_access.py`). Such a fetch leaves too little of the budget to measure,
 so **the first tick fetches and the next measures**: the first tick's `vision_site` line says
 `deferred` for `time_budget`, and the ops assistant's vision status shows the network's
-`fetched_at` from that tick; the next tick (an hour later by default) measures the city against
-the cached network, which then serves for `osm_ttl_days` (a refresh that fails keeps it). The
-fetch ends by its deadline even if Overpass goes silent mid-reply: a reply still arriving then is
-cut, and the tick records a timeout. For a heavy city, raise the topic's `time_budget_seconds` to
-the cap, 80, which gives the fetch about 70 s (the example's Sydney topic sets it already; a topic
-created before it did, like dev's `trains-sydney`, does not): read the config with
-`topics get <id>`, add `"time_budget_seconds": 80` to the whole `adapter_config` and send all of
-it back with `topics update <id> --adapter-config-json '...'` (it replaces the config: see
-`reach_m` below). A failed first fetch is tried again on the next tick,
-with no 6-hour wait: nothing is measured without a network. If the status keeps saying `osm` with
-"OpenStreetMap timed out" at the 80 s budget (Overpass took 39 to 75 s to start answering for
-Sydney on 16 October, so a busy hour can miss), fetch the network out of band:
+`fetched_at` from that tick; the city's next turn measures it against the stored network, which
+then serves for `osm_ttl_days` (a refresh that fails keeps it). The fetch ends by its deadline even
+if Overpass goes silent mid-reply: a reply still arriving then is cut, and the tick records a
+timeout. The example sets `time_budget_seconds` to the cap, 80, which gives the fetch about 70 s; a
+topic created before it did, like dev's `trains-sydney`, does not: read the config with
+`topics get <id>`, add `"time_budget_seconds": 80` to the whole `adapter_config` and send all of it
+back with `topics update <id> --adapter-config-json '...'` (it replaces the config: see `reach_m`
+below). A failed first fetch is tried again on the city's next turn, with no 6-hour wait: nothing is
+measured without a network. If the status keeps saying `osm` with "OpenStreetMap timed out" at the
+80 s budget (Overpass took 39 to 75 s to start answering for Sydney on 16 October, so a busy hour
+can miss), fetch the networks out of band:
 
 ```bash
-python scripts/admin_cli.py topics trigger rail-sydney --pipeline network_prefetch
+python scripts/admin_cli.py topics trigger rail-cities --pipeline network_prefetch
 ```
 
-It runs the research tick's function in a mode that only fetches each site's network, with up to
-90 s per Overpass reply and 100 s in all, and stores it at `vision/<topic>/<site>/network.json` in
-the content bucket. It writes no Finding, no running state and no research time, so the CLI does
-not wait: each site's result is a `network_prefetch` line in the research-tick log (`stored`,
-`failed` with the Overpass error, or `deferred` when the time ran out before a second site; trigger
-again for those). The next tick adopts the stored network for a site that has none, or whose own is
-past its TTL and older, and carries it in the running state from then on; it is read in no other
-case. When a city's cached network goes stale (`osm_ttl_days`, 30 by default) and the tick's
-30 s refresh keeps failing, the old network is still measured against; run the prefetch again to
-replace it. If even the prefetch fails with a timeout, the query is too big for Overpass to answer:
-shrink the polygon (it starts a new baseline, and a new network is fetched for it).
+It runs the research tick's function in a mode that only fetches each city's network, in the
+config's order, with up to 90 s per Overpass reply and 100 s in all, and stores each in its own
+object, `vision/<topic>/<site>/network.json` in the content bucket: the same object the hourly tick
+reads and writes, so the next tick that reaches the city measures with it. It writes no Finding, no
+running state and no research time, so the CLI does not wait: each city's result is a
+`network_prefetch` line in the research-tick log (`stored`, `failed` with the Overpass error, or
+`deferred` when the time ran out before the next city; trigger again for those): a slow city can
+leave too little of the 100 s for the next one. When a city's network goes stale (`osm_ttl_days`,
+30 by default) and the tick's 30 s refresh keeps failing, the old network is still measured
+against; run the prefetch again to replace it. If even the prefetch fails with a timeout, the query
+is too big for Overpass to answer: shrink the polygon (it starts a new baseline, and a new network
+is fetched for it).
 
 **Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
 drew it, `vision/<topic>/<site>/<scene>.png` (for example
-`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); a network fetched by
-`network_prefetch`, `vision/<topic>/<site>/network.json`; the running state, rewritten every
-tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
-`snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the
-newest entry with its station, flag, suggestion and desert lists), the cached network, and any
-`last_error`, `network_error` or `failed_scene`; and `first_observed_at` for the topic. When the
-article is published, each figure is copied to the site bucket, `<prefix>-<env>-site`, as
-`articles/figures/<article>/<n>.png`, and the page shows it under the credits with its caption.
+`vision/rail-cities/sydney/S2A_56HLH_20240105_0_L2A.png`); each city's network, its only copy,
+`vision/<topic>/<site>/network.json`, written by the tick's fetches and by `network_prefetch` alike
+and kept outside `snapshots/` (whose objects the bucket expires after 21 days); the running state,
+rewritten every tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
+`snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the newest
+entry with its station, flag, suggestion and desert lists), what it knows of the network without
+holding it (`network_key`, `network_fetched_at`, the polygon's `network_site_key` and
+`network_counts`), and any `last_error`, `network_error` or `failed_scene`; and `first_observed_at`
+for the topic, and each city's own `first_observed_at`. When the article is published, each figure
+is copied to the site bucket, `<prefix>-<env>-site`, as `articles/figures/<article>/<n>.png`, and
+the page shows it under the credits with its caption.
 
 ```bash
-aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json - | python -m json.tool | less
+aws s3 cp s3://<prefix>-dev-content/snapshots/rail-cities/running-state.json - | python -m json.tool | less
+aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | python -c 'import json, sys; n = json.load(sys.stdin); print(n["fetched_at"], n["counts"])'
 ```
 
-**Reading the agent's trail.** From the second clear scene on, a numeric change goes to the
-triage agent before it can become a Finding. `topics findings rail-sydney` prints the latest
+**Reading the agent's trail.** From the second clear scene of a city on, a numeric change goes to
+the triage agent before it can become a Finding. `topics findings rail-cities` prints the latest
 Finding: its `summary` (the model wrote it from a diff that, for a change the agent judged real,
 quoted the agent's reason as `the vision agent's note (not a measurement): "…"`), `figures`,
-`planner_notes` and `raw_snapshot_s3_key`. That snapshot (and the running state) holds the whole
-trail under `triage`, keyed by site id: `verdict`, `reason`, `tool_calls` (each tool's `name`, its
-`input` and whether it was `ok`), `model_id`, the tokens and `model_calls`; the newest history entry
-repeats the verdict and reason. A change the agent judged an artefact writes no Finding, so its
-trail is only in the running state. The review evidence, which the fresh-data review checks the
-draft against, carries each city's measured numbers and planner notes, not the trail: to see why
-a change was or was not reported, read `triage`.
+`planner_notes`, `subjects` and `raw_snapshot_s3_key`. That snapshot (and the running state) holds
+the whole trail under `triage`, keyed by site id: `verdict`, `reason`, `tool_calls` (each tool's
+`name`, its `input` and whether it was `ok`), `model_id`, the tokens and `model_calls`; the newest
+history entry repeats the verdict and reason. A change the agent judged an artefact writes no
+Finding, so its trail is only in the running state. The review evidence, which the fresh-data
+review checks the draft against, carries each city's measured numbers and planner notes, not the
+trail: to see why a change was or was not reported, read `triage`.
 
-**Adding a city.** A new city is a new topic: copy one of the four bodies, with a new `topic_id`
-(at most 24 characters), name, site and days. Every day of the week already features a city, so
-give the new one a day of its own, taken from a city that has two (for Friday,
-`topics update rail-sydney --daily-cadence "cron(5 9 ? * MON *)"`), or share a day with another
-city, which then has two articles. Keep `findings_window_hours` at least the longest gap between
-a city's days plus a day: 192 hours covers any city that runs at least once a week. Its box must
-sit inside one Sentinel-2 tile, because the scene search keeps only scenes whose footprint holds the whole site. A tile is a
-100 km square of the UTM grid and 9.8 km more to the east and south (Sydney's 56HLH runs from
-easting 300,000 to 409,800 and northing 6,190,240 to 6,300,040), so a box whose corners fall in
-one 100 km square fits. Check it with `lambdas/vision/geo.py` from the repository root (any
-Python 3.11 or later; `geo.py` needs only the standard library), putting your box's west, south,
-east and north in place of Sydney's:
+**Moving from city topics to `rail-cities`.** A topic made before the day-subject round, like dev's
+`trains-sydney` (one city, no rota), keeps working after the deploy: it has no rota, so its daily
+cycle drafts every Finding as before, and its first tick moves the network its running state
+carried to the city's own object (`vision/trains-sydney/sydney/network.json`) without fetching it
+again. To change to one rotating topic, start it fresh rather than migrate state
+([dailysubject_hook.md §4.4](enhancements/dailysubject_hook.md#44-migrating-the-four-deployed-topics)):
+create `rail-cities` (above), run the first-deploy check (one tick per city), and once each city has
+had its first tick, pause the old topic, which stops its ticks and daily runs and keeps its
+published articles under its own id:
+
+```bash
+python scripts/admin_cli.py topics pause trains-sydney
+```
+
+(`topics delete trains-sydney` removes it for good.) Each city in `rail-cities` starts with a first
+observation again: the baseline needs one earlier clear scene (`min_baseline` 1), so each city is
+back to reporting changes after its second clear scene, a few days. Pause any other city topics
+the same way.
+
+**Adding a city.** A new city is a new site in the topic's `sites` and a day for it in the rota:
+every site needs a day, and a rota day that names no site is refused. Read the config with
+`topics get rail-cities`, add the site (with a new `id`, at most 64 letters, digits, `_` or `-`, its
+name and its box) and give it a day, taken from a city that has two (for Friday, `"FRI": "perth"`)
+or by changing the rota to a list cycled one a day, then send the whole config back with
+`topics update rail-cities --adapter-config-json '...'` (it replaces the config: see `reach_m`
+below). Keep `findings_window_hours` at least the longest gap between a city's days plus a day
+(`topics update rail-cities --findings-window-hours 192`): 192 hours covers any city that has at
+least one day a week. A topic may hold up to eight cities (`MAX_RAIL_SITES`), measured one per tick
+in turn; each city's network is in its own object, so the running state holds only the histories
+(about 7 MB at eight cities, `MAX_RAIL_SITES`'s comment in
+`lambdas/common/adapters/rail_access.py` has the measurements). The new city's box must sit inside
+one Sentinel-2 tile, because the scene search keeps only scenes whose footprint holds the whole
+site. A tile is a 100 km square of the UTM grid and 9.8 km more to the east and south (Sydney's
+56HLH runs from easting 300,000 to 409,800 and northing 6,190,240 to 6,300,040), so a box whose
+corners fall in one 100 km square fits. Check it with `lambdas/vision/geo.py` from the repository
+root (any Python 3.11 or later; `geo.py` needs only the standard library), putting your box's west,
+south, east and north in place of Sydney's:
 
 ```bash
 python -c 'import sys, math; sys.path.insert(0, "lambdas"); from vision import geo; w, s, e, n = 150.86, -34.16, 151.56, -33.58; z = int((w + e) / 2 + 180) // 6 + 1; c = [geo.lonlat_to_utm(x, y, z, s < 0) for x in (w, e) for y in (s, n)]; xs, ys = [p[0] for p in c], [p[1] for p in c]; print("zone", z, "S" if s < 0 else "N", "| 100 km squares", sorted({(int(x // 1e5), int(y // 1e5)) for x, y in c}), "| margin km", round(min(min(xs) % 1e5, 1e5 - max(xs) % 1e5, min(ys) % 1e5, 1e5 - max(ys) % 1e5) / 1e3, 1), "| window px", math.ceil(max(xs) / 20) - math.floor(min(xs) / 20) + 32, "x", math.ceil(max(ys) / 20) - math.floor(min(ys) / 20) + 32)'
@@ -826,17 +883,14 @@ cover only part of a tile; the search skips those and waits for one that holds t
 `reach_m` is the walking reach of a station in a straight line, 200 to 5000 m. Keep 1000 (about a
 12-minute walk) unless there is a reason: the served share and the deserts are only comparable
 between cities at the same reach, and a larger reach describes stations people drive or ride a
-bus to. Changing it, or the polygon, on a running topic starts a new baseline: the next scene
+bus to. Changing it, or a polygon, on a running topic starts a new baseline: the next scene
 reports "baseline still building" rather than a change. Either is changed with
 `topics update <id> --adapter-config-json '...'`, which replaces the whole `adapter_config`, not
-the keys it names: read it with `topics get <id>`, edit it, and send all of it back, keeping the
-city's `sites` entry with the same `id` (and polygon, unless that is what changes). Sent with
-only the changed key, the config loses `sites` and every tick fails until it is whole again; any
-other key left out falls back to its default; a city under a new `id` starts with no history.
-
-A topic may hold up to three cities (`MAX_RAIL_SITES`), measured one per tick, each with its own
-network in the running state; one city per topic is the design, since each city's network is
-about 3 MB of the state and articles are about one city.
+the keys it names: read it with `topics get <id>`, edit it, and send all of it back, keeping each
+city's `sites` entry with the same `id` (and polygon, unless that is what changes) and the
+`rotation`. Sent with only the changed key, the config loses `sites` and every tick fails until it
+is whole again; any other key left out falls back to its default (a lost `rotation` makes the topic
+write about every city every day); a city under a new `id` starts with no history.
 
 ### Evidence: what the pipeline measured and decided
 
@@ -1053,21 +1107,26 @@ shadow them, and the handler would answer `not_cool`).
    Two inputs must be in that checkout before the runs:
 
    - **The Sydney network fixture**, `scripts/vision_benchmark_networks/sydney.json`: the network
-     the deployed worker was sent, taken from the running state after the first Sydney tick, on
-     your own machine:
+     the deployed worker was sent, taken from Sydney's network object after the first Sydney tick
+     (each city's network is its own object, `vision/<topic>/<site>/network.json`, not part of the
+     running state: [`rail_access` topics](#rail_access-topics), "Where things land"), on your own
+     machine. For the example topic the object is `vision/rail-cities/sydney/network.json`; for
+     dev's `trains-sydney`, `vision/trains-sydney/sydney/network.json`, once a tick after the
+     day-subject round has moved it there:
 
      ```sh
-     aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json - | jq '.sites.sydney.network | {ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' > scripts/vision_benchmark_networks/sydney.json
+     aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json - | jq '{ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' > scripts/vision_benchmark_networks/sydney.json
      ```
 
      ```powershell
-     aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json "$env:TEMP\running-state.json"
-     jq -a '.sites.sydney.network | {ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' "$env:TEMP\running-state.json" | Set-Content -Encoding ascii scripts\vision_benchmark_networks\sydney.json
+     aws s3 cp s3://<prefix>-dev-content/vision/rail-cities/sydney/network.json "$env:TEMP\network.json"
+     jq -a '{ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' "$env:TEMP\network.json" | Set-Content -Encoding ascii scripts\vision_benchmark_networks\sydney.json
      ```
 
      The PowerShell lines differ on purpose: Windows PowerShell re-encodes whatever passes between
-     two programs through its own pipe, which mangles any station name outside ASCII, so the state
-     is downloaded to a file first and `jq -a` writes every such character as a `\u` escape; and
+     two programs through its own pipe, which mangles any station name outside ASCII, so the
+     network is downloaded to a file first and `jq -a` writes every such character as a `\u`
+     escape; and
      `Set-Content -Encoding ascii` writes the lines as they are, with no byte-order mark (the
      benchmark reads a file with one too).
 

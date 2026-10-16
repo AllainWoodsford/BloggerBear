@@ -776,6 +776,27 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   adopts it for a site with none, or whose own is stale and older. No Finding, running state or
   research time is written. For a city that still misses #312's first-fetch minute (#315, rail;
   `lambdas/common/adapters/rail_access.py`, `lambdas/research_tick_handler.py`)
+- [x] `vision_evidence`'s review nits: the call has a 12-second deadline, and an Articles read that
+  would start after it is said as not checked; that read takes only the fields the join uses and at
+  most 200 articles; no "on screen" when nothing is; a topic whose decisions were all cut off says
+  so, never "nothing was measured"; titles keep their spend whole; a scene of several sites says
+  how many; implausible numbers are never spoken; the vision runsheet lists the tool. The rubric
+  tracker's rows as of 16 October (C1 to C3, S3, S7, A2, A3, O1 met, O2, O5) (#322, rail PR W;
+  `lambdas/ops_mcp/vision_evidence.py`, `docs/hackathon/rubric-tracker.md`)
+- [x] The day-subject round: one topic that rotates through the cities it watches, one a day, as
+  the crypto feed has its market days. A generic adapter hook names the day's subject and the
+  subjects each Finding reports (`subjects`); the daily cycle drafts only the day's subject's
+  Findings, from its own last article (`last_article_by_subject`), and Re-Write, `topic_findings`
+  and `findings list --next-article` read the same way (S1, #320; its review's leftovers, S1b,
+  #324). The rail adapter rotates: each city's network in its own object, `MAX_RAIL_SITES` 8, a
+  weekly rota read in `rotation_timezone`, each city's own first observation, and one template
+  topic, `rail-cities`, with a 192-hour window (S2, #323; its review fixes, #327). The tidy-up: the
+  rotating read logs where it stopped, the hook's text and subjects are bounded before they are
+  cleaned, a stored network S3 fails to hand back waits a tick instead of being fetched again, and
+  the docs say what was built (S3) (`lambdas/common/day_subject.py`,
+  `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
+  `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
+  [design](enhancements/dailysubject_hook.md))
 
 ## Backlog / not yet scheduled
 

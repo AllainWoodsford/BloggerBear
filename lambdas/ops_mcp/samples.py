@@ -24,8 +24,9 @@ somehow arrive. A field can only be added to the allowlist on purpose.
 **No personal data out.** Every value shown passes through `redact`: e-mail addresses and IP
 addresses become placeholders, fields that identify a person (a user id, an address) are replaced
 whole, text that reads like instructions to a model is withheld
-(redact.looks_like_instructions_within, then the shown text again), and text is cut short and
-stripped of control characters (common/security_events.untrusted_text). The values go under
+(redact.looks_like_instructions_within over the value as written, then redact.cut_or_withheld over
+the value as swept and as cut), and text is cut short and stripped of control characters
+(redact.cut_or_withheld, with common/security_events.untrusted_text's rule). The values go under
 `untrusted`, never into `spoken`: the spoken answer says how old the newest row is and whether
 writes look on time, nothing a row contains.
 
@@ -49,9 +50,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from common.dynamo import get_pipeline_config, get_table, list_topics
 from common.research_schedule import resolve_interval_hours
-from common.security_events import untrusted_text
 from ops_mcp import architecture, topic_match
-from ops_mcp.redact import WITHHELD, looks_like_instructions, looks_like_instructions_within, visible
+from ops_mcp.redact import WITHHELD, cut_or_withheld, looks_like_instructions_within, visible
 from ops_mcp.suggestions import ID_PATTERN
 from ops_mcp.tools import DAY_WINDOW, _age, _join, _parse, _topic_label
 
@@ -141,13 +141,19 @@ def _dynamodb():
     return _dynamodb_client
 
 
-def _account_id() -> str:
-    """This account's id, for a table's ARN. GetCallerIdentity needs no permission."""
+def _account_id(sts=None) -> str:
+    """This account's id, for a table's ARN. GetCallerIdentity needs no permission. `sts`, when
+    given, makes the STS client asked while the id is not known yet, in place of the shared one
+    (vision_evidence's, which holds the request to its call's time left: logs.group_arn)."""
     global _sts_client
     if not _account:
-        if _sts_client is None:
-            _sts_client = boto3.client("sts")
-        _account.append(_sts_client.get_caller_identity()["Account"])
+        if sts is not None:
+            client = sts()
+        else:
+            if _sts_client is None:
+                _sts_client = boto3.client("sts")
+            client = _sts_client
+        _account.append(client.get_caller_identity()["Account"])
     return _account[0]
 
 
@@ -239,19 +245,19 @@ def _redact_text(text: str) -> str:
     # source data) is not shown at all: the same rule, the same normalisation and the same two copies
     # as the log tools' (redact.looks_like_instructions), read as written, since a format character
     # between two words is what tells them apart, over a bounded start of the value, since at most
-    # VALUE_MAX_CHARS of it are shown (redact.looks_like_instructions_within says how much and why),
-    # and again over the text about to be shown, whole. Between the two, what nobody sees (format
-    # characters such as the tag characters, which can spell an instruction the check never reads,
-    # and the invisible marks and fillers) is dropped, as redact.scrub drops it. This module keeps
-    # its own [ip] masking.
+    # VALUE_MAX_CHARS of it are shown (redact.looks_like_instructions_within says how much), and
+    # again over the swept value before it is cut and the cut value (redact.cut_or_withheld says
+    # why), as redact.scrub reads a log line. Between the two, what nobody sees (format characters
+    # such as the tag characters, which can spell an instruction the check never reads, and the
+    # invisible marks and fillers) is dropped, as redact.scrub drops it. This module keeps its own
+    # [ip] masking.
     if looks_like_instructions_within(text, VALUE_MAX_CHARS):
         return WITHHELD
-    text = visible(text)
-    text = _EMAIL.sub("[email]", text)
-    text = _IPV4.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
-    text = _IPV6.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
-    shown = untrusted_text(text, VALUE_MAX_CHARS) or ""
-    return WITHHELD if looks_like_instructions(shown) else shown
+    seen = visible(text)
+    swept = _EMAIL.sub("[email]", seen)
+    swept = _IPV4.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), swept)
+    swept = _IPV6.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), swept)
+    return cut_or_withheld(swept, VALUE_MAX_CHARS, hidden=len(seen) < len(text))
 
 
 def _is_ip(text: str) -> bool:

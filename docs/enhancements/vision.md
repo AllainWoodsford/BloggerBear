@@ -61,8 +61,8 @@ research tick ── satellite_vision.fetch_state
 ```
 
 The rail task follows the same path with two additions: the adapter fetches the city's
-OpenStreetMap network through the Overpass API and keeps it in the running state, and the Finding
-carries the figure to the article page. Its diagram is in
+OpenStreetMap network through the Overpass API and keeps it in an object of its own in the content
+bucket, and the Finding carries the figure to the article page. Its diagram is in
 [rail-access-monitor.md §3](rail-access-monitor.md#3-architecture) and
 [blogger-vision.md](../architecture/blogger-vision.md#part-one-the-pipeline).
 
@@ -155,7 +155,7 @@ The integration branch and the Rail Access Monitor (the letters are the rail doc
 | OpenStreetMap | `lambdas/common/osm.py` | The Overpass query, two allow-listed endpoints and one fallback hop, decimation to 20 m, caps, a streamed body under 20 MB, coded errors (`OsmError`), `is_stale`, the credit (`OSM_SOURCE`). No numpy or OpenCV. |
 | Shared site machinery | `lambdas/common/vision_sites.py` | What both vision adapters share: config checks and bounds, the STAC search and choice of scene, the figure store, clear entries, the time `Budget` and when a tick may still ask the worker (`time_to_measure`: `MEASURE_RESERVE_SECONDS`, 45 s, of the budget left; waited on for at most `WORKER_READ_TIMEOUT`, 58 s), the site order, `site_key`, the first-observation rule, the credits. |
 | Ship adapter | `lambdas/common/adapters/satellite_vision.py` | Sites, history, the count diff, triage hook, attribution, summary prompt, review evidence. |
-| Rail adapter | `lambdas/common/adapters/rail_access.py` | One city per site: scene search, the cached network, the worker call, history, the served-share, desert and station-count diff, triage, figures and planner notes (of the sites its summary reports, `_reported_scenes`), source references, summary prompt, review evidence. |
+| Rail adapter | `lambdas/common/adapters/rail_access.py` | One city per site, one city a day by the topic's rota: scene search, the city's network object, the worker call, history, the served-share, desert and station-count diff, triage, figures and planner notes (of the sites its summary reports, `_reported_scenes`), source references, summary prompt, review evidence. |
 | Planner notes | `lambdas/common/rail_notes.py` | The rail flags and simulated links as one generated sentence each (§6.8). |
 | Figures path | `lambdas/common/figures.py` | Shapes and checks `[{"key", "caption", "alt"}]` from adapter to Finding to article; the site key `articles/figures/<article>/<n>.png`; `static_pages.publish_figures` does the copy and leaves a failed copy off the static page; the SPA (`frontend/app.js`) removes a `<figure>` whose image fails to load, so it shows what the static page shows. |
 | Triage agent | `lambdas/common/vision_triage.py` | Converse with the figure and the task profile's tools (three for ships, four for rail); bounded; a deadline; fail closed; trail returned. |
@@ -309,18 +309,19 @@ automatically and cannot be unset.
 Every key, its default and its bounds are in one table, in
 [configuration.md, A `rail_access` topic](../configuration.md#a-rail_access-topic), read from the
 adapter's `DEFAULTS` (`lambdas/common/adapters/rail_access.py`); the rail parameters `params` may
-override are the table in §4. Four ready topic bodies, one per starting city, are
-`scripts/rail_topics.example.json`: the cities take turns, one a day at 09:05 Sydney time, and each
-sets `findings_window_hours` to 192 (8 days, more than Boston's 7 between runs), so each article
-drafts every Finding since the city's last one. The runsheet's
-[rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them and says how the
-window works. What differs from a
-ship topic, in short: at most three sites (one city per topic is the design), one city measured per
-tick by default, `reach_m` and the network cache's `osm_ttl_days`, the agent's `web_context`, and
-three material rules (served share, desert area, station count, §6.2) in place of the count's two
-thresholds.
+override are the table in §4. One ready topic body, `rail-cities`, is
+`scripts/rail_topics.example.json`: the four starting cities and a `rotation` that gives each city
+its days (the day-subject round, [dailysubject_hook.md](dailysubject_hook.md)), a daily run at
+09:05 Sydney time that writes about the day's city alone, and `findings_window_hours` 192 (8 days,
+more than Boston's 7 between its Thursdays), so each article drafts every Finding about its city
+since that city's last. The runsheet's
+[rail_access topics](../deployment-runsheet.md#rail_access-topics) creates it and says how the
+window works. What differs from a ship topic, in short: at most eight sites (`MAX_RAIL_SITES`), an
+optional rota, one city measured per tick by default, `reach_m` and each network's `osm_ttl_days`,
+the agent's `web_context`, a first observation per city, and three material rules (served share,
+desert area, station count, §6.2) in place of the count's two thresholds.
 
-**A city's first network takes the measuring time.** With no network cached for the city's
+**A city's first network takes the measuring time.** With no network stored for the city's
 polygon, the fetch starts when `OSM_RESERVE_SECONDS` (30 s) of the budget remain, like a refresh,
 but may take the rest of the budget less `FIRST_FETCH_MARGIN_SECONDS` (10 s, for the parse and the
 stores: a reply still arriving at the deadline is shut, so the transfer is inside it), never less
@@ -328,10 +329,10 @@ than 30 s: about 60 s at the default `time_budget_seconds` of 70, about 70 s at 
 Overpass hop reads for up to `FIRST_FETCH_TIMEOUT_SECONDS` (75 s) within that deadline, and its
 query declares the same runtime to the server (`[timeout:N]`, the hop's read timeout rounded down),
 so Overpass neither stops a query the client still waits for nor runs one the client has left.
-A refresh of a cached network keeps 30 s and 25 s a hop
-(`osm.TIMEOUT_SECONDS`): the cached copy serves meanwhile. A first fetch that takes most of the
-minute leaves under 45 s, so the city is measured on the next tick, against the network now
-cached; a failed one is tried again on the next tick (no 6-hour wait: nothing serves meanwhile).
+A refresh of a stored network keeps 30 s and 25 s a hop
+(`osm.TIMEOUT_SECONDS`): the stored copy serves meanwhile. A first fetch that takes most of the
+minute leaves under 45 s, so the city is measured on its next turn, against the network now
+stored; a failed one is tried again on the next tick (no 6-hour wait: nothing serves meanwhile).
 Raise `time_budget_seconds` to 80 for a heavy city; the runsheet's
 [rail_access topics](../deployment-runsheet.md#rail_access-topics) says when (§8 lesson 16).
 
@@ -397,8 +398,9 @@ and never calls an area safe, clear or unaffected. A topic's own `primary_focus`
 |---|---|
 | Per-site history, `last_error`, `last_attempt_at`, triage trails | `snapshots/<topic>/running-state.json` in the content bucket, and each Finding's snapshot (`snapshots/<topic>/<captured_at>.json`) |
 | Each site's decision ring: the last 12 decisions, each with the numbers it was made from, its code, what moved, the agent's trail with each tool's result, who measured, and whether it was reported ([the evidence trail](vision-evidence.md)) | `decisions` on the site's record in the same running state; one `vision_decision` line per entry in the research tick's log |
-| The rail task's cached OpenStreetMap network, per site, with its polygon's `site_key`, `network_error` after a failed refresh, and `failed_scene` after a refusal | The same running state (never in a prompt or the review evidence) |
-| When the topic's first observation was reported | `first_observed_at` in the running state |
+| The rail task's OpenStreetMap network, per site, with its polygon's `site_key`: its only copy, written by the tick's fetches and by the operator's `network_prefetch` alike | `vision/<topic>/<site>/network.json` in the content bucket, outside `snapshots/` (never in the running state, a prompt or the review evidence) |
+| What the site's record knows of its network without holding it (`network_key`, `network_fetched_at`, `network_site_key`, `network_counts`), `network_error` after a failed refresh, and `failed_scene` after a refusal | The running state |
+| When the topic's first observation was reported, and each city's (rail) | `first_observed_at` in the running state, and on each rail site's record |
 | Figures, as the worker drew them | `vision/<topic>/<site>/<scene>.png` in the content bucket (private) |
 | A Finding's figures and planner notes | `figures` (`[{"key", "caption", "alt"}]`) and, for rail, `planner_notes` (at most 7) on the Finding, both only for the sites its summary reports |
 | A published article's figures | `articles/figures/<article>/<n>.png` in the site bucket (copied at publish; removed on unpublish and take-down, which also ask the CDN to drop `/articles/figures/<article>/*` for an article with figures), and `figures` on the article row |
@@ -412,8 +414,8 @@ A rail history entry keeps, per scene: `scene_id`, `captured_at`, `scene_cloud_c
 them) and, once judged, `triage` (`verdict`, `reason`). Only the newest entry also keeps the lists
 (`NEWEST_ONLY_KEYS`: `stations`, cut to ten fields and 2,000 rows, `flags`, `suggestions`,
 `deserts`): the figure, the review evidence, the agent's brief and the planner notes read them from
-it alone, and dropping them from older entries is what keeps three cities' state near 10 MB
-(§8).
+it alone, and dropping them from older entries, with each network in its own object, is what keeps
+eight cities' state near 7 MB (§8).
 
 A scene the worker failed on leaves `failed_scene` (`id`, `code`, `at`, `site_key`, `params`) on
 the site beside its `last_error`. One refused for what it is (`window_too_large`,
@@ -807,7 +809,10 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     state and a 390 MB peak in the 512 MB tick. Only the newest entry now keeps the lists
     (`NEWEST_ONLY_KEYS`), every entry keeps `flag_count`, and a topic has at most three cities
     (`MAX_RAIL_SITES`): about 10 to 11 MB of state (23 MB with long CJK names) and a 146 to 181 MB
-    peak.
+    peak. The day-subject round then moved each network out of the state into its own object, the
+    one the out-of-band prefetch (#315) already wrote: eight cities with full decision rings make a
+    7.3 MB state (16.4 MB with CJK names) and a 107 MB peak (128 MB) for a tick measuring one, so
+    a topic may now hold eight (`MAX_RAIL_SITES`'s comment has the measurements).
 15. **The stack merged onto a moved `dev`.** `dev` had moved 86 commits since the stack branched;
     three files had both sides appending at the end, and a careless "keep both" duplicated six
     lines of a test file, which ruff caught. Each was resolved as dev's version plus the stack's
@@ -849,7 +854,7 @@ None of this is automatic.
    [runsheet](../deployment-runsheet.md#vision-optional) has the steps; nothing in `terraform.tfvars`
    changes). It also turns the worker on in production at the next release, unless the
    `production` environment sets `VISION_ENABLED` to `false` until the dev trial is done.
-4. **Create the topics.** The four rail cities from `scripts/rail_topics.example.json`
+4. **Create the topics.** The rail topic over the four cities from `scripts/rail_topics.example.json`
    ([rail_access topics](../deployment-runsheet.md#rail_access-topics)), and a ship topic if
    wanted: `adapter: "satellite_vision"`, its `sites`, an `object_noun`, and editorial goals if the
    adapter's default (§5, "Editorial goal") is not what you want. Check

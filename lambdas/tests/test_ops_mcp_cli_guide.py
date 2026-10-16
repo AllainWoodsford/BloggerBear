@@ -862,6 +862,29 @@ def test_one_topic_is_shown_in_full(tables):
     assert result["spoken"] == "GitHub Trending's settings are on screen."
 
 
+def test_a_rotating_topic_shows_its_last_article_per_subject_and_others_have_no_such_row(tables):
+    """The daily cycle's per-subject stamps (common/day_subject.py) beside the topic-wide one."""
+    put_topic(
+        tables,
+        "rail-cities",
+        name="Rail cities",
+        adapter="rail_access",
+        last_article_at="2026-10-13T22:05:00+00:00",
+        last_article_by_subject={"sydney": "2026-10-13T22:05:00+00:00", "boston": "not a time"},
+    )
+    put_topic(tables, "hn", name="Hacker News")
+
+    settings = dict(cli_guide.topics_overview(topic="rail-cities")["table"]["rows"])
+    plain = dict(cli_guide.topics_overview(topic="hn")["table"]["rows"])
+
+    assert settings["Last article"] == "2026-10-13 22:05 UTC"
+    assert settings["Last article by subject"] == "boston never; sydney 2026-10-13 22:05 UTC"
+    assert "Last article by subject" not in plain
+    # The list view's columns are unchanged.
+    (row,) = (r for r in cli_guide.topics_overview()["table"]["rows"] if r[1] == "rail-cities")
+    assert len(row) == len(cli_guide.OVERVIEW_COLUMNS)
+
+
 def test_an_id_that_is_not_one_or_is_not_there_is_said_so(tables):
     assert "table" not in cli_guide.topics_overview(topic="x; topics delete y")
     assert cli_guide.topics_overview(topic="nope")["spoken"].startswith("I couldn't find that topic")

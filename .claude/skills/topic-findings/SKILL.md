@@ -39,7 +39,10 @@ python scripts/admin_cli.py topics findings <topic_id>
 ```
 
 `findings list` takes `--limit N` (1 to 20, default 5) and one of `--days D` (1 to 14, unexpired
-only), `--since ISO` or `--next-article`. Its answer is `findings` (raw items, newest first) with
+only), `--since ISO` or `--next-article`; with `--next-article`, `--subject KEY` reads what a
+rotating topic's next article on that subject reads. Without `--subject`, `--next-article` reads a
+rotating topic for today's subject, which is echoed in `subject`, and `count` is then that
+subject's Findings (it can pass 48). Its answer is `findings` (raw items, newest first) with
 `count` (how many the window holds; a floor when `count_is_at_least`), `more` (some were not
 listed), `expired_left_out`, `since`, `until` and `truncated`.
 
@@ -71,7 +74,9 @@ python scripts/admin_cli.py findings list <topic_id> | jq '.findings[] | {captur
 - The next article reads from `max(now - findings_window_hours, last_article_at)`, at most 48
   Findings newest first, and its draft reads their summaries up to 40,000 characters, so the
   oldest can be left out of a busy window. `findings_window_hours` defaults to 24; a topic that
-  writes on some days only (a rail city in a rotation) widens it.
+  writes on some days only (a rail topic with a rota) widens it. A rotating topic reads from its
+  day subject's own last article (`last_article_by_subject`) instead, and keeps only the Findings
+  that list the subject in `subjects`.
 - A topic with editorial goals (the crypto feed) may use only the Findings of the day's goal.
 - A vision topic writes a Finding only for a new clear scene that changed against its baseline.
   Its first clear scene is a "first observation", also a Finding.

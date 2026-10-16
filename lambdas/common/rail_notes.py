@@ -290,6 +290,12 @@ _NAME_MARKUP = str.maketrans(
 )  # fmt: skip
 
 
+def clean_name(value) -> str | None:
+    """A name as a note would quote it (`_clean_name`), for a name used outside a note: a site's,
+    as the daily cycle's prompts name the day's city (rail_access.day_subject)."""
+    return _clean_name(value)
+
+
 def _clean_name(value) -> str | None:
     """`value` as a name fit to quote: common/osm.clean_name (controls, bidi overrides and isolates
     and every other formatting character out, except the joiners U+200C and U+200D that Persian,

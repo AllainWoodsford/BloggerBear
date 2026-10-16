@@ -51,6 +51,7 @@ from common import compliance, fresh_review
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, pricing_for
+from common.day_subject import ARTICLE_SUBJECT_FIELD, subject_findings
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     delete_musings_for_article,
@@ -59,13 +60,14 @@ from common.dynamo import (
     get_moderation_item,
     get_pipeline_config,
     get_topic,
+    list_findings,
     list_moderation_by_status,
     list_recent_findings,
     put_moderation_item,
     update_article_after_rewrite,
     update_article_status,
 )
-from common.findings_window import findings_window_hours
+from common.findings_window import SUBJECT_READ_LIMIT, findings_window_hours, read_stopped_at
 from common.model_pricing import model_label
 from common.model_routing import resolve_model
 from common.relevance import topic_label
@@ -260,11 +262,43 @@ def _findings_for(article: dict, topic: dict) -> list[dict]:
     it from (common/findings_window.py): a day, or more for a topic that writes on some days only,
     whose article drew on the findings of its off days too. The previous article is not known
     here, so a wide window can also hold findings an earlier article used: more context, never
-    less. Empty once they have aged out of the Findings table."""
+    less. Empty once they have aged out of the Findings table.
+
+    An article written on a rotating topic's day subject (its `subject`, common/day_subject.py)
+    was drafted from that subject's Findings only, so only those are kept, at most MAX_FINDINGS of
+    them, as the daily cycle caps them: the window is read further first (SUBJECT_READ_LIMIT, as
+    the daily cycle reads it), so other subjects' newer Findings never push the subject's out. The
+    read is bounded at both ends, the window's start and the article's `created_at`, so a rewrite
+    run long after the article spends none of it on Findings captured since; when the window holds
+    more than that read reaches, the log says where it stopped, as the daily cycle's does. The
+    fresh-data review and the compliance review then see its own subject's research, not its
+    neighbours'. If none of the window's Findings report it (the subject has since left the topic's
+    rota, say), the newest MAX_FINDINGS of the whole window are used and the log says so: never an
+    empty prompt."""
     created_at = article.get("created_at") or datetime.now(UTC).isoformat()
     since = (datetime.fromisoformat(created_at) - timedelta(hours=findings_window_hours(topic))).isoformat()
-    findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
-    return [f for f in findings if (f.get("captured_at") or "") <= created_at]
+    subject = article.get(ARTICLE_SUBJECT_FIELD)
+    if not isinstance(subject, str) or not subject:
+        findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
+        return [f for f in findings if (f.get("captured_at") or "") <= created_at]
+    findings, _, more = list_findings(
+        article["topic_id"], since=since, until=created_at, limit=SUBJECT_READ_LIMIT, unexpired_at=None
+    )
+    if more:
+        print(
+            f"rewrite: subject {subject!r:.70} topic_id={article['topic_id']} read {len(findings)} findings "
+            f"of its window and stopped at {read_stopped_at(len(findings))}; any of its older ones were "
+            "not read"
+        )
+    own = subject_findings(findings, subject)
+    if own or not findings:
+        return own[:MAX_FINDINGS]
+    newest = findings[:MAX_FINDINGS]
+    print(
+        f"rewrite: no findings on the article's subject {subject!r:.70} in its window; "
+        f"rewriting from the window's {len(newest)} newest findings instead"
+    )
+    return newest
 
 
 def _load_snapshot(findings: list[dict]) -> dict | None:

@@ -28,7 +28,7 @@ from moto import mock_aws
 from test_ops_mcp_redact import BYPASSES
 
 import research_tick_handler
-from common import osm, vision_client
+from common import osm, vision_client, vision_sites
 from common.adapters import rail_access as ra
 from common.adapters import satellite_vision as sv
 from ops_agent import policy
@@ -119,6 +119,17 @@ def rail_state(previous=None, *, stac=None, worker=None, overpass=None, topic=No
     adapter.fetch_network = overpass or rail.FakeOverpass(rail.network())
     adapter.store_image = lambda *args: "vision/rail-sydney/sydney/S1.png"
     return adapter.fetch_state(topic or rail_topic(), previous_state=previous)
+
+
+def aged_rail(state, days, topic_id="rail-sydney", site="sydney"):
+    """A rail state whose site's network was fetched `days` ago: the network in its object (moto's
+    content bucket, where the adapter keeps it) and what the site's record says of it."""
+    copy = json.loads(json.dumps(state))
+    when = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    copy["sites"][site]["network_fetched_at"] = when
+    network = vision_sites.load_network(topic_id, site)
+    vision_sites.store_network(topic_id, site, {**network, "fetched_at": when})
+    return copy
 
 
 def recent():
@@ -676,7 +687,7 @@ def test_the_checks_drop_whatever_a_hook_gets_wrong():
 
 def test_a_stale_network_and_a_failed_refresh_with_a_cached_copy_are_not_failing(aws):
     put_topic(aws, rail_topic(last_research_at=recent()))
-    first = rail.aged(rail_state(), 31)
+    first = aged_rail(rail_state(), 31)
     failing = rail.FakeOverpass(osm.OsmError("rate_limited", "HTTP 429", transient=True))
     put_state("rail-sydney", rail_state(first, overpass=failing))
     result = status()
@@ -726,8 +737,10 @@ def test_an_unreadable_scene_is_a_worker_error_not_a_refusal(aws):
 def test_the_rail_network_never_reaches_the_result(aws):
     put_topic(aws, rail_topic(last_research_at=recent()))
     state = rail_state()
+    # A state written before each network had its own object carries it inline.
     way = {"points": [[151.2, -33.9]] * 30, "name": "Line"}
-    state["sites"]["sydney"]["network"]["ways"] = [{"id": f"w{n}", **way} for n in range(5000)]
+    network = vision_sites.load_network("rail-sydney", "sydney")
+    state["sites"]["sydney"]["network"] = {**network, "ways": [{"id": f"w{n}", **way} for n in range(5000)]}
     assert len(json.dumps(state)) > 2_500_000
     put_state("rail-sydney", state)
     text = json.dumps(status())
@@ -773,7 +786,7 @@ def _planted_everywhere(aws, text, monkeypatch):
                                         worker=failing, topic=ships_item))  # fmt: skip
     put_topic(aws, rail_topic(last_research_at=recent()))
     refusing = rail.FakeOverpass(osm.OsmError("rate_limited", text, transient=True))
-    put_state("rail-sydney", rail_state(rail.aged(rail_state(), 31), overpass=refusing))
+    put_state("rail-sydney", rail_state(aged_rail(rail_state(), 31), overpass=refusing))
     put_topic(aws, topic_item("broken", "Broken", "satellite_vision", BROKEN))
     parse = sv.parse_config
 
@@ -806,9 +819,10 @@ def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkey
         # The site name is stored as the pipeline's own cleaner leaves it (vision_sites.parse_config,
         # common/figures.plain_text): a format character between two words is removed there, before
         # any scrub reads it, so a phrase spaced only by format characters is stored as one glued
-        # word. The check reads its copy against the glued form of the pattern too
-        # (redact._INSTRUCTION_LIKE_GLUED), so that word is withheld like the rest: the marker
-        # appears nowhere, in no column, however it is spelt or split.
+        # word with nothing ignorable left in it. vision_status reads the name with the glued form
+        # of the pattern all the same (redact.scrub's `hidden`: the cleaner hid what the check would
+        # have seen), so that word is withheld like the rest: the marker appears nowhere, in no
+        # column, however it is spelt or split.
         assert not shows(marker(text), whole)
     assert "jane.doe" not in whole and "203.0.113.77" not in whole
     for card in result["findings"]:
@@ -945,10 +959,13 @@ def test_two_large_states_are_never_read_at_once_and_memory_stays_bounded(monkey
 
 
 def test_a_stalled_body_is_closed_at_the_deadline_and_no_thread_is_left(monkeypatch):
+    """The deadline is read between the chunks: six chunks 0.8 s apart would take 4.8 s, past the
+    1 s deadline and the read timeout after it, so only the check inside the loop ends the read in
+    time. The body is small enough to have time to parse (0.3 s on a whole core): it is the stalled
+    chunks, not the parse-time rule, that stop it."""
     monkeypatch.setenv("CONTENT_BUCKET", BUCKET)
-    # Small enough to have time to parse (a quarter of a second at PARSE_BYTES_PER_SECOND): it is the
-    # stalled chunks, not the parse-time rule, that stop it.
-    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 5) + b"}"}, wait=0.3)
+    monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
+    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 5) + b"}"}, wait=0.8)
     before = set(threading.enumerate())
     started = time.monotonic()
     with patch.object(vision_status, "_s3", return_value=fake):
@@ -1030,8 +1047,9 @@ def _stand_in(size: int) -> bytes:
 
 
 def test_a_state_is_read_only_with_time_left_to_parse_it(monkeypatch):
-    """24 MiB is four seconds at PARSE_BYTES_PER_SECOND: with eight left it is read and parsed; with
-    one left it is not checked, before any byte of it is read or the parse begun."""
+    """24 MiB is six seconds on a whole core (PARSE_BYTES_PER_CPU_SECOND): with eight left it is read
+    and parsed; with one left it is not checked, before any byte of it is read or the parse begun."""
+    monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
     fake = FakeS3({key("late"): _stand_in(vision_status.MAX_STATE_BYTES)})
     assert _read_late(fake, 8.0)[1] == "read"
     monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
@@ -1040,14 +1058,90 @@ def test_a_state_is_read_only_with_time_left_to_parse_it(monkeypatch):
     assert fake.bodies[1].closed and not fake.bodies[1].reading
 
 
-def test_a_state_whose_download_leaves_too_little_time_to_parse_it_is_not_parsed():
+def test_a_state_whose_download_leaves_too_little_time_to_parse_it_is_not_parsed(monkeypatch):
     """The time left is read again before the parse: one second's worth of bytes, begun with 1.5 s
     left, whose chunks take 0.6 s to come, leaves too little for its parse."""
-    size = vision_status.PARSE_BYTES_PER_SECOND
+    monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
+    size = vision_status.PARSE_BYTES_PER_CPU_SECOND
     fake = FakeS3({key("late"): _stand_in(size)}, wait=0.6 * vision_status.CHUNK_BYTES / size)
     with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
         assert _read_late(fake, 1.5) == (None, "not_checked")
     assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
+
+
+@pytest.mark.parametrize(
+    ("memory", "needs"),
+    [("512", 20.7), ("1769", 6.0), ("3008", 6.0), (None, 6.0), ("lots", 6.0)],
+)
+def test_a_state_needs_time_to_parse_on_the_cpu_the_function_has(monkeypatch, memory, needs):
+    """Lambda gives a function CPU in proportion to its memory, one vCPU at 1,769 MB, and Lambda
+    says how much it has (AWS_LAMBDA_FUNCTION_MEMORY_SIZE): at the function's 512 MB a 24 MiB state
+    needs about 20.7 s left to be parsed; at 1,769 MB or more, and where the memory is not given
+    (outside Lambda) or not a number, a whole core's 6 s."""
+    if memory is None:
+        monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(vision_status.MEMORY_SIZE_ENV, memory)
+    size = vision_status.MAX_STATE_BYTES
+    assert size / vision_status.parse_bytes_per_second() == pytest.approx(needs, abs=0.05)
+    fake = FakeS3({key("late"): _stand_in(size)})
+    assert _read_late(fake, needs + 0.7)[1] == "read"
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, needs - 0.7) == (None, "not_checked")
+    assert fake.bodies[1].closed
+
+
+@pytest.mark.parametrize(
+    ("memory", "seconds", "most", "read", "refused"),
+    [
+        ("512", vision_status.READ_SECONDS, 9.26, 8.0, 10.0),
+        ("512", vision_status.HEALTH_READ_SECONDS, 3.47, 3.0, 4.0),
+        ("512", vision_status.WATCH_READ_SECONDS, 2.32, 2.0, 3.0),
+        ("1769", vision_status.HEALTH_READ_SECONDS, 12.0, 8.0, 13.0),
+        ("1769", vision_status.WATCH_READ_SECONDS, 8.0, 7.0, 8.5),
+    ],
+)
+def test_each_call_parses_only_its_deadlines_worth_on_the_cpu_the_function_has(
+    monkeypatch, memory, seconds, most, read, refused
+):
+    """The rate holds for every call, not only the survey: at the function's 512 MB the survey's 8 s
+    parses at most about 9.3 MiB, pipeline_health's 3 s about 3.5 MiB and the watch's 2 s about
+    2.3 MiB, well under the LARGE_STATE_BYTES (8 MiB) those two may read, so a 4 MiB state they read
+    before is not checked; at 1,769 MB they parse up to the 8 MiB again (ops-assistant-vision.md,
+    "Bounded"). Sizes in MiB; `most` is the whole deadline's worth, before any download time."""
+    monkeypatch.setenv(vision_status.MEMORY_SIZE_ENV, memory)
+    mib = 1024 * 1024
+    assert seconds * vision_status.parse_bytes_per_second() / mib == pytest.approx(most, abs=0.01)
+    fake = FakeS3({key("late"): _stand_in(int(read * mib))})
+    assert _read_late(fake, seconds)[1] == "read"
+    fake = FakeS3({key("late"): _stand_in(int(refused * mib))})
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, seconds) == (None, "not_checked")
+
+
+@pytest.mark.parametrize(
+    ("size", "parsed"),
+    [(3_600_000, True), (4_400_000, True), (11_300_000, False), (16_400_000, False)],
+)
+def test_at_512_mb_the_survey_parses_most_rail_states_after_the_day_subject_round(monkeypatch, size, parsed):
+    """The rail state sizes in common/adapters/rail_access.py's MAX_RAIL_SITES comment: a three-city
+    state is 11.3 MB until the round's first tick moves its networks out, and 3.6 MB after it (four
+    cities about 4.4 MB; eight with CJK names at the caps, 16.4 MB). At the function's 512 MB the
+    survey's 8 s parses the smaller ones, which used to read "not checked" always, and not one from
+    before; the module says so instead of "never parsed"."""
+    monkeypatch.setenv(vision_status.MEMORY_SIZE_ENV, "512")
+    fake = FakeS3({key("late"): _stand_in(size)})
+    if parsed:
+        assert _read_late(fake, vision_status.READ_SECONDS)[1] == "read"
+    else:
+        monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+        with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+            assert _read_late(fake, vision_status.READ_SECONDS) == (None, "not_checked")
+    doc = " ".join(vision_status.__doc__.split())
+    assert "11 to 23 MB until the day-subject round's first tick" in doc and "3.6 to 16.4 MB after it" in doc
+    assert "MAX_RAIL_SITES's comment" in doc and "keeps a real rail state" not in doc
 
 
 class _Raw:

@@ -8,7 +8,9 @@ outside of the small registry lookup.
 from __future__ import annotations
 
 import json
+import re
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 
 # Reserved snapshot key. The research tick records, in every snapshot it
@@ -20,6 +22,28 @@ SEEN_KEY = "_seen"
 
 # The most fresh evidence, as text, handed to the fresh-data reviewer.
 REVIEW_EVIDENCE_MAX_CHARS = 6000
+
+# A day subject's key (DaySubject.key, a Finding's `subjects`, the keys of a topic's
+# `last_article_by_subject`): the shape of a vision site's id (common/vision_sites.SITE_ID, a test
+# holds the two equal), so a site id is always a subject key. It is a DynamoDB map key and goes into
+# log lines, so plain characters only.
+SUBJECT_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+@dataclass(frozen=True)
+class DaySubject:
+    """The subject a rotating topic writes about on a given day (Adapter.day_subject): to a topic
+    that watches several subjects (cities, say) what the crypto feed's day goal is to it
+    (common/editorial_goals.py). Written by the adapter's code, never by a model: the daily cycle
+    folds `mandate` and `style` into its ideation and drafting prompts and prints `key` in its log;
+    `label` is the adapter's to fold into the mandate. Each text is checked and cleaned to one plain
+    line within its bound before any prompt sees it (common/day_subject.day_subject_error and
+    clean_day_subject)."""
+
+    key: str  # a stable id, SUBJECT_KEY-shaped: a site id such as "sydney"
+    label: str  # how the subject is named: "Sydney"
+    mandate: str  # the day's editorial mandate, with the label folded in
+    style: str  # the article style line, like editorial_goals.ARTICLE_STYLES
 
 
 def render_review_evidence(payload: dict, max_chars: int = REVIEW_EVIDENCE_MAX_CHARS) -> str:
@@ -228,6 +252,30 @@ class Adapter(ABC):
         Never a triage agent's reason (it wrote it after reading news results), never a network's
         lists or anything else bulky: the assistant reads this for every site topic at once."""
         return None
+
+    def day_subject(self, topic_config: dict, at: datetime) -> DaySubject | None:
+        """The subject a topic that rotates through several writes about at `at`, or None (the
+        default): the topic writes about everything it watches, as every topic always has.
+
+        `topic_config` is the full Topic item; `at` is when the daily run started (aware, UTC).
+        Pure: the same topic and moment always give the same subject, so anything that asks agrees
+        with the daily cycle without stored state, as the crypto feed's goal_for_date does. Which
+        local calendar day `at` falls on, and so whose day it is, is the adapter's to say: its own
+        rota in its own zone (common/day_subject.py has a weekly or cyclic rota any adapter can
+        use). The daily cycle then drafts only the Findings whose `subjects` hold the key and
+        remembers the article per subject. Raising stops the daily run before any model call: a
+        topic whose rota is broken writes nothing, never an article about every subject at once.
+        """
+        return None
+
+    def subjects(self, new_state: dict) -> list[str]:
+        """The subject keys this observation reports (SUBJECT_KEY-shaped; for a topic that watches
+        sites, the ids of the sites its summary covers). The research tick keeps them on the Finding
+        (`subjects`, common/day_subject.clean_subjects), only when there are any; a rotating topic's
+        daily cycle drafts a Finding on the day of each subject it lists, and never one that lists
+        none. The default, for a source with no subjects, is none.
+        """
+        return []
 
     def build_summary_prompt(
         self, topic: dict, diff_summary: str, new_state: dict

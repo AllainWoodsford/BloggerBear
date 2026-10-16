@@ -974,7 +974,7 @@
           "flags": [
             "--next-article"
           ],
-          "help": "what the topic's next article will be written from: every Finding since its last article within its findings window (--findings-window-hours), at most 48, expired or not; `count` says how many and `more` whether some were not listed",
+          "help": "what the topic's next article will be written from: every Finding since its last article within its findings window (--findings-window-hours), at most 48, expired or not; `count` says how many and `more` whether some were not listed. A topic that rotates through subjects: today's subject's Findings since that subject's last article (`subject` names it)",
           "type": "str",
           "choices": null,
           "default": false,
@@ -983,10 +983,26 @@
           "metavar": null,
           "destructive": false,
           "value": true
+        },
+        {
+          "name": "--subject",
+          "dest": "subject",
+          "kind": "option",
+          "flags": [
+            "--subject"
+          ],
+          "help": "with --next-article, for a topic that rotates through subjects: what its next article on this subject reads (from that subject's last article, its Findings only); without it, today's subject",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py findings list [-h] [--limit LIMIT] [--days DAYS | --since SINCE |\n                                  --next-article]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help      show this help message and exit\n  --limit LIMIT   how many to list, 1 to 20 (default 5)\n  --days DAYS     only the last D days, 1 to 14 (unexpired ones)\n  --since SINCE   only those captured at or after this ISO-8601 timestamp\n  --next-article  what the topic's next article will be written from: every Finding since its last\n                  article within its findings window (--findings-window-hours), at most 48,\n                  expired or not; `count` says how many and `more` whether some were not listed\n"
+      "help_text": "usage: admin_cli.py findings list [-h] [--limit LIMIT] [--days DAYS | --since SINCE |\n                                  --next-article] [--subject SUBJECT]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help         show this help message and exit\n  --limit LIMIT      how many to list, 1 to 20 (default 5)\n  --days DAYS        only the last D days, 1 to 14 (unexpired ones)\n  --since SINCE      only those captured at or after this ISO-8601 timestamp\n  --next-article     what the topic's next article will be written from: every Finding since its\n                     last article within its findings window (--findings-window-hours), at most\n                     48, expired or not; `count` says how many and `more` whether some were not\n                     listed. A topic that rotates through subjects: today's subject's Findings\n                     since that subject's last article (`subject` names it)\n  --subject SUBJECT  with --next-article, for a topic that rotates through subjects: what its next\n                     article on this subject reads (from that subject's last article, its Findings\n                     only); without it, today's subject\n"
     },
     "articles": {
       "help": "Manage articles",

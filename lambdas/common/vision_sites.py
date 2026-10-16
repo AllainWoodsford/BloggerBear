@@ -35,6 +35,7 @@ from decimal import Decimal
 
 import boto3
 import requests
+from botocore.config import Config
 
 from common.figures import plain_text
 
@@ -239,26 +240,53 @@ def closed_ring(polygon: list) -> list:
     return ring if ring[0] == ring[-1] else [*ring, ring[0]]
 
 
+# The content bucket's client for the four calls below: the tick's figures and networks (both
+# vision adapters), rail_access's prefetch_networks, and the triage agent's figure read. botocore's
+# defaults wait 60 s to connect and 60 s on each read, five times (legacy mode): a stalled GetObject
+# of a network raised after about 308 s, long past the research tick's 120 s Lambda timeout, so the
+# tick died before rail_access could defer the site (NETWORK_READ_ERROR) and store its state. Here
+# each attempt waits at most S3_CONNECT_TIMEOUT_SECONDS to connect (urllib3 sends the request, a
+# body of a few MB included, under the same allowance: well under a second inside the region) and
+# S3_READ_TIMEOUT_SECONDS on each read, and there are two attempts in all (`total_max_attempts`
+# counts the first; standard mode waits under a second before the second). A stalled read so ends
+# in about 31 s, and at most 2 x (5 + 15) + 1 = 41 s. A visit reads its network after the scene
+# search (STAC_TIMEOUT_SECONDS at most), so even then the tick's first visit has its answer by about
+# 61 s: inside rail_access's default 70 s budget and the 120 s Lambda, with about a minute to spare
+# for the rest of the tick and the state's store.
+S3_CONNECT_TIMEOUT_SECONDS = 5
+S3_READ_TIMEOUT_SECONDS = 15
+S3_CONFIG = Config(
+    connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+    read_timeout=S3_READ_TIMEOUT_SECONDS,
+    retries={"total_max_attempts": 2, "mode": "standard"},
+)
+
+
+def _s3():
+    return boto3.client("s3", config=S3_CONFIG)
+
+
 def store_image(topic_id: str, site_id: str, scene_id: str, png: bytes) -> str:
     """The worker's figure for one scene, kept in the content bucket; returns its key."""
     key = f"vision/{topic_id}/{site_id}/{scene_id}.png"
-    boto3.client("s3").put_object(
+    _s3().put_object(
         Bucket=os.environ["CONTENT_BUCKET"], Key=key, Body=png, ContentType="image/png"
     )
     return key
 
 
 def network_key(topic_id: str, site_id: str) -> str:
-    """Where a site's rail network fetched outside the hourly tick is kept (rail_access's
-    prefetch_networks): its own object, so the long fetch never writes the running state the tick
-    rewrites each hour."""
+    """Where a site's rail network is kept: its only copy, in an object of its own, written by the
+    tick's fetches and by rail_access's prefetch_networks (the operator's out-of-band fetch) alike,
+    so the running state the tick rewrites each hour carries none of it. Outside `snapshots/`, whose
+    objects the content bucket expires."""
     return f"vision/{topic_id}/{site_id}/network.json"
 
 
 def store_network(topic_id: str, site_id: str, network: dict) -> str:
-    """The prefetched network for one site, in the content bucket; returns its key."""
+    """A site's network, in the content bucket (written over the one before); returns its key."""
     key = network_key(topic_id, site_id)
-    boto3.client("s3").put_object(
+    _s3().put_object(
         Bucket=os.environ["CONTENT_BUCKET"],
         Key=key,
         Body=json.dumps(network, ensure_ascii=False).encode("utf-8"),
@@ -268,8 +296,9 @@ def store_network(topic_id: str, site_id: str, network: dict) -> str:
 
 
 def load_network(topic_id: str, site_id: str) -> dict | None:
-    """The prefetched network for one site, or None when none was ever stored."""
-    s3 = boto3.client("s3")
+    """A site's network, or None when none was ever stored. A read that fails (S3_CONFIG bounds a
+    stalled one) raises."""
+    s3 = _s3()
     try:
         response = s3.get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=network_key(topic_id, site_id))
     except s3.exceptions.NoSuchKey:
@@ -279,7 +308,7 @@ def load_network(topic_id: str, site_id: str) -> dict | None:
 
 
 def load_image(key: str) -> bytes | None:
-    response = boto3.client("s3").get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=key)
+    response = _s3().get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=key)
     return response["Body"].read()
 
 
@@ -342,12 +371,12 @@ def order_sites(sites: list[dict], records: dict | None) -> list[dict]:
     then by the oldest `last_attempt_at` in its record, the config's order breaking ties. A site is
     attempted when the tick works on it to an outcome (measured, nothing new, a fetch, search or
     worker error); the adapters record `last_attempt_at` then, and not when a site is skipped for
-    the tick's cap or deferred for its budget. So a topic with more sites than it measures per tick
-    rotates through them, a site added later is seen first, and a site that fails slowly every
-    tick cannot keep the others waiting: a site it left without time is still unstamped, or
-    stamped earlier, and goes first next tick. (Never attempted, not never measured, leads: a site
-    that has failed once and never measured would otherwise lead every tick and could block the
-    rest.)"""
+    the tick's cap or deferred (for its budget, or by the adapter: rail_access's stored network
+    that S3 could not read). So a topic with more sites than it measures per tick rotates through
+    them, a site added later is seen first, and a site that fails slowly every tick cannot keep the
+    others waiting: a site it left without time is still unstamped, or stamped earlier, and goes
+    first next tick. (Never attempted, not never measured, leads: a site that has failed once and
+    never measured would otherwise lead every tick and could block the rest.)"""
 
     def key(indexed):
         index, site = indexed

@@ -300,6 +300,9 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   project and ManagedBy tag; personal data swept out (addresses only as `123.XXX.XXX.34`); a log
   line that reads like instructions is withheld, never obeyed, and reported with the function it
   was in and without alarm (its own log, which talks about tool calls, is not reported at all).
+  The phrase counts when it lies within the line's swept start, four times the shown limit; one
+  wholly past it is never shown, since the line is cut first, and so is not counted
+  ([how](docs/enhancements/ops-assistant-vision.md#redactscrub-hardened-first)).
 - **The architecture, a layer at a time:** "how does the project work?" names nine layers (edge,
   presentation, API gateways, identity and access, orchestration, compute, AI, data and storage,
   observability) and asks which one; a layer gives its AWS services and our resources in it;
@@ -485,7 +488,7 @@ scripts/
                               personal strings
   vision_benchmark.py        times the vision worker's OpenCV work (stock
                               against COOL); fetches a rail scene's network
-  rail_topics.example.json   the Rail Access Monitor's four city topics
+  rail_topics.example.json   the Rail Access Monitor's topic: four cities, one a day
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
 

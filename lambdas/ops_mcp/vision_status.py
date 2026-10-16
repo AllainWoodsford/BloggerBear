@@ -18,19 +18,25 @@ spend) are already readable.
 
 **Why the reads are safe and bounded.** The role may read only `snapshots/*/running-state.json`
 (infra/modules/ops-assistant/vision.tf), and the key is built here only from an id that passes
-ID_PATTERN: any other id is refused before S3 is called. A rail state can pass 20 MB, the
-function has 512 MB, and pipeline_health opens every briefing, so the reads share one budget,
-weighted by each object's ContentLength and taken before its body is read (IN_FLIGHT_BYTES): two
-large states never parse at once. pipeline_health and the memory watch read nothing over
-LARGE_STATE_BYTES, and nothing at all is read over MAX_STATE_BYTES. Each call has a deadline (8 s
-here, 3 s for pipeline_health, 2 s per topic for the watch), S3 is asked with a short timeout and
+ID_PATTERN: any other id is refused before S3 is called. A rail state is 11 to 23 MB until the
+day-subject round's first tick moves its networks out, and 3.6 to 16.4 MB after it
+(common/adapters/rail_access.py, MAX_RAIL_SITES's comment, has the measurements); the function has
+512 MB, and pipeline_health opens every briefing, so the reads share one budget, weighted by each
+object's ContentLength and taken before its body is read (IN_FLIGHT_BYTES): two large states never
+parse at once. pipeline_health and the memory watch read nothing over LARGE_STATE_BYTES, and
+nothing at all is read over MAX_STATE_BYTES. Each call has a deadline (8 s here, 3 s for
+pipeline_health, 2 s per topic for the watch), S3 is asked with a short timeout and
 no retry, and the deadline is read before GetObject, once it answers, between the chunks a body is
 read in and before the parse (and the budget gives nothing past it). A parse is not interrupted, so
-it is begun only with time left for the state's size at the slowest rate measured
-(PARSE_BYTES_PER_SECOND), and so is the read that leads to it: a call ends by its deadline, or, when
-a parse begun with that time to spare runs slower still (a slower CPU, or parses sharing one), up to
-that parse's own length later. Every body is closed and every thread joined before the call
-returns: nothing keeps reading after the answer.
+it is begun only with time left for the state's size at the slowest rate measured, on the share of
+a vCPU the function's memory buys (parse_bytes_per_second), and so is the read that leads to it: a
+call ends by its deadline, or, when a parse begun with that time to spare runs slower still (parses
+sharing the CPU), up to that parse's own length later. At the function's 512 MB the survey's 8 s
+parses a state of up to about 9 MiB: most rail states after the day-subject round's first tick
+(a four-city one among them), none from before it; pipeline_health and the watch stop near 3.5 and
+2.3 MiB. A state not parsed in time says not_checked (PARSE_BYTES_PER_CPU_SECOND says why, and what
+would change it). Every body is closed and every thread joined before the call returns: nothing
+keeps reading after the answer.
 
 **What is never spoken.** `spoken` is fixed templates over counts, ages, the Region, topics named
 by `tools.spoken_label`, and words from the adapters' declared vocabularies (each checked against
@@ -72,13 +78,14 @@ VISION_REGION_ENV = "OPS_VISION_REGION"
 WORKER_FUNCTION = "vision-worker"
 
 # The read budgets (the module docstring says why). The bytes bound the download, not the parsed
-# size. A real rail state (11.3 MB measured, 22.6 MB with CJK names at the caps: common/adapters/
-# rail_access.py, MAX_RAIL_SITES) parses to about six times its bytes; a 24 MiB JSON of a million
-# tiny site records, which only a hostile writer of the content bucket could put under snapshots/
-# (the research tick alone writes there), parses and is copied (topic_status's records and stamps)
-# to about seventeen times, 496 MB. The in-flight budget serialises such reads to one at a time in
-# the process; the function's memory (512 MB, infra/modules/ops-assistant/main.tf) is the knob if a
-# state ever grows past that. Neither constant can shrink: MAX_STATE_BYTES below a real state would
+# size. A real rail state (11 to 23 MB before the day-subject round's first tick, 3.6 to 16.4 MB
+# after it: common/adapters/rail_access.py, MAX_RAIL_SITES's comment) parses to about six times its
+# bytes (measured at 11.3 MB); a 24 MiB JSON of a million tiny site records, which only a hostile
+# writer of the content bucket could put under snapshots/ (the research tick alone writes there),
+# parses and is copied (topic_status's records and stamps) to about seventeen times, 496 MB. The
+# in-flight budget serialises such reads to one at a time in the process; the function's memory
+# (512 MB, infra/modules/ops-assistant/main.tf) is the knob if a state ever grows past that.
+# Neither constant can shrink: MAX_STATE_BYTES below a state written before that first tick would
 # refuse it, and IN_FLIGHT_BYTES below MAX_STATE_BYTES would refuse the largest readable one.
 MAX_STATE_BYTES = 24 * 1024 * 1024
 LARGE_STATE_BYTES = 8 * 1024 * 1024
@@ -91,11 +98,24 @@ CONNECT_TIMEOUT_SECONDS = 1.0
 READ_TIMEOUT_SECONDS = 2.0
 CHUNK_BYTES = 256 * 1024
 # A parse is not interrupted once begun, so it is begun only with time left for its size at the
-# slowest rate measured: json.loads and the adapter's status() took 3.8 s on a 24 MiB state of a
-# million tiny site records (about 6 MiB a second); a real-shaped 24 MiB state takes 0.7 s. The cost
-# is a real state refused in the last seconds of a call (a 22 MB one with under 3.5 s left), which
-# then says "not_checked", as a read the deadline stops does.
-PARSE_BYTES_PER_SECOND = 6 * 1024 * 1024
+# slowest rate measured, on the CPU the function has (parse_bytes_per_second). json.loads and the
+# adapter's status() took 3.96-4.01 CPU-seconds on a 24 MiB state of a million tiny site records,
+# 6.0 MiB per CPU-second (a real-shaped 24 MiB state: 0.72-0.76 CPU-seconds, 33 MiB per CPU-second);
+# the rate is set a third under that, for a margin. Lambda gives a function CPU in proportion to its
+# memory, one vCPU at 1,769 MB, and this one has 512 MB (infra/modules/ops-assistant/main.tf): 0.29
+# of a vCPU, under which that hostile state, begun with the time a whole core needs, ended the 8 s
+# survey at 14.5-15.2 s. Scaled, the rate is 1.16 MiB a second at 512 MB, so a 24 MiB state needs
+# 20.7 s left, and a rail state from before the day-subject round's first tick (11 to 23 MB) 9.3 s
+# or more: neither is parsed within the survey's 8 s, and each says "not_checked", as a read the
+# deadline stops does. After that tick most rail states are parsed (3.6 MB in about 3 s; the sizes
+# are in MAX_RAIL_SITES's comment). Every call is held to it: pipeline_health's 3 s parses nothing
+# over about 3.5 MiB and the watch's 2 s nothing over about 2.3 MiB, well under the
+# LARGE_STATE_BYTES they may read. At 1,769 MB or more it is 4 MiB a second (6 s for 24 MiB; 8 MiB
+# within those two again). The function's memory is the knob for that (the owner's: Terraform, cost).
+PARSE_BYTES_PER_CPU_SECOND = 4 * 1024 * 1024
+LAMBDA_MB_PER_VCPU = 1769
+# Set by Lambda in every function's environment; unset elsewhere (tests, a laptop): a whole core.
+MEMORY_SIZE_ENV = "AWS_LAMBDA_FUNCTION_MEMORY_SIZE"
 # snapshots/ expires after this many days (the content bucket's lifecycle rule, infra/environments/
 # */main.tf): a state older than that is gone, not unreadable.
 SNAPSHOT_DAYS = 21
@@ -278,10 +298,23 @@ def _recently_researched(topic: dict, now: datetime) -> bool:
     return last is not None and now - last <= timedelta(days=SNAPSHOT_DAYS)
 
 
+def parse_bytes_per_second() -> float:
+    """How fast a state is assumed to parse here: PARSE_BYTES_PER_CPU_SECOND times the share of a
+    vCPU the function's memory buys (MEMORY_SIZE_ENV over LAMBDA_MB_PER_VCPU, at most one). A whole
+    core where the memory is not given, or is not a positive number."""
+    try:
+        memory = float(os.environ.get(MEMORY_SIZE_ENV, ""))
+    except ValueError:
+        return PARSE_BYTES_PER_CPU_SECOND
+    if not math.isfinite(memory) or memory <= 0:
+        return PARSE_BYTES_PER_CPU_SECOND
+    return PARSE_BYTES_PER_CPU_SECOND * min(1.0, memory / LAMBDA_MB_PER_VCPU)
+
+
 def _time_to_parse(size: int, deadline: float) -> bool:
-    """Whether a state of `size` bytes, parsed from now at PARSE_BYTES_PER_SECOND, ends before
+    """Whether a state of `size` bytes, parsed from now at parse_bytes_per_second(), ends before
     `deadline` (False once the deadline has passed, whatever the size)."""
-    return deadline - time.monotonic() > size / PARSE_BYTES_PER_SECOND
+    return deadline - time.monotonic() > size / parse_bytes_per_second()
 
 
 def _read_one(client, bucket: str, topic: dict, deadline: float, max_bytes: int, then, now: datetime):
@@ -484,7 +517,11 @@ def checked(raw: dict, words: frozenset | None = None) -> dict:
         sites.append(
             {
                 "site_id": _site_id(site.get("site_id")),
-                "name": redact.scrub(site.get("name"), NAME_CELL_CHARS) if site.get("name") else "",
+                # Stored through common/figures.plain_text (vision_sites.parse_config), which removes
+                # the format characters a phrase can be spaced with: read glued (redact.scrub's hidden).
+                "name": (
+                    redact.scrub(site.get("name"), NAME_CELL_CHARS, hidden=True) if site.get("name") else ""
+                ),
                 "order": int(order) if order is not None and order >= 1 else None,
                 "scenes": int(scenes) if scenes is not None and scenes >= 0 else 0,
                 "last_scene": _scene(site.get("last_scene")),

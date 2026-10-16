@@ -12,8 +12,11 @@ import pytest
 from moto import mock_aws
 
 import common.dynamo as dynamo
+import daily_cycle_handler
 from common import findings_window
-from common.adapters.base import SEEN_KEY, Adapter
+from common.adapters.base import SEEN_KEY, Adapter, DaySubject
+from common.adapters.registry import ADAPTER_REGISTRY
+from common.editorial_goals import EditorialGoal
 
 REGION = "ap-southeast-2"
 
@@ -112,6 +115,71 @@ def test_set_topic_last_article_at_does_not_create_a_missing_topic(topics_table)
     assert "Item" not in topics_table.get_item(Key={"topic_id": "deleted"})
 
 
+def test_a_subjects_stamp_is_set_with_the_topics_and_the_other_subjects_are_left_alone(topics_table):
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")  # makes the map
+    dynamo.set_topic_last_article_at("t", "2026-09-22T09:00:00+00:00", subject_key="south")
+    dynamo.set_topic_last_article_at("t", "2026-09-23T09:00:00+00:00", subject_key="north")
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item == {
+        "topic_id": "t",
+        "name": "T",
+        "adapter": "web_search",
+        "last_article_at": "2026-09-23T09:00:00+00:00",
+        "last_article_by_subject": {
+            "north": "2026-09-23T09:00:00+00:00",
+            "south": "2026-09-22T09:00:00+00:00",
+        },
+    }
+    # A plain stamp (a topic that does not rotate) leaves the map alone.
+    dynamo.set_topic_last_article_at("t", "2026-09-24T09:00:00+00:00")
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_at"] == "2026-09-24T09:00:00+00:00"
+    assert item["last_article_by_subject"]["north"] == "2026-09-23T09:00:00+00:00"
+
+
+def test_a_subjects_stamp_does_not_create_a_missing_topic(topics_table):
+    with pytest.raises(topics_table.meta.client.exceptions.ConditionalCheckFailedException):
+        dynamo.set_topic_last_article_at("deleted", "2026-09-21T09:00:00+00:00", subject_key="north")
+
+    assert "Item" not in topics_table.get_item(Key={"topic_id": "deleted"})
+
+
+@pytest.mark.parametrize("stored", [None, "oops", ["north"], Decimal(3), {"north", "south"}, True])
+def test_a_stamp_map_that_is_not_a_map_is_replaced_with_this_subjects_stamp_and_said(
+    topics_table, capsys, stored
+):
+    """A hand-edited `last_article_by_subject` that is not a map would refuse the subject's key
+    on every run (DynamoDB rejects a path into anything else), so the subject's window would never
+    advance: it is replaced with a map holding this subject's stamp, and the log says so."""
+    topics_table.update_item(
+        Key={"topic_id": "t"},
+        UpdateExpression="SET last_article_by_subject = :v",
+        ExpressionAttributeValues={":v": stored},
+    )
+
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_by_subject"] == {"north": "2026-09-21T09:00:00+00:00"}
+    assert item["last_article_at"] == "2026-09-21T09:00:00+00:00"
+    said = capsys.readouterr().out
+    assert "dynamo: topic_id=t had a last_article_by_subject that was a " in said
+    assert "not a map; replaced it with a map holding subject=north's stamp" in said
+
+
+def test_a_stamp_map_that_is_a_map_or_missing_is_never_said_to_be_replaced(topics_table, capsys):
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")  # missing
+    dynamo.set_topic_last_article_at("t", "2026-09-22T09:00:00+00:00", subject_key="south")  # a map
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_by_subject"] == {
+        "north": "2026-09-21T09:00:00+00:00",
+        "south": "2026-09-22T09:00:00+00:00",
+    }
+    assert "replaced" not in capsys.readouterr().out
+
+
 # --- the adapter contract behind "what counts as new" -----------------------
 
 
@@ -190,6 +258,8 @@ def test_delete_musings_for_an_article_with_none_is_a_no_op(musings_table):
 # --- window_start: the one rule for where a topic's findings window starts ---------------------
 
 RUN = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
+# A small Sydney polygon (lon, lat), as test_rail_access_adapter.py draws it.
+SYDNEY = [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58], [150.86, -33.58]]
 
 
 def _hours_before(hours: int) -> str:
@@ -242,6 +312,143 @@ def test_an_invalid_stored_window_falls_back_to_the_default_day(bad):
 
 def test_it_is_pure_and_takes_no_topic_at_all():
     assert findings_window.window_start(None, RUN) == _hours_before(24)
+    assert findings_window.window_start(None, RUN, subject_key="north") == _hours_before(24)
+
+
+# --- window_start with a subject: a topic that rotates (common/day_subject.py) --------------------
+
+
+def _rotating(**subject_stamps) -> dict:
+    """A topic with a 96-hour window whose last article (on any subject) was 2 hours ago."""
+    return {
+        "findings_window_hours": Decimal("96"),  # as DynamoDB hands it back
+        "last_article_at": _hours_before(2),
+        "last_article_by_subject": {key: _hours_before(hours) for key, hours in subject_stamps.items()},
+    }
+
+
+def test_with_a_subject_its_own_last_article_bounds_the_window_not_the_topics():
+    topic = _rotating(north=50, south=26)
+
+    assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(50)
+    assert findings_window.window_start(topic, RUN, subject_key="south") == _hours_before(26)
+    # Without a subject, the rule every other topic has: the topic-wide stamp.
+    assert findings_window.window_start(topic, RUN) == _hours_before(2)
+
+
+def test_a_subject_never_written_about_is_bounded_by_the_window_alone():
+    topic = _rotating(north=50)
+
+    assert findings_window.window_start(topic, RUN, subject_key="south") == _hours_before(96)
+    no_map = {**topic, "last_article_by_subject": None}
+    assert findings_window.window_start(no_map, RUN, subject_key="north") == _hours_before(96)
+    # A map edited by hand into something else is no stamp at all.
+    for odd in ("north", ["north"], 7):
+        topic = {**_rotating(), "last_article_by_subject": odd}
+        assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(96)
+
+
+def test_a_subject_stamp_older_than_the_window_leaves_the_window_and_force_ignores_both_stamps():
+    topic = _rotating(north=200)
+    assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(96)
+
+    topic = _rotating(north=50)
+    assert findings_window.window_start(topic, RUN, force=True, subject_key="north") == _hours_before(96)
+    assert findings_window.window_start(topic, RUN, force=True) == _hours_before(96)
+
+
+def test_a_subject_stamp_is_read_as_the_topic_stamp_is_naive_as_utc_unreadable_as_none():
+    naive = (RUN - timedelta(hours=5)).replace(tzinfo=None)
+    topic = {"last_article_by_subject": {"north": naive.isoformat()}}
+
+    as_utc = naive.replace(tzinfo=UTC).isoformat()
+    assert findings_window.window_start(topic, RUN, subject_key="north") == as_utc
+    for bad in ("not a date", 12345, "", None):
+        topic = {"last_article_by_subject": {"north": bad}, "last_article_at": _hours_before(1)}
+        assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(24)
+
+
+def test_last_article_at_reads_the_stamp_that_bounds_the_window():
+    topic = _rotating(north=50)
+
+    assert findings_window.last_article_at(topic) == _hours_before(2)
+    assert findings_window.last_article_at(topic, "north") == _hours_before(50)
+    assert findings_window.last_article_at(topic, "south") is None
+    assert findings_window.last_article_at(None, "north") is None
+
+
+# --- which subject the next article is on: the one rule the three readers share -------------------
+
+
+class _Rotating(Adapter):
+    """An adapter whose topics write about "south" today, and that remembers being asked."""
+
+    asked: list = []
+
+    def fetch_state(self, topic_config):
+        return {}
+
+    def material_diff(self, old_state, new_state):
+        return False, ""
+
+    def source_refs(self, new_state):
+        return []
+
+    def day_subject(self, topic_config, at):
+        type(self).asked.append(at)
+        return DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+
+
+@pytest.fixture
+def rotating_adapter(monkeypatch):
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rotating_test", _Rotating)
+    monkeypatch.setattr(_Rotating, "asked", [])
+    return _Rotating
+
+
+def test_next_article_subject_is_the_day_subject_of_a_rotating_topic_and_none_of_any_other(rotating_adapter):
+    subject = findings_window.next_article_subject({"topic_id": "r", "adapter": "rotating_test"}, RUN)
+
+    assert subject == DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+    assert rotating_adapter.asked == [RUN]
+    for plain in ({"adapter": "web_search"}, {"adapter": "nope"}, {}):
+        assert findings_window.next_article_subject(plain, RUN) is None
+    # rail_access names a day subject only for a topic with a rota (S2): one city, no rota, none.
+    one_city = {"sites": [{"id": "sydney", "name": "Sydney", "polygon": SYDNEY}]}
+    rail = {"adapter": "rail_access", "adapter_config": one_city}
+    assert findings_window.next_article_subject(rail, RUN) is None
+
+
+def test_a_topic_with_a_daily_goal_keeps_it_and_its_adapter_is_never_asked(rotating_adapter, monkeypatch):
+    """The crypto feed's day goal wins, as in the daily cycle: its path is unchanged."""
+    goal = EditorialGoal.TREND_INVENTOR
+    monkeypatch.setattr(findings_window, "resolve_goal_for_topic", lambda topic, day: goal)
+
+    assert findings_window.next_article_subject({"adapter": "rotating_test"}, RUN) is None
+    assert rotating_adapter.asked == []
+
+
+def test_a_hook_that_raises_is_raised_never_read_as_no_rota(rotating_adapter, monkeypatch):
+    def broken(self, topic_config, at):
+        raise ValueError("the rota broke")
+
+    monkeypatch.setattr(_Rotating, "day_subject", broken)
+
+    with pytest.raises(ValueError, match="the rota broke"):
+        findings_window.next_article_subject({"adapter": "rotating_test"}, RUN)
+
+
+def test_the_daily_cycle_asks_the_same_rule(rotating_adapter):
+    topic = {"topic_id": "r", "adapter": "rotating_test"}
+
+    assert daily_cycle_handler._day_subject(topic, RUN) == findings_window.next_article_subject(topic, RUN)
+
+
+def test_a_rotating_topics_read_is_four_caps_every_finding_a_seven_subject_rota_can_gather():
+    """Read before the subject filter, capped after it: 4 x the article's cap, which covers a
+    one-slot rota of 7 subjects (a window of 24 h a day plus a day) at one Finding an hourly tick."""
+    assert findings_window.SUBJECT_READ_LIMIT == 4 * daily_cycle_handler.MAX_WINDOW_FINDINGS == 192
+    assert findings_window.SUBJECT_READ_LIMIT >= 24 * 7 + 24
 
 
 # --- the paged readers behind topic_findings and the Admin API's findings route -------------------
@@ -284,6 +491,22 @@ def test_list_findings_pages_until_it_has_kept_enough_and_says_whether_more_rema
     assert [f["summary"] for f in kept] == ["finding 9"] and more is True
     kept, _, more = dynamo.list_findings("t", since="2026-09-20T08:00:00+00:00", limit=5, unexpired_at=now)
     assert [f["summary"] for f in kept] == ["finding 9", "finding 8"] and more is False
+
+
+def test_list_findings_bounds_the_window_at_its_end_too_when_asked(findings_table):
+    """Re-Write's read of an article's window (common/rewrite._findings_for): captured at or after
+    `since` and at or before `until`, both ends kept, so nothing captured after the window's end
+    takes a place in the read. `until` alone reads up to it; without it, the read is as it was."""
+
+    def summaries(**kwargs):
+        kept, _, more = dynamo.list_findings("t", **kwargs)
+        return [f["summary"] for f in kept], more
+
+    window = {"since": "2026-09-20T03:00:00+00:00", "until": "2026-09-20T05:00:00+00:00"}
+    assert summaries(**window, limit=5) == (["finding 5", "finding 4", "finding 3"], False)
+    assert summaries(**window, limit=2) == (["finding 5", "finding 4"], True)
+    assert summaries(until="2026-09-20T01:00:00+00:00", limit=5) == (["finding 1", "finding 0"], False)
+    assert summaries(since="2026-09-20T08:00:00+00:00", limit=5) == (["finding 9", "finding 8"], False)
 
 
 def test_count_findings_counts_the_unexpired_in_the_window_and_knows_when_it_stopped_short(findings_table):
