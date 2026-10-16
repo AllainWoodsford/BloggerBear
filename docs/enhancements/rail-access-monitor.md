@@ -37,7 +37,9 @@ stack, PRs #240–#254) and [opencv-agentic-vision-enhancement.md](opencv-agenti
 >   (`vision_contract.allowed_prefixes`, PR L).
 > - **PR E:** the tick works scene first (a new scene is measured with the cached network even
 >   past its TTL; a stale network is refreshed only on a tick with nothing new, with a 6-hour
->   back-off after a failure); a topic holds 1 to 3 cities; the first observation is reported once,
+>   back-off after a failure); a topic holds 1 to 3 cities (8 since the day-subject round, which
+>   keeps each city's network in its own object and lets one topic write about one city a day:
+>   [dailysubject_hook.md](dailysubject_hook.md)); the first observation is reported once,
 >   only from a scene at or above the coverage floor (`first_observed_at`); a baseline uses only
 >   scenes with the same polygon and parameters; only the newest history entry keeps `stations`,
 >   `flags`, `suggestions` and `deserts`, and every entry keeps `flag_count`; a failed scene is
