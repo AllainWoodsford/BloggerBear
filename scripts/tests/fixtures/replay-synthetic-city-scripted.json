@@ -4,10 +4,10 @@
   "kind": "eval-replay",
   "mode": "replay",
   "backend": "opencv",
-  "started_at": "2026-10-16T23:10:15Z",
-  "finished_at": "2026-10-16T23:10:16Z",
+  "started_at": "2026-10-16T23:26:53Z",
+  "finished_at": "2026-10-16T23:26:54Z",
   "code": {
-    "git_sha": "2f05360558c035e45d85565735378840ce9e9581",
+    "git_sha": "460cdfc66e967a118a3619355283b7f6dbe5c2f4",
     "dirty": false
   },
   "environment": {
@@ -161,7 +161,7 @@
             "v": 1,
             "at": "2024-06-27T06:06:11+00:00",
             "tick": "eval-tick-1",
-            "run": "000000000001",
+            "run": "eval-run-1",
             "scene_id": "synthetic-1",
             "captured_at": "2024-06-27T00:06:11Z",
             "coverage": 0.9913,
@@ -197,9 +197,9 @@
           }
         ],
         "lines": [
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-1\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247248, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 29, \"graph_ms\": 18, \"annotate_ms\": 122, \"total_ms\": 155, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 101}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-1\", \"run\": \"000000000001\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-1\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-1\", \"run\": \"000000000001\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-1\", \"at\": \"2024-06-27T06:06:11+00:00\", \"captured_at\": \"2024-06-27T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"built_up_km2\": 6.3036, \"station_count\": 12, \"flag_count\": 0}, \"baseline_scenes\": 0, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"first_observation\", \"moved\": \"\", \"triaged\": false, \"reported\": true, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-1\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247248, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 30, \"graph_ms\": 19, \"annotate_ms\": 126, \"total_ms\": 162, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 105}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-1\", \"run\": \"eval-run-1\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-1\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-1\", \"run\": \"eval-run-1\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-1\", \"at\": \"2024-06-27T06:06:11+00:00\", \"captured_at\": \"2024-06-27T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"built_up_km2\": 6.3036, \"station_count\": 12, \"flag_count\": 0}, \"baseline_scenes\": 0, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"first_observation\", \"moved\": \"\", \"triaged\": false, \"reported\": true, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
         ],
         "printed": 0,
         "measurements": [
@@ -270,7 +270,7 @@
             "v": 1,
             "at": "2024-07-07T06:06:11+00:00",
             "tick": "eval-tick-2",
-            "run": "000000000002",
+            "run": "eval-run-2",
             "scene_id": "synthetic-2-cloud",
             "captured_at": "2024-07-07T00:06:11Z",
             "coverage": 0.2668,
@@ -306,9 +306,9 @@
           }
         ],
         "lines": [
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-2-cloud\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247288, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 16, \"graph_ms\": 8, \"annotate_ms\": 138, \"total_ms\": 158, \"coverage\": 0.2668, \"quality_flags\": \"low_coverage\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 103}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-2\", \"run\": \"000000000002\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-2-cloud\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-2\", \"run\": \"000000000002\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-2-cloud\", \"at\": \"2024-07-07T06:06:11+00:00\", \"captured_at\": \"2024-07-07T00:06:11Z\", \"coverage\": 0.2668, \"measure\": {\"served_share\": 0.9243, \"desert_km2\": 0.0504, \"built_up_km2\": 0.6656, \"station_count\": 12, \"flag_count\": 0}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"below_floor\", \"moved\": \"\", \"network_changed\": false, \"triaged\": false, \"reported\": false, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-2-cloud\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247288, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 9, \"annotate_ms\": 140, \"total_ms\": 162, \"coverage\": 0.2668, \"quality_flags\": \"low_coverage\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 108}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-2\", \"run\": \"eval-run-2\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-2-cloud\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-2\", \"run\": \"eval-run-2\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-2-cloud\", \"at\": \"2024-07-07T06:06:11+00:00\", \"captured_at\": \"2024-07-07T00:06:11Z\", \"coverage\": 0.2668, \"measure\": {\"served_share\": 0.9243, \"desert_km2\": 0.0504, \"built_up_km2\": 0.6656, \"station_count\": 12, \"flag_count\": 0}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"below_floor\", \"moved\": \"\", \"network_changed\": false, \"triaged\": false, \"reported\": false, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
         ],
         "printed": 0,
         "measurements": [
@@ -376,7 +376,7 @@
             "v": 1,
             "at": "2024-07-17T06:06:11+00:00",
             "tick": "eval-tick-3",
-            "run": "000000000003",
+            "run": "eval-run-3",
             "scene_id": "synthetic-3",
             "captured_at": "2024-07-17T00:06:11Z",
             "coverage": 0.9913,
@@ -471,11 +471,11 @@
           }
         ],
         "lines": [
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247283, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 93, \"total_ms\": 115, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 104}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-3\", \"run\": \"000000000003\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-3\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247283, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 94, \"total_ms\": 115, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 104}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-3\", \"run\": \"000000000003\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"verdict\": \"artefact\", \"stop\": \"answered\", \"model_id\": \"scripted\", \"model_calls\": 3, \"input_tokens\": 0, \"output_tokens\": 0, \"elapsed_ms\": 0, \"deadline_left_s\": 85.0, \"figure\": true, \"tools\": \"look_again,web_context\", \"tools_total\": 2, \"look_again\": 1, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"look_again\", \"ok\": true, \"ms\": 0, \"result\": {\"settings\": {\"reach_m\": 800}, \"measured\": {\"coverage\": 0.9913, \"served_share\": 0.1154, \"desert_km2\": 5.576, \"built_up_km2\": 6.3036, \"station_count\": 12}, \"quality_flags\": [], \"build\": \"0ef08003c311\", \"worker_ms\": 0}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 0, \"dated\": 0}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"65b145b89145\"}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-3\", \"run\": \"000000000003\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"at\": \"2024-07-17T06:06:11+00:00\", \"captured_at\": \"2024-07-17T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"built_up_km2\": 6.3036, \"station_count\": 12, \"flag_count\": 0}, \"baseline\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"station_count\": 12}, \"delta\": {\"served_share\": 0.0, \"desert_km2\": 0.0, \"station_count\": 0}, \"relative\": {\"desert_km2\": 0.0}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"artefact\", \"moved\": \"served_share,desert_km2\", \"network_changed\": false, \"triaged\": true, \"verdict\": \"artefact\", \"stop\": \"answered\", \"reported\": false, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247283, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 18, \"graph_ms\": 8, \"annotate_ms\": 94, \"total_ms\": 117, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 108}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-3\", \"run\": \"eval-run-3\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-3\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247283, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 94, \"total_ms\": 115, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 108}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-3\", \"run\": \"eval-run-3\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"verdict\": \"artefact\", \"stop\": \"answered\", \"model_id\": \"scripted\", \"model_calls\": 3, \"input_tokens\": 0, \"output_tokens\": 0, \"elapsed_ms\": 0, \"deadline_left_s\": 85.0, \"figure\": true, \"tools\": \"look_again,web_context\", \"tools_total\": 2, \"look_again\": 1, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"look_again\", \"ok\": true, \"ms\": 0, \"result\": {\"settings\": {\"reach_m\": 800}, \"measured\": {\"coverage\": 0.9913, \"served_share\": 0.1154, \"desert_km2\": 5.576, \"built_up_km2\": 6.3036, \"station_count\": 12}, \"quality_flags\": [], \"build\": \"0ef08003c311\", \"worker_ms\": 0}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 0, \"dated\": 0}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"65b145b89145\"}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-3\", \"run\": \"eval-run-3\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"at\": \"2024-07-17T06:06:11+00:00\", \"captured_at\": \"2024-07-17T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"built_up_km2\": 6.3036, \"station_count\": 12, \"flag_count\": 0}, \"baseline\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"station_count\": 12}, \"delta\": {\"served_share\": 0.0, \"desert_km2\": 0.0, \"station_count\": 0}, \"relative\": {\"desert_km2\": 0.0}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"artefact\", \"moved\": \"served_share,desert_km2\", \"network_changed\": false, \"triaged\": true, \"verdict\": \"artefact\", \"stop\": \"answered\", \"reported\": false, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
         ],
         "printed": 0,
         "measurements": [
@@ -595,7 +595,7 @@
             "v": 1,
             "at": "2024-07-27T06:06:11+00:00",
             "tick": "eval-tick-4",
-            "run": "000000000004",
+            "run": "eval-run-4",
             "scene_id": "synthetic-4",
             "captured_at": "2024-07-27T00:06:11Z",
             "coverage": 0.9913,
@@ -691,11 +691,11 @@
           }
         ],
         "lines": [
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247281, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 89, \"total_ms\": 111, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 17, \"snapped\": 17, \"nodes\": 17, \"edges\": 16, \"components\": 2, \"rss_peak_mb\": 104}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-4\", \"run\": \"000000000004\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-4\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247281, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 18, \"graph_ms\": 8, \"annotate_ms\": 90, \"total_ms\": 111, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 17, \"snapped\": 17, \"nodes\": 17, \"edges\": 16, \"components\": 2, \"rss_peak_mb\": 104}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-4\", \"run\": \"000000000004\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"verdict\": \"real\", \"stop\": \"answered\", \"model_id\": \"scripted\", \"model_calls\": 3, \"input_tokens\": 0, \"output_tokens\": 0, \"elapsed_ms\": 0, \"deadline_left_s\": 85.0, \"figure\": true, \"tools\": \"look_again,web_context\", \"tools_total\": 2, \"look_again\": 1, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"look_again\", \"ok\": true, \"ms\": 0, \"result\": {\"settings\": {\"reach_m\": 800}, \"measured\": {\"coverage\": 0.9913, \"served_share\": 0.6716, \"desert_km2\": 2.0704, \"built_up_km2\": 6.3036, \"station_count\": 17}, \"quality_flags\": [], \"build\": \"0ef08003c311\", \"worker_ms\": 0}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 0, \"dated\": 0}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"a72d11f1331e\"}",
-          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-4\", \"run\": \"000000000004\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"at\": \"2024-07-27T06:06:11+00:00\", \"captured_at\": \"2024-07-27T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.9686, \"desert_km2\": 0.198, \"built_up_km2\": 6.3036, \"station_count\": 17, \"flag_count\": 1}, \"baseline\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"station_count\": 12}, \"delta\": {\"served_share\": 0.578, \"desert_km2\": -3.6436, \"station_count\": 5}, \"relative\": {\"desert_km2\": -0.948}, \"baseline_scenes\": 2, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"reported\", \"moved\": \"served_share,desert_km2,station_count\", \"network_changed\": true, \"triaged\": true, \"verdict\": \"real\", \"stop\": \"answered\", \"reported\": true, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247281, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 18, \"graph_ms\": 8, \"annotate_ms\": 92, \"total_ms\": 115, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 17, \"snapped\": 17, \"nodes\": 17, \"edges\": 16, \"components\": 2, \"rss_peak_mb\": 108}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-4\", \"run\": \"eval-run-4\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-4\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247281, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 19, \"graph_ms\": 9, \"annotate_ms\": 94, \"total_ms\": 117, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 17, \"snapped\": 17, \"nodes\": 17, \"edges\": 16, \"components\": 2, \"rss_peak_mb\": 108}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-4\", \"run\": \"eval-run-4\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"verdict\": \"real\", \"stop\": \"answered\", \"model_id\": \"scripted\", \"model_calls\": 3, \"input_tokens\": 0, \"output_tokens\": 0, \"elapsed_ms\": 0, \"deadline_left_s\": 85.0, \"figure\": true, \"tools\": \"look_again,web_context\", \"tools_total\": 2, \"look_again\": 1, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"look_again\", \"ok\": true, \"ms\": 0, \"result\": {\"settings\": {\"reach_m\": 800}, \"measured\": {\"coverage\": 0.9913, \"served_share\": 0.6716, \"desert_km2\": 2.0704, \"built_up_km2\": 6.3036, \"station_count\": 17}, \"quality_flags\": [], \"build\": \"0ef08003c311\", \"worker_ms\": 0}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 0, \"dated\": 0}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"a72d11f1331e\"}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-4\", \"run\": \"eval-run-4\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"at\": \"2024-07-27T06:06:11+00:00\", \"captured_at\": \"2024-07-27T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.9686, \"desert_km2\": 0.198, \"built_up_km2\": 6.3036, \"station_count\": 17, \"flag_count\": 1}, \"baseline\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"station_count\": 12}, \"delta\": {\"served_share\": 0.578, \"desert_km2\": -3.6436, \"station_count\": 5}, \"relative\": {\"desert_km2\": -0.948}, \"baseline_scenes\": 2, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"reported\", \"moved\": \"served_share,desert_km2,station_count\", \"network_changed\": true, \"triaged\": true, \"verdict\": \"real\", \"stop\": \"answered\", \"reported\": true, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
         ],
         "printed": 0,
         "measurements": [
@@ -807,7 +807,7 @@
         "v": 1,
         "at": "2024-06-27T06:06:11+00:00",
         "tick": "eval-tick-1",
-        "run": "000000000001",
+        "run": "eval-run-1",
         "scene_id": "synthetic-1",
         "captured_at": "2024-06-27T00:06:11Z",
         "coverage": 0.9913,
@@ -845,7 +845,7 @@
         "v": 1,
         "at": "2024-07-07T06:06:11+00:00",
         "tick": "eval-tick-2",
-        "run": "000000000002",
+        "run": "eval-run-2",
         "scene_id": "synthetic-2-cloud",
         "captured_at": "2024-07-07T00:06:11Z",
         "coverage": 0.2668,
@@ -883,7 +883,7 @@
         "v": 1,
         "at": "2024-07-17T06:06:11+00:00",
         "tick": "eval-tick-3",
-        "run": "000000000003",
+        "run": "eval-run-3",
         "scene_id": "synthetic-3",
         "captured_at": "2024-07-17T00:06:11Z",
         "coverage": 0.9913,
@@ -980,7 +980,7 @@
         "v": 1,
         "at": "2024-07-27T06:06:11+00:00",
         "tick": "eval-tick-4",
-        "run": "000000000004",
+        "run": "eval-run-4",
         "scene_id": "synthetic-4",
         "captured_at": "2024-07-27T00:06:11Z",
         "coverage": 0.9913,
