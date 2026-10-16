@@ -731,6 +731,71 @@ ETag ("input changed"), and exits 1 when a scene's `expected` (`low_coverage` fo
 no-data cases) was not met. Both subcommands run on Windows as well as Linux and macOS (`py -3.11 scripts\vision_eval.py ...`); they need
 `lambdas/requirements-vision.txt` and `scripts/requirements.txt`.
 
+## The evaluation proper: `vision_eval.py replay`, `failures`, `access-baseline`, `index`
+
+Each writes one run file (`--out DIR`, `--tag`) with the code, machine, build and inputs it ran
+on, and runs in CI on a synthetic city with scripted parts; on real data they are the operator's
+runs (the runsheet's [evaluation runs](../docs/deployment-runsheet.md#the-evaluations-real-data-runs),
+bash and PowerShell). Every real-data run HEADs its scenes first and refuses one whose pinned ETag
+moved ("input changed"); `--cache [DIR]` answers the worker's reads from DIR after the first.
+
+```bash
+python scripts/vision_eval.py replay --sequence sydney-demo --worker <ARN> --agent bedrock --model-id <id> --out docs/hackathon/evidence/runs --trace
+python scripts/vision_eval.py replay --sequence sydney-demo --agent recorded --from docs/hackathon/evidence/runs/<run>.json --cache ~/cogs
+python scripts/vision_eval.py replay --sequence synthetic-city                       # CI's: the synthetic city, scripted agent
+python scripts/vision_eval.py failures --cache ~/cogs --out docs/hackathon/evidence/runs
+python scripts/vision_eval.py access-baseline --cache ~/cogs --out docs/hackathon/evidence/runs   # E5; --scene synthetic-1 in CI
+python scripts/vision_eval.py index            # docs/hackathon/evidence/index.json and RESULTS.md
+python scripts/vision_eval.py index --check    # change nothing; exit 1 if either is stale or a label is wrong
+```
+
+**`replay`** (2.6.4) drives the real `RailAccessAdapter` through `fetch_state` then `material_diff`,
+tick by tick, over a sequence of the manifest's scenes (`sydney-winter`, `sydney-demo` with the demo
+topic's thresholds of 0, `sydney-c1` with network B on its last tick, and `synthetic-city`), as a
+one-site topic like `trains-sydney`, each tick six hours after its scene. The worker is in this
+process (`--worker in-process`, the default) or the deployed one (`--worker <ARN>`; every site id
+sent is `eval-sydney`, and the run file names the Region, never the ARN). The agent is Bedrock
+(`--agent bedrock --model-id <id> [--region R]`: every Converse response recorded), a recording
+(`--agent recorded --from <run file>`: the responses, the ticks' times and the clock's readings
+replayed, every measurement recomputed in-process and held to the recording: the ring's
+code-derived fields exactly, measurements within 2.7.1's tolerances, the fields left out listed in
+the run file under `excluded`) or scripted (`--agent scripted`, the default: a `look_again` at 800 m,
+the news, then `real` exactly when the station count moved). The news the agent may read is the
+sequence's own (sydney-c1's is constructed and says so), never a live search. A recorded replay is
+refused when a pinned ETag or the network file moved, or when a recorded response calls a tool the
+profile no longer offers (naming the tick and the step); an in-process worker under the real
+model's deadline is refused without `--cache` off an EC2 instance in us-west-2 (its `look_again`
+would re-read the scene inside the agent's 85 s). `--trace` renders the ticks' decisions to
+`docs/hackathon/evidence/replay/<sequence>.md` through `vision_decisions.trace` and the operator's
+assistant's own table; `--limit N` replays the first N ticks; each tick's figure is written beside
+the run file (`--no-figures` to skip). `scripts/tests/fixtures/replay-synthetic-city-scripted.json`
+is a scripted recording CI replays with `--agent recorded`.
+
+**`failures`** (2.5) is the constructed failure catalogue: fourteen cases, each with its input,
+what must happen and the tests that hold it, named by pytest node id and checked to be collected
+(`--no-collect` skips that). The rows that read nothing (an asset off the allowlist; a cool request
+to a stock worker and a cool worker without its pin) run anywhere; with `--cache` the real-data
+rows run through the worker handler in this process, and the cloudy row also runs the real adapter
+for one tick on a scene the search does pick under the floor. `--only CASE` picks rows.
+
+**`access-baseline`** (E5) measures one scene in this process with the worker's own read and
+analysis, then compares the production distance transform (`DIST_L2`, the 5x5 mask, as
+`vision/access.py` runs it) with `DIST_MASK_PRECISE` and with a straight-line buffer (the union
+of `cv2.circle` discs of the reach at each station, SDG 11.2.1's simple method): each method's
+served share, its difference from production's, the IoU of the served masks and the median time
+of five runs; it checks production's share is the worker's own.
+
+**`index`** (2.9) reads every run file in `docs/hackathon/evidence/runs/` (a malformed one, or one of
+an unknown kind, is refused by name) and writes `index.json` and `RESULTS.md` (one table per kind,
+newest first; a run listed in `older-code.json` is marked "measured on older code" with its
+reason). `--check`, run in CI by `scripts/tests/test_vision_eval.py`, fails when a run file was
+added without re-indexing, and checks the operator's labels (`live/*/labels.csv`) when there are
+any.
+
+All four run on Windows (`py -3.11 scripts\vision_eval.py ...`). The driver they share,
+`scripts/vision_eval_driver.py`, documents in its docstring the interface the agent evaluation,
+the counterfactuals and the stability run build on.
+
 ## After changing the CLI: `generate_cli_reference.py`
 
 The operator's assistant answers "how do I ...?" by showing a command's own `--help` and, when you

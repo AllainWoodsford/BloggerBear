@@ -797,6 +797,16 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
   [design](enhancements/dailysubject_hook.md))
+- [x] The submission round's evaluation, first half (Q2a): a driver that runs the real rail adapter
+  tick by tick over pinned scenes with every outside service under the run's control (the worker in
+  this process with the cache, deployed by ARN or scripted; the agent on Bedrock, recorded or
+  scripted), the interface the agent evaluation, counterfactuals and stability build on;
+  `vision_eval.py replay` (the A2 trace, live, or recorded and re-run without AWS, held to its
+  recording; CI replays a committed synthetic recording), `failures` (the failure catalogue, its 42
+  tests named by node id and checked to be collected), `access-baseline` (E5) and `index`
+  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked in CI). The real-data runs are the
+  operator's (submission PR Q2a; `scripts/vision_eval_driver.py`, `scripts/vision_eval.py`;
+  [results](hackathon/evidence/RESULTS.md))
 
 ## Backlog / not yet scheduled
 

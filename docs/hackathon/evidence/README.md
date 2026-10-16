@@ -9,10 +9,16 @@ machine, build and inputs it ran on, and the report quotes it.
 | Directory | Holds | Written by |
 |---|---|---|
 | `runs/` | One JSON **run file** per run, `<run_id>.json`, plus the figures a `scenes` run kept beside its file (`<run_id>.<scene>.png`) | `scripts/vision_benchmark.py --out` and `scripts/vision_eval.py --out` |
+| `replay/` | One Markdown trace per replayed sequence, `<sequence>.md`: each tick's decision as the operator's assistant shows it (the six steps of `vision_decisions.trace`), generated from a `replay` run file, never edited by hand | `scripts/vision_eval.py replay --trace` |
+| `index.json`, `RESULTS.md` | One row per run file (its id, kind, date, CPU, backend, build, commit and `summary`), and the same as one table per kind, newest first, each row linking its file | `scripts/vision_eval.py index`; CI's `index --check` fails when a run file was added without re-indexing |
+| `older-code.json` (when needed) | `{run_id: reason}` for a run made on code that has changed since in a way that matters to it: RESULTS.md marks it "measured on older code" with the reason | by hand, then `index` |
+| `live/` (from the export) | The deployed system's evidence and the operator's labels, `live/<date>/labels.csv` (`decision, verdict, figure, trace, label, reason`; `agree`/`disagree`; the reason codes) | `scripts/evidence_export.py` (Q3) and the owner; `index --check` validates the labels |
 | `cool/` | What the Graviton session records by hand: `recon.md` (the Marketplace product, its delivery type, Region and price), `cool-buildinfo.txt`, `stock-buildinfo.txt` and `stock4-buildinfo.txt` (each venv's `cv2.getBuildInformation()`, whose sha256 is the build fingerprint), `lscpu.txt`, `session.md` (hours and fees), `perf-dso.txt` if made | the owner, following the [runsheet's COOL section](../../deployment-runsheet.md#the-cool-backend-and-the-benchmark) |
 
-The evaluation's later subcommands add an `index.json` and a generated `RESULTS.md` here, built
-from the run files; until then the files themselves are the index.
+[`RESULTS.md`](RESULTS.md) is the index a reader starts from; `index.json` is the same for code
+(the operator's assistant copies its rows). Both are generated: after adding run files, run
+`python scripts/vision_eval.py index` (PowerShell: `py -3.11 scripts\vision_eval.py index`) and
+commit the two files with them.
 
 ## The run file
 
@@ -67,11 +73,46 @@ Schema `bloggerbear.vision-eval/1` (`scripts/vision_runs.py` writes and reads it
 | `bench-compare` | `vision_benchmark.py compare` | two runs of one machine and the same inputs: the speed-up of B over A with a bootstrap interval, per stage and on the compute stages, and the parity of the rail metrics |
 | `bench-controls` | `vision_benchmark.py controls` | the COOL guard's three negative controls and whether each answered as expected |
 | `eval-coverage` | `vision_eval.py coverage` | per pinned scene the SCL class shares inside the site, the coverage as the worker defines it and the mean aerosol optical thickness; and the year's selection counts |
+| `eval-replay` | `vision_eval.py replay` | the real rail adapter over a pinned sequence, tick by tick (2.6.4): each tick's evidence lines as printed, the decision ring's entries, every worker call with its metrics digest, the clock's readings, and under `agent.responses` every Converse response (Bedrock or scripted), so `--agent recorded` replays it; with `--agent recorded`, the checks that it reproduced its recording |
+| `eval-failures` | `vision_eval.py failures` | the failure catalogue (2.5): per case its input, what must happen, the tests that hold it (pytest node ids, each checked to be collected) and, for the real-data rows, what the worker and the adapter did |
+| `eval-access-baseline` | `vision_eval.py access-baseline` | E5 on one scene: the production distance transform against the precise one and a straight-line buffer, each served share, the IoU of the served masks and the times |
 
 The first run file, `runs/2026-10-16-eval-coverage-intel-xeon-processor-2-80ghz-none.json`, is the
 coverage of every scene in `scripts/vision_eval_manifest.json`, measured on 16 October on the
 build container (x86, outside us-west-2: the environment says so). Coverage does not depend on the
 CPU; the Graviton session's run files are the first measurements of the worker's speed.
+
+## Running the evaluation for real
+
+Every subcommand below is in CI on the synthetic city or with scripted parts; on real data they
+are the operator's runs, and only their run files are evidence. They read the pinned scenes over
+HTTPS from `sentinel-cogs` (us-west-2): give them a cache (`--cache ~/cogs`; PowerShell
+`--cache $HOME\cogs`), which a first run fills (about 54 MB a scene) and every later run reads
+from. They need the Sydney network fixture, `scripts/vision_benchmark_networks/sydney.json`
+(the owner captures it from the deployed `vision/rail-cities/sydney/network.json`; until then
+`--network <file>`), `lambdas/requirements-vision.txt`, `lambdas/requirements.txt` and
+`scripts/requirements.txt`. The exact session, with each command's PowerShell line, is the
+runsheet's [evaluation runs](../../deployment-runsheet.md#the-evaluations-real-data-runs).
+
+- **`replay --sequence sydney-winter | sydney-demo | sydney-c1`** (2.6.4): the real adapter over
+  06-27, 08-21b, 08-26 and 08-31, through `fetch_state` then `material_diff`, one tick per scene,
+  each six hours after its capture. `--worker <the deployed worker's ARN>` (site ids sent as
+  `eval-sydney`) or `--worker in-process --cache DIR`; `--agent bedrock --model-id <id>` (every
+  Converse response recorded), `--agent recorded --from runs/<id>.json` (no AWS: the responses
+  replayed, every measurement recomputed in-process and held to the recording within 2.7.1's
+  tolerances, its excluded fields listed in the run file) or `--agent scripted`. `--trace` writes
+  `replay/<sequence>.md`. sydney-demo runs with the demo topic's thresholds of 0, disclosed in its
+  trace; sydney-c1's last tick reads network B, the fixture plus a constructed five-station line
+  on the previous scene's largest area beyond reach (or `--network-b FILE`), with a constructed
+  news item. The replay stops at the adapter's decision: "a Finding would be written", never a
+  Finding.
+- **`failures`** (2.5): the catalogue's tests are checked to be collected; the rows that read
+  nothing run anywhere; with `--cache` the real-data rows run through the worker handler in this
+  process (the cloudy and no-data scenes, the smoke scene, a site off the tile, a window past the
+  rail cap, a missing key), and the cloudy row also runs the real adapter for one tick on a scene
+  the search does pick under the floor.
+- **`access-baseline`** (E5): on `sydney-2024-08-26` by default (`--scene`), with the network.
+- **`index`**: after any of the above, and `index --check` before committing.
 
 ## How to add a run
 
