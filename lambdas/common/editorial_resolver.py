@@ -90,7 +90,11 @@ def _clean(value) -> str | None:
     return value.strip() or None
 
 
-def resolve_editorial_goals(topic: dict, daily_goal: EditorialGoal | DaySubject | None = None) -> str:
+def resolve_editorial_goals(
+    topic: dict,
+    daily_goal: EditorialGoal | DaySubject | None = None,
+    rotation_focus: str | None = None,
+) -> str:
     """The topic's standing editorial goal, as prompt text.
 
     Topic-specific -> adapter-specific -> global default, with the topic's
@@ -102,11 +106,15 @@ def resolve_editorial_goals(topic: dict, daily_goal: EditorialGoal | DaySubject 
     describes that domain and would contradict the day; a topic-specific focus
     still wins. A rotating topic's day subject (common/day_subject.py) is one of the
     things the adapter watches, inside its domain, so the adapter's layer is kept.
+
+    `rotation_focus` is the primary focus of the goal a topic's goal rotation picked for this
+    article (common/goal_rotation.py): it stands in for the topic's own `primary_focus`, and the
+    topic's exclusion criteria still apply.
     """
     adapter = topic.get("adapter") or DEFAULT_ADAPTER
     raw_goals = topic.get("editorial_goals")
     goals = raw_goals if isinstance(raw_goals, dict) else {}
-    focus = _clean(goals.get("primary_focus"))
+    focus = _clean(rotation_focus) or _clean(goals.get("primary_focus"))
     exclusions = _clean(goals.get("exclusion_criteria"))
 
     if focus:

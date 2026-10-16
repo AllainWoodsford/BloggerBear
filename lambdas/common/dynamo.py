@@ -449,12 +449,18 @@ def put_article(
     attribution: list[dict] | None = None,
     figures: list[dict] | None = None,
     subject: str | None = None,
+    editorial_goal: str | None = None,
+    revisit: bool = False,
 ) -> dict:
     """Write an Articles item and return it.
 
     `subject` is the key of the day's subject the article was written about, for a topic that
     rotates through several (common/day_subject.py): Re-Write reads that subject's Findings back.
     Stored only when given; every other article has no such field.
+
+    `editorial_goal` is the name of the goal of a topic's goal rotation the article was written
+    under, and `revisit` says it was written from Findings an earlier article had already used
+    (common/goal_rotation.py). Each stored only when set.
 
     `attribution` is the source credit this article was drafted with (common/attribution.py:
     [{"text", "label", "url"}], copied from its topic's adapter), kept so the article goes on
@@ -511,6 +517,10 @@ def put_article(
         item["figures"] = figures
     if subject is not None:
         item["subject"] = subject
+    if editorial_goal is not None:
+        item["editorial_goal"] = editorial_goal
+    if revisit:
+        item["revisit"] = True
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -636,6 +646,41 @@ def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | 
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeNames={"#subject": subject_key},
         ExpressionAttributeValues={":t": timestamp},
+    )
+
+
+def set_topic_goal_rotation_state(topic_id: str, key: str, state: dict) -> None:
+    """Set one entry of a Topic's `goal_rotation_state` (common/goal_rotation.py: a map of subject
+    key, or its topic-wide key, to {"goal", "used", "from", "to"}), leaving the other entries and
+    every other attribute alone. Two writes, as set_topic_last_article_at's subject stamp: the map
+    is made when missing (or replaced when it is not a map, which only a hand edit makes, and the
+    log says so), then the entry is set. Fails rather than creating a Topic that no longer exists."""
+    table = get_table(os.environ["TOPICS_TABLE"])
+    try:
+        replaced = table.update_item(
+            Key={"topic_id": topic_id},
+            UpdateExpression="SET goal_rotation_state = :empty",
+            ConditionExpression=(
+                "attribute_exists(topic_id) AND (attribute_not_exists(goal_rotation_state) "
+                "OR NOT attribute_type(goal_rotation_state, :map))"
+            ),
+            ExpressionAttributeValues={":empty": {}, ":map": "M"},
+            ReturnValues="UPDATED_OLD",
+        ).get("Attributes") or {}
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        replaced = {}
+    if "goal_rotation_state" in replaced:
+        print(
+            f"dynamo: topic_id={topic_id} had a goal_rotation_state that was a "
+            f"{type(replaced['goal_rotation_state']).__name__}, not a map; replaced it with a map "
+            f"holding {key}'s entry"
+        )
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET goal_rotation_state.#key = :s",
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames={"#key": key},
+        ExpressionAttributeValues={":s": state},
     )
 
 

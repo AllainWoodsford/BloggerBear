@@ -116,6 +116,8 @@ from common.fresh_review import (
     resolve_review_mode,
     review_mode_error,
 )
+from common.goal_rotation import FIELD as GOAL_ROTATION_FIELD
+from common.goal_rotation import normalize_goal_rotation, validate_goal_rotation
 from common.lineage_tools import audit_lineage, plan_backfill
 from common.model_routing import resolve_model
 from common.musings import (
@@ -355,6 +357,9 @@ def _create_topic(event: dict) -> dict:
     editorial_goals_error = validate_editorial_goals(body.get("editorial_goals"))
     if editorial_goals_error:
         return _error(400, editorial_goals_error)
+    goal_rotation_error = validate_goal_rotation(body.get(GOAL_ROTATION_FIELD))
+    if goal_rotation_error:
+        return _error(400, goal_rotation_error)
 
     is_financial = body.get("is_financial", False)
     if not isinstance(is_financial, bool):
@@ -467,6 +472,9 @@ def _create_topic(event: dict) -> dict:
     # adapter's/the global default goal (common/editorial_resolver.py).
     if body.get("editorial_goals") is not None:
         item["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
+    # Several goals taken in turn (common/goal_rotation.py); stored only when there are some.
+    if body.get(GOAL_ROTATION_FIELD):
+        item[GOAL_ROTATION_FIELD] = normalize_goal_rotation(body[GOAL_ROTATION_FIELD])
     if research_interval_hours is not None:
         item["research_interval_hours"] = research_interval_hours
     if findings_window_hours is not None:
@@ -507,6 +515,7 @@ def _update_topic(event: dict) -> dict:
         "adapter",
         "adapter_config",
         "editorial_goals",
+        GOAL_ROTATION_FIELD,
         "is_financial",
         "force_manual_review",
         "research_cadence",
@@ -536,6 +545,17 @@ def _update_topic(event: dict) -> dict:
             return _error(400, editorial_goals_error)
         # A whole-block replace, like adapter_config; {} or null clears it.
         updated["editorial_goals"] = normalize_editorial_goals(body["editorial_goals"])
+    if GOAL_ROTATION_FIELD in body:
+        goal_rotation_error = validate_goal_rotation(body[GOAL_ROTATION_FIELD])
+        if goal_rotation_error:
+            return _error(400, goal_rotation_error)
+        # The whole list is replaced; [] or null clears it (the rotation's state is kept: a goal
+        # whose name comes back picks up where it was, and an unknown one is read as no state).
+        rotation = normalize_goal_rotation(body[GOAL_ROTATION_FIELD])
+        if rotation:
+            updated[GOAL_ROTATION_FIELD] = rotation
+        else:
+            updated.pop(GOAL_ROTATION_FIELD, None)
     if "is_financial" in body and not isinstance(updated["is_financial"], bool):
         return _error(400, "'is_financial' must be a boolean")
     # Phase 7: same forced-True guarantee as _create_topic above -- applies
