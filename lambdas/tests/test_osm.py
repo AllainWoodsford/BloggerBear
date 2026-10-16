@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import json
 import math
+import socket
 import subprocess
 import sys
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import requests
@@ -116,6 +120,12 @@ def fetch(*outcomes, **kwargs):
     return osm.fetch_network(POLY, http_post=fake, now=NOW, **kwargs), fake
 
 
+def ticks(*values):
+    """A clock that reads `values` in turn, then the last one for good."""
+    left = list(values)
+    return lambda: left.pop(0) if len(left) > 1 else left[0]
+
+
 # --- the module's footprint ------------------------------------------------------------------
 
 
@@ -194,6 +204,10 @@ def test_the_default_query_is_unchanged_and_a_hops_read_timeout_is_its_timeout_r
     assert osm.overpass_query(POLY, 65.0).startswith("[out:json][timeout:65];\n")
     assert osm.overpass_query(POLY, 2.0).startswith("[out:json][timeout:2];\n")  # _MIN_HOP_SECONDS
     assert osm.overpass_query(POLY, 0.4).startswith("[out:json][timeout:1];\n")  # never 0
+    # A hop meant to read for 25 s, measured from a clock read a moment after its deadline's, reads
+    # for a hair under it: still 25. A hundredth of a second short is a second short.
+    assert osm.overpass_query(POLY, 24.99999) == DEFAULT_QUERY
+    assert osm.overpass_query(POLY, 24.98).startswith("[out:json][timeout:24];\n")
     with pytest.raises(ValueError):
         osm.overpass_query([[151.2, -33.9]], 60.0)
 
@@ -700,14 +714,12 @@ def test_a_connection_cut_while_reading_is_tried_on_the_mirror():
 
 def test_the_deadline_bounds_each_hop_and_skips_a_hop_with_no_time():
     # 40 s left: the first hop keeps the default; after it, 12 s left gives the mirror 12 - 5 = 7 s.
-    ticks = iter([100.0, 128.0])
-    _, fake = fetch(reply(status=503), reply(), deadline=140.0, clock=lambda: next(ticks))
+    _, fake = fetch(reply(status=503), reply(), deadline=140.0, clock=ticks(100.0, 128.0))
     assert [call[2] for call in fake.calls] == [(5.0, 25.0), (5.0, 7.0)]
 
     # With under the minimum left for the mirror, the first failure is what is raised.
-    ticks = iter([100.0, 134.0])
     with pytest.raises(osm.OsmError) as caught:
-        fetch(reply(status=503), reply(), deadline=140.0, clock=lambda: next(ticks))
+        fetch(reply(status=503), reply(), deadline=140.0, clock=ticks(100.0, 134.0))
     assert caught.value.code == "http" and "503" in caught.value.detail
 
     # And with no time at all before the first hop, it is a timeout, with nothing asked.
@@ -725,16 +737,14 @@ def test_each_hops_query_declares_the_read_timeout_that_hop_gets():
     """A first fetch (the rail adapter's FIRST_FETCH_TIMEOUT_SECONDS of 75 s a hop, 58.4 s to its
     deadline): the first hop reads for 58.4 - 5 = 53.4 s and its query says 53; the mirror, after a
     503 at 40 s, gets 13.4 s and says 13. Without a deadline both hops ask for the timeout given."""
-    ticks = iter([100.0, 140.0])
-    network, fake = fetch(reply(status=503), reply(), timeout=75.0, deadline=158.4, clock=lambda: next(ticks))
+    network, fake = fetch(reply(status=503), reply(), timeout=75.0, deadline=158.4, clock=ticks(100.0, 140.0))
     assert [call[2] for call in fake.calls] == [(5.0, pytest.approx(53.4)), (5.0, pytest.approx(13.4))]
     assert [hop_timeout(call) for call in fake.calls] == ["[timeout:53]", "[timeout:13]"]
     assert fake.calls[0][1]["data"] == osm.overpass_query(POLY, 53.4)
     assert network["endpoint"] == MIRROR
 
     # The hop cap holds when the deadline is further off than it.
-    ticks = iter([100.0])
-    _, fake = fetch(reply(), timeout=75.0, deadline=300.0, clock=lambda: next(ticks))
+    _, fake = fetch(reply(), timeout=75.0, deadline=300.0, clock=ticks(100.0))
     assert fake.calls[0][2] == (5.0, 75.0) and hop_timeout(fake.calls[0]) == "[timeout:75]"
 
     _, fake = fetch(reply(status=429), reply(), timeout=40.0)
@@ -744,6 +754,192 @@ def test_each_hops_query_declares_the_read_timeout_that_hop_gets():
     # The default, as before: 25 s a hop, and the query as it always was.
     _, fake = fetch(reply())
     assert fake.calls[0][1]["data"] == DEFAULT_QUERY and fake.calls[0][2] == (5, 25.0)
+
+    # A refresh (the adapter's 30 s deadline, read a microsecond before the hop reads the clock)
+    # still asks for 25, as it did before the query followed the read.
+    _, fake = fetch(reply(), deadline=130.0, clock=ticks(100.000001))
+    assert fake.calls[0][1]["data"] == DEFAULT_QUERY and fake.calls[0][2] == (5.0, pytest.approx(25.0))
+
+
+class Clock:
+    """A scripted clock the replies below advance, as a slow server would."""
+
+    def __init__(self, now=0.0):
+        self.now, self.timers = now, []
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A scripted clock, with osm's timer (the _Shutter's) on it: armed for `interval` scripted
+    seconds and fired by a StreamedReply whose read is still waiting when it is due."""
+    clock = Clock()
+
+    class ScriptedTimer:
+        def __init__(self, interval, function, args=()):
+            self.due, self.function, self.args = clock.now + interval, function, args
+            self.started = self.cancelled = self.fired = False
+            clock.timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+        def fire(self):
+            self.fired = True
+            self.function(*self.args)
+
+    monkeypatch.setattr(osm, "Timer", ScriptedTimer)
+    return clock
+
+
+class StreamedReply(_Reply):
+    """A 200 streamed as requests gives it, under the scripted clock: `parts`, each (seconds of
+    silence, bytes), read in turn and then, with `stall`, silence with the connection held open.
+    A read waits for its bytes, for the read timeout (raised as requests raises it mid-body) or for
+    the reply to be shut (urllib3's HTTPResponse.shutdown, `raw.shutdown`): a chunked or sized body
+    then breaks off, and one read to its connection's close just ends."""
+
+    def __init__(self, clock, parts, read_timeout, stall=True, read_to_close=False, shuttable=True):
+        super().__init__(b"")
+        self.clock, self.parts, self.read_timeout = clock, list(parts), read_timeout
+        self.stall, self.read_to_close, self.shut, self.read = stall, read_to_close, 0, []
+        if shuttable:
+            self.raw = SimpleNamespace(shutdown=self._shutdown)
+
+    def _shutdown(self):
+        self.shut += 1
+
+    def _wait(self, seconds):
+        """Advances the clock to the end of a read that waits `seconds` for its bytes, and says how it
+        ended: the bytes came, the read timed out, or the shutter's timer was due."""
+        timer = next((t for t in self.clock.timers if t.started and not (t.cancelled or t.fired)), None)
+        ends = {
+            "bytes": self.clock.now + seconds,
+            "timeout": self.clock.now + self.read_timeout,
+            "shut": timer.due if timer else math.inf,
+        }
+        how = min(ends, key=ends.get)
+        self.clock.now = ends[how]
+        if how == "shut":
+            timer.fire()
+        return how
+
+    def iter_content(self, chunk_size):
+        for silence, data in [*self.parts, (math.inf, b"")] if self.stall else self.parts:
+            how = self._wait(silence)
+            if how == "timeout":
+                raise requests.exceptions.ConnectionError("Read timed out.")
+            if how == "shut" and self.read_to_close:
+                return
+            if how == "shut":
+                raise requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead")
+            self.read.append(data)
+            yield data
+
+
+# A big city's reply at the rail adapter's 80 s budget: the hop starts 2 s in with a 70 s deadline, so
+# it reads for 63 s; Overpass sends its preamble at once, runs the query for 53 s, then streams.
+HOP_START, DEADLINE, HOP_READ = 2.0, 70.0, 63.0
+PREAMBLE, ELEMENTS = b'{"version": 0.6, ', b'"elements": ' + json.dumps(elements()).encode()
+
+
+@pytest.mark.parametrize("read_to_close", [False, True], ids=["chunked", "read-to-close"])
+def test_a_body_that_stalls_after_its_first_bytes_ends_at_the_deadline_as_a_timeout(clock, read_to_close):
+    """A read timeout bounds each wait between two reads, not the body: a connection that goes
+    silent after the body started (a proxy hung mid-reply, a peer gone without a FIN) would hold
+    the hop for a whole read timeout more, 63 s past a 70 s deadline here. The shutter shuts the
+    reply at the deadline, the stalled read ends there, and the hop is a transient "timeout",
+    never a partial network; with no time left the mirror is not asked."""
+    clock.now = HOP_START
+    parts = [(0.0, PREAMBLE), (53.0, ELEMENTS[:100]), (3.0, ELEMENTS[100:200])]
+    stalls = StreamedReply(clock, parts, HOP_READ, read_to_close=read_to_close)
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(stalls, reply(), timeout=75.0, deadline=DEADLINE, clock=clock)
+    assert (caught.value.code, caught.value.transient) == ("timeout", True)
+    assert "still arriving at the deadline" in caught.value.detail
+    assert clock.now == DEADLINE  # not 58 + 63 = 121
+    (timer,) = clock.timers
+    assert timer.due == DEADLINE and timer.fired and stalls.shut == 1 and stalls.closed
+    assert stalls.read == [PREAMBLE, ELEMENTS[:100], ELEMENTS[100:200]]
+
+
+def test_a_body_still_arriving_at_the_deadline_is_cut_there_even_when_it_cannot_be_shut(clock):
+    """A body that keeps trickling in never trips the read timeout; and a reply with nothing to shut
+    (a stand-in, an older urllib3) is cut by the clock, checked after each chunk."""
+    clock.now = HOP_START
+    trickle = [(0.0, PREAMBLE)] + [(4.0, b" ")] * 30
+    slow = StreamedReply(clock, trickle, HOP_READ, stall=False, shuttable=False)
+    with pytest.raises(osm.OsmError) as caught:
+        fetch(slow, timeout=75.0, deadline=DEADLINE, clock=clock)
+    assert caught.value.code == "timeout" and clock.now == DEADLINE and len(slow.read) == 18
+    assert clock.timers == []  # nothing to shut, no timer
+
+
+def test_a_body_read_in_time_is_the_network_and_the_shutter_is_disarmed(clock):
+    clock.now = HOP_START
+    parts = [(0.0, PREAMBLE), (50.0, ELEMENTS[:-1]), (1.0, ELEMENTS[-1:] + b"}")]
+    timely = StreamedReply(clock, parts, HOP_READ, stall=False)
+    network, _ = fetch(timely, timeout=75.0, deadline=DEADLINE, clock=clock)
+    assert network["counts"]["stations"] == 3 and clock.now == 53.0
+    (timer,) = clock.timers
+    assert timer.cancelled and not timer.fired and timely.shut == 0
+
+    # Without a deadline nothing is armed: the read timeout alone, as before.
+    clock.timers.clear()
+    fetch(reply())
+    assert clock.timers == []
+
+
+@pytest.fixture
+def local_overpass(monkeypatch):
+    """A server on 127.0.0.1 that answers like Overpass with a connection gone silent: the headers
+    and the preamble at once, part of the body, then nothing, with the connection held open. Yields
+    (url for a reply of the given framing, release)."""
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    release, servers = threading.Event(), []
+
+    def serve(listener, framing):
+        conn, _ = listener.accept()
+        with conn:
+            conn.recv(65536)
+            head = {"chunked": b"Transfer-Encoding: chunked", "close": b"Connection: close"}[framing]
+            conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" + head + b"\r\n\r\n")
+            for part in (PREAMBLE, ELEMENTS[:100]):
+                conn.sendall(b"%x\r\n%s\r\n" % (len(part), part) if framing == "chunked" else part)
+            release.wait(30)
+
+    def url(framing):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        thread = threading.Thread(target=serve, args=(listener, framing), daemon=True)
+        thread.start()
+        servers.append((listener, thread))
+        return f"http://127.0.0.1:{listener.getsockname()[1]}/api/interpreter"
+
+    yield url
+    release.set()
+    for listener, thread in servers:
+        thread.join(timeout=5)
+        listener.close()
+
+
+@pytest.mark.parametrize("framing", ["chunked", "close"])
+def test_the_shutter_ends_a_real_stalled_read_at_the_deadline(local_overpass, framing):
+    """The same with requests and urllib3 over a real socket: a 15 s read timeout, a deadline 1 s
+    off, and a body that stops after its first bytes. The read ends at the deadline, not 15 s on."""
+    started = time.monotonic()
+    with pytest.raises(osm.OsmError) as caught:
+        osm._request(requests.post, local_overpass(framing), "query", 15.0, deadline=started + 1.0)
+    took = time.monotonic() - started
+    assert caught.value.code == "timeout" and caught.value.transient
+    assert 1.0 <= took < 5.0, took
 
 
 def test_a_bad_polygon_is_refused_before_anything_is_asked_even_with_no_time_left():

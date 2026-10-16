@@ -615,9 +615,10 @@ default: [configuration.md](configuration.md#a-rail_access-topic)). Turn the wor
 **Create the four city topics.** `scripts/rail_topics.example.json` holds four complete admin API
 topic bodies, Sydney, Melbourne, Singapore and Boston: each city's box from
 [rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards),
-`reach_m` 1000, an editorial goal, the city's days of the week (`daily_cadence`) and a findings
-window of 192 hours (`findings_window_hours`). `topics create` takes a topic as flags, not as a
-file, so read each field out of it, from the repository root:
+`reach_m` 1000 (and for Sydney the 80 s `time_budget_seconds` cap: see "A large city's first
+network can take a minute", below), an editorial goal, the city's days of the week
+(`daily_cadence`) and a findings window of 192 hours (`findings_window_hours`). `topics create`
+takes a topic as flags, not as a file, so read each field out of it, from the repository root:
 
 ```bash
 field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.example.json"))["topics"][int(sys.argv[1])][sys.argv[2]]; print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"; }
@@ -739,11 +740,14 @@ asking the server for the same (`FIRST_FETCH_MARGIN_SECONDS` and `FIRST_FETCH_TI
 so **the first tick fetches and the next measures**: the first tick's `vision_site` line says
 `deferred` for `time_budget`, and the ops assistant's vision status shows the network's
 `fetched_at` from that tick; the next tick (an hour later by default) measures the city against
-the cached network, which then serves for `osm_ttl_days` (a refresh that fails keeps it). For a
-heavy city, raise the topic's `time_budget_seconds` to the cap, 80, which gives the fetch about
-70 s: read the config with `topics get <id>`, add `"time_budget_seconds": 80` to the whole
-`adapter_config` and send all of it back with `topics update <id> --adapter-config-json '...'` (it
-replaces the config: see `reach_m` below). A failed first fetch is tried again on the next tick,
+the cached network, which then serves for `osm_ttl_days` (a refresh that fails keeps it). The
+fetch ends by its deadline even if Overpass goes silent mid-reply: a reply still arriving then is
+cut, and the tick records a timeout. For a heavy city, raise the topic's `time_budget_seconds` to
+the cap, 80, which gives the fetch about 70 s (the example's Sydney topic sets it already; a topic
+created before it did, like dev's `trains-sydney`, does not): read the config with
+`topics get <id>`, add `"time_budget_seconds": 80` to the whole `adapter_config` and send all of
+it back with `topics update <id> --adapter-config-json '...'` (it replaces the config: see
+`reach_m` below). A failed first fetch is tried again on the next tick,
 with no 6-hour wait: nothing is measured without a network. If the status keeps saying `osm` with
 "OpenStreetMap timed out" at the 80 s budget (Overpass took 39 to 75 s to start answering for
 Sydney on 16 October, so a busy hour can miss), fetch the network out of band:

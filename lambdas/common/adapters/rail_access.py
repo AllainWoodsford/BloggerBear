@@ -140,18 +140,19 @@ _FLOAT_KEYS = vision_sites.FLOAT_KEYS + (
 )  # fmt: skip
 
 # The tick's 120 s, shared out (docs §5 risk 1): the network is fetched only with this much of the
-# measuring budget left, and a refresh of a cached one (c, d) must finish within it (both Overpass
-# hops included) ...
+# measuring budget left, and a refresh of a cached one (d; (c) measures against the cached one and
+# fetches nothing) must finish within it (both Overpass hops, and the body, included) ...
 OSM_RESERVE_SECONDS = 30.0
 # ... but a site's first network (b: none cached for its polygon) may take the rest of the measuring
 # budget less this margin, never less than OSM_RESERVE_SECONDS (first_fetch_seconds). A big city's
 # query runs for most of a minute on Overpass (Sydney's took 54 s from a workstation on 16 October),
-# so it could never succeed within 30 s, and until it does nothing is measured. The margin is for
-# what follows the reply: the body's transfer once bytes flow (a read timeout does not bound it),
-# parsing and capping several MB of it, then the tick stores the state and writes its lines. With
-# the default budget of 70 s the fetch gets about 60 s, at the 80 s cap about 70 s. A refresh (c,
-# d) keeps OSM_RESERVE_SECONDS: a cached network serves meanwhile. A long first fetch leaves under
-# MEASURE_RESERVE_SECONDS, so its scene is measured on the next tick, against the cached network.
+# so it could never succeed within 30 s, and until it does nothing is measured. osm.fetch_network
+# ends by its deadline, the body's transfer included (a reply still arriving then is shut), so the
+# margin is for what follows: parsing and capping several MB of it, then the tick stores the state
+# and writes its lines. With the default budget of 70 s the fetch gets about 60 s, at the 80 s cap
+# about 70 s. A refresh (d) keeps OSM_RESERVE_SECONDS: a cached network serves meanwhile. A long
+# first fetch leaves under MEASURE_RESERVE_SECONDS, so its scene is measured on the next tick,
+# against the cached network.
 FIRST_FETCH_MARGIN_SECONDS = 10.0
 # ... and each of its Overpass hops reads for at most this long, its query's `[timeout:]` the same
 # (common/osm.py's TIMEOUT_SECONDS says why), where a refresh keeps osm.TIMEOUT_SECONDS (25 s). The
@@ -302,7 +303,8 @@ def first_fetch_seconds(remaining: float) -> float:
     """How long a site's first network fetch (b) may take, from now, with `remaining` seconds of the
     measuring budget left (at least OSM_RESERVE_SECONDS, or it is not started): the rest less
     FIRST_FETCH_MARGIN_SECONDS, never less than OSM_RESERVE_SECONDS. Never more than `remaining`, so
-    it ends inside the budget, as a refresh does."""
+    it ends inside the budget, as a refresh does (osm.fetch_network ends by its deadline, the body's
+    read included)."""
     return max(OSM_RESERVE_SECONDS, remaining - FIRST_FETCH_MARGIN_SECONDS)
 
 
