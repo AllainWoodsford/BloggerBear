@@ -36,7 +36,9 @@ Schema `bloggerbear.vision-eval/1` (`scripts/vision_runs.py` writes and reads it
                  "build_lines": [...]},
  "worker": {"kind": "in-process" | "deployed", "region", "code_sha256"},
  "inputs": {"manifest_sha256", "cache", "scenes": [{"name", "scene_id", "etag_by_asset"}], "networks": [{"file", "sha256"}]},
- "params": {...}, "results": {...}, "agent": null, "checks": [{"name", "expected", "got", "pass"}],
+ "params": {...}, "results": {...}, "checks": [{"name", "expected", "got", "pass"}],
+ "agent": null | {"mode": "bedrock" | "recorded" | "scripted", "model_id", "responses": [{"tick", "site_id", "turns"}],
+                  "input_tokens", "output_tokens", "cost_usd", "cost_aud", "price_source"},   # a replay's
  "summary": {<fixed code>: <number>}}
 ```
 

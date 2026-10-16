@@ -629,6 +629,9 @@ EVIDENCE_DIR = ROOT / "docs" / "hackathon" / "evidence"
 REPLAY_DIR = EVIDENCE_DIR / "replay"
 # How a refusal and a usage error end (a run that started and failed a check ends 1).
 REFUSED = 2
+# The replay's sequences, by name (vision_eval_driver.SEQUENCES holds them; a test holds the two
+# equal, so --help can name them without importing the driver).
+SEQUENCE_NAMES = ("sydney-winter", "sydney-demo", "sydney-c1", "synthetic-city")
 # sydney-c1's network B when no file is given (vision_eval_driver.line_on_largest_desert).
 NETWORK_B_DERIVED = "A with a five-station line through the previous scene's largest area beyond reach"
 
@@ -756,6 +759,9 @@ def agent_spend(ticks: list[dict], model_id: str | None) -> dict:
 def _main_replay(args, manifest: dict) -> int:
     import vision_eval_driver as driver
 
+    if args.sequence not in driver.SEQUENCES:
+        print(f"no sequence {args.sequence!r}; the sequences are {sorted(driver.SEQUENCES)}", file=sys.stderr)
+        return REFUSED
     sequence = driver.SEQUENCES[args.sequence]
     synthetic = sequence["site"] == "synthetic"
     agent_mode = args.agent
@@ -1740,11 +1746,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--write", action="store_true", help="put site_coverage and aot_mean into the manifest")
     c.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     c.add_argument("--tag", help="a suffix for the run id")
-
-    import vision_eval_driver as driver
-
+    # The replay's sequences are vision_eval_driver.SEQUENCES', checked when it runs: `pin` and
+    # `coverage` never import the driver (it imports the adapter, and so boto3), so they run in a
+    # venv with only the worker's requirements (the Graviton session's stock venv).
     r = sub.add_parser("replay", help="2.6.4: the real adapter over a pinned sequence, tick by tick")
-    r.add_argument("--sequence", required=True, choices=sorted(driver.SEQUENCES))
+    r.add_argument("--sequence", required=True, metavar="NAME", help=f"one of {', '.join(SEQUENCE_NAMES)}")
     r.add_argument("--manifest", type=Path, default=MANIFEST_FILE)
     r.add_argument("--network", type=Path, help="the network fixture (default: the site's committed one)")
     r.add_argument("--network-b", type=Path,
@@ -1761,7 +1767,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--from", dest="from_run", type=Path, help="the replay run file --agent recorded replays")
     r.add_argument("--model-id", help="the model or inference profile id (--agent bedrock)")
     r.add_argument("--region", help="Bedrock's Region (--agent bedrock; default: the AWS configuration's)")
-    r.add_argument("--thresholds", choices=sorted(driver.THRESHOLDS), help="the sequence's own by default")
+    r.add_argument("--thresholds", choices=("default", "demo"), help="the sequence's own by default")
     r.add_argument("--limit", type=int, help="replay only the first N ticks")
     r.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     r.add_argument("--trace", nargs="?", const=True, default=None, metavar="FILE",

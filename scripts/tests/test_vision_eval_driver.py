@@ -372,3 +372,29 @@ def test_tick_specs_name_their_network_once_and_refuse_a_missing_b():
     manifest = {"sites": {"sydney": {"polygon": [[0, 0], [1, 0], [1, 1]]}}, "scenes": []}
     with pytest.raises(KeyError, match="no scene named"):
         driver_module.sequence_scenes("sydney-winter", manifest)
+
+
+def test_a_rewritten_band_moves_the_coverage_through_the_real_handler(blobs):
+    # 2.6.6 (b)'s gate counterfactual: the same scene with a share of its SCL set to cloud before
+    # the analysis, through the worker's own reads; every other band and URL is untouched.
+    site, scenes = driver_module.sequence_scenes("synthetic-city", None)
+    scene = scenes[0]
+    scl_url = scene["assets"]["scl"]["url"]
+
+    def cloud_west(scl):
+        scl[:, : scl.shape[1] // 2] = 9
+        return scl
+
+    reads = []
+    fetch = driver_module.rewritten_fetch(driver_module.synthetic_fetch(blobs, reads), scl_url, cloud_west)
+    coverages = []
+    for chosen in (driver_module.synthetic_fetch(blobs), fetch):
+        measure = driver_module.in_process_measure(chosen, driver_module.SYNTHETIC_ENVIRON)
+        result = measure({"id": "eval-synthetic", "polygon": site["polygon"]},
+                         {"id": scene["scene_id"], "captured_at": scene["captured_at"],
+                          "assets": {b: a["url"] for b, a in scene["assets"].items()}},
+                         params={"reach_m": 1000}, coverage_floor=0.6, task="rail_access",
+                         network=driver_module.synthetic_network())  # fmt: skip
+        coverages.append(result.metrics["coverage"])
+    assert coverages[0] > 0.9 and 0.4 < coverages[1] < 0.6
+    assert {url for url, _, _ in reads} == set(blobs) & {a["url"] for a in scene["assets"].values()}
