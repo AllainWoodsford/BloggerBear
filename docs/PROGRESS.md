@@ -707,6 +707,14 @@ All shipped and deployed; the design and decisions for each are in
   `rail_access topics` section, the friction entries, and the earlier docs brought in line with
   the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
   (#296, rail PR F2)
+- [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
+  with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
+  digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
+  `--cache`, `--threads`, `--pin-cpu`, `--isolate`, `--only`, `--imds`, `--label`, `compare` (a
+  seeded bootstrap speed-up with parity) and `controls` (the COOL guard's negative controls); the
+  Sydney scene manifest with `vision_eval.py pin` and `coverage` (the first run file, under
+  `docs/hackathon/evidence/runs/`); the network fixture directory's ODbL notice; the COOL runsheet
+  corrected into the Graviton session's script, with the 4.x pin (`opencv-python-headless==4.14.0.94`)
 
 ## Backlog / not yet scheduled
 

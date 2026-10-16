@@ -575,39 +575,127 @@ existing manifest without `--force`. It needs Terraform and read access to that 
 
 The vision worker (`lambdas/vision_worker_handler.py`; [docs/enhancements/vision.md](../docs/enhancements/vision.md))
 is benchmarked with one script, run the same way on every machine so the rows compare like with
-like: stock OpenCV 5 against OpenCV's COOL build, x86 against Graviton. It needs
-`lambdas/requirements-vision.txt` installed (`worker` mode also needs boto3 and AWS credentials)
-and reads only public data.
+like: stock OpenCV 5 against OpenCV's COOL build, x86 against Graviton, OpenCV 5 against 4. It
+needs `lambdas/requirements-vision.txt` installed (`worker` mode also needs boto3 and AWS
+credentials) and reads only public data.
 
 ```bash
-python scripts/vision_benchmark.py kernels --out stock-x86.json   # the OpenCV operations alone, on synthetic images
-python scripts/vision_benchmark.py scenes                         # the pinned scenes, in-process, read over HTTPS
-python scripts/vision_benchmark.py worker --arn <function ARN>    # a deployed worker, end to end
-python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-01-05   # a rail scene's OpenStreetMap network
+python scripts/vision_benchmark.py kernels --out docs/hackathon/evidence/runs     # the OpenCV operations alone, on synthetic images
+python scripts/vision_benchmark.py scenes --cache ~/cogs --out docs/hackathon/evidence/runs   # the pinned scenes through the real handler
+python scripts/vision_benchmark.py worker --arn <function ARN>                     # a deployed worker, end to end
+python scripts/vision_benchmark.py compare A.json B.json --out docs/hackathon/evidence/runs   # two runs: speed-up and parity
+python scripts/vision_benchmark.py controls --cool-sha <hex> --out docs/hackathon/evidence/runs   # the COOL guard's negative controls
+python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26    # a rail scene's OpenStreetMap network
 ```
 
 `kernels` times every operation the worker spends its CPU on, for both of its tasks: the ship pass
 (resize, blur, adaptive threshold, morphology, components, contours, the warp, `analyse_site`) and
 the rail access pass (the distance transform, hit-or-miss thinning, polylines, the colour map, the
-desert components, `analyse_rail_access`), on fixed synthetic images, so network and data never
-enter it. `scenes` and `worker` run the scenes pinned in `vision_benchmark_scenes.json` (add
-scenes; never change one, or old reports stop being comparable). Every report records the OpenCV
-build fingerprint and the CPU generation.
+desert components, `analyse_rail_access`, with that analysis's own stage timings so the split
+between masks, access, graph and metrics is measured), on fixed synthetic images, so network and
+data never enter it. `scenes` runs the worker handler in-process on the scenes pinned in
+`vision_benchmark_scenes.json` (add scenes; never change one, or old reports stop being
+comparable) and records, per scene, the handler's stage timings with every sample, the rail
+metrics it measured (served share, areas, counts, hubs, flags, the top suggestions) and their
+digest, the figure's sha256 and shape (the PNG is written beside the run file), and the peak
+memory. `worker` invokes a deployed worker, every site id prefixed `bench-` so its lines never
+pass for production's, and adds the round trip. `compare` takes two run files of one kind from
+one machine and the same inputs (it refuses anything else: "not the same machine", "not the same
+inputs") and reports the speed-up of B over A as the ratio of medians with a seeded bootstrap 95 %
+interval, per case or stage, the headline on the compute stages (`analyse` and `annotate`; `graph`
+is inside `analyse`, the read is reported apart), each stage's share of the total, and for scenes
+the parity of the rail metrics (an equal digest, or each scalar within its tolerance and the hubs,
+flags and suggestions identical; exit 1 when it fails) and the share of figure pixels that differ.
+`controls` runs the COOL guard's three negative controls in the current interpreter on one real
+scene: `cool` with the pin (`ok` only on the pinned build, else `not_cool`), `cool` with no pin
+(`not_cool`), an `opencv` request to the `cool` backend (`backend_mismatch`).
 
-The options, as `--help` gives them: `kernels`, `scenes` and `worker` take `--repeats` (timed runs
-per case; 20, 3 and 5 when left out) and `--out FILE` (the report as JSON; a Markdown table is
-always printed); `kernels` takes `--size` (the synthetic images' side, 2048 px); `scenes` and
-`worker` take `--scenes-file` and `--backend opencv|cool`, and `worker` needs `--arn`;
-`fetch-network` takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one
-vCPU, so a CPU's rows are closest to it with the run pinned to one core (`taskset -c 0` on Linux).
+Every run records the OpenCV build fingerprint and the CPU, and with `--out` writes a
+`bloggerbear.vision-eval/1` run file ([docs/hackathon/evidence/README.md](../docs/hackathon/evidence/README.md)
+has the schema): the code's git commit, the environment (cores, affinity, threads, library
+versions, where it ran, and on Linux the OpenCV shared objects mapped into the process with their
+sha256 and package, plus the build lines that tell a vendor build apart), the inputs' ETags, the
+parameters, the results and a flat summary. `--out` takes a `.json` path or a directory (then
+`<run_id>.json`, the run id being `<UTC date>-<kind>-<cpu slug>-<backend>`, with `--tag` as a
+suffix for several runs of one kind a day). A Markdown table is always printed.
+
+The options, as `--help` gives them: `kernels`, `scenes`, `worker` and `controls` take
+`--repeats` (timed runs per case; 20, 3 and 5 when left out), `--out`, `--tag`, `--imds` (the EC2
+instance identity through IMDSv2 with 1 s timeouts: five fields are kept, the account id and the
+rest are dropped; `host` is null off EC2) and `--label k=v` (repeatable; `cool_product`,
+`cool_version`, `cool_delivery` as `ami` or `container`, `image_digest`, `price`; any other key is
+an error); `kernels`, `scenes` and `controls` take `--threads N` (`cv2.setNumThreads`, recorded)
+and `--pin-cpu K` (one core, through `sched_setaffinity`; Linux only, refused with a message
+elsewhere: use the OS's own tool, the affinity is recorded either way, as `taskset`'s is);
+`kernels` takes `--size` (the synthetic images' side, 2048 px); `scenes`, `worker` and `controls`
+take `--scenes-file`, `--only NAME` (repeatable) and `--backend opencv|cool`, where `cool` needs
+`--cool-sha <hex>`, the pinned COOL build's fingerprint (the in-process modes set the handler's
+`VISION_BACKEND` and `COOL_BUILD_SHA256` from these before calling it, so a `cool` run on any other
+build is answered `not_cool` by the handler itself, and `kernels --backend cool` refuses to run on
+any other build); `scenes` and `controls` take `--manifest` (the evaluation's manifest, whose ETags
+pin the scenes they share: a changed ETag refuses the run before any read, "input changed") and
+`--cache [DIR]` (every range read answered from `DIR` after the first, keyed by URL, ETag and
+range, so repeats and both backends read identical bytes; the default is `~/.cache/bloggerbear-cogs`,
+`%LOCALAPPDATA%\bloggerbear-cogs` on Windows, never inside the repository); `scenes` takes
+`--isolate` (each scene in a fresh interpreter, so its peak memory is its own); `worker` needs
+`--arn`; `compare` takes two run files, `--bootstrap` (2000) and `--seed` (0); `fetch-network`
+takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one vCPU, so a
+CPU's rows are closest to it with the run pinned to one core.
 
 A `rail_access` scene also needs its OpenStreetMap network, which the worker is sent with the
-request. `fetch-network` asks Overpass for the scene's polygon (`lambdas/common/osm.py`, the same
-client the adapter uses) and writes the scene's `network_file`, a path relative to the scenes file
-(`--out` puts it elsewhere); until that file exists, the scene's row in a report reads
-`error: network_file missing`. The Sydney network is not committed, because Overpass is not
-reachable from the build containers: fetch it once on a machine that can and commit it, so later
-reports say (`fetched_at`) which network they measured.
+request. The scenes file names `vision_benchmark_networks/sydney.json` for both Sydney scenes; the
+directory's `NOTICE.md` carries the Open Database Licence attribution and the row to fill in when
+the file lands (the runsheet's COOL section says how to take it from the deployed running state,
+or `fetch-network` asks Overpass for the scene's polygon through `lambdas/common/osm.py`, the
+same client the adapter uses). Until the file exists, the rail scenes' rows read
+`error: network_file missing`. Overpass is not reachable from the build containers, so the file
+is captured on a machine that can reach it, checked with `pii_denylist_check.py --staged`, and
+committed, so later reports say (`fetched_at`, and the file's sha256 in `inputs.networks`) which
+network they measured.
+
+## The evaluation's inputs: `vision_eval.py`
+
+The evaluation reads pinned scenes, so every run file names the bytes it read.
+`vision_eval_manifest.json` (`bloggerbear.vision-manifest/1`) holds the Sydney site and 46
+Sentinel-2 L2A scenes on AWS Open Data by id, each with its four assets' URL, ETag and size, the
+STAC item's capture time, cloud cover, no-data share and footprint, its role (`clear`, `season`,
+`cloud`, `nodata`, `smoke`, `baseline`, `year`), and what `coverage` measured. Add a scene; never
+change one.
+
+```bash
+python scripts/vision_eval.py pin                                # HEAD every asset, read every STAC item; print what differs
+python scripts/vision_eval.py pin --write                        # ... and write it into the manifest
+python scripts/vision_eval.py pin --list-year 56HLH 2024 --write # add a tile's year by the production rule (the year set)
+python scripts/vision_eval.py coverage --out docs/hackathon/evidence/runs --write   # E1 and E2; the run file; the manifest's coverage
+```
+
+`pin` HEADs each asset for its ETag and Content-Length and reads the scene's STAC item from the
+same bucket folder (`<scene>/<scene>.json`: no Earth Search call), prints the differences from
+the manifest, writes them with `--write`, and exits 1 when a pinned ETag changed (earlier runs read
+other bytes). `--list-year TILE YEAR` lists the bucket month by month (`list-type=2` with a
+delimiter) and, with `--write`, keeps the whole listing under `listings` and adds every item that
+passes the production rule as a `year` scene: STAC cloud cover at most the rail adapter's
+`max_cloud_cover` (40) and a footprint that holds the site box (the same rule as the deployed
+search), one per date, the others kept as `duplicate_of` the one chosen (a Sentinel-2C tandem item,
+more tile no-data, or a later processing sequence) so they are measured but outside the set. It
+reads `sentinel-cogs.s3.us-west-2.amazonaws.com` only, with 10 s timeouts; a URL at any other host
+is refused before any request.
+
+`coverage` reads each scene's SCL inside the site polygon with the repository's own COG reader
+(`lambdas/vision/cog.py`, `geo.py`) and reports the share of every scene-classification class,
+the coverage as the worker defines it (the share outside `vision/masks.SCL_UNUSABLE`), whether
+it is under the adapter's floor (0.6, imported, never retyped) and the dominant cause when it is,
+and the mean aerosol optical thickness over the site from the scene's `AOT` band at its coarsest
+overview (smoke that SCL does not flag); about 60 range requests and 0.7 MB a scene. From the
+manifest's listing it counts the selection: the items, those passing the cloud filter, those of
+them passing the footprint rule, and those of them still under the floor (worker calls the search
+would make for nothing); the year set is the scenes that pass the rule with site coverage 0.95 or
+more. It writes an `eval-coverage` run file (`--out`, `--tag`), fills `site_coverage` and
+`aot_mean` into the manifest with `--write`, takes `--only NAME` and `--cache [DIR]`, HEADs each
+asset first and refuses a changed ETag ("input changed"), and exits 1 when a scene's `expected`
+(`low_coverage` for the cloud and no-data cases) was not met. Both subcommands run on Windows as
+well as Linux and macOS (`py -3.11 scripts\vision_eval.py ...`); they need
+`lambdas/requirements-vision.txt` and `scripts/requirements.txt`.
 
 ## After changing the CLI: `generate_cli_reference.py`
 

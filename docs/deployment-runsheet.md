@@ -770,38 +770,250 @@ about 3 MB of the state and articles are about one city.
 
 ### The COOL backend and the benchmark
 
-COOL (OpenCV's Graviton-tuned OpenCV 5) is what the competition's COOL award scores, and it is
-measured against the stock worker above. Nothing here is in Terraform yet; these are by hand.
+COOL (OpenCV's Graviton-tuned OpenCV 5, "Cloud Optimized OpenCV for AWS Graviton4" on AWS
+Marketplace) is what the competition's COOL award scores, and it is measured against the stock
+worker above on one Graviton4 instance, in one session. Nothing here is in Terraform; these are by
+hand, and every command below is what the session runs, in this order. The evidence it leaves
+behind is listed at the end; the run files it writes are the only source of the COOL numbers in
+the report ([the evidence README](hackathon/evidence/README.md) has the schema). The script's own
+options are in [scripts/README.md](../scripts/README.md#timing-the-vision-worker-vision_benchmarkpy).
 
-1. **Subscribe** to *Cloud Optimized OpenCV For AWS Graviton4* (or *Graviton3*) on AWS Marketplace.
-   It has a 7-day free trial, then usage pricing: note the price, and unsubscribe when done.
-2. **Measure on Graviton4, both builds**, on a `c8g` instance launched from the COOL AMI (Ubuntu
-   24.04, COOL preinstalled), in the vision Region:
+**Venvs, not the system pip.** Ubuntu 24.04 refuses a system-wide `pip install` (PEP 668,
+"externally-managed-environment"). Every install below goes into a venv: never `sudo pip`, never
+`--break-system-packages`, and never `opencv-python-headless` or `numpy` into the COOL venv, which
+must see the product's own `cv2` and the numpy it was built against (a stock install there would
+shadow them, and the handler would answer `not_cool`).
+
+0. **Reconnaissance (Friday 16, 20 minutes, right after subscribing).** Record the answers in
+   `docs/hackathon/evidence/cool/recon.md`:
+   - the Marketplace product id, version and price, and its **delivery type**: an AMI or a
+     container image;
+   - whether it is offered in **us-west-2**, beside `sentinel-cogs`, and with `c8g` instances;
+   - on the smallest instance it allows: `python3 -V`;
+     `python3 -c 'import cv2; print(cv2.__version__, cv2.__file__)'`; `lscpu`;
+     `grep -m1 'CPU part' /proc/cpuinfo`.
+
+   Then decide:
+
+   | Found | Then |
+   |---|---|
+   | an AMI; `cv2` imports and is 5.x; Python 3.11 or newer | go: the steps below as written |
+   | `cv2` imports, but is not 5.x | record it; every claim is scoped to "COOL <version>"; add a stock venv of the same major version, so the comparison is like for like |
+   | a container image, not an AMI | launch a `c8g` with Docker; build `docker/vision-cool/Dockerfile` from the image by digest (its 5.x gate applies) and run every step inside it (`docker run ... python3 bench/vision_benchmark.py ...`) |
+   | no Python binding (C++ only) | the container route if one exists; otherwise the COOL proof (C3) is "not shown" and the report says why; the COOL configuration (C1) and the stock rows still stand |
+   | Python under 3.11 | the stock venvs need a 3.11+ interpreter (numpy 2.4.4 requires it): install `python3.12` for them (step 3) and record that the backends ran on different Pythons |
+   | not in us-west-2 | the nearest Region with `c8g`; fill `--cache` once there (the reads then cross Regions only once) |
+   | no trial, or more than about USD 5 an hour | decide before launching |
+1. **Subscribe** on AWS Marketplace to *Cloud Optimized OpenCV for AWS Graviton4* on Friday 16.
+   Note the price; unsubscribe at the end unless the subscription is kept.
+2. **Launch** a `c8g.xlarge` (4 vCPU, 8 GiB: enough for the 1.32 GB worst case) in us-west-2,
+   from the COOL AMI (or a plain Ubuntu arm64 AMI with Docker, for a container image). Require
+   IMDSv2. Connect through SSM Session Manager, with no inbound ports. The instance role has
+   `AmazonSSMManagedInstanceCore` only (step 12 adds one statement for its own hour).
+3. **The host.** On the instance:
 
    ```sh
-   git clone <this repository> && cd BloggerBear
-   python3 -m pip install networkx==3.4.2               # COOL's cv2 and numpy are already there
-   python3 scripts/vision_benchmark.py kernels --out cool-g4.json
-   python3 -m venv stock && stock/bin/pip install -r lambdas/requirements-vision.txt
-   stock/bin/python scripts/vision_benchmark.py kernels --out stock-g4.json
+   lscpu > lscpu.txt
+   grep -m1 'CPU part' /proc/cpuinfo      # expect 0xd4f: Neoverse V2, Graviton4
+   python3 -V && uname -r
    ```
 
-   `kernels` imports networkx for the rail kernels (`vision/network.py`, `vision/rail_analyse.py`),
-   and COOL does not bring it (`lambdas/requirements-vision-cool.txt` adds it to the COOL worker
-   image for the same reason); without it the run stops with `ModuleNotFoundError`. Install only
-   networkx, at that file's pin: never `opencv-python-headless` or `numpy`, which would shadow
-   COOL's build of them.
+   If `python3 -V` is under 3.11, the stock venvs need a 3.11+ interpreter: install `python3.12`
+   (`sudo apt-get install python3.12-venv`) and use it in step 7; record it in `recon.md`.
+4. **The COOL build.**
 
-   Each report names its CPU (Neoverse V2 = Graviton4) and its OpenCV build's fingerprint. Add the
-   deployed stock worker end to end (`worker --arn <VISION_WORKER_ARN>`) and an x86 run for the
-   other rows. **Terminate the instance afterwards.**
-3. **Pin the fingerprint**: `build_sha256` from the COOL report is what a COOL worker's
-   `COOL_BUILD_SHA256` is set to; a `cool` worker whose `cv2` is anything else refuses every
-   request (`not_cool`).
-4. **The COOL worker image**: `docker/vision-cool/Dockerfile` builds the same handler on top of the
-   COOL Docker image (its URI from the subscription, pinned by digest; the file says how). Whether it
-   runs as a Lambda on Lambda's arm64 CPUs, or needs ECS on a Graviton4 instance, is the open question
-   in the design's §8; run the image's `kernels` benchmark on Lambda-class hardware before wiring it.
+   ```sh
+   python3 -c 'import cv2, sys; sys.stdout.write(cv2.getBuildInformation())' > cool-buildinfo.txt
+   sha256sum cool-buildinfo.txt
+   python3 -c 'import cv2; print(cv2.__version__, cv2.__file__)'
+   ```
+
+   The sha256 is the COOL fingerprint: it must equal `build_info()["build_sha256"]`, which is the
+   hash of exactly that text (`lambdas/vision/build.py`), and it is what `COOL_BUILD_SHA256` is
+   pinned to. Expect `kleidicv` True.
+5. **The code and the inputs.** Clone the repository at the commit to be benchmarked and record
+   it: `git rev-parse HEAD` (the submission tag does not exist yet; the evidence index says how an
+   earlier commit is still cited). The repository may still be private: `gh auth login` in the
+   session, or copy a `git archive`.
+
+   Two inputs must be in that checkout before the runs:
+
+   - **The Sydney network fixture**, `scripts/vision_benchmark_networks/sydney.json`: the network
+     the deployed worker was sent, taken from the running state after the first Sydney tick, on
+     your own machine:
+
+     ```sh
+     aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json - | jq '.sites.sydney.network | {ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' > scripts/vision_benchmark_networks/sydney.json
+     ```
+
+     ```powershell
+     aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json - | jq '.sites.sydney.network | {ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' | Out-File -Encoding utf8 scripts\vision_benchmark_networks\sydney.json
+     ```
+
+     The alternative is `python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26`
+     on any machine that reaches Overpass (the network is then whatever OpenStreetMap holds that
+     day). Fill the row in `scripts/vision_benchmark_networks/NOTICE.md` from the file's
+     `fetched_at`, `endpoint` and `query_url` and `sha256sum`, run
+     `python scripts/pii_denylist_check.py --staged` before committing it (Sydney's suburb and
+     station names could match the denylist; if they do, decide whether to allow the term or keep
+     the file out of git, in which case the run files still cite its sha256), and commit it. Without
+     the file the two rail scenes report `error: network_file missing` and only the ship scene is
+     timed.
+   - **The pinned scenes.** `scripts/vision_eval_manifest.json` was pinned on 16 October (every
+     asset's ETag and size, from the build container). Confirm nothing moved, on your own machine
+     or the instance:
+
+     ```sh
+     python scripts/vision_eval.py pin        # prints "the manifest matches the bucket", or what changed
+     ```
+
+     ```powershell
+     py -3.11 scripts\vision_eval.py pin
+     ```
+
+     A changed ETag is said and exits 1: every benchmark run then refuses that scene ("input
+     changed") until the manifest is re-pinned with `--write`, which is a new input, not the one
+     earlier runs read. `coverage` was run on 16 October too (its run file is in
+     `docs/hackathon/evidence/runs/`); it need not be re-run for the session.
+6. **The COOL venv**, on the product's own Python, with the system site-packages visible so the
+   product's `cv2` and numpy are the ones imported:
+
+   ```sh
+   python3 -m venv --system-site-packages ~/cool
+   ~/cool/bin/pip install requests==2.34.2 networkx==3.4.2 boto3==1.34.162
+   ~/cool/bin/python -c 'import cv2; print(cv2.__file__)'    # must be outside ~/cool
+   ~/cool/bin/python -c 'import cv2, hashlib; print(hashlib.sha256(cv2.getBuildInformation().encode()).hexdigest())'   # must equal step 4
+   ```
+
+   These are `lambdas/requirements-vision-cool.txt`'s pins without `awslambdaric`, plus boto3
+   for step 12. **Never install opencv or numpy here.** If the AMI puts `cv2` on a custom
+   `PYTHONPATH`, keep that variable in the environment of every COOL command.
+7. **The stock venvs**: OpenCV 5 as the deployed worker runs it, and the newest OpenCV 4 that has
+   an aarch64 wheel for this Python and numpy 2, so the report can say what OpenCV 5 changed for
+   this workload:
+
+   ```sh
+   python3 -m venv ~/stock && ~/stock/bin/pip install -r lambdas/requirements-vision.txt
+   python3 -m venv ~/stock4 && ~/stock4/bin/pip install "opencv-python-headless==4.14.0.94" numpy==2.4.4 requests==2.34.2 networkx==3.4.2
+   for v in stock stock4; do ~/$v/bin/python -c 'import cv2, sys; sys.stdout.write(cv2.getBuildInformation())' > $v-buildinfo.txt; done
+   sha256sum stock-buildinfo.txt stock4-buildinfo.txt
+   ```
+
+   `opencv-python-headless==4.14.0.94` is the 4.x pin: PyPI's newest 4.x release (28 July 2026),
+   with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28); it was installed beside
+   `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0 (the evidence README records the
+   check). Use `python3.12` in place of `python3` here if step 3 said so. Stock aarch64 builds can
+   include KleidiCV too, which is why the proof is the fingerprint and the mapped libraries, not
+   the flag.
+8. **The runs.** Interleave the backends, so a slow minute on the instance does not land on one
+   side. Set the names once:
+
+   ```sh
+   E=docs/hackathon/evidence/runs
+   D=$(date -u +%F)                        # the UTC date that starts every run id
+   CPU=neoverse-v2-graviton4               # the cpu slug in every run id: check it against the first file written
+   SHA=<step 4's sha256>
+   L="--imds --label cool_product=<product id> --label cool_version=<version> --label cool_delivery=<ami|container>"
+   C="--cache ~/cogs"
+   ```
+
+   Each run writes `$E/$D-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with `--tag`), and
+   `scenes` writes each scene's figure beside it. `--imds` records the instance type, AMI, Region,
+   architecture and the Marketplace product codes, nothing else of the identity document (the
+   account id never reaches a file). `taskset -c 0` pins a run to one core, the deployed worker's
+   shape; the affinity is recorded, so the one-core rows say so themselves (`--pin-cpu 0` does the
+   same from inside the script). `--isolate` runs each scene in a fresh interpreter, so its peak
+   memory is its own.
+
+   ```sh
+   for r in 1 2; do
+     taskset -c 0 ~/stock/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 1t-r$r
+     taskset -c 0 ~/cool/bin/python  scripts/vision_benchmark.py kernels --threads 1 --backend cool --cool-sha $SHA $L --out $E --tag 1t-r$r
+     ~/stock/bin/python scripts/vision_benchmark.py kernels $L --out $E --tag 4t-r$r
+     ~/cool/bin/python  scripts/vision_benchmark.py kernels --backend cool --cool-sha $SHA $L --out $E --tag 4t-r$r
+   done
+   ~/stock/bin/python scripts/vision_benchmark.py scenes --repeats 1 $C --out /tmp/warm.json                      # fills the cache: the timed runs read no network
+   taskset -c 0 ~/stock/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 1t
+   taskset -c 0 ~/cool/bin/python  scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 1t
+   ~/stock/bin/python scripts/vision_benchmark.py scenes --repeats 5 --isolate $C $L --out $E --tag 4t
+   ~/cool/bin/python  scripts/vision_benchmark.py scenes --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 4t
+   taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 4x-1t
+   taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 4x-1t
+   for pair in "scenes opencv-1t cool-1t" "scenes opencv-4t cool-4t" "kernels opencv-1t-r1 cool-1t-r1" "scenes opencv-4x-1t opencv-1t"; do
+     set -- $pair
+     ~/stock/bin/python scripts/vision_benchmark.py compare $E/$D-bench-$1-$CPU-$2.json $E/$D-bench-$1-$CPU-$3.json --out $E --tag "$1-$2-vs-$3"
+   done
+   ~/cool/bin/python  scripts/vision_benchmark.py controls --cool-sha $SHA --backend cool $C $L --out $E
+   ~/stock/bin/python scripts/vision_benchmark.py controls --cool-sha $SHA $C $L --out $E
+   ```
+
+   What to expect: a `kernels --backend cool` run on any build but the pinned one stops with
+   `not_cool` before timing anything; the `scenes --backend cool` rows are `ok` only from the COOL
+   venv (the handler's own guard answers `not_cool` elsewhere, and that row is what gets
+   recorded). `compare` prints the speed-up of the second run over the first (median A / median
+   B) with its bootstrap interval, the headline on the compute stages (`analyse` and `annotate`;
+   the read is reported apart, and `graph` is inside `analyse`), each stage's share, and `parity:
+   pass` when the rail metrics agree; it exits 1 when they do not, and refuses two runs from
+   different machines or inputs. The **headline speed-up is the pinned one-core scenes pair on the
+   compute stages**: it matches the deployed worker's one vCPU. The 4-thread pair shows what more
+   cores add; the `4x-1t` pair says what OpenCV 5 changed against 4.14. `controls` from the COOL
+   venv must show `ok`, `not_cool`, `backend_mismatch` (`as_expected` 3); from the stock venv
+   `not_cool`, `not_cool`, `backend_mismatch` (also 3). Every `scenes` and `controls` run file
+   lists the OpenCV shared objects mapped into the process (`environment.libraries`, with each
+   file's sha256 and package) and the build lines that tell a vendor build apart.
+9. **Optional: where the time went.**
+
+   ```sh
+   sudo perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
+   perf report -i perf.data --sort dso --stdio > perf-dso.txt
+   ```
+
+   The share of samples in `libkleidicv*` and `libopencv*`/`cv2*.so` is direct evidence that the
+   vendor's code executed. Commit `perf-dso.txt`, not `perf.data`.
+10. **Optional, the container route** (when the product is an AMI): build
+    `docker/vision-cool/Dockerfile` with the COOL image by digest and print `build_info()` inside
+    it. The image's fingerprint may differ from the AMI's; record both, and say which one ran.
+11. **Stop and commit.** Terminate the instance (or stop it, if step 12 follows within two days),
+    and unsubscribe unless the subscription is kept. Record the instance hours and the software
+    fee in `docs/hackathon/evidence/cool/session.md`. Commit the run files and figures from `$E`,
+    and `docs/hackathon/evidence/cool/` (`recon.md`, `cool-buildinfo.txt`, `stock-buildinfo.txt`,
+    `stock4-buildinfo.txt`, `lscpu.txt`, `session.md`, `perf-dso.txt` if made); then the
+    tracker's C1, C2, C3 and S7 rows, and O5. Nothing in `$E` holds an account id, an instance id
+    or an IP: `--imds` keeps five fields, and the run files say which.
+
+    **What the session must leave behind** (the proof that COOL executed the claimed core workload,
+    all committed):
+
+    - [ ] the `scenes --backend cool` run files, with every scene `ok` and `environment.opencv.build_sha256`
+      equal to `sha256sum cool-buildinfo.txt`, taken from the product's own `cv2`;
+    - [ ] in those run files, `environment.libraries`: the `cv2` extension and the OpenCV and
+      KleidiCV shared objects by path, size, sha256 and owning package or AMI path, and
+      `environment.build_lines`;
+    - [ ] optionally `perf-dso.txt` (step 9);
+    - [ ] the CPU is Neoverse V2 (`lscpu.txt`, and `environment.cpu` in every run);
+    - [ ] `environment.host.marketplace_product_codes` names the COOL product;
+    - [ ] the two `controls` run files: `not_cool` under stock with the same pin, `not_cool` with
+      no pin, `backend_mismatch` for an `opencv` request;
+    - [ ] the `compare` run files with `parity: pass` for the stock-COOL pairs, on the same scene
+      and network;
+    - [ ] the speed-up on the compute stages, per stage, with its interval, from the same files;
+    - [ ] optionally the agent session's replay run (step 12).
+
+    **The claim's scope**, as the report words it: "the same worker handler, run on Graviton4 with
+    COOL, on real Sydney scenes and its real OpenStreetMap network, and (if step 12 ran) inside the
+    agent's loop; the deployed worker runs stock OpenCV 5 on Lambda arm64 (CPU named in its
+    logs)". Not "COOL is deployed": a deployed COOL worker (Terraform for `VISION_COOL_WORKER_ARN`
+    and a container Lambda or ECS) is out of scope until after the deadline, and whether COOL runs
+    on Lambda's CPUs is the open question in [vision.md §10](enhancements/vision.md#10-still-open).
+12. **Optional: the agent session (Wednesday 21, about an hour, once the evaluation's `replay`
+    and `stability` exist).** On the same kind of instance, with the cache from step 8:
+    - give the instance role, for this hour only, one statement: `bedrock:InvokeModel` on the one
+      inference profile the topics use and its foundation models, and remove it afterwards;
+    - `~/cool/bin/python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --worker in-process --backend cool --cool-sha $SHA $C --out $E`:
+      COOL then executes the agent's `look_again` re-measurements inside the agentic loop, in
+      us-west-2, with production's deadline;
+    - `~/stock/bin/python scripts/vision_eval.py stability --set year-2024 $C --out $E`: the year of
+      clear Sydney scenes through the production rule, in-Region.
 
 ## Deploying to another region
 
