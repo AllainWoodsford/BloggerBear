@@ -25,7 +25,7 @@ that followed it, the tool that interrogates a topic's Findings ([Topic findings
 
 | Asked | Tool | Reads | Returns |
 |---|---|---|---|
-| "How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney measured?", "Why wasn't Botany Bay measured?" (a site) | **`vision_status(topic?)`** (new) | Topics (one Scan); where vision is on, each vision topic's running state; the pipeline config (each topic's research interval) and this week's stats row (triage spend) | whether the worker is on and where; per topic and site: when last measured, the newest scene, coverage, the measure and triage, and why a site was not measured; a card per problem with its fix; the sites as a `table` |
+| "How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney measured?", "Why wasn't Botany Bay measured?" (a site) | **`vision_status(topic?)`** (new) | Topics (one Scan); where vision is on, each vision topic's running state; the pipeline config (each topic's research interval) and this week's stats row (triage spend: the triage agent's calls only, since the worker Lambda's own cost is not tracked) | whether the worker is on and where; per topic and site: when last measured, the newest scene, coverage, the measure and triage, and why a site was not measured; a card per problem with its fix; the sites as a `table` |
 | "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each | one sentence: the worker off, or the vision topics with a site not measured on the last try, or how many were not checked; the same cards |
 | "Watch the Sydney topic" | `watch(topic)`, then `watch_list` | a watched vision topic's running state, at most two per call | "research is on time" no longer hides sites that were not measured |
 | "Any errors in the vision worker?", "Look at the logs for the rail Sydney topic" | `log_review` | the worker's log group **in `vision_region`**, beside the home Region's functions | the worker's errors by root cause, `scene_unreadable` among them ([the log reader](ops-assistant-log-reader.md#a-second-region-the-vision-worker)) |
@@ -39,7 +39,7 @@ site, each a fixed set of words and, for a problem, a card (`ops_mcp/suggestions
 | Class | Card | Means |
 |---|---|---|
 | worker off | `vision_worker_off` | `OPS_VISION_REGION` is empty: turning it on is the `VISION_ENABLED` setting |
-| config error | `vision_config_error` | the sites setting does not parse, or asks for a COOL worker that is not deployed |
+| config error | `vision_config_error` | the sites setting does not parse, or asks for a COOL worker that is not deployed; a topic whose sites list itself does not parse has one row for the topic and counts no site |
 | refused, site problem | `vision_site_refused` | the worker refuses the scene as the site is set up (too large, outside the tile, ...); tried again later, or at once if the site is edited |
 | worker error | `vision_worker_error` | the worker failed on the last try |
 | source error | `vision_source_error` | the imagery search or the map data (OpenStreetMap) failed; the next tick tries again |
@@ -121,8 +121,12 @@ aloud" are prose, and injected text can steer a model past prose. Both are now h
    new Ledger. Alexa+ calls the server with no Ledger; for it, the new tools return no untrusted
    text at all.
 2. **No echo.** The Ledger keeps every string under an `untrusted` key and every cell of an
-   "(unverified)" column, normalised (NFKC, case-folded, whitespace collapsed), at most 64 KB a
-   turn. An answer that shares a run of six words, or thirty characters, with any of it is replaced
+   "(unverified)" column, normalised as the instruction check normalises (`redact.normalised`:
+   NFKD, so an accented letter is its letter and a mark; format characters such as the two
+   joiners, marks and the Hangul fillers removed; control characters read as spaces; whitespace
+   collapsed), then case-folded, at most 64 KB a turn. The answer is normalised the same way, so
+   a joiner after every word of a cell, or a mark after every letter, does not hide its repeat.
+   An answer that shares a run of six words, or thirty characters, with any of it is replaced
    by the tools' own `spoken` sentences (then the personal-data sweep, as before), and the
    handler's log line says `echo=1`.
 
@@ -131,15 +135,31 @@ aloud" are prose, and injected text can steer a model past prose. Both are now h
 Both new tools rely on `redact.scrub` to withhold instruction-like text, and its check was easy to
 get past: it ran on the raw text, with single spaces in the pattern, so `"ignore\nprevious
 instructions"`, a tab, a double or non-breaking space, a zero-width joiner inside a word or
-fullwidth letters came back as the clean phrase. Now the check runs on a normalised copy (NFKC,
-every format character removed, whitespace collapsed), and `looks_like_instructions` uses the same
-copy, so every caller gets it. Bidi overrides and isolates and the other invisible characters are
-stripped from the returned text; U+200C and U+200D stay, because Persian and Indic OpenStreetMap
-names are spelt with them and they cannot reorder text.
+fullwidth letters came back as the clean phrase. Now the check runs on a normalised copy (NFKD,
+so an accented letter is its letter and a mark; every format character, mark and Hangul filler
+read as ignorable; C0 and C1 control characters and line separators read as spaces; whitespace
+collapsed). Marks and the fillers are read like format characters because they are not format
+characters: a combining grapheme joiner, a variation selector or a Hangul filler after every
+letter left the words readable and the old copy unmatched, and so did a visible mark (an overline,
+a dot below). The copy is read two ways, with the ignorable characters removed (inside a word, one
+hid a letter) and with each one as a space (between words, one glued the words into a single word
+the pattern does not match), and a line that matches in either is withheld.
+`looks_like_instructions` reads both copies, so every caller gets them, and it reads the text as
+written, before the invisible characters are removed from what is returned. The returned text
+holds nothing the check did not read: every format character (bidi overrides and isolates,
+zero-width spaces, a soft hyphen, and the Unicode tag characters, which can spell an instruction
+nobody sees), surrogate, private-use or unassigned code point, and the invisible marks and fillers
+outside Cf (the combining grapheme joiner, the variation selectors, the Hangul fillers: Unicode's
+other default-ignorable code points) are removed from it, as `common/osm.py` cleans a name.
+U+200C and U+200D stay, because Persian and Indic OpenStreetMap names are spelt with them and they
+cannot reorder text; a visible mark stays too, since it is seen.
 
-`samples._redact_text` (`table_sample`) now withholds instruction-like text the same way. That is
+`samples._redact_text` (`table_sample`) now withholds instruction-like text the same way, and
+drops the same invisible characters. That is
 a security fix outside the ask: `table_sample`'s findings rows showed model summaries with no
-instruction check.
+instruction check. Both modules' e-mail rule is anchored to the start of a run: unanchored, a long
+run of e-mail-safe characters with no "@" in it (a 256 KB CloudWatch event, a 400 KB DynamoDB
+attribute) was tried from every position, 80 s in one call against the function's 30 s.
 
 ## A sites config is never filled in
 

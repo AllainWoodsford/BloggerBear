@@ -45,39 +45,17 @@ LAMBDAS = ROOT / "lambdas"
 if str(LAMBDAS) not in sys.path:
     sys.path.insert(0, str(LAMBDAS))
 
-SCENES_FILE = Path(__file__).with_name("vision_benchmark_scenes.json")
+# The CPU table is the worker contract's, so the worker's reply, this benchmark and the assistant
+# name a CPU the same way (ARM_PARTS is re-exported for the tests that read it here).
+from common.vision_contract import ARM_PARTS, cpu_identity  # noqa: E402,F401 - after the path above
 
-# ARM's CPU part numbers (/proc/cpuinfo "CPU part") for the cores AWS's Graviton generations use.
-ARM_PARTS = {
-    "0xd0c": "Neoverse N1 (Graviton2)",
-    "0xd40": "Neoverse V1 (Graviton3)",
-    "0xd4f": "Neoverse V2 (Graviton4)",
-    "0xd84": "Neoverse V3 (Graviton5?)",
-}
+SCENES_FILE = Path(__file__).with_name("vision_benchmark_scenes.json")
 
 # The synthetic city's grid: 20 m pixels in UTM zone 56S, as the rail task reads a scene.
 CITY_TRANSFORM = (300000.0, 20.0, 0.0, 6300000.0, 0.0, -20.0)
 CITY_EPSG, CITY_PIXEL_M = 32756, 20.0
 # What a missing rail network file is reported as, per scene, in the scenes and worker modes.
 NETWORK_FILE_MISSING = "network_file missing"
-
-
-def cpu_identity(cpuinfo: str | None = None, machine: str | None = None) -> str:
-    """A readable name for the CPU: the x86 model name, or the Arm core and Graviton generation."""
-    machine = machine or platform.machine()
-    if cpuinfo is None:
-        try:
-            cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            cpuinfo = ""
-    for line in cpuinfo.splitlines():
-        key, _, value = line.partition(":")
-        key, value = key.strip().lower(), value.strip()
-        if key == "model name" and value:
-            return value
-        if key == "cpu part" and value:
-            return ARM_PARTS.get(value.lower(), f"Arm core {value}")
-    return machine or "unknown"
 
 
 def summarise(samples_ms: list[float]) -> dict:

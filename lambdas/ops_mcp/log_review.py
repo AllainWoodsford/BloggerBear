@@ -78,6 +78,15 @@ _NOT_ERRORS = r"/^(START|END|INIT_START) /"
 # "error" above and was counted as an error in ops-agent, and its "tool_calls" read like
 # instructions (redact.py), so the assistant reported its own bookkeeping as someone probing.
 _OWN_RECORD = r"/^ops_agent: (turn=|briefing run tool_calls=)/"
+# The pipeline's evidence lines (common/evidence.py): one JSON line per step, holding only codes
+# and numbers. Their codes include words such as "failed" and "timeout", so without this every
+# tick would read as an error, as the assistant's own turn record once did (_OWN_RECORD). A test
+# holds the regex to evidence.PREFIX.
+_EVIDENCE_RECORD = r'/^\{"evidence": "bloggerbear\//'
+# What may sit either side of a topic id in a free-text log line: anything that is not an id
+# character (suggestions.ID_PATTERN), or the line's edge. "rail-sydney" between these never
+# matches "rail-sydney-demo", whose id goes on with "-".
+_ID_EDGE = "[^A-Za-z0-9_-]"
 # The assistant's own functions. Their logs are written by this code about its own tool calls, so a
 # line of theirs that reads like instructions is still withheld but is not a sign of anything.
 ASSISTANT_FUNCTIONS = ("ops-agent", "ops-mcp")
@@ -295,14 +304,17 @@ def classify(message: str) -> Cause:
 
 
 def _topic_filter(topic_id: str | None, prefix: str | None) -> str:
-    """A filter narrowing a query to one topic's lines: those naming the topic, or written by its
-    adapter. Both are checked before they get here: the id against ID_PATTERN (letters, digits,
-    "-" and "_"), the prefix from ADAPTER_PREFIXES. Neither can end the regex or add a command."""
+    """A filter narrowing a query to one topic's lines: those naming the topic as a whole id (the
+    print lines are free text, so the id is matched between non-id characters or the line's
+    edges, never as a substring: a deep dive on "rail-sydney" does not read "rail-sydney-demo"),
+    or written by its adapter. Both are checked before they get here: the id against ID_PATTERN
+    (letters, digits, "-" and "_"), the prefix from ADAPTER_PREFIXES. Neither can end the regex or
+    add a command."""
     if topic_id is None:
         return ""
     if not ID_PATTERN.match(topic_id) or (prefix is not None and prefix not in ADAPTER_PREFIXES.values()):
         raise ValueError("not a topic filter this module builds")
-    words = [re.escape(topic_id)] + ([re.escape(prefix)] if prefix else [])
+    words = [f"(^|{_ID_EDGE}){re.escape(topic_id)}({_ID_EDGE}|$)"] + ([re.escape(prefix)] if prefix else [])
     return f"\n| filter @message like /{'|'.join(words)}/"
 
 
@@ -311,7 +323,7 @@ def queries(topic_id: str | None = None, prefix: str | None = None) -> dict[str,
     narrow = _topic_filter(topic_id, prefix)
     errors = (
         f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS} "
-        f"and @message not like {_OWN_RECORD}{narrow}"
+        f"and @message not like {_OWN_RECORD} and @message not like {_EVIDENCE_RECORD}{narrow}"
     )
     return {
         "sample": (
@@ -507,10 +519,19 @@ def review(
     parts = {kind: [results.get((group["name"], kind)) for group in groups] for kind in QUERY_KINDS}
     complete = all(part is not None for found in parts.values() for part in found)
     merged = {kind: [row for part in found if part for row in part] for kind, found in parts.items()}
-    # The baseline is "not known" only when no group's answered.
-    baseline = merged["baseline"] if any(part is not None for part in parts["baseline"]) else None
+    # The baseline is known per group: a function whose group's baseline didn't answer has no
+    # "typical", rather than a typical of zero that would make its errors look unusual.
+    known = {
+        _function_key(name, env)
+        for group, part in zip(groups, parts["baseline"], strict=True)
+        if part is not None
+        for name in group["allowed"]
+    }
+    baseline = merged["baseline"] if known else None
 
-    per_function = _work_out(merged["sample"], merged["totals"], merged["runs"], baseline, env, when)
+    per_function = _work_out(
+        merged["sample"], merged["totals"], merged["runs"], baseline, env, when, known=known
+    )
     findings = _findings(per_function, chosen, when)
     total = sum(row["errors"] for row in per_function.values())
     examples_withheld = sum(row["withheld"] for row in per_function.values())
@@ -550,9 +571,10 @@ def _refusal(spoken: str, **more) -> dict:
     return {"spoken": spoken, "findings": [], "errors": 0, "functions": [], **more}
 
 
-def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
+def _work_out(sample, totals, runs, baseline, env, when, *, known=None) -> dict[str, dict]:
     """Per function: error lines, the share of each cause (scaled to the total), examples
-    (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline."""
+    (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline. `known`
+    is the functions whose baseline answered (None: all of them); the others have no typical."""
     rows: dict[str, dict] = {}
 
     def row(group: str) -> dict:
@@ -606,6 +628,8 @@ def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
             key = _function_key(logs.group_of(line.get("@log")), env)
             daily.setdefault(key, []).append(logs.count(line.get("errors")))
         for key, row_ in rows.items():
+            if known is not None and key not in known:
+                continue
             days = daily.get(key, [])
             days = days + [0] * max(0, BASELINE_DAYS - len(days))
             row_["typical"] = round(median(days) * when.hours / 24, 1)

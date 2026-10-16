@@ -680,7 +680,10 @@ def test_only_the_pages_app_client_is_a_screen_caller(monkeypatch):
 
 # Every attribute the assistant may take from an adapter class or instance (rule 5): the opt-in
 # hooks of common/adapters/base.py, and nothing that fetches, writes, measures or calls out.
-ADAPTER_HOOKS = {"status", "status_vocabulary", "uses_vision_worker", "config_by_hand", "keeps_running_state"}
+ADAPTER_HOOKS = {
+    "status", "status_vocabulary", "decision_vocabulary", "uses_vision_worker", "config_by_hand",
+    "keeps_running_state",
+}  # fmt: skip
 NEVER_FROM_AN_ADAPTER = {
     "fetch_state",
     "material_diff",

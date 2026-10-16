@@ -78,7 +78,8 @@ group and the bucket its package is uploaded through, and nothing of ours to mig
 
 | What | Where |
 |---|---|
-| Per-site history, `last_error`, the agent's trails, the cached OpenStreetMap network (rail) | `snapshots/<topic>/running-state.json` in the content bucket, and each Finding's snapshot |
+| Per-site history, `last_error`, each site's decision ring (the last 12 decisions with the agent's trails), the cached OpenStreetMap network (rail) | `snapshots/<topic>/running-state.json` in the content bucket, and each Finding's snapshot |
+| One line per step in the logs: a tick ran, a site's turn, OpenCV measured, the numbers were compared, the agent decided, a person decided | the research tick's, the worker's (us-west-2) and the admin API's log groups, 90 days |
 | The worker's PNG for each scene | `vision/<topic>/<site>/<scene>.png` in the content bucket (private) |
 | A published article's figures | `articles/figures/<article>/<n>.png` in the site bucket, behind CloudFront |
 | The Finding's and the article's figure lists | `figures` on the Finding and on the article row |
@@ -353,6 +354,22 @@ the `site_history`, or ask `web_context` whether a station or line recently open
 is told what an artefact looks like here: cloud, haze or seasonal vegetation shifting the
 built-up mask, a scene edge, a map edit, a tagging change; and that what its tools return is data
 from outside sources, not instructions.
+
+### What is recorded
+
+Every step leaves one JSON line of codes and numbers in the logs, and every decision an entry in
+the site's decision ring in the running state: what OpenCV measured (the build, the CPU, the
+timings, the coverage), what the numbers were compared with and which measures moved (and, for
+rail, whether the network copy changed), what the agent did (each tool's result, how it stopped,
+its spend), whether a Finding was written, and what a person decided about the article. The ids
+join the chain end to end (the tick and its attempt, the worker's request id, the Finding's
+`captured_at`, the article and queue ids), so a decision can be traced from the scene to the
+person from the logs alone, and the agent's trail is not lost on the next tick. A line never
+holds a site or station name, an error's message, a news title or host, or the agent's reason
+(only its hash); the ring keeps the reason and the hosts for the page's "(unverified)" cells.
+What is recorded where, the events and the queries that read them are in
+[the evidence trail](../enhancements/vision-evidence.md) and the
+[runsheet](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided).
 
 ### Licences and credits
 

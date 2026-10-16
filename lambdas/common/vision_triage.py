@@ -35,9 +35,13 @@ turn limit or a tool failure the model can't get past is "artefact" with the rea
 closed:** an unsure agent never makes a Finding. **Outside text is data.** What the tools return (news text,
 OpenStreetMap names) is cut and cleaned before the model sees it, the reason it answers with is
 one plain line of at most MAX_REASON_CHARS, and the adapters quote it in a summary as the agent's
-note, not a measurement. Every call's tokens are tallied on the Stats page
-(`vision_triage`), and the trail (tools called, with what, and the answer) is returned for the
-snapshot, so the decision can be replayed.
+note, not a measurement. Every call's tokens are tallied on the Stats page (`vision_triage`), and
+the trail is returned: the tool calls as the model made them (`tool_calls`), and beside them one
+`step` per call with the tool's code-derived result (`summarise_step`: what `look_again` measured
+at which settings, how many scenes or news results the others gave, or why a call failed), how the
+loop stopped (`stop`), its time, its spend and whether the figure was in front of the model. The
+adapters keep the trail in each site's decision ring (common/vision_decisions.py) and log its
+steps as evidence (common/evidence.py), so every decision can be read back.
 
 No OpenCV here: `look_again` goes through common/vision_client.py to the worker, like the adapter.
 """
@@ -50,8 +54,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from urllib.parse import urlsplit
 
-from common import stats_tracking, vision_client
+from common import costing, stats_tracking, vision_client
 from common import vision_contract as contract
 from common.figures import plain_text
 from common.model_pricing import canonical_model_id
@@ -60,6 +65,32 @@ CATEGORY = "vision_triage"
 VERDICTS = ("real", "artefact")
 MAX_TOKENS = 700
 MAX_REASON_CHARS = 300
+# How the loop stopped, in the trail's `stop`: the model answered (well-formed or not), Bedrock
+# failed, the deadline or the turn limit was reached, or there was no profile for the task. The
+# adapters add `no_model` for their own fail-closed path (no model to triage with).
+STOPS = ("answered", "malformed", "bedrock_error", "deadline", "turn_limit", "no_profile", "no_model")
+# The measures a `look_again` step keeps from the re-measurement, per task: the numbers a reader
+# puts beside the same scene's numbers at the topic's settings (never compared with the baseline).
+STEP_MEASURES = {
+    "ships": ("coverage", "count", "density_per_km2"),
+    "rail_access": ("coverage", "served_share", "desert_km2", "built_up_km2", "station_count", "flag_count"),
+}
+# All of them in one order: summarise_step reads the body alone and is not told the task, and a
+# task's body carries only its own measures (the rail reply has no `count`, the ships reply no
+# `served_share`).
+STEP_MEASURE_KEYS = tuple(dict.fromkeys(key for keys in STEP_MEASURES.values() for key in keys))
+# The hosts `web_context` read, kept on the trail for the page alone (common/vision_decisions.py):
+# lower-case ASCII host names, at most this many. A host is part of a URL, third-party text, so it
+# never reaches a log line.
+MAX_HOSTS = 5
+_HOST = re.compile(r"^[a-z0-9.-]{1,100}$")
+# The fixed texts the tools answer the model with when they cannot do what was asked. Code-written,
+# and read back by `summarise_step` to name the step's failure code.
+NO_TIME_TEXT = "No time left to re-measure. Answer now with what you have."
+BAD_SETTINGS_TEXT = "look_again takes an object of settings."
+NO_PREVIOUS_TEXT = "There is no previous scene for this site."
+NO_NEWS_TEXT = "News search is not available for this site."
+BUDGET_TEXT = "Tool budget used. Answer now with the JSON verdict."
 # Seconds that must remain before the deadline for one more model turn.
 MIN_SECONDS_TO_ANSWER = 10.0
 # A re-measurement (a worker call: seconds for ships, up to the worker's own 60 s timeout) waits at
@@ -261,19 +292,36 @@ def parse_verdict(text: str) -> tuple[str, str]:
     reason is one plain line (common/figures.plain_text: no controls, line breaks or bidi
     overrides) of at most MAX_REASON_CHARS: news text may have shaped it, and an adapter puts it
     into the summary prompt (quoted_note)."""
+    return _parse(text)[:2]
+
+
+def _parse(text: str) -> tuple[str, str, bool]:
+    """parse_verdict's rule, and whether the answer was well-formed (the trail's `answered`
+    against `malformed`)."""
     match = re.search(r"\{.*\}", text or "", re.S)
     if not match:
-        return "artefact", "no verdict in the answer"
+        return "artefact", "no verdict in the answer", False
     try:
         answer = json.loads(match.group(0))
     except ValueError:
-        return "artefact", "the verdict was not valid JSON"
+        return "artefact", "the verdict was not valid JSON", False
     verdict = answer.get("verdict") if isinstance(answer, dict) else None
     reason = answer.get("reason") if isinstance(answer, dict) else None
     if verdict not in VERDICTS:
-        return "artefact", "the verdict was neither real nor artefact"
+        return "artefact", "the verdict was neither real nor artefact", False
     reason = plain_text(reason) if isinstance(reason, str) else ""
-    return verdict, (reason or "(no reason given)")[:MAX_REASON_CHARS]
+    return verdict, (reason or "(no reason given)")[:MAX_REASON_CHARS], True
+
+
+def closed_outcome(reason: str, stop: str) -> dict:
+    """The trail of a decision made without the model, for an adapter's own fail-closed path (no
+    model to triage with): an artefact, with `stop` saying why, and nothing called."""
+    return {
+        "verdict": "artefact", "reason": reason, "tool_calls": [], "model_id": None, "input_tokens": 0,
+        "output_tokens": 0, "model_calls": 0, "stop": stop, "steps": [], "steps_total": 0,
+        "budget_refusals": 0, "elapsed_ms": 0, "deadline_left_s": None, "figure": False, "cost_usd": None,
+        "hosts": [],
+    }  # fmt: skip
 
 
 def quoted_note(reason) -> str:
@@ -311,23 +359,37 @@ def triage(
     None to withhold the tool) is what `web_context` calls; `read_timeout` is how long `look_again`
     waits on the worker. `deadline`, if given, is the `clock()` value by which the caller needs
     the answer; running out of time is an artefact like any other doubt. Returns {"verdict",
-    "reason", "tool_calls", "model_id", "input_tokens", "output_tokens", "model_calls"}. Never
-    raises."""
+    "reason", "tool_calls", "model_id", "input_tokens", "output_tokens", "model_calls"}, and the
+    trail's steps beside them: "stop" (STOPS), "steps" (one per tool call, in order, the budget
+    refusals included: {"tool", "ok", "ms", "result"}), "steps_total", "budget_refusals",
+    "elapsed_ms" (from the start of triage() to its return, on `clock`), "deadline_left_s", "figure",
+    "cost_usd" (the price unit; readers show AUD) and "hosts" (what `web_context` read, for the page
+    alone). Never raises."""
     converse = converse or _converse
-    measure = measure or vision_client.measure
+    measure = _Recorder(measure or vision_client.measure, clock)
     load_image = load_image or (lambda key: None)
+    # `elapsed_ms` runs from here to finish(): the brief and the figure load are part of the time.
+    started = clock()
     trail: dict = {"tool_calls": [], "model_id": canonical_model_id(model_id), "input_tokens": 0,
-                   "output_tokens": 0, "model_calls": 0}  # fmt: skip
+                   "output_tokens": 0, "model_calls": 0, "stop": None, "steps": [], "steps_total": 0,
+                   "budget_refusals": 0, "elapsed_ms": 0, "deadline_left_s": None, "figure": False,
+                   "cost_usd": None, "hosts": []}  # fmt: skip
 
-    def finish(verdict_value: str, reason: str) -> dict:
+    def finish(verdict_value: str, reason: str, stop: str) -> dict:
+        now = clock()
+        trail["stop"] = stop
+        trail["elapsed_ms"] = _ms(now - started)
+        trail["deadline_left_s"] = None if deadline is None else round(deadline - now, 3)
+        trail["cost_usd"] = _cost_usd(trail)
         _record_stats(trail)
         return {"verdict": verdict_value, "reason": reason, **trail}
 
     profile = PROFILES.get(task)
     if profile is None:
-        return finish("artefact", f"no triage profile for task {task!r}")
+        return finish("artefact", f"no triage profile for task {task!r}", "no_profile")
     # The news tool is offered only when there is a search to answer it with.
     tools = [t for t in profile.tools if t["toolSpec"]["name"] != "web_context" or web_search is not None]
+    tool_names = {t["toolSpec"]["name"] for t in profile.tools}
 
     latest = history[-1] if history else {}
     brief = {
@@ -346,6 +408,7 @@ def triage(
     }
     content: list[dict] = [{"text": "Measured change to check:\n" + json.dumps(brief, default=str)}]
     figure = _safe_image(load_image, latest.get("image_key"))
+    trail["figure"] = bool(figure)
     if figure:
         content.append({"image": {"format": "png", "source": {"bytes": figure}}})
     else:
@@ -354,8 +417,9 @@ def triage(
 
     used = 0
     for _turn in range(max_tool_calls + 2):
-        if deadline is not None and deadline - clock() < MIN_SECONDS_TO_ANSWER:
-            return finish("artefact", "no time left to decide")
+        now = clock()
+        if deadline is not None and deadline - now < MIN_SECONDS_TO_ANSWER:
+            return finish("artefact", "no time left to decide", "deadline")
         try:
             response = converse(
                 modelId=model_id,
@@ -365,7 +429,7 @@ def triage(
                 inferenceConfig={"maxTokens": MAX_TOKENS},
             )
         except Exception as exc:  # noqa: BLE001 - fail closed: no Finding on an unsure agent
-            return finish("artefact", f"triage unavailable ({type(exc).__name__})")
+            return finish("artefact", f"triage unavailable ({type(exc).__name__})", "bedrock_error")
         usage = response.get("usage") or {}
         trail["model_calls"] += 1
         trail["input_tokens"] += int(usage.get("inputTokens", 0))
@@ -375,27 +439,155 @@ def triage(
         uses = [block["toolUse"] for block in message.get("content", []) if "toolUse" in block]
         if response.get("stopReason") != "tool_use" or not uses:
             text = "".join(block.get("text", "") for block in message.get("content", []))
-            return finish(*parse_verdict(text))
+            verdict_value, reason, well_formed = _parse(text)
+            return finish(verdict_value, reason, "answered" if well_formed else "malformed")
 
         results = []
         for use in uses:
+            name = use.get("name")
+            tool = name if isinstance(name, str) and name in tool_names else "other"
             if used >= max_tool_calls:
-                body, status = [{"text": "Tool budget used. Answer now with the JSON verdict."}], "error"
+                body, status = [{"text": BUDGET_TEXT}], "error"
+                step = {"tool": tool, "ok": False, "ms": 0, "result": {"code": "budget"}}
+                trail["budget_refusals"] += 1
             else:
                 used += 1
+                measure.last = None
+                before = clock()
                 body, status = _run_tool(
                     use, profile=profile, site=site, history=history, scene=scene, params=params or {},
                     backend=backend, load_image=load_image, measure=measure, network=network,
                     web_search=web_search, deadline=deadline, clock=clock, read_timeout=read_timeout,
                 )  # fmt: skip
+                result = summarise_step(tool, use.get("input"), body, status, measure.last)
+                step = {"tool": tool, "ok": status == "success", "ms": _ms(clock() - before),
+                        "result": result}  # fmt: skip
+                if tool == "web_context" and status == "success":
+                    trail["hosts"] = _hosts(body, trail["hosts"])
             trail["tool_calls"].append(
                 {"name": use.get("name"), "input": use.get("input") or {}, "ok": status == "success"}
             )
+            trail["steps"].append(step)
+            trail["steps_total"] += 1
             result = {"toolUseId": use.get("toolUseId"), "content": body, "status": status}
             results.append({"toolResult": result})
         messages.append({"role": "user", "content": results})
 
-    return finish("artefact", "no verdict within the turn limit")
+    return finish("artefact", "no verdict within the turn limit", "turn_limit")
+
+
+class _Recorder:
+    """`measure` as `look_again` calls it, remembering {worker_request_id, build, worker_ms, code}
+    of the last worker call for the step's result: on failure too (VisionError carries the request
+    id of a refused or mismatched reply), so a failed re-measurement still joins its worker line."""
+
+    def __init__(self, measure: Callable[..., vision_client.VisionResult], clock: Callable[[], float]):
+        self.measure, self.clock, self.last = measure, clock, None
+
+    def __call__(self, *args, **kwargs) -> vision_client.VisionResult:
+        started = self.clock()
+        try:
+            result = self.measure(*args, **kwargs)
+        except vision_client.VisionError as exc:
+            self.last = {"worker_request_id": getattr(exc, "request_id", None), "build": None,
+                         "worker_ms": _ms(self.clock() - started), "code": exc.code}  # fmt: skip
+            raise
+        except Exception:
+            self.last = {"worker_request_id": None, "build": None, "worker_ms": _ms(self.clock() - started),
+                         "code": "tool_failed"}  # fmt: skip
+            raise
+        reply = result.reply if isinstance(result.reply, dict) else {}
+        build = reply.get("build") if isinstance(reply.get("build"), dict) else {}
+        build = build.get("build_sha256")
+        self.last = {
+            "worker_request_id": getattr(result, "request_id", None),
+            "build": build[:12] if isinstance(build, str) and re.fullmatch(r"[0-9a-f]{12,}", build) else None,
+            "worker_ms": _ms(self.clock() - started),
+            "code": None,
+        }
+        return result
+
+
+def summarise_step(name: str, given, body: list[dict], status: str, call: dict | None) -> dict:
+    """One tool call's code-derived result, from the body `_run_tool` returned to the model (the
+    body itself is unchanged): what `look_again` measured (STEP_MEASURE_KEYS: a body carries its
+    own task's measures and no other's) at which settings, with the worker call's ids (`call`, the
+    recorder's last); the previous scene's id and whether it had a figure; how many scenes
+    `site_history` listed; how many results `web_context` found and how many were dated (never the
+    hosts: a host is part of a URL); or the code of why a call failed. `name` is the tool's name in
+    the profile, or "other". Pure."""
+    first = body[0] if body and isinstance(body[0], dict) else {}
+    payload = first.get("json") if isinstance(first.get("json"), dict) else None
+    text = first.get("text")
+    ok = status == "success"
+    if name == "look_again":
+        if ok and payload is not None:
+            settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+            result = {
+                "settings": dict(settings),
+                "measured": {key: payload[key] for key in STEP_MEASURE_KEYS if key in payload},
+                "quality_flags": list(payload.get("quality_flags") or []),
+            }
+        elif text == NO_TIME_TEXT:
+            result = {"code": "no_time"}
+        elif text == BAD_SETTINGS_TEXT:
+            result = {"code": "bad_settings"}
+        else:
+            result = {"code": (call or {}).get("code") or "tool_failed"}
+        for key in ("worker_request_id", "build", "worker_ms"):
+            if (call or {}).get(key) is not None and (ok or key == "worker_request_id"):
+                result[key] = call[key]
+        return result
+    if name == "previous_scene":
+        if ok and payload is not None:
+            figure = any(isinstance(part, dict) and "image" in part for part in body)
+            return {"scene_id": payload.get("scene_id"), "figure": figure}
+        return {"code": "none" if text == NO_PREVIOUS_TEXT else "tool_failed"}
+    if name == "site_history":
+        if ok and payload is not None:
+            return {"scenes": len(payload.get("scenes") or [])}
+        return {"code": "tool_failed"}
+    if name == "web_context":
+        if ok and payload is not None:
+            rows = [row for row in payload.get("results") or [] if isinstance(row, dict)]
+            return {"results": len(rows), "dated": sum(1 for row in rows if row.get("published_at"))}
+        return {"code": "unavailable" if text == NO_NEWS_TEXT else "search_failed"}
+    return {"code": "unknown_tool"}
+
+
+def _hosts(body: list[dict], known: list[str]) -> list[str]:
+    """`known` plus the host names of the news results in a `web_context` body: lower-case ASCII
+    only (_HOST), at most MAX_HOSTS in all. For the page's "(unverified)" cell alone."""
+    hosts = list(known)
+    payload = body[0].get("json") if body and isinstance(body[0], dict) else None
+    for row in (payload or {}).get("results") or []:
+        url = row.get("url") if isinstance(row, dict) else None
+        if not isinstance(url, str):
+            continue
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            continue
+        if isinstance(host, str) and _HOST.match(host) and host not in hosts and len(hosts) < MAX_HOSTS:
+            hosts.append(host)
+    return hosts
+
+
+def _cost_usd(trail: dict) -> float | None:
+    """What the trail's model calls cost, in USD (the registry's unit; readers show AUD), by the
+    same formula as every other tracked call; None without a call or a price, or on any failure
+    (pricing_for reads the Models table)."""
+    if not trail["model_calls"]:
+        return None
+    try:
+        call = {"input_tokens": trail["input_tokens"], "output_tokens": trail["output_tokens"]}
+        return costing.call_cost_usd(call, costing.pricing_for(trail["model_id"]))
+    except Exception:  # noqa: BLE001 - the price is bookkeeping, never a reason to lose the verdict
+        return None
+
+
+def _ms(seconds: float) -> int:
+    return max(0, int(round(seconds * 1000.0)))
 
 
 def _run_tool(
@@ -422,7 +614,7 @@ def _run_tool(
             return [{"json": {"scenes": rows}}], "success"
         if name == "previous_scene":
             if len(history) < 2:
-                return [{"text": "There is no previous scene for this site."}], "success"
+                return [{"text": NO_PREVIOUS_TEXT}], "success"
             previous = history[-2]
             body = [{"json": summarise_metrics(previous, profile.metric_keys)}]
             image = _safe_image(load_image, previous.get("image_key"))
@@ -431,11 +623,11 @@ def _run_tool(
             return body, "success"
         if name == "look_again":
             if not isinstance(given, dict):
-                return [{"text": "look_again takes an object of settings."}], "error"
+                return [{"text": BAD_SETTINGS_TEXT}], "error"
             wait = look_again_timeout(read_timeout, deadline, clock)
             if deadline is not None and wait < profile.min_look_again_seconds:
                 # Too short for the worker to finish: the call would be billed and answer nothing.
-                return [{"text": "No time left to re-measure. Answer now with what you have."}], "error"
+                return [{"text": NO_TIME_TEXT}], "error"
             # The task and its network are passed only for a task other than ships, and the read
             # timeout whenever there is one: with a deadline (the adapters always give one, ships
             # too) or a timeout given. vision_client.measure takes them all; a ships stand-in with
@@ -462,7 +654,7 @@ def _run_tool(
             return body, "success"
         if name == "web_context" and profile.web_query is not None:
             if web_search is None:
-                return [{"text": "News search is not available for this site."}], "error"
+                return [{"text": NO_NEWS_TEXT}], "error"
             return _web_context(profile, site, web_search, deadline, clock)
         return [{"text": f"There is no tool called {name!r}."}], "error"
     except vision_client.VisionError as exc:

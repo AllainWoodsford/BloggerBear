@@ -7,6 +7,7 @@ kept, and what is material.
 
 from __future__ import annotations
 
+import itertools
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -17,7 +18,7 @@ import pytest
 from moto import mock_aws
 
 import research_tick_handler
-from common import vision_client
+from common import evidence, vision_client, vision_sites
 from common.adapters import satellite_vision as sv
 from common.adapters.registry import ADAPTER_REGISTRY
 
@@ -59,9 +60,9 @@ class FakeWorker:
     """Answers with counts from a dict keyed by scene id; with a `clock`, each call takes `takes`
     seconds of it, as a real worker call does."""
 
-    def __init__(self, counts, coverage=None, error=None, takes=0.0, clock=None):
+    def __init__(self, counts, coverage=None, error=None, takes=0.0, clock=None, request_id=None):
         self.counts, self.coverage, self.error, self.calls = counts, coverage or {}, error, []
-        self.takes, self.clock, self.read_timeouts = takes, clock, []
+        self.takes, self.clock, self.read_timeouts, self.request_id = takes, clock, [], request_id
 
     def __call__(self, site, scene, backend, params, coverage_floor, read_timeout=None):
         self.calls.append((site["id"], scene["id"], backend, params))
@@ -84,7 +85,8 @@ class FakeWorker:
                 "quality_flags": [],
             },
         }
-        return vision_client.VisionResult(reply=reply, image_png=b"\x89PNG\r\n\x1a\nfake")
+        png = b"\x89PNG\r\n\x1a\nfake"
+        return vision_client.VisionResult(reply=reply, image_png=png, request_id=self.request_id)
 
 
 SITE_NAME = "Botany Bay anchorage"
@@ -256,9 +258,10 @@ def test_sites_per_tick_and_time_budget_are_bounded(adapter):
     state = adapter.fetch_state({"topic_id": "t", "adapter_config": config})
     assert len(state["measured"]) == 2 and len(state["sites"]) == 4
 
-    # The budget's start, then the first site's two readings (is the budget spent; is there time to
-    # measure: vision_sites.time_to_measure), then one per later site, by then past the budget.
-    ticks = iter([0.0, 0.0, 0.0, 100.0, 100.0, 100.0, 100.0])
+    # The budget's start, then the first site's readings (is the budget spent; is there time to
+    # measure, vision_sites.time_to_measure; before and after the worker, for its wall time; the
+    # budget left, for its evidence line), then every later site's, by then past the budget.
+    ticks = itertools.chain([0.0] * 6, itertools.repeat(100.0))
     adapter.clock = lambda: next(ticks)
     worker.calls.clear()
     config = {"sites": sites, "time_budget_seconds": 60}
@@ -892,4 +895,196 @@ def test_assess_is_unchanged_by_the_shared_rule(adapter):
         "material": True,
         "reason": "changed against the baseline",
     }
-    assert list(verdict)[-6:] == ["baseline", "baseline_scenes", "delta", "relative", "material", "reason"]
+    assert list(verdict)[-7:] == ["baseline", "baseline_scenes", "delta", "relative", "material", "reason",
+                                  "moved"]  # fmt: skip
+    assert verdict["moved"] == ["count"]  # the evidence trail's code for the one reason
+
+
+# --- the evidence trail (common/vision_decisions.py, common/evidence.py) ---------------------------
+
+
+def evidence_lines(capsys, event=None):
+    """Every evidence line printed so far, parsed as a reader would (evidence.parse); `event`
+    narrows them to one event."""
+    parsed = [evidence.parse(line) for line in capsys.readouterr().out.splitlines()]
+    return [line for line in parsed if line and (event is None or line["event"] == event)]
+
+
+@pytest.mark.parametrize(
+    ("counts", "moved"),
+    [([10, 12, 11, 30], ["count"]), ([10, 12, 11, 2], ["count"]), ([10, 12, 11, 15], []), ([10, 40], [])],
+)
+def test_moved_is_written_by_the_same_condition_as_the_reason(adapter, counts, moved):
+    """`_judge` names the count as moved beside its one reason phrase, by the one condition that
+    makes a verdict material."""
+    (verdict,) = adapter.assess(history_state(adapter, counts))
+    assert verdict["moved"] == moved and bool(verdict["moved"]) == verdict["material"]
+    assert (verdict["reason"] == "changed against the baseline") == bool(moved)
+    assert set(verdict["moved"]) <= set(sv.DECISION_VOCABULARY["moved"]) == {"count"}
+
+
+@pytest.mark.parametrize(
+    ("counts", "coverage", "agent", "config", "code", "reported"),
+    [
+        ([10, 12, 11, 15], None, None, {}, "within_range", False),
+        ([10, 12, 11, 30], None, FakeAgent("real"), {}, "reported", True),
+        ([10, 12, 11, 30], None, FakeAgent("artefact", "glint"), {}, "artefact", False),
+        ([10, 12, 11, 30], None, "no model", {}, "artefact", False),
+        ([10, 12, 11, 30], None, None, {"triage": False}, "reported", True),
+        ([10, 11, 0], {2: 0.3}, None, {}, "below_floor", False),
+        ([10, 40], None, None, {}, "baseline_building", False),
+    ],
+)
+def test_the_rings_code_is_the_verdict_the_status_speaks(
+    adapter, counts, coverage, agent, config, code, reported, capsys
+):
+    """vision_decisions.decision_code and vision_sites.verdict_status read one rule two ways."""
+    if agent == "no model":
+        adapter.choose_model = lambda topic: (_ for _ in ()).throw(RuntimeError("no model config"))
+    elif agent is not None:
+        adapter.triage_agent = agent
+    state = history_state(adapter, counts, coverage, **config)
+    adapter.material_diff(EARLIER, state)
+    (entry,) = state["sites"]["botany"]["decisions"]
+    history = state["sites"]["botany"]["history"]
+    judged = sv._judge(history[-1], history[:-1], sv._thresholds(state))[0]
+    assert entry["code"] == vision_sites.verdict_status(judged, history[-1])["code"] == code
+    assert entry["reported"] is reported
+    assert entry["network_changed"] is None  # the ships have no network
+    (line,) = evidence_lines(capsys, "vision_decision")
+    assert line["code"] == code and line["reported"] is reported
+    if entry["baseline"] is not None:
+        assert entry["baseline"] == {"count": 11} and line["baseline"] == {"count": 11}
+        assert entry["delta"] == {"count": counts[-1] - 11}
+        assert entry["relative"] == {"count": line["relative"]["count"]}
+    if agent == "no model":
+        assert entry["triage"]["stop"] == "no_model" and line["stop"] == "no_model"
+
+
+def test_a_material_change_leaves_a_ring_entry_and_three_lines(adapter, capsys):
+    with evidence.bind(tick="t-1", run="r" * 12, topic_id="anchorages"):
+        state = history_state(adapter, [10, 12, 11, 30])
+        changed, _ = adapter.material_diff(EARLIER, state)
+    assert changed
+    (entry,) = state["sites"]["botany"]["decisions"]
+    assert entry["measure"] == {"count": 30, "density_per_km2": 1.0, "clear_water_km2": 12.0}
+    assert entry["moved"] == ["count"] and entry["code"] == "reported" and entry["baseline_scenes"] == 3
+    assert entry["thresholds"] == state["thresholds"] and entry["measured_by"]["build"] == "ab" * 6
+    assert entry["triage"]["verdict"] == "real" and entry["triage"]["reason"] == adapter.agent.reason
+    assert entry["triage"]["steps"] == [] and entry["triage"]["hosts"] == []
+    out = capsys.readouterr().out
+    lines = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    assert [line["event"] for line in lines][-3:] == ["vision_site", "vision_triage", "vision_decision"]
+    assert all(line["topic_id"] == "anchorages" and line["tick"] == "t-1" for line in lines)
+    assert (lines[-2]["site_id"], lines[-2]["scene_id"], lines[-2]["verdict"]) == ("botany", "S3", "real")
+    assert lines[-2]["reason_sha256"] == sv.vision_decisions.reason_prefix(adapter.agent.reason)
+    assert lines[-1]["moved"] == ["count"] and lines[-1]["baseline"] == {"count": 11}
+    assert adapter.agent.reason not in out
+
+
+def test_the_first_observation_gets_its_code_and_a_cloudy_first_scene_waits(adapter, capsys):
+    first = history_state(adapter, [10])
+    assert adapter.material_diff(None, first)[1].startswith("First observation")
+    (entry,) = first["sites"]["botany"]["decisions"]
+    assert (entry["code"], entry["reported"]) == ("first_observation", True)
+    assert entry["triage"] is None and entry["baseline"] is None
+    cloudy = history_state(adapter, [3], {0: 0.3})
+    assert not adapter.material_diff(None, cloudy)[0]
+    assert [e["code"] for e in cloudy["sites"]["botany"]["decisions"]] == ["below_floor"]
+    codes = [line["code"] for line in evidence_lines(capsys, "vision_decision")]
+    assert codes == ["first_observation", "below_floor"]
+
+
+def test_each_sites_turn_leaves_a_line_at_its_branch(adapter, capsys):
+    """One `vision_site` line per site per tick, at the branch the loop took: measured, nothing
+    new, no scene, the search failed, the worker failed, deferred (the budget spent, or too little
+    left to wait on the worker) and not reached (the per-tick cap)."""
+    worker = FakeWorker({"S1": 12}, request_id="req-1")
+    state = run(adapter, FakeStac([item("S1", "2026-10-03T00:00:00Z")]), worker)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["site_id"] == "botany" and line["outcome"] == "measured" and line["scene_id"] == "S1"
+    assert line["worker_request_id"] == "req-1" and line["worker_ms"] == 0
+    assert isinstance(line["budget_left_s"], float)
+
+    run(adapter, FakeStac([item("S1", "2026-10-03T00:00:00Z")]), worker, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["outcome"] == "none" and not {"code", "scene_id"} & set(line)
+
+    run(adapter, FakeStac([]), worker, previous=state)
+    assert evidence_lines(capsys, "vision_site")[0]["outcome"] == "no_scene"
+
+    run(adapter, FakeStac(error=TimeoutError("stac down")), worker, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert (line["outcome"], line["code"]) == ("none", "search") and "stac down" not in json.dumps(line)
+
+    refused = vision_client.VisionError("unreadable_scene", "HTTP 503 from a.b", "req-2")
+    failing = FakeWorker({}, error=refused)
+    run(adapter, FakeStac([item("S2", "2026-10-08T00:00:00Z")]), failing, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert (line["outcome"], line["code"], line["scene_id"]) == ("none", "unreadable_scene", "S2")
+    assert line["worker_request_id"] == "req-2" and "a.b" not in json.dumps(line)
+
+    clock = Clock()
+    adapter.clock = clock
+    sites = [{"id": "a", "polygon": POLY}, {"id": "b", "polygon": POLY}, {"id": "c", "polygon": POLY}]
+    config = {"sites": sites, "max_sites_per_tick": 2, "time_budget_seconds": 60}
+    slow = FakeWorker({"S1": 1}, takes=20.0, clock=clock)
+    adapter.http_post, adapter.measure = FakeStac([item("S1", "2026-10-03T00:00:00Z")]), slow
+    adapter.fetch_state({"topic_id": "t", "adapter_config": config})
+    lines = evidence_lines(capsys, "vision_site")
+    assert [(line["site_id"], line["outcome"], line.get("code")) for line in lines] == [
+        ("a", "measured", None), ("b", "deferred", "time_budget"), ("c", "deferred", "time_budget"),
+    ]  # fmt: skip
+    assert lines[1]["budget_left_s"] == 40.0
+    clock.now = 0.0
+    spent = FakeWorker({"S1": 1}, takes=75.0, clock=clock)
+    adapter.measure = spent
+    adapter.fetch_state({"topic_id": "t", "adapter_config": {**config, "max_sites_per_tick": 1}})
+    lines = evidence_lines(capsys, "vision_site")
+    assert [(line["site_id"], line["outcome"]) for line in lines] == [("a", "measured"), ("b", "not_reached"),
+                                                                       ("c", "not_reached")]  # fmt: skip
+    clock.now = 0.0
+    adapter.fetch_state({"topic_id": "t", "adapter_config": config})
+    lines = evidence_lines(capsys, "vision_site")
+    assert [(line["site_id"], line["outcome"], line.get("code")) for line in lines] == [
+        ("a", "measured", None), ("b", "deferred", "time_budget"), ("c", "deferred", "time_budget"),
+    ]  # fmt: skip
+    assert lines[1]["budget_left_s"] == -15.0
+
+
+def test_a_tick_that_dies_mid_loop_leaves_the_lines_before_it(adapter, capsys):
+    class Dies(FakeWorker):
+        def __call__(self, site, scene, *args, **kwargs):
+            if site["id"] == "b":
+                raise SystemExit("the tick timed out")
+            return super().__call__(site, scene, *args, **kwargs)
+
+    sites = [{"id": "a", "polygon": POLY}, {"id": "b", "polygon": POLY}]
+    adapter.http_post, adapter.measure = FakeStac([item("S1", "2026-10-03T00:00:00Z")]), Dies({"S1": 1})
+    with pytest.raises(SystemExit):
+        adapter.fetch_state({"topic_id": "t", "adapter_config": {"sites": sites, "max_sites_per_tick": 2}})
+    assert [(line["event"], line["site_id"]) for line in evidence_lines(capsys)] == [("vision_site", "a")]
+
+
+def test_the_ring_is_trimmed_and_the_review_path_and_a_replay_write_nothing(adapter, capsys):
+    state = None
+    for n in range(13):
+        stac = FakeStac([item(f"S{n}", f"2026-09-{10 + n}T00:00:00Z")])
+        state = run(adapter, stac, FakeWorker({f"S{n}": 10 + n}), previous=state, history_size=3)
+        adapter.material_diff(EARLIER if n else None, state)
+    ring = state["sites"]["botany"]["decisions"]
+    assert len(ring) == sv.vision_decisions.DECISIONS_KEPT and [e["scene_id"] for e in ring][0] == "S1"
+    capsys.readouterr()
+    adapter.material_diff(EARLIER, state)
+    assert len(state["sites"]["botany"]["decisions"]) == 12 and evidence_lines(capsys) == []
+    assert adapter.review_evidence(topic(), state) and evidence_lines(capsys) == []
+
+
+def test_the_vocabulary_is_fixed_words_and_never_the_operators_noun():
+    vocabulary = sv.SatelliteVisionAdapter.decision_vocabulary()
+    assert set(vocabulary["measures"]) == {"count", "density_per_km2", "clear_water_km2"}
+    assert set(vocabulary["settings"]) == set(sv.vision_client.contract.PARAM_LIMITS)
+    assert vocabulary["sources"] == {"count": "imagery"}
+    for word in sv.vision_decisions.vocabulary_words(vocabulary):
+        assert sv.vision_decisions.WORD.match(word), word
+    assert "large vessels" not in json.dumps(vocabulary) and "object_noun" not in json.dumps(vocabulary)

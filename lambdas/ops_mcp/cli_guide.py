@@ -1007,7 +1007,9 @@ GUIDES: dict[str, dict] = {
         },
     },
     # Vision topics (common/adapters/satellite_vision.py, rail_access.py). Before first-topic: "create
-    # a topic for rail" scores one for each, and _guide_for keeps the first of equal scores.
+    # a topic for rail" scores one for each, and _guide_for keeps the first of equal scores. No bare
+    # "site": it is also the public website (architecture.py's alias), and placed before review it
+    # would win the tie for "how do I publish an article to the site".
     "vision": {
         "title": "Vision topics: satellite sites and the Rail Access Monitor",
         "keywords": (
@@ -1020,7 +1022,6 @@ GUIDES: dict[str, dict] = {
             "opencv",
             "city",
             "cities",
-            "site",
             "rail topic",
             "vision topic",
             "satellite topic",

@@ -10,6 +10,7 @@ import pytest
 from moto import mock_aws
 
 import research_tick_handler
+from common import evidence
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
@@ -724,3 +725,117 @@ def test_an_adapter_has_no_planner_notes_unless_it_says_so_and_its_finding_has_n
     _run_one_tick(monkeypatch, _tracked("a summary"))
 
     assert "planner_notes" not in _the_finding()
+
+
+# --- the evidence line (common/evidence.py's research_tick) --------------------------------------
+
+
+class Context:
+    aws_request_id = "7c1d2e3f-0000-4000-8000-00000000abcd"
+
+
+def tick_lines(capsys):
+    out = capsys.readouterr().out
+    return [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+
+
+def _github_tick(monkeypatch, state, context=Context(), **event):
+    monkeypatch.setattr(GitHubTrendingAdapter, "fetch_state", lambda self, topic_config: state)
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("a summary")):
+        return research_tick_handler.handler({"topic_id": "github-trending-python", **event}, context)
+
+
+def test_every_invocation_leaves_one_research_tick_line_with_its_outcome(aws_resources, monkeypatch, capsys):
+    """One line per invocation, in a finally: the tick's ids, the adapter as typed, the outcome,
+    whether anything was stored, the Finding's time when one was written, and the returns are
+    what they always were."""
+    state = {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+    result = _github_tick(monkeypatch, state)
+    assert result["status"] == "material_change"
+    (line,) = tick_lines(capsys)
+    assert line["event"] == "research_tick" and line["tick"] == Context.aws_request_id
+    assert line["topic_id"] == "github-trending-python" and line["adapter"] == "github_trending"
+    assert line["outcome"] == "material_change" and line["stored"] is True
+    assert line["finding"] == state["fetched_at"] and line["decisions"] == 0 and line["triages"] == 0
+    assert line["force"] is False and line["ms"] >= 0 and "error_type" not in line
+    assert len(line["run"]) == 12
+    first_run = line["run"]
+
+    # Nothing new: no Finding, nothing stored (this adapter keeps no running state), a new run.
+    result = _github_tick(monkeypatch, state, force=True)
+    assert result == {"status": "no_change"}
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "no_change" and line["stored"] is False and "finding" not in line
+    assert line["force"] is True and line["run"] != first_run
+
+    # Not due: the schedule's heartbeat found the interval not elapsed.
+    not_due = {"status": "not_due", "topic_id": "github-trending-python", "interval_hours": 2,
+               "next_due_at": None}  # fmt: skip
+    monkeypatch.setattr(research_tick_handler, "_not_due", lambda topic, now: not_due)
+    assert _github_tick(monkeypatch, state) == not_due
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "not_due" and "adapter" not in line and line["stored"] is False
+
+    # Without a Lambda context (a test, an in-process run) there is no tick id, and still a line.
+    assert _github_tick(monkeypatch, state, context=None) == not_due
+    (line,) = tick_lines(capsys)
+    assert "tick" not in line and line["outcome"] == "not_due"
+
+
+def test_a_failed_paused_or_unknown_tick_says_so_in_its_line(aws_resources, monkeypatch, capsys):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    for topic_id, adapter, extra in (
+        ("flaky-topic", "github_trending", {}),
+        ("mystery-topic", "not_a_real_adapter", {}),
+        ("resting-topic", "github_trending", {"paused": True}),
+    ):
+        table.put_item(Item={"topic_id": topic_id, "name": "T", "adapter": adapter, "adapter_config": {},
+                             "is_financial": False, **extra})  # fmt: skip
+
+    with patch.object(GitHubTrendingAdapter, "fetch_state", side_effect=RuntimeError("network blip")):
+        result = research_tick_handler.handler({"topic_id": "flaky-topic"}, Context())
+    assert result == {"status": "error", "topic_id": "flaky-topic", "reason": "network blip"}
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "error" and line["error_type"] == "RuntimeError" and line["stored"] is False
+    assert line["adapter"] == "github_trending" and "network blip" not in json.dumps(line)
+
+    assert research_tick_handler.handler({"topic_id": "does-not-exist"}, Context()) == {
+        "status": "error", "reason": "unknown topic_id: does-not-exist",
+    }  # fmt: skip
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "unknown_topic" and line["topic_id"] == "does-not-exist"
+    assert "adapter" not in line
+
+    result = research_tick_handler.handler({"topic_id": "mystery-topic"}, Context())
+    assert result == {"status": "error", "reason": "unknown adapter: not_a_real_adapter"}
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "unknown_adapter" and "adapter" not in line  # never a key not in the registry
+
+    assert research_tick_handler.handler({"topic_id": "resting-topic"}, Context())["status"] == "paused"
+    (line,) = tick_lines(capsys)
+    assert line["outcome"] == "paused" and line["stored"] is False
+
+    # An event with no topic id is refused before anything is bound: no line.
+    assert research_tick_handler.handler({}, Context())["status"] == "error"
+    assert tick_lines(capsys) == []
+
+
+def test_a_running_state_stored_on_a_quiet_tick_is_said_so(aws_resources, monkeypatch, capsys):
+    """An adapter that keeps a running state stores it on a quiet tick too: `stored` is true with
+    no Finding, which is how a reader tells a kept decision from a lost one."""
+
+    class Keeps(GitHubTrendingAdapter):
+        keeps_running_state = True
+
+        def fetch_state(self, topic_config, previous_state=None):
+            return {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", Keeps)
+    with patch("research_tick_handler.invoke_model_tracked", return_value=_tracked("a summary")):
+        first = research_tick_handler.handler({"topic_id": "github-trending-python"}, Context())
+        second = research_tick_handler.handler({"topic_id": "github-trending-python"}, Context())
+    assert first["status"] == "material_change" and second == {"status": "no_change"}
+    lines = tick_lines(capsys)
+    assert [(line["outcome"], line["stored"], "finding" in line) for line in lines] == [
+        ("material_change", True, True), ("no_change", True, False),
+    ]  # fmt: skip
