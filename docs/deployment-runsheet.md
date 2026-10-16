@@ -951,11 +951,26 @@ shadow them, and the handler would answer `not_cool`).
    |---|---|
    | an AMI; `cv2` imports and is 5.x; Python 3.11 or newer | go: the steps below as written |
    | `cv2` imports, but is not 5.x | record it; every claim is scoped to "COOL <version>"; add a stock venv of the same major version, so the comparison is like for like |
-   | a container image, not an AMI | launch a `c8g` with Docker; build `docker/vision-cool/Dockerfile` from the image by digest (its 5.x gate applies) and run every step inside it (`docker run ... python3 bench/vision_benchmark.py ...`) |
+   | a container image, not an AMI | launch a `c8g` with Docker; build `docker/vision-cool/Dockerfile` from the image by digest once step 5 has the network fixture in the checkout (its 5.x gate applies), and run the COOL commands inside it, as the paragraph below the table says |
    | no Python binding (C++ only) | the container route if one exists; otherwise the COOL proof (C3) is "not shown" and the report says why; the COOL configuration (C1) and the stock rows still stand |
-   | Python under 3.11 | the stock venvs need a 3.11+ interpreter (numpy 2.4.4 requires it): install `python3.12` for them (step 3) and record that the backends ran on different Pythons |
+   | Python under 3.11 | the stock venvs need a 3.11+ interpreter (numpy 2.4.4 requires it): install one for them (step 3) and record that the backends ran on different Pythons |
    | not in us-west-2 | the nearest Region with `c8g`; fill `--cache` once there (the reads then cross Regions only once) |
    | no trial, or more than about USD 5 an hour | decide before launching |
+
+   **The container route.** The image copies in the handler, the benchmark with its run-file
+   module, its scenes file, the evaluation's manifest and `scripts/vision_benchmark_networks/`, so
+   build it from the checkout after step 5, naming the commit (the image has no git history):
+
+   ```sh
+   docker build --platform linux/arm64 -f docker/vision-cool/Dockerfile --build-arg COOL_IMAGE=<registry>/<repository>@sha256:<digest> --build-arg GIT_SHA=$(git rev-parse HEAD) -t bloggerbear-vision-cool .
+   docker run --rm --network host -v "$PWD/docs/hackathon/evidence/runs:/var/task/runs" -v "$HOME/cogs:/cogs" --entrypoint python3 bloggerbear-vision-cool bench/vision_benchmark.py kernels --backend cool --cool-sha $SHA --out runs
+   ```
+
+   Each COOL command of step 8 runs that way: `docker run ... bench/vision_benchmark.py` in
+   place of `~/cool/bin/python scripts/vision_benchmark.py`, `--out runs` for `--out $E` and
+   `--cache /cogs` for `$C` (the two mounts put the run files and the cache on the host, beside the
+   stock runs, which use the host's venvs as written), and `--network host` so `--imds` reaches the
+   metadata service in one hop.
 1. **Subscribe** on AWS Marketplace to *Cloud Optimized OpenCV for AWS Graviton4* on Friday 16.
    Note the price; unsubscribe at the end unless the subscription is kept.
 2. **Launch** a `c8g.xlarge` (4 vCPU, 8 GiB: enough for the 1.32 GB worst case) in us-west-2,
@@ -968,10 +983,14 @@ shadow them, and the handler would answer `not_cool`).
    lscpu > lscpu.txt
    grep -m1 'CPU part' /proc/cpuinfo      # expect 0xd4f: Neoverse V2, Graviton4
    python3 -V && uname -r
+   sudo apt-get update && sudo apt-get install -y python3-venv   # steps 6 and 7 make venvs; a no-op when it is there
    ```
 
-   If `python3 -V` is under 3.11, the stock venvs need a 3.11+ interpreter: install `python3.12`
-   (`sudo apt-get install python3.12-venv`) and use it in step 7; record it in `recon.md`.
+   An Ubuntu server image ships `python3` without its `venv` package (`python3 -m venv` then fails
+   with "ensurepip is not available"), hence the install. If `python3 -V` is under 3.11, the stock
+   venvs need a 3.11+ interpreter from the distribution's own archive: on Ubuntu 22.04 (Python
+   3.10) that is `sudo apt-get install -y python3.11 python3.11-venv` (22.04 has no `python3.12`);
+   use `python3.11` in place of `python3` in step 7, and record it in `recon.md`.
 4. **The COOL build.**
 
    ```sh
@@ -986,7 +1005,10 @@ shadow them, and the handler would answer `not_cool`).
 5. **The code and the inputs.** Clone the repository at the commit to be benchmarked and record
    it: `git rev-parse HEAD` (the submission tag does not exist yet; the evidence index says how an
    earlier commit is still cited). The repository may still be private: `gh auth login` in the
-   session, or copy a `git archive`.
+   session, or copy a `git bundle` (`git bundle create bloggerbear.bundle HEAD` on your machine,
+   `git clone bloggerbear.bundle BloggerBear` on the instance). Not a `git archive`: a copy
+   without git history has no commit to record, and every run file would name none
+   (`code.git_sha` null).
 
    Two inputs must be in that checkout before the runs:
 
@@ -1022,7 +1044,8 @@ shadow them, and the handler would answer `not_cool`).
      two rail scenes report `error: network_file missing` and only the ship scene is timed.
    - **The pinned scenes.** `scripts/vision_eval_manifest.json` was pinned on 16 October (every
      asset's ETag and size, from the build container). Confirm nothing moved, on your own machine
-     or the instance:
+     (on the instance, after step 7: `~/stock/bin/python scripts/vision_eval.py pin`; the instance
+     has no `python` and no `requests` until then):
 
      ```sh
      python scripts/vision_eval.py pin        # prints "the manifest matches the bucket", or what changed
@@ -1073,7 +1096,8 @@ shadow them, and the handler would answer `not_cool`).
    `opencv-python-headless==4.14.0.94` is the 4.x pin: PyPI's newest 4.x release (its wheels
    uploaded on 28 and 29 July 2026), with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28);
    it was installed beside `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0, and the
-   benchmark's `kernels` ran on it (the evidence README records the check). Use `python3.12` in place of `python3` here if step 3 said so. Stock aarch64 builds can
+   benchmark's `kernels` ran on it (the evidence README records the check). Use step 3's
+   `python3.11` in place of `python3` here if step 3 said so. Stock aarch64 builds can
    include KleidiCV too, which is why the proof is the fingerprint and the mapped libraries, not
    the flag.
 8. **The runs.** Interleave the backends, so a slow minute on the instance does not land on one
@@ -1081,17 +1105,18 @@ shadow them, and the handler would answer `not_cool`).
 
    ```sh
    E=docs/hackathon/evidence/runs
-   D=$(date -u +%F)                        # the UTC date that starts every run id
    CPU=neoverse-v2-graviton4               # the cpu slug in every run id: check it against the first file written
    SHA=<step 4's sha256>
    L="--imds --label cool_product=<product id> --label cool_version=<version> --label cool_delivery=<ami|container>"
    C="--cache $HOME/cogs"
    ```
 
-   Each run writes `$E/$D-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with `--tag`), and
-   `scenes` writes each scene's figure beside it. `--imds` records the instance type, AMI, Region,
-   architecture and the Marketplace product codes, nothing else of the identity document (the
-   account id never reaches a file). `taskset -c 0` pins a run to one core, the deployed worker's
+   Each run writes `$E/<UTC date>-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with
+   `--tag`), and `scenes` writes each scene's figure beside it. The date is the run's own start, so
+   a session that crosses midnight UTC writes two dates; the `compare` lines find each file by the
+   rest of its name (`newest`: the latest of that mode, backend and tag). `--imds` records the
+   instance type, AMI, Region, architecture and the Marketplace product codes, nothing else of the
+   identity document (the account id never reaches a file). `taskset -c 0` pins a run to one core, the deployed worker's
    shape; the affinity is recorded, so the one-core rows say so themselves (`--pin-cpu 0` does the
    same from inside the script). `--isolate` runs each scene in a fresh interpreter, so its peak
    memory is its own.
@@ -1110,9 +1135,10 @@ shadow them, and the handler would answer `not_cool`).
    ~/cool/bin/python  scripts/vision_benchmark.py scenes --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 4t
    taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 4x-1t
    taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 4x-1t
+   newest() { ls "$E"/*-bench-$1-$CPU-$2.json | tail -n 1; }
    for pair in "scenes opencv-1t cool-1t" "scenes opencv-4t cool-4t" "kernels opencv-1t-r1 cool-1t-r1" "scenes opencv-4x-1t opencv-1t"; do
      set -- $pair
-     ~/stock/bin/python scripts/vision_benchmark.py compare $E/$D-bench-$1-$CPU-$2.json $E/$D-bench-$1-$CPU-$3.json --out $E --tag "$1-$2-vs-$3"
+     ~/stock/bin/python scripts/vision_benchmark.py compare "$(newest $1 $2)" "$(newest $1 $3)" --out $E --tag "$1-$2-vs-$3"
    done
    ~/cool/bin/python  scripts/vision_benchmark.py controls --cool-sha $SHA --backend cool $C $L --out $E
    ~/stock/bin/python scripts/vision_benchmark.py controls --cool-sha $SHA $C $L --out $E
@@ -1135,9 +1161,13 @@ shadow them, and the handler would answer `not_cool`).
 9. **Optional: where the time went.**
 
    ```sh
-   sudo perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
-   perf report -i perf.data --sort dso --stdio > perf-dso.txt
+   sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)"    # perf, for this kernel
+   sudo env PYTHONPATH="$PYTHONPATH" perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
+   sudo perf report -i perf.data --sort dso --stdio > perf-dso.txt
    ```
+
+   `sudo` resets the environment, so a `PYTHONPATH` the COOL commands need (step 6) is passed on
+   by hand, and `perf.data` is root's (mode 0600), so the report runs under `sudo` too.
 
    The share of samples in `libkleidicv*` and `libopencv*`/`cv2*.so` is direct evidence that the
    vendor's code executed. Commit `perf-dso.txt`, not `perf.data`.

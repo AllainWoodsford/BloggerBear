@@ -86,6 +86,22 @@ def test_the_manifest_parses_and_pins_only_bucket_assets():
     assert year and all(scene["item"]["cloud_cover"] <= 40 for scene in year)
     duplicates = [scene for scene in scenes if scene.get("duplicate_of")]
     assert all(scene["duplicate_of"] in {s["scene_id"] for s in scenes} for scene in duplicates)
+    # The year set (E3's input) is recorded by name, in time order, as year_set derives it; the
+    # `year` role marks a candidate only: some candidates are outside the set, and named clear and
+    # season scenes are inside it, so a run of the year set must read `sets`, not the roles.
+    year_set = manifest["sets"]["year-2024"]
+    members = vision_eval.year_set(manifest, "56HLH", 2024, 40.0)
+    assert sorted(year_set["scenes"]) == sorted(members) and len(members) == len(set(members))
+    times = [by_name[name]["captured_at"] for name in year_set["scenes"]]
+    assert times == sorted(times)
+    assert (year_set["site"], year_set["tile"], year_set["year"]) == ("sydney", "56HLH", 2024)
+    assert (year_set["max_cloud_cover"], year_set["min_coverage"]) == (40.0, 0.95)
+    assert manifest["sets"] == vision_eval.year_sets(manifest, 40.0)
+    assert {by_name[name]["role"] for name in members} == {"clear", "season", "year"}
+    assert any(scene["role"] == "year" and scene["name"] not in members for scene in scenes)
+    assert all(by_name[name]["site_coverage"] >= 0.95 and not by_name[name].get("duplicate_of")
+               for name in members)  # fmt: skip
+    assert "sets as year-2024" in manifest["about"] and "never by the year role" in manifest["about"]
 
 
 def test_the_bucket_urls_are_derived_from_the_scene_id_and_other_hosts_are_refused():
@@ -287,6 +303,14 @@ def test_list_year_reads_the_bucket_month_by_month_and_the_year_rule_keeps_one_p
     assert vision_eval.year_set(manifest, "56HLH", 2024, 40) == ["sydney-2024-12-14"]
     by_name["sydney-2024-12-14"]["site_coverage"] = 0.9
     assert vision_eval.year_set(manifest, "56HLH", 2024, 40) == []
+    by_name["sydney-2024-12-14"]["site_coverage"] = 0.99
+    assert vision_eval.year_sets(manifest, 40) == {"year-2024": {
+        "site": "sydney", "tile": "56HLH", "year": 2024, "max_cloud_cover": 40, "min_coverage": 0.95,
+        "scenes": ["sydney-2024-12-14"],
+    }}  # fmt: skip
+    # Two sites listed for one year: each set is named with its site.
+    manifest["listings"]["55HCU-2024"] = {**listing, "site": "melbourne", "tile": "55HCU"}
+    assert sorted(vision_eval.year_sets(manifest, 40)) == ["melbourne-year-2024", "sydney-year-2024"]
     assert (
         vision_eval.bbox_covers(list(SHORT), SYDNEY) is False
         and vision_eval.bbox_covers(None, SYDNEY) is False
@@ -493,6 +517,8 @@ def test_coverage_counts_e2_from_the_listing_and_main_writes_the_run_file(tmp_pa
     assert (
         written["scenes"][0]["site_coverage"] == cloudy_coverage and written["scenes"][1]["aot_mean"] == 0.44
     )
+    # --write records the year set by name: the clear scene, not the cloudy one under 0.95.
+    assert written["sets"]["year-2024"]["scenes"] == ["sydney-2024-08-26"]
     out = capsys.readouterr().out
     assert (
         f"| sydney-2024-01-05 | cloud | {cloudy_coverage} (below floor) | cloud_high 1.0 | cloud_high |"

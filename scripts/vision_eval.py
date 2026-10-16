@@ -30,7 +30,9 @@ aerosol optical thickness from the scene's `AOT` band (smoke that SCL does not f
 range requests and 0.7 MB a scene. From the same pass over the year's listing it counts E2: how
 many items pass the cloud filter and the footprint rule, and how many of those are still under
 the floor, worker calls that could only be wasted. `--write` puts `site_coverage` and `aot_mean`
-into the manifest; `--cache DIR` answers the reads from the cache after the first.
+into the manifest, and the year sets under `sets` (`year-2024`: the scenes a run of the year set
+reads, by name; a scene's `year` role only marks a candidate); `--cache DIR` answers the reads
+from the cache after the first.
 
 Runs on Windows as well as Linux and macOS (nothing here pins a CPU or reads `resource`). Needs
 lambdas/requirements-vision.txt and scripts/requirements.txt installed.
@@ -345,6 +347,33 @@ def year_set(
         if coverage_ is not None and coverage_ >= min_coverage:
             out.append(scene["name"])
     return out
+
+
+def year_sets(manifest: dict, max_cloud_cover: float) -> dict:
+    """The manifest's `sets`: for each year listing, its year set by name (`year-2024`; prefixed
+    with the site when two sites have a listing for one year), the rule it was taken by, and its
+    scenes as `year_set` gives them, in time order. A scene's `year` role marks a candidate of the
+    listing, not a member: a candidate measured under the coverage bar, or another's duplicate, is
+    outside the set, and a named scene (`clear`, `season`) that passes is inside it, so a run
+    selects by this."""
+    listings = list((manifest.get("listings") or {}).values())
+    years = [listing["year"] for listing in listings]
+    by_name = {scene["name"]: scene for scene in manifest["scenes"]}
+    sets = {}
+    for listing in listings:
+        name = f"year-{listing['year']}"
+        if years.count(listing["year"]) > 1:
+            name = f"{listing['site']}-{name}"
+        sets[name] = {
+            "site": listing["site"],
+            "tile": listing["tile"],
+            "year": listing["year"],
+            "max_cloud_cover": max_cloud_cover,
+            "min_coverage": YEAR_SET_MIN_COVERAGE,
+            "scenes": sorted(year_set(manifest, listing["tile"], listing["year"], max_cloud_cover),
+                             key=lambda name: by_name[name].get("captured_at") or ""),
+        }
+    return sets
 
 
 # --- coverage ----------------------------------------------------------------------------------------
@@ -684,8 +713,10 @@ def _main_coverage(args, manifest: dict) -> int:
     print(coverage_markdown(run))
     if args.write:
         written = write_coverage(manifest, results)
+        manifest["sets"] = year_sets(manifest, rail_rule()[1])
         save_manifest(manifest, args.manifest)
-        print(f"wrote {written} scenes' coverage into {args.manifest}")
+        sizes = ", ".join(f"{name} {len(entry['scenes'])} scenes" for name, entry in manifest["sets"].items())
+        print(f"wrote {written} scenes' coverage and the sets ({sizes or 'none'}) into {args.manifest}")
     if args.out:
         path = vision_runs.write(run, args.out)
         print(f"wrote {path}")
