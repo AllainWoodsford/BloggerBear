@@ -4,8 +4,9 @@ status, through the Articles table's topic index and nothing else.
 Held here, against moto with the index as infra/modules/app-data/main.tf defines it
 (table_schemas.create_table mirrors it; test_terraform_wiring.py holds the two together): the read
 is a Query on `by_topic_created_at` with `created_at` in the key condition and no filter, never a
-Scan; it pages until it has what it needs; it stops at ARTICLES_FOR_TOPIC_MAX; and the items come
-back newest first with plain numbers in their lineage.
+Scan; it pages until it has what it needs; it stops at ARTICLES_FOR_TOPIC_MAX whatever the caller
+asks; it reads only ARTICLES_FOR_TOPIC_FIELDS; and the items come back newest first with plain
+numbers in their lineage.
 """
 
 from __future__ import annotations
@@ -147,6 +148,28 @@ def test_it_stops_at_the_cap(articles):
     # A smaller cap is honoured too, and never less than one.
     assert len(dynamo.list_articles_for_topic("rail-sydney", "2026-10-01T00:00:00+00:00", limit=3)) == 3
     assert len(dynamo.list_articles_for_topic("rail-sydney", "2026-10-01T00:00:00+00:00", limit=0)) == 1
+    # A larger one is not: the ceiling holds whatever the caller asks for.
+    before = len(articles.queries)
+    found = dynamo.list_articles_for_topic("rail-sydney", "2026-10-01T00:00:00+00:00", limit=5000)
+    assert len(found) == dynamo.ARTICLES_FOR_TOPIC_MAX
+    assert len(articles.queries) - before == -(-dynamo.ARTICLES_FOR_TOPIC_MAX // PAGE)
+
+
+def test_it_reads_only_the_fields_the_assistants_join_uses(articles):
+    """One ProjectionExpression on the Query: the article's id, status, who published it and when,
+    and its lineage (the Findings it was drafted from). Never the title, the body's key or anything
+    else of an article, so a topic's 200 articles stay a short read."""
+    _article("a1", day=3, status="published", captured="2026-10-03T00:00:00+00:00")
+    (found,) = dynamo.list_articles_for_topic("rail-sydney", "2026-10-02T00:00:00+00:00")
+
+    assert set(found) == set(dynamo.ARTICLES_FOR_TOPIC_FIELDS) == {
+        "article_id", "status", "published_by", "created_at", "published_at", "lineage",
+    }  # fmt: skip
+    assert found["lineage"]["research"]["calls"][0]["captured_at"] == "2026-10-03T00:00:00+00:00"
+    for kwargs in articles.queries:
+        names = kwargs["ExpressionAttributeNames"]
+        said = [names[each.strip()] for each in kwargs["ProjectionExpression"].split(",")]
+        assert said == list(dynamo.ARTICLES_FOR_TOPIC_FIELDS)
 
 
 def test_a_topic_with_nothing_since_gives_an_empty_list_from_one_query(articles):

@@ -15,8 +15,9 @@ demo topic's lines, forged lines, a failed attempt and its retry, a cut and an u
 an article of two Findings, an expired Finding, a rejection's time, `days` out of range); the
 trace of a look_again decision, with no cell comparing a re-measurement with the baseline; the
 tables; `spoken` under 120 words and free of every site id and name, scene id, request id and
-build hex the fakes used; spend in AUD; one sentence per topic, never summed; one wait budget; and
-no IAM change.
+build hex the fakes used; spend in AUD; one sentence per topic, never summed; one wait budget, and
+one deadline for the Articles reads; titles within the page's limit; no implausible number spoken;
+and no IAM change.
 """
 
 from __future__ import annotations
@@ -328,7 +329,24 @@ def test_the_queries_are_fixed_text_that_compare_by_equality():
 def test_the_limits_are_the_named_exception_and_logs_window_is_unchanged():
     assert vision_evidence.EVIDENCE_LOOKBACK_DAYS == 90 and vision_evidence.DAYS_DEFAULT == 7
     assert vision_evidence.WAIT_SECONDS == 8.0
+    # The whole call's deadline: the Logs wait and a few short Articles reads, well inside API
+    # Gateway's 29 s, which the ops agent's own model calls share.
+    assert vision_evidence.WAIT_SECONDS < vision_evidence.DEADLINE_SECONDS == 12.0
     assert (logs.LOOKBACK_DAYS, logs.MAX_HOURS, logs.QUERY_LIMIT) == (30, 168, 1000)
+    # The page's title limit, which the ops-mcp package cannot import (it ships no ops_agent/).
+    assert vision_evidence.TABLE_TITLE_MAX_CHARS == policy.TABLE_TITLE_MAX_CHARS
+
+
+def test_the_articles_read_holds_exactly_the_fields_the_join_uses():
+    """dynamo.list_articles_for_topic's ProjectionExpression is what this module reads of an
+    article: the lineage that finds it, and the fields the trace's person row reads."""
+    assert set(dynamo.ARTICLES_FOR_TOPIC_FIELDS) == {*vision_evidence.ARTICLE_FIELDS, "lineage"}
+    full = article("art-1", "2026-10-03T00:00:00+00:00", status="published", published_by="humans")
+    full |= {"title": "t", "body_s3_key": "b", "published_at": full["created_at"]}
+    projected = {key: full[key] for key in dynamo.ARTICLES_FOR_TOPIC_FIELDS}
+    (at,) = vision_evidence._article_by_captured_at([projected])
+    assert vision_evidence._article_part(projected) == vision_evidence._article_part(full)
+    assert vision_evidence._article_by_captured_at([full]) == {at: full}
 
 
 def test_the_fixed_words_cover_every_code_and_read_as_plain_words():
@@ -356,6 +374,9 @@ def test_the_fixed_words_cover_every_code_and_read_as_plain_words():
         *vision_evidence.ACTION_SENTENCES.values(), *vision_evidence.PERSON_SENTENCES.values(),
         vision_evidence.NOT_IN_TIME, vision_evidence.PEOPLE_NOT_CHECKED, vision_evidence.ON_SCREEN,
         vision_evidence.NO_EVIDENCE_TOPIC, vision_evidence.SPEND_NOTE,
+        vision_evidence.UNKNOWN_KEPT.format(label="Rail access: Sydney", window="in the last 7 days"),
+        vision_evidence.UNKNOWN_KEPT_SHORT.format(label="Rail access: Sydney"),
+        vision_evidence.MANY_SITES.format(n=2),
     ]  # fmt: skip
     for said in fixed:
         assert not redact.looks_like_instructions(said), said
@@ -373,9 +394,9 @@ def test_the_topics_with_evidence_are_those_whose_adapter_declares_a_vocabulary(
 def test_no_lines_yet_is_none_for_the_topic(pipeline):
     fake = FakeLogs(pipeline)
     result = ask(fake, "rail-sydney")
+    # Nothing is on screen, so the answer does not say the decisions are.
     assert result["spoken"] == (
-        "Rail access: Sydney made no decisions in the last 7 days: no new clear scene was measured. "
-        "The decisions are on screen."
+        "Rail access: Sydney made no decisions in the last 7 days: no new clear scene was measured."
     )
     assert result["counts"] == {key: 0 for key in vision_evidence.COUNT_KEYS}
     assert result["rows"] == [] and result["table"]["rows"] == [] and result["dropped"] == 0
@@ -386,10 +407,16 @@ def test_no_lines_yet_is_none_for_the_topic(pipeline):
     assert [(key[1], group) for key, _region, group, *_ in fake.jobs] == [
         ("decisions", TICK_GROUP), ("attempts", TICK_GROUP), ("people", ADMIN_GROUP),
     ]  # fmt: skip
+    # Every topic, none with a decision: nothing on screen either.
+    every = ask(FakeLogs(pipeline))["spoken"]
+    assert every.endswith("Rail access: Sydney (demo) made no decisions in the last 7 days: no new clear "
+                          "scene was measured.")  # fmt: skip
+    assert vision_evidence.ON_SCREEN not in every
     # Another topic measured, this one never did: still none.
     pipeline.rail("rail-sydney-demo", SCENES[0], rail.metrics())
     said = ask(FakeLogs(pipeline), "rail-sydney")["spoken"]
     assert said.startswith("Rail access: Sydney made no decisions")
+    assert ask(FakeLogs(pipeline))["spoken"].endswith(vision_evidence.ON_SCREEN)
 
 
 @pytest.mark.parametrize(
@@ -558,6 +585,40 @@ def test_spend_is_in_aud_at_the_projects_fixed_rate(pipeline):
     scene = ask(FakeLogs(pipeline), "rail-sydney", scene=SCENES[1])
     verdict = next(row for row in scene["table"]["rows"] if row[0] == "the agent decided")
     assert "A$0.0086 (AUD, at the project's fixed rate)" in verdict[2]
+
+
+def test_a_long_topic_name_is_shortened_in_the_titles_and_the_spend_kept_whole(pipeline):
+    """A 60-character name (spoken_label's longest), 30 days, a priced triage and a long site id: the
+    titles stay within the page's limit, so policy._table never cuts them, and the label is what is
+    shortened, never the spend, its AUD label or a scene's ids."""
+    name = "Rail access: Greater Sydney metropolitan region and Blue Mts"
+    assert len(name) == 60
+    site = "greater-sydney-blue-mountains-1"
+    config = {"sites": [{"id": site, "name": RAIL_SITE_NAME, "polygon": rail.SYDNEY}]}
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item={"topic_id": "rail-greater-sydney", "name": name, "adapter": "rail_access",
+              "adapter_config": json.loads(json.dumps(config), parse_float=Decimal)}
+    )  # fmt: skip
+    pipeline.rail("rail-greater-sydney", SCENES[0], rail.metrics())
+    pipeline.rail("rail-greater-sydney", SCENES[1], MOVED, day=4)
+
+    result = ask(FakeLogs(pipeline), "rail-greater-sydney", days=30)
+    title = result["table"]["title"]
+    tail = ", the last 30 days: the agent cost A$0.0086 (AUD, at the project's fixed rate)"
+    assert len(name) + len(tail) > policy.TABLE_TITLE_MAX_CHARS  # it would not fit as it was
+    assert len(title) <= policy.TABLE_TITLE_MAX_CHARS and title.endswith(tail)
+    assert title.startswith("Rail access: Greater Sydney") and "…" in title
+    assert policy._table(result["table"])["title"] == title
+
+    scene = ask(FakeLogs(pipeline), "rail-greater-sydney", days=30, scene=SCENES[1])
+    title = scene["table"]["title"]
+    assert len(title) <= policy.TABLE_TITLE_MAX_CHARS
+    assert title.endswith(f": scene {SCENES[1]} at {site}, step by step") and "…" in title
+    assert policy._table(scene["table"])["title"] == title
+    # A name that fits is left as it is.
+    assert ask(FakeLogs(pipeline), "rail-sydney")["table"]["title"] == (
+        "Rail access: Sydney, the last 7 days: the agent cost A$0.0000 (AUD, at the project's fixed rate)"
+    )
 
 
 def test_the_demo_topics_lines_never_reach_sydneys_answer(pipeline):
@@ -764,7 +825,23 @@ def test_an_attempt_beyond_a_cut_attempts_query_is_unknown_not_a_failed_tick(pip
     result = ask(FakeLogs(pipeline, extra={"attempts": newer}), "rail-sydney")
     assert result["queries"]["attempts"] == "cut"
     assert result["counts"]["decisions"] == 0 and result["counts"]["not_kept"] == 0 and result["rows"] == []
-    assert "Only the newest 1000 log lines were read." in result["spoken"]
+    # A scene was measured; only whether it was kept is unknown. Never "nothing was measured".
+    assert result["spoken"] == (
+        "For Rail access: Sydney, I couldn't tell which of its decisions in the last 7 days were kept. "
+        "Only the newest 1000 log lines were read."
+    )
+    # join() says how many scenes it left out so, per topic.
+    lines = [evidence.parse(message) for _stamp, message in pipeline.groups[TICK_GROUP]]
+    decisions = [line for line in lines if line["event"] == "vision_decision"]
+    horizon = "2099-01-01T00:00:00+00:00"
+    assert vision_evidence.join(decisions, [], [], horizon=horizon) == ([], {}, {"rail-sydney": 1})
+    # Every topic: the same sentence for Sydney, and the short form when the answer runs long.
+    every = ask(FakeLogs(pipeline, extra={"attempts": newer}))["spoken"]
+    assert "For Rail access: Sydney, I couldn't tell which of its decisions in the last 7 days" in every
+    assert "no new clear scene was measured. For Rail" in every and vision_evidence.ON_SCREEN not in every
+    counts = vision_evidence._empty_counts() | {"unknown": 1}
+    short = vision_evidence._short_sentence("Rail access: Sydney", counts, "In the last 7 days, ")
+    assert short == "In the last 7 days, for Rail access: Sydney, I couldn't tell which decisions were kept."
 
 
 @pytest.mark.parametrize("unfinished", ["decisions", "attempts"])
@@ -876,6 +953,73 @@ def test_an_articles_read_that_fails_is_never_no_article_yet(pipeline):
     assert "No article has been drafted yet" not in scene["spoken"]
 
 
+class Clock:
+    """A scripted time.monotonic: it moves only when the fakes below say time passed."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+        self.reads = 0
+
+    def __call__(self):
+        self.reads += 1
+        return self.now
+
+
+def test_an_articles_read_past_the_deadline_is_skipped_and_said_as_not_checked(pipeline):
+    """Every topic, each with a finding written: the Logs wait uses its 8 s, and each Articles read
+    takes 3 s. The reads that start inside DEADLINE_SECONDS of the call's start run; the one that
+    would start after it is skipped, and that topic's person step is not checked, as a failed read
+    is: no "no article yet", and PEOPLE_NOT_CHECKED said."""
+    pipeline.rail("rail-sydney", SCENES[0], rail.metrics())
+    pipeline.rail("rail-sydney-demo", SCENES[0], rail.metrics())
+    pipeline.ships("anchorages", SHIP_SCENE, 12)
+    clock, fake = Clock(), FakeLogs(pipeline)
+    asked = []
+
+    def run(jobs):
+        clock.now += vision_evidence.WAIT_SECONDS  # the Logs wait, used to its end
+        return fake(jobs)
+
+    def articles(topic_id, since):
+        asked.append(topic_id)
+        clock.now += 3.0  # 8 s, then 11 s, then 14 s: the third would start past 12 s
+        return []
+
+    result = vision_evidence.vision_evidence(
+        None, 7, None, now=datetime.now(UTC) + timedelta(hours=1), run=run, readable=readable,
+        articles=articles, clock=clock,
+    )  # fmt: skip
+    assert len(asked) == 2
+    (skipped,) = {"anchorages", "rail-sydney", "rail-sydney-demo"} - set(asked)
+    people = {row["topic_id"]: row["person"] for row in result["rows"]}
+    assert people[skipped] is None
+    assert all(people[topic_id] == "no_article_yet" for topic_id in asked)
+    article_cells = dict(zip(table_cells(result)["Topic"], table_cells(result)["Article"], strict=True))
+    assert sorted(article_cells.values()) == ["", "no article yet", "no article yet"]
+    assert vision_evidence.PEOPLE_NOT_CHECKED in result["spoken"]
+    assert_said_safely(result)
+
+    # Inside the deadline every read runs, and the answer is the same as without a clock.
+    clock, asked[:] = Clock(), []
+    on_time = vision_evidence.vision_evidence(
+        None, 7, None, now=datetime.now(UTC) + timedelta(hours=1), run=fake, readable=readable,
+        articles=lambda topic_id, since: asked.append(topic_id) or [], clock=clock,
+    )  # fmt: skip
+    assert len(asked) == 3 and vision_evidence.PEOPLE_NOT_CHECKED not in on_time["spoken"]
+    # One topic asked late (a slow access check) is the same: not checked, never "no article yet".
+    late = Clock()
+
+    def slow(names, region):
+        late.now += vision_evidence.DEADLINE_SECONDS
+        return readable(names, region)
+
+    one = vision_evidence.vision_evidence(
+        "rail-sydney", 7, None, now=datetime.now(UTC) + timedelta(hours=1), run=FakeLogs(pipeline),
+        readable=slow, articles=articles, clock=late,
+    )  # fmt: skip
+    assert one["rows"][0]["person"] is None and vision_evidence.PEOPLE_NOT_CHECKED in one["spoken"]
+
+
 # --- one decision, step by step -------------------------------------------------------------------
 
 
@@ -956,6 +1100,73 @@ def test_a_scene_by_its_id_and_one_that_is_not_there(pipeline):
     assert missing["rows"] == [] and missing["table"]["rows"] == []
     assert_said_safely(first)
     assert_said_safely(missing)
+
+
+def test_a_scene_decided_for_several_sites_says_so_and_keeps_the_others(pipeline):
+    """Two sites in one Sentinel-2 tile, decided in one tick: `scene=<id>` shows the newest one's
+    steps, says how many sites the scene was decided for (never which), and keeps the other site
+    ids in the result for the page."""
+    other_site = "botany-10"
+    sites = [{"id": SHIPS_SITE, "name": SHIPS_SITE_NAME, "polygon": ships.POLY},
+             {"id": other_site, "name": "Botany Bay berths", "polygon": ships.POLY}]  # fmt: skip
+    harbours = {"topic_id": "harbours", "name": "Harbours", "adapter": "satellite_vision",
+                "adapter_config": {"sites": sites}}  # fmt: skip
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item=json.loads(json.dumps(harbours), parse_float=Decimal)
+    )
+    pipeline.ships("harbours", SHIP_SCENE, 12)
+    result = ask(FakeLogs(pipeline), "harbours", scene=SHIP_SCENE)
+
+    newest = ask(FakeLogs(pipeline), "harbours")["rows"][0]["site_id"]
+    assert result["decision"]["site_id"] == newest
+    assert result["other_sites"] == [({SHIPS_SITE, other_site} - {newest}).pop()]
+    said = "That scene was decided for 2 sites; the newest one's steps are on screen."
+    assert result["spoken"].endswith(said)
+    assert vision_evidence.STEPS_ON_SCREEN not in result["spoken"]
+    assert other_site not in result["spoken"] and SHIPS_SITE not in result["spoken"]
+    assert_said_safely(result)
+    # "latest" is the same scene here, so the same is said; one site's scene says nothing of it.
+    assert ask(FakeLogs(pipeline), "harbours", scene="latest")["other_sites"] == result["other_sites"]
+    pipeline.rail("rail-sydney", SCENES[0], rail.metrics())
+    single = ask(FakeLogs(pipeline), "rail-sydney", scene=SCENES[0])
+    assert single["other_sites"] == [] and single["spoken"].endswith(vision_evidence.STEPS_ON_SCREEN)
+
+
+def test_an_implausible_number_is_never_spoken(pipeline):
+    """Rule 7 for numbers: a `vision_decision` whose coverage is outside 0..1 is dropped and counted;
+    one whose measure is past SPOKEN_MEASURE_MAX (a 300-digit "share") keeps its row, but the scene
+    answer says the fixed fallback, never the number."""
+    huge = 1e300
+    assert len(f"{huge:.0f}") == 301
+
+    def forged(scene_id, coverage, served_share, **more):
+        with evidence.bind(tick="tick-x", run="f" * 12, topic_id="rail-sydney"):
+            decision = evidence.line(
+                "vision_decision", site_id=RAIL_SITE, scene_id=scene_id, at="2026-10-10T00:00:00+00:00",
+                code="first_observation", coverage=coverage, measure={"served_share": served_share, **more},
+                moved=list(more), reported=False,
+            )  # fmt: skip
+            attempt = evidence.line("research_tick", outcome="no_change", stored=True, decisions=1)
+        return {"@timestamp": "2099-01-01 00:00:00.000", "@message": decision}, {
+            "@timestamp": "2099-01-01 00:00:00.000", "@message": attempt,
+        }  # fmt: skip
+
+    cloudy, attempt = forged(SCENES[2], huge, 0.7)
+    result = ask(FakeLogs(pipeline, extra={"decisions": [cloudy], "attempts": [attempt]}), "rail-sydney")
+    assert result["dropped"] == 1 and result["rows"] == []
+
+    loud, attempt = forged(SCENES[2], 0.93, huge)
+    extra = {"decisions": [loud], "attempts": [attempt]}
+    scene = ask(FakeLogs(pipeline, extra=extra), "rail-sydney", scene="latest")
+    assert scene["dropped"] == 0 and scene["decision"]["measure"] == {"served_share": huge}
+    assert scene["spoken"].startswith("That Rail access: Sydney scene was 93% clear. OpenCV measured it.")
+    assert not re.search(r"\d{7}", scene["spoken"])
+    assert_said_safely(scene)
+    # A plausible measure beside it is still said: a moved station count of 1e300 is not.
+    both, attempt = forged(SCENES[2], 0.93, 0.7, station_count=huge)
+    said = ask(FakeLogs(pipeline, extra={"decisions": [both], "attempts": [attempt]}), "rail-sydney",
+               scene="latest")["spoken"]  # fmt: skip
+    assert "OpenCV measured built-up area served 70.0%." in said and not re.search(r"\d{7}", said)
 
 
 @pytest.mark.parametrize(

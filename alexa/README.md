@@ -226,7 +226,9 @@ sent ([ops-assistant-vision.md](../docs/enhancements/ops-assistant-vision.md)).
 `vision_evidence` reads the pipeline's evidence lines, which hold only codes, ids and numbers, so
 Alexa+ hears what the page shows: the decisions counted, what the agent did, the findings written
 and what became of their articles ([vision-evidence.md](../docs/enhancements/vision-evidence.md#asking-the-assistant)).
-It waits at most 8 seconds for its logs, plus a short read of the Articles table.
+It waits at most 8 seconds for its logs, then makes one short Articles read per topic with a finding
+written, each started only within 12 seconds of the question: a read that would start later is
+skipped, and what people decided is then said as not checked.
 
 A log read waits for Logs Insights (up to 15 seconds), which can be close to Alexa's own time limit.
 If Alexa gives up, ask for a briefing instead ("ask BloggerBear to start a briefing"): the agent

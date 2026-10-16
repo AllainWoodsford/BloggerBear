@@ -1318,11 +1318,12 @@ FEATURES: tuple[Feature, ...] = (
                 "approves it, its figures are copied to articles/figures/ in the site bucket.",
                 ("function:daily-cycle", "table:moderation-queue", "bucket:site"),
             ),
-            # ops_mcp/vision_status.py, log_review.py.
+            # ops_mcp/vision_status.py, log_review.py, vision_evidence.py.
             Step(
                 "Where to look",
-                "This assistant's vision_status reads each site's running state, and log_review "
-                "reads the worker's log in the vision Region.",
+                "This assistant's vision_status reads each site's running state, log_review "
+                "reads the worker's log in the vision Region, and vision_evidence reads what the "
+                "pipeline decided from its evidence lines.",
                 ("function:ops-mcp",),
             ),
         ),
