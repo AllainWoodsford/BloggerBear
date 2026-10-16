@@ -1,0 +1,2480 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-16-eval-coverage-intel-xeon-processor-2-80ghz-none",
+  "kind": "eval-coverage",
+  "mode": "coverage",
+  "backend": "none",
+  "started_at": "2026-10-16T04:17:36Z",
+  "finished_at": "2026-10-16T04:17:36Z",
+  "code": {
+    "git_sha": "e46b6ddfd7885db0f63efa9e7fced4840e53cbe2",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "machine": "x86_64",
+    "python": "3.11.17",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "0ef08003c31127b3b5d34410ab13483c511e73b99e278b1a8abd6ddcb265699a",
+      "arch": "x86_64",
+      "kleidicv": false,
+      "cpu_baseline": "SSE SSE2 SSE3",
+      "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
+      "cv2_path": "/root/.cache/bloggerbear/venv311/lib/python3.11/site-packages/cv2/__init__.py"
+    },
+    "cpu_count": 4,
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "threads": 4,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "linux",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": null
+  },
+  "inputs": {
+    "manifest_sha256": "c48c2ec75bb8b2a92146f19f175995da349bb5eb0f2d68cb144c851ae7a3e667",
+    "cache": true,
+    "scenes": [
+      {
+        "name": "sydney-2024-06-27",
+        "scene_id": "S2A_56HLH_20240627_0_L2A",
+        "etag_by_asset": {
+          "scl": "7d5537a43bf477b8f65c2b1969a4491f",
+          "aot": "412b2abe24708400d5d5cee46a02bfca"
+        }
+      },
+      {
+        "name": "sydney-2024-08-21b",
+        "scene_id": "S2B_56HLH_20240821_1_L2A",
+        "etag_by_asset": {
+          "scl": "c992f966fea1bd6155aadf77193ae855",
+          "aot": "5363e27c8fd0c54f29d9bc9e09fdb42d"
+        }
+      },
+      {
+        "name": "sydney-2024-08-26",
+        "scene_id": "S2A_56HLH_20240826_0_L2A",
+        "etag_by_asset": {
+          "scl": "1104e55f9c91a600b0596227acd4901d",
+          "aot": "a5eb0f4c54a555321b20da98018f27b1"
+        }
+      },
+      {
+        "name": "sydney-2024-08-31",
+        "scene_id": "S2B_56HLH_20240831_0_L2A",
+        "etag_by_asset": {
+          "scl": "5b5942b856553fac50165a259b73d403",
+          "aot": "f0700380dbae9769ae2edd4be7929707"
+        }
+      },
+      {
+        "name": "sydney-2024-12-24",
+        "scene_id": "S2A_56HLH_20241224_0_L2A",
+        "etag_by_asset": {
+          "scl": "aeb0e99dcc2f33eb9906dea3342819fd",
+          "aot": "31d97750d59543777923c20bff161bcf"
+        }
+      },
+      {
+        "name": "sydney-2024-01-05",
+        "scene_id": "S2A_56HLH_20240105_0_L2A",
+        "etag_by_asset": {
+          "scl": "a6a98e904a508f1f863561a7868dd00f",
+          "aot": "d05146813613619278a837023562303f"
+        }
+      },
+      {
+        "name": "sydney-2024-08-21a",
+        "scene_id": "S2B_56HLH_20240821_0_L2A",
+        "etag_by_asset": {
+          "scl": "d87d511fcd101bc64d9975e13e202f30",
+          "aot": "4700cd26fbb9ca46d7367cf4ad4f588c"
+        }
+      },
+      {
+        "name": "sydney-2019-12-26-smoke",
+        "scene_id": "S2B_56HLH_20191226_0_L2A",
+        "etag_by_asset": {
+          "scl": "6927ad1bd70fbddcb6533a71094e7ae1",
+          "aot": "72cf8be281c34ef6d35524e3179897f0"
+        }
+      },
+      {
+        "name": "sydney-2019-12-21",
+        "scene_id": "S2A_56HLH_20191221_0_L2A",
+        "etag_by_asset": {
+          "scl": "8235713a1753f2531f30c69018c6480f",
+          "aot": "739a1522980cfb373ff0abce23b6dc1f"
+        }
+      },
+      {
+        "name": "sydney-2019-11-01",
+        "scene_id": "S2A_56HLH_20191101_0_L2A",
+        "etag_by_asset": {
+          "scl": "cffc56b5de30c2ed8abfe5768a0bdaa7",
+          "aot": "c99c6f574d03031615b9a44529142723"
+        }
+      },
+      {
+        "name": "sydney-2019-11-06",
+        "scene_id": "S2B_56HLH_20191106_0_L2A",
+        "etag_by_asset": {
+          "scl": "bf50b0f1bad50131f9fbd0b53e7a750b",
+          "aot": "fc5d09d07ff70363d0ca00081da2308b"
+        }
+      },
+      {
+        "name": "sydney-2019-11-07",
+        "scene_id": "S2A_56HLH_20191107_0_L2A",
+        "etag_by_asset": {
+          "scl": "b056a9966ebe05ded2239457d6289297",
+          "aot": "57a9ace0b4b354dd7b2ba16d57dc4800"
+        }
+      },
+      {
+        "name": "sydney-2019-11-27",
+        "scene_id": "S2A_56HLH_20191127_0_L2A",
+        "etag_by_asset": {
+          "scl": "6cc6d057098a48ac2367901ff382713d",
+          "aot": "be816db33266b573fab240e63bae49fa"
+        }
+      },
+      {
+        "name": "sydney-2024-01-09",
+        "scene_id": "S2A_56HLH_20240109_0_L2A",
+        "etag_by_asset": {
+          "scl": "9e291c4dbe2906a9b6c234345a3343d6",
+          "aot": "9d95dca7ba7a8fb231ff06d723a740ef"
+        }
+      },
+      {
+        "name": "sydney-2024-01-19",
+        "scene_id": "S2A_56HLH_20240119_0_L2A",
+        "etag_by_asset": {
+          "scl": "0654af579cc6a016667906d47615c8cc",
+          "aot": "71394de6d2776018ad4ecfab48eff5ba"
+        }
+      },
+      {
+        "name": "sydney-2024-01-24",
+        "scene_id": "S2B_56HLH_20240124_0_L2A",
+        "etag_by_asset": {
+          "scl": "34924aafebfd051659784de5d4b28b8d",
+          "aot": "23cb0749ff4bcd5c9e8dd6f46aaedf07"
+        }
+      },
+      {
+        "name": "sydney-2024-01-29",
+        "scene_id": "S2A_56HLH_20240129_0_L2A",
+        "etag_by_asset": {
+          "scl": "914a1e69230d3b827ea9a9a476d63496",
+          "aot": "581fc1055c8ead7cbde814b522935e60"
+        }
+      },
+      {
+        "name": "sydney-2024-02-13",
+        "scene_id": "S2B_56HLH_20240213_0_L2A",
+        "etag_by_asset": {
+          "scl": "84042f530b3ea9f0add7dd4aaaaebd4b",
+          "aot": "aa0c3e0a8c6c071f10b6216595ea9d8b"
+        }
+      },
+      {
+        "name": "sydney-2024-02-18",
+        "scene_id": "S2A_56HLH_20240218_0_L2A",
+        "etag_by_asset": {
+          "scl": "5e3b67d7b9cd96f2a6a44a0317b3f7bf",
+          "aot": "7922a1d94630a11bb428ebaafa1e3086"
+        }
+      },
+      {
+        "name": "sydney-2024-02-28",
+        "scene_id": "S2A_56HLH_20240228_0_L2A",
+        "etag_by_asset": {
+          "scl": "3384195253252459c533f6835bce73d5",
+          "aot": "71a15843055c06574423fa2f8888d038"
+        }
+      },
+      {
+        "name": "sydney-2024-03-09",
+        "scene_id": "S2A_56HLH_20240309_0_L2A",
+        "etag_by_asset": {
+          "scl": "51c24b6bcbe46d2647fde86388019190",
+          "aot": "c6f8898a0be7c26e38306b9e1dd0039d"
+        }
+      },
+      {
+        "name": "sydney-2024-03-14",
+        "scene_id": "S2B_56HLH_20240314_0_L2A",
+        "etag_by_asset": {
+          "scl": "9579befd7d6f4dfcf3cbbb0c0b6a7a98",
+          "aot": "92ead169d7d6ce99f11e0f0d088cce06"
+        }
+      },
+      {
+        "name": "sydney-2024-03-24",
+        "scene_id": "S2B_56HLH_20240324_0_L2A",
+        "etag_by_asset": {
+          "scl": "4ec1b8057a3bf8f87040e56dc099f604",
+          "aot": "b0600ffef77eaaeb5807fc21c45ea17f"
+        }
+      },
+      {
+        "name": "sydney-2024-04-03",
+        "scene_id": "S2B_56HLH_20240403_0_L2A",
+        "etag_by_asset": {
+          "scl": "7e4703cf27c59762ef5f39f47e5b15d0",
+          "aot": "a651e0ee7230a6bcb4aacd8f674d92c3"
+        }
+      },
+      {
+        "name": "sydney-2024-04-13",
+        "scene_id": "S2B_56HLH_20240413_0_L2A",
+        "etag_by_asset": {
+          "scl": "da1a91ad27f6bc7ecd8dad1d8ded1107",
+          "aot": "1c3bc5c9ba6157574b5549be0e63857c"
+        }
+      },
+      {
+        "name": "sydney-2024-04-23",
+        "scene_id": "S2B_56HLH_20240423_0_L2A",
+        "etag_by_asset": {
+          "scl": "fc78856e546bc8d36de4d3085b90342d",
+          "aot": "e8041b5af639bc6df7dd59a5f12d23a0"
+        }
+      },
+      {
+        "name": "sydney-2024-04-28",
+        "scene_id": "S2A_56HLH_20240428_0_L2A",
+        "etag_by_asset": {
+          "scl": "a1362c471a06a6a8605fc976a822c5f0",
+          "aot": "50eb57705dc272e4e22c89a518119eca"
+        }
+      },
+      {
+        "name": "sydney-2024-05-23",
+        "scene_id": "S2B_56HLH_20240523_0_L2A",
+        "etag_by_asset": {
+          "scl": "f58386d5a3be246dda5faad55999a323",
+          "aot": "5318870bae7f44cd40713c1a3f018c42"
+        }
+      },
+      {
+        "name": "sydney-2024-05-28",
+        "scene_id": "S2A_56HLH_20240528_0_L2A",
+        "etag_by_asset": {
+          "scl": "0f0619fb2de9389544b23163254a1a65",
+          "aot": "add7dd122179e2dd003aa39c499ca2e2"
+        }
+      },
+      {
+        "name": "sydney-2024-06-12",
+        "scene_id": "S2B_56HLH_20240612_0_L2A",
+        "etag_by_asset": {
+          "scl": "1760d0634fd349c4b1beb00507215c6c",
+          "aot": "0d6df6d2ea1d7e73d6309f2a0b228ea7"
+        }
+      },
+      {
+        "name": "sydney-2024-07-07",
+        "scene_id": "S2A_56HLH_20240707_0_L2A",
+        "etag_by_asset": {
+          "scl": "7c415facb48d2a582deaf5bcb121041f",
+          "aot": "81e36c13d93dd9db9d52f76afc6d7d60"
+        }
+      },
+      {
+        "name": "sydney-2024-07-17",
+        "scene_id": "S2A_56HLH_20240717_0_L2A",
+        "etag_by_asset": {
+          "scl": "1b59dbfc5860c850b3c2cffc201cf238",
+          "aot": "eecfd7d3e98430f0cecece311f88de2c"
+        }
+      },
+      {
+        "name": "sydney-2024-07-22",
+        "scene_id": "S2B_56HLH_20240722_0_L2A",
+        "etag_by_asset": {
+          "scl": "777ea9924b239ec3871c509b00d47007",
+          "aot": "2ce9869a4489b985bd4df837fcd83f4a"
+        }
+      },
+      {
+        "name": "sydney-2024-08-06",
+        "scene_id": "S2A_56HLH_20240806_0_L2A",
+        "etag_by_asset": {
+          "scl": "9b5a1e5c97af08f87ddd93b3382f9c2c",
+          "aot": "f3ffac6d1ca98dff41eff5faf7742f2b"
+        }
+      },
+      {
+        "name": "sydney-2024-08-11",
+        "scene_id": "S2B_56HLH_20240811_0_L2A",
+        "etag_by_asset": {
+          "scl": "872270e5473a2460cbe29d292acb430a",
+          "aot": "a780dd0d4bf21ec0ece54a86d8c0b4e5"
+        }
+      },
+      {
+        "name": "sydney-2024-08-16",
+        "scene_id": "S2A_56HLH_20240816_0_L2A",
+        "etag_by_asset": {
+          "scl": "db5bc1efc1d526e9206359092f86b05d",
+          "aot": "97a0cf991e766aa4eb6020f35499e2ff"
+        }
+      },
+      {
+        "name": "sydney-2024-09-20",
+        "scene_id": "S2B_56HLH_20240920_0_L2A",
+        "etag_by_asset": {
+          "scl": "73b7dc2f8253bf912e03250a02b27d47",
+          "aot": "798c5057dc5127db0d3f74839ad8d9e8"
+        }
+      },
+      {
+        "name": "sydney-2024-10-05",
+        "scene_id": "S2A_56HLH_20241005_0_L2A",
+        "etag_by_asset": {
+          "scl": "6fe0d4971342a9db7c4061e7586efa90",
+          "aot": "5aaeb5434bb8210e33084ac8d743b469"
+        }
+      },
+      {
+        "name": "sydney-2024-10-10",
+        "scene_id": "S2B_56HLH_20241010_0_L2A",
+        "etag_by_asset": {
+          "scl": "212c6e9d942eb7b7d124de232370fe8b",
+          "aot": "c640ceee5c9737866177c573cd82306e"
+        }
+      },
+      {
+        "name": "sydney-2024-10-25",
+        "scene_id": "S2A_56HLH_20241025_0_L2A",
+        "etag_by_asset": {
+          "scl": "d8d3940ff0d41de3472140121a6736c5",
+          "aot": "256560f298cd3e0f9efc304104472513"
+        }
+      },
+      {
+        "name": "sydney-2024-10-30",
+        "scene_id": "S2B_56HLH_20241030_0_L2A",
+        "etag_by_asset": {
+          "scl": "d5b3da3b36571780e6cc681fea265dcc",
+          "aot": "ec943ac0a9f4d18b3b2dfdc40c689dfa"
+        }
+      },
+      {
+        "name": "sydney-2024-11-24",
+        "scene_id": "S2A_56HLH_20241124_0_L2A",
+        "etag_by_asset": {
+          "scl": "4047cab10804fbcf54fbff01ccda3307",
+          "aot": "85e5af4799e72751dfedd98a218bff97"
+        }
+      },
+      {
+        "name": "sydney-2024-12-14",
+        "scene_id": "S2A_56HLH_20241214_0_L2A",
+        "etag_by_asset": {
+          "scl": "fa57ae9b91c880c9a4c41eefa9c04064",
+          "aot": "35b6cc3882d0b274aaecd3a97b034a91"
+        }
+      },
+      {
+        "name": "sydney-2024-12-14b",
+        "scene_id": "S2C_56HLH_20241214_1_L2A",
+        "etag_by_asset": {
+          "scl": "b088b994dc2f04c3406468af4b2a8d08",
+          "aot": "2cd2aa6eee70348bb50e522f22ce694e"
+        }
+      },
+      {
+        "name": "sydney-2024-12-19",
+        "scene_id": "S2B_56HLH_20241219_0_L2A",
+        "etag_by_asset": {
+          "scl": "3e3b74d354a38574539cb1cf9e7c8c50",
+          "aot": "088726250ee2f5ec8eec04ce16e88cfc"
+        }
+      },
+      {
+        "name": "sydney-2024-12-29",
+        "scene_id": "S2B_56HLH_20241229_0_L2A",
+        "etag_by_asset": {
+          "scl": "a408e97a4e2b0479d0c0a7c7bf1add6e",
+          "aot": "f0ecc4c5922e2fbdf7b17f95bd3b35cd"
+        }
+      }
+    ],
+    "networks": [],
+    "cache_index_sha256": "2e5b3051674f085ac0cf5ff996526f4977d65cf5d446915500bf9b8fa8b790e3"
+  },
+  "params": {
+    "only": null,
+    "cache": true,
+    "floor": 0.6,
+    "max_cloud_cover": 40.0,
+    "year_set_min_coverage": 0.95
+  },
+  "results": {
+    "sydney-2024-06-27": {
+      "scene_id": "S2A_56HLH_20240627_0_L2A",
+      "role": "clear",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.006,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.3547,
+        "not_vegetated": 0.1692,
+        "water": 0.4699,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0001,
+        "cloud_high": 0.0,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9999,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.4101
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0657,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 955149
+    },
+    "sydney-2024-08-21b": {
+      "scene_id": "S2B_56HLH_20240821_1_L2A",
+      "role": "clear",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0007,
+        "cloud_shadow": 0.0002,
+        "vegetation": 0.3464,
+        "not_vegetated": 0.1817,
+        "water": 0.4652,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0001,
+        "cloud_high": 0.0,
+        "cirrus": 0.0054,
+        "snow": 0.0003
+      },
+      "coverage": 0.9943,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.9391
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1131,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 930374
+    },
+    "sydney-2024-08-26": {
+      "scene_id": "S2A_56HLH_20240826_0_L2A",
+      "role": "clear",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0003,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.3594,
+        "not_vegetated": 0.1709,
+        "water": 0.4694,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0,
+        "cloud_high": 0.0,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9999,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.4604
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0778,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 919967
+    },
+    "sydney-2024-08-31": {
+      "scene_id": "S2B_56HLH_20240831_0_L2A",
+      "role": "clear",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0002,
+        "cloud_shadow": 0.0002,
+        "vegetation": 0.3544,
+        "not_vegetated": 0.1759,
+        "water": 0.4692,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0,
+        "cloud_high": 0.0,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9998,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_shadow",
+        "share_of_loss": 0.7231
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0898,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 912754
+    },
+    "sydney-2024-12-24": {
+      "scene_id": "S2A_56HLH_20241224_0_L2A",
+      "role": "season",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0019,
+        "cloud_shadow": 0.0011,
+        "vegetation": 0.3389,
+        "not_vegetated": 0.1882,
+        "water": 0.4669,
+        "unclassified": 0.0009,
+        "cloud_medium": 0.0012,
+        "cloud_high": 0.0008,
+        "cirrus": 0.0002,
+        "snow": 0.0
+      },
+      "coverage": 0.9968,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.3697
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1374,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 969957
+    },
+    "sydney-2024-01-05": {
+      "scene_id": "S2A_56HLH_20240105_0_L2A",
+      "role": "cloud",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.2936,
+        "saturated": 0.0,
+        "dark": 0.0015,
+        "cloud_shadow": 0.0007,
+        "vegetation": 0.0319,
+        "not_vegetated": 0.0176,
+        "water": 0.0875,
+        "unclassified": 0.0081,
+        "cloud_medium": 0.0921,
+        "cloud_high": 0.4302,
+        "cirrus": 0.0367,
+        "snow": 0.0
+      },
+      "coverage": 0.1467,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.5042
+      },
+      "cause": "cloud_high",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1461,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 13473,
+      "requests": 59,
+      "bytes": 833313
+    },
+    "sydney-2024-08-21a": {
+      "scene_id": "S2B_56HLH_20240821_0_L2A",
+      "role": "nodata",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.9127,
+        "saturated": 0.0,
+        "dark": 0.0003,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.0235,
+        "not_vegetated": 0.0012,
+        "water": 0.0611,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0,
+        "cloud_high": 0.0,
+        "cirrus": 0.0012,
+        "snow": 0.0
+      },
+      "coverage": 0.086,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "no_data",
+        "share_of_loss": 0.9986
+      },
+      "cause": "no_data",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.124,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 1910,
+      "requests": 59,
+      "bytes": 275415
+    },
+    "sydney-2019-12-26-smoke": {
+      "scene_id": "S2B_56HLH_20191226_0_L2A",
+      "role": "smoke",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0052,
+        "cloud_shadow": 0.0021,
+        "vegetation": 0.2355,
+        "not_vegetated": 0.2778,
+        "water": 0.4672,
+        "unclassified": 0.0092,
+        "cloud_medium": 0.0015,
+        "cloud_high": 0.0015,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9949,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_shadow",
+        "share_of_loss": 0.4058
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.4358,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 969915
+    },
+    "sydney-2019-12-21": {
+      "scene_id": "S2A_56HLH_20191221_0_L2A",
+      "role": "clear",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0006,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.0556,
+        "not_vegetated": 0.2965,
+        "water": 0.4693,
+        "unclassified": 0.1704,
+        "cloud_medium": 0.0071,
+        "cloud_high": 0.0005,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9924,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.9374
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.203,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 809351
+    },
+    "sydney-2019-11-01": {
+      "scene_id": "S2A_56HLH_20191101_0_L2A",
+      "role": "baseline",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0039,
+        "cloud_shadow": 0.0007,
+        "vegetation": 0.2981,
+        "not_vegetated": 0.2162,
+        "water": 0.4685,
+        "unclassified": 0.0091,
+        "cloud_medium": 0.0011,
+        "cloud_high": 0.0023,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9958,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.562
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.4052,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1033921
+    },
+    "sydney-2019-11-06": {
+      "scene_id": "S2B_56HLH_20191106_0_L2A",
+      "role": "baseline",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0044,
+        "cloud_shadow": 0.0007,
+        "vegetation": 0.336,
+        "not_vegetated": 0.1828,
+        "water": 0.4677,
+        "unclassified": 0.0028,
+        "cloud_medium": 0.0012,
+        "cloud_high": 0.0044,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9937,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.7012
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0955,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1063764
+    },
+    "sydney-2019-11-07": {
+      "scene_id": "S2A_56HLH_20191107_0_L2A",
+      "role": "baseline",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.2851,
+        "saturated": 0.0,
+        "dark": 0.0022,
+        "cloud_shadow": 0.0005,
+        "vegetation": 0.1557,
+        "not_vegetated": 0.0865,
+        "water": 0.465,
+        "unclassified": 0.0013,
+        "cloud_medium": 0.0008,
+        "cloud_high": 0.0029,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.7106,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "no_data",
+        "share_of_loss": 0.9854
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.2501,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 13632,
+      "requests": 59,
+      "bytes": 637018
+    },
+    "sydney-2019-11-27": {
+      "scene_id": "S2A_56HLH_20191127_0_L2A",
+      "role": "baseline",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.2981,
+        "saturated": 0.0,
+        "dark": 0.0022,
+        "cloud_shadow": 0.0005,
+        "vegetation": 0.1344,
+        "not_vegetated": 0.0952,
+        "water": 0.4656,
+        "unclassified": 0.0013,
+        "cloud_medium": 0.0006,
+        "cloud_high": 0.0022,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.6986,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "no_data",
+        "share_of_loss": 0.989
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.399,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 13389,
+      "requests": 59,
+      "bytes": 600392
+    },
+    "sydney-2024-01-09": {
+      "scene_id": "S2A_56HLH_20240109_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0037,
+        "cloud_shadow": 0.0065,
+        "vegetation": 0.2476,
+        "not_vegetated": 0.1329,
+        "water": 0.4296,
+        "unclassified": 0.0268,
+        "cloud_medium": 0.0819,
+        "cloud_high": 0.0698,
+        "cirrus": 0.0011,
+        "snow": 0.0
+      },
+      "coverage": 0.8406,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.5139
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1909,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1380720
+    },
+    "sydney-2024-01-19": {
+      "scene_id": "S2A_56HLH_20240119_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0021,
+        "cloud_shadow": 0.0009,
+        "vegetation": 0.338,
+        "not_vegetated": 0.1353,
+        "water": 0.265,
+        "unclassified": 0.0007,
+        "cloud_medium": 0.018,
+        "cloud_high": 0.0006,
+        "cirrus": 0.2394,
+        "snow": 0.0
+      },
+      "coverage": 0.7412,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.9247
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0958,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 955726
+    },
+    "sydney-2024-01-24": {
+      "scene_id": "S2B_56HLH_20240124_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0022,
+        "cloud_shadow": 0.0001,
+        "vegetation": 0.3557,
+        "not_vegetated": 0.1587,
+        "water": 0.4681,
+        "unclassified": 0.0011,
+        "cloud_medium": 0.0034,
+        "cloud_high": 0.001,
+        "cirrus": 0.0098,
+        "snow": 0.0
+      },
+      "coverage": 0.9857,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.6856
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1431,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 955498
+    },
+    "sydney-2024-01-29": {
+      "scene_id": "S2A_56HLH_20240129_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0033,
+        "cloud_shadow": 0.0051,
+        "vegetation": 0.3381,
+        "not_vegetated": 0.1708,
+        "water": 0.4578,
+        "unclassified": 0.0036,
+        "cloud_medium": 0.0138,
+        "cloud_high": 0.0074,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9737,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.5264
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1495,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1069714
+    },
+    "sydney-2024-02-13": {
+      "scene_id": "S2B_56HLH_20240213_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.003,
+        "cloud_shadow": 0.0087,
+        "vegetation": 0.3382,
+        "not_vegetated": 0.1524,
+        "water": 0.4432,
+        "unclassified": 0.0037,
+        "cloud_medium": 0.0234,
+        "cloud_high": 0.0266,
+        "cirrus": 0.0009,
+        "snow": 0.0
+      },
+      "coverage": 0.9405,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.4463
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1255,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1032704
+    },
+    "sydney-2024-02-18": {
+      "scene_id": "S2A_56HLH_20240218_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0041,
+        "cloud_shadow": 0.0191,
+        "vegetation": 0.2683,
+        "not_vegetated": 0.1553,
+        "water": 0.4517,
+        "unclassified": 0.0116,
+        "cloud_medium": 0.0506,
+        "cloud_high": 0.0379,
+        "cirrus": 0.0015,
+        "snow": 0.0
+      },
+      "coverage": 0.891,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.4639
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.2269,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1223422
+    },
+    "sydney-2024-02-28": {
+      "scene_id": "S2A_56HLH_20240228_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0018,
+        "cloud_shadow": 0.0002,
+        "vegetation": 0.0197,
+        "not_vegetated": 0.0481,
+        "water": 0.4074,
+        "unclassified": 0.0121,
+        "cloud_medium": 0.0932,
+        "cloud_high": 0.4171,
+        "cirrus": 0.0005,
+        "snow": 0.0
+      },
+      "coverage": 0.4891,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.8163
+      },
+      "cause": "cloud_high",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.2125,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 822935
+    },
+    "sydney-2024-03-09": {
+      "scene_id": "S2A_56HLH_20240309_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0043,
+        "cloud_shadow": 0.0454,
+        "vegetation": 0.2413,
+        "not_vegetated": 0.1158,
+        "water": 0.4575,
+        "unclassified": 0.0174,
+        "cloud_medium": 0.0592,
+        "cloud_high": 0.059,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.8364,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.362
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1375,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1193261
+    },
+    "sydney-2024-03-14": {
+      "scene_id": "S2B_56HLH_20240314_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0036,
+        "cloud_shadow": 0.0002,
+        "vegetation": 0.3418,
+        "not_vegetated": 0.1749,
+        "water": 0.4676,
+        "unclassified": 0.0012,
+        "cloud_medium": 0.0016,
+        "cloud_high": 0.0,
+        "cirrus": 0.0089,
+        "snow": 0.0002
+      },
+      "coverage": 0.9893,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.8255
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1796,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 986380
+    },
+    "sydney-2024-03-24": {
+      "scene_id": "S2B_56HLH_20240324_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0049,
+        "cloud_shadow": 0.0513,
+        "vegetation": 0.1541,
+        "not_vegetated": 0.1017,
+        "water": 0.4599,
+        "unclassified": 0.0366,
+        "cloud_medium": 0.0937,
+        "cloud_high": 0.0971,
+        "cirrus": 0.0006,
+        "snow": 0.0
+      },
+      "coverage": 0.7572,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.4001
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1731,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1220470
+    },
+    "sydney-2024-04-03": {
+      "scene_id": "S2B_56HLH_20240403_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0,
+        "cloud_shadow": 0.0135,
+        "vegetation": 0.1727,
+        "not_vegetated": 0.1203,
+        "water": 0.2243,
+        "unclassified": 0.0267,
+        "cloud_medium": 0.1839,
+        "cloud_high": 0.2585,
+        "cirrus": 0.0001,
+        "snow": 0.0
+      },
+      "coverage": 0.544,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.5668
+      },
+      "cause": "cloud_high",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1492,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1443518
+    },
+    "sydney-2024-04-13": {
+      "scene_id": "S2B_56HLH_20240413_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0002,
+        "cloud_shadow": 0.0217,
+        "vegetation": 0.317,
+        "not_vegetated": 0.1599,
+        "water": 0.4655,
+        "unclassified": 0.002,
+        "cloud_medium": 0.0174,
+        "cloud_high": 0.0159,
+        "cirrus": 0.0,
+        "snow": 0.0005
+      },
+      "coverage": 0.9451,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_shadow",
+        "share_of_loss": 0.3943
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1191,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1010328
+    },
+    "sydney-2024-04-23": {
+      "scene_id": "S2B_56HLH_20240423_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0004,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.3764,
+        "not_vegetated": 0.1538,
+        "water": 0.4693,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0,
+        "cloud_high": 0.0,
+        "cirrus": 0.0,
+        "snow": 0.0001
+      },
+      "coverage": 1.0,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.5203
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0717,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 899756
+    },
+    "sydney-2024-04-28": {
+      "scene_id": "S2A_56HLH_20240428_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0008,
+        "cloud_shadow": 0.0001,
+        "vegetation": 0.3699,
+        "not_vegetated": 0.1599,
+        "water": 0.4672,
+        "unclassified": 0.0,
+        "cloud_medium": 0.001,
+        "cloud_high": 0.001,
+        "cirrus": 0.0,
+        "snow": 0.0002
+      },
+      "coverage": 0.9979,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.4881
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0837,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 928215
+    },
+    "sydney-2024-05-23": {
+      "scene_id": "S2B_56HLH_20240523_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0031,
+        "cloud_shadow": 0.0003,
+        "vegetation": 0.3641,
+        "not_vegetated": 0.1628,
+        "water": 0.4692,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0001,
+        "cloud_high": 0.0001,
+        "cirrus": 0.0,
+        "snow": 0.0003
+      },
+      "coverage": 0.9995,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_shadow",
+        "share_of_loss": 0.5877
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0716,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 930334
+    },
+    "sydney-2024-05-28": {
+      "scene_id": "S2A_56HLH_20240528_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0042,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.3555,
+        "not_vegetated": 0.1703,
+        "water": 0.4696,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0,
+        "cloud_high": 0.0,
+        "cirrus": 0.0,
+        "snow": 0.0003
+      },
+      "coverage": 0.9999,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.4646
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.078,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 940075
+    },
+    "sydney-2024-06-12": {
+      "scene_id": "S2B_56HLH_20240612_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0043,
+        "cloud_shadow": 0.0279,
+        "vegetation": 0.3015,
+        "not_vegetated": 0.1464,
+        "water": 0.4442,
+        "unclassified": 0.0094,
+        "cloud_medium": 0.0297,
+        "cloud_high": 0.0133,
+        "cirrus": 0.0233,
+        "snow": 0.0
+      },
+      "coverage": 0.9058,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.3151
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0717,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1177937
+    },
+    "sydney-2024-07-07": {
+      "scene_id": "S2A_56HLH_20240707_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0039,
+        "cloud_shadow": 0.024,
+        "vegetation": 0.1221,
+        "not_vegetated": 0.0978,
+        "water": 0.3278,
+        "unclassified": 0.0457,
+        "cloud_medium": 0.1697,
+        "cloud_high": 0.2021,
+        "cirrus": 0.0069,
+        "snow": 0.0
+      },
+      "coverage": 0.5973,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.5019
+      },
+      "cause": "cloud_high",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1135,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1359786
+    },
+    "sydney-2024-07-17": {
+      "scene_id": "S2A_56HLH_20240717_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0046,
+        "cloud_shadow": 0.0003,
+        "vegetation": 0.3496,
+        "not_vegetated": 0.1755,
+        "water": 0.4662,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0006,
+        "cloud_high": 0.0001,
+        "cirrus": 0.0023,
+        "snow": 0.0007
+      },
+      "coverage": 0.9967,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.6929
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0774,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 974296
+    },
+    "sydney-2024-07-22": {
+      "scene_id": "S2B_56HLH_20240722_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0028,
+        "cloud_shadow": 0.001,
+        "vegetation": 0.2005,
+        "not_vegetated": 0.0866,
+        "water": 0.3042,
+        "unclassified": 0.0,
+        "cloud_medium": 0.0323,
+        "cloud_high": 0.0018,
+        "cirrus": 0.3706,
+        "snow": 0.0001
+      },
+      "coverage": 0.5943,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.9134
+      },
+      "cause": "cirrus",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0897,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 927927
+    },
+    "sydney-2024-08-06": {
+      "scene_id": "S2A_56HLH_20240806_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0015,
+        "cloud_shadow": 0.0186,
+        "vegetation": 0.3169,
+        "not_vegetated": 0.175,
+        "water": 0.45,
+        "unclassified": 0.002,
+        "cloud_medium": 0.0202,
+        "cloud_high": 0.0159,
+        "cirrus": 0.0,
+        "snow": 0.0001
+      },
+      "coverage": 0.9454,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.3702
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.0958,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1049906
+    },
+    "sydney-2024-08-11": {
+      "scene_id": "S2B_56HLH_20240811_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0004,
+        "cloud_shadow": 0.0413,
+        "vegetation": 0.1051,
+        "not_vegetated": 0.1266,
+        "water": 0.4115,
+        "unclassified": 0.0238,
+        "cloud_medium": 0.137,
+        "cloud_high": 0.1543,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.6674,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.4641
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1548,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1332484
+    },
+    "sydney-2024-08-16": {
+      "scene_id": "S2A_56HLH_20240816_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0005,
+        "cloud_shadow": 0.0479,
+        "vegetation": 0.1539,
+        "not_vegetated": 0.1217,
+        "water": 0.256,
+        "unclassified": 0.013,
+        "cloud_medium": 0.1391,
+        "cloud_high": 0.2678,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.5451,
+      "floor": 0.6,
+      "below_floor": true,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.5888
+      },
+      "cause": "cloud_high",
+      "explained": true,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.137,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1369662
+    },
+    "sydney-2024-09-20": {
+      "scene_id": "S2B_56HLH_20240920_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0038,
+        "cloud_shadow": 0.0001,
+        "vegetation": 0.346,
+        "not_vegetated": 0.1796,
+        "water": 0.4693,
+        "unclassified": 0.001,
+        "cloud_medium": 0.0001,
+        "cloud_high": 0.0,
+        "cirrus": 0.0,
+        "snow": 0.0001
+      },
+      "coverage": 0.9998,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.4242
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1136,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 945663
+    },
+    "sydney-2024-10-05": {
+      "scene_id": "S2A_56HLH_20241005_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.003,
+        "cloud_shadow": 0.0224,
+        "vegetation": 0.295,
+        "not_vegetated": 0.1407,
+        "water": 0.3995,
+        "unclassified": 0.0045,
+        "cloud_medium": 0.0331,
+        "cloud_high": 0.0571,
+        "cirrus": 0.0448,
+        "snow": 0.0
+      },
+      "coverage": 0.8426,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.3627
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.155,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1101811
+    },
+    "sydney-2024-10-10": {
+      "scene_id": "S2B_56HLH_20241010_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0036,
+        "cloud_shadow": 0.0098,
+        "vegetation": 0.3325,
+        "not_vegetated": 0.174,
+        "water": 0.4665,
+        "unclassified": 0.0025,
+        "cloud_medium": 0.0066,
+        "cloud_high": 0.0045,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9791,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_shadow",
+        "share_of_loss": 0.4705
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1493,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1036733
+    },
+    "sydney-2024-10-25": {
+      "scene_id": "S2A_56HLH_20241025_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0016,
+        "cloud_shadow": 0.005,
+        "vegetation": 0.2784,
+        "not_vegetated": 0.1078,
+        "water": 0.3795,
+        "unclassified": 0.0014,
+        "cloud_medium": 0.0166,
+        "cloud_high": 0.0214,
+        "cirrus": 0.1885,
+        "snow": 0.0
+      },
+      "coverage": 0.7686,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.8147
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1733,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1055875
+    },
+    "sydney-2024-10-30": {
+      "scene_id": "S2B_56HLH_20241030_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0026,
+        "cloud_shadow": 0.0029,
+        "vegetation": 0.3354,
+        "not_vegetated": 0.1848,
+        "water": 0.463,
+        "unclassified": 0.0019,
+        "cloud_medium": 0.0035,
+        "cloud_high": 0.0021,
+        "cirrus": 0.0037,
+        "snow": 0.0
+      },
+      "coverage": 0.9877,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.3045
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.2092,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 959500
+    },
+    "sydney-2024-11-24": {
+      "scene_id": "S2A_56HLH_20241124_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.001,
+        "cloud_shadow": 0.0,
+        "vegetation": 0.2175,
+        "not_vegetated": 0.1072,
+        "water": 0.2879,
+        "unclassified": 0.0008,
+        "cloud_medium": 0.0095,
+        "cloud_high": 0.0022,
+        "cirrus": 0.374,
+        "snow": 0.0
+      },
+      "coverage": 0.6143,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cirrus",
+        "share_of_loss": 0.9697
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.199,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 925930
+    },
+    "sydney-2024-12-14": {
+      "scene_id": "S2A_56HLH_20241214_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0036,
+        "cloud_shadow": 0.0032,
+        "vegetation": 0.3007,
+        "not_vegetated": 0.1752,
+        "water": 0.4458,
+        "unclassified": 0.009,
+        "cloud_medium": 0.0348,
+        "cloud_high": 0.0248,
+        "cirrus": 0.0028,
+        "snow": 0.0
+      },
+      "coverage": 0.9344,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.53
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.209,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1199400
+    },
+    "sydney-2024-12-14b": {
+      "scene_id": "S2C_56HLH_20241214_1_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0035,
+        "cloud_shadow": 0.0028,
+        "vegetation": 0.3007,
+        "not_vegetated": 0.1765,
+        "water": 0.4468,
+        "unclassified": 0.0088,
+        "cloud_medium": 0.0334,
+        "cloud_high": 0.0245,
+        "cirrus": 0.003,
+        "snow": 0.0
+      },
+      "coverage": 0.9362,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_medium",
+        "share_of_loss": 0.5238
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.2031,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1177137
+    },
+    "sydney-2024-12-19": {
+      "scene_id": "S2B_56HLH_20241219_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.005,
+        "cloud_shadow": 0.0199,
+        "vegetation": 0.1451,
+        "not_vegetated": 0.072,
+        "water": 0.429,
+        "unclassified": 0.0266,
+        "cloud_medium": 0.0841,
+        "cloud_high": 0.2162,
+        "cirrus": 0.0021,
+        "snow": 0.0
+      },
+      "coverage": 0.6776,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_high",
+        "share_of_loss": 0.6707
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1849,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 1075365
+    },
+    "sydney-2024-12-29": {
+      "scene_id": "S2B_56HLH_20241229_0_L2A",
+      "role": "year",
+      "ok": true,
+      "error": null,
+      "pixels": 10421336,
+      "shares": {
+        "no_data": 0.0,
+        "saturated": 0.0,
+        "dark": 0.0019,
+        "cloud_shadow": 0.0003,
+        "vegetation": 0.3316,
+        "not_vegetated": 0.1968,
+        "water": 0.4681,
+        "unclassified": 0.0008,
+        "cloud_medium": 0.0002,
+        "cloud_high": 0.0002,
+        "cirrus": 0.0,
+        "snow": 0.0
+      },
+      "coverage": 0.9992,
+      "floor": 0.6,
+      "below_floor": false,
+      "largest_loss": {
+        "class": "cloud_shadow",
+        "share_of_loss": 0.4029
+      },
+      "cause": null,
+      "explained": false,
+      "window": [
+        69,
+        827,
+        3364,
+        4101
+      ],
+      "aot_mean": 0.1374,
+      "aot_scope": "all",
+      "aot_pixel_m": 479.5,
+      "aot_pixels": 19182,
+      "requests": 59,
+      "bytes": 966229
+    }
+  },
+  "agent": null,
+  "checks": [
+    {
+      "name": "sydney-2024-01-05:low_coverage",
+      "expected": true,
+      "got": true,
+      "pass": true
+    },
+    {
+      "name": "sydney-2024-08-21a:low_coverage",
+      "expected": true,
+      "got": true,
+      "pass": true
+    }
+  ],
+  "summary": {
+    "scenes": 46,
+    "explained": 7,
+    "items": 149,
+    "passed_filter": 65,
+    "passed_bbox": 38,
+    "below_floor_after_pick": 5,
+    "unmeasured": 0,
+    "year_set": 17,
+    "sydney-2024-06-27.coverage": 0.9999,
+    "sydney-2024-06-27.aot_mean": 0.0657,
+    "sydney-2024-08-21b.coverage": 0.9943,
+    "sydney-2024-08-21b.aot_mean": 0.1131,
+    "sydney-2024-08-26.coverage": 0.9999,
+    "sydney-2024-08-26.aot_mean": 0.0778,
+    "sydney-2024-08-31.coverage": 0.9998,
+    "sydney-2024-08-31.aot_mean": 0.0898,
+    "sydney-2024-12-24.coverage": 0.9968,
+    "sydney-2024-12-24.aot_mean": 0.1374,
+    "sydney-2024-01-05.coverage": 0.1467,
+    "sydney-2024-01-05.aot_mean": 0.1461,
+    "sydney-2024-08-21a.coverage": 0.086,
+    "sydney-2024-08-21a.aot_mean": 0.124,
+    "sydney-2019-12-26-smoke.coverage": 0.9949,
+    "sydney-2019-12-26-smoke.aot_mean": 0.4358,
+    "sydney-2019-12-21.coverage": 0.9924,
+    "sydney-2019-12-21.aot_mean": 0.203,
+    "sydney-2019-11-01.coverage": 0.9958,
+    "sydney-2019-11-01.aot_mean": 0.4052,
+    "sydney-2019-11-06.coverage": 0.9937,
+    "sydney-2019-11-06.aot_mean": 0.0955,
+    "sydney-2019-11-07.coverage": 0.7106,
+    "sydney-2019-11-07.aot_mean": 0.2501,
+    "sydney-2019-11-27.coverage": 0.6986,
+    "sydney-2019-11-27.aot_mean": 0.399,
+    "sydney-2024-01-09.coverage": 0.8406,
+    "sydney-2024-01-09.aot_mean": 0.1909,
+    "sydney-2024-01-19.coverage": 0.7412,
+    "sydney-2024-01-19.aot_mean": 0.0958,
+    "sydney-2024-01-24.coverage": 0.9857,
+    "sydney-2024-01-24.aot_mean": 0.1431,
+    "sydney-2024-01-29.coverage": 0.9737,
+    "sydney-2024-01-29.aot_mean": 0.1495,
+    "sydney-2024-02-13.coverage": 0.9405,
+    "sydney-2024-02-13.aot_mean": 0.1255,
+    "sydney-2024-02-18.coverage": 0.891,
+    "sydney-2024-02-18.aot_mean": 0.2269,
+    "sydney-2024-02-28.coverage": 0.4891,
+    "sydney-2024-02-28.aot_mean": 0.2125,
+    "sydney-2024-03-09.coverage": 0.8364,
+    "sydney-2024-03-09.aot_mean": 0.1375,
+    "sydney-2024-03-14.coverage": 0.9893,
+    "sydney-2024-03-14.aot_mean": 0.1796,
+    "sydney-2024-03-24.coverage": 0.7572,
+    "sydney-2024-03-24.aot_mean": 0.1731,
+    "sydney-2024-04-03.coverage": 0.544,
+    "sydney-2024-04-03.aot_mean": 0.1492,
+    "sydney-2024-04-13.coverage": 0.9451,
+    "sydney-2024-04-13.aot_mean": 0.1191,
+    "sydney-2024-04-23.coverage": 1.0,
+    "sydney-2024-04-23.aot_mean": 0.0717,
+    "sydney-2024-04-28.coverage": 0.9979,
+    "sydney-2024-04-28.aot_mean": 0.0837,
+    "sydney-2024-05-23.coverage": 0.9995,
+    "sydney-2024-05-23.aot_mean": 0.0716,
+    "sydney-2024-05-28.coverage": 0.9999,
+    "sydney-2024-05-28.aot_mean": 0.078,
+    "sydney-2024-06-12.coverage": 0.9058,
+    "sydney-2024-06-12.aot_mean": 0.0717,
+    "sydney-2024-07-07.coverage": 0.5973,
+    "sydney-2024-07-07.aot_mean": 0.1135,
+    "sydney-2024-07-17.coverage": 0.9967,
+    "sydney-2024-07-17.aot_mean": 0.0774,
+    "sydney-2024-07-22.coverage": 0.5943,
+    "sydney-2024-07-22.aot_mean": 0.0897,
+    "sydney-2024-08-06.coverage": 0.9454,
+    "sydney-2024-08-06.aot_mean": 0.0958,
+    "sydney-2024-08-11.coverage": 0.6674,
+    "sydney-2024-08-11.aot_mean": 0.1548,
+    "sydney-2024-08-16.coverage": 0.5451,
+    "sydney-2024-08-16.aot_mean": 0.137,
+    "sydney-2024-09-20.coverage": 0.9998,
+    "sydney-2024-09-20.aot_mean": 0.1136,
+    "sydney-2024-10-05.coverage": 0.8426,
+    "sydney-2024-10-05.aot_mean": 0.155,
+    "sydney-2024-10-10.coverage": 0.9791,
+    "sydney-2024-10-10.aot_mean": 0.1493,
+    "sydney-2024-10-25.coverage": 0.7686,
+    "sydney-2024-10-25.aot_mean": 0.1733,
+    "sydney-2024-10-30.coverage": 0.9877,
+    "sydney-2024-10-30.aot_mean": 0.2092,
+    "sydney-2024-11-24.coverage": 0.6143,
+    "sydney-2024-11-24.aot_mean": 0.199,
+    "sydney-2024-12-14.coverage": 0.9344,
+    "sydney-2024-12-14.aot_mean": 0.209,
+    "sydney-2024-12-14b.coverage": 0.9362,
+    "sydney-2024-12-14b.aot_mean": 0.2031,
+    "sydney-2024-12-19.coverage": 0.6776,
+    "sydney-2024-12-19.aot_mean": 0.1849,
+    "sydney-2024-12-29.coverage": 0.9992,
+    "sydney-2024-12-29.aot_mean": 0.1374
+  }
+}

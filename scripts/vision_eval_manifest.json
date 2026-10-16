@@ -68,8 +68,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9999,
+   "aot_mean": 0.0657,
    "expected": null
   },
   {
@@ -112,8 +112,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9943,
+   "aot_mean": 0.1131,
    "expected": null
   },
   {
@@ -156,8 +156,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9999,
+   "aot_mean": 0.0778,
    "expected": null
   },
   {
@@ -200,8 +200,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9998,
+   "aot_mean": 0.0898,
    "expected": null
   },
   {
@@ -244,8 +244,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9968,
+   "aot_mean": 0.1374,
    "expected": null
   },
   {
@@ -288,8 +288,8 @@
      -33.42603405040068
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.1467,
+   "aot_mean": 0.1461,
    "expected": {
     "quality_flags": [
      "low_coverage"
@@ -336,8 +336,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.086,
+   "aot_mean": 0.124,
    "expected": {
     "quality_flags": [
      "low_coverage"
@@ -384,8 +384,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9949,
+   "aot_mean": 0.4358,
    "expected": null
   },
   {
@@ -428,8 +428,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9924,
+   "aot_mean": 0.203,
    "expected": null
   },
   {
@@ -472,8 +472,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9958,
+   "aot_mean": 0.4052,
    "expected": null
   },
   {
@@ -516,8 +516,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9937,
+   "aot_mean": 0.0955,
    "expected": null
   },
   {
@@ -560,8 +560,8 @@
      -33.42594981454852
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.7106,
+   "aot_mean": 0.2501,
    "expected": null
   },
   {
@@ -604,8 +604,8 @@
      -33.42608384081397
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.6986,
+   "aot_mean": 0.399,
    "expected": null
   },
   {
@@ -648,8 +648,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.8406,
+   "aot_mean": 0.1909,
    "expected": null
   },
   {
@@ -692,8 +692,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.7412,
+   "aot_mean": 0.0958,
    "expected": null
   },
   {
@@ -736,8 +736,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9857,
+   "aot_mean": 0.1431,
    "expected": null
   },
   {
@@ -780,8 +780,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9737,
+   "aot_mean": 0.1495,
    "expected": null
   },
   {
@@ -824,8 +824,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9405,
+   "aot_mean": 0.1255,
    "expected": null
   },
   {
@@ -868,8 +868,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.891,
+   "aot_mean": 0.2269,
    "expected": null
   },
   {
@@ -912,8 +912,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.4891,
+   "aot_mean": 0.2125,
    "expected": null
   },
   {
@@ -956,8 +956,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.8364,
+   "aot_mean": 0.1375,
    "expected": null
   },
   {
@@ -1000,8 +1000,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9893,
+   "aot_mean": 0.1796,
    "expected": null
   },
   {
@@ -1044,8 +1044,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.7572,
+   "aot_mean": 0.1731,
    "expected": null
   },
   {
@@ -1088,8 +1088,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.544,
+   "aot_mean": 0.1492,
    "expected": null
   },
   {
@@ -1132,8 +1132,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9451,
+   "aot_mean": 0.1191,
    "expected": null
   },
   {
@@ -1176,8 +1176,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 1.0,
+   "aot_mean": 0.0717,
    "expected": null
   },
   {
@@ -1220,8 +1220,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9979,
+   "aot_mean": 0.0837,
    "expected": null
   },
   {
@@ -1264,8 +1264,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9995,
+   "aot_mean": 0.0716,
    "expected": null
   },
   {
@@ -1308,8 +1308,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9999,
+   "aot_mean": 0.078,
    "expected": null
   },
   {
@@ -1352,8 +1352,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9058,
+   "aot_mean": 0.0717,
    "expected": null
   },
   {
@@ -1396,8 +1396,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.5973,
+   "aot_mean": 0.1135,
    "expected": null
   },
   {
@@ -1440,8 +1440,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9967,
+   "aot_mean": 0.0774,
    "expected": null
   },
   {
@@ -1484,8 +1484,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.5943,
+   "aot_mean": 0.0897,
    "expected": null
   },
   {
@@ -1528,8 +1528,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9454,
+   "aot_mean": 0.0958,
    "expected": null
   },
   {
@@ -1572,8 +1572,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.6674,
+   "aot_mean": 0.1548,
    "expected": null
   },
   {
@@ -1616,8 +1616,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.5451,
+   "aot_mean": 0.137,
    "expected": null
   },
   {
@@ -1660,8 +1660,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9998,
+   "aot_mean": 0.1136,
    "expected": null
   },
   {
@@ -1704,8 +1704,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.8426,
+   "aot_mean": 0.155,
    "expected": null
   },
   {
@@ -1748,8 +1748,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9791,
+   "aot_mean": 0.1493,
    "expected": null
   },
   {
@@ -1792,8 +1792,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.7686,
+   "aot_mean": 0.1733,
    "expected": null
   },
   {
@@ -1836,8 +1836,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9877,
+   "aot_mean": 0.2092,
    "expected": null
   },
   {
@@ -1880,8 +1880,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.6143,
+   "aot_mean": 0.199,
    "expected": null
   },
   {
@@ -1924,8 +1924,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9344,
+   "aot_mean": 0.209,
    "expected": null
   },
   {
@@ -1968,8 +1968,8 @@
      -33.420387
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9362,
+   "aot_mean": 0.2031,
    "expected": null,
    "duplicate_of": "S2A_56HLH_20241214_0_L2A"
   },
@@ -2013,8 +2013,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.6776,
+   "aot_mean": 0.1849,
    "expected": null
   },
   {
@@ -2057,8 +2057,8 @@
      -33.42038715452384
     ]
    },
-   "site_coverage": null,
-   "aot_mean": null,
+   "site_coverage": 0.9992,
+   "aot_mean": 0.1374,
    "expected": null
   }
  ],
