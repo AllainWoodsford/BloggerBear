@@ -23,7 +23,7 @@ what a topic's next article will be written from, or a vision topic's maps and p
 | Step | Command |
 |---|---|
 | find the topic id | `python scripts/admin_cli.py topics list` |
-| its `adapter`, `findings_window_hours`, `last_research_at`, `last_article_at` | `python scripts/admin_cli.py topics get <topic_id>` |
+| its `adapter`, `findings_window_hours`, `last_research_at`, `last_article_at`, `paused` | `python scripts/admin_cli.py topics get <topic_id>` |
 | the Findings, newest first | `python scripts/admin_cli.py findings list <topic_id>` |
 | what the next article reads | `python scripts/admin_cli.py findings list <topic_id> --next-article` |
 | the newest one, raw | `python scripts/admin_cli.py topics findings <topic_id>` |
@@ -65,8 +65,9 @@ python scripts/admin_cli.py findings list <topic_id> | jq '.findings[] | {captur
 
 ## How to read it
 
-- Research is diff-first: no Finding means nothing material changed at the source. Compare
-  `last_research_at` (the tick ran) with the newest `captured_at` (it found something).
+- Research is diff-first: no Finding from a running topic means nothing material changed at the
+  source. Compare `last_research_at` (the tick ran) with the newest `captured_at` (it found
+  something).
 - The next article reads from `max(now - findings_window_hours, last_article_at)`, at most 48
   Findings newest first, and its draft reads their summaries up to 40,000 characters, so the
   oldest can be left out of a busy window. `findings_window_hours` defaults to 24; a topic that
@@ -75,7 +76,9 @@ python scripts/admin_cli.py findings list <topic_id> | jq '.findings[] | {captur
 - A vision topic writes a Finding only for a new clear scene that changed against its baseline.
   Its first clear scene is a "first observation", also a Finding.
 - The daily run wrote nothing (`no_findings`) when the window above was empty: either no tick
-  found a change since the last article, or the window is narrower than the topic's cadence.
+  found a change since the last article, or the window is narrower than the topic's cadence. Or
+  the topic is paused: `topics get <topic_id>` shows `paused`, and the daily run returns
+  `status: paused` without reading the window.
 - To run research now, or to widen the window, `topics trigger` and `topics update` are writes:
   only when the user asks for exactly that.
 

@@ -58,6 +58,10 @@ SUMMARIES_MAX_CHARS = 40_000  # daily_cycle_handler.SUMMARIES_MAX_CHARS (a test 
 SUMMARY_CELL_CHARS = 280
 UNTRUSTED_BUDGET_CHARS = 6_000  # all "(unverified)" cells of one result, together
 SPOKEN_MAX_WORDS = 120
+# A paused topic (`topics pause`) has no next article until it is resumed: the daily cycle returns
+# `paused` before it reads the window (daily_cycle_handler._run_daily_cycle, the same `is True`).
+# Said after the next-article window's counts, and only there.
+PAUSED_NO_NEXT_ARTICLE = "It is paused, so there is no next article until it is resumed."
 FINDINGS_TABLE_ENV = "FINDINGS_TABLE"
 LEFT_OUT = "(left out: ask for fewer)"
 
@@ -277,13 +281,14 @@ def _spoken(
     """The spoken answer, from fixed templates (the module docstring says what is never in it),
     under SPOKEN_MAX_WORDS."""
     label = spoken_label(topic)
+    paused = f" {PAUSED_NO_NEXT_ARTICLE}" if rule == RULE_NEXT_ARTICLE and topic.get("paused") is True else ""
     if count == 0:
         researched = _parse(topic.get("last_research_at"))
         if researched is None:
-            return f"{prefix}{label} has no findings {window}, and it hasn't been researched yet."
+            return f"{prefix}{label} has no findings {window}, and it hasn't been researched yet.{paused}"
         return (
             f"{prefix}{label} has no findings {window}. Research last ran {_age(researched, now)} ago: "
-            "a tick writes a finding only when something changed."
+            f"a tick writes a finding only when something changed.{paused}"
         )
     newest = _parse(rows[0]["captured_at"]) if rows else None
     how_many = f"at least {_plural(count, 'finding')}" if at_least else _plural(count, "finding")
@@ -318,6 +323,8 @@ def _spoken(
             )
         if resolve_goal_for_topic(topic, now.date()) is not None:
             sentences.append("A topic with editorial goals may use only some of them.")
+        if paused:
+            sentences.append(PAUSED_NO_NEXT_ARTICLE)
     text = " ".join(sentences)
     while len(text.split()) >= SPOKEN_MAX_WORDS and len(sentences) > 2:
         sentences.pop()

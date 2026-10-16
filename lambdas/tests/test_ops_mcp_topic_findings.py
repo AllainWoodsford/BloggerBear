@@ -365,6 +365,35 @@ def test_a_topic_with_editorial_goals_may_use_only_some(aws):
     assert "editorial goals" not in ask(next_article=True)["spoken"]
 
 
+def test_a_paused_topic_has_no_next_article_until_it_is_resumed(aws):
+    """`topics pause`: the daily cycle returns `paused` before it reads the window, so the
+    next-article answer says so, after its counts; the other windows say nothing about it."""
+    put_topic(aws, paused=True, paused_at=(NOW - timedelta(hours=3)).isoformat())
+    put_finding(aws, 1)
+    assert ask(next_article=True)["spoken"] == (
+        "Rail access: Sydney has 1 finding for its next article, the newest 60 minutes ago. It's on "
+        "screen. " + topic_findings.PAUSED_NO_NEXT_ARTICLE
+    )
+    assert "paused" not in ask()["spoken"] and "paused" not in ask(days=2)["spoken"]
+    # With nothing in the window too: "why did it write nothing?" most often lands here.
+    put_topic(
+        aws,
+        paused=True,
+        last_article_at=(NOW - timedelta(minutes=30)).isoformat(),
+        last_research_at=(NOW - timedelta(hours=2)).isoformat(),
+    )
+    assert ask(next_article=True)["spoken"] == (
+        "Rail access: Sydney has no findings for its next article since its last article. Research "
+        "last ran 2 hours ago: a tick writes a finding only when something changed. "
+        + topic_findings.PAUSED_NO_NEXT_ARTICLE
+    )
+    # A running topic never says it, whether the flag is absent, False or not the bool the daily
+    # cycle reads (`paused is True`).
+    for running in ({}, {"paused": False}, {"paused": "true"}):
+        put_topic(aws, **running)
+        assert "paused" not in ask(next_article=True)["spoken"], running
+
+
 # --- the rows: item shapes ------------------------------------------------------------------------------
 
 
@@ -588,7 +617,7 @@ def test_both_column_sets_fit_the_page(aws):
 
 
 def test_the_richest_answer_is_under_a_hundred_and_twenty_words(aws):
-    put_topic(aws, "crypto", "Crypto & Investing", "crypto_feed", findings_window_hours=192)
+    put_topic(aws, "crypto", "Crypto & Investing", "crypto_feed", findings_window_hours=192, paused=True)
     figure = [{"key": "vision/x/y/S1.png", "caption": "Map", "alt": "Map"}]
     for minutes in range(50):
         put_finding(
@@ -607,6 +636,7 @@ def test_the_richest_answer_is_under_a_hundred_and_twenty_words(aws):
         "The next article reads at most 48.",
         "Their summaries are longer than the draft reads, so the oldest may be left out.",
         "A topic with editorial goals may use only some of them.",
+        topic_findings.PAUSED_NO_NEXT_ARTICLE,
     ):
         assert part in spoken, part
     assert len(spoken.split()) < topic_findings.SPOKEN_MAX_WORDS
