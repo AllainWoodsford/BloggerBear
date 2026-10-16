@@ -797,6 +797,14 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `lambdas/common/findings_window.py`, `lambdas/daily_cycle_handler.py`,
   `lambdas/common/adapters/rail_access.py`, `scripts/rail_topics.example.json`;
   [design](enhancements/dailysubject_hook.md))
+- [x] The goal rotation: a topic may take 2 to 7 editorial goals in turn
+  (`editorial_goal_rotation`, `topics create|update --goal-rotation-json`), so one set of Findings is
+  written up from different sides. New Findings get the next goal; with nothing new, the daily run
+  revisits the last set under a goal not yet used on it, and stops once every goal has had it. Per
+  subject on a rotating topic (`goal_rotation_state`); the article keeps `editorial_goal` and
+  `revisit`; a revisit's research is not counted twice. Not yet: `findings list --next-article` and
+  the assistant's `topic_findings` do not say a revisit is coming (`lambdas/common/goal_rotation.py`,
+  `lambdas/daily_cycle_handler.py`; [configuration.md](configuration.md))
 
 ## Backlog / not yet scheduled
 

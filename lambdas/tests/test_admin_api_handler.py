@@ -2100,6 +2100,71 @@ def test_updating_other_fields_leaves_editorial_goals_alone(aws_resources):
     assert json.loads(result["body"])["editorial_goals"] == {"primary_focus": "Keep me"}
 
 
+# --- a goal rotation (common/goal_rotation.py) ------------------------------------------------------
+
+_GOAL_ROTATION = [
+    {"name": "access", "primary_focus": "  The served share.  "},
+    {"name": "network", "primary_focus": "The flags."},
+]
+
+
+def _stored_topic(topic_id):
+    table = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    return table.get_item(Key={"topic_id": topic_id})["Item"]
+
+
+def test_create_topic_stores_a_stripped_goal_rotation(aws_resources):
+    result = _create({"topic_id": "sec", "name": "Security", "editorial_goal_rotation": _GOAL_ROTATION})
+
+    assert result["statusCode"] == 201
+    assert _stored_topic("sec")["editorial_goal_rotation"] == [
+        {"name": "access", "primary_focus": "The served share."},
+        {"name": "network", "primary_focus": "The flags."},
+    ]
+
+
+def test_create_topic_without_a_goal_rotation_stores_none(aws_resources):
+    _create({"topic_id": "sec", "name": "Security", "editorial_goal_rotation": []})
+
+    assert "editorial_goal_rotation" not in _stored_topic("sec")
+
+
+@pytest.mark.parametrize(
+    "bad", ["nope", _GOAL_ROTATION[:1], [_GOAL_ROTATION[0], {"name": "access", "primary_focus": "x"}]]
+)
+def test_create_topic_rejects_an_invalid_goal_rotation(aws_resources, bad):
+    result = _create({"topic_id": "sec", "name": "Security", "editorial_goal_rotation": bad})
+
+    assert result["statusCode"] == 400
+    assert "editorial_goal_rotation" in json.loads(result["body"])["error"]
+
+
+def test_update_topic_replaces_and_clears_a_goal_rotation_and_keeps_its_state(aws_resources):
+    state = {"*": {"goal": "access", "used": ["access"], "from": "a", "to": "b"}}
+    _put_topic({**TOPIC, "goal_rotation_state": state})
+
+    result = _update("github-trending", {"editorial_goal_rotation": _GOAL_ROTATION})
+    assert result["statusCode"] == 200
+    stored = _stored_topic("github-trending")["editorial_goal_rotation"]
+    assert [goal["name"] for goal in stored] == ["access", "network"]
+
+    result = _update("github-trending", {"editorial_goal_rotation": []})
+    assert result["statusCode"] == 200
+    stored = _stored_topic("github-trending")
+    assert "editorial_goal_rotation" not in stored
+    assert stored["goal_rotation_state"] == state
+
+
+def test_update_topic_rejects_an_invalid_goal_rotation_without_writing(aws_resources):
+    _put_topic()
+
+    bad = [{"name": "Bad Name", "primary_focus": "x"}] * 2
+    result = _update("github-trending", {"editorial_goal_rotation": bad})
+
+    assert result["statusCode"] == 400
+    assert "editorial_goal_rotation" not in _stored_topic("github-trending")
+
+
 # --- Feedback limits -----------------------------------------------------------------------
 
 
