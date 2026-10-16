@@ -391,9 +391,11 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   of four cities' days would have had nothing to write until one of them changed. Each site's
   record now keeps `first_observed_at` too, set and carried forward the way the topic's is, and the
   first clear scene of a city the topic had not yet seen clearly is reported as that city's first
-  observation (the ring's code `first_observation`). A record from before counts as observed if its
-  history holds a clear scene. The shared `vision_sites` helpers, which `satellite_vision` uses,
-  are unchanged.
+  observation (the ring's code `first_observation`). A record from before that is its state's only
+  site is the city the topic observed, so it counts as observed when the topic was (the owner's
+  trains-sydney stays as it was, even when cloudy scenes have trimmed every clear one from its
+  history); one of several counts as observed if its history holds a clear scene. The shared
+  `vision_sites` helpers, which `satellite_vision` uses, are unchanged.
 - **The window is 192 hours, not 120 (4.3).** It must cover the longest gap between a city's days
   plus a day. The three two-day cities are at most 4 days apart (120 hours), but Boston's one
   Thursday is 7 days from the next, and four cities cannot all have two of seven days: 192 hours.
