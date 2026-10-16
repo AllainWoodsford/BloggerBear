@@ -351,21 +351,27 @@ newest one's steps are on screen.", and lists the other sites' ids under `other_
   polling them, stopping the ones still running, and the Articles reads, whose own deadline
   (`DEADLINE_SECONDS`) is the same 12 seconds since they come last. Each request goes through a
   client built for it with a one-second connect, the time left as its read timeout (at least
-  0.1 s) and one attempt; a request that would start at or after the limit is not made. The shared
-  clients keep longer bounds (the Logs client's 3-second connect, 8-second read and two attempts;
-  the pipeline's DynamoDB resource's 60-second timeouts and ten attempts), which no limit could
-  hold. A step out of time ends as when it fails, never as a partial count or an exception: the
-  access check refuses ("I couldn't reach CloudWatch Logs"), a query is not checked ("The decision
-  logs didn't answer in time"), a stop is skipped (a query left running is cheap and ends by
-  itself), an Articles read is not checked, and a Topics read that fails says "I couldn't read the
-  topics just now". Normally the steps before the 8-second Logs wait take well under a second and
-  the Articles reads have the rest of the 12 seconds. The worst case for a request that stalls is a
-  sum: it starts before the limit and ends by its connect, its read timeout and its client's build,
-  which comes after the time left is read: 12 + 1 + 0.1 + 0.2 = 13.3 seconds (0.2 s is the build
-  measured for the first client of a service in a process; about 10 ms after). A read timeout is an
-  idle bound, the longest wait between two reads of the socket, so a request whose bytes keep
-  trickling in is bounded only by the function's 30-second timeout; a hard end per request would
-  need a thread, which a DynamoDB Query of at most 200 small items does not warrant.
+  0.1 s) and one attempt, so a request that stalls is never sent twice; a request that would start
+  at or after the limit is not made. A request Logs throttles is asked again above botocore instead
+  (`logs.run_queries`' `recover_throttles`, which only this tool passes): a poll counts as still
+  running and is asked again next round, within the wait, and a start is tried once more after one
+  pause, each a new request with the time left, so the sum below still holds. The shared clients
+  keep longer bounds (the Logs client's 3-second connect, 8-second read and two attempts; the
+  pipeline's DynamoDB resource's 60-second timeouts and ten attempts), which no limit could hold.
+  A step out of time ends as when it fails, never as a partial count or an exception: the access
+  check refuses ("I couldn't reach CloudWatch Logs"), a query is not checked ("The decision logs
+  didn't answer in time"), a stop is skipped (a query left running is cheap and ends by itself),
+  an Articles read is not checked, and a Topics read that fails says "I couldn't read the topics
+  just now". Normally the steps before the 8-second Logs wait take well under a second and the
+  Articles reads have the rest of the 12 seconds. The worst case for a request that stalls is a
+  sum: it starts before the limit and ends by its connect, its read timeout and its client's
+  build, which comes after the time left is read: 12 + 1 + 0.1 + 0.2 = 13.3 seconds (0.2 s is the
+  build measured for the first client of a service in a process; about 10 ms after). The name
+  lookup each request makes before it connects is outside these timeouts, and each request makes
+  its own (a client per request reuses no connection). A read timeout is an idle bound, the
+  longest wait between two reads of the socket, so a request whose bytes keep trickling in is
+  bounded only by the function's 30-second timeout; a hard end per request would need a thread,
+  which a DynamoDB Query of at most 200 small items does not warrant.
 - **By equality, never a pattern**: the only values put into a query are a topic id that passed
   `ID_PATTERN` and a scene id that passed `^[A-Za-z0-9_.-]{1,100}$`, each a quoted string compared
   with `=`, so `rail-sydney` never reads `rail-sydney-demo`'s lines.

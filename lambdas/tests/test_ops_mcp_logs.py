@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from botocore.awsrequest import AWSResponse
@@ -228,6 +229,18 @@ def test_a_caller_may_ask_with_its_own_clients_and_the_shared_ones_are_never_use
     assert tags.asked == [f"arn:aws:logs:ap-southeast-2:111111111111:log-group:{good}"]
 
 
+def test_with_no_sts_given_group_arn_is_asked_as_before(dev, monkeypatch):
+    """A caller that passes no `sts` asks group_arn(name, region), the call it made before `sts`
+    existed, so a (name, region) stand-in for it (test_ops_mcp_api_errors.py's, log_review's) fits."""
+    good = "/aws/lambda/bloggerbear-dev-research-tick"
+    monkeypatch.setattr(
+        logs, "group_arn", lambda name, region: f"arn:aws:logs:{region}:123456789012:log-group:{name}"
+    )
+    fake = _fake(monkeypatch, FakeTags({good: {**TAGS, "Environment": "dev"}}))
+    assert logs.readable([good], region="ap-southeast-2") == ([good], [])
+    assert fake.asked == [f"arn:aws:logs:ap-southeast-2:123456789012:log-group:{good}"]
+
+
 # --- the runner ------------------------------------------------------------------------------------
 
 
@@ -271,6 +284,130 @@ def test_queries_run_together_and_one_still_running_is_stopped():
         ("broken", "a"): None,
     }
     assert fake.stopped == ["slow"]
+
+
+THROTTLES = ["LimitExceededException", "ThrottlingException"]
+
+
+def _throttle(code: str, operation: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": "Rate exceeded"}}, operation)
+
+
+class ThrottledLogs(FakeLogs):
+    """FakeLogs, on which the first `starts` StartQuery requests and the first `polls` GetQueryResults
+    requests of each query are throttled (`code`), as Logs answers a burst."""
+
+    def __init__(self, statuses, *, starts=0, polls=0, code="ThrottlingException"):
+        super().__init__(statuses)
+        self.starts, self.polls, self.code = starts, dict.fromkeys(statuses, polls), code
+        self.asked: list[str] = []
+
+    def start_query(self, **kwargs):
+        self.asked.append("StartQuery")
+        if self.starts:
+            self.starts -= 1
+            raise _throttle(self.code, "StartQuery")
+        return super().start_query(**kwargs)
+
+    def get_query_results(self, queryId):  # noqa: N803
+        self.asked.append("GetQueryResults")
+        if self.polls[queryId]:
+            self.polls[queryId] -= 1
+            raise _throttle(self.code, "GetQueryResults")
+        return super().get_query_results(queryId)
+
+
+def _run(fake, jobs, **kwargs):
+    slept = []
+    results = logs.run_queries(jobs, client=lambda region: fake, sleep=slept.append, **kwargs)
+    return results, slept
+
+
+def test_the_throttles_recovered_are_logs_own():
+    assert logs.THROTTLES == set(THROTTLES)
+
+
+@pytest.mark.parametrize("code", THROTTLES)
+def test_a_throttled_poll_is_asked_again_only_for_a_caller_that_opts_in(code, capsys):
+    """vision_evidence's clients make one attempt each, so it asks run_queries to recover a throttle:
+    the throttled poll counts as still running, and the next round's answer is the query's. Without
+    the opt-in (log_review, api_errors, firewall: the shared client has retried already) it fails
+    the query, as before."""
+    jobs = [(("done", "a"), "ap-southeast-2", "done", "q", NOW, NOW)]
+    fake = ThrottledLogs({"done": ["Complete"]}, polls=1, code=code)
+    results, slept = _run(fake, jobs, wait_seconds=5, recover_throttles=True)
+    assert results == {("done", "a"): [{"n": "2"}]}
+    assert fake.asked == ["StartQuery", "GetQueryResults", "GetQueryResults"] and slept == [logs.POLL_SECONDS]
+    assert "ops_logs: results throttled, asked again" in capsys.readouterr().out
+    fake = ThrottledLogs({"done": ["Complete"]}, polls=1, code=code)
+    results, slept = _run(fake, jobs, wait_seconds=5)
+    assert results == {("done", "a"): None}
+    assert fake.asked == ["StartQuery", "GetQueryResults"] and slept == [] and fake.stopped == []
+    assert "ops_logs: results failed error=ClientError" in capsys.readouterr().out
+
+
+def test_polls_throttled_for_the_whole_wait_end_the_query_as_not_finished():
+    """A throttle is never an answer: a query whose every poll is throttled is polled every round
+    until the wait ends, then said as not finished and stopped, as one still running is."""
+    jobs = [(("slow", "a"), "ap-southeast-2", "slow", "q", NOW, NOW)]
+    fake = ThrottledLogs({"slow": ["Complete"]}, polls=10**6)
+    results, slept = _run(fake, jobs, wait_seconds=0.05, recover_throttles=True)
+    assert results == {("slow", "a"): None} and fake.stopped == ["slow"]
+    assert fake.asked.count("GetQueryResults") == len(slept) >= 1
+
+
+@pytest.mark.parametrize("code", THROTTLES)
+def test_a_throttled_start_is_tried_once_more_only_for_a_caller_that_opts_in(code, capsys):
+    """One more try, after one pause, for each throttled start; a second throttle, or any other error,
+    fails the query as before. Without the opt-in a throttled start fails at once."""
+    jobs = [
+        (("done", "a"), "ap-southeast-2", "done", "q", NOW, NOW),
+        (("also", "a"), "ap-southeast-2", "also", "q", NOW, NOW),
+    ]
+    statuses = {"done": ["Complete"], "also": ["Complete"]}
+    fake = ThrottledLogs(statuses, starts=1, code=code)
+    results, slept = _run(fake, jobs, wait_seconds=5, recover_throttles=True)
+    assert results == {("done", "a"): [{"n": "2"}], ("also", "a"): [{"n": "2"}]}
+    assert fake.asked.count("StartQuery") == 3 and fake.started == ["also", "done"]
+    assert slept == [logs.POLL_SECONDS]  # the one pause before the try more; none while polling
+    assert "ops_logs: start throttled, tried once more" in capsys.readouterr().out
+    fake = ThrottledLogs(statuses, starts=3, code=code)  # both throttled, then the first again
+    results, slept = _run(fake, jobs, wait_seconds=5, recover_throttles=True)
+    assert results == {("done", "a"): None, ("also", "a"): [{"n": "2"}]}
+    assert fake.asked.count("StartQuery") == 4 and fake.started == ["also"]
+    fake = ThrottledLogs(statuses, starts=1, code=code)
+    results, slept = _run(fake, jobs, wait_seconds=5)
+    assert results == {("done", "a"): None, ("also", "a"): [{"n": "2"}]}
+    assert fake.asked.count("StartQuery") == 2 and slept == []
+    assert "ops_logs: start failed error=ClientError" in capsys.readouterr().out
+
+
+def test_only_a_throttle_is_recovered():
+    """Another refusal (AccessDenied) or a server error fails the query at once, with or without the
+    opt-in: only a throttle says the same request may succeed when asked again."""
+    jobs = [(("done", "a"), "ap-southeast-2", "done", "q", NOW, NOW)]
+    for recover in (False, True):
+        fake = ThrottledLogs({"done": ["Complete"]}, starts=1, code="AccessDeniedException")
+        assert _run(fake, jobs, wait_seconds=5, recover_throttles=recover)[0] == {("done", "a"): None}
+        assert fake.asked == ["StartQuery"]
+        fake = ThrottledLogs({"done": ["Complete"]}, polls=1, code="ServiceUnavailableException")
+        assert _run(fake, jobs, wait_seconds=5, recover_throttles=recover)[0] == {("done", "a"): None}
+        assert fake.asked == ["StartQuery", "GetQueryResults"]
+
+
+def test_the_tools_on_the_shared_client_never_opt_in():
+    """log_review, api_errors and firewall ask through logs.py's shared client, whose own retry
+    rides out a throttle: none passes recover_throttles, so each is answered as before. Only
+    vision_evidence, whose clients make one attempt each, does."""
+    root = Path(logs.__file__).parent
+    callers = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in root.glob("*.py")
+        if "run_queries(" in path.read_text(encoding="utf-8") and path.name != "logs.py"
+    }
+    assert set(callers) == {"log_review.py", "api_errors.py", "firewall.py"}
+    assert not any("recover_throttles" in text for text in callers.values())
+    assert "recover_throttles=True" in (root / "vision_evidence.py").read_text(encoding="utf-8")
 
 
 class _Raw:

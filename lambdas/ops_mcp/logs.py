@@ -66,6 +66,10 @@ GROUP_PATTERN = re.compile(
 _LOGS_CONFIG = Config(
     connect_timeout=3, read_timeout=8, retries={"total_max_attempts": 2, "mode": "standard"}
 )
+# What Logs throttles with: a request rate (ThrottlingException), or the queries an account may run at
+# once (LimitExceededException). The shared client's retry rides out one; a caller whose clients make
+# one attempt each (vision_evidence) asks run_queries to (`recover_throttles`).
+THROTTLES = frozenset({"ThrottlingException", "LimitExceededException"})
 _clients: dict[str, object] = {}
 # A group's tags, by (Region, name): the same name in another Region is another group.
 _tags: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
@@ -130,7 +134,9 @@ def check_group(
         tags = cached[1]
     else:
         try:
-            arn = group_arn(name, region, sts=sts)  # before the Logs client, which takes the time left
+            # As before when no `sts` is given, so a (name, region) stand-in for group_arn still fits;
+            # the account first, before the Logs client, which takes the time left.
+            arn = group_arn(name, region) if sts is None else group_arn(name, region, sts=sts)
             tags = (clients or client)(region).list_tags_for_resource(resourceArn=arn).get("tags", {})
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
@@ -172,6 +178,23 @@ def readable(
     return allowed, refused
 
 
+def _throttled(exc: Exception) -> bool:
+    return isinstance(exc, ClientError) and exc.response.get("Error", {}).get("Code") in THROTTLES
+
+
+def _start_query(client, region: str, group, query: str, start: datetime, end: datetime) -> str:
+    several = isinstance(group, list | tuple)
+    where = {"logGroupNames": list(group)} if several else {"logGroupName": group}
+    response = client(region).start_query(
+        **where,
+        startTime=int(start.timestamp()),
+        endTime=int(end.timestamp()),
+        queryString=query,
+        limit=QUERY_LIMIT,
+    )
+    return response["queryId"]
+
+
 def run_queries(
     jobs: list[tuple[tuple[str, str], str, str | tuple[str, ...], str, datetime, datetime]],
     *,
@@ -179,35 +202,49 @@ def run_queries(
     wait_seconds: float = WAIT_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
     label: str = "ops_logs",
+    recover_throttles: bool = False,
 ) -> dict[tuple[str, str], list[dict] | None]:
     """Start every (key, region, group, query, start, end) query at once, then wait for them. `group`
     is one log group's name, or a tuple of names for one query over several (Logs Insights takes up
     to 50, and @log in each row says which it came from). Each
     result is a list of rows ({field: value}), or None for a query that failed or did not finish.
-    A query still running at the deadline is stopped, so it costs no more."""
+    A query still running at the deadline is stopped, so it costs no more.
+
+    `recover_throttles` is for a caller whose clients make one attempt each (vision_evidence's, so a
+    request that stalls cannot run twice): a request Logs throttles (THROTTLES) is then not a
+    failure. A start is tried once more, after one pause, through a new `client`; a poll counts as
+    still running and is asked again next round, within the wait. The other tools leave it off and
+    are answered as before: the shared client's own retry rides out a throttle for them."""
     started: dict[tuple[str, str], tuple[str, str]] = {}
     results: dict[tuple[str, str], list[dict] | None] = {}
+    again = []
     for key, region, group, query, start, end in jobs:
         try:
-            several = isinstance(group, list | tuple)
-            where = {"logGroupNames": list(group)} if several else {"logGroupName": group}
-            response = client(region).start_query(
-                **where,
-                startTime=int(start.timestamp()),
-                endTime=int(end.timestamp()),
-                queryString=query,
-                limit=QUERY_LIMIT,
-            )
-            started[key] = (region, response["queryId"])
+            started[key] = (region, _start_query(client, region, group, query, start, end))
         except Exception as exc:  # noqa: BLE001 - one group that cannot be read is reported as such
+            if recover_throttles and _throttled(exc):
+                print(f"{label}: start throttled, tried once more")
+                again.append((key, region, group, query, start, end))
+                continue
             print(f"{label}: start failed error={type(exc).__name__}")
             results[key] = None
+    if again:
+        sleep(POLL_SECONDS)  # one pause, as between polls
+        for key, region, group, query, start, end in again:
+            try:
+                started[key] = (region, _start_query(client, region, group, query, start, end))
+            except Exception as exc:  # noqa: BLE001 - the one more try failed too: as any failure
+                print(f"{label}: start failed error={type(exc).__name__}")
+                results[key] = None
     deadline = time.monotonic() + wait_seconds
     while started and time.monotonic() < deadline:
         for key, (region, query_id) in list(started.items()):
             try:
                 response = client(region).get_query_results(queryId=query_id)
             except Exception as exc:  # noqa: BLE001
+                if recover_throttles and _throttled(exc):
+                    print(f"{label}: results throttled, asked again")  # still running, as far as known
+                    continue
                 print(f"{label}: results failed error={type(exc).__name__}")
                 results[key] = None
                 del started[key]

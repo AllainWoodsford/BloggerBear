@@ -19,7 +19,8 @@ build hex the fakes used; spend in AUD; one sentence per topic, never summed; on
 one deadline for the Articles reads, every page of which is given only the time left (a stalled
 socket included) and none of which is ever a partial count; one limit for the whole call, held for
 real against a loopback AWS on which the access check, a query's start, its stop or the Topics read
-never answers; titles within the page's limit; no implausible number spoken; and no IAM change.
+never answers, and on which Logs throttles a poll or a start (asked again within the limit); a Topics
+read AWS refuses; titles within the page's limit; no implausible number spoken; and no IAM change.
 """
 
 from __future__ import annotations
@@ -395,7 +396,8 @@ def test_the_fixed_words_cover_every_code_and_read_as_plain_words():
         *vision_evidence.TOOL_WORDS.values(), *vision_evidence.OUTCOME_CELLS.values(),
         *vision_evidence.ARTICLE_CELLS.values(), *vision_evidence.GATE_SENTENCES.values(),
         *vision_evidence.ACTION_SENTENCES.values(), *vision_evidence.PERSON_SENTENCES.values(),
-        vision_evidence.NOT_IN_TIME, vision_evidence.PEOPLE_NOT_CHECKED, vision_evidence.ON_SCREEN,
+        vision_evidence.NOT_IN_TIME, vision_evidence.TOPICS_NOT_READ, vision_evidence.PEOPLE_NOT_CHECKED,
+        vision_evidence.ON_SCREEN,
         vision_evidence.NO_EVIDENCE_TOPIC, vision_evidence.SPEND_NOTE,
         vision_evidence.UNKNOWN_KEPT.format(label="Rail access: Sydney", window="in the last 7 days"),
         vision_evidence.UNKNOWN_KEPT_SHORT.format(label="Rail access: Sydney"),
@@ -540,6 +542,8 @@ def test_every_query_waits_on_one_budget_and_asks_through_the_calls_own_clients(
     vision_evidence.vision_evidence("rail-sydney", articles=no_articles)
     assert seen["wait_seconds"] == vision_evidence.WAIT_SECONDS == 8.0
     assert seen["label"] == "ops_vision_evidence" and len(seen["jobs"]) == 3
+    # Its clients make one attempt each, so a throttle is recovered above botocore (logs.run_queries).
+    assert seen["recover_throttles"] is True
     assert {job[1] for job in seen["jobs"]} == {REGION}
     # The access check, starting, polling and stopping the queries, and the pauses between polls all
     # go through the call's budget, never logs.py's shared client.
@@ -1076,7 +1080,7 @@ def test_the_articles_are_read_from_the_topic_index_for_real(pipeline):
         ("art-2", "published_unreviewed"), ("art-1", "approved"),
     ]  # fmt: skip
     assert result["counts"]["articles_approved"] == 1
-    # The tool's own read, through the bounded table (_BoundedArticles), reads the same.
+    # The tool's own read, through the bounded table (_Bounded), reads the same.
     bounded = ask(FakeLogs(pipeline), "rail-sydney", articles=None)
     assert bounded["rows"] == result["rows"] and bounded["counts"] == result["counts"]
 
@@ -1312,6 +1316,21 @@ def test_the_topics_are_read_through_the_calls_own_table_and_never_the_shared_on
     assert built == [vision_evidence.CALL_LIMIT_SECONDS] * 4
 
 
+@pytest.mark.parametrize("topic", [None, "rail-sydney"])
+def test_a_topics_read_aws_refuses_is_said_as_not_read(aws, monkeypatch, capsys, topic):
+    """For real under moto: a Topics table that does not exist (ResourceNotFoundException, a
+    ClientError, as AccessDenied would be) fails the Scan of every topic and one topic's GetItem
+    alike. The tool says the topics were not read, and reads no log."""
+    monkeypatch.setenv("TOPICS_TABLE", "NoSuchTopics")
+
+    def never(*args, **kwargs):
+        pytest.fail("a log was read")
+
+    result = vision_evidence.vision_evidence(topic, readable=never, run=never)
+    assert result == {"spoken": vision_evidence.TOPICS_NOT_READ, "findings": []}
+    assert "topics read failed error=ResourceNotFoundException" in capsys.readouterr().out
+
+
 def test_a_stalled_articles_read_ends_by_the_deadline_with_one_attempt(monkeypatch):
     """For real: botocore against a loopback socket that accepts and never answers. The bounded read
     raises once the time left has passed (plus a connect at most), after one attempt; common/dynamo's
@@ -1382,8 +1401,10 @@ STS_ANSWER = (
 class LoopbackAws:
     """CloudWatch Logs, DynamoDB and STS on a loopback socket, answering as AWS does: the log
     groups' tags, a started query that is still running, a stopped query, the Topics table's one
-    rail topic, the account id. An operation in `hang` is read and never answered. `seen` is every
-    operation asked for, in order, so a retry would show."""
+    rail topic, the account id. An operation in `hang` is read and never answered. One in
+    `throttle` is answered as Logs throttles (HTTP 400, ThrottlingException) the number of times
+    given, or every time for None. `answers` replaces some of ANSWERS. `seen` is every operation
+    asked for, in order, so a retry would show."""
 
     ANSWERS = {
         "ListTagsForResource": {"tags": {**LOOPBACK_TAGS, "Environment": "dev"}},
@@ -1392,13 +1413,16 @@ class LoopbackAws:
         "StopQuery": {"success": True},
         "Scan": {"Items": [LOOPBACK_TOPIC], "Count": 1, "ScannedCount": 1},
         "GetItem": {"Item": LOOPBACK_TOPIC},
+        "Query": {"Items": [], "Count": 0, "ScannedCount": 0},
     }
+    THROTTLED = {"__type": "ThrottlingException", "message": "Rate exceeded"}
 
-    def __init__(self, hang: str):
+    def __init__(self, hang: str | None = None, *, throttle=None, answers=None):
         import http.server
         from urllib.parse import parse_qs
 
         aws, self.hang, self.seen, self.release = self, hang, [], threading.Event()
+        self.throttle, self.answers = dict(throttle or {}), {**LoopbackAws.ANSWERS, **(answers or {})}
 
         class Handler(http.server.BaseHTTPRequestHandler):
             protocol_version = "HTTP/1.1"
@@ -1412,11 +1436,16 @@ class LoopbackAws:
                     aws.release.wait(timeout=60)  # never answered while the test runs
                     self.close_connection = True
                     return
-                if operation == "GetCallerIdentity":
+                status, kind = 200, "application/x-amz-json-1.1"
+                if operation in aws.throttle and aws.throttle[operation] != 0:
+                    if aws.throttle[operation] is not None:
+                        aws.throttle[operation] -= 1
+                    status, payload = 400, json.dumps(aws.THROTTLED).encode()
+                elif operation == "GetCallerIdentity":
                     payload, kind = STS_ANSWER.encode(), "text/xml"
                 else:
-                    payload, kind = json.dumps(aws.ANSWERS[operation]).encode(), "application/x-amz-json-1.1"
-                self.send_response(200)
+                    payload = json.dumps(aws.answers[operation]).encode()
+                self.send_response(status)
                 self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -1474,11 +1503,12 @@ def loopback_env(monkeypatch):
     return point
 
 
-def _call_against(loopback_env, hang: str, topic=None):
-    """vision_evidence, by its default path, against a loopback AWS on which `hang` never answers:
-    its result, how long it took, and the operations asked for. It runs on a thread joined a little
-    past its limit, so a call that overruns fails here at once rather than after 30 s or more."""
-    with LoopbackAws(hang) as aws:
+def _call_against(loopback_env, hang: str | None, topic=None, **loopback):
+    """vision_evidence, by its default path, against a loopback AWS on which `hang` never answers
+    (and `loopback`'s throttles and answers): its result, how long it took, and the operations asked
+    for. It runs on a thread joined a little past its limit, so a call that overruns fails here at
+    once rather than after 30 s or more."""
+    with LoopbackAws(hang, **loopback) as aws:
         loopback_env(aws.url)
         # The service models loaded once, as in a Lambda that has answered before.
         boto3.client("logs", region_name=REGION), boto3.client("sts"), boto3.resource("dynamodb")
@@ -1542,6 +1572,64 @@ def test_a_topics_read_that_never_answers_ends_by_the_limit_as_not_read(loopback
     assert took < SMALL_LIMIT + TOLERANCE, took
     assert result == {"spoken": vision_evidence.TOPICS_NOT_READ, "findings": []}
     assert seen == [operation]
+
+
+# A poll that has finished, on the loopback: no line in the window (so no Articles read follows).
+COMPLETE = {"GetQueryResults": {"status": "Complete", "results": []}}
+NO_DECISIONS = "Rail access: Sydney made no decisions in the last 7 days"
+
+
+def test_a_throttled_poll_is_asked_again_and_the_answer_is_complete(loopback_env):
+    """Logs throttles the first poll. Each request makes one attempt, so botocore does not ask
+    again; run_queries does, next round, within the wait: every query is complete, as with no
+    throttle, and only the throttled poll was asked twice."""
+    result, took, seen = _call_against(loopback_env, None, throttle={"GetQueryResults": 1}, answers=COMPLETE)
+    assert took < SMALL_LIMIT + TOLERANCE, took
+    assert result["queries"] == dict.fromkeys(vision_evidence.QUERY_KINDS, "complete")
+    assert result["spoken"].startswith(NO_DECISIONS)
+    assert seen.count("StartQuery") == 3 and seen.count("GetQueryResults") == 4
+    assert "StopQuery" not in seen
+
+
+def test_a_throttled_query_start_is_tried_once_more_and_the_answer_is_complete(loopback_env):
+    """Logs throttles the first query's start: it is tried once more, after one pause, and its
+    answer is complete, as the other two are."""
+    result, took, seen = _call_against(loopback_env, None, throttle={"StartQuery": 1}, answers=COMPLETE)
+    assert took < SMALL_LIMIT + TOLERANCE, took
+    assert result["queries"] == dict.fromkeys(vision_evidence.QUERY_KINDS, "complete")
+    assert result["spoken"].startswith(NO_DECISIONS)
+    assert seen.count("StartQuery") == 4 and seen.count("GetQueryResults") == 3
+
+
+@pytest.mark.parametrize(
+    "wait", [SMALL_WAIT, 5 * SMALL_LIMIT], ids=["the wait ends first", "the limit ends first"]
+)
+def test_polls_throttled_until_the_end_end_as_not_in_time_inside_the_limit(loopback_env, monkeypatch, wait):
+    """Logs throttles every poll. Each is asked again every round, until the wait ends (each query is
+    then stopped) or, with a wait longer than the call's limit, until the limit does (no request is
+    made after it, so none is stopped): either way within the limit, and the decision logs are said
+    not to have answered in time, never as none."""
+    monkeypatch.setattr(vision_evidence, "WAIT_SECONDS", wait)
+    result, took, seen = _call_against(
+        loopback_env, None, throttle={"GetQueryResults": None}, answers=COMPLETE
+    )
+    assert took < SMALL_LIMIT + TOLERANCE, took
+    assert result["spoken"] == vision_evidence.NOT_IN_TIME and result["counts"] is None
+    assert result["queries"] == dict.fromkeys(vision_evidence.QUERY_KINDS, "not_checked")
+    assert seen.count("StartQuery") == 3 and seen.count("GetQueryResults") > 3 * 2
+    if wait > SMALL_LIMIT:
+        assert took >= SMALL_LIMIT - 0.1 and "StopQuery" not in seen
+    else:
+        assert seen.count("StopQuery") == 3
+
+
+def test_starts_throttled_twice_end_as_not_in_time(loopback_env):
+    """Logs throttles every start: each is tried twice in all, never more, and the decision logs are
+    said not to have answered in time."""
+    result, took, seen = _call_against(loopback_env, None, throttle={"StartQuery": None}, answers=COMPLETE)
+    assert took < SMALL_LIMIT + TOLERANCE, took
+    assert result["spoken"] == vision_evidence.NOT_IN_TIME and result["counts"] is None
+    assert seen.count("StartQuery") == 6 and "GetQueryResults" not in seen
 
 
 

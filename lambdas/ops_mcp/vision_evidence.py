@@ -21,10 +21,13 @@ roughly 15 s, API Gateway after 29). Every AWS call is held to the time left bef
 read, the access check (the log groups' tags and the account id), starting the queries, polling
 them, stopping the ones still running, and the Articles reads. Each request goes through a client
 built for it with a one-second connect, the time left as its read timeout and one attempt
-(_Budget, _Bounded), and one that would start at or after the limit is not made. A step out of
-time ends as when it fails, never as a partial count or an exception. The worst case for a request
-that stalls is 12 + 1 + 0.1 + 0.2 = 13.3 s: the limit, one connect, the read timeout's floor and
-the request's client build (0.2 s measured cold). A read timeout is an idle bound, though: a
+(_Budget, _Bounded), and one that would start at or after the limit is not made. A request Logs
+throttles is asked again above botocore instead (logs.run_queries' recover_throttles): a poll next
+round, a start once more, each a new request held to the time left. A step out of time ends as
+when it fails, never as a partial count or an exception. The worst case for a request that stalls
+is 12 + 1 + 0.1 + 0.2 = 13.3 s: the limit, one connect, the read timeout's floor and the request's
+client build (0.2 s measured cold); the name lookup each request makes before it connects is
+outside these timeouts, and each request makes its own. A read timeout is an idle bound, though: a
 request whose bytes keep trickling in is bounded only by the Lambda's 30 s timeout, and a hard end
 per request would need a thread, which reads this small (a DynamoDB Query of at most 200 small
 items) do not warrant.
@@ -128,7 +131,9 @@ WAIT_SECONDS = 8.0
 # The worst case for a request that stalls, from the call's start, is a sum: the last request starts
 # before the limit and ends by its connect, its read timeout and the build of its client, which comes
 # after the time left is read: 12 + 1 + 0.1 + 0.2 = 13.3 s (the build measured 0.2 s for the first
-# client of a service in a process, 10 ms after), inside Alexa+'s 15 s and API Gateway's 29 s.
+# client of a service in a process, 10 ms after), inside Alexa+'s 15 s and API Gateway's 29 s. The
+# name lookup each request makes before it connects is outside these timeouts, and each request
+# makes its own (a client per request reuses no connection).
 # A read timeout is an idle bound, the longest wait between two reads of the socket, so a request
 # that stalls ends as above but one whose bytes keep trickling in is bounded only by the Lambda's
 # 30 s timeout: a hard end per request would need a thread, which a DynamoDB Query of at most 200
@@ -142,7 +147,11 @@ CALL_LIMIT_SECONDS = 12.0
 # = 13.3 s from the call's start (above), and one that trickles by the Lambda's 30 s.
 DEADLINE_SECONDS = CALL_LIMIT_SECONDS
 # Each request's connect, as vision_status._s3's, and the least read timeout it is given (botocore
-# needs one above zero). One attempt in all: the next question asks again.
+# needs one above zero). One attempt per request, so a request that stalls is never sent twice. A
+# request Logs throttles is asked again above botocore instead (logs.run_queries' recover_throttles):
+# a poll counts as still running and is asked again next round, within the wait, and a start is tried
+# once more after one pause, each through a client _Budget builds with the time left, so none is
+# made at or after the limit and the sum above still holds.
 CONNECT_SECONDS = 1.0
 MIN_READ_SECONDS = 0.1
 # The functions whose log groups are read, by their catalogue keys (architecture.py).
@@ -1390,7 +1399,7 @@ def vision_evidence(
     if run is None:  # started, polled and stopped within the call's limit
         run = partial(
             logs.run_queries, client=budget.logs, wait_seconds=WAIT_SECONDS, sleep=budget.sleep,
-            label="ops_vision_evidence",
+            label="ops_vision_evidence", recover_throttles=True,
         )  # fmt: skip
     results = run(jobs)
 
