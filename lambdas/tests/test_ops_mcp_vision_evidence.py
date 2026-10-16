@@ -16,8 +16,9 @@ an article of two Findings, an expired Finding, a rejection's time, `days` out o
 trace of a look_again decision, with no cell comparing a re-measurement with the baseline; the
 tables; `spoken` under 120 words and free of every site id and name, scene id, request id and
 build hex the fakes used; spend in AUD; one sentence per topic, never summed; one wait budget, and
-one deadline for the Articles reads; titles within the page's limit; no implausible number spoken;
-and no IAM change.
+one deadline for the Articles reads, every page of which is given only the time left (a stalled
+socket included) and none of which is ever a partial count; titles within the page's limit; no
+implausible number spoken; and no IAM change.
 """
 
 from __future__ import annotations
@@ -25,6 +26,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -34,6 +38,7 @@ import boto3
 import pytest
 import test_rail_access_adapter as rail
 import test_satellite_vision_adapter as ships
+from botocore.exceptions import ReadTimeoutError
 from moto import mock_aws
 from table_schemas import create_table
 
@@ -332,6 +337,14 @@ def test_the_limits_are_the_named_exception_and_logs_window_is_unchanged():
     # The whole call's deadline: the Logs wait and a few short Articles reads, well inside API
     # Gateway's 29 s, which the ops agent's own model calls share.
     assert vision_evidence.WAIT_SECONDS < vision_evidence.DEADLINE_SECONDS == 12.0
+    # The worst case the module states: the 8 s wait, the reads ending by the 12 s deadline, one
+    # connect and the read timeout's floor; inside Alexa+'s limit of about 15 s.
+    assert (vision_evidence.CONNECT_SECONDS, vision_evidence.MIN_READ_SECONDS) == (1.0, 0.1)
+    worst = (
+        vision_evidence.WAIT_SECONDS + (vision_evidence.DEADLINE_SECONDS - vision_evidence.WAIT_SECONDS)
+        + vision_evidence.CONNECT_SECONDS + vision_evidence.MIN_READ_SECONDS
+    )  # fmt: skip
+    assert worst == pytest.approx(13.1) and worst < 15
     assert (logs.LOOKBACK_DAYS, logs.MAX_HOURS, logs.QUERY_LIMIT) == (30, 168, 1000)
     # The page's title limit, which the ops-mcp package cannot import (it ships no ops_agent/).
     assert vision_evidence.TABLE_TITLE_MAX_CHARS == policy.TABLE_TITLE_MAX_CHARS
@@ -376,7 +389,13 @@ def test_the_fixed_words_cover_every_code_and_read_as_plain_words():
         vision_evidence.NO_EVIDENCE_TOPIC, vision_evidence.SPEND_NOTE,
         vision_evidence.UNKNOWN_KEPT.format(label="Rail access: Sydney", window="in the last 7 days"),
         vision_evidence.UNKNOWN_KEPT_SHORT.format(label="Rail access: Sydney"),
+        vision_evidence.UNKNOWN_KEPT_FAILED.format(
+            label="Rail access: Sydney", window="in the last 7 days", failed=3, were="were"
+        ),
         vision_evidence.MANY_SITES.format(n=2),
+        vision_evidence.REST_ON_SCREEN.format(topics="4 more topics", are="are"),
+        vision_evidence.REST_NO_DECISIONS.format(topics="8 more topics"),
+        vision_evidence.REST_UNKNOWN_KEPT.format(topics="5 more topics"),
     ]  # fmt: skip
     for said in fixed:
         assert not redact.looks_like_instructions(said), said
@@ -723,6 +742,47 @@ def test_a_long_answer_for_many_topics_is_cut_to_whole_sentences_under_120_words
     assert len(one.split()) < vision_evidence.SPOKEN_MAX_WORDS and one.endswith(vision_evidence.ON_SCREEN)
 
 
+def test_the_topics_a_long_answer_leaves_out_are_on_screen_only_when_they_have_a_row():
+    """The all-topics answer, cut to as many short sentences as fit: the topics it leaves out are
+    said to be on screen only when the table has a row for them; the others are said for what they
+    are, so an empty table is never said to be on screen."""
+    empty = vision_evidence._empty_counts
+    cut = "Only the newest 1000 log lines were read."
+    # Twenty topics, none with a decision.
+    labels = [f"Rail access: City number {n} region" for n in range(20)]
+    said = vision_evidence._all_topics_spoken(labels, [empty()] * 20, 7, [])
+    assert len(said.split()) < vision_evidence.SPOKEN_MAX_WORDS
+    assert said.endswith("City number 11 region made no decisions. 8 more topics made no decisions.")
+    assert "on screen" not in said
+    # Twelve topics whose decisions were all left out as unknown (the attempts query cut).
+    labels = [f"Rail access: City {n}" for n in range(12)]
+    said = vision_evidence._all_topics_spoken(labels, [empty() | {"unknown": 1}] * 12, 7, [cut])
+    assert said.endswith(
+        "For Rail access: City 6, I couldn't tell which decisions were kept. For 5 more topics, I couldn't "
+        "tell which decisions were kept. " + cut
+    )
+    assert "on screen" not in said and "made no decisions" not in said
+    # Some of each: only those with a row are on screen, and the closing sentence says the table has rows.
+    labels = [f"Rail access: City number {n} region" for n in range(18)]
+    some = empty() | {"decisions": 2, "triaged": 1, "findings_written": 1}
+    per_topic = [some] * 8 + [empty()] * 6 + [empty() | {"unknown": 1}] * 4
+    said = vision_evidence._all_topics_spoken(labels, per_topic, 7, [cut])
+    assert len(said.split()) < vision_evidence.SPOKEN_MAX_WORDS
+    assert said.endswith(
+        "4 more topics are on screen. 6 more topics made no decisions. For 4 more topics, I couldn't tell "
+        "which decisions were kept. " + cut + " " + vision_evidence.ON_SCREEN
+    )
+    # One topic left out of each kind: singular.
+    assert vision_evidence._rest_sentences([some, empty(), empty() | {"unknown": 2}]) == [
+        "1 more topic is on screen.", "1 more topic made no decisions.",
+        "For 1 more topic, I couldn't tell which decisions were kept.",
+    ]  # fmt: skip
+    # A topic with only scenes not kept has rows: on screen.
+    assert vision_evidence._rest_sentences([empty() | {"not_kept": 1, "unknown": 1}]) == [
+        "1 more topic is on screen.", "", "",
+    ]  # fmt: skip
+
+
 def test_a_failed_attempt_and_its_retry_show_one_decision_kept_and_count_the_other(pipeline):
     pipeline.rail("rail-sydney", SCENES[0], rail.metrics())
     # The summary call fails after the decision and the triage were printed: stored false, the
@@ -844,6 +904,35 @@ def test_an_attempt_beyond_a_cut_attempts_query_is_unknown_not_a_failed_tick(pip
     assert short == "In the last 7 days, for Rail access: Sydney, I couldn't tell which decisions were kept."
 
 
+def test_a_topic_with_unknown_and_not_kept_decisions_keeps_its_failed_tick_count(pipeline):
+    """The attempts query cut at the cap: an older decision has no attempt to join (unknown), and a
+    newer one's attempt was read and failed (not kept). The topic kept none, and its answer says
+    both: which were kept is unknown, and how many came from ticks that failed."""
+    pipeline.rail("rail-sydney", SCENES[0], rail.metrics())  # its attempt falls beyond the cut
+    pipeline.rail("rail-sydney", SCENES[1], MOVED, day=4, summary_fails=True)
+    newer = []
+    for n in range(logs.QUERY_LIMIT - 1):  # with the failed attempt's own line, the cap exactly
+        with evidence.bind(tick=f"tick-n{n}", run=f"{n:012x}", topic_id="rail-sydney"):
+            line = evidence.line("research_tick", outcome="no_change", stored=True, decisions=1)
+        newer.append({"@timestamp": f"2099-01-01 00:{n // 60 % 60:02d}:{n % 60:02d}.000", "@message": line})
+    result = ask(FakeLogs(pipeline, extra={"attempts": newer}), "rail-sydney")
+    assert result["queries"]["attempts"] == "cut"
+    assert (result["counts"]["decisions"], result["counts"]["not_kept"]) == (0, 1)
+    assert [(row["scene_id"], row["kept"]) for row in result["rows"]] == [(SCENES[1], False)]
+    assert result["spoken"] == (
+        "For Rail access: Sydney, I couldn't tell which of its decisions in the last 7 days were kept; 1 "
+        "came from ticks that failed, and was measured again. Only the newest 1000 log lines were read. "
+        "The decisions are on screen."
+    )
+    # More of each: the count and its verb follow the not-kept copies.
+    counts = vision_evidence._empty_counts() | {"unknown": 2, "not_kept": 3}
+    assert vision_evidence._main_sentence("Rail access: Sydney", counts, 7) == (
+        "For Rail access: Sydney, I couldn't tell which of its decisions in the last 7 days were kept; 3 "
+        "came from ticks that failed, and were measured again."
+    )
+    assert_said_safely(result)
+
+
 @pytest.mark.parametrize("unfinished", ["decisions", "attempts"])
 def test_a_query_that_did_not_finish_is_not_checked(pipeline, unfinished):
     pipeline.rail("rail-sydney", SCENES[0], rail.metrics())
@@ -937,6 +1026,9 @@ def test_the_articles_are_read_from_the_topic_index_for_real(pipeline):
         ("art-2", "published_unreviewed"), ("art-1", "approved"),
     ]  # fmt: skip
     assert result["counts"]["articles_approved"] == 1
+    # The tool's own read, through the bounded table (_BoundedArticles), reads the same.
+    bounded = ask(FakeLogs(pipeline), "rail-sydney", articles=None)
+    assert bounded["rows"] == result["rows"] and bounded["counts"] == result["counts"]
 
 
 def test_an_articles_read_that_fails_is_never_no_article_yet(pipeline):
@@ -947,7 +1039,16 @@ def test_an_articles_read_that_fails_is_never_no_article_yet(pipeline):
 
     result = ask(FakeLogs(pipeline), "rail-sydney", articles=broken)
     assert result["rows"][0]["person"] is None and table_cells(result)["Article"] == [""]
-    assert vision_evidence.PEOPLE_NOT_CHECKED in result["spoken"]
+    # Its articles were not read, so they are not counted: null, never "0 articles", and only the
+    # findings half of the sentence is said.
+    assert result["spoken"] == (
+        "Rail access: Sydney made 1 decision in the last 7 days: 1 first observation and 0 changes checked "
+        "by the agent. 1 finding was written. What people decided wasn't checked this time. The decisions "
+        "are on screen."
+    )
+    counts = result["counts"]
+    assert (counts["articles_held"], counts["articles_approved"], counts["articles_rejected"]) == (None,) * 3
+    assert counts["findings_written"] == 1 and result["topics"][0]["counts"] == counts
     scene = ask(FakeLogs(pipeline), "rail-sydney", scene="latest", articles=broken)
     assert all(row["step"] != "person" for row in scene["rows"])
     assert "No article has been drafted yet" not in scene["spoken"]
@@ -997,6 +1098,14 @@ def test_an_articles_read_past_the_deadline_is_skipped_and_said_as_not_checked(p
     article_cells = dict(zip(table_cells(result)["Topic"], table_cells(result)["Article"], strict=True))
     assert sorted(article_cells.values()) == ["", "no article yet", "no article yet"]
     assert vision_evidence.PEOPLE_NOT_CHECKED in result["spoken"]
+    # The skipped topic's articles are not checked (null); the topics read have none (zero).
+    articles_counted = {
+        each["topic_id"]: tuple(each["counts"][key] for key in ("articles_held", "articles_approved",
+                                                                 "articles_rejected"))
+        for each in result["topics"]
+    }  # fmt: skip
+    assert articles_counted[skipped] == (None, None, None)
+    assert all(articles_counted[topic_id] == (0, 0, 0) for topic_id in asked)
     assert_said_safely(result)
 
     # Inside the deadline every read runs, and the answer is the same as without a clock.
@@ -1018,6 +1127,163 @@ def test_an_articles_read_past_the_deadline_is_skipped_and_said_as_not_checked(p
         readable=slow, articles=articles, clock=late,
     )  # fmt: skip
     assert one["rows"][0]["person"] is None and vision_evidence.PEOPLE_NOT_CHECKED in one["spoken"]
+    # Only the findings half is said: no article count, since none was read.
+    assert "1 finding was written. What people decided wasn't checked this time." in one["spoken"]
+    assert "0 articles" not in one["spoken"] and "waiting for review" not in one["spoken"]
+    counts = one["counts"]
+    assert (counts["articles_held"], counts["articles_approved"], counts["articles_rejected"]) == (None,) * 3
+
+
+class PagedArticles:
+    """The Articles table one bounded page is read through (vision_evidence._articles_table, stubbed):
+    it records the read timeout each page was given and the Query each made, answers each page in
+    turn, and moves the scripted clock by each page's `seconds`. A page that is an exception is
+    raised, as botocore raises a read that timed out."""
+
+    def __init__(self, clock, pages):
+        self.clock, self.pages = clock, list(pages)
+        self.read_timeouts, self.queries = [], []
+
+    def __call__(self, read_timeout):
+        self.read_timeouts.append(read_timeout)
+        return self
+
+    def query(self, **kwargs):
+        self.queries.append(kwargs)
+        seconds, page = self.pages.pop(0)
+        self.clock.now += seconds
+        if isinstance(page, Exception):
+            raise page
+        return page
+
+
+def _bounded_ask(pipeline, monkeypatch, pages):
+    """One topic with a finding written, asked with the default (bounded) Articles read over
+    PagedArticles: the Logs wait uses its 8 s, so the first page has the 4 s left."""
+    pipeline.rail("rail-sydney", SCENES[0], rail.metrics())
+    (at,) = pipeline.findings("rail-sydney")
+    clock, fake = Clock(), FakeLogs(pipeline)
+    table = PagedArticles(clock, [(seconds, page(at) if callable(page) else page) for seconds, page in pages])
+    monkeypatch.setattr(vision_evidence, "_articles_table", table)
+
+    def run(jobs):
+        clock.now += vision_evidence.WAIT_SECONDS
+        return fake(jobs)
+
+    result = vision_evidence.vision_evidence(
+        "rail-sydney", 7, None, now=datetime.now(UTC) + timedelta(hours=1), run=run, readable=readable,
+        clock=clock,
+    )  # fmt: skip
+    return result, table
+
+
+def _page(*items, more=False):
+    page = {"Items": list(items)}
+    if more:
+        page["LastEvaluatedKey"] = {"article_id": "next"}
+    return page
+
+
+def test_each_articles_page_is_given_the_time_left_before_the_deadline(pipeline, monkeypatch):
+    """Two pages, both inside the deadline: the first is given the 4 s left after the Logs wait, and
+    the second, 2 s later, the 2 s then left. What both pages hold is counted."""
+    result, table = _bounded_ask(pipeline, monkeypatch, [
+        (2.0, lambda at: _page(more=True)),
+        (1.0, lambda at: _page(article("art-1", at))),
+    ])  # fmt: skip
+    left = vision_evidence.DEADLINE_SECONDS - vision_evidence.WAIT_SECONDS
+    assert table.read_timeouts == [left, left - 2.0] == [4.0, 2.0]
+    assert "ExclusiveStartKey" in table.queries[1]
+    assert result["rows"][0]["person"] == "held" and result["counts"]["articles_held"] == 1
+    assert "1 article is waiting for review" in result["spoken"]
+    assert vision_evidence.PEOPLE_NOT_CHECKED not in result["spoken"]
+
+
+def test_an_articles_read_that_runs_out_of_time_between_pages_is_not_checked_never_partial(
+    pipeline, monkeypatch
+):
+    """The first page takes the 4 s left and more and holds the topic's article: the second page is
+    never started, and the read is not checked, rather than counting what the first page held."""
+    result, table = _bounded_ask(pipeline, monkeypatch, [
+        (5.0, lambda at: _page(article("art-1", at), more=True)),
+        (0.0, lambda at: _page()),
+    ])  # fmt: skip
+    assert table.read_timeouts == [4.0] and len(table.queries) == 1  # no second page
+    assert result["rows"][0]["person"] is None and result["rows"][0]["article_id"] is None
+    counts = result["counts"]
+    assert (counts["articles_held"], counts["articles_approved"], counts["articles_rejected"]) == (None,) * 3
+    assert "1 finding was written. What people decided wasn't checked this time." in result["spoken"]
+    assert "article" not in result["spoken"]
+
+
+def test_an_articles_read_that_times_out_is_not_checked(pipeline, monkeypatch):
+    """A page whose read timed out (botocore's ReadTimeoutError, after the 4 s it was given): not
+    checked, as any failed read, and nothing about the article is said."""
+    timed_out = ReadTimeoutError(endpoint_url="https://dynamodb.ap-southeast-2.amazonaws.com/")
+    result, table = _bounded_ask(pipeline, monkeypatch, [(4.0, timed_out)])
+    assert table.read_timeouts == [4.0]
+    assert result["rows"][0]["person"] is None and result["counts"]["articles_held"] is None
+    assert result["spoken"].endswith(
+        "1 finding was written. What people decided wasn't checked this time. The decisions are on screen."
+    )
+
+
+def test_the_bounded_articles_table_has_a_short_connect_the_time_left_and_one_attempt(aws):
+    table = vision_evidence._articles_table(3.5)
+    config = table.meta.client.meta.config
+    assert table.name == "Articles"
+    assert (config.connect_timeout, config.read_timeout) == (vision_evidence.CONNECT_SECONDS, 3.5)
+    assert config.retries == {"total_max_attempts": 1, "mode": "standard"}
+    # Past the deadline is still a read timeout botocore takes: the floor.
+    floor = vision_evidence._articles_table(-2.0).meta.client.meta.config
+    assert floor.read_timeout == vision_evidence.MIN_READ_SECONDS
+
+
+def test_a_stalled_articles_read_ends_by_the_deadline_with_one_attempt(monkeypatch):
+    """For real: botocore against a loopback socket that accepts and never answers. The bounded read
+    raises once the time left has passed (plus a connect at most), after one attempt; common/dynamo's
+    shared resource would wait 60 s and try ten times."""
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    server.settimeout(0.2)
+    accepted, stop = [], threading.Event()
+
+    def hold():
+        while not stop.is_set():
+            try:
+                accepted.append(server.accept()[0])  # held open, never answered
+            except OSError:
+                continue
+
+    for key, value in {
+        "AWS_DEFAULT_REGION": REGION, "AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing",
+        "ARTICLES_TABLE": "Articles", "AWS_ENDPOINT_URL_DYNAMODB": f"http://127.0.0.1:{server.getsockname()[1]}",
+    }.items():  # fmt: skip
+        monkeypatch.setenv(key, value)
+    for key in ("AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS"):
+        monkeypatch.delenv(key, raising=False)
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    vision_evidence._articles_table(1.0)  # the models loaded once, as the Topics read has in the Lambda
+    left = 0.5
+    try:
+        began = time.monotonic()
+        with pytest.raises(ReadTimeoutError):
+            vision_evidence._read_articles(
+                "rail-sydney", "2026-10-01T00:00:00+00:00", clock=time.monotonic, deadline=began + left
+            )
+        took = time.monotonic() - began
+    finally:
+        stop.set()
+        holder.join(timeout=2)
+        for each in accepted:
+            each.close()
+        server.close()
+    assert left <= took < left + vision_evidence.CONNECT_SECONDS + 0.5
+    assert len(accepted) == 1  # one attempt: no retry
 
 
 # --- one decision, step by step -------------------------------------------------------------------

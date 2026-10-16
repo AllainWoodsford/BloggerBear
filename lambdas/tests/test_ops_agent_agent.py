@@ -878,7 +878,7 @@ def test_the_model_is_told_to_interrogate_the_vision_evidence():
     assert (
         "Asked what the vision pipeline or its agent did, why a change was or was not reported, or for "
         "evidence that OpenCV's output changed a decision: call vision_evidence (`scene` for one decision "
-        "step by step). Say what its `spoken` says; the rows are on screen."
+        "step by step). Say what its `spoken` says; it says when rows are on screen."
     ) in prompt
     assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
     assert policy.BUDGETS == {"briefing": 8, "follow_up": 3}

@@ -1412,7 +1412,7 @@ ARTICLES_FOR_TOPIC_FIELDS = ("article_id", "status", "published_by", "created_at
 
 
 def list_articles_for_topic(
-    topic_id: str, since_iso: str, *, limit: int = ARTICLES_FOR_TOPIC_MAX
+    topic_id: str, since_iso: str, *, limit: int = ARTICLES_FOR_TOPIC_MAX, table=None
 ) -> list[dict]:
     """The topic's articles created at or after `since_iso`, in any status, newest first and at
     most `limit` of them (between one and ARTICLES_FOR_TOPIC_MAX, whatever is asked): one Query on
@@ -1420,8 +1420,13 @@ def list_articles_for_topic(
     a Scan, reading only ARTICLES_FOR_TOPIC_FIELDS. For the operator's assistant
     (ops_mcp/vision_evidence.py), which finds the article a vision decision's Finding fed by the
     lineage's `captured_at`, and reads its status and `published_by` for what a person did. Lineage
-    Decimals come back as plain numbers, as list_articles_by_status gives them."""
-    table = get_table(os.environ["ARTICLES_TABLE"])
+    Decimals come back as plain numbers, as list_articles_by_status gives them.
+
+    `table`, when given, is what every page is queried through instead of the shared resource's
+    Articles table (which keeps botocore's default timeouts and retries): the assistant passes one
+    that gives each page only the time its call has left (vision_evidence._BoundedArticles)."""
+    if table is None:
+        table = get_table(os.environ["ARTICLES_TABLE"])
     items = _paginated_query(
         table,
         ARTICLES_BY_TOPIC_INDEX,
