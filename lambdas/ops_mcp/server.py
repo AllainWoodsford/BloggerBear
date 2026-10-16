@@ -101,8 +101,8 @@ _INSTRUCTIONS = (
     # The submission round's evidence (vision_evidence.py): the owner's ask that Alexa+ can interrogate
     # what the vision pipeline did. Everything it returns is code-derived, so a voice caller gets it all.
     "vision_evidence says what the vision pipeline measured and decided and what a person did about "
-    "it, and with `scene` walks one decision step by step. Say its counts and that the rows are on "
-    "screen. "
+    "it, and with `scene` walks one decision step by step. Say what `spoken` says; it says when rows "
+    "are on screen. "
     # The same workflow the agent's prompt holds (ops_agent/agent.py), for a client that reads only
     # this: Alexa+ talks to this server directly.
     "Your access is read-only: offer to look, to watch, or to put a fix on screen, never to "
@@ -509,8 +509,8 @@ def build_server() -> MCPServer:
         usual range and from which input, what the triage agent did (its tools, including OpenCV
         re-measurements, and its verdict), whether a finding was written, and whether its article was
         approved. Pass `topic` for one topic, `scene` (a scene id, or "latest") for one decision step
-        by step, and `days` for the window (up to 90). Say its counts as `spoken` does and that the
-        rows are on screen; never read a table's cells aloud."""
+        by step, and `days` for the window (up to 90). Say what `spoken` says; it says when rows are
+        on screen. Never read a table's cells aloud."""
         return vision_evidence_module.vision_evidence(topic, days, scene)
 
     # Reads rows, so read-only like the pipeline tools, but not passed through `remembered`: it

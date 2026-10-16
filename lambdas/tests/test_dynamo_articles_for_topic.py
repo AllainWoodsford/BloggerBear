@@ -5,8 +5,9 @@ Held here, against moto with the index as infra/modules/app-data/main.tf defines
 (table_schemas.create_table mirrors it; test_terraform_wiring.py holds the two together): the read
 is a Query on `by_topic_created_at` with `created_at` in the key condition and no filter, never a
 Scan; it pages until it has what it needs; it stops at ARTICLES_FOR_TOPIC_MAX whatever the caller
-asks; it reads only ARTICLES_FOR_TOPIC_FIELDS; and the items come back newest first with plain
-numbers in their lineage.
+asks; it reads only ARTICLES_FOR_TOPIC_FIELDS; the items come back newest first with plain
+numbers in their lineage; and a table passed in (the assistant's, bounded by the time its call has
+left) is the only one read.
 """
 
 from __future__ import annotations
@@ -177,3 +178,20 @@ def test_a_topic_with_nothing_since_gives_an_empty_list_from_one_query(articles)
     assert dynamo.list_articles_for_topic("rail-sydney", "2026-10-09T00:00:00+00:00") == []
     assert dynamo.list_articles_for_topic("nobody", "2026-10-01T00:00:00+00:00") == []
     assert len(articles.queries) == 2
+
+
+def test_a_table_passed_in_is_the_only_one_read(articles):
+    """The operator's assistant passes its own table, whose every page has only the time its call
+    has left (vision_evidence._BoundedArticles): every page goes through it, with the same Query,
+    and the shared resource's table is never read."""
+    for n in range(10):
+        _article(f"a{n}", day=2 + n % 7, hour=n, captured=f"2026-10-{2 + n % 7:02d}T{n:02d}:00:00+00:00")
+    expected = dynamo.list_articles_for_topic("rail-sydney", "2026-10-01T00:00:00+00:00")
+    shared = list(articles.queries)
+    own = _Watched(articles._table)
+
+    found = dynamo.list_articles_for_topic("rail-sydney", "2026-10-01T00:00:00+00:00", table=own)
+
+    assert found == expected and len(found) == 10
+    assert articles.queries == shared  # nothing more through the shared table
+    assert own.queries == shared and len(own.queries) >= 2  # the same Query, paged the same way

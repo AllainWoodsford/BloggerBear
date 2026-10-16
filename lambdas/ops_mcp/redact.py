@@ -42,7 +42,7 @@ since one ignorable inside every word and between the words glues the words in t
 splits them in the other; a line that matches in either copy is withheld. A line with nothing
 ignorable in it is read against the pattern as written: "filesystem: 91% used" is not "system:".
 Where the result is cut to a limit (`scrub`, samples._redact_text) the check reads a bounded start,
-CHECK_VISIBLE_MULTIPLE times the limit in characters it does not ignore, of the text as written and
+CHECK_VISIBLE_MULTIPLE times the limit in characters it reads (`_read`), of the text as written and
 of the text as swept (what nobody sees removed, placeholders in, whitespace collapsed: the text
 that is cut), and then the cut text (`cut_or_withheld` says why each). A phrase within either start
 withholds the line; one past the swept start begins past the cut, so it is never returned and the
@@ -157,14 +157,16 @@ _INSTRUCTION_LIKE = re.compile(
 _INSTRUCTION_LIKE_GLUED = re.compile(_INSTRUCTION_LIKE.pattern.replace(" ", " ?").replace(r"\b", ""))
 
 # How much of a text the check reads where the result is cut to a limit (looks_like_instructions_
-# within): this many times the limit, in characters the check does not ignore, of the text as
-# written and of the text as swept (cut_or_withheld). More than the limit itself so that a phrase
-# that begins before the cut is read whole: the start reaches three times the limit past the cut,
-# and the pattern's longest phrase ("forget everything previous instructions") is 39 characters.
-# Past the swept start a phrase is past the cut too, never returned, and the line is shown cut.
-# Small enough that the NFKD the check runs is bounded: at the default limit, 1,200 characters of
-# the one that expands eighteen-fold (U+FDFA) is 21,600 code points, where the whole of a
-# 256K-character line was 4.7 million.
+# within): this many times the limit, in characters the check's copy keeps more of than a space
+# (`_read`: not what it ignores, closes up or collapses), of the text as written and of the text
+# as swept (cut_or_withheld). More than the limit itself so that a phrase that begins before the
+# cut is read whole: the start reaches three times the limit past the cut, and the pattern's
+# longest phrase ("forget everything previous instructions") is 39 characters, so at most 39 such
+# characters, however many of the others lie between them. Past the swept start a phrase is past
+# the cut too, never returned, and the line is shown cut. Small enough that the NFKD the check runs
+# is bounded: at the default limit, 1,200 characters of the one that expands eighteen-fold
+# (U+FDFA) is 21,600 code points, where the whole of a 256K-character line was 4.7 million; the
+# characters not counted decompose to three code points at most.
 CHECK_VISIBLE_MULTIPLE = 4
 
 
@@ -318,17 +320,37 @@ def looks_like_instructions(text, *, hidden: bool = False) -> bool:
     return bool(ignored) and bool(_INSTRUCTION_LIKE.search(_copy(decomposed, " ")))
 
 
+def _read(char: str) -> bool:
+    """Whether the check's copy keeps something of `char` that is not a space: a code point of its
+    NFKD that is neither ignorable nor a space (`normalised`). What it keeps nothing of can be
+    repeated without lengthening the copy by more than one space: an ignorable character,
+    whitespace and control characters (collapsed), a halfwidth sound mark (U+FF9E, whose NFKD is a
+    combining mark) and a spacing accent (U+00A8, U+00B4: a space and a mark), 52 of those two
+    kinds. None of them decomposes to more than three code points."""
+    return not _ignorable(char) and any(
+        not (_ignorable(part) or part.isspace() or unicodedata.category(part) in _SPACE_CATEGORIES)
+        for part in unicodedata.normalize("NFKD", char)
+    )
+
+
 def _head(text: str, limit: int) -> str:
     """The start of `text` the bounded check reads: up to where CHECK_VISIBLE_MULTIPLE * limit
-    characters the check does not ignore have been seen. A plain scan of categories, no NFKD, so a
-    line of 256K zero-width spaces costs some 40 ms; ASCII holds nothing the check ignores, so it is
-    cut outright."""
+    characters the check reads as more than nothing or a space (`_read`) have been seen. Counted,
+    a run of spacing accents or sound marks, which the copy closes up, carried the end of a phrase
+    that begins in what is returned past the start, and the line came back "...Ignore all
+    previous¨¨¨…". A scan with one NFKD per distinct character, so a line of 256K zero-width spaces
+    costs some 40 ms. ASCII is cut outright: its only characters the copy closes up are whitespace
+    and control characters, which the sweep has collapsed before the swept start is read
+    (`cut_or_withheld`)."""
     wanted = CHECK_VISIBLE_MULTIPLE * limit
     if len(text) <= wanted or text.isascii():
         return text[:wanted]
-    seen = 0
+    seen, read = 0, {}
     for index, char in enumerate(text):
-        if not _ignorable(char):
+        counted = read.get(char)
+        if counted is None:
+            counted = read[char] = _read(char)
+        if counted:
             seen += 1
             if seen >= wanted:
                 return text[: index + 1]
@@ -337,11 +359,11 @@ def _head(text: str, limit: int) -> str:
 
 def looks_like_instructions_within(text, limit: int, *, hidden: bool = False) -> bool:
     """`looks_like_instructions` over the start of a text of which at most `limit` characters will
-    be returned (`_head`: CHECK_VISIBLE_MULTIPLE * limit characters the check does not ignore),
-    which bounds the NFKD and the pattern's work however long the text. A phrase within that start
-    is found and one past it is not: the callers that cut (`scrub`, samples._redact_text) read the
-    start of the text as written and of the text as swept, and then the cut text
-    (`cut_or_withheld`)."""
+    be returned (`_head`: CHECK_VISIBLE_MULTIPLE * limit characters the check's copy keeps more of
+    than a space), which bounds the NFKD and the pattern's work however long the text. A phrase
+    within that start is found and one past it is not: the callers that cut (`scrub`,
+    samples._redact_text) read the start of the text as written and of the text as swept, and then
+    the cut text (`cut_or_withheld`)."""
     return looks_like_instructions(_head(str(text if text is not None else ""), limit), hidden=hidden)
 
 
@@ -353,12 +375,14 @@ def cut_or_withheld(text: str, limit: int, *, hidden: bool = False) -> str:
     within): the collapse and the placeholders shorten text, so a phrase past the start of the text
     as written, which the caller's own check read, can be brought up to the cut, and a check of the
     cut text alone saw its first words only ("...Ignore all previous instruc…"). The start reaches
-    three times the limit past the cut (CHECK_VISIBLE_MULTIPLE), more than the pattern's longest
-    phrase at any limit from 13 up, so a phrase that begins in what is returned is read whole and
-    withholds the line, and one past the start begins past the cut, is never returned, and leaves
-    the line shown cut. Then the cut text itself, which a cut can make a phrase of ("you are
-    nowhere" cut to "you are now…"). `hidden`: the caller's `visible` removed something, so two
-    words may be glued with nothing ignorable left to show it (looks_like_instructions)."""
+    three times the limit past the cut (CHECK_VISIBLE_MULTIPLE), counted in characters the check's
+    copy keeps more of than a space (`_head`, so a run of spacing accents inside a phrase does not
+    stretch it), more than the pattern's longest phrase at any limit from 13 up, so a phrase that
+    begins in what is returned is read whole and withholds the line, and one past the start begins
+    past the cut, is never returned, and leaves the line shown cut. Then the cut text itself, which
+    a cut can make a phrase of ("you are nowhere" cut to "you are now…"). `hidden`: the caller's
+    `visible` removed something, so two words may be glued with nothing ignorable left to show it
+    (looks_like_instructions)."""
     swept = " ".join(_CONTROL.sub(" ", text).split())
     shown = untrusted_text(swept, limit)
     if looks_like_instructions_within(swept, limit, hidden=hidden):

@@ -101,8 +101,10 @@ CHUNK_BYTES = 256 * 1024
 # of a vCPU, under which that hostile state, begun with the time a whole core needs, ended the 8 s
 # survey at 14.5-15.2 s. Scaled, the rate is 1.16 MiB a second at 512 MB, so a 24 MiB state needs
 # 20.7 s left and a real 11.3 MB one 9.3 s: neither is parsed within the survey's 8 s, and each says
-# "not_checked", as a read the deadline stops does. At 1,769 MB or more it is 4 MiB a second (6 s for
-# 24 MiB). The function's memory is the knob for that (the owner's: it is Terraform and cost).
+# "not_checked", as a read the deadline stops does. Every call is held to it: pipeline_health's 3 s
+# parses nothing over about 3.5 MiB and the watch's 2 s nothing over about 2.3 MiB, well under the
+# LARGE_STATE_BYTES they may read. At 1,769 MB or more it is 4 MiB a second (6 s for 24 MiB; 8 MiB
+# within those two again). The function's memory is the knob for that (the owner's: Terraform, cost).
 PARSE_BYTES_PER_CPU_SECOND = 4 * 1024 * 1024
 LAMBDA_MB_PER_VCPU = 1769
 # Set by Lambda in every function's environment; unset elsewhere (tests, a laptop): a whole core.
