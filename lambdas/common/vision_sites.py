@@ -240,25 +240,33 @@ def closed_ring(polygon: list) -> list:
     return ring if ring[0] == ring[-1] else [*ring, ring[0]]
 
 
-# The content bucket's client for the four calls below: the tick's figures and networks (both
-# vision adapters), rail_access's prefetch_networks, and the triage agent's figure read. botocore's
+# The content bucket's client for the four calls below (the tick's figures and networks, both
+# vision adapters; rail_access's prefetch_networks; the triage agent's figure read) and for the
+# research tick's own (research_tick_handler: the running state, the snapshots). botocore's
 # defaults wait 60 s to connect and 60 s on each read, five times (legacy mode): a stalled GetObject
-# of a network raised after about 308 s, long past the research tick's 120 s Lambda timeout, so the
-# tick died before rail_access could defer the site (NETWORK_READ_ERROR) and store its state. Here
-# each attempt waits at most S3_CONNECT_TIMEOUT_SECONDS to connect (urllib3 sends the request, a
-# body of a few MB included, under the same allowance: well under a second inside the region) and
-# S3_READ_TIMEOUT_SECONDS on each read, and there are two attempts in all (`total_max_attempts`
-# counts the first; standard mode waits under a second before the second). A stalled read so ends
-# in about 31 s, and at most 2 x (5 + 15) + 1 = 41 s. A visit reads its network after the scene
-# search (STAC_TIMEOUT_SECONDS at most), so even then the tick's first visit has its answer by about
-# 61 s: inside rail_access's default 70 s budget and the 120 s Lambda, with about a minute to spare
-# for the rest of the tick and the state's store.
+# raised after about 308 s, long past the research tick's 120 s Lambda timeout. Here each attempt
+# waits at most S3_CONNECT_TIMEOUT_SECONDS to connect (urllib3 sends the request, a body of a few MB
+# included, under the same allowance: well under a second inside the region) and
+# S3_READ_TIMEOUT_SECONDS on each read, and there are S3_MAX_ATTEMPTS in all (`total_max_attempts`
+# counts the first) with standard mode's wait of at most S3_RETRY_WAIT_SECONDS before the second.
 S3_CONNECT_TIMEOUT_SECONDS = 5
 S3_READ_TIMEOUT_SECONDS = 15
+S3_MAX_ATTEMPTS = 2
+S3_RETRY_WAIT_SECONDS = 1  # standard mode's first backoff: random() x 2 ** 0
 S3_CONFIG = Config(
     connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
     read_timeout=S3_READ_TIMEOUT_SECONDS,
-    retries={"total_max_attempts": 2, "mode": "standard"},
+    retries={"total_max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
+)
+# A stalled call so raises in about 31 s, and at the latest once every attempt has connected and
+# read for as long as it may: 2 x (5 + 15) + 1 = 41 s. That is long against the tick (its measuring
+# budget is at most 80 s of the Lambda's 120), so the tick may not make such calls one after
+# another: rail_access starts a stored network's read, or a call of a network's move, only with this
+# much of its budget left, and cuts the tick's later S3 calls once one has failed
+# (rail_access.S3_RESERVE_SECONDS). A stall then costs its measuring loop one call, and the research
+# tick's own read or store of the running state ends within this long too.
+S3_CALL_MAX_SECONDS = (
+    S3_MAX_ATTEMPTS * (S3_CONNECT_TIMEOUT_SECONDS + S3_READ_TIMEOUT_SECONDS) + S3_RETRY_WAIT_SECONDS
 )
 
 

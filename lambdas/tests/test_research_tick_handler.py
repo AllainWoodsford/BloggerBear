@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import inspect
+import io
 import json
+import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
+import test_vision_sites
+from botocore.config import Config
 from moto import mock_aws
 
 import research_tick_handler
-from common import evidence
+from common import evidence, lambda_timing, vision_sites
 from common.adapters.base import Adapter
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
@@ -988,3 +993,60 @@ def test_a_prefetch_event_refuses_a_paused_topic_or_one_with_no_network(aws_reso
     assert result == {"status": "error", "reason": "adapter github_trending has no network to prefetch"}
     result = research_tick_handler.handler({"topic_id": "nope", "prefetch_network": True}, None)
     assert result == {"status": "error", "reason": "unknown topic_id: nope"}
+
+
+# --- the running state's own S3 calls are bounded (S4) ---------------------------------------------
+
+# A content endpoint that accepts and never answers (test_vision_sites.py's fixture).
+stalled_s3 = test_vision_sites.stalled_s3
+
+
+def test_the_ticks_own_s3_client_is_the_bounded_one(monkeypatch):
+    """The running state's read and store, a prior Finding's snapshot read and the snapshot's store
+    all go through one client, built with vision_sites.S3_CONFIG (each call raises within
+    S3_CALL_MAX_SECONDS on a stall, where botocore's defaults took about 310 s), and the handler
+    builds no other S3 client."""
+    built = []
+
+    def client(service, **kwargs):
+        built.append((service, kwargs))
+        fake = MagicMock()
+        fake.get_object.side_effect = lambda **kwargs: {"Body": io.BytesIO(b"{}")}
+        return fake
+
+    monkeypatch.setattr(research_tick_handler.boto3, "client", client)
+    research_tick_handler._load_running_state("bucket", "rail")
+    research_tick_handler._load_prior_state("bucket", "snapshots/rail/x.json")
+    research_tick_handler._store_state("bucket", "snapshots/rail/running-state.json", {})
+    assert [service for service, _ in built] == ["s3"]
+    assert built[0][1] == {"config": vision_sites.S3_CONFIG}
+    assert built[0][1]["config"] is vision_sites.S3_CONFIG
+    assert inspect.getsource(research_tick_handler).count("boto3.client(") == 1
+
+
+def test_a_stalled_running_state_read_fails_the_tick_inside_its_lambda_with_nothing_stored(
+    stalled_s3, monkeypatch
+):
+    """Finding 3 (S4), for real: a rail tick whose running state's read meets an endpoint that never
+    answers, with S3_CONFIG's retries and its read timeout scaled down to 0.3 s. The read raises
+    after two attempts, and the tick ends in an error before any city is visited, with nothing
+    stored. Unscaled that is about 31 s (at most S3_CALL_MAX_SECONDS); with botocore's defaults the
+    read took about 310 s and the Lambda timed out at 120 s inside it."""
+    read = 0.3
+    scaled = vision_sites.S3_CONFIG.merge(Config(read_timeout=read))
+    monkeypatch.setattr(research_tick_handler, "S3_CONFIG", scaled)
+    monkeypatch.setattr(lambda_timing, "record_lambda_duration", lambda *args: None)
+    sydney = [[150.9, -34.1], [151.5, -34.1], [151.5, -33.6], [150.9, -33.6]]
+    rail = {"topic_id": "rail", "name": "Rail", "adapter": "rail_access",
+            "adapter_config": {"sites": [{"id": "sydney", "polygon": sydney}]}}  # fmt: skip
+    monkeypatch.setattr(research_tick_handler, "get_topic", lambda topic_id: rail)
+    fetched = []
+    monkeypatch.setattr(RailAccessAdapter, "fetch_state", lambda self, *args, **kwargs: fetched.append(1))
+
+    began = time.monotonic()
+    result = research_tick_handler.handler({"topic_id": "rail", "force": True}, None)
+    took = time.monotonic() - began
+
+    assert result["status"] == "error" and result["reason"].startswith("Read timeout on endpoint URL")
+    assert fetched == [] and len(stalled_s3) == 2  # two attempts, then no other S3 call
+    assert 2 * read <= took < 2 * read + 1 + 1.5

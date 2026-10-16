@@ -64,6 +64,7 @@ from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
 from common.research_schedule import is_due, next_due_at, resolve_interval_hours
+from common.vision_sites import S3_CONFIG
 
 FINDING_TTL_DAYS = 14
 COMPACT_STATE_MAX_CHARS = 4000
@@ -84,9 +85,13 @@ _s3_client = None
 
 
 def _get_s3_client():
+    """The content bucket's client, bounded as the adapters' calls to it are (vision_sites.S3_CONFIG:
+    a stalled call raises within S3_CALL_MAX_SECONDS, 41 s, where botocore's defaults took about
+    310 s). The running state's read then fails the tick inside its 120 s Lambda, with nothing
+    stored, and its store after a rail tick whose every city waited on S3 ends inside it too."""
     global _s3_client
     if _s3_client is None:
-        _s3_client = boto3.client("s3")
+        _s3_client = boto3.client("s3", config=S3_CONFIG)
     return _s3_client
 
 

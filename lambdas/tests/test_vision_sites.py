@@ -7,12 +7,14 @@ once."""
 
 from __future__ import annotations
 
+import io
 import re
 import socket
 import threading
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import boto3
 import pytest
@@ -259,7 +261,31 @@ def test_the_content_buckets_calls_are_bounded_so_a_stalled_read_ends_inside_the
     assert vs.S3_CONNECT_TIMEOUT_SECONDS <= 5
     assert config.retries == {"total_max_attempts": 2, "mode": "standard"}
     two_attempts = 2 * (vs.S3_CONNECT_TIMEOUT_SECONDS + vs.S3_READ_TIMEOUT_SECONDS) + 1
+    assert vs.S3_CALL_MAX_SECONDS == two_attempts == 41  # the bound rail_access keeps (S4)
     assert vs.STAC_TIMEOUT_SECONDS + two_attempts < rail_access.DEFAULTS["time_budget_seconds"] < 120
+
+
+def test_every_content_bucket_call_builds_its_client_with_the_bounded_config(monkeypatch):
+    """S3_CONFIG bounds only the calls that use it: store_image (the tick's figures), store_network
+    (the tick's fetches and the prefetch), load_network (every visit) and load_image (the agent's
+    figure) each build their client with it. Any one of them back on botocore's defaults would take
+    about 310 s to fail on a stall, with the stalled-read test above still passing."""
+    monkeypatch.setenv("CONTENT_BUCKET", "content-test")
+    built = []
+
+    def client(service, **kwargs):
+        built.append((service, kwargs))
+        fake = MagicMock()
+        fake.get_object.return_value = {"Body": io.BytesIO(b"{}")}
+        return fake
+
+    monkeypatch.setattr(vs.boto3, "client", client)
+    vs.store_image("rail", "sydney", "S1", b"\x89PNG")
+    vs.store_network("rail", "sydney", {"site_key": "k"})
+    vs.load_network("rail", "sydney")
+    vs.load_image("vision/rail/sydney/S1.png")
+    assert [service for service, _ in built] == ["s3"] * 4
+    assert all(set(kwargs) == {"config"} and kwargs["config"] is vs.S3_CONFIG for _, kwargs in built)
 
 
 @pytest.fixture

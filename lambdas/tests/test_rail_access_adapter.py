@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import boto3
 import pytest
 import requests
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ReadTimeoutError
 from moto import mock_aws
 from terraform_text import INFRA
 
@@ -997,20 +997,40 @@ def test_no_network_is_fetched_with_under_the_osm_reserve_left(adapter):
 
 
 def test_a_stale_network_is_not_refreshed_with_under_the_osm_reserve_left(adapter):
-    """Step (d): a stale cached network and nothing new, but the search left 29 s of the 70 s
-    budget: no refresh is started, nothing failed (no `network_error`), and the site is stamped (it
-    was worked on to an outcome, nothing new). A later tick with the time refreshes it."""
+    """Step (d): a stale cached network and nothing new. A search that left 29 s of the 70 s budget
+    leaves too little for the network's read (S3_RESERVE_SECONDS, which a stalled read may take):
+    the site waits for time, unstamped, with nothing read, refreshed or failed. A read that answers
+    but leaves 29 s: no refresh is started, nothing failed (no `network_error`), and the site is
+    stamped (it was worked on to an outcome, nothing new). A later tick with the time refreshes it."""
     clock = Clock()
     adapter.clock = clock
     first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     overpass = FakeOverpass(network())
+    adapter.loads.clear()
     slow_search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=41.0, clock=clock)
     state = run(adapter, slow_search, FakeRailWorker({}), overpass, previous=first)
+    record = state["sites"]["sydney"]
+    assert overpass.calls == [] and state["measured"] == [] and adapter.loads == []
+    assert record["last_error"] == {"at": state["fetched_at"], "code": "time_budget", "detail": "next tick"}
+    assert "network_error" not in record
+    assert record["last_attempt_at"] == first["sites"]["sydney"]["last_attempt_at"]  # not stamped
+    assert network_fields(record) == network_fields(first["sites"]["sydney"])
+
+    readable = adapter.load_network
+
+    def slow_read(topic_id, site_id):
+        clock.advance(12.0)  # answered, slowly: 29 s left after it
+        return readable(topic_id, site_id)
+
+    adapter.load_network = slow_read
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=70.0 - ra.S3_RESERVE_SECONDS, clock=clock)
+    state = run(adapter, search, FakeRailWorker({}), overpass, previous=first)
     record = state["sites"]["sydney"]
     assert overpass.calls == [] and state["measured"] == []
     assert not {"network_error", "last_error"} & set(record)
     assert record["last_attempt_at"] == state["fetched_at"]
     assert network_fields(record) == network_fields(first["sites"]["sydney"])
+    adapter.load_network = readable
     again = run(adapter, scene(1), FakeRailWorker({}), overpass, previous=state)
     assert len(overpass.calls) == 1
     assert again["sites"]["sydney"]["network_fetched_at"] == again["fetched_at"]
@@ -3120,6 +3140,172 @@ def test_a_network_that_cannot_be_stored_is_a_failed_fetch(adapter):
     assert not network_fields(record)
 
 
+# --- one S3 bound for the whole tick (S4): S3_RESERVE_SECONDS --------------------------------------
+
+
+def stalls(clock, seconds=31.0):
+    """A load or store against an S3 that never answers, as S3_CONFIG ends it: it raises after two
+    attempts of a read timeout and the wait between (about 31 s, at most S3_CALL_MAX_SECONDS) on
+    the adapter's clock. Records each call."""
+
+    def call(*args):
+        call.calls.append(args)
+        clock.advance(seconds)
+        raise ReadTimeoutError(endpoint_url="http://127.0.0.1:1/content-test/vision/rail/network.json")
+
+    call.calls = []
+    return call
+
+
+def four_cities(adapter):
+    """The owner's four cities, each record naming its polygon's stored network, as every tick
+    after the first leaves them."""
+    nets = {city["id"]: network(polygon=city["polygon"]) for city in CITIES}
+    return {"sites": {cid: with_network(adapter, cid, net, {"history": []}) for cid, net in nets.items()}}
+
+
+def test_the_bound_is_the_longest_one_s3_call_can_take():
+    """Derived from S3_CONFIG's own numbers: two attempts that each connect and read for as long as
+    they may, and standard mode's wait before the second. A stalled read then fits the smallest
+    budget a topic may have, and the stall is told from an error S3 answers by a connect allowance."""
+    assert vision_sites.S3_CONFIG.retries["total_max_attempts"] == vision_sites.S3_MAX_ATTEMPTS == 2
+    assert ra.S3_RESERVE_SECONDS == vision_sites.S3_CALL_MAX_SECONDS == 2 * (5 + 15) + 1
+    assert ra.S3_RESERVE_SECONDS <= vision_sites.MEASURE_RESERVE_SECONDS  # the least budget allowed
+    assert ra.S3_STALLED_SECONDS == vision_sites.S3_CONNECT_TIMEOUT_SECONDS
+
+
+def test_a_named_network_is_not_read_with_less_left_than_a_stalled_read_takes(adapter, capsys):
+    """Finding 1 (S4): the read of a network the record names starts only with S3_RESERVE_SECONDS
+    of the budget left, or it could stall past the budget. Under that, the site waits for time,
+    unread and unstamped. Entered with too little left, it does not search for a scene either."""
+    clock = Clock()
+    adapter.clock = clock
+    previous = four_cities(adapter)
+    adapter.loads.clear()
+    takes = 70.0 - ra.S3_RESERVE_SECONDS + 1  # 40 s left after the first site's search
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=takes, clock=clock)
+    capsys.readouterr()
+    state = run(adapter, search, FakeRailWorker({}), previous=previous, sites=CITIES, max_sites_per_tick=4)
+    assert adapter.loads == [] and len(search.bodies) == 1  # the sites after the first: no search
+    for cid, record in state["sites"].items():
+        assert record["last_error"]["code"] == "time_budget" and "last_attempt_at" not in record, cid
+        assert network_fields(record) == network_fields(previous["sites"][cid])
+    lines = evidence_lines(capsys, "vision_site")
+    assert [(line["outcome"], line["code"]) for line in lines] == [("deferred", "time_budget")] * 4
+    # Exactly the reserve left after the search: read.
+    clock.now = 0.0
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=70.0 - ra.S3_RESERVE_SECONDS, clock=clock)
+    run(adapter, search, FakeRailWorker({}), previous=previous, sites=CITIES, max_sites_per_tick=4)
+    assert adapter.loads[0] == ("rail", "sydney")
+
+
+def test_a_stalled_read_ends_the_ticks_s3_calls_and_every_city_waits_unread(adapter, capsys):
+    """Finding 1 (S4): four cities whose records name their networks, and an S3 that never answers.
+    The first read stalls (about 31 s on the clock), inside the budget; the other three wait unread,
+    with no scene search, rather than stall 31 s each (the reviewer's 7 sites took 93 to 130 s, past
+    the 120 s Lambda). Each keeps its place and its network; the next tick reads them all."""
+    clock = Clock()
+    adapter.clock = clock
+    previous = four_cities(adapter)
+    readable, stalled = adapter.load_network, stalls(clock)
+    adapter.load_network = stalled
+    stac, overpass, worker = scene(2), FakeOverpass(network()), FakeRailWorker({})
+    capsys.readouterr()
+
+    state = run(adapter, stac, worker, overpass, previous=previous, sites=CITIES, max_sites_per_tick=4)
+
+    assert len(stalled.calls) == 1 and len(stac.bodies) == 1 and clock.now == 31.0 <= 70.0
+    assert overpass.calls == [] and worker.calls == [] and state["measured"] == []
+    for cid, record in state["sites"].items():
+        assert record["last_error"]["code"] == ra.NETWORK_READ_ERROR and "last_attempt_at" not in record
+        assert network_fields(record) == network_fields(previous["sites"][cid]), cid
+    assert state["sites"]["sydney"]["last_error"]["detail"].startswith("ReadTimeoutError: Read timeout")
+    assert state["sites"]["boston"]["last_error"]["detail"].startswith(
+        "not read: S3 failed earlier this tick (ReadTimeoutError: Read timeout"
+    )
+    lines = evidence_lines(capsys, "vision_site")
+    assert [(line["outcome"], line["code"]) for line in lines] == [("deferred", "network_read")] * 4
+    assert set(said(status_of(adapter, state, sites=CITIES))) <= ra.RailAccessAdapter.status_vocabulary()
+    changed, _ = adapter.material_diff(previous, state)
+    assert not changed
+
+    adapter.load_network = readable
+    worker = FakeRailWorker({"S2": metrics()})
+    again = run(adapter, scene(2), worker, overpass, previous=state, sites=CITIES, max_sites_per_tick=4)
+    assert [load[1] for load in adapter.loads[-4:]] == ["sydney", "melbourne", "singapore", "boston"]
+    assert overpass.calls == [] and all("last_error" not in r for r in again["sites"].values())
+
+
+def test_after_s3_answers_a_read_with_an_error_the_rest_wait_unread_but_an_inline_one_serves(adapter):
+    """An error S3 answers (at once, not a stall): the site waits as before, and the sites after it
+    that would read their networks wait unread too (S3 is most likely failing for them). A site whose
+    network is still inline needs no read: it is served from the record and measured."""
+    previous = four_cities(adapter)
+    inline = network(polygon=MELBOURNE)
+    melbourne = previous["sites"]["melbourne"]
+    for field in ra.NETWORK_FIELDS:
+        melbourne.pop(field)
+    melbourne["network"] = inline
+    adapter.objects.pop(("rail", "melbourne"))
+    calls = []
+
+    def fails(topic_id, site_id):
+        calls.append(site_id)
+        _s3_fails(topic_id, site_id)
+
+    adapter.load_network = fails
+    worker = FakeRailWorker({"S2": metrics()})
+    state = run(adapter, scene(2), worker, previous=previous, sites=CITIES, max_sites_per_tick=4)
+
+    # The move of Melbourne's network read first (and failed): no other read was made.
+    assert calls == ["melbourne"]
+    assert state["measured"] == [{"site_id": "melbourne", "scene_id": "S2"}]
+    assert worker.calls[0]["network"] == ra.worker_network(inline)
+    assert state["sites"]["melbourne"]["network"] == inline  # kept, moved on a later tick
+    for cid in ("sydney", "singapore", "boston"):
+        record = state["sites"][cid]
+        assert record["last_error"]["code"] == ra.NETWORK_READ_ERROR and "last_attempt_at" not in record
+        assert record["last_error"]["detail"].startswith("not read: S3 failed earlier this tick (ClientError")
+
+
+def test_a_network_the_record_does_not_name_waits_too_when_s3_does_not_answer(adapter):
+    """An object the record does not name, that S3 answered with an error for, is no network and is
+    fetched again (above). One S3 did not answer at all waits like a named one: a network fetched
+    now could not be stored either, and the tick would spend Overpass's time and then a stalled
+    store on it."""
+    clock = Clock()
+    adapter.clock = clock
+    adapter.load_network = stalls(clock)
+    overpass = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
+    record = state["sites"]["sydney"]
+    assert overpass.calls == [] and state["measured"] == [] and clock.now == 31.0
+    assert record["last_error"]["code"] == ra.NETWORK_READ_ERROR and "last_attempt_at" not in record
+
+
+def test_after_s3_stalls_the_agent_is_shown_no_figure(adapter):
+    """Two sites a tick: the first is measured and its figure stored, then S3 stalls on the second's
+    read. The agent, asked about the first, is not handed a figure read that would stall too."""
+    clock = Clock()
+    adapter.clock = clock
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), sites=sites, max_sites_per_tick=2)
+    readable, stalled = adapter.load_network, stalls(clock)
+
+    def load(topic_id, site_id):
+        return (stalled if site_id == "melbourne" else readable)(topic_id, site_id)
+
+    adapter.load_network = load
+    clock.now = 0.0
+    state = run(adapter, scene(2), FakeRailWorker({"S2": metrics(served_share=0.5)}), previous=first,
+                sites=sites, max_sites_per_tick=2)  # fmt: skip
+    assert state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert state["sites"]["melbourne"]["last_error"]["code"] == ra.NETWORK_READ_ERROR
+    changed, _ = adapter.material_diff(first, state)
+    assert changed and len(adapter.agent.calls) == 1
+    assert adapter.agent.calls[0]["load_image"]("vision/rail/sydney/S2.png") is None
+
+
 # --- a state written before each network had its object (the transition) ---------------------------
 # Until S2 the network rode in the running state (`network` in the site's record). The owner's
 # deployed topic has one there. The first tick after the deploy moves it to the object, keeps it
@@ -3196,6 +3382,83 @@ def test_an_inline_network_that_cannot_be_moved_stays_and_still_serves(adapter):
     adapter.store_network = store
     moved = run(adapter, scene(2), FakeRailWorker({}), overpass, previous=state)
     assert stored_network(adapter) == inline and "network" not in moved["sites"]["sydney"]
+
+
+def legacy_cities(adapter):
+    """A state written before S2 for the four cities: each network inline, none in an object."""
+    sites = {}
+    for city in CITIES:
+        record = with_network(adapter, city["id"], network(polygon=city["polygon"]), {"history": []})
+        for field in ra.NETWORK_FIELDS:
+            record.pop(field)
+        record["network"] = network(polygon=city["polygon"])
+        sites[city["id"]] = record
+    adapter.objects.clear()
+    adapter.loads.clear()
+    return {"sites": sites}
+
+
+def test_the_move_counts_against_the_budget_and_a_stall_stops_it_after_one_read(adapter):
+    """Finding 2 (S4): the inline networks' move runs inside the tick's budget. With S3 stalled, the
+    first move's read (about 31 s on the clock) is the only S3 call: no network is stored or read
+    after it, every city keeps its network inline and waits (S3 did not answer, so a city served
+    from the record now would leave its figure's store and the running state's to the same stall).
+    The reviewer's two such cities took 125.8 s, past the 120 s Lambda."""
+    clock = Clock(500.0)
+    adapter.clock = clock
+    old = legacy_cities(adapter)
+    stalled, stores = stalls(clock), []
+    adapter.load_network = stalled
+    adapter.store_network = lambda *args: stores.append(args)
+    stac, worker = scene(2), FakeRailWorker({"S2": metrics()})
+
+    state = run(adapter, stac, worker, previous=old, sites=CITIES, max_sites_per_tick=4)
+
+    assert adapter._started == 500.0 and clock.now == 531.0  # the budget counts the move
+    assert len(stalled.calls) == 1 and stores == [] and stac.bodies == [] and worker.calls == []
+    for cid, record in state["sites"].items():
+        assert record["network"] == old["sites"][cid]["network"] and not network_fields(record)
+        assert record["last_error"]["code"] == ra.NETWORK_READ_ERROR and "last_attempt_at" not in record
+
+
+def test_a_move_is_started_only_with_the_time_for_a_stalled_call(adapter):
+    """A slow S3 that answers: each of a move's two calls is started only with S3_RESERVE_SECONDS of
+    the budget left, so a stalled one would still end inside it. A network not moved for time stays
+    inline, nothing failed, and the city is served from the record this tick, unread; a later tick
+    moves it. (One load plus one store, worst case, is 82 s, over the largest budget, 80 s: checked
+    as one, no network would ever move.)"""
+    clock = Clock()
+    adapter.clock = clock
+    old = legacy_cities(adapter)
+    readable, writable = adapter.load_network, adapter.store_network
+
+    def slow(call):
+        def answered(*args):
+            clock.advance(15.0)
+            return call(*args)
+
+        return answered
+
+    adapter.load_network, adapter.store_network = slow(readable), slow(writable)
+    state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), previous=old, sites=CITIES,
+                max_sites_per_tick=4)  # fmt: skip
+    # Sydney's move: read with 70 s left, stored with 55 s. With 40 s left no other call starts.
+    assert set(adapter.objects) == {("rail", "sydney")} and adapter.loads == [("rail", "sydney")]
+    assert "network" not in state["sites"]["sydney"] and network_fields(state["sites"]["sydney"])
+    for cid in ("melbourne", "singapore", "boston"):
+        record = state["sites"][cid]
+        assert record["network"] == old["sites"][cid]["network"] and "network_error" not in record
+        assert ra.NETWORK_READ_ERROR not in json.dumps(record)
+    # Singapore and Boston (no scene over them): served from the record, worked on to nothing new.
+    assert state["sites"]["boston"]["last_attempt_at"] == state["fetched_at"]
+    assert state["sites"]["singapore"]["last_attempt_at"] == state["fetched_at"]
+    assert vision_sites.MAX_TIME_BUDGET_SECONDS < 2 * ra.S3_RESERVE_SECONDS
+
+    adapter.load_network, adapter.store_network = readable, writable
+    clock.now = 0.0
+    later = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), previous=state, sites=CITIES)
+    assert all("network" not in record for record in later["sites"].values())
+    assert set(adapter.objects) == {("rail", city["id"]) for city in CITIES}
 
 
 def test_a_state_from_before_reaches_the_object_through_the_research_tick(tick_env, monkeypatch):
