@@ -22,6 +22,12 @@ time) beside `last_article_at`, which every topic keeps as before. With `subject
 reads the subject's own stamp and ignores the topic-wide one; a subject never written about yet is
 bounded by the window alone.
 
+Which subject the next article is on is one rule too (`next_article_subject`): the daily cycle asks
+it at its run's start, and the assistant's topic_findings and the Admin API's findings route ask it
+when they are asked about the next article without a subject, so for a rotating topic all three
+read the day's subject's window and Findings. A rotating topic's run keeps only the subject's
+Findings, so it reads further into the window before it caps them (`SUBJECT_READ_LIMIT`).
+
 Topic-agnostic: nothing here knows about any adapter or domain.
 """
 
@@ -29,6 +35,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+
+from common.adapters.base import DaySubject
+from common.day_subject import resolve_day_subject
+from common.editorial_goals import resolve_goal_for_topic
 
 FIELD = "findings_window_hours"
 # The topic item's stamps: when its last article began, on any subject and per subject (the daily
@@ -39,6 +49,16 @@ FINDINGS_WINDOW_HOURS = 24
 # Two weeks: Findings expire after research_tick_handler.FINDING_TTL_DAYS (14), so a longer window
 # would reach back to nothing. tests/test_daily_cycle_handler.py holds the two together.
 MAX_FINDINGS_WINDOW_HOURS = 336
+# How much of the window a rotating topic's readers read before they keep the day subject's
+# Findings and cap those at the 48 an article is written from (daily_cycle_handler's
+# MAX_WINDOW_FINDINGS, and the same cap in Re-Write, topic_findings and the findings route; a test
+# holds this to four of it). Capping first would let other subjects' newer Findings push the
+# subject's older ones out, and the subject's stamp would then pass them for good. 4 x 48 = 192 is
+# every Finding a rota of up to 7 subjects can gather: one slot each needs a window of 24 h a day
+# plus a day (192 h, dailysubject_hook.md 3.4), and the hourly research tick writes at most one
+# Finding a run. Bounded, so a busier window still costs a bounded read; a topic that does not
+# rotate reads exactly what it always read.
+SUBJECT_READ_LIMIT = 4 * 48
 
 
 def _as_hours(value) -> int | None:
@@ -119,3 +139,18 @@ def window_start(
                 previous = previous.replace(tzinfo=UTC)  # stored in UTC
             return max(floor, previous).isoformat()
     return floor.isoformat()
+
+
+def next_article_subject(topic: dict, at: datetime) -> DaySubject | None:
+    """The subject the topic's daily run starting at `at` writes about, for a topic that rotates
+    through several (common/day_subject.resolve_day_subject), or None for every other topic.
+
+    The daily cycle asks it once, at its run's start; the assistant's topic_findings and the Admin
+    API's findings route ask it at `now` when asked about the next article with no subject, so the
+    three read the same subject's window and Findings. A topic with a daily editorial goal (the
+    crypto feed) keeps its goal and its adapter is not asked. Whatever the hook raises (a broken
+    rota, or something that is not a usable DaySubject) is raised here: never an answer about
+    every subject at once."""
+    if resolve_goal_for_topic(topic, at.date()) is not None:
+        return None
+    return resolve_day_subject(topic, at)

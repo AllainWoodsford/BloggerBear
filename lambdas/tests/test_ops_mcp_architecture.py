@@ -38,6 +38,17 @@ def _of_kind(kind: str) -> dict[str, architecture.Component]:
     return {c.key: c for c in CATALOGUE if c.kind == kind}
 
 
+def test_the_catalogue_names_the_fields_a_rotating_topic_stores():
+    """The day-subject round's stored fields (common/day_subject.py): the topic's per-subject
+    stamps, the Finding's subjects and the article's subject, where the assistant reads what each
+    table holds and what the daily cycle writes."""
+    tables = _of_kind("table")
+    assert "last_article_by_subject" in dict(tables["topics"].details)["Written by"]
+    assert "subjects (the subject keys it reports" in dict(tables["findings"].details)["Holds"]
+    assert "subject: " in dict(tables["articles"].details)["Day subject"]
+    assert "topics.last_article_by_subject" in dict(_of_kind("function")["daily-cycle"].details)["Writes"]
+
+
 # The functions modules make: the ops-assistant module's two, and the vision-worker module's (in the
 # vision Region, so observability's alarms in the home Region can't watch it). Every other function
 # is made by an environment root and handed to observability, which gives it an errors and a

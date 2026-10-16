@@ -163,7 +163,9 @@ def _subjects(adapter, new_state: dict) -> list[str]:
     """The subjects the observation reports (Adapter.subjects), as a Finding keeps them
     (common/day_subject.clean_subjects: plain keys, each once, at most MAX_SUBJECTS_PER_FINDING).
     A hook that fails costs the subjects and never the Finding: by now its summary has been paid
-    for. It is said in the log, since a rotating topic never drafts a Finding without subjects."""
+    for. It is said in the log, since a rotating topic never drafts a Finding without subjects, and
+    so is a hook that returns something other than an iterable of keys (a string, say), which
+    clean_subjects refuses with TypeError rather than reading it as none."""
     try:
         return clean_subjects(adapter.subjects(new_state))
     except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it

@@ -50,13 +50,14 @@ from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
-from common.day_subject import ARTICLE_SUBJECT_FIELD, resolve_day_subject, subject_findings
+from common.day_subject import ARTICLE_SUBJECT_FIELD, subject_findings
 from common.dynamo import (
     get_last_armor_versions,
     get_model_rotation_candidates,
     get_pipeline_config,
     get_top_voted_articles,
     get_topic,
+    list_findings,
     list_prompt_refinements,
     list_recent_article_titles,
     list_recent_findings,
@@ -82,8 +83,10 @@ from common.fact_check import fact_check_label
 from common.figures import figures_for_findings
 from common.findings_window import (
     FINDINGS_WINDOW_HOURS,
+    SUBJECT_READ_LIMIT,
     findings_window_error,
     findings_window_hours,
+    next_article_subject,
     window_start,
 )
 from common.lambda_timing import track_lambda_duration
@@ -107,7 +110,10 @@ from common.stats_tracking import record_article_lineage, refresh_articles_snaps
 # oldest findings drop out first). list_recent_findings is a descending Query on
 # captured_at with this as its Limit, so when a wide window holds more findings
 # than the cap it is the oldest that are left out, never the newest
-# (tests/test_findings_window.py, tests/test_daily_cycle_handler.py).
+# (tests/test_findings_window.py, tests/test_daily_cycle_handler.py). A topic that
+# rotates through subjects caps its day subject's findings instead: it reads up to
+# common/findings_window.SUBJECT_READ_LIMIT of the window, keeps the subject's, then
+# caps those (_select_subject_and_findings).
 MAX_WINDOW_FINDINGS = 48
 SUMMARIES_MAX_CHARS = 40_000
 # An article draft is a few paragraphs to a few pages; the 1,024-token default cut real
@@ -273,10 +279,23 @@ def _day_subject(topic: dict, run_started: datetime) -> DaySubject | None:
     (common/day_subject.py), asked once at the run's start; None for every other topic. A topic
     with a daily editorial goal (the crypto feed) keeps its goal and is not asked: the goal's path
     is unchanged. Whatever the adapter raises stops the run before any model call (the handler's
-    guard returns it as an error), and nothing is stamped: a broken rota writes nothing."""
-    if resolve_goal_for_topic(topic, run_started.date()) is not None:
-        return None
-    return resolve_day_subject(topic, run_started)
+    guard returns it as an error), and nothing is stamped: a broken rota writes nothing. The rule
+    is common/findings_window.next_article_subject, the one the assistant's topic_findings and the
+    Admin API's findings route ask too, so they name the subject this run writes about."""
+    return next_article_subject(topic, run_started)
+
+
+def _read_window(topic_id: str, since: str, day_subject: DaySubject | None) -> list[dict]:
+    """The window's findings, newest first. Every topic but a rotating one reads exactly what it
+    always read: the newest MAX_WINDOW_FINDINGS. A rotating topic reads further (at most
+    SUBJECT_READ_LIMIT, paged as the assistant's topic_findings and the findings route read it),
+    so the cap falls on its day subject's own findings, after the subject filter: capped first,
+    other subjects' newer findings would push the subject's older ones out, and its stamp would
+    then pass them for good."""
+    if day_subject is None:
+        return list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
+    findings, _, _ = list_findings(topic_id, since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None)
+    return findings
 
 
 def _no_findings(topic_id: str, subject_key: str | None) -> dict:
@@ -305,7 +324,7 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     if day_subject is not None:
         print(f"daily_cycle_handler: day_subject={subject_key} topic_id={topic_id}")
     since = _window_start(topic, run_started, force, subject_key)
-    findings = list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
+    findings = _read_window(topic_id, since, day_subject)
     if not findings:
         # Nothing new since the topic's last article (or in its findings window): better
         # no article than one rewritten from findings a previous run already used.
@@ -645,11 +664,20 @@ def _select_subject_and_findings(
     """What this article is about, and the findings it is written from. A rotating topic's day
     subject (common/day_subject.py) keeps only the findings that report it (none, if none do: the
     caller then stops; never crypto's "follow the newest finding's day" fallback, which would write
-    about another subject on this one's day). Without one, the crypto feed's editorial goal, as
-    `_select_goal_and_findings` resolves it (an unchanged path), or nothing at all."""
+    about another subject on this one's day), at most MAX_WINDOW_FINDINGS of them, the newest: the
+    cap counts the subject's own findings, and the log says how many of them it left out. Without
+    one, the crypto feed's editorial goal, as `_select_goal_and_findings` resolves it (an unchanged
+    path), or nothing at all."""
     if day_subject is None:
         return _select_goal_and_findings(topic, findings)
-    return day_subject, subject_findings(findings, day_subject.key)
+    own = subject_findings(findings, day_subject.key)
+    if len(own) > MAX_WINDOW_FINDINGS:
+        print(
+            f"daily_cycle_handler: day_subject={day_subject.key} topic_id={topic.get('topic_id')} has "
+            f"{len(own)} findings in its window; drafting from the newest {MAX_WINDOW_FINDINGS}, "
+            f"{len(own) - MAX_WINDOW_FINDINGS} older ones left out"
+        )
+    return day_subject, own[:MAX_WINDOW_FINDINGS]
 
 
 def _select_goal_and_findings(

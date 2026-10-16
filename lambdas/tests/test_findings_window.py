@@ -12,8 +12,11 @@ import pytest
 from moto import mock_aws
 
 import common.dynamo as dynamo
+import daily_cycle_handler
 from common import findings_window
-from common.adapters.base import SEEN_KEY, Adapter
+from common.adapters.base import SEEN_KEY, Adapter, DaySubject
+from common.adapters.registry import ADAPTER_REGISTRY
+from common.editorial_goals import EditorialGoal
 
 REGION = "ap-southeast-2"
 
@@ -140,6 +143,41 @@ def test_a_subjects_stamp_does_not_create_a_missing_topic(topics_table):
         dynamo.set_topic_last_article_at("deleted", "2026-09-21T09:00:00+00:00", subject_key="north")
 
     assert "Item" not in topics_table.get_item(Key={"topic_id": "deleted"})
+
+
+@pytest.mark.parametrize("stored", [None, "oops", ["north"], Decimal(3), {"north", "south"}, True])
+def test_a_stamp_map_that_is_not_a_map_is_replaced_with_this_subjects_stamp_and_said(
+    topics_table, capsys, stored
+):
+    """A hand-edited `last_article_by_subject` that is not a map would refuse the subject's key
+    on every run (DynamoDB rejects a path into anything else), so the subject's window would never
+    advance: it is replaced with a map holding this subject's stamp, and the log says so."""
+    topics_table.update_item(
+        Key={"topic_id": "t"},
+        UpdateExpression="SET last_article_by_subject = :v",
+        ExpressionAttributeValues={":v": stored},
+    )
+
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_by_subject"] == {"north": "2026-09-21T09:00:00+00:00"}
+    assert item["last_article_at"] == "2026-09-21T09:00:00+00:00"
+    said = capsys.readouterr().out
+    assert "dynamo: topic_id=t had a last_article_by_subject that was a " in said
+    assert "not a map; replaced it with a map holding subject=north's stamp" in said
+
+
+def test_a_stamp_map_that_is_a_map_or_missing_is_never_said_to_be_replaced(topics_table, capsys):
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")  # missing
+    dynamo.set_topic_last_article_at("t", "2026-09-22T09:00:00+00:00", subject_key="south")  # a map
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_by_subject"] == {
+        "north": "2026-09-21T09:00:00+00:00",
+        "south": "2026-09-22T09:00:00+00:00",
+    }
+    assert "replaced" not in capsys.readouterr().out
 
 
 # --- the adapter contract behind "what counts as new" -----------------------
@@ -335,6 +373,76 @@ def test_last_article_at_reads_the_stamp_that_bounds_the_window():
     assert findings_window.last_article_at(topic, "north") == _hours_before(50)
     assert findings_window.last_article_at(topic, "south") is None
     assert findings_window.last_article_at(None, "north") is None
+
+
+# --- which subject the next article is on: the one rule the three readers share -------------------
+
+
+class _Rotating(Adapter):
+    """An adapter whose topics write about "south" today, and that remembers being asked."""
+
+    asked: list = []
+
+    def fetch_state(self, topic_config):
+        return {}
+
+    def material_diff(self, old_state, new_state):
+        return False, ""
+
+    def source_refs(self, new_state):
+        return []
+
+    def day_subject(self, topic_config, at):
+        type(self).asked.append(at)
+        return DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+
+
+@pytest.fixture
+def rotating_adapter(monkeypatch):
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rotating_test", _Rotating)
+    monkeypatch.setattr(_Rotating, "asked", [])
+    return _Rotating
+
+
+def test_next_article_subject_is_the_day_subject_of_a_rotating_topic_and_none_of_any_other(rotating_adapter):
+    subject = findings_window.next_article_subject({"topic_id": "r", "adapter": "rotating_test"}, RUN)
+
+    assert subject == DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+    assert rotating_adapter.asked == [RUN]
+    for plain in ({"adapter": "web_search"}, {"adapter": "rail_access"}, {"adapter": "nope"}, {}):
+        assert findings_window.next_article_subject(plain, RUN) is None
+
+
+def test_a_topic_with_a_daily_goal_keeps_it_and_its_adapter_is_never_asked(rotating_adapter, monkeypatch):
+    """The crypto feed's day goal wins, as in the daily cycle: its path is unchanged."""
+    goal = EditorialGoal.TREND_INVENTOR
+    monkeypatch.setattr(findings_window, "resolve_goal_for_topic", lambda topic, day: goal)
+
+    assert findings_window.next_article_subject({"adapter": "rotating_test"}, RUN) is None
+    assert rotating_adapter.asked == []
+
+
+def test_a_hook_that_raises_is_raised_never_read_as_no_rota(rotating_adapter, monkeypatch):
+    def broken(self, topic_config, at):
+        raise ValueError("the rota broke")
+
+    monkeypatch.setattr(_Rotating, "day_subject", broken)
+
+    with pytest.raises(ValueError, match="the rota broke"):
+        findings_window.next_article_subject({"adapter": "rotating_test"}, RUN)
+
+
+def test_the_daily_cycle_asks_the_same_rule(rotating_adapter):
+    topic = {"topic_id": "r", "adapter": "rotating_test"}
+
+    assert daily_cycle_handler._day_subject(topic, RUN) == findings_window.next_article_subject(topic, RUN)
+
+
+def test_a_rotating_topics_read_is_four_caps_every_finding_a_seven_subject_rota_can_gather():
+    """Read before the subject filter, capped after it: 4 x the article's cap, which covers a
+    one-slot rota of 7 subjects (a window of 24 h a day plus a day) at one Finding an hourly tick."""
+    assert findings_window.SUBJECT_READ_LIMIT == 4 * daily_cycle_handler.MAX_WINDOW_FINDINGS == 192
+    assert findings_window.SUBJECT_READ_LIMIT >= 24 * 7 + 24
 
 
 # --- the paged readers behind topic_findings and the Admin API's findings route -------------------
