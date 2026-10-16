@@ -12,6 +12,9 @@ import io
 import json
 import os
 import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -307,6 +310,109 @@ def test_the_cool_image_is_a_cool_worker_with_the_same_code():
         assert copied in DOCKERFILE
     assert 'CMD ["vision_worker_handler.lambda_handler"]' in DOCKERFILE
     assert "@sha256:" in DOCKERFILE  # the instructions pin the base by digest
+
+
+def dockerfile_copies() -> list[tuple[list[str], str]]:
+    """Each COPY instruction as (sources, destination), continuation lines joined."""
+    text = DOCKERFILE.replace("\\\n", " ")
+    out = []
+    for line in re.findall(r"^COPY (.+)$", text, re.M):
+        *sources, destination = line.split()
+        out.append((sources, destination))
+    return out
+
+
+def test_the_cool_image_carries_everything_the_benchmark_imports_and_reads():
+    # `docker run ... python3 bench/vision_benchmark.py` is the container route of the COOL session:
+    # every scripts/ module the benchmark imports, its scenes file, the evaluation's manifest (the
+    # ETag pins) and the network fixture directory must be in bench/ beside it.
+    import ast
+
+    tree = ast.parse((ROOT / "scripts" / "vision_benchmark.py").read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            imported.add(node.module.split(".")[0])
+    local = sorted(name for name in imported if (ROOT / "scripts" / f"{name}.py").is_file())
+    assert "vision_runs" in local
+    bench_sources = [src for sources, dest in dockerfile_copies() if dest == "/var/task/bench/"
+                     for src in sources]  # fmt: skip
+    needed = [f"scripts/{name}.py" for name in local] + [
+        f"scripts/{bench.SCENES_FILE.name}", f"scripts/{bench.MANIFEST_FILE.name}",
+        "scripts/vision_benchmark.py",
+    ]  # fmt: skip
+    assert not [path for path in needed if path not in bench_sources]
+    networks = {Path(s["network_file"]).parent.name for s in bench.load_scenes() if s.get("network_file")}
+    assert networks == {"vision_benchmark_networks"}
+    assert (["scripts/vision_benchmark_networks/"], "/var/task/bench/vision_benchmark_networks/") in (
+        dockerfile_copies()
+    )
+    # The image has no git history: the commit its run files name comes in as a build argument.
+    assert re.search(r"^ARG GIT_SHA=$", DOCKERFILE, re.M)
+    assert f"{vision_runs.GIT_SHA_ENV}=${{GIT_SHA}}" in DOCKERFILE
+
+
+# --- the runsheet's COOL session, as the owner runs it ----------------------------------------------------
+
+RUNSHEET_COOL = (ROOT / "docs" / "deployment-runsheet.md").read_text(encoding="utf-8").split(
+    "### The COOL backend and the benchmark", 1
+)[1].split("\n## ", 1)[0]
+
+
+def test_the_runsheets_compare_lines_find_each_run_file_whatever_its_date(tmp_path):
+    # Every run names its file by its own UTC start date, and step 8 takes hours: a session that
+    # crosses 00:00 UTC writes two dates, so the compare lines must not build names from one.
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("no bash here")
+    assert "$D" not in RUNSHEET_COOL
+    lines = [line.strip() for line in RUNSHEET_COOL.splitlines()]
+    newest = next(line for line in lines if line.startswith("newest() {"))
+    assert 'compare "$(newest $1 $2)" "$(newest $1 $3)"' in RUNSHEET_COOL
+    cpu = "neoverse-v2-graviton4"
+    names = [
+        f"2026-10-18-bench-scenes-{cpu}-opencv-1t.json",  # before midnight UTC
+        f"2026-10-19-bench-scenes-{cpu}-cool-1t.json",  # after it
+        f"2026-10-19-bench-scenes-{cpu}-opencv-4x-1t.json",
+        f"2026-10-19-bench-compare-{cpu}-opencv-vs-cool-scenes-opencv-1t-vs-cool-1t.json",
+        f"2026-10-19-bench-kernels-{cpu}-opencv-1t-r1.json",
+    ]
+    for name in names:
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    def run(calls: str) -> list[str]:
+        script = f'E="{tmp_path.as_posix()}"; CPU={cpu}\n{newest}\n{calls}'
+        return subprocess.run([bash, "-c", script], capture_output=True, text=True, check=True).stdout.split()
+
+    found = run("newest scenes opencv-1t; newest scenes cool-1t; newest scenes opencv-4x-1t; "
+                "newest kernels opencv-1t-r1")  # fmt: skip
+    assert found == [(tmp_path / name).as_posix() for name in (names[0], names[1], names[2], names[4])]
+    # A later run of the same mode, backend and tag (a re-run the next day) is the one compared.
+    later = tmp_path / f"2026-10-20-bench-scenes-{cpu}-opencv-1t.json"
+    later.write_text("{}", encoding="utf-8")
+    assert run("newest scenes opencv-1t") == [later.as_posix()]
+
+
+def test_the_runsheets_cool_session_installs_what_it_uses_and_keeps_the_commit():
+    lines = RUNSHEET_COOL.splitlines()
+
+    def first(text):
+        return next(i for i, line in enumerate(lines) if text in line)
+
+    # python3 -m venv needs the distribution's venv package, which a server image lacks.
+    assert first("sudo apt-get install -y python3-venv") < first("python3 -m venv")
+    assert "python3.12-venv" not in RUNSHEET_COOL  # not in Ubuntu 22.04's archive, where it would apply
+    # perf: installed for the kernel, PYTHONPATH carried through sudo, the root-owned file read by root.
+    assert first('linux-tools-$(uname -r)') < first("perf record")
+    record = lines[first("perf record")]
+    assert 'sudo env PYTHONPATH="$PYTHONPATH" perf record' in record
+    assert "sudo perf report -i perf.data" in lines[first("perf report")]
+    # A copy without git history records no commit: a bundle, never an archive; the image is told its commit.
+    assert "git bundle create" in RUNSHEET_COOL and "or copy a `git archive`" not in RUNSHEET_COOL
+    assert "--build-arg GIT_SHA=$(git rev-parse HEAD)" in RUNSHEET_COOL
+    # `pin` on the instance runs from a venv with requests (Ubuntu has no `python` command).
+    assert "~/stock/bin/python scripts/vision_eval.py pin" in RUNSHEET_COOL
 
 
 # --- the submission round: what a run records ---------------------------------------------------------
@@ -884,6 +990,9 @@ General configuration for OpenCV 5.0.0 =====================================
     KleidiCV:                    YES (0.3.0)
     Custom HAL:                  YES (kleidicv_hal)
   Vendor:                      COOL for AWS Graviton4
+  Target:                      AWS Graviton4 tuned
+  Extra modules:               cool_hal (1.0)
+  Built by:                    vendors team
   Python 3:
     Interpreter:                 /usr/bin/python3
 """
@@ -900,8 +1009,13 @@ def test_build_lines_keep_what_tells_a_vendor_build_apart():
         "KleidiCV:                    YES (0.3.0)",
         "Custom HAL:                  YES (kleidicv_hal)",
         "Vendor:                      COOL for AWS Graviton4",
+        "Target:                      AWS Graviton4 tuned",
+        "Extra modules:               cool_hal (1.0)",
+        "Built by:                    vendors team",
     ]
     assert not any("Timestamp" in line or "Interpreter" in line for line in lines)
+    # "COOL" starts a word; inside one it is not the vendor's name.
+    assert bench.build_lines("  Install to:  /opt/school/lib") == []
 
 
 def run_dict(kind, cpu, backend, results, scenes_inputs=None, networks=None, size=None, run_id=None):
@@ -984,7 +1098,9 @@ def test_compare_parity_fails_on_a_served_share_difference_and_exits_1(tmp_path,
     assert row["pixel_mismatch"] == {"share": 0.0, "note": "identical PNG bytes"}
     difference = "served_share: 0.7312 vs 0.7322 (abs 0.001000 > 0.0001)"
     assert bench.compare_checks(result) == [{"name": "parity:sydney-rail-2024-01-05", "expected": "equal",
-                                             "got": difference, "pass": False}]  # fmt: skip
+                                             "got": difference, "pass": False},
+                                            {"name": "scenes_compared", "expected": ">= 1", "got": 1,
+                                             "pass": True}]  # fmt: skip
     # Within the tolerances, and with identical lists, it passes without an equal digest.
     close = bench.compare(
         a, run_dict("bench-scenes", "N", "cool", scene_results(2, served=0.73125), INPUTS, NETS), 50, 0
@@ -1103,6 +1219,52 @@ def test_compare_with_unequal_stages_compares_the_common_ones_and_says_so():
             20,
             0,
         )
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "passes"),
+    [(0.7312, 0.7313, True), (0.6123, 0.6124, True), (0.6124, 0.6123, True), (0.0, 0.0001, True),
+     (0.6123, 0.6125, False), (0.7312, 0.7314, False)],
+)  # fmt: skip
+def test_parity_passes_one_rounding_step_of_the_served_share_whatever_the_float_noise(a, b, passes):
+    # The worker rounds the share to 4 places, so 1e-4 is one step: it passes for every value.
+    result = bench.parity({"metrics": {"served_share": a}}, {"metrics": {"served_share": b}})
+    assert result["pass"] is passes, result
+
+
+def test_compare_fails_parity_when_a_scene_is_ok_in_one_run_only_or_nothing_was_compared(tmp_path, capsys):
+    a = run_dict("bench-scenes", "N", "opencv", scene_results(1), INPUTS, NETS, run_id="A")
+    not_cool = {"sydney-rail-2024-01-05": {"ok": False, "error": "not_cool", "count": None, "io": None,
+                                           "stages": {}}}  # fmt: skip
+    b = run_dict("bench-scenes", "N", "cool", not_cool, INPUTS, NETS, run_id="B")
+    result = bench.compare(a, b, 20, 0)
+    row = result["scenes"]["sydney-rail-2024-01-05"]
+    assert row["skipped"] == "not ok in B (not_cool)" and not row["parity"]["pass"]
+    assert not result["parity_pass"] and result["headline"] is None
+    assert "no scene was ok in both runs: nothing was compared" in result["notes"]
+    assert bench.compare_checks(result) == [
+        {"name": "parity:sydney-rail-2024-01-05", "expected": "equal", "got": "not ok in B (not_cool)",
+         "pass": False},
+        {"name": "scenes_compared", "expected": ">= 1", "got": 0, "pass": False},
+    ]  # fmt: skip
+    summary = bench.compare_summary(result)
+    assert summary["parity_pass"] == 0 and summary["scenes_compared"] == 0
+    # Through main: the compare file is written with the failure, and the exit is 1.
+    vision_runs.write(a, tmp_path / "A.json")
+    vision_runs.write(b, tmp_path / "B.json")
+    argv = ["compare", str(tmp_path / "A.json"), str(tmp_path / "B.json"), "--bootstrap", "20"]
+    assert bench.main([*argv, "--out", str(tmp_path / "cmp.json")]) == 1
+    assert "parity: FAIL" in capsys.readouterr().err
+    assert vision_runs.load(tmp_path / "cmp.json")["summary"]["parity_pass"] == 0
+    # A scene that failed in both runs is skipped without blame; the others still decide.
+    failed, inputs = not_cool["sydney-rail-2024-01-05"], [*INPUTS, {**INPUTS[0], "name": "other"}]
+    both = run_dict("bench-scenes", "N", "opencv", {**scene_results(1), "other": failed}, inputs, NETS)
+    again = run_dict("bench-scenes", "N", "cool", {**scene_results(2), "other": failed}, inputs, NETS)
+    mixed = bench.compare(both, again, 20, 0)
+    assert mixed["parity_pass"] and mixed["scenes"]["other"] == {
+        "skipped": "not ok in either run (not_cool, not_cool)"
+    }
+    assert [c["pass"] for c in bench.compare_checks(mixed)] == [True, True]
 
 
 def test_controls_show_the_cool_guard_refusing_what_it_must(monkeypatch, capsys):
@@ -1276,6 +1438,55 @@ def test_where_and_code_identity(monkeypatch, tmp_path):
     assert vision_runs.code_identity(run=no_git) == {"git_sha": None, "dirty": None}
 
 
+def test_dirty_means_a_changed_tracked_file_and_a_copy_without_git_names_its_commit(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        identity = ["-c", "user.name=bench", "-c", "user.email=bench", "-c", "commit.gpgsign=false"]
+        subprocess.run(["git", *identity, *args], cwd=repo, check=True, capture_output=True)
+
+    git("init", "-q")
+    (repo / "code.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "code.py")
+    git("commit", "-q", "-m", "code")
+    clean = vision_runs.code_identity(repo, environ={})
+    assert re.fullmatch(r"[0-9a-f]{40}", clean["git_sha"]) and clean["dirty"] is False
+    # The session's earlier run files and build records sit untracked in the checkout until they
+    # are committed; they change no code, so the tree is not dirty.
+    runs = repo / "docs" / "runs"
+    runs.mkdir(parents=True)
+    (runs / "2026-10-19-bench-kernels-x-opencv-1t-r1.json").write_text("{}", encoding="utf-8")
+    (repo / "stock-buildinfo.txt").write_text("General configuration\n", encoding="utf-8")
+    assert vision_runs.code_identity(repo, environ={}) == clean
+    (repo / "code.py").write_text("x = 2\n", encoding="utf-8")
+    assert vision_runs.code_identity(repo, environ={}) == {**clean, "dirty": True}
+    # No checkout (the COOL image, built with GIT_SHA): the commit from the environment, if it is one.
+    copy = tmp_path / "copy"
+    copy.mkdir()
+    sha = clean["git_sha"]
+    named = vision_runs.code_identity(copy, environ={vision_runs.GIT_SHA_ENV: sha})
+    assert named == {"git_sha": sha, "dirty": None}
+    for junk in ("", "HEAD", "abc123", sha + "0"):
+        assert vision_runs.code_identity(copy, environ={vision_runs.GIT_SHA_ENV: junk})["git_sha"] is None
+
+
+def test_the_benchmark_and_the_evaluation_start_on_a_python_without_datetime_utc():
+    # datetime.UTC is 3.11+, and the COOL product's own Python (the COOL venv's) may be 3.10.
+    code = (
+        "import datetime, sys; del datetime.UTC; sys.path[:0] = sys.argv[1:3]; "
+        "import vision_runs, vision_benchmark, vision_eval; print(vision_runs.utc_now())"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(ROOT / "scripts"), str(ROOT / "lambdas")],
+        capture_output=True, text=True, timeout=120,
+    )  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\n", done.stdout)
+
+
 def test_the_scenes_file_gained_the_clear_sydney_scene_and_kept_the_old_two():
     scenes = {s["name"]: s for s in bench.load_scenes()}
     assert list(scenes)[:2] == ["botany-bay-2024-01-05", "sydney-rail-2024-01-05"]
@@ -1361,7 +1572,9 @@ def test_isolated_runs_record_the_childrens_cache_counts_and_mapped_libraries(tm
     assert "--isolate" not in argvs[0] and argvs[0][argvs[0].index("--cache") + 1] == str(tmp_path / "cogs")
 
 
-def test_worker_mode_records_the_deployed_worker_by_region_and_code_never_its_arn(tmp_path, monkeypatch):
+def test_worker_mode_records_the_deployed_worker_by_region_and_code_never_its_arn(
+    tmp_path, monkeypatch, capsys
+):
     arn = "arn:aws:lambda:us-west-2:123456789012:function:bloggerbear-dev-vision-worker"
 
     class Configured(FakeLambda):
@@ -1370,10 +1583,21 @@ def test_worker_mode_records_the_deployed_worker_by_region_and_code_never_its_ar
 
     fake = Configured(REPLY)
     monkeypatch.setattr(bench, "lambda_client", lambda arn_: fake)
+    manifest = vision_runs.pinned_etags(bench.load_manifest(bench.MANIFEST_FILE))
+    monkeypatch.setattr(
+        vision_runs, "default_head", lambda url: {"etag": manifest.get(url, "unpinned"), "bytes": 1}
+    )
     out = tmp_path / "worker.json"
     argv = ["worker", "--arn", arn, "--repeats", "1", "--only", "botany-bay-2024-01-05", "--out", str(out)]
     assert bench.main(argv) == 0
     run = vision_runs.load(out)
+    # The manifest pins the scene: its assets were HEADed before the worker was invoked, and the
+    # run file names the ETags the worker was sent to read.
+    scene = next(s for s in bench.load_scenes() if s["name"] == "botany-bay-2024-01-05")
+    etags = run["inputs"]["scenes"][0]["etag_by_asset"]
+    assert etags == {band: manifest.get(url, "unpinned") for band, url in scene["assets"].items()}
+    assert any(url in manifest for url in scene["assets"].values())
+    assert run["inputs"]["manifest_sha256"] == vision_runs.sha256_file(bench.MANIFEST_FILE)
     assert run["kind"] == "bench-worker" and run["mode"] == "worker"
     assert run["worker"] == {"kind": "deployed", "region": "us-west-2", "code_sha256": "c0de="}
     assert "arn" not in run["params"]
@@ -1383,6 +1607,11 @@ def test_worker_mode_records_the_deployed_worker_by_region_and_code_never_its_ar
     assert fake.calls[0][1]["site"]["id"] == "bench-botany-bay"
     # A caller that may not read the function's configuration records null.
     assert bench.deployed_code_sha256(FakeLambda(REPLY), arn) is None
+    # A pinned ETag that changed refuses the run before the worker is invoked: exit 1, no call.
+    fake.calls.clear()
+    monkeypatch.setattr(vision_runs, "default_head", lambda url: {"etag": "CHANGED", "bytes": 1})
+    assert bench.main(argv) == 1
+    assert fake.calls == [] and "input changed" in capsys.readouterr().err
 
 
 def test_shown_path_keeps_the_users_name_out_of_run_files(tmp_path):

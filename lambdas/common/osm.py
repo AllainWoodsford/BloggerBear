@@ -28,6 +28,7 @@ import re
 import time
 import unicodedata
 from datetime import UTC, datetime, timedelta
+from threading import Timer
 from urllib.parse import quote
 
 import requests
@@ -44,6 +45,9 @@ OVERPASS_ENDPOINTS = (
 # of this client's slots, after the client has stopped reading (a higher one would; and Overpass
 # turns away a query declaring a longer runtime sooner when it is busy).
 TIMEOUT_SECONDS = 25.0
+# A caller's deadline is read from the clock a moment before the hop's time is, so a hop meant to read
+# for 25 s reads for 24.99999 s: a shortfall this small is the clock's, and the query still says 25.
+_ROUNDING_SLACK_SECONDS = 0.01
 # Overpass' usage policy asks every client to name itself. Without a User-Agent the request goes out
 # as python-requests: overpass-api.de's front answers 406 Not Acceptable (not transient, so the
 # mirror is never tried) and the mirror answers 429 "Please include a meaningful User-Agent". The
@@ -167,10 +171,11 @@ def _ring(polygon) -> list[tuple[float, float]]:
 def overpass_query(polygon, timeout: float = TIMEOUT_SECONDS) -> str:
     """The Overpass QL for `polygon` ([[lon, lat], ...]): rail ways with their geometry, stations
     and intermodal points with their centres, as JSON, with `timeout` (the hop's read timeout) as
-    the query's `[timeout:]` in whole seconds, rounded down and at least 1 (TIMEOUT_SECONDS says
-    why the two match). With the default timeout the text is the one the query has always had."""
+    the query's `[timeout:]` in whole seconds, rounded down (less than _ROUNDING_SLACK_SECONDS short
+    of a whole second counts as it) and at least 1 (TIMEOUT_SECONDS says why the two match). With
+    the default timeout the text is the one the query has always had."""
     poly = " ".join(f"{_coord(lat)} {_coord(lon)}" for lon, lat in _ring(polygon))
-    seconds = max(1, math.floor(timeout))
+    seconds = max(1, math.floor(timeout + _ROUNDING_SLACK_SECONDS))
     return _QUERY.replace("{timeout}", str(seconds)).replace("{poly}", poly)
 
 
@@ -372,11 +377,14 @@ def is_stale(network, now: datetime, ttl_days) -> bool:
     return now - fetched_at > timedelta(days=float(ttl_days))
 
 
-def _request(post, endpoint: str, query: str, timeout: float) -> list:
+def _request(
+    post, endpoint: str, query: str, timeout: float, deadline: float | None = None, clock=time.monotonic
+) -> list:
     """One POST to `endpoint`; the reply's `elements`, or the OsmError it amounts to. Redirects are
     not followed (the allowlist is about the host actually read), and the body is streamed so the
-    size cap holds while it arrives. Any other failure of the request library is a connection
-    failure worth the mirror: a connection cut mid-body is one of them."""
+    size cap holds while it arrives, and read only until `deadline` (_read_body). Any other failure
+    of the request library is a connection failure worth the mirror: a connection cut mid-body is
+    one of them."""
     try:
         response = post(
             endpoint,
@@ -402,14 +410,14 @@ def _request(post, endpoint: str, query: str, timeout: float) -> list:
         raise OsmError("http", f"HTTP {status} from {endpoint}", transient=True)
     if status >= 400:
         raise OsmError("http", f"HTTP {status} from {endpoint}")
-    return _read_elements(response, endpoint)
+    return _read_elements(response, endpoint, deadline, clock)
 
 
-def _read_elements(response, endpoint: str) -> list:
+def _read_elements(response, endpoint: str, deadline: float | None = None, clock=time.monotonic) -> list:
     """The `elements` of a 2xx reply. The adapter must never take a partial network for a whole
     one, so a "runtime error" remark (Overpass answers 200 with what it had when the query timed
     out) is a failure too, and a timed-out one is worth the mirror."""
-    body = _read_body(response, endpoint)
+    body = _read_body(response, endpoint, deadline, clock)
     try:
         payload = json.loads(body)
     except (ValueError, RecursionError) as exc:
@@ -424,14 +432,23 @@ def _read_elements(response, endpoint: str) -> list:
     return payload["elements"]
 
 
-def _read_body(response, endpoint: str) -> bytes:
+def _read_body(response, endpoint: str, deadline: float | None = None, clock=time.monotonic) -> bytes:
     """The reply's bytes, refused as `too_large` as soon as they pass MAX_RESPONSE_BYTES: from the
     Content-Length when there is one, else while the chunks arrive, so an oversized body is never
-    held whole. A connection cut while reading is a transient failure."""
+    held whole. A connection cut while reading is a transient failure.
+
+    With a `deadline` (a `clock()` value) the body is read only until then, and a body not read
+    whole by it is a transient "timeout". The read timeout bounds each wait between two reads, not
+    the body: Overpass sends its headers at once and its elements once the query has run, so a
+    connection that went silent after the first bytes would otherwise hold the hop for a whole
+    read timeout past the deadline (63 s at the rail adapter's 80 s budget). So a _Shutter ends
+    any read still blocked at the deadline, and the time is checked after each chunk."""
     declared = (getattr(response, "headers", None) or {}).get("Content-Length")
     if isinstance(declared, str) and declared.isdigit() and int(declared) > MAX_RESPONSE_BYTES:
         _close(response)
         raise OsmError("too_large", f"{declared} bytes declared by {endpoint}")
+    late = OsmError("timeout", f"the body from {endpoint} was still arriving at the deadline", transient=True)
+    shutter = _Shutter(response, deadline - clock()) if deadline is not None else None
     chunks, total = [], 0
     try:
         for chunk in response.iter_content(chunk_size=_CHUNK_BYTES):
@@ -439,11 +456,45 @@ def _read_body(response, endpoint: str) -> bytes:
             if total > MAX_RESPONSE_BYTES:
                 raise OsmError("too_large", f"over {MAX_RESPONSE_BYTES} bytes from {endpoint}")
             chunks.append(chunk)
+            if deadline is not None and clock() >= deadline:
+                raise late
+        if shutter is not None and shutter.fired:
+            raise late  # a reply read to its connection's close just ends when shut
     except requests.RequestException as exc:
+        if shutter is not None and (shutter.fired or clock() >= deadline):
+            raise late from exc
         raise OsmError("http", f"{type(exc).__name__} reading from {endpoint}", transient=True) from exc
     finally:
+        if shutter is not None:
+            shutter.cancel()
         _close(response)
     return b"".join(chunks)
+
+
+class _Shutter:
+    """Shuts a streamed reply's socket for reading `seconds` from now, from a timer thread
+    (urllib3's HTTPResponse.shutdown), which ends a read blocked on it at once: with an error, or as
+    the body's end on a reply read to its connection's close, so `fired` says it was this. A reply
+    that cannot be shut (a stand-in, an older urllib3) is left to the read timeout."""
+
+    def __init__(self, response, seconds: float):
+        self.fired = False
+        shutdown = getattr(getattr(response, "raw", None), "shutdown", None)
+        self._timer = Timer(max(0.0, seconds), self._shut, (shutdown,)) if callable(shutdown) else None
+        if self._timer is not None:
+            self._timer.daemon = True
+            self._timer.start()
+
+    def _shut(self, shutdown) -> None:
+        self.fired = True
+        try:
+            shutdown()
+        except Exception:  # noqa: BLE001 - read and released already: nothing left to end
+            pass
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
 
 
 def _close(response) -> None:
@@ -479,7 +530,9 @@ def fetch_network(
     Without a `deadline` the worst case is two hops of connect plus `timeout` plus the transfer.
     With one (a `clock()` value, `time.monotonic` by default), each hop gets at most the time left
     before it, less the connect allowance, and a hop that would get under _MIN_HOP_SECONDS is not
-    made: the failure so far is raised, or "timeout" if there was none. Each hop's query declares
+    made: the failure so far is raised, or "timeout" if there was none. A body not read whole by the
+    deadline is a "timeout" too (_read_body), so the fetch ends by its deadline however the server
+    stalls; only the parse and the cap follow it. Each hop's query declares
     the read timeout that hop gets as its `[timeout:]` (`overpass_query`), so a mirror hop with less
     time left asks the server for no more. `http_post` stands in for `requests.post` in tests;
     `endpoints` must be allow-listed (OVERPASS_ENDPOINTS)."""
@@ -499,7 +552,8 @@ def fetch_network(
             if hop_timeout < _MIN_HOP_SECONDS:
                 raise failure or OsmError("timeout", "no time left before the deadline")
         try:
-            elements = _request(post, endpoint, overpass_query(polygon, hop_timeout), hop_timeout)
+            query = overpass_query(polygon, hop_timeout)
+            elements = _request(post, endpoint, query, hop_timeout, deadline, clock)
             break
         except OsmError as exc:
             failure = exc

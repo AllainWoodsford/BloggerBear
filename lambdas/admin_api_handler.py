@@ -835,7 +835,12 @@ def _resume_topic(event: dict) -> dict:
 _PIPELINE_FUNCTION_ENV_VARS = {
     "research_tick": "RESEARCH_TICK_FUNCTION_NAME",
     "daily_cycle": "DAILY_CYCLE_FUNCTION_NAME",
+    # The research tick's Lambda again, asked only to fetch a vision topic's rail networks with the
+    # time a slow Overpass needs (rail_access.prefetch_networks): no Finding, no research time.
+    "network_prefetch": "RESEARCH_TICK_FUNCTION_NAME",
 }
+# The adapters with a network to prefetch (those with rail_access's prefetch_networks).
+_NETWORK_PREFETCH_ADAPTERS = frozenset({"rail_access"})
 
 
 def _trigger_topic(event: dict) -> dict:
@@ -848,7 +853,7 @@ def _trigger_topic(event: dict) -> dict:
 
     pipeline = body.get("pipeline")
     if pipeline not in _PIPELINE_FUNCTION_ENV_VARS:
-        return _error(400, "'pipeline' must be one of: research_tick, daily_cycle")
+        return _error(400, "'pipeline' must be one of: research_tick, daily_cycle, network_prefetch")
 
     topic = get_topic(topic_id)
     if topic is None:
@@ -857,7 +862,15 @@ def _trigger_topic(event: dict) -> dict:
     if topic.get("paused") is True:
         return _error(409, f"topic '{topic_id}' is paused: resume it first (topics resume {topic_id})")
 
+    if pipeline == "network_prefetch" and topic.get("adapter") not in _NETWORK_PREFETCH_ADAPTERS:
+        return _error(
+            400,
+            f"topic '{topic_id}' has no network to prefetch: only a rail_access topic has one",
+        )
+
     payload = {"topic_id": topic_id}
+    if pipeline == "network_prefetch":
+        payload["prefetch_network"] = True
     # A manual research_tick is "check now": it must not be refused because the
     # topic's research interval hasn't elapsed, so it always bypasses that check.
     if pipeline == "research_tick":

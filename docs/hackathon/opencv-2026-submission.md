@@ -311,22 +311,28 @@ kept is numbers and one map per scene.
    ([runsheet](../deployment-runsheet.md#vision-optional))
 2. **Create the topics.** The four city topics are complete topic bodies in
    `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,
-   one city drafted a day, each article from every Finding since that city's last, through a
-   192-hour `findings_window_hours`); the runsheet's
+   Sydney at the 80 s `time_budget_seconds` cap for its slow first network, one city drafted a
+   day, each article from every Finding since that city's last, through a 192-hour
+   `findings_window_hours`); the runsheet's
    [rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them with the admin
    CLI. For the ship task, `adapter: "satellite_vision"` with a Botany Bay polygon and
    `object_noun: "large vessels"`. `force_manual_review` is set for you.
-3. **Force a tick.** `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick`.
-   The first tick fetches the city's network from Overpass and measures the newest scene; if its
-   coverage is at least 0.6, that is the first observation and a Finding appears, carrying the
-   map and the planner notes (a cloudy scene reports nothing, and the next clear one is first).
-   The figure is in the content bucket under `vision/<topic>/<site>/<scene>.png`, and the running
-   state at `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and
-   timings, the cached network and, from the second clear scene on, the agent's trail. The CLI
-   waits only 30 s for the Finding, and a tick that measures a scene can run longer (the network
-   fetch, up to 58 s of worker, then the summary, inside 120 s), so its "No new Finding after 30s"
-   is expected: wait about two minutes, or until
-   `python scripts/admin_cli.py topics findings rail-sydney` shows it.
+3. **Force two ticks.** `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick`.
+   A large city's first tick only fetches its OpenStreetMap network from Overpass: Sydney's query
+   runs for most of a minute, which leaves too little of the tick to measure, so the scene waits
+   (the tick's `vision_site` line says `deferred` for `time_budget`) and the network is cached
+   (the runsheet's [`rail_access` topics](../deployment-runsheet.md#rail_access-topics), "A large
+   city's first network can take a minute"). Trigger it again, or wait for the next hourly tick:
+   that tick measures the newest scene against the cached network, and if its coverage is at least
+   0.6, that is the first observation and a Finding appears, carrying the map and the planner
+   notes (a cloudy scene reports nothing, and the next clear one is first). The figure is in the
+   content bucket under `vision/<topic>/<site>/<scene>.png`, and the running state at
+   `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and timings, the
+   cached network and, from the second clear scene on, the agent's trail. The CLI waits only 30 s
+   for the Finding, so its "No new Finding after 30s" is expected on both ticks (the first makes
+   none; the second runs up to 58 s of worker, then the summary, inside 120 s): after the second,
+   wait about two minutes, or until `python scripts/admin_cli.py topics findings rail-sydney`
+   shows it.
 4. **Run the daily cycle** (`--pipeline daily_cycle`) once the Finding is there, and open the
    inbox (`python scripts/admin_cli.py inbox`): the article is held for you.
    `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; the page

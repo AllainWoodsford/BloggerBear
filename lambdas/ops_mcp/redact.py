@@ -32,17 +32,24 @@ it is replaced by WITHHELD, and the result says how many were withheld. The mode
 result never sees the words, so they cannot steer it, and the operator still learns that a line
 like that was in the log (which is itself worth knowing: someone is probing). The phrase is looked
 for in a normalised copy (NFKD, so an accented letter is its letter and a mark; format characters,
-marks and the Hangul fillers read as ignorable; control characters and whitespace collapsed to
+marks and the blank symbols read as ignorable; control characters and whitespace collapsed to
 single spaces), so a line break, a tab, a C1 control, a no-break or em space, a zero-width joiner,
-a combining mark or a variation selector between or inside the words, or fullwidth letters, do not
-hide it. The ignorable characters are read two ways, removed (inside a word, one hid a letter) and
-as a space (between words, one hid the space), and a line that matches in either copy is withheld.
-What scrub returns has no character the check did not read: every format character (the two
-joiners aside), surrogate, private-use or unassigned code point, and the invisible marks and
-fillers outside Cf (the combining grapheme joiner, the variation selectors, the Hangul fillers:
-Unicode's other default-ignorable code points) are removed from it, so nothing invisible, such as
-an instruction spelt in Unicode tag characters, reaches the result. A visible mark (an accent, an
-overline, a keycap) stays: it is seen.
+a combining mark, a variation selector or a Braille blank between or inside the words, or
+fullwidth letters, do not hide it. The ignorable characters are read two ways, removed (inside a
+word, one hid a letter) and as a space (between words, one hid the space); the removed copy is
+read against the pattern with its spaces optional and no word boundary, since one ignorable inside
+every word and between the words glues the words in the one copy and splits them in the other; a
+line that matches in either copy is withheld. Where the result is cut to a limit (`scrub`,
+samples._redact_text) the check reads the text's start, a few times the limit in characters it
+does not ignore, and then the text as it will be returned, whole (`looks_like_instructions_within`
+says why both): a phrase wholly past the cut is never returned, so such a line is shown cut rather
+than withheld, and nothing a model reads is instruction-like. What scrub returns has no character
+the check did not read: every format character (the two joiners aside), surrogate, private-use or
+unassigned code point, and the invisible marks and fillers outside Cf (the combining grapheme
+joiner, the variation selectors, the Hangul fillers: Unicode's other default-ignorable code points)
+are removed from it, so nothing invisible, such as an instruction spelt in Unicode tag characters,
+reaches the result. A visible mark (an accent, an overline, a keycap) stays: it is seen; so does a
+blank symbol, which is a symbol, not a format character.
 
 Pure functions and regular expressions: no AWS, no model.
 """
@@ -92,12 +99,13 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 # copy (normalised).
 _DROPPED_CATEGORIES = frozenset({"Cf", "Cs", "Co", "Cn"})
 _KEPT_JOINERS = frozenset("\u200c\u200d")
-# Read like a format character by the check (normalised), where one after every letter hid a phrase:
-# every mark (an accent, which NFKD splits off its letter; the invisible combining grapheme joiner
-# and variation selectors; an enclosing keycap) and the four Hangul fillers, which are letters (Lo)
-# that show nothing.
+# Read like a format character by the check (normalised), where one after every letter or between
+# the words hid a phrase: every mark (an accent, which NFKD splits off its letter; the invisible
+# combining grapheme joiner and variation selectors; an enclosing keycap) and the blanks, symbols
+# that show nothing: the four Hangul fillers (letters, Lo), the Braille blank, the musical null
+# notehead and the object replacement character (symbols, So).
 _MARK_CATEGORIES = frozenset({"Mn", "Mc", "Me"})
-_FILLERS = frozenset("\u115f\u1160\u3164\uffa0")
+_BLANKS = frozenset("\u115f\u1160\u3164\uffa0\u2800\U0001d159\ufffc")
 # Unicode's Default_Ignorable_Code_Point members outside Cf (unicodedata names no such property):
 # the combining grapheme joiner, the Hangul fillers, the Khmer inherent vowels, the Mongolian and
 # the ordinary variation selectors. Nobody sees them, so `visible` removes them with the format
@@ -133,6 +141,25 @@ _INSTRUCTION_LIKE = re.compile(
     r"|reveal (your|the) (prompt|instructions|system)"
     r")"
 )
+# The same pattern with every literal space optional and no word boundary, for the copy with the
+# ignorable characters removed: one ignorable inside every word AND between the words reads as
+# "ignorepreviousinstructions" there and as "ig nore pr evious in structions" in the spaced copy,
+# so neither matched the pattern as written. Built from the pattern, not retyped, so the two cannot
+# drift apart, and it matches everything the pattern does. Broader, in every line, since the copy
+# with nothing ignorable in it is the line itself: "filesystem: 91% used" and "subsystem: ok" read
+# as "system:", "you are nowhere near it" as "you are now", "<tooltip>" as "<tool", and each is
+# withheld, which the pattern's own rule accepts (a false positive hides one log line, and says so).
+_INSTRUCTION_LIKE_GLUED = re.compile(_INSTRUCTION_LIKE.pattern.replace(" ", " ?").replace(r"\b", ""))
+
+# How much of a text the check reads where the result is cut to a limit (looks_like_instructions_
+# within): this many times the limit, in characters the check does not ignore. More than the limit
+# itself because the whitespace collapse and the personal-data sweep shorten text into the shown
+# window (an address of sixty characters becomes "[email]"); the returned text is then checked
+# whole, so nothing a model reads escapes, and the multiple only decides how far past the cut a
+# phrase still withholds the line instead of being cut off it. Small enough that the NFKD the check
+# runs is bounded: at the default limit, 1,200 characters of the one that expands eighteen-fold
+# (U+FDFA) is 21,600 code points, where the whole of a 256K-character line was 4.7 million.
+CHECK_VISIBLE_MULTIPLE = 4
 
 
 def mask_ip(value: str) -> str:
@@ -222,35 +249,88 @@ def visible(text: str) -> str:
     )
 
 
+def _ignorable(char: str) -> bool:
+    """Whether the check reads `char` as nothing or as a space (`normalised`'s `ignorable_as`)."""
+    category = unicodedata.category(char)
+    return category in _DROPPED_CATEGORIES or category in _MARK_CATEGORIES or char in _BLANKS
+
+
+def _decomposed(text) -> tuple[str, dict[int, str], list[int]]:
+    """The text in NFKD, what of it the check reads as a space (control characters and line
+    separators, as a str.translate table) and which code points it reads as ignorable: what
+    `normalised` builds its copies from. Each distinct character is looked up once (those of the
+    decomposition are the decompositions of the text's distinct characters) and the copies are then
+    built in C: a per-character loop kept one object per code point, and NFKD expands U+FDFA
+    eighteen-fold, so the two copies of a 256K-character line of it took 5.4 s and 477 MB."""
+    raw = str(text if text is not None else "")
+    spaces, ignored = {}, []
+    for char in set(unicodedata.normalize("NFKD", "".join(set(raw)))):
+        if unicodedata.category(char) in _SPACE_CATEGORIES:
+            spaces[ord(char)] = " "
+        elif _ignorable(char):
+            ignored.append(ord(char))
+    return unicodedata.normalize("NFKD", raw), spaces, ignored
+
+
+def _copy(decomposed: tuple[str, dict[int, str], list[int]], ignorable_as: str) -> str:
+    """One copy of a `_decomposed` text (`normalised`), each ignorable code point `ignorable_as`."""
+    folded, spaces, ignored = decomposed
+    return " ".join(folded.translate({**spaces, **dict.fromkeys(ignored, ignorable_as)}).split())
+
+
 def normalised(text, *, ignorable_as: str = "") -> str:
     """The copy the instruction rule reads (and the agent's echo rule compares, ops_agent/policy.py):
     compatibility forms decomposed (NFKD: fullwidth letters, a no-break or em space become plain,
     an accented letter its letter and a mark), every character `visible` drops with the two joiners
-    (they can sit inside a word and hide it) and every mark and Hangul filler (_MARK_CATEGORIES,
-    _FILLERS) replaced by `ignorable_as`, control characters and line separators read as spaces,
+    (they can sit inside a word and hide it) and every mark and blank symbol (_MARK_CATEGORIES,
+    _BLANKS) replaced by `ignorable_as`, control characters and line separators read as spaces,
     and whitespace collapsed to single spaces, since _INSTRUCTION_LIKE is written with single spaces
     and a model's text spans lines.
 
     `ignorable_as` is nothing by default: inside a word an ignorable character hid a letter.
     Between words it hid a space, so the check reads a second copy with each one as " "."""
-    folded = unicodedata.normalize("NFKD", str(text if text is not None else ""))
-    kept = []
-    for char in folded:
-        category = unicodedata.category(char)
-        if category in _SPACE_CATEGORIES:
-            kept.append(" ")
-        elif category in _DROPPED_CATEGORIES or category in _MARK_CATEGORIES or char in _FILLERS:
-            kept.append(ignorable_as)
-        else:
-            kept.append(char)
-    return " ".join("".join(kept).split())
+    return _copy(_decomposed(text), ignorable_as)
 
 
 def looks_like_instructions(text) -> bool:
     """Whether the text reads like something written to steer a model, however it is spaced or
-    spelt: in the normalised copy with the ignorable characters removed and in the one with each
-    read as a space (`normalised` says why both)."""
-    return any(_INSTRUCTION_LIKE.search(normalised(text or "", ignorable_as=as_)) for as_ in ("", " "))
+    spelt: the normalised copy with the ignorable characters removed, read against the glued form
+    of the pattern (_INSTRUCTION_LIKE_GLUED matches everything _INSTRUCTION_LIKE does, so that copy
+    is read with it alone), and the copy with each read as a space, against the pattern as written
+    (`normalised` says why both copies; the text is decomposed once for the two, and with nothing
+    ignorable in it the two copies are one, read once). The whole text, however long: where only
+    the start of it is returned, `looks_like_instructions_within` reads a bounded amount."""
+    decomposed = _decomposed(text or "")
+    if _INSTRUCTION_LIKE_GLUED.search(_copy(decomposed, "")):
+        return True
+    _, _, ignored = decomposed
+    return bool(ignored) and bool(_INSTRUCTION_LIKE.search(_copy(decomposed, " ")))
+
+
+def _head(text: str, limit: int) -> str:
+    """The start of `text` the bounded check reads: up to where CHECK_VISIBLE_MULTIPLE * limit
+    characters the check does not ignore have been seen. A plain scan of categories, no NFKD, so a
+    line of 256K zero-width spaces costs some 40 ms; ASCII holds nothing the check ignores, so it is
+    cut outright."""
+    wanted = CHECK_VISIBLE_MULTIPLE * limit
+    if len(text) <= wanted or text.isascii():
+        return text[:wanted]
+    seen = 0
+    for index, char in enumerate(text):
+        if not _ignorable(char):
+            seen += 1
+            if seen >= wanted:
+                return text[: index + 1]
+    return text
+
+
+def looks_like_instructions_within(text, limit: int) -> bool:
+    """`looks_like_instructions` over the start of a text of which at most `limit` characters will
+    be returned (`_head`), which bounds the NFKD and the pattern's work however long the text. The
+    caller checks the text it returns as well, whole (`scrub`, samples._redact_text), so a phrase
+    the start does not reach is either past the cut, and never returned, or shortened into view by
+    the sweep, and caught there."""
+    return looks_like_instructions(_head(str(text if text is not None else ""), limit))
 
 
 def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
@@ -259,13 +339,17 @@ def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
     whitespace collapsed, cut to `limit`.
 
     The order matters: the check reads the text as written, before `visible` removes what nobody
-    sees (a format character between two words is what tells them apart); tokens and keys before
-    the generic long-secret rule (so a JWT says [token]), cards before account ids (a 16-digit card
-    holds 12 digits in a row), addresses last of the numeric rules."""
+    sees (a format character between two words is what tells them apart), a bounded start of it
+    (looks_like_instructions_within), and then the text about to be returned, whole, so a phrase
+    the sweep shortened into view is caught and one wholly past the cut, never returned, leaves the
+    line shown cut; tokens and keys before the generic long-secret rule (so a JWT says [token]),
+    cards before account ids (a 16-digit card holds 12 digits in a row), addresses last of the
+    numeric rules."""
     text = _CONTROL.sub(" ", str(value if value is not None else ""))
-    if looks_like_instructions(text):
+    if looks_like_instructions_within(text, limit):
         return WITHHELD
-    return untrusted_text(_personal(visible(text)), limit)
+    shown = untrusted_text(_personal(visible(text)), limit)
+    return WITHHELD if looks_like_instructions(shown) else shown
 
 
 def sweep_answer(text) -> str:

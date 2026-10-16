@@ -615,9 +615,10 @@ default: [configuration.md](configuration.md#a-rail_access-topic)). Turn the wor
 **Create the four city topics.** `scripts/rail_topics.example.json` holds four complete admin API
 topic bodies, Sydney, Melbourne, Singapore and Boston: each city's box from
 [rail-access-monitor.md §2](enhancements/rail-access-monitor.md#2-the-angle-rail-access-not-rail-yards),
-`reach_m` 1000, an editorial goal, the city's days of the week (`daily_cadence`) and a findings
-window of 192 hours (`findings_window_hours`). `topics create` takes a topic as flags, not as a
-file, so read each field out of it, from the repository root:
+`reach_m` 1000 (and for Sydney the 80 s `time_budget_seconds` cap: see "A large city's first
+network can take a minute", below), an editorial goal, the city's days of the week
+(`daily_cadence`) and a findings window of 192 hours (`findings_window_hours`). `topics create`
+takes a topic as flags, not as a file, so read each field out of it, from the repository root:
 
 ```bash
 field() { python -c 'import json, sys; v = json.load(open("scripts/rail_topics.example.json"))["topics"][int(sys.argv[1])][sys.argv[2]]; print(v if isinstance(v, str) else json.dumps(v))' "$1" "$2"; }
@@ -739,18 +740,38 @@ asking the server for the same (`FIRST_FETCH_MARGIN_SECONDS` and `FIRST_FETCH_TI
 so **the first tick fetches and the next measures**: the first tick's `vision_site` line says
 `deferred` for `time_budget`, and the ops assistant's vision status shows the network's
 `fetched_at` from that tick; the next tick (an hour later by default) measures the city against
-the cached network, which then serves for `osm_ttl_days` (a refresh that fails keeps it). For a
-heavy city, raise the topic's `time_budget_seconds` to the cap, 80, which gives the fetch about
-70 s: read the config with `topics get <id>`, add `"time_budget_seconds": 80` to the whole
-`adapter_config` and send all of it back with `topics update <id> --adapter-config-json '...'` (it
-replaces the config: see `reach_m` below). A failed first fetch is tried again on the next tick,
+the cached network, which then serves for `osm_ttl_days` (a refresh that fails keeps it). The
+fetch ends by its deadline even if Overpass goes silent mid-reply: a reply still arriving then is
+cut, and the tick records a timeout. For a heavy city, raise the topic's `time_budget_seconds` to
+the cap, 80, which gives the fetch about 70 s (the example's Sydney topic sets it already; a topic
+created before it did, like dev's `trains-sydney`, does not): read the config with
+`topics get <id>`, add `"time_budget_seconds": 80` to the whole `adapter_config` and send all of
+it back with `topics update <id> --adapter-config-json '...'` (it replaces the config: see
+`reach_m` below). A failed first fetch is tried again on the next tick,
 with no 6-hour wait: nothing is measured without a network. If the status keeps saying `osm` with
-"OpenStreetMap timed out" at the 80 s budget, the query is too big for Overpass to answer in a
-tick: shrink the polygon (it starts a new baseline, and a new network is fetched for it).
+"OpenStreetMap timed out" at the 80 s budget (Overpass took 39 to 75 s to start answering for
+Sydney on 16 October, so a busy hour can miss), fetch the network out of band:
+
+```bash
+python scripts/admin_cli.py topics trigger rail-sydney --pipeline network_prefetch
+```
+
+It runs the research tick's function in a mode that only fetches each site's network, with up to
+90 s per Overpass reply and 100 s in all, and stores it at `vision/<topic>/<site>/network.json` in
+the content bucket. It writes no Finding, no running state and no research time, so the CLI does
+not wait: each site's result is a `network_prefetch` line in the research-tick log (`stored`,
+`failed` with the Overpass error, or `deferred` when the time ran out before a second site; trigger
+again for those). The next tick adopts the stored network for a site that has none, or whose own is
+past its TTL and older, and carries it in the running state from then on; it is read in no other
+case. When a city's cached network goes stale (`osm_ttl_days`, 30 by default) and the tick's
+30 s refresh keeps failing, the old network is still measured against; run the prefetch again to
+replace it. If even the prefetch fails with a timeout, the query is too big for Overpass to answer:
+shrink the polygon (it starts a new baseline, and a new network is fetched for it).
 
 **Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
 drew it, `vision/<topic>/<site>/<scene>.png` (for example
-`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); the running state, rewritten every
+`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); a network fetched by
+`network_prefetch`, `vision/<topic>/<site>/network.json`; the running state, rewritten every
 tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
 `snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the
 newest entry with its station, flag, suggestion and desert lists), the cached network, and any
@@ -970,11 +991,26 @@ shadow them, and the handler would answer `not_cool`).
    |---|---|
    | an AMI; `cv2` imports and is 5.x; Python 3.11 or newer | go: the steps below as written |
    | `cv2` imports, but is not 5.x | record it; every claim is scoped to "COOL <version>"; add a stock venv of the same major version, so the comparison is like for like |
-   | a container image, not an AMI | launch a `c8g` with Docker; build `docker/vision-cool/Dockerfile` from the image by digest (its 5.x gate applies) and run every step inside it (`docker run ... python3 bench/vision_benchmark.py ...`) |
+   | a container image, not an AMI | launch a `c8g` with Docker; build `docker/vision-cool/Dockerfile` from the image by digest once step 5 has the network fixture in the checkout (its 5.x gate applies), and run the COOL commands inside it, as the paragraph below the table says |
    | no Python binding (C++ only) | the container route if one exists; otherwise the COOL proof (C3) is "not shown" and the report says why; the COOL configuration (C1) and the stock rows still stand |
-   | Python under 3.11 | the stock venvs need a 3.11+ interpreter (numpy 2.4.4 requires it): install `python3.12` for them (step 3) and record that the backends ran on different Pythons |
+   | Python under 3.11 | the stock venvs need a 3.11+ interpreter (numpy 2.4.4 requires it): install one for them (step 3) and record that the backends ran on different Pythons |
    | not in us-west-2 | the nearest Region with `c8g`; fill `--cache` once there (the reads then cross Regions only once) |
    | no trial, or more than about USD 5 an hour | decide before launching |
+
+   **The container route.** The image copies in the handler, the benchmark with its run-file
+   module, its scenes file, the evaluation's manifest and `scripts/vision_benchmark_networks/`, so
+   build it from the checkout after step 5, naming the commit (the image has no git history):
+
+   ```sh
+   docker build --platform linux/arm64 -f docker/vision-cool/Dockerfile --build-arg COOL_IMAGE=<registry>/<repository>@sha256:<digest> --build-arg GIT_SHA=$(git rev-parse HEAD) -t bloggerbear-vision-cool .
+   docker run --rm --network host -v "$PWD/docs/hackathon/evidence/runs:/var/task/runs" -v "$HOME/cogs:/cogs" --entrypoint python3 bloggerbear-vision-cool bench/vision_benchmark.py kernels --backend cool --cool-sha $SHA --out runs
+   ```
+
+   Each COOL command of step 8 runs that way: `docker run ... bench/vision_benchmark.py` in
+   place of `~/cool/bin/python scripts/vision_benchmark.py`, `--out runs` for `--out $E` and
+   `--cache /cogs` for `$C` (the two mounts put the run files and the cache on the host, beside the
+   stock runs, which use the host's venvs as written), and `--network host` so `--imds` reaches the
+   metadata service in one hop.
 1. **Subscribe** on AWS Marketplace to *Cloud Optimized OpenCV for AWS Graviton4* on Friday 16.
    Note the price; unsubscribe at the end unless the subscription is kept.
 2. **Launch** a `c8g.xlarge` (4 vCPU, 8 GiB: enough for the 1.32 GB worst case) in us-west-2,
@@ -987,10 +1023,14 @@ shadow them, and the handler would answer `not_cool`).
    lscpu > lscpu.txt
    grep -m1 'CPU part' /proc/cpuinfo      # expect 0xd4f: Neoverse V2, Graviton4
    python3 -V && uname -r
+   sudo apt-get update && sudo apt-get install -y python3-venv   # steps 6 and 7 make venvs; a no-op when it is there
    ```
 
-   If `python3 -V` is under 3.11, the stock venvs need a 3.11+ interpreter: install `python3.12`
-   (`sudo apt-get install python3.12-venv`) and use it in step 7; record it in `recon.md`.
+   An Ubuntu server image ships `python3` without its `venv` package (`python3 -m venv` then fails
+   with "ensurepip is not available"), hence the install. If `python3 -V` is under 3.11, the stock
+   venvs need a 3.11+ interpreter from the distribution's own archive: on Ubuntu 22.04 (Python
+   3.10) that is `sudo apt-get install -y python3.11 python3.11-venv` (22.04 has no `python3.12`);
+   use `python3.11` in place of `python3` in step 7, and record it in `recon.md`.
 4. **The COOL build.**
 
    ```sh
@@ -1005,7 +1045,10 @@ shadow them, and the handler would answer `not_cool`).
 5. **The code and the inputs.** Clone the repository at the commit to be benchmarked and record
    it: `git rev-parse HEAD` (the submission tag does not exist yet; the evidence index says how an
    earlier commit is still cited). The repository may still be private: `gh auth login` in the
-   session, or copy a `git archive`.
+   session, or copy a `git bundle` (`git bundle create bloggerbear.bundle HEAD` on your machine,
+   `git clone bloggerbear.bundle BloggerBear` on the instance). Not a `git archive`: a copy
+   without git history has no commit to record, and every run file would name none
+   (`code.git_sha` null).
 
    Two inputs must be in that checkout before the runs:
 
@@ -1041,7 +1084,8 @@ shadow them, and the handler would answer `not_cool`).
      two rail scenes report `error: network_file missing` and only the ship scene is timed.
    - **The pinned scenes.** `scripts/vision_eval_manifest.json` was pinned on 16 October (every
      asset's ETag and size, from the build container). Confirm nothing moved, on your own machine
-     or the instance:
+     (on the instance, after step 7: `~/stock/bin/python scripts/vision_eval.py pin`; the instance
+     has no `python` and no `requests` until then):
 
      ```sh
      python scripts/vision_eval.py pin        # prints "the manifest matches the bucket", or what changed
@@ -1092,7 +1136,8 @@ shadow them, and the handler would answer `not_cool`).
    `opencv-python-headless==4.14.0.94` is the 4.x pin: PyPI's newest 4.x release (its wheels
    uploaded on 28 and 29 July 2026), with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28);
    it was installed beside `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0, and the
-   benchmark's `kernels` ran on it (the evidence README records the check). Use `python3.12` in place of `python3` here if step 3 said so. Stock aarch64 builds can
+   benchmark's `kernels` ran on it (the evidence README records the check). Use step 3's
+   `python3.11` in place of `python3` here if step 3 said so. Stock aarch64 builds can
    include KleidiCV too, which is why the proof is the fingerprint and the mapped libraries, not
    the flag.
 8. **The runs.** Interleave the backends, so a slow minute on the instance does not land on one
@@ -1100,17 +1145,18 @@ shadow them, and the handler would answer `not_cool`).
 
    ```sh
    E=docs/hackathon/evidence/runs
-   D=$(date -u +%F)                        # the UTC date that starts every run id
    CPU=neoverse-v2-graviton4               # the cpu slug in every run id: check it against the first file written
    SHA=<step 4's sha256>
    L="--imds --label cool_product=<product id> --label cool_version=<version> --label cool_delivery=<ami|container>"
    C="--cache $HOME/cogs"
    ```
 
-   Each run writes `$E/$D-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with `--tag`), and
-   `scenes` writes each scene's figure beside it. `--imds` records the instance type, AMI, Region,
-   architecture and the Marketplace product codes, nothing else of the identity document (the
-   account id never reaches a file). `taskset -c 0` pins a run to one core, the deployed worker's
+   Each run writes `$E/<UTC date>-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with
+   `--tag`), and `scenes` writes each scene's figure beside it. The date is the run's own start, so
+   a session that crosses midnight UTC writes two dates; the `compare` lines find each file by the
+   rest of its name (`newest`: the latest of that mode, backend and tag). `--imds` records the
+   instance type, AMI, Region, architecture and the Marketplace product codes, nothing else of the
+   identity document (the account id never reaches a file). `taskset -c 0` pins a run to one core, the deployed worker's
    shape; the affinity is recorded, so the one-core rows say so themselves (`--pin-cpu 0` does the
    same from inside the script). `--isolate` runs each scene in a fresh interpreter, so its peak
    memory is its own.
@@ -1129,9 +1175,10 @@ shadow them, and the handler would answer `not_cool`).
    ~/cool/bin/python  scripts/vision_benchmark.py scenes --repeats 5 --isolate $C --backend cool --cool-sha $SHA $L --out $E --tag 4t
    taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py kernels --threads 1 $L --out $E --tag 4x-1t
    taskset -c 0 ~/stock4/bin/python scripts/vision_benchmark.py scenes --threads 1 --repeats 5 --isolate $C $L --out $E --tag 4x-1t
+   newest() { ls "$E"/*-bench-$1-$CPU-$2.json | tail -n 1; }
    for pair in "scenes opencv-1t cool-1t" "scenes opencv-4t cool-4t" "kernels opencv-1t-r1 cool-1t-r1" "scenes opencv-4x-1t opencv-1t"; do
      set -- $pair
-     ~/stock/bin/python scripts/vision_benchmark.py compare $E/$D-bench-$1-$CPU-$2.json $E/$D-bench-$1-$CPU-$3.json --out $E --tag "$1-$2-vs-$3"
+     ~/stock/bin/python scripts/vision_benchmark.py compare "$(newest $1 $2)" "$(newest $1 $3)" --out $E --tag "$1-$2-vs-$3"
    done
    ~/cool/bin/python  scripts/vision_benchmark.py controls --cool-sha $SHA --backend cool $C $L --out $E
    ~/stock/bin/python scripts/vision_benchmark.py controls --cool-sha $SHA $C $L --out $E
@@ -1154,9 +1201,13 @@ shadow them, and the handler would answer `not_cool`).
 9. **Optional: where the time went.**
 
    ```sh
-   sudo perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
-   perf report -i perf.data --sort dso --stdio > perf-dso.txt
+   sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)"    # perf, for this kernel
+   sudo env PYTHONPATH="$PYTHONPATH" perf record -g -o perf.data -- ~/cool/bin/python scripts/vision_benchmark.py scenes --repeats 1 --threads 1 $C --backend cool --cool-sha $SHA --only sydney-rail-2024-08-26
+   sudo perf report -i perf.data --sort dso --stdio > perf-dso.txt
    ```
+
+   `sudo` resets the environment, so a `PYTHONPATH` the COOL commands need (step 6) is passed on
+   by hand, and `perf.data` is root's (mode 0600), so the report runs under `sudo` too.
 
    The share of samples in `libkleidicv*` and `libopencv*`/`cv2*.so` is direct evidence that the
    vendor's code executed. Commit `perf-dso.txt`, not `perf.data`.

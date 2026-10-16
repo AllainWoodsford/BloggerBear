@@ -185,8 +185,9 @@ MEMORY_TOOLS = {"follow_up", "dismiss", "watch", "unwatch", "watch_list"}
 GUIDE_TOOLS = {"cli_reference", "cli_help", "cli_guides", "cli_command", "topics_overview"}
 # The architecture expert (architecture.py, runsheets.py): answered from the package's catalogue.
 EXPERT_TOOLS = {"architecture", "investigate", "table_sample", "topic_findings"}
-# The tools that read this environment's logs (log_review.py), read-only like the rest.
-LOG_TOOLS = {"log_review", "api_errors"}
+# The tools that read this environment's logs (log_review.py, and the vision evidence lines in
+# vision_evidence.py), read-only like the rest.
+LOG_TOOLS = {"log_review", "api_errors", "vision_evidence"}
 
 
 def test_the_tools_are_listed_with_what_they_change_and_structured_output(client):
@@ -666,6 +667,54 @@ def test_topic_findings_is_told_whether_the_caller_has_a_screen_and_is_not_remem
     assert mock_tool.call_args_list[1].args == ("crypto", 10, None, True)
     assert mock_tool.call_args_list[2].args == ("rail", 5, None, True)
     assert mock_tool.call_args_list[2].kwargs == {"screen": screen, "subject": "sydney"}
+    mock_remember.assert_not_called()
+
+
+# The submission round's vision_evidence: its docstring and its sentence in _INSTRUCTIONS, pinned as
+# the specification words them (the owner's ask: Alexa+ and the MCP can interrogate the evidence).
+VISION_EVIDENCE_DOC = (
+    "What the vision pipeline measured and decided, and what a person did about it, from the "
+    "pipeline's logs: each new scene's coverage and numbers, whether they moved past the topic's usual "
+    "range and from which input, what the triage agent did (its tools, including OpenCV "
+    "re-measurements, and its verdict), whether a finding was written, and whether its article was "
+    'approved. Pass `topic` for one topic, `scene` (a scene id, or "latest") for one decision step by '
+    "step, and `days` for the window (up to 90). Say its counts as `spoken` does and that the rows are "
+    "on screen; never read a table's cells aloud."
+)
+VISION_EVIDENCE_INSTRUCTION = (
+    "vision_evidence says what the vision pipeline measured and decided and what a person did about it, "
+    "and with `scene` walks one decision step by step. Say its counts and that the rows are on screen."
+)
+
+
+def test_vision_evidence_is_described_as_pinned_and_told_alexa_plus_too(client):
+    tools = {tool["name"]: tool for tool in call(client, "tools/list").json()["result"]["tools"]}
+    tool = tools["vision_evidence"]
+    assert " ".join(tool["description"].split()) == VISION_EVIDENCE_DOC
+    assert tool["annotations"]["readOnlyHint"] is True and tool["annotations"]["destructiveHint"] is False
+    properties = tool["inputSchema"]["properties"]
+    assert set(properties) == {"topic", "days", "scene"} and properties["days"]["default"] == 7
+    assert VISION_EVIDENCE_INSTRUCTION in " ".join(server._INSTRUCTIONS.split())
+
+
+def test_vision_evidence_passes_its_arguments_on_and_is_not_remembered(client):
+    """It has no cards (everything it returns is code-derived and on screen), so nothing is
+    recorded on the assistant's list, and it is the same for a voice caller as for the page."""
+    answer = {"spoken": "Rail access: Sydney made no decisions in the last 30 days.", "findings": []}
+    with (
+        patch("ops_mcp.vision_evidence.vision_evidence", return_value=answer) as mock_tool,
+        patch("ops_mcp.memory.remember") as mock_remember,
+    ):
+        response = call(
+            client,
+            "tools/call",
+            {"name": "vision_evidence", "arguments": {"topic": "rail sydney", "days": 30, "scene": "latest"}},
+            name="vision_evidence",
+        )
+        call(client, "tools/call", {"name": "vision_evidence", "arguments": {}}, name="vision_evidence")
+    assert response.json()["result"]["structuredContent"] == answer
+    assert mock_tool.call_args_list[0].args == ("rail sydney", 30, "latest")
+    assert mock_tool.call_args_list[1].args == (None, 7, None)
     mock_remember.assert_not_called()
 
 

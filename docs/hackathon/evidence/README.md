@@ -36,9 +36,12 @@ Schema `bloggerbear.vision-eval/1` (`scripts/vision_runs.py` writes and reads it
 
 - `run_id` is `<UTC date>-<kind>-<cpu slug>-<backend>`, with a `-<tag>` suffix when several runs
   of one kind are made in a day (`1t`, `4t-r1`); the file is named after it.
-- `code.git_sha` is the commit the run was made on, and `dirty` whether the tree had uncommitted
-  changes. A run made before the submission tag is still cited when the code it measured has not
-  changed since, or when the index says why the difference does not matter.
+- `code.git_sha` is the commit the run was made on, and `dirty` whether a tracked file had
+  uncommitted changes (untracked files, such as the session's own run files before they are
+  committed, do not count). A copy without git history, the COOL container image, names its
+  commit through `BLOGGERBEAR_GIT_SHA` (the image's `GIT_SHA` build argument), with `dirty` null.
+  A run made before the submission tag is still cited when the code it measured has not changed
+  since, or when the index says why the difference does not matter.
 - `environment.host` holds five fields of the EC2 instance identity and nothing else (never an
   account id, an instance id or an IP). `environment.libraries` lists, on Linux, the OpenCV shared
   objects mapped into the process during the run (with `--isolate`, into the processes the scenes

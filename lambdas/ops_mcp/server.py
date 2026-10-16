@@ -51,6 +51,7 @@ from ops_mcp import (
 )
 from ops_mcp import architecture as architecture_module
 from ops_mcp import topic_findings as topic_findings_module
+from ops_mcp import vision_evidence as vision_evidence_module
 from ops_mcp import vision_status as vision_status_module
 from ops_mcp.access import AccessMiddleware
 
@@ -97,6 +98,11 @@ _INSTRUCTIONS = (
     "worker's log in its own Region; asked how the vision pipeline works, pass architecture "
     "`feature` \"vision-pipeline\". Never read a table's cells aloud: say what `spoken` says and "
     "that the table is on screen. "
+    # The submission round's evidence (vision_evidence.py): the owner's ask that Alexa+ can interrogate
+    # what the vision pipeline did. Everything it returns is code-derived, so a voice caller gets it all.
+    "vision_evidence says what the vision pipeline measured and decided and what a person did about "
+    "it, and with `scene` walks one decision step by step. Say its counts and that the rows are on "
+    "screen. "
     # The same workflow the agent's prompt holds (ops_agent/agent.py), for a client that reads only
     # this: Alexa+ talks to this server directly.
     "Your access is read-only: offer to look, to watch, or to put a fix on screen, never to "
@@ -487,6 +493,25 @@ def build_server() -> MCPServer:
         and that the sites are on screen; never read a table's cells aloud, and never say a site's
         name or an error's text."""
         return remembered(ctx, vision_status_module.vision_status(topic, screen=screen(ctx)))
+
+    # The vision pipeline's evidence (vision_evidence.py): what it measured and decided, and what a
+    # person did about it, read from the pipeline's evidence lines in the logs. Everything it returns
+    # is code-derived (no "(unverified)" column), so the page and a voice caller get the same result
+    # and it needs no screen check. It has no cards, so it is not passed through `remembered`.
+    @server.tool(annotations=_READ_ONLY, structured_output=True)
+    def vision_evidence(
+        topic: str | None = None,
+        days: int = vision_evidence_module.DAYS_DEFAULT,
+        scene: str | None = None,
+    ) -> dict[str, Any]:
+        """What the vision pipeline measured and decided, and what a person did about it, from the
+        pipeline's logs: each new scene's coverage and numbers, whether they moved past the topic's
+        usual range and from which input, what the triage agent did (its tools, including OpenCV
+        re-measurements, and its verdict), whether a finding was written, and whether its article was
+        approved. Pass `topic` for one topic, `scene` (a scene id, or "latest") for one decision step
+        by step, and `days` for the window (up to 90). Say its counts as `spoken` does and that the
+        rows are on screen; never read a table's cells aloud."""
+        return vision_evidence_module.vision_evidence(topic, days, scene)
 
     # Reads rows, so read-only like the pipeline tools, but not passed through `remembered`: it
     # reports no findings, only what a table holds and whether it is being written on time.

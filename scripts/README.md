@@ -618,7 +618,8 @@ inputs") and reports the speed-up of B over A as the ratio of medians with a see
 interval, per case or stage, the headline on the compute stages (`analyse` and `annotate`; `graph`
 is inside `analyse`, the read is reported apart), each stage's share of the total, and for scenes
 the parity of the rail metrics (an equal digest, or each scalar within its tolerance and the hubs,
-flags and suggestions identical; exit 1 when it fails) and the share of figure pixels that differ.
+flags and suggestions identical; a scene measured in one run and not the other, or no scene
+measured in both, fails it too; exit 1 when it fails) and the share of figure pixels that differ.
 `controls` runs the COOL guard's three negative controls in the current interpreter on one real
 scene: `cool` with the pin (`ok` only on the pinned build, else `not_cool`), `cool` with no pin
 (`not_cool`), an `opencv` request to the `cool` backend (`backend_mismatch`).
@@ -645,13 +646,15 @@ take `--scenes-file`, `--only NAME` (repeatable) and `--backend opencv|cool`, wh
 `--cool-sha <hex>`, the pinned COOL build's fingerprint (the in-process modes set the handler's
 `VISION_BACKEND` and `COOL_BUILD_SHA256` from these before calling it, so a `cool` run on any other
 build is answered `not_cool` by the handler itself, and `kernels --backend cool` refuses to run on
-any other build); `scenes` and `controls` take `--manifest` (the evaluation's manifest, whose ETags
-pin the scenes they share: a changed ETag refuses the run before any read, "input changed") and
-`--cache [DIR]` (every range read answered from `DIR` after the first, keyed by URL, ETag and
-range, so repeats and both backends read identical bytes; the default is `~/.cache/bloggerbear-cogs`,
-`%LOCALAPPDATA%\bloggerbear-cogs` on Windows, never inside the repository); `scenes` takes
-`--isolate` (each scene in a fresh interpreter, so its peak memory is its own, and the run's
-cache counts and mapped libraries are those of the processes the scenes ran in); `worker` needs
+any other build); `scenes`, `controls` and `worker` take `--manifest` (the evaluation's manifest,
+whose ETags pin the scenes they share: a changed ETag refuses the run before any read or
+invocation, "input changed", and the run file records the ETags HEAD found); `scenes` and
+`controls` take `--cache [DIR]` (every range read answered from `DIR` after the first, keyed by
+URL, ETag and range, so repeats and both backends read identical bytes; the default is
+`~/.cache/bloggerbear-cogs`, `%LOCALAPPDATA%\bloggerbear-cogs` on Windows, never inside the
+repository); `scenes` takes `--isolate` (each scene in a fresh interpreter, so its peak memory is
+its own, and the run's cache counts and mapped libraries are those of the processes the scenes ran
+in); `worker` needs
 `--arn`; `compare` takes two run files, `--bootstrap` (2000) and `--seed` (0); `fetch-network`
 takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one vCPU, so a
 CPU's rows are closest to it with the run pinned to one core.
@@ -705,10 +708,12 @@ manifest's listing it counts the selection: the items, those passing the cloud f
 them passing the footprint rule, and those of them still under the floor (worker calls the search
 would make for nothing); the year set is the scenes that pass the rule with site coverage 0.95 or
 more. It writes an `eval-coverage` run file (`--out`, `--tag`), fills `site_coverage` and
-`aot_mean` into the manifest with `--write`, takes `--only NAME` and `--cache [DIR]`, HEADs each
-asset first and refuses a changed ETag ("input changed"), and exits 1 when a scene's `expected`
-(`low_coverage` for the cloud and no-data cases) was not met. Both subcommands run on Windows as
-well as Linux and macOS (`py -3.11 scripts\vision_eval.py ...`); they need
+`aot_mean` into the manifest with `--write`, and records each year set there by name, in time
+order (`sets`, `year-2024`: a `year` role marks a candidate of the listing, and a candidate under
+0.95 or another's duplicate is outside the set, so a run of the set reads `sets`, never the
+roles), takes `--only NAME` and `--cache [DIR]`, HEADs each asset first and refuses a changed
+ETag ("input changed"), and exits 1 when a scene's `expected` (`low_coverage` for the cloud and
+no-data cases) was not met. Both subcommands run on Windows as well as Linux and macOS (`py -3.11 scripts\vision_eval.py ...`); they need
 `lambdas/requirements-vision.txt` and `scripts/requirements.txt`.
 
 ## After changing the CLI: `generate_cli_reference.py`
