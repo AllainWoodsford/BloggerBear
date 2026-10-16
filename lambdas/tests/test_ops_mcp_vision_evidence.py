@@ -612,6 +612,35 @@ def test_every_topic_is_said_on_its_own_and_never_summed(pipeline):
     assert_code_derived(result)
 
 
+def test_a_tick_that_reports_two_sites_wrote_one_finding(pipeline):
+    """Two sites in one Sentinel-2 tile: one tick decides both and writes one Finding (the tick's
+    captured_at, which both decisions share), so one finding was written, not one per decision."""
+    other_site = "botany-10"
+    sites = [{"id": SHIPS_SITE, "name": SHIPS_SITE_NAME, "polygon": ships.POLY},
+             {"id": other_site, "name": "Botany Bay berths", "polygon": ships.POLY}]  # fmt: skip
+    harbours = {"topic_id": "harbours", "name": "Harbours", "adapter": "satellite_vision",
+                "adapter_config": {"sites": sites}}  # fmt: skip
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item=json.loads(json.dumps(harbours), parse_float=Decimal)
+    )
+    pipeline.ships("harbours", SHIP_SCENE, 12)
+    (written,) = pipeline.findings("harbours")  # one row in the Findings table
+    result = ask(FakeLogs(pipeline), "harbours")
+
+    assert {row["site_id"] for row in result["rows"]} == {SHIPS_SITE, other_site}
+    outcomes = [(row["action"], row["finding_at"]) for row in result["rows"]]
+    assert outcomes == [("finding_written", written)] * 2
+    assert table_cells(result)["Outcome"] == ["finding written"] * 2  # each decision's own outcome
+    assert result["counts"]["decisions"] == 2 and result["counts"]["findings_written"] == 1
+    assert result["spoken"] == (
+        "Harbours made 2 decisions in the last 7 days: 2 first observations and 0 changes checked by the "
+        "agent. 1 finding was written; 0 articles are waiting for review, 0 were approved and 0 rejected. "
+        "The decisions are on screen."
+    )
+    assert other_site not in result["spoken"]
+    assert_said_safely(result)
+
+
 def test_a_long_answer_for_many_topics_is_cut_to_whole_sentences_under_120_words():
     cities = ("Sydney", "Perth", "Hobart", "Darwin", "Cairns", "Albury", "Dubbo")
     labels = [f"Rail access: {city} and its outer suburbs" for city in cities]
