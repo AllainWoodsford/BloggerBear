@@ -76,7 +76,7 @@ carries the figure to the article page. Its diagram is in
 | Best Use of COOL: 30% for the Graviton/Arm component | Half right | The 30% row is *verified COOL integration* on Graviton. Then 25% architecture, **20% measured value against a baseline**, 15% innovation, 10% reproducibility. |
 | Deploy the vision Lambdas for `arm64` and you score on COOL | **Wrong** | COOL is the **Cloud-Optimized OpenCV Library**, OpenCV's own OpenCV 5 build for Graviton3/4 (KleidiCV), on AWS Marketplace as AMIs and Docker images. Stock OpenCV on an `arm64` Lambda is not COOL. |
 | BloggerBear's compute is all Lambda | Mostly | Plus Step Functions, Scheduler and SQS. And every Lambda was x86_64. |
-| Extend the ops assistant's agent and MCP server | **Wrong place** | This is about where the triage agent runs. That assistant is read-only on its own narrow role, so the vision agent lives in the pipeline. The assistant's read-only view of the pipeline (`vision_status`, the worker's log) is [ops-assistant-vision.md](ops-assistant-vision.md). |
+| Extend the ops assistant's agent and MCP server | **Wrong place** | This is about where the triage agent runs. That assistant is read-only on its own narrow role, so the vision agent lives in the pipeline. The assistant's read-only view of the pipeline (`vision_status`, `topic_findings`, the worker's log) is [ops-assistant-vision.md](ops-assistant-vision.md). |
 | Region restrictions on "Sentinel/Agent features" | **Wrong cause** | Sentinel-2 is ESA imagery, not an AWS feature. The **data** is in US regions (`sentinel-cogs` us-west-2, `noaa-himawari9` us-east-1). The model is fine: Claude Haiku 4.5 reads images through the AU profile in ap-southeast-2. |
 | Don't move finished articles between regions | Right | All state stays in the home region; the worker is stateless. |
 | A "diff-first, stateless" pipeline | Half right | Diff-first yes; it keeps state between ticks (and now more of it, §6.4). |
@@ -673,6 +673,20 @@ rows:
 
 **The COOL and Graviton rows are still to be measured** (§9).
 
+**Evaluation.** From the submission round on, every measurement a judge reads is a run file
+under `docs/hackathon/evidence/runs/` ([its README](../hackathon/evidence/README.md) has the
+schema and the kinds): the benchmark writes one per run (`--out`), with the code's commit, the
+CPU, the build fingerprint, the inputs' ETags, every sample, the rail metrics and their digest,
+and on Linux the OpenCV libraries mapped during the run; `compare` puts two runs of one machine
+in a ratio with a bootstrap interval and checks they measured the same thing; `controls` shows
+the COOL guard refusing what it must. The evaluation's inputs are pinned in
+`scripts/vision_eval_manifest.json` (46 Sydney scenes: clear, season, cloud, no-data, smoke, the
+2019 baseline, the 2024 year set), and its first run file is `vision_eval.py coverage` over all
+of them (16 October, x86): the share of each scene the worker can measure, why a scene is
+unusable, and how many of the year's items the production search would pick only to find them
+under the floor. The tables above stay as the first indicative numbers; the report cites the
+files.
+
 The worst cases the worker must survive were measured separately (PR J; the figures are in the
 comments on `RAIL_MAX_WINDOW_PX` in `vision_worker_handler.py`, `MAX_WINDOW_PX` in
 `vision/scene.py` and `MAX_GRAPH_NODES` in `vision/rail_analyse.py`): on one core of the same
@@ -803,12 +817,15 @@ None of this is automatic.
    `docs/risks/opencv-bushfire-watch-01.md` against it.
 5. **Run Sydney for real:** a tick with the Overpass network on the deployed worker, for the
    measurements the submission needs (its table in `docs/hackathon/opencv-2026-submission.md`).
-6. **COOL:** subscribe to *Cloud Optimized OpenCV For AWS Graviton4* on Marketplace (7-day trial,
-   then usage pricing); on a `c8g` from the COOL AMI install networkx (the runsheet's step has
-   the pin; nothing else, so COOL's cv2 and numpy are not shadowed) and run
-   `python3 scripts/vision_benchmark.py kernels --out cool-g4.json`, and the same with a stock
-   OpenCV venv; pin the COOL `build_sha256` as `COOL_BUILD_SHA256`; terminate the instance and
-   unsubscribe if not kept. `docs/deployment-runsheet.md` has the steps.
+6. **COOL:** the Graviton session, exactly as the
+   [runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) gives
+   it: the Friday reconnaissance (the product's delivery type, Region, price and Python), a
+   `c8g.xlarge` from the COOL AMI with IMDSv2 and SSM, a COOL venv on the product's own `cv2`
+   (`--system-site-packages`; never opencv or numpy in it), stock 5.0.0.93 and 4.14.0.94 venvs
+   beside it, the interleaved `kernels`, `scenes` (`--isolate`, `--cache`, pinned to one core),
+   `compare` and `controls` runs of its step 8 written to `docs/hackathon/evidence/runs/`, and the
+   proof checklist it ends with; pin the COOL `build_sha256` as `COOL_BUILD_SHA256`; terminate the
+   instance and unsubscribe if not kept.
 7. **For the submission:** the benchmark table (x86, Graviton stock, Graviton COOL), a run of the
    loop on dev showing an artefact rejected and a real change held for review, the architecture
    diagram (§1), and the video.
@@ -819,8 +836,10 @@ None of this is automatic.
 
 1. Does the COOL image run on Lambda's `arm64` CPUs, or does the COOL backend need ECS on a
    Graviton4 instance? That decides its Terraform.
-2. Are COOL and Graviton4 (`c8g`) offered in us-west-2 and ap-southeast-2?
-3. COOL's price after the trial.
+2. Are COOL and Graviton4 (`c8g`) offered in us-west-2 and ap-southeast-2? The runsheet's
+   reconnaissance step records the answer in `docs/hackathon/evidence/cool/recon.md`.
+3. COOL's price after the trial: recorded by the same step, and by `--label price=` in the run
+   files.
 4. Inter-region transfer cost of the worker's replies against reading `sentinel-cogs` from Sydney:
    measure both on dev.
 5. Lambda `arm64`'s CPU generation: answered from the first invoke once deployed, by the worker's
@@ -830,6 +849,11 @@ None of this is automatic.
    geospatial model trained on it; the latter would be another worker backend.
 7. **The COOL run on Graviton**, by the operator (§9): the benchmark's Graviton stock and COOL
    rows, and the 1.3 times slower arm64 core that the rail window cap assumes, are not measured.
+   The benchmark now records what that session needs (the run files, the rail metrics and their
+   parity, the mapped libraries, the negative controls, the 4.x row) and the runsheet's COOL
+   section is the session's script; what remains is to run it. The Sydney network fixture the
+   rail scenes need is captured after the deploy's first tick (the runsheet's step 5), into
+   `scripts/vision_benchmark_networks/`, whose `NOTICE.md` is in place.
 8. **Grade-separated crossings read as junctions.** Two lines crossing on a bridge are crossing
    pixels; degree and betweenness inherit it. OpenStreetMap's `bridge` and `layer` tags could keep
    them apart.

@@ -28,6 +28,24 @@
       },
       "params": {"reach_m": 1000},
       "network_file": "vision_benchmark_networks/sydney.json"
+    },
+    {
+      "name": "sydney-rail-2024-08-26",
+      "task": "rail_access",
+      "site_id": "sydney",
+      "polygon": [[150.86, -33.58], [151.56, -33.58], [151.56, -34.16], [150.86, -34.16]],
+      "scene_id": "S2A_56HLH_20240826_0_L2A",
+      "captured_at": "2024-08-26T00:06:06.130000Z",
+      "role": "clear",
+      "note": "A clear scene over the whole site (STAC cloud cover 0.004, site coverage from scripts/vision_eval.py coverage): the one the COOL and stock rows are compared on. The 2024-01-05 scene above is mostly cloud and stays as the low_coverage case.",
+      "assets": {
+        "red": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/B04.tif",
+        "nir": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/B08.tif",
+        "swir16": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/B11.tif",
+        "scl": "https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/56/H/LH/2024/8/S2A_56HLH_20240826_0_L2A/SCL.tif"
+      },
+      "params": {"reach_m": 1000},
+      "network_file": "vision_benchmark_networks/sydney.json"
     }
   ]
 }

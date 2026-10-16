@@ -560,8 +560,8 @@ Called out separately because it cuts across every phase, not just one:
 ## Enhancements since Phase 8
 
 All shipped and deployed; the design and decisions for each are in
-`docs/project-plan.md` §11. The vision entries at the end are on the integration branch
-(#285) until it merges into `dev`.
+`docs/project-plan.md` §11. The vision entries merged into `dev` on 15 October (#285); the
+submission-round entries after them are docs and tests, with nothing to deploy.
 
 - [x] Static article publishing — every publish path renders a static page
 - [x] Custom domain (bloggerbear.com) via Route 53 + ACM
@@ -728,6 +728,33 @@ All shipped and deployed; the design and decisions for each are in
   `lambdas/common/evidence.py`, `lambdas/common/vision_decisions.py`,
   `lambdas/common/vision_triage.py`, `lambdas/vision_worker_handler.py`;
   [design](enhancements/vision-evidence.md))
+- [x] Interrogating a topic's Findings, three ways: the assistant's `topic_findings` (a topic's
+  research Findings newest first as a table, with `next_article` for exactly what the next daily
+  run reads; counts and ages spoken, the summary scrubbed and on the page only, nothing to a voice
+  caller), `GET /topics/{topic_id}/findings` and `admin_cli findings list` (the raw items, with
+  `--days`, `--since` and `--next-article`), and the repository's first Claude Code skill,
+  `topic-findings`, with its rules for Finding text in a developer's session; the findings
+  window's start moved to `common/findings_window.window_start`, shared by the daily cycle, the
+  tool and the route; Findings joins the assistant's readable tables (the Findings round, #307,
+  after #300 on the integration branch; `lambdas/ops_mcp/topic_findings.py`,
+  `.claude/skills/topic-findings/SKILL.md`, `scripts/tests/test_claude_skills.py`;
+  [design](enhancements/ops-assistant-vision.md#topic-findings))
+- [x] The submission round, for the OpenCV AI Competition 2026: the rubric tracker
+  (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
+  step, with its status, what it needs, the evidence, the gap, what closes it and what the
+  assistant may say, updated by the PR that closes a row; a format test that fails on a
+  malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
+  `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
+  (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+- [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
+  with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
+  digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
+  `--cache`, `--threads`, `--pin-cpu`, `--isolate`, `--only`, `--imds`, `--label`, `compare` (a
+  seeded bootstrap speed-up with parity) and `controls` (the COOL guard's negative controls); the
+  Sydney scene manifest with `vision_eval.py pin` and `coverage` (the first run file, under
+  `docs/hackathon/evidence/runs/`); the network fixture directory's ODbL notice; the COOL runsheet
+  corrected into the Graviton session's script, with the 4.x pin (`opencv-python-headless==4.14.0.94`)
+  (#308, submission PR Q1)
 
 ## Backlog / not yet scheduled
 

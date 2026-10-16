@@ -182,12 +182,32 @@ CATALOGUE: tuple[Component, ...] = (
         ("topic_id", "captured_at"),
         ttl="expires_at",
         details=(
-            ("Written by", "research-tick, once per topic per research interval"),
-            ("Read by", "daily-cycle, trending-digest, the public API, the Admin API"),
+            (
+                "Holds",
+                "topic_id, captured_at, expires_at, summary (written by a model from the source "
+                "data), raw_snapshot_s3_key, source_refs, research_call (model, tokens, fallback, "
+                "stop reason), figures (maps, from the vision adapters), planner_notes (rail: flags "
+                "and simulations)",
+            ),
+            (
+                "Written by",
+                "research-tick, only when a tick's diff is material (diff-first): a quiet source "
+                "writes none",
+            ),
+            (
+                "Read by",
+                "daily-cycle, trending-digest, the public API, the Admin API, the assistant "
+                "(topic_findings)",
+            ),
             ("Expires", "14 days after it was captured (TTL)"),
-            ("Healthy looks like", "a new row per topic at about each research interval"),
+            (
+                "Healthy looks like",
+                "research on time for the topic (pipeline_health); Findings as often as its source "
+                "changes",
+            ),
         ),
         aliases=("finding", "research"),
+        assistant_reads=True,
     ),
     _table(
         "candidate-ideas",

@@ -192,6 +192,121 @@ def list_recent_findings(topic_id: str, limit: int = 5, since: str | None = None
     return response.get("Items", [])
 
 
+# Interrogating a topic's Findings (the assistant's topic_findings, the Admin API's findings route
+# and `admin_cli findings list`). Read-only, and only ever a Query on the topic's own key: a test
+# in each caller holds the table to `query` and nothing else. list_recent_findings above stays as
+# it is: the daily cycle and Re-Write read through it.
+#
+# DynamoDB's TTL deletes an expired item lazily, up to about two days after `expires_at`, so a
+# read that wants what is still alive skips any item whose `expires_at` has passed (the daily run
+# keeps them, as it always has). An item with no `expires_at` never expires. A 1 MB page can hold
+# fewer items than asked for, so the readers page, a bounded number of times.
+FINDINGS_PAGES_MAX = 5
+FINDINGS_COUNT_PAGES_MAX = 10
+
+
+def _findings_condition(topic_id: str, since: str | None):
+    condition = Key("topic_id").eq(topic_id)
+    if since is not None:
+        condition = condition & Key("captured_at").gte(since)
+    return condition
+
+
+def finding_is_expired(item: dict, unexpired_at: int | None) -> bool:
+    """Whether a Finding's `expires_at` (epoch seconds) is at or before `unexpired_at`. None, or an
+    item with no readable `expires_at`, is never expired."""
+    if unexpired_at is None:
+        return False
+    expires_at = item.get("expires_at")
+    if isinstance(expires_at, bool) or not isinstance(expires_at, int | float | Decimal):
+        return False
+    return expires_at <= unexpired_at
+
+
+def list_findings_page(
+    topic_id: str, *, since: str | None = None, limit: int, start_key: dict | None = None
+) -> tuple[list[dict], dict | None]:
+    """One page of a topic's Findings, newest first: at most `limit` items captured at or after
+    `since` (an ISO-8601 UTC timestamp, the sort key's own form), from `start_key` on. Returns
+    the items and the key to continue from (None when there are no more)."""
+    table = get_table(os.environ["FINDINGS_TABLE"])
+    kwargs = {
+        "KeyConditionExpression": _findings_condition(topic_id, since),
+        "ScanIndexForward": False,
+        "Limit": limit,
+    }
+    if start_key is not None:
+        kwargs["ExclusiveStartKey"] = start_key
+    response = table.query(**kwargs)
+    return response.get("Items", []), response.get("LastEvaluatedKey")
+
+
+def list_findings(
+    topic_id: str,
+    *,
+    since: str | None = None,
+    limit: int,
+    unexpired_at: int | None = None,
+    max_pages: int = FINDINGS_PAGES_MAX,
+) -> tuple[list[dict], int, bool]:
+    """Up to `limit` of a topic's Findings, newest first, captured at or after `since`, paging
+    `list_findings_page` at most `max_pages` times. With `unexpired_at` (epoch seconds, now), an
+    item whose `expires_at` has passed is skipped and counted. Returns the items kept, how many
+    expired items were skipped, and whether more items were there than were kept."""
+    kept: list[dict] = []
+    expired = 0
+    start_key = None
+    for _ in range(max_pages):
+        items, start_key = list_findings_page(
+            topic_id, since=since, limit=limit + 1 - len(kept), start_key=start_key
+        )
+        for item in items:
+            if finding_is_expired(item, unexpired_at):
+                expired += 1
+            else:
+                kept.append(item)
+        if len(kept) > limit or start_key is None:
+            break
+    more = len(kept) > limit or start_key is not None
+    return kept[:limit], expired, more
+
+
+def count_findings(
+    topic_id: str,
+    *,
+    since: str | None = None,
+    unexpired_at: int | None,
+    max_pages: int = FINDINGS_COUNT_PAGES_MAX,
+    most: int | None = None,
+) -> tuple[int, bool]:
+    """How many Findings a topic has captured at or after `since`: a Select=COUNT Query, paged at
+    most `max_pages` times, counting only the unexpired ones when `unexpired_at` (epoch seconds,
+    now) is given, and stopping once `most` have been counted when that is given. Returns the
+    count and whether it is complete (False: the pages or `most` ran out, so it is a floor)."""
+    table = get_table(os.environ["FINDINGS_TABLE"])
+    kwargs = {
+        "KeyConditionExpression": _findings_condition(topic_id, since),
+        "Select": "COUNT",
+    }
+    if unexpired_at is not None:
+        kwargs["FilterExpression"] = Attr("expires_at").not_exists() | Attr("expires_at").gt(unexpired_at)
+    count = 0
+    start_key = None
+    for _ in range(max_pages):
+        if most is not None:
+            kwargs["Limit"] = most - count
+        if start_key is not None:
+            kwargs["ExclusiveStartKey"] = start_key
+        response = table.query(**kwargs)
+        count += int(response.get("Count") or 0)
+        start_key = response.get("LastEvaluatedKey")
+        if start_key is None:
+            return count, True
+        if most is not None and count >= most:
+            return count, False
+    return count, False
+
+
 def put_candidate_idea(
     topic_id: str,
     created_at: str,

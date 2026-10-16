@@ -1048,7 +1048,7 @@ GUIDES: dict[str, dict] = {
             "scripts/rail_topics.example.json for a rail city. I never fill a sites config in; ask "
             "me how the vision pipeline is doing to see each site.",
         ],
-        "commands": ["topics create", "topics update", "topics trigger", "topics findings"],
+        "commands": ["topics create", "topics update", "topics trigger", "topics findings", "findings list"],
         "steps": [
             {
                 "say": "Create the topic; its sites config is a placeholder for you to write",
@@ -1079,6 +1079,68 @@ GUIDES: dict[str, dict] = {
                 "command": "topics findings",
                 "options": {},
                 "ask": ["topic_id"],
+            },
+            {
+                "say": "See its Findings, newest first: what each new scene changed, its maps and notes",
+                "command": "findings list",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+        ],
+    },
+    "findings": {
+        "title": (
+            "Reading a topic's findings: what research found, and what the next article will be "
+            "written from"
+        ),
+        "keywords": ("finding", "findings", "found", "next article", "window"),
+        "explanation": [
+            # research_tick_handler.py: diff-first, FINDING_TTL_DAYS.
+            "Research writes a finding only when a topic's source changed, and each finding is kept "
+            "for 14 days.",
+            # daily_cycle_handler.py: MAX_WINDOW_FINDINGS, SUMMARIES_MAX_CHARS; common/findings_window.py;
+            # _select_goal_and_findings for a topic with a daily editorial goal.
+            "The next article reads every finding since the topic's last article, within its "
+            "findings window, at most 48, newest first; a topic with editorial goals may use only "
+            "some.",
+            # common/figures.py, Adapter.planner_notes: what a vision Finding carries besides its summary.
+            "A finding's summary is written by a model; a vision finding also carries maps and "
+            "planner notes.",
+            # admin_api_handler._list_findings_route; ops_mcp/topic_findings.py.
+            "findings list shows them in full; I show how many there are and how old, and the "
+            "summaries on screen.",
+        ],
+        "commands": ["findings list", "topics findings", "topics update"],
+        "steps": [
+            {
+                "say": "See a topic's newest findings",
+                "command": "findings list",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "See what its next article will be written from",
+                "command": "findings list",
+                "options": {"next_article": True},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "Only the last few days, and more of them",
+                "command": "findings list",
+                "options": {},
+                "ask": ["topic_id", "days", "limit"],
+            },
+            {
+                "say": "The newest one, raw",
+                "command": "topics findings",
+                "options": {},
+                "ask": ["topic_id"],
+            },
+            {
+                "say": "Widen the window, for a topic that writes on some days only",
+                "command": "topics update",
+                "options": {},
+                "ask": ["topic_id", "findings_window_hours"],
             },
         ],
     },
