@@ -39,6 +39,11 @@ OVERPASS_ENDPOINTS = (
 # Overpass' own query timeout is the same figure (`[timeout:]` in the query), so a slow server
 # answers with a 504 or a "timed out" remark before the client gives up on the read.
 TIMEOUT_SECONDS = 25.0
+# Overpass' usage policy asks every client to name itself. Without a User-Agent the request goes out
+# as python-requests: overpass-api.de's front answers 406 Not Acceptable (not transient, so the
+# mirror is never tried) and the mirror answers 429 "Please include a meaningful User-Agent". The
+# same string the other adapters send.
+USER_AGENT = "BloggerBearResearchBot/1.0 (+https://github.com/AllainWoodsford/BloggerBear)"
 _CONNECT_TIMEOUT_SECONDS = 5.0
 # A hop that would get less read time than this before the caller's deadline is not made.
 _MIN_HOP_SECONDS = 2.0
@@ -353,6 +358,7 @@ def _request(post, endpoint: str, query: str, timeout: float) -> list:
         response = post(
             endpoint,
             data={"data": query},
+            headers={"User-Agent": USER_AGENT},
             timeout=(_CONNECT_TIMEOUT_SECONDS, timeout),
             allow_redirects=False,
             stream=True,
