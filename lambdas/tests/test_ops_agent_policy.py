@@ -438,6 +438,26 @@ def test_format_characters_in_the_untrusted_text_do_not_hide_its_echo(salted):
     assert policy.echoes(" ".join(salted(word) for word in payload.split()), ledger)
 
 
+def test_a_korean_cell_counts_its_syllables_and_still_echoes_its_clean_repeat():
+    """NFKD splits a Hangul syllable into two or three jamo; _normal recomposes them, so ECHO_CHARS
+    and UNTRUSTED_KEPT_MAX_CHARS count a syllable as one character, and a cell laced with a grapheme
+    joiner after every letter still matches its clean repeat."""
+    assert len(policy._normal("\uc11c\uc6b8\uc5ed")) == 3  # 서울역: two jamo, three, three
+    payload = "서울역에서 강남구청역까지 환승 안내를 지금 문의하세요"
+    laced = " ".join("".join(char + "\u034f" for char in word) for word in payload.split())
+    assert policy._normal(laced) == policy._normal(payload)
+    ledger = policy.Ledger(policy.FOLLOW_UP, LIST_SERVER)
+    table = {**SITES_TABLE, "rows": [["Rail access: Seoul", "seoul", "Seoul", "measured", laced]]}
+    ledger.record({"spoken": "The sites are on screen.", "findings": [], "table": table})
+    assert policy.echoes(payload, ledger)
+    # Twelve syllables in common are not thirty characters (they were 33 jamo).
+    cell = "서울특별시청역강남구청역"
+    ledger = policy.Ledger(policy.FOLLOW_UP, LIST_SERVER)
+    table = {**SITES_TABLE, "rows": [["Rail access: Seoul", "seoul", "Seoul", "measured", cell]]}
+    ledger.record({"spoken": "The sites are on screen.", "findings": [], "table": table})
+    assert not policy.echoes(f"그 역은 {cell} 입니다", ledger)
+
+
 def test_an_unverified_cell_is_compared_too_and_the_kept_text_is_bounded():
     ledger = policy.Ledger(policy.FOLLOW_UP, LIST_SERVER)
     ledger.record({"spoken": "The sites are on screen.", "findings": [], "table": SITES_TABLE})

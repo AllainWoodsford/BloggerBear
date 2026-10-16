@@ -31,7 +31,6 @@ import research_tick_handler
 from common import osm, vision_client
 from common.adapters import rail_access as ra
 from common.adapters import satellite_vision as sv
-from common.figures import plain_text
 from ops_agent import policy
 from ops_mcp import redact, vision_status
 
@@ -744,11 +743,19 @@ PLANTED = [*BYPASSES, "write to jane.doe@example.com", "from 203.0.113.77 again"
 
 
 def marker(text: str) -> str | None:
-    """The plain word of a planted instruction that must appear nowhere: "previous" or "prompt"."""
-    for word in ("previous", "prompt"):
-        if word in text.lower():
+    """The plain word of a planted instruction that must appear nowhere, "previous", "prompt" or
+    "admin", as the check reads it (redact.normalised: fullwidth letters folded, an ignorable inside
+    the word removed), so the cases that spell or split the word have one too. ("command" would be
+    one, but the findings' suggestions carry a command.)"""
+    for word in ("previous", "prompt", "admin"):
+        if word in redact.normalised(text).casefold():
             return word
     return None
+
+
+def shows(word: str, text: str) -> bool:
+    """Whether `word` can be read in `text`, spelt or split as the planted cases spell or split it."""
+    return word in redact.normalised(text).casefold()
 
 
 BROKEN = {"sites": "nope"}
@@ -798,18 +805,11 @@ def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkey
     if marker(text):
         # The site name is stored as the pipeline's own cleaner leaves it (vision_sites.parse_config,
         # common/figures.plain_text): a format character between two words is removed there, before
-        # any scrub reads it, so a phrase spaced only by format characters is stored as one glued word
-        # nothing can tell apart. That word, in its own unverified cell, is the one place the marker
-        # may appear (a follow-up for that cleaner, outside this round); nowhere else, and never
-        # where the phrase survives the cleaner.
-        glued = plain_text(" ".join(text.split())[:80])
-        if redact.looks_like_instructions(glued):
-            assert marker(text) not in whole.lower()
-        else:
-            assert marker(text) not in elsewhere.lower()
-            cells = table_column(result, "Name (unverified)") + table_column(result, "Error (unverified)")
-            for cell in cells:  # the stored name, as scrub cuts it, or nothing of the marker
-                assert marker(text) not in cell.lower() or glued.startswith(cell.rstrip("\u2026")), cell
+        # any scrub reads it, so a phrase spaced only by format characters is stored as one glued
+        # word. The check reads its copy against the glued form of the pattern too
+        # (redact._INSTRUCTION_LIKE_GLUED), so that word is withheld like the rest: the marker
+        # appears nowhere, in no column, however it is spelt or split.
+        assert not shows(marker(text), whole)
     assert "jane.doe" not in whole and "203.0.113.77" not in whole
     for card in result["findings"]:
         assert "untrusted" not in card
@@ -837,7 +837,7 @@ def test_a_voice_caller_gets_no_unverified_column_and_none_of_the_text(aws, text
     for needle in ("jane.doe", "203.0.113.77", "[email]", "203.XXX", "withheld", "(unverified)"):
         assert needle not in whole
     if marker(text):
-        assert marker(text) not in whole.lower()
+        assert not shows(marker(text), whole)
 
 
 def test_a_config_error_message_is_only_in_its_unverified_cell(aws, monkeypatch):

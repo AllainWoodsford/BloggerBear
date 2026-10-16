@@ -123,12 +123,13 @@ aloud" are prose, and injected text can steer a model past prose. Both are now h
 2. **No echo.** The Ledger keeps every string under an `untrusted` key and every cell of an
    "(unverified)" column, normalised as the instruction check normalises (`redact.normalised`:
    NFKD, so an accented letter is its letter and a mark; format characters such as the two
-   joiners, marks and the Hangul fillers removed; control characters read as spaces; whitespace
-   collapsed), then case-folded, at most 64 KB a turn. The answer is normalised the same way, so
-   a joiner after every word of a cell, or a mark after every letter, does not hide its repeat.
-   An answer that shares a run of six words, or thirty characters, with any of it is replaced
-   by the tools' own `spoken` sentences (then the personal-data sweep, as before), and the
-   handler's log line says `echo=1`.
+   joiners, marks, the Hangul fillers and the blank symbols removed; control characters read as
+   spaces; whitespace collapsed), Hangul syllables recomposed (NFKD had split each into its jamo,
+   and the thresholds count characters), then case-folded, at most 64 KB a turn. The answer is
+   normalised the same way, so a joiner after every word of a cell, or a mark after every letter,
+   does not hide its repeat. An answer that shares a run of six words, or thirty characters, with
+   any of it is replaced by the tools' own `spoken` sentences (then the personal-data sweep, as
+   before), and the handler's log line says `echo=1`.
 
 ## `redact.scrub`, hardened first
 
@@ -136,16 +137,31 @@ Both new tools rely on `redact.scrub` to withhold instruction-like text, and its
 get past: it ran on the raw text, with single spaces in the pattern, so `"ignore\nprevious
 instructions"`, a tab, a double or non-breaking space, a zero-width joiner inside a word or
 fullwidth letters came back as the clean phrase. Now the check runs on a normalised copy (NFKD,
-so an accented letter is its letter and a mark; every format character, mark and Hangul filler
-read as ignorable; C0 and C1 control characters and line separators read as spaces; whitespace
-collapsed). Marks and the fillers are read like format characters because they are not format
-characters: a combining grapheme joiner, a variation selector or a Hangul filler after every
-letter left the words readable and the old copy unmatched, and so did a visible mark (an overline,
-a dot below). The copy is read two ways, with the ignorable characters removed (inside a word, one
-hid a letter) and with each one as a space (between words, one glued the words into a single word
-the pattern does not match), and a line that matches in either is withheld.
+so an accented letter is its letter and a mark; every format character, mark, Hangul filler and
+blank symbol read as ignorable; C0 and C1 control characters and line separators read as spaces;
+whitespace collapsed). Marks, the fillers and the blanks are read like format characters because
+they are not format characters: a combining grapheme joiner, a variation selector or a Hangul
+filler after every letter left the words readable and the old copy unmatched, and so did a visible
+mark (an overline, a dot below); a Braille blank, the musical null notehead or the object
+replacement character (symbols that show nothing) between the words did the same. The copy is read
+two ways, with the ignorable characters removed (inside a word, one hid a letter) and with each one
+as a space (between words, one glued the words into a single word the pattern does not match). The
+removed copy is read against the pattern with its spaces optional and no word boundary, since one
+ignorable inside every word and between the words glues the words in the one copy and splits them
+in the other (a zero-width space inside and between each word of "ignore previous instructions"
+reads as `ignorepreviousinstructions` in the one and `ig nore pr evious in structions` in the
+other); a line that matches in either is withheld. That glued form is broader, in every line:
+"filesystem: 91% used" reads as "system:", "you are nowhere near it" as "you are now", and each is
+withheld, a false positive the pattern's own rule accepts (it hides one log line, and says so).
 `looks_like_instructions` reads both copies, so every caller gets them, and it reads the text as
-written, before the invisible characters are removed from what is returned. The returned text
+written, before the invisible characters are removed from what is returned. Where the result is cut
+(`scrub` to 300 characters, `samples._redact_text` likewise), it reads a bounded start of the text,
+four times the limit in characters it does not ignore, found by a plain category scan with no NFKD
+(a character can decompose to eighteen code points, and a 256K-character line of U+FDFA took 5.5 s
+and 494 MB to scrub when the check read all of it), and then the text about to be returned, whole: a
+phrase the sweep shortened into view is caught there, and one wholly past the cut is never returned,
+so that line is shown cut rather than withheld. The copies themselves are built with `str.translate`
+over the distinct characters of the text, not a per-character loop. The returned text
 holds nothing the check did not read: every format character (bidi overrides and isolates,
 zero-width spaces, a soft hyphen, and the Unicode tag characters, which can spell an instruction
 nobody sees), surrogate, private-use or unassigned code point, and the invisible marks and fillers
