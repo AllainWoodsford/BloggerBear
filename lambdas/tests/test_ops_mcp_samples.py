@@ -20,7 +20,7 @@ from unittest.mock import patch
 import boto3
 import pytest
 from moto import mock_aws
-from test_ops_mcp_redact import straddling
+from test_ops_mcp_redact import STRETCHES, ZWSP_GLUED, past_the_start, straddling, stretched
 
 import common.dynamo as dynamo_module
 from ops_mcp import redact, samples
@@ -391,6 +391,26 @@ def test_a_phrase_the_sweep_brings_up_to_the_cut_is_withheld_not_shown_cut(keep)
     (redact.cut_or_withheld), as redact.scrub reads a log line."""
     value = straddling(samples.VALUE_MAX_CHARS, keep)
     assert not redact.looks_like_instructions_within(value, samples.VALUE_MAX_CHARS)
+    assert samples._redact_text(value) == WITHHELD
+
+
+def test_a_phrase_glued_by_the_sweep_past_the_start_is_withheld():
+    """Past the start of the value as written, with a zero-width space inside and between each word:
+    `visible` removes them, the masked addresses bring the glued words within what is shown, and
+    nothing ignorable is left in the swept value to say so. It is read with the glued form because
+    `visible` removed something (redact.cut_or_withheld's `hidden`), as redact.scrub reads a line."""
+    value = past_the_start(samples.VALUE_MAX_CHARS, ZWSP_GLUED)
+    assert not redact.looks_like_instructions_within(value, samples.VALUE_MAX_CHARS)
+    assert samples._redact_text(value) == WITHHELD
+
+
+@pytest.mark.parametrize("stretch", STRETCHES)
+def test_a_phrase_stretched_by_characters_the_copy_closes_up_is_withheld(stretch):
+    """A phrase that begins in what is shown, with a run of characters the check's copy reads as
+    nothing or one space inside it: the start the check reads counts only what the copy keeps, so
+    the run does not carry the phrase's end past it (test_ops_mcp_redact)."""
+    value = stretched(samples.VALUE_MAX_CHARS, *stretch)
+    assert redact.looks_like_instructions(value)
     assert samples._redact_text(value) == WITHHELD
 
 

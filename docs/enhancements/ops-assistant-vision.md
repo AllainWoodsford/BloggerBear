@@ -26,8 +26,8 @@ that followed it, the tool that interrogates a topic's Findings ([Topic findings
 | Asked | Tool | Reads | Returns |
 |---|---|---|---|
 | "How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney measured?", "Why wasn't Botany Bay measured?" (a site) | **`vision_status(topic?)`** (new) | Topics (one Scan); where vision is on, each vision topic's running state; the pipeline config (each topic's research interval) and this week's stats row (triage spend: the triage agent's calls only, since the worker Lambda's own cost is not tracked) | whether the worker is on and where; per topic and site: when last measured, the newest scene, coverage, the measure and triage, and why a site was not measured; a card per problem with its fix; the sites as a `table` |
-| "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each | one sentence: the worker off, or the vision topics whose sites setting doesn't parse and those with a site not measured on the last try (both clauses in the one sentence when both hold), or how many were not checked; the same cards |
-| "Watch the Sydney topic" | `watch(topic)`, then `watch_list` | a watched vision topic's running state, at most two per call | "research is on time" no longer hides sites that were not measured |
+| "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each (at the function's 512 MB it parses none over about 3.5 MiB: "Bounded", below) | one sentence: the worker off, or the vision topics whose sites setting doesn't parse and those with a site not measured on the last try (both clauses in the one sentence when both hold), or how many were not checked; the same cards |
+| "Watch the Sydney topic" | `watch(topic)`, then `watch_list` | a watched vision topic's running state, at most two per call, in 2 s and at most 8 MiB each (at 512 MB, none parsed over about 2.3 MiB) | "research is on time" no longer hides sites that were not measured |
 | "Any errors in the vision worker?", "Look at the logs for the rail Sydney topic" | `log_review` | the worker's log group **in `vision_region`**, beside the home Region's functions | the worker's errors by root cause, `scene_unreadable` among them ([the log reader](ops-assistant-log-reader.md#a-second-region-the-vision-worker)) |
 | "How does the vision pipeline work?" | `architecture(feature="vision-pipeline")` (new feature) | nothing: the catalogue | nine steps with this environment's names |
 | "How do I set up a rail topic?" | `cli_guides("vision")` (new guide) | nothing: the CLI reference | the steps, with a sites config never filled in (below) |
@@ -79,20 +79,25 @@ actions, counts and conditions, and the worker name against the vision-worker mo
 
 **Bounded.** A rail state can pass 20 MB and `pipeline_health` opens every briefing, so the reads
 share one budget weighted by each object's size (24 MiB in flight, four at once), taken before its
-body is read; nothing over 24 MiB is read, and `pipeline_health` and the watch read nothing over
-8 MiB. Each call has a deadline (8 s, 3 s for `pipeline_health`, 2 s per watched topic), S3 is
-asked with a 1 s connect and 2 s read timeout and no retry, a body is read in chunks with the
-deadline checked between them, and every body is closed and every thread joined before the
-answer. A parse is not interrupted once begun, so a state is read and parsed only with time left
-to parse its size at 4 MiB per CPU-second, a third under the slowest shape measured (a dict-dense
-24 MiB state at 4.0 CPU-seconds, 6.0 MiB per CPU-second; a real one of that size takes 0.7), scaled
-by the share of a vCPU the function's memory buys (Lambda gives one vCPU at 1,769 MB; the function
-has 512 MB, 0.29 of one, so 1.16 MiB a second): a call ends by its deadline, or, when a parse begun
-with that time to spare runs slower still, up to that parse's length later. At 512 MB a 24 MiB
-state needs 20.7 s left and a real 11.3 MB rail state 9.3 s: nothing over about 9 MiB is parsed
-within the 8 s survey, so such a topic's sites read "not checked this time" until the function has
-more memory (at 1,769 MB: 6 s for 24 MiB, 2.7 s for 11.3 MB), which is the owner's call. A state
-not read in time is "not checked this time", never "fine".
+body is read; nothing over 24 MiB is read, and `pipeline_health` and the watch read nothing over 8
+MiB (at 512 MB the parse rule below holds them well under that). Each call has a deadline (8 s, 3 s
+for `pipeline_health`, 2 s per watched topic), S3 is asked with a 1 s connect and 2 s read timeout
+and no retry, a body is read in chunks with the deadline checked between them, and every body is
+closed and every thread joined before the answer. A parse is not interrupted once begun, so a state
+is read and parsed only with time left to parse its size at 4 MiB per CPU-second, a third under the
+slowest shape measured (a dict-dense 24 MiB state at 4.0 CPU-seconds, 6.0 MiB per CPU-second; a real
+one of that size takes 0.7), scaled by the share of a vCPU the function's memory buys (Lambda gives
+one vCPU at 1,769 MB; the function has 512 MB, 0.29 of one, so 1.16 MiB a second): a call ends by
+its deadline, or, when a parse begun with that time to spare runs slower still, up to that parse's
+length later. At 512 MB a 24 MiB state needs 20.7 s left and a real 11.3 MB rail state 9.3 s. The
+rate holds for every call, so what each parses at most is its deadline's worth, less the time the
+download took: about 9 MiB within the 8 s survey, about 3.5 MiB within `pipeline_health`'s 3 s and
+about 2.3 MiB within the watch's 2 s, well under the 8 MiB those two may read. A rail topic's sites,
+and any state between those sizes and 8 MiB that `pipeline_health` and the watch read before, read
+"not checked this time" until the function has more memory (at 1,769 MB: 6 s for 24 MiB, 2.7 s for
+11.3 MB; `pipeline_health` parses up to its 8 MiB again, and the watch nearly so, 8 MiB taking its
+whole 2 s), which is the owner's call. A state not read in time is "not checked this time", never
+"fine".
 
 ## What is spoken, what is on screen
 
@@ -170,9 +175,15 @@ stores through `common/figures.plain_text`). A plain line, such as the assistant
 written, before the invisible characters are removed from what is returned. Where the result is cut
 to a limit (`scrub`: 300 characters by default, 60 and 120 in `vision_status`'s name and error
 cells, 280 in `topic_findings`' summary, 120, 40 and 10 in `api_errors`; `samples._redact_text`:
-300), the check reads a bounded start, four times that limit in characters it does not ignore,
-found by a plain category scan with no NFKD (a character can decompose to eighteen code points, and
-a 256K-character line of U+FDFA took 5.5 s and 494 MB to scrub when the check read all of it). It
+300), the check reads a bounded start, four times that limit in characters its copy keeps more of
+than a space: not what it ignores, nor whitespace, nor the 52 spacing accents and sound marks it
+closes up (U+00A8, U+00B4, U+FF9E: a space and a mark, or a mark alone), since counted, a run of
+them inside a phrase that begins in what is returned carried its end past the start and the line
+came back "...Ignore all previous¨¨¨…" (an all-ASCII text, whose spaces the sweep collapses, is cut
+at that many characters). The start is found by a scan that decomposes each distinct character
+once (a character can decompose to eighteen code points, and a 256K-character line of U+FDFA took
+5.5 s and 494 MB to scrub when the check read all of it; none the scan does not count decomposes
+to more than three, so a line of them, read whole, scrubs in a few hundred milliseconds). It
 reads that start twice: of the text as written, and of the text as swept (invisible characters
 out, placeholders in, whitespace collapsed), before the swept text is cut, since the collapse and
 the placeholders can bring a phrase from past the first start up to the cut, where a check of the
