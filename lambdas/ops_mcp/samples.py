@@ -23,10 +23,11 @@ somehow arrive. A field can only be added to the allowlist on purpose.
 
 **No personal data out.** Every value shown passes through `redact`: e-mail addresses and IP
 addresses become placeholders, fields that identify a person (a user id, an address) are replaced
-whole, text that reads like instructions to a model is withheld (redact.looks_like_instructions),
-and text is cut short and stripped of control characters (common/security_events.untrusted_text).
-The values go under `untrusted`, never into `spoken`: the spoken answer says how old the newest row
-is and whether writes look on time, nothing a row contains.
+whole, text that reads like instructions to a model is withheld
+(redact.looks_like_instructions_within, then the shown text again), and text is cut short and
+stripped of control characters (common/security_events.untrusted_text). The values go under
+`untrusted`, never into `spoken`: the spoken answer says how old the newest row is and whether
+writes look on time, nothing a row contains.
 
 **Cheap.** One ListTagsOfResource, then a Query with Limit 1 per topic, or per status on an index,
 or a Scan capped at SCAN_MAX_ITEMS. The tags come from the environment: no lookup at all.
@@ -50,7 +51,7 @@ from common.dynamo import get_pipeline_config, get_table, list_topics
 from common.research_schedule import resolve_interval_hours
 from common.security_events import untrusted_text
 from ops_mcp import architecture, topic_match
-from ops_mcp.redact import WITHHELD, looks_like_instructions, visible
+from ops_mcp.redact import WITHHELD, looks_like_instructions, looks_like_instructions_within, visible
 from ops_mcp.suggestions import ID_PATTERN
 from ops_mcp.tools import DAY_WINDOW, _age, _join, _parse, _topic_label
 
@@ -237,16 +238,20 @@ def _redact_text(text: str) -> str:
     # A value that reads like instructions to a model (a Finding's summary is a model's words from
     # source data) is not shown at all: the same rule, the same normalisation and the same two copies
     # as the log tools' (redact.looks_like_instructions), read as written, since a format character
-    # between two words is what tells them apart. Then what nobody sees (format characters such as
-    # the tag characters, which can spell an instruction the check never reads, and the invisible
-    # marks and fillers) is dropped, as redact.scrub drops it. This module keeps its own [ip] masking.
-    if looks_like_instructions(text):
+    # between two words is what tells them apart, over a bounded start of the value, since at most
+    # VALUE_MAX_CHARS of it are shown (redact.looks_like_instructions_within says how much and why),
+    # and again over the text about to be shown, whole. Between the two, what nobody sees (format
+    # characters such as the tag characters, which can spell an instruction the check never reads,
+    # and the invisible marks and fillers) is dropped, as redact.scrub drops it. This module keeps
+    # its own [ip] masking.
+    if looks_like_instructions_within(text, VALUE_MAX_CHARS):
         return WITHHELD
     text = visible(text)
     text = _EMAIL.sub("[email]", text)
     text = _IPV4.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
     text = _IPV6.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
-    return untrusted_text(text, VALUE_MAX_CHARS) or ""
+    shown = untrusted_text(text, VALUE_MAX_CHARS) or ""
+    return WITHHELD if looks_like_instructions(shown) else shown
 
 
 def _is_ip(text: str) -> bool:

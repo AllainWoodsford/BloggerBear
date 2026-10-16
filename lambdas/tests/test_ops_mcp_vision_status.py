@@ -31,7 +31,6 @@ import research_tick_handler
 from common import osm, vision_client
 from common.adapters import rail_access as ra
 from common.adapters import satellite_vision as sv
-from common.figures import plain_text
 from ops_agent import policy
 from ops_mcp import redact, vision_status
 
@@ -744,11 +743,19 @@ PLANTED = [*BYPASSES, "write to jane.doe@example.com", "from 203.0.113.77 again"
 
 
 def marker(text: str) -> str | None:
-    """The plain word of a planted instruction that must appear nowhere: "previous" or "prompt"."""
-    for word in ("previous", "prompt"):
-        if word in text.lower():
+    """The plain word of a planted instruction that must appear nowhere, "previous", "prompt" or
+    "admin", as the check reads it (redact.normalised: fullwidth letters folded, an ignorable inside
+    the word removed), so the cases that spell or split the word have one too. ("command" would be
+    one, but the findings' suggestions carry a command.)"""
+    for word in ("previous", "prompt", "admin"):
+        if word in redact.normalised(text).casefold():
             return word
     return None
+
+
+def shows(word: str, text: str) -> bool:
+    """Whether `word` can be read in `text`, spelt or split as the planted cases spell or split it."""
+    return word in redact.normalised(text).casefold()
 
 
 BROKEN = {"sites": "nope"}
@@ -798,18 +805,11 @@ def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkey
     if marker(text):
         # The site name is stored as the pipeline's own cleaner leaves it (vision_sites.parse_config,
         # common/figures.plain_text): a format character between two words is removed there, before
-        # any scrub reads it, so a phrase spaced only by format characters is stored as one glued word
-        # nothing can tell apart. That word, in its own unverified cell, is the one place the marker
-        # may appear (a follow-up for that cleaner, outside this round); nowhere else, and never
-        # where the phrase survives the cleaner.
-        glued = plain_text(" ".join(text.split())[:80])
-        if redact.looks_like_instructions(glued):
-            assert marker(text) not in whole.lower()
-        else:
-            assert marker(text) not in elsewhere.lower()
-            cells = table_column(result, "Name (unverified)") + table_column(result, "Error (unverified)")
-            for cell in cells:  # the stored name, as scrub cuts it, or nothing of the marker
-                assert marker(text) not in cell.lower() or glued.startswith(cell.rstrip("\u2026")), cell
+        # any scrub reads it, so a phrase spaced only by format characters is stored as one glued
+        # word. The check reads its copy against the glued form of the pattern too
+        # (redact._INSTRUCTION_LIKE_GLUED), so that word is withheld like the rest: the marker
+        # appears nowhere, in no column, however it is spelt or split.
+        assert not shows(marker(text), whole)
     assert "jane.doe" not in whole and "203.0.113.77" not in whole
     for card in result["findings"]:
         assert "untrusted" not in card
@@ -837,7 +837,7 @@ def test_a_voice_caller_gets_no_unverified_column_and_none_of_the_text(aws, text
     for needle in ("jane.doe", "203.0.113.77", "[email]", "203.XXX", "withheld", "(unverified)"):
         assert needle not in whole
     if marker(text):
-        assert marker(text) not in whole.lower()
+        assert not shows(marker(text), whole)
 
 
 def test_a_config_error_message_is_only_in_its_unverified_cell(aws, monkeypatch):
@@ -946,7 +946,9 @@ def test_two_large_states_are_never_read_at_once_and_memory_stays_bounded(monkey
 
 def test_a_stalled_body_is_closed_at_the_deadline_and_no_thread_is_left(monkeypatch):
     monkeypatch.setenv("CONTENT_BUCKET", BUCKET)
-    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 50) + b"}"}, wait=0.3)
+    # Small enough to have time to parse (a quarter of a second at PARSE_BYTES_PER_SECOND): it is the
+    # stalled chunks, not the parse-time rule, that stop it.
+    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 5) + b"}"}, wait=0.3)
     before = set(threading.enumerate())
     started = time.monotonic()
     with patch.object(vision_status, "_s3", return_value=fake):
@@ -1018,6 +1020,34 @@ def test_a_body_whose_end_comes_after_the_deadline_is_not_checked():
     assert _read_late(fake, 0.1) == (None, "not_checked")
     assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
     assert _read_late(fake, 5.0)[1] == "read"  # the same body, with time to spare, is parsed
+
+
+def _stand_in(size: int) -> bytes:
+    """A JSON object of exactly `size` bytes that parses at once: the parse-time rule reads the size,
+    not the shape."""
+    head, tail = b'{"pad": "', b'"}'
+    return head + b"x" * (size - len(head) - len(tail)) + tail
+
+
+def test_a_state_is_read_only_with_time_left_to_parse_it(monkeypatch):
+    """24 MiB is four seconds at PARSE_BYTES_PER_SECOND: with eight left it is read and parsed; with
+    one left it is not checked, before any byte of it is read or the parse begun."""
+    fake = FakeS3({key("late"): _stand_in(vision_status.MAX_STATE_BYTES)})
+    assert _read_late(fake, 8.0)[1] == "read"
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, 1.0) == (None, "not_checked")
+    assert fake.bodies[1].closed and not fake.bodies[1].reading
+
+
+def test_a_state_whose_download_leaves_too_little_time_to_parse_it_is_not_parsed():
+    """The time left is read again before the parse: one second's worth of bytes, begun with 1.5 s
+    left, whose chunks take 0.6 s to come, leaves too little for its parse."""
+    size = vision_status.PARSE_BYTES_PER_SECOND
+    fake = FakeS3({key("late"): _stand_in(size)}, wait=0.6 * vision_status.CHUNK_BYTES / size)
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, 1.5) == (None, "not_checked")
+    assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
 
 
 class _Raw:

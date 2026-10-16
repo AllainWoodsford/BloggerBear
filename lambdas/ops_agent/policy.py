@@ -50,6 +50,7 @@ guide tools are ordinary tools, offered on every turn.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -323,8 +324,10 @@ def _normal(text: str) -> str:
     and marks such as an accent or the combining grapheme joiner removed, control characters read
     as spaces, whitespace collapsed), case folded. Both sides alike, so a zero-width non-joiner
     after every word of an "(unverified)" cell, or a mark after every letter, does not hide its
-    repeat."""
-    return " ".join(normalised(text).casefold().split())
+    repeat. Hangul is recomposed first (NFC; the marks are already gone, so nothing else is), since
+    NFKD split each syllable into two or three jamo and ECHO_CHARS and UNTRUSTED_KEPT_MAX_CHARS
+    count characters: a Korean syllable counts one."""
+    return " ".join(unicodedata.normalize("NFC", normalised(text)).casefold().split())
 
 
 def echoes(answer: str, ledger: Ledger) -> bool:
