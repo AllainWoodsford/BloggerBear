@@ -205,6 +205,58 @@ sets `measure_subject_first: true`. Leave it out of S1.
 - `test_ops_mcp_*`: `topics_overview` and `cli_guide` ignore the new map (or show it, if PR M's
   overview already lists `last_article_at`; decide then).
 
+### 3.10 S1 as built
+
+S1 was built on the Phase 2 branch after #297 (PR K), #302 (paused topics), #306 (P1's evidence
+lines) and #307 (PR N), so some of the references above moved. What differs from 3.1 to 3.9, and
+why:
+
+- **The hook takes the moment, not a date:** `day_subject(topic, at)`, where `at` is the daily
+  run's start (aware, UTC) and `topic` is the whole Topic item, as `fetch_state` gets it. Which
+  local day `at` falls on is the adapter's to work out in its own `rotation_timezone`. A `date`
+  argument would have made the pipeline compute the day in a zone it must not know (rule 5). The
+  item is needed for `daily_timezone`, the zone's default.
+- **One window rule, three readers:** PR N moved `_window_start` into
+  `common/findings_window.window_start`, which now takes `subject_key`. The daily cycle passes the
+  day's subject. The assistant's `topic_findings` and `GET /topics/{topic_id}/findings` (with
+  `admin_cli findings list --subject`) take an optional `subject`, with `next_article` only;
+  given alone, it is refused (a fixed sentence, or a 400). Without one, both are unchanged. The
+  assistant never speaks the subject, because it is the operator's text; the result echoes it.
+- **Selection:** `_select_subject_and_findings` dispatches. `_select_goal_and_findings`, the
+  crypto path, is untouched, and its tests call it. The subject is asked once, at `run_started`,
+  after the paused check, so a paused rotating topic stays paused and its rota is not read. It is
+  never asked of a topic that has a crypto goal.
+- **A broken rota writes nothing:** if the hook raises, or returns something that is not a usable
+  `DaySubject` (`common/day_subject.day_subject_error`), the run returns an error before any model
+  call. It never falls back to "every subject".
+- **The research tally** on a rotating topic's article covers the Findings it was written from,
+  not the whole window. Subjects' windows overlap, so a whole-window tally would count a Finding
+  once per subject.
+- **Stamps:** `dynamo.set_topic_last_article_at(topic_id, ts, subject_key=)` makes the map if it
+  is missing, then sets the subject's entry and `last_article_at` together in a second write.
+  DynamoDB refuses to set a map and a key inside it in one expression. A day that writes nothing
+  stamps nothing.
+- **The article** stores `subject`, and the daily result names it. There is no `editorial_goal`
+  field on an article to put it beside (3.3.8). A topic that does not rotate stores and returns
+  nothing new.
+- **The rota (3.7)** is a generic library in `common/day_subject.py`: `parse_rotation` checks
+  either the seven weekdays (all seven must be named) or a list cycled from 1970-01-01, that every
+  subject has a day, and the zone. It raises ValueError, which the adapter wraps in its
+  ConfigError. `rotation_subject` names the subject for the local day.
+- **Not changed:** no new evidence event or field (a Finding's subject count on the
+  `research_tick` line is a follow-up), `admin_api._update_topic`'s whole-item write (the 3.4
+  race, now on one more field, is a follow-up), and the 48-Finding cap, which applies to the
+  window before the subject filter.
+- **The operator's view:** `topics_overview`'s single-topic view lists the last article per
+  subject. The list view's columns are unchanged.
+
+What S2 needs from this: `RailAccessAdapter.subjects` returns the reported site ids.
+`day_subject` parses the rota with `parse_rotation(adapter_config, site_ids,
+topic.get("daily_timezone"))` (also from `parse_config`, so a bad rota is the topic's
+`last_error`). It returns `DaySubject(key=site_id, label=name, mandate=..., style=...)` for
+`rotation_subject(rota, at)`. The rotating topic's `findings_window_hours` must cover the rota's
+longest gap: 24 h a day, plus a day.
+
 ## 4. PR S2: the rail adapter rotates (after S1)
 
 ### 4.1 Lift `MAX_RAIL_SITES` by keeping networks out of the running state

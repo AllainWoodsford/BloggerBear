@@ -39,7 +39,8 @@ python scripts/admin_cli.py topics findings <topic_id>
 ```
 
 `findings list` takes `--limit N` (1 to 20, default 5) and one of `--days D` (1 to 14, unexpired
-only), `--since ISO` or `--next-article`. Its answer is `findings` (raw items, newest first) with
+only), `--since ISO` or `--next-article`; with `--next-article`, `--subject KEY` reads what a
+rotating topic's next article on that subject reads. Its answer is `findings` (raw items, newest first) with
 `count` (how many the window holds; a floor when `count_is_at_least`), `more` (some were not
 listed), `expired_left_out`, `since`, `until` and `truncated`.
 

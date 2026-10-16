@@ -154,6 +154,8 @@ python scripts/admin_cli.py topics findings github-trending
 # Expired ones are left out, except with --next-article, which lists exactly what the next
 # daily article will be written from: since the topic's last article, within its findings
 # window, at most 48. --limit is 1 to 20 (default 5); --days 1 to 14; --since an ISO timestamp.
+# With --next-article, --subject KEY is for a topic that rotates through subjects: what its next
+# article on that subject reads (from that subject's last article, its Findings only).
 # The ops assistant's topic_findings tool and the topic-findings Claude Code skill
 # (.claude/skills/) show the same window.
 python scripts/admin_cli.py findings list rail-sydney
