@@ -539,6 +539,10 @@ def test_a_sites_list_that_does_not_parse_is_still_a_config_error(aws, monkeypat
     assert [row["class"] for row in result["sites"]] == ["config_error"]
     assert [(card["kind"], card["id"]) for card in result["findings"]] == [("vision_config_error", "broken")]
     assert result["findings"][0]["where"]["reasons"] == "the sites setting doesn't parse"
+    assert result["findings"][0]["where"]["sites"] == 0  # the one row is no site, as the total says
+    assert result["findings"][0]["noticed"] == (
+        "Broken's sites config can't be used, so its sites aren't measured"
+    )
     assert "1 vision topic watches 0 sites: none measured yet." in result["spoken"]
     assert "Broken's sites setting doesn't parse, so its research stops before measuring." in result["spoken"]
     assert result["topics"][0]["sites"]["total"] == 0 and result["topics"][0]["sites"]["config_error"] == 1
@@ -548,14 +552,20 @@ def test_a_sites_list_that_does_not_parse_is_still_a_config_error(aws, monkeypat
     health = vision_status.site_health([topic], datetime.now(UTC), budget_seconds=3)
     assert health["topics"]["broken"]["sites"]["config_error"] == 1
     assert [card["kind"] for card in health["findings"]] == ["vision_config_error"]
-    assert tools._vision_spoken(health).startswith("Broken has a site that wasn't measured")
-    # With the worker off it is said too, beside the worker-off card.
+    assert health["findings"][0]["where"]["sites"] == 0
+    assert tools._vision_spoken(health) == (
+        "Broken's sites setting doesn't parse; ask about the vision pipeline for why."
+    )
+    # With the worker off it is said too, beside the worker-off card, and neither card counts a site.
     monkeypatch.setenv("OPS_VISION_REGION", "")
     off = status()
     assert {card["kind"] for card in off["findings"]} == {"vision_worker_off", "vision_config_error"}
     assert "Broken's sites setting doesn't parse" in off["spoken"]
     worker_off = next(card for card in off["findings"] if card["kind"] == "vision_worker_off")
     assert worker_off["where"]["sites"] == 0
+    config_error = next(card for card in off["findings"] if card["kind"] == "vision_config_error")
+    assert config_error["where"]["sites"] == 0
+    assert config_error["noticed"] == "Broken's sites config can't be used, so its sites aren't measured"
 
 
 def test_deferred_is_rotation_and_starved_is_a_card(aws):
@@ -949,6 +959,65 @@ def test_a_stalled_body_is_closed_at_the_deadline_and_no_thread_is_left(monkeypa
     assert elapsed < 1.0 + vision_status.READ_TIMEOUT_SECONDS
     assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
     assert set(threading.enumerate()) == before
+
+
+def test_the_budget_gives_nothing_once_the_deadline_has_passed():
+    """Room or not: a read that takes its bytes past the deadline would parse past it too."""
+    budget = vision_status._ByteBudget(100)
+    assert budget.take(10, time.monotonic() - 5) is False and budget.used == 0
+    assert budget.take(10, time.monotonic() + 5) is True and budget.used == 10
+
+
+class _NoBudget:
+    """Stands in for _IN_FLIGHT where no byte may be taken or given."""
+
+    total = vision_status.IN_FLIGHT_BYTES
+
+    def take(self, size, deadline):
+        raise AssertionError("the budget was asked")
+
+    def give(self, size):
+        raise AssertionError("the budget was given to")
+
+
+def _read_late(fake, deadline_in: float):
+    return vision_status._read_one(
+        fake, BUCKET, {"topic_id": "late"}, time.monotonic() + deadline_in, vision_status.MAX_STATE_BYTES,
+        lambda state: state, datetime.now(UTC),
+    )  # fmt: skip
+
+
+def test_a_get_object_that_answers_after_the_deadline_is_not_checked_and_takes_no_budget(monkeypatch):
+    class _LateS3(FakeS3):
+        def get_object(self, Bucket, Key):  # noqa: N803 - boto3's own argument names
+            time.sleep(0.2)
+            return super().get_object(Bucket, Key)
+
+    fake = _LateS3({key("late"): json.dumps(ships_state()).encode()})
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    assert _read_late(fake, 0.05) == (None, "not_checked")
+    assert fake.bodies[0].closed and not fake.bodies[0].reading  # never read, and not left open
+
+
+def test_a_body_whose_end_comes_after_the_deadline_is_not_checked():
+    """The chunks arrive in time; the read that says the stream is over (which a stalled connection
+    holds up to the read timeout) comes after the deadline, so the state is not parsed."""
+
+    class _LateEnd(FakeBody):
+        def iter_chunks(self, size):
+            yield from super().iter_chunks(size)
+            time.sleep(0.2)
+
+    class _LateEndS3(FakeS3):
+        def get_object(self, Bucket, Key):  # noqa: N803 - boto3's own argument names
+            response = super().get_object(Bucket, Key)
+            self.bodies[-1] = body = _LateEnd(self.objects[Key])
+            return {**response, "Body": body}
+
+    fake = _LateEndS3({key("late"): json.dumps(ships_state()).encode()})
+    assert _read_late(fake, 0.1) == (None, "not_checked")
+    assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
+    assert _read_late(fake, 5.0)[1] == "read"  # the same body, with time to spare, is parsed
 
 
 class _Raw:

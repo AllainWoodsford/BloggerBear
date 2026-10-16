@@ -471,9 +471,62 @@ def test_the_briefing_carries_no_untrusted_text_from_a_vision_topic(tables, visi
     broken_row = next(row for row in result["topics"] if row["topic_id"] == "broken")
     assert broken_row["sites"]["config_error"] == 1 and broken_row["sites"]["total"] == 0
     assert ("vision_config_error", "broken") in {(card["kind"], card["id"]) for card in result["findings"]}
+    assert result["spoken"].endswith(
+        "Broken's sites setting doesn't parse, and Rail access: Sydney has a site that wasn't measured "
+        "on the last try; ask about the vision pipeline for why."
+    )
     assert '"untrusted"' not in whole
     for needle in ("previous", "jane.doe", "203.0.113.77", "[email]", "203.XXX", "withheld"):
         assert needle not in whole
+
+
+def _vision_entry(label: str, *, total: int = 1, **classes) -> dict:
+    sites = dict.fromkeys(("total", *tools._SITE_PROBLEMS), 0)
+    sites.update(total=total, **classes)
+    return {"label": label, "uses_worker": True, "state": "read", "sites": sites}
+
+
+@pytest.mark.parametrize(
+    ("entries", "said"),
+    [
+        (
+            [_vision_entry("Broken", total=0, config_error=1)],
+            "Broken's sites setting doesn't parse; ask about the vision pipeline for why.",
+        ),
+        (
+            [_vision_entry("Anchorages", total=0, config_error=1)],
+            "Anchorages' sites setting doesn't parse; ask about the vision pipeline for why.",
+        ),
+        (
+            [
+                _vision_entry("Broken", total=0, config_error=1),
+                _vision_entry("Rail access: Sydney", worker_error=1),
+                _vision_entry("Other", total=0, config_error=1),
+            ],
+            "Broken and Other's sites settings don't parse, and Rail access: Sydney has a site that wasn't "
+            "measured on the last try; ask about the vision pipeline for why.",
+        ),
+        (
+            [
+                _vision_entry("Rail access: Sydney", worker_error=1),
+                _vision_entry("Ports", total=2, source_error=1),
+            ],
+            "Rail access: Sydney and Ports have a site that wasn't measured on the last try; ask about the "
+            "vision pipeline for why.",
+        ),
+        (
+            [_vision_entry("Rail access: Sydney", total=2, config_error=1)],
+            "Rail access: Sydney has a site that wasn't measured on the last try; ask about the vision "
+            "pipeline for why.",
+        ),
+    ],
+)
+def test_pipeline_health_says_whose_sites_setting_does_not_parse(entries, said):
+    """A topic with no parsable site has no site that "wasn't measured": its clause is the memory
+    watch's, and the two clauses make the one sentence the docstring promises. A config error on
+    one site of a parsed list (a COOL worker not deployed) is still a site not measured."""
+    health = {"topics": {f"topic-{n}": entry for n, entry in enumerate(entries)}}
+    assert tools._vision_spoken(health) == said
 
 
 # --- spoken_label (the assistant's vision round) --------------------------------------------------

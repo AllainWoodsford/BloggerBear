@@ -24,8 +24,9 @@ weighted by each object's ContentLength and taken before its body is read (IN_FL
 large states never parse at once. pipeline_health and the memory watch read nothing over
 LARGE_STATE_BYTES, and nothing at all is read over MAX_STATE_BYTES. Each call has a deadline (8 s
 here, 3 s for pipeline_health, 2 s per topic for the watch), S3 is asked with a short timeout and
-no retry, a body is read in chunks with the deadline checked between them, and every body is
-closed and every thread joined before the call returns: nothing keeps reading after the answer.
+no retry, the deadline is checked once GetObject answers, between the chunks a body is read in
+and before the parse (and the budget gives nothing past it), and every body is closed and every
+thread joined before the call returns: nothing keeps reading after the answer.
 
 **What is never spoken.** `spoken` is fixed templates over counts, ages, the Region, topics named
 by `tools.spoken_label`, and words from the adapters' declared vocabularies (each checked against
@@ -66,9 +67,15 @@ from ops_mcp.tools import _age, _join, _parse, spoken_label
 VISION_REGION_ENV = "OPS_VISION_REGION"
 WORKER_FUNCTION = "vision-worker"
 
-# The read budgets (the module docstring says why). A rail state measured 11.3 MB, and 22.6 MB
-# with CJK names at the caps (common/adapters/rail_access.py, MAX_RAIL_SITES); parsed it takes about
-# six times its bytes.
+# The read budgets (the module docstring says why). The bytes bound the download, not the parsed
+# size. A real rail state (11.3 MB measured, 22.6 MB with CJK names at the caps: common/adapters/
+# rail_access.py, MAX_RAIL_SITES) parses to about six times its bytes; a 24 MiB JSON of a million
+# tiny site records, which only a hostile writer of the content bucket could put under snapshots/
+# (the research tick alone writes there), parses and is copied (topic_status's records and stamps)
+# to about seventeen times, 496 MB. The in-flight budget serialises such reads to one at a time in
+# the process; the function's memory (512 MB, infra/modules/ops-assistant/main.tf) is the knob if a
+# state ever grows past that. Neither constant can shrink: MAX_STATE_BYTES below a real state would
+# refuse it, and IN_FLIGHT_BYTES below MAX_STATE_BYTES would refuse the largest readable one.
 MAX_STATE_BYTES = 24 * 1024 * 1024
 LARGE_STATE_BYTES = 8 * 1024 * 1024
 IN_FLIGHT_BYTES = 24 * 1024 * 1024
@@ -216,7 +223,8 @@ def running_state_key(topic_id: str) -> str:
 class _ByteBudget:
     """One budget for every state being read at once in this process, in bytes: a read takes its
     object's ContentLength before its body is read and gives it back once the state is parsed and
-    dropped. A read that cannot get its bytes before its deadline is not made."""
+    dropped. A read that cannot get its bytes before its deadline is not made, nor one whose
+    deadline has passed while there is room: it would end after it."""
 
     def __init__(self, total: int):
         self.total, self.used = total, 0
@@ -224,13 +232,14 @@ class _ByteBudget:
 
     def take(self, size: int, deadline: float) -> bool:
         with self._changed:
-            while self.used + size > self.total:
+            while True:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     return False
+                if self.used + size <= self.total:
+                    self.used += size
+                    return True
                 self._changed.wait(left)
-            self.used += size
-            return True
 
     def give(self, size: int) -> None:
         with self._changed:
@@ -287,6 +296,8 @@ def _read_one(client, bucket: str, topic: dict, deadline: float, max_bytes: int,
     size = response.get("ContentLength")
     taken = 0
     try:
+        if time.monotonic() >= deadline:
+            return None, "not_checked"  # GetObject itself answered after it
         if not isinstance(size, int) or size < 0:
             return None, "unreadable"
         if size > MAX_STATE_BYTES or size > _IN_FLIGHT.total:
@@ -303,6 +314,8 @@ def _read_one(client, bucket: str, topic: dict, deadline: float, max_bytes: int,
                 return None, "unreadable"  # more than it said it was: not what was stored
             if time.monotonic() >= deadline:
                 return None, "not_checked"
+        if time.monotonic() >= deadline:
+            return None, "not_checked"  # the end of the stream came after it: the parse would too
         try:
             state = json.loads(data)
         except (ValueError, RecursionError):
@@ -696,10 +709,11 @@ def cards(surveyed: list[dict], env: str | None, *, on: bool) -> list[dict]:
             noticed = _NOTICED[kind].format(
                 topic=entry["label"], whose=_whose(entry["label"]), sites=_plural(len(indexes), "site")
             )
+            # As counts() counts: the one row of a topic whose sites list doesn't parse (WHOLE_TOPIC)
+            # is no site, so the card says 0 where the topic's sites total says 0.
+            sites = sum(1 for i in indexes if not entry["status"]["sites"][i].get(WHOLE_TOPIC))
             found.append(
-                finding(
-                    kind, noticed, card_id, topic=entry["label"], sites=len(indexes), reasons="; ".join(words)
-                )
+                finding(kind, noticed, card_id, topic=entry["label"], sites=sites, reasons="; ".join(words))
             )
     return found
 
