@@ -104,6 +104,18 @@ def test_the_manifest_parses_and_pins_only_bucket_assets():
     assert "sets as year-2024" in manifest["about"] and "never by the year role" in manifest["about"]
 
 
+def test_the_agent_cases_and_the_year_set_name_only_scenes_the_manifest_pins():
+    import vision_eval_agent
+
+    manifest = vision_eval.load_manifest()
+    pinned = {scene["name"]: scene for scene in manifest["scenes"]}
+    cases = vision_eval_agent.load_cases(manifest)  # refuses a case naming a scene the manifest lacks
+    named = vision_eval_agent.scene_names(cases)
+    assert named and all(all(asset["etag"] for asset in pinned[name]["assets"].values()) for name in named)
+    year = manifest["sets"][vision_eval_agent.YEAR_SET]["scenes"]
+    assert len(year) >= 10 and all(pinned[name]["site_coverage"] >= 0.95 for name in year)
+
+
 def test_the_bucket_urls_are_derived_from_the_scene_id_and_other_hosts_are_refused():
     assets = vision_eval.scene_assets("S2B_56HLH_20191226_0_L2A")
     assert assets["scl"]["url"] == f"{BUCKET}/56/H/LH/2019/12/S2B_56HLH_20191226_0_L2A/SCL.tif"
