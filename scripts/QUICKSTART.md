@@ -38,6 +38,7 @@ Instead of exporting, you can pass `--api-url` and `--region` on every command.
 python scripts/admin_cli.py inbox      # what is waiting for you, at a glance
 python scripts/admin_cli.py approve    # go through it, one keystroke each
 python scripts/admin_cli.py topics list
+python scripts/admin_cli.py topics schedule    # each topic's slot, state and the minutes it runs at
 python scripts/admin_cli.py equipment list   # what the bear is wearing
 ```
 

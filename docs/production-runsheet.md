@@ -305,6 +305,11 @@ the repository's value); topics keep their state.
 
 Check the AWS pricing pages before relying on these numbers.
 
+The firewall can be trimmed, at your own risk, with the switches in
+[docs/cost-saving.md](cost-saving.md): about US$16 a month per environment for the regional web
+ACLs, US$7 for the site's. Every switch is on by default; the admin API's address allowlist stays
+on whatever you switch off.
+
 ## Not done, on purpose
 
 - **No custom domain for the API.** The site talks to the API on its own AWS address, which is fine

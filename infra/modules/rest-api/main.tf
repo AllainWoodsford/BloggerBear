@@ -159,6 +159,24 @@ resource "aws_api_gateway_integration" "this" {
   uri                     = var.lambda_invoke_arn
 }
 
+# Cost saving (docs/cost-saving.md): an optional resource policy on the API itself. The admin API
+# passes a Deny of every call from outside the operator's addresses (var.admin_allowed_cidrs),
+# which costs nothing and stays in force whether or not the admin WAF web ACL is created, so
+# turning the firewall switches off never leaves the admin API reachable from elsewhere. A
+# resource policy only takes effect on the next deployment, hence its hash in the triggers below.
+resource "aws_api_gateway_rest_api_policy" "this" {
+  # From the flag, not from var.resource_policy: the policy is sensitive (it carries addresses),
+  # and Terraform refuses a count decided by a sensitive value (see the variable).
+  count = var.resource_policy_enabled ? 1 : 0
+
+  rest_api_id = aws_api_gateway_rest_api.this.id
+  # The caller writes the resource as API Gateway's own shorthand, "execute-api:/*", because the
+  # API's id does not exist until this module makes it. API Gateway stores the shorthand as the
+  # full ARN, which Terraform would then read back as a change on every plan, so it is written
+  # out in full here: this API, every stage, method and path.
+  policy = replace(var.resource_policy, "execute-api:/*", "${aws_api_gateway_rest_api.this.execution_arn}/*")
+}
+
 # API Gateway v1 deployments are immutable snapshots -- redeploying on any
 # resource/method/integration change requires a brand new
 # aws_api_gateway_deployment. Terraform has no built-in "redeploy when any
@@ -172,8 +190,14 @@ resource "aws_api_gateway_deployment" "this" {
       resources    = local.resource_id_of
       methods      = { for k, m in aws_api_gateway_method.this : k => m.id }
       integrations = { for k, i in aws_api_gateway_integration.this : k => i.id }
+      # The policy's text, not the policy resource's id: the id is the API's and never changes,
+      # while an edit to the allowlist must redeploy for the new policy to be enforced.
+      policy = var.resource_policy_enabled ? sha1(var.resource_policy) : ""
     }))
   }
+
+  # A policy change is what the hash above is for: deploy after it is written, never before.
+  depends_on = [aws_api_gateway_rest_api_policy.this]
 
   lifecycle {
     create_before_destroy = true

@@ -905,8 +905,8 @@ def test_pipeline_config_set_with_nothing_to_set_is_refused(capsys):
     assert exc_info.value.code != 0
     m.assert_not_called()
     assert (
-        "needs --research-interval-hours, --review-mode, --review-on-unavailable and/or "
-        "--assistant-access"
+        "needs --research-interval-hours, --review-mode, --review-on-unavailable, "
+        "--assistant-access and/or --stagger-minutes"
     ) in capsys.readouterr().err
 
 

@@ -1590,8 +1590,10 @@ def get_pipeline_config() -> dict | None:
     state: every setting then takes its built-in default)."""
     table = get_table(os.environ["MODEL_CONFIG_TABLE"])
     item = table.get_item(Key={"config_id": _PIPELINE_CONFIG_ID}).get("Item")
-    if item is not None and item.get("research_interval_hours") is not None:
-        item["research_interval_hours"] = int(item["research_interval_hours"])
+    if item is not None:
+        for number in ("research_interval_hours", "stagger_minutes"):
+            if item.get(number) is not None:
+                item[number] = int(item[number])
     return item
 
 
@@ -1604,17 +1606,20 @@ def put_pipeline_config(
     review_mode=_UNSET,
     review_on_unavailable=_UNSET,
     assistant_access=_UNSET,
+    stagger_minutes=_UNSET,
 ) -> dict:
     """Update pipeline-wide settings and return the row.
 
     Only the settings passed are touched (a value sets it, None clears it), so
-    editing one never wipes another or one added later.
+    editing one never wipes another or one added later. `stagger_minutes` is the
+    gap between one topic's schedules and the next (common/stagger.py).
     """
     updates = {
         "research_interval_hours": research_interval_hours,
         "review_mode": review_mode,
         "review_on_unavailable": review_on_unavailable,
         "assistant_access": assistant_access,
+        "stagger_minutes": stagger_minutes,
     }
     sets, removes, values = [], [], {}
     for index, (name, value) in enumerate(updates.items()):
@@ -1898,6 +1903,28 @@ def set_topic_last_research_at(topic_id: str, timestamp: str) -> None:
         UpdateExpression="SET last_research_at = :t",
         ConditionExpression="attribute_exists(topic_id)",
         ExpressionAttributeValues={":t": timestamp},
+    )
+
+
+def set_topic_fields(topic_id: str, fields: dict) -> None:
+    """Set the given attributes on a Topic (`paused`, `stagger_slot`, the schedules
+    written for it, ...), leaving every other attribute alone. Fails
+    (ConditionalCheckFailedException) rather than creating a deleted topic. The
+    attribute names go through placeholders, so a reserved word is fine."""
+    if not fields:
+        return
+    names, values, sets = {}, {}, []
+    for index, (name, value) in enumerate(fields.items()):
+        names[f"#f{index}"] = name
+        values[f":v{index}"] = value
+        sets.append(f"#f{index} = :v{index}")
+    table = get_table(os.environ["TOPICS_TABLE"])
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET " + ", ".join(sets),
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
     )
 
 
