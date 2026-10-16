@@ -9,9 +9,11 @@ from __future__ import annotations
 import copy
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 
 import vision_eval_networks as networks
+import vision_eval_scoring as scoring
 
 SCRIPTS = Path(__file__).resolve().parent
 CASES_DIR = SCRIPTS / "vision_eval_cases"
@@ -244,3 +246,274 @@ def case_networks(case: dict, fixture_a: dict, polygon: list, *, anchor=None) ->
 
 def needs_anchor(case: dict) -> bool:
     return any(spec.get("anchor") == "largest_desert" for spec in case["networks"].values())
+
+
+# --- the model: scripted, live and recorded ------------------------------------------------------------
+
+# What a scripted turn reports it used: a few thousand tokens in, a short answer out, so the cost
+# path is exercised in CI with numbers of the live run's order.
+SCRIPTED_USAGE = {"inputTokens": 2400, "outputTokens": 90}
+# The answer a script gives once it has no turn left: no JSON, so the loop ends `malformed`.
+SCRIPT_EXHAUSTED = "(the script has no more turns)"
+# C8's model id: well-formed, and no model Bedrock serves.
+INVALID_MODEL_ID = "eval.invalid-model-v0:0"
+# How the scripted `decide_by: look_again` turn reads a re-measurement against the brief's
+# baseline: the topic's default thresholds (common/adapters/rail_access.DEFAULTS).
+DECIDE_SHARE = 0.02
+DECIDE_DESERT_RELATIVE = 0.10
+BRIEF_PREFIX = "Measured change to check:\n"
+
+
+class ScriptedError(Exception):
+    """What a scripted `{"raise": <name>}` turn raises: Bedrock refusing the call, as the loop sees
+    one (common/vision_triage.triage fails closed on any exception from converse)."""
+
+
+class ScriptedConverse:
+    """A Converse stand-in that answers one scripted turn per call: `{"tool": name, "input": {...}}`
+    asks for a tool, `{"text": ...}` answers, `{"raise": name}` fails as Bedrock would, and
+    `{"decide_by": "look_again"}` answers real when the last re-measurement moved against the
+    brief's baseline by the default thresholds and artefact otherwise (the counterfactual's
+    stand-in for a model that reads its tool's numbers). Every request is kept in `requests`."""
+
+    def __init__(self, turns: list[dict], usage: dict | None = None):
+        self.turns, self.usage = list(turns), dict(usage or SCRIPTED_USAGE)
+        self.calls, self.requests = 0, []
+
+    def __call__(self, **request) -> dict:
+        self.requests.append(request)
+        turn = self.turns[self.calls] if self.calls < len(self.turns) else {"text": SCRIPT_EXHAUSTED}
+        self.calls += 1
+        if "raise" in turn:
+            raise ScriptedError(turn["raise"])
+        if "tool" in turn:
+            given = dict(turn.get("input") or {})
+            use = {"toolUseId": f"tool-{self.calls}", "name": turn["tool"], "input": given}
+            return _response([{"toolUse": use}], "tool_use", self.usage)
+        text = decide_by_look_again(request.get("messages") or []) if "decide_by" in turn else turn["text"]
+        return _response([{"text": text}], "end_turn", self.usage)
+
+
+def _response(content: list[dict], stop: str, usage: dict) -> dict:
+    return {"output": {"message": {"role": "assistant", "content": content}}, "stopReason": stop,
+            "usage": dict(usage)}  # fmt: skip
+
+
+def _brief(messages: list[dict]) -> dict:
+    for block in (messages[0].get("content") or []) if messages else []:
+        text = block.get("text") if isinstance(block, dict) else None
+        if isinstance(text, str) and text.startswith(BRIEF_PREFIX):
+            try:
+                return json.loads(text[len(BRIEF_PREFIX) :])
+            except ValueError:
+                return {}
+    return {}
+
+
+def _last_look_again(messages: list[dict]) -> dict | None:
+    """The last successful `look_again` result in the conversation (its json body), or None."""
+    found = None
+    for message in messages:
+        for block in message.get("content") or []:
+            result = block.get("toolResult") if isinstance(block, dict) else None
+            if not result or result.get("status") != "success":
+                continue
+            body = (result.get("content") or [{}])[0]
+            payload = body.get("json") if isinstance(body, dict) else None
+            if isinstance(payload, dict) and "settings" in payload:
+                found = payload
+    return found
+
+
+def decide_by_look_again(messages: list[dict]) -> str:
+    """The scripted verdict from the re-measurement: real when its station count differs from the
+    baseline's, or its served share or desert area moved past the default thresholds; artefact
+    otherwise, or when nothing was re-measured."""
+    baseline = _brief(messages).get("baseline_median") or {}
+    measured = _last_look_again(messages)
+    if not measured or not baseline:
+        return json.dumps({"verdict": "artefact", "reason": "Nothing was re-measured to confirm it."})
+    moved = []
+    stations = measured.get("station_count")
+    if stations is not None and stations != baseline.get("station_count"):
+        moved.append("the station count")
+    share, base_share = measured.get("served_share"), baseline.get("served_share")
+    if isinstance(share, int | float) and isinstance(base_share, int | float):
+        if round(abs(share - base_share), 4) >= DECIDE_SHARE:
+            moved.append("the served share")
+    desert, base_desert = measured.get("desert_km2"), baseline.get("desert_km2")
+    if isinstance(desert, int | float) and isinstance(base_desert, int | float):
+        if round(abs(desert - base_desert), 4) >= round(DECIDE_DESERT_RELATIVE * max(base_desert, 1.0), 4):
+            moved.append("the area beyond reach")
+    if moved:
+        reason = f"The re-measurement confirms {' and '.join(moved)} moved."
+        return json.dumps({"verdict": "real", "reason": reason})
+    return json.dumps({"verdict": "artefact", "reason": "The re-measurement is back at the baseline."})
+
+
+class RecordingConverse:
+    """`converse` with every response kept: the content blocks the model returned (text and tool
+    uses; a response holds no image), its stop reason and token usage, in call order, under the
+    tag of the case and repeat. A call that raised is kept as its exception's class name only."""
+
+    def __init__(self, converse, sink: list, tag: dict):
+        self.converse, self.sink, self.tag, self.calls = converse, sink, dict(tag), 0
+
+    def __call__(self, **request) -> dict:
+        self.calls += 1
+        try:
+            response = self.converse(**request)
+        except Exception as exc:
+            self.sink.append({**self.tag, "turn": self.calls, "error": type(exc).__name__})
+            raise
+        message = (response.get("output") or {}).get("message") or {}
+        usage = response.get("usage") or {}
+        blocks = [block for block in message.get("content") or [] if "text" in block or "toolUse" in block]
+        self.sink.append({
+            **self.tag,
+            "turn": self.calls,
+            "stopReason": response.get("stopReason"),
+            "content": blocks,
+            "usage": {key: usage.get(key) for key in ("inputTokens", "outputTokens")},
+        })  # fmt: skip
+        return response
+
+
+def bedrock_converse(region: str, client=None):
+    """The real Converse, from the operator's credentials in `region` (Bedrock's, which may differ
+    from the worker's)."""
+    if client is None:
+        import boto3
+        from botocore.config import Config
+
+        config = Config(read_timeout=60, retries={"total_max_attempts": 3})
+        client = boto3.client("bedrock-runtime", region_name=region, config=config)
+    return client.converse
+
+
+def model_cost(model_id: str | None, input_tokens: int, output_tokens: int) -> tuple:
+    """(USD, AUD) for one run's tokens, by the built-in price table (common/model_pricing.py; the
+    deployed Models table is not read from an operator's machine) and the pipeline's own formula
+    and rate (common/costing.py); (None, None) for a model without a price, or no tokens."""
+    from common import costing, model_pricing
+
+    if not model_id or not (input_tokens or output_tokens):
+        return None, None
+    usd = costing.call_cost_usd({"input_tokens": input_tokens, "output_tokens": output_tokens},
+                                model_pricing.default_model_entry(model_id))  # fmt: skip
+    if usd is None:
+        return None, None
+    return round(usd, 6), round(usd * costing.USD_TO_AUD_RATE, 6)
+
+
+# --- where the worker runs ------------------------------------------------------------------------------
+
+# The Region whose scenes an in-process re-measurement reads without leaving it.
+SCENES_REGION = "us-west-2"
+IN_PROCESS_REFUSAL = (
+    "refused: --worker in-process with the production deadline needs --cache DIR (a filled scene cache) "
+    "or a run on an EC2 instance in us-west-2: an uncached look_again re-reads about 54 MB of bands "
+    "before 12-40 s of analysis, so cases would fail closed (deadline, no_time) for the harness's "
+    "reasons and be scored as the agent's"
+)
+
+
+def in_process_refusal(cache, where_: str | None, region: str | None) -> str | None:
+    """None when an in-process worker keeps the production deadline: with a cache, or on an EC2
+    instance in us-west-2 (`where_` from vision_runs.where, `region` from the instance identity).
+    Otherwise the refusal, which names `--cache`."""
+    if cache is not None:
+        return None
+    if where_ == "ec2" and region == SCENES_REGION:
+        return None
+    return IN_PROCESS_REFUSAL
+
+
+# --- in-process seams: the built-up masks (E3) and SCL clouded to a coverage (2.6.6 b) -------------------
+
+# The cloud class the gate counterfactual writes into SCL (Sentinel-2 L2A: cloud, high probability).
+SCL_CLOUD_HIGH = 9
+
+
+@contextmanager
+def capturing_masks(sink: list):
+    """While open, every in-process rail analysis (vision_worker_handler.analyse_rail_access, the
+    worker's own call) also hands its built-up and usable masks to `sink`, bit-packed, so E3 can
+    compare the built-up mask scene to scene. The reply is unchanged."""
+    import numpy as np
+    import vision_worker_handler as handler
+
+    original = handler.analyse_rail_access
+
+    def analyse(*args, **kwargs):
+        analysis = original(*args, **kwargs)
+        built, usable = analysis.layers["built"] > 0, analysis.layers["usable"] > 0
+        sink.append({"shape": list(built.shape), "built": np.packbits(built), "usable": np.packbits(usable)})
+        return analysis
+
+    handler.analyse_rail_access = analyse
+    try:
+        yield sink
+    finally:
+        handler.analyse_rail_access = original
+
+
+def mask_iou(a: dict | None, b: dict | None) -> float | None:
+    """The IoU of two captured built-up masks over the ground both scenes could see (usable in
+    both); None when either is missing or their grids differ."""
+    import numpy as np
+
+    if not a or not b or a["shape"] != b["shape"]:
+        return None
+    count = a["shape"][0] * a["shape"][1]
+
+    def unpack(packed):
+        return np.unpackbits(packed, count=count).astype(bool)
+
+    seen = unpack(a["usable"]) & unpack(b["usable"])
+    built_a, built_b = unpack(a["built"]) & seen, unpack(b["built"]) & seen
+    return scoring.iou_from_counts(int((built_a & built_b).sum()), int((built_a | built_b).sum()))
+
+
+@contextmanager
+def clouded_to(coverage: float | None, report: dict):
+    """While open, every in-process site read (vision.scene.read_site, which the worker handler
+    calls) has SCL pixels inside the site rewritten to cloud (SCL_CLOUD_HIGH), a bank from the
+    site's top rows down, until the share of the site the worker can measure is `coverage` (to
+    one pixel): the spec's "SCL masked in-process", all else equal. `report` gets the coverage
+    before and after and the pixels clouded. ValueError when the scene is already under it.
+    `coverage` None leaves every read alone."""
+    import numpy as np
+    from vision import masks, scene
+
+    original = scene.read_site
+
+    def read_site(*args, **kwargs):
+        site = original(*args, **kwargs)
+        if coverage is None or "scl" not in site.bands:
+            return site
+        scl = site.bands["scl"].copy()
+        inside = masks.polygon_mask(scl.shape, [site.polygon_px]) > 0
+        unusable = masks.unusable_mask(scl) > 0
+        # The handler folds the reference band's no-data into SCL's no-data after this read.
+        for band, nodata in site.nodata.items():
+            if band != "scl" and nodata is not None and band in site.bands:
+                unusable |= site.bands[band] == nodata
+        usable = inside & ~unusable
+        total, seen = int(inside.sum()), int(usable.sum())
+        keep = int(round(coverage * total))
+        if keep > seen:
+            raise ValueError(f"the scene's coverage {seen / max(total, 1):.4f} is already under {coverage}")
+        drop = np.flatnonzero(usable.ravel())[: seen - keep]
+        scl.reshape(-1)[drop] = SCL_CLOUD_HIGH  # a fresh copy is contiguous: reshape is a view
+        site.bands["scl"] = scl
+        whole = max(total, 1)
+        report.update(target=coverage, coverage_before=round(seen / whole, 4),
+                      coverage_after=round(keep / whole, 4), pixels_clouded=int(drop.size))  # fmt: skip
+        return site
+
+    scene.read_site = read_site
+    try:
+        yield report
+    finally:
+        scene.read_site = original

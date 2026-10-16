@@ -41,7 +41,7 @@
   },
   "why": "The network is the same; a third of the site is under cloud, so the measures moved with what could be seen, not with the city.",
   "driven_by": "imagery",
-  "conditional": "gate",
+  "conditional": null,
   "run": {
     "converse": "model"
   },
