@@ -11,12 +11,14 @@ from moto import mock_aws
 
 import research_tick_handler
 from common import evidence
+from common.adapters.base import Adapter
 from common.adapters.crypto_feed import CryptoFeedAdapter
 from common.adapters.github_trending import GitHubTrendingAdapter
 from common.adapters.hacker_news import HackerNewsAdapter
 from common.adapters.rail_access import RailAccessAdapter
 from common.adapters.satellite_vision import SatelliteVisionAdapter
 from common.adapters.web_search import WebSearchAdapter
+from common.day_subject import MAX_SUBJECTS_PER_FINDING
 
 REGION = "ap-southeast-2"
 
@@ -725,6 +727,55 @@ def test_an_adapter_has_no_planner_notes_unless_it_says_so_and_its_finding_has_n
     _run_one_tick(monkeypatch, _tracked("a summary"))
 
     assert "planner_notes" not in _the_finding()
+
+
+# --- the subjects an observation reports (Adapter.subjects, common/day_subject.py) ----------------
+
+
+class _SubjectsAdapter(GitHubTrendingAdapter):
+    """An adapter that reports more subjects than a Finding keeps, with repeats and junk among them."""
+
+    def subjects(self, new_state):
+        return ["sydney", "sydney", "not a key", 7, "melbourne", *[f"city-{n}" for n in range(12)]]
+
+
+class _BrokenSubjectsAdapter(GitHubTrendingAdapter):
+    def subjects(self, new_state):
+        raise RuntimeError("the rota broke")
+
+
+def test_an_adapters_subjects_are_stored_on_the_finding_cleaned_and_capped(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _SubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    stored = _the_finding()["subjects"]
+    assert len(stored) == MAX_SUBJECTS_PER_FINDING == 10
+    assert stored == ["sydney", "melbourne", *[f"city-{n}" for n in range(8)]]  # plain keys, once, in order
+
+
+def test_subjects_that_fail_cost_the_subjects_never_the_finding(aws_resources, monkeypatch, capsys):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _BrokenSubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    finding = _the_finding()
+    assert finding["summary"] == "a summary" and "subjects" not in finding
+    assert "subjects dropped: RuntimeError" in capsys.readouterr().out
+
+
+def test_an_adapter_reports_no_subjects_unless_it_says_so_and_its_finding_has_no_such_field(
+    aws_resources, monkeypatch
+):
+    for adapter_class in research_tick_handler.ADAPTER_REGISTRY.values():
+        assert adapter_class.subjects is Adapter.subjects  # no registered adapter rotates yet (S2)
+    assert GitHubTrendingAdapter().subjects({"repos": []}) == []  # the base class's default
+
+    _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert "subjects" not in _the_finding()
 
 
 # --- the evidence line (common/evidence.py's research_tick) --------------------------------------

@@ -115,6 +115,7 @@ def put_finding(
     research_call: dict | None = None,
     figures: list[dict] | None = None,
     planner_notes: list[dict] | None = None,
+    subjects: list[str] | None = None,
 ) -> None:
     """Write a Finding item to the Findings table.
 
@@ -135,6 +136,10 @@ def put_finding(
     `planner_notes` is the adapter's rule-based notes on what it measured
     (Adapter.planner_notes: the rail adapter's flags and simulations), DynamoDB-ready
     (numbers as Decimal), stored likewise only when there is at least one.
+
+    `subjects` are the subject keys the observation reports (Adapter.subjects, cleaned by
+    common/day_subject.clean_subjects), for a topic that rotates through several: its daily cycle
+    drafts the Finding on each of their days. Stored likewise only when there is at least one.
     """
     table = get_table(os.environ["FINDINGS_TABLE"])
     item = {
@@ -151,6 +156,8 @@ def put_finding(
         item["figures"] = figures
     if planner_notes:
         item["planner_notes"] = planner_notes
+    if subjects:
+        item["subjects"] = list(subjects)
     table.put_item(Item=item)
 
 
