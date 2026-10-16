@@ -441,3 +441,20 @@ def test_the_bedrock_agent_records_each_response_without_its_metadata():
         [{"decisions": [{"triage": {"input_tokens": 1000, "output_tokens": 100}}]}], agent.model_id
     )
     assert spend["cost_usd"] and spend["cost_aud"] > spend["cost_usd"]
+
+
+def test_pin_and_coverage_never_import_the_driver_and_the_sequence_names_agree():
+    # The Graviton session's stock venv has the worker's requirements only (no boto3): `pin` and
+    # `coverage` must not reach the adapter. A fresh interpreter, so earlier imports do not count.
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; sys.path[:0] = sys.argv[1:3]; import vision_eval; "
+        "assert 'vision_eval_driver' not in sys.modules and 'boto3' not in sys.modules, sorted(sys.modules)"
+    )
+    done = subprocess.run([sys.executable, "-c", code, str(ROOT / "scripts"), str(ROOT / "lambdas")],
+                          capture_output=True, text=True, timeout=120)  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert set(vision_eval.SEQUENCE_NAMES) == set(driver.SEQUENCES)
+    assert vision_eval.main(["replay", "--sequence", "sydney-spring"]) == vision_eval.REFUSED
