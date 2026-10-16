@@ -728,6 +728,17 @@ All shipped and deployed; the design and decisions for each are in
   `lambdas/common/evidence.py`, `lambdas/common/vision_decisions.py`,
   `lambdas/common/vision_triage.py`, `lambdas/vision_worker_handler.py`;
   [design](enhancements/vision-evidence.md))
+- [x] Interrogating a topic's Findings, three ways: the assistant's `topic_findings` (a topic's
+  research Findings newest first as a table, with `next_article` for exactly what the next daily
+  run reads; counts and ages spoken, the summary scrubbed and on the page only, nothing to a voice
+  caller), `GET /topics/{topic_id}/findings` and `admin_cli findings list` (the raw items, with
+  `--days`, `--since` and `--next-article`), and the repository's first Claude Code skill,
+  `topic-findings`, with its rules for Finding text in a developer's session; the findings
+  window's start moved to `common/findings_window.window_start`, shared by the daily cycle, the
+  tool and the route; Findings joins the assistant's readable tables (the Findings round, #307,
+  after #300 on the integration branch; `lambdas/ops_mcp/topic_findings.py`,
+  `.claude/skills/topic-findings/SKILL.md`, `scripts/tests/test_claude_skills.py`;
+  [design](enhancements/ops-assistant-vision.md#topic-findings))
 
 ## Backlog / not yet scheduled
 

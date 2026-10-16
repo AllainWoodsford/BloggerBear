@@ -1,12 +1,18 @@
-"""list_recent_findings' optional `since` window (the daily cycle's article input)."""
+"""list_recent_findings' optional `since` window (the daily cycle's article input), and the one
+rule for where that window starts (common/findings_window.py's `window_start`, which the daily
+cycle, the assistant's topic_findings and the Admin API's findings route share)."""
 
 from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import boto3
 import pytest
 from moto import mock_aws
 
 import common.dynamo as dynamo
+from common import findings_window
 from common.adapters.base import SEEN_KEY, Adapter
 
 REGION = "ap-southeast-2"
@@ -179,3 +185,127 @@ def test_delete_musings_for_article_removes_only_that_articles(musings_table):
 def test_delete_musings_for_an_article_with_none_is_a_no_op(musings_table):
     assert dynamo.delete_musings_for_article("nope") == 0
     assert len(musings_table.scan()["Items"]) == 4
+
+
+# --- window_start: the one rule for where a topic's findings window starts ---------------------
+
+RUN = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
+
+
+def _hours_before(hours: int) -> str:
+    return (RUN - timedelta(hours=hours)).isoformat()
+
+
+def test_the_window_is_the_topics_own_or_the_default_day_when_there_is_no_previous_article():
+    assert findings_window.window_start({}, RUN) == _hours_before(24)
+    assert findings_window.window_start({"findings_window_hours": 192}, RUN) == _hours_before(192)
+    assert findings_window.window_start({"findings_window_hours": Decimal("48")}, RUN) == _hours_before(48)
+    # `hours` given wins over the stored window: the daily cycle passes the one it logged about.
+    assert findings_window.window_start({"findings_window_hours": 192}, RUN, hours=6) == _hours_before(6)
+
+
+def test_the_window_is_bounded_by_the_last_article_when_that_is_within_it():
+    last = RUN - timedelta(hours=3)
+
+    assert findings_window.window_start({"last_article_at": last.isoformat()}, RUN) == last.isoformat()
+    older = RUN - timedelta(days=10)  # past a 192-hour (8-day) window
+    topic = {"last_article_at": older.isoformat(), "findings_window_hours": 192}
+    assert findings_window.window_start(topic, RUN) == _hours_before(192)
+
+
+def test_force_ignores_the_last_article_but_keeps_the_window():
+    last = RUN - timedelta(hours=3)
+    topic = {"last_article_at": last.isoformat(), "findings_window_hours": 192}
+
+    assert findings_window.window_start(topic, RUN, force=True) == _hours_before(192)
+    only_last = {"last_article_at": last.isoformat()}
+    assert findings_window.window_start(only_last, RUN, force=True) == _hours_before(24)
+
+
+def test_a_naive_last_article_is_read_as_utc_and_an_unreadable_one_leaves_the_window_alone():
+    naive = (RUN - timedelta(hours=2)).replace(tzinfo=None)
+
+    assert findings_window.window_start({"last_article_at": naive.isoformat()}, RUN) == (
+        naive.replace(tzinfo=UTC).isoformat()
+    )
+    for bad in ("not a date", 12345, "", None):
+        assert findings_window.window_start({"last_article_at": bad}, RUN) == _hours_before(24)
+    # A last article in the future bounds the window there: nothing before it is read.
+    ahead = RUN + timedelta(hours=1)
+    assert findings_window.window_start({"last_article_at": ahead.isoformat()}, RUN) == ahead.isoformat()
+
+
+@pytest.mark.parametrize("bad", [0, -24, 337, "x", "", "192", 1.5, 192.0, True, Decimal("NaN"), [192]])
+def test_an_invalid_stored_window_falls_back_to_the_default_day(bad):
+    assert findings_window.window_start({"findings_window_hours": bad}, RUN) == _hours_before(24)
+
+
+def test_it_is_pure_and_takes_no_topic_at_all():
+    assert findings_window.window_start(None, RUN) == _hours_before(24)
+
+
+# --- the paged readers behind topic_findings and the Admin API's findings route -------------------
+
+
+def _epoch(**delta) -> int:
+    return int((datetime.now(UTC) + timedelta(**delta)).timestamp())
+
+
+def _set_expiry(table, hour: int, expires_at) -> None:
+    table.update_item(
+        Key={"topic_id": "t", "captured_at": f"2026-09-20T{hour:02d}:00:00+00:00"},
+        UpdateExpression="SET expires_at = :e",
+        ExpressionAttributeValues={":e": expires_at},
+    )
+
+
+def test_list_findings_pages_until_it_has_kept_enough_and_says_whether_more_remain(findings_table):
+    for hour in (3, 4):  # two of the ten are expired, not yet deleted
+        _set_expiry(findings_table, hour, _epoch(days=-1))
+    for hour in (5, 6):
+        _set_expiry(findings_table, hour, Decimal(_epoch(days=1)))
+    now = _epoch()
+
+    kept, expired, more = dynamo.list_findings("t", limit=4, unexpired_at=now)
+    assert [f["summary"] for f in kept] == [f"finding {h}" for h in (9, 8, 7, 6)] and more is True
+    assert expired == 0  # the newest four are alive: the expired ones were never reached
+
+    kept, expired, more = dynamo.list_findings("t", limit=7, unexpired_at=now)
+    assert [f["summary"] for f in kept] == [f"finding {h}" for h in (9, 8, 7, 6, 5, 2, 1)]
+    assert expired == 2 and more is True
+
+    kept, expired, more = dynamo.list_findings("t", limit=20, unexpired_at=now)
+    assert len(kept) == 8 and expired == 2 and more is False
+    # The daily run's reading: no expiry filter at all.
+    kept, expired, more = dynamo.list_findings("t", limit=20, unexpired_at=None)
+    assert len(kept) == 10 and expired == 0 and more is False
+    # The page budget: one page of one item at a time reaches only so far.
+    kept, expired, more = dynamo.list_findings("t", limit=1, unexpired_at=now, max_pages=1)
+    assert [f["summary"] for f in kept] == ["finding 9"] and more is True
+    kept, _, more = dynamo.list_findings("t", since="2026-09-20T08:00:00+00:00", limit=5, unexpired_at=now)
+    assert [f["summary"] for f in kept] == ["finding 9", "finding 8"] and more is False
+
+
+def test_count_findings_counts_the_unexpired_in_the_window_and_knows_when_it_stopped_short(findings_table):
+    for hour in (0, 1):
+        _set_expiry(findings_table, hour, _epoch(days=-2))
+    now = _epoch()
+
+    assert dynamo.count_findings("t", unexpired_at=now) == (8, True)
+    assert dynamo.count_findings("t", unexpired_at=None) == (10, True)
+    assert dynamo.count_findings("t", since="2026-09-20T07:00:00+00:00", unexpired_at=now) == (3, True)
+    assert dynamo.count_findings("other", unexpired_at=now) == (1, True)
+    assert dynamo.count_findings("nobody", unexpired_at=now) == (0, True)
+    # Capped: at most `most` are counted, and the count is then a floor.
+    assert dynamo.count_findings("t", unexpired_at=None, most=4) == (4, False)
+    assert dynamo.count_findings("t", unexpired_at=None, most=10) == (10, True)
+    assert dynamo.count_findings("t", unexpired_at=None, most=50) == (10, True)
+
+
+def test_finding_is_expired_reads_only_a_number_at_or_before_now():
+    assert dynamo.finding_is_expired({"expires_at": 10}, 10) is True
+    assert dynamo.finding_is_expired({"expires_at": Decimal("9")}, 10) is True
+    assert dynamo.finding_is_expired({"expires_at": 11}, 10) is False
+    assert dynamo.finding_is_expired({"expires_at": 5}, None) is False
+    for odd in ({}, {"expires_at": None}, {"expires_at": "5"}, {"expires_at": True}):
+        assert dynamo.finding_is_expired(odd, 10) is False

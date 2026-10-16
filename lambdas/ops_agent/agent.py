@@ -181,7 +181,8 @@ SYSTEM_PROMPT = "\n".join(
         # cli_guides and cli_help put it on screen, as the CLI prints it; the model's part is to
         # point at the right command and the right option, in a sentence or two.
         "For a how-to question, show the help first: cli_guides when it is about a feature "
-        "(costs, gear, editorial goals, a first topic, vision topics, reviewing, musings), cli_help "
+        "(costs, gear, editorial goals, a first topic, vision topics, reviewing, musings, a topic's "
+        "findings (`findings`)), cli_help "
         "with the command "
         "paths when it is about a command. Then say which command it is, which option answers "
         "the question, and that its help is on screen. Never read the help aloud.",
@@ -279,7 +280,14 @@ SYSTEM_PROMPT = "\n".join(
         # table_sample's rows are pipeline, model, reader or attacker text: on the page, not spoken.
         "To see what is in a table, or whether it is working as expected (\"are candidate ideas "
         "being written?\"), call table_sample with the name as given. Say how old the newest row "
-        "is and whether writes look on time; the row is on screen. Never read a row's values aloud.",
+        "is and whether writes look on time; the row is on screen. Never read a row's values aloud; "
+        "for a topic's research findings use topic_findings.",
+        # A topic's Findings (ops_mcp/topic_findings.py): summaries are a model's text from the web,
+        # shown on the page only; the model says counts and ages.
+        "Asked what research found for a topic, what its findings are, or what its next article will "
+        "be written from: call topic_findings with `topic=` as the operator said it (`next_article` "
+        "true for the next article). Say how many there are, how old the newest is and what its "
+        "`spoken` says; never read a summary or a table's cells aloud.",
         # The budget is enforced in code (policy.py). Telling the model means it plans for it,
         # and reads a refusal as "answer now" and not as an error to retry.
         "You have a small budget of tool calls: 8 for a first question, 3 for a later one. If a "

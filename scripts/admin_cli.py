@@ -513,6 +513,29 @@ def _cmd_topics_resume(args: argparse.Namespace) -> None:
     _do_request(args, "POST", f"/topics/{args.topic_id}/resume")
 
 
+# --- findings subcommands -------------------------------------------------
+
+
+def _cmd_findings_list(args: argparse.Namespace) -> None:
+    """A topic's research Findings, newest first (GET /topics/{topic_id}/findings). The id goes
+    into the path percent-encoded: the Admin API creates a topic with any non-empty id, so one
+    with a slash or a space in it still has Findings to list. `topics findings` (the newest one,
+    which `topics trigger` polls) is unchanged."""
+    query: dict[str, object] = {}
+    if args.limit is not None:
+        query["limit"] = args.limit
+    if args.days is not None:
+        query["days"] = args.days
+    if args.since is not None:
+        query["since"] = args.since
+    if args.next_article:
+        query["next_article"] = "true"
+    path = f"/topics/{urllib.parse.quote(args.topic_id, safe='')}/findings"
+    if query:
+        path += "?" + urllib.parse.urlencode(query)
+    _do_request(args, "GET", path)
+
+
 # --- articles subcommands ------------------------------------------------
 
 
@@ -1293,6 +1316,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume_parser.add_argument("topic_id")
     resume_parser.set_defaults(func=_cmd_topics_resume)
+
+    # A topic's Findings in full, for the operator at a terminal and the topic-findings Claude Code
+    # skill (.claude/skills/topic-findings/SKILL.md); the ops assistant's topic_findings tool shows
+    # the same window on screen. Its own group, so `topics findings` (what `topics trigger` polls)
+    # stays exactly as it is.
+    findings_group = subparsers.add_parser("findings", help="Research Findings")
+    findings_sub = findings_group.add_subparsers(dest="action", required=True)
+    findings_list_parser = findings_sub.add_parser(
+        "list",
+        help=(
+            "List a topic's research Findings, newest first (expired ones left out, except with "
+            "--next-article, which lists what the next article reads)"
+        ),
+    )
+    findings_list_parser.add_argument("topic_id")
+    findings_list_parser.add_argument(
+        "--limit", type=int, default=None, help="how many to list, 1 to 20 (default 5)"
+    )
+    findings_window = findings_list_parser.add_mutually_exclusive_group()
+    findings_window.add_argument(
+        "--days", type=int, default=None, help="only the last D days, 1 to 14 (unexpired ones)"
+    )
+    findings_window.add_argument(
+        "--since", default=None, help="only those captured at or after this ISO-8601 timestamp"
+    )
+    findings_window.add_argument(
+        "--next-article",
+        action="store_true",
+        default=False,
+        help=(
+            "what the topic's next article will be written from: every Finding since its last "
+            "article within its findings window (--findings-window-hours), at most 48, expired "
+            "or not; `count` says how many and `more` whether some were not listed"
+        ),
+    )
+    findings_list_parser.set_defaults(func=_cmd_findings_list)
 
     articles_parser = subparsers.add_parser("articles", help="Manage articles")
     articles_sub = articles_parser.add_subparsers(dest="action", required=True)

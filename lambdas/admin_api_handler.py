@@ -31,8 +31,9 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import boto3
@@ -45,6 +46,7 @@ from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     claim_moderation_for_rewrite,
+    count_findings,
     delete_musings_for_article,
     delete_prompt_refinement,
     delete_topic,
@@ -67,6 +69,7 @@ from common.dynamo import (
     list_all_moderation_items,
     list_candidate_ideas,
     list_failed_executions,
+    list_findings,
     list_models,
     list_moderation_by_status,
     list_musings,
@@ -99,7 +102,7 @@ from common.editorial_resolver import (
 )
 from common.fact_check import fact_check_label
 from common.figures import clean_figures
-from common.findings_window import findings_window_error
+from common.findings_window import findings_window_error, window_start
 from common.fresh_review import (
     on_unavailable_error,
     resolve_on_unavailable,
@@ -904,6 +907,106 @@ def _get_latest_finding_route(event: dict) -> dict:
     if finding is None:
         return _error(404, f"no findings yet for topic '{topic_id}'")
     return _response(200, finding)
+
+
+# GET /topics/{topic_id}/findings (scripts/admin_cli.py's `findings list`): a topic's Findings,
+# newest first, with their raw items, for the operator at a terminal and a developer's session.
+# The limits, and the three windows, are the same the operator's assistant's topic_findings
+# applies (lambdas/ops_mcp/topic_findings.py); `next_article` reads exactly what the next daily
+# run reads (common/findings_window.window_start, no expiry filter, at most MAX_WINDOW_FINDINGS).
+FINDINGS_LIMIT_DEFAULT, FINDINGS_LIMIT_MAX = 5, 20
+FINDINGS_DAYS_MAX = 14
+FINDINGS_WINDOW_MAX = 48  # daily_cycle_handler.MAX_WINDOW_FINDINGS; a test holds the two equal
+# Lambda answers at most 6 MB. Past this many bytes of body the oldest items are dropped until it
+# fits, and the body says so.
+FINDINGS_BODY_MAX_BYTES = 5_000_000
+_WHOLE_NUMBER = re.compile(r"^\d{1,6}$")
+
+
+def _whole_number_param(event: dict, name: str, low: int, high: int, default: int | None):
+    """A whole-number query parameter from `low` to `high`, or `default` when absent. Raises
+    ValueError, with the message for the 400, otherwise."""
+    raw = _query_param(event, name)
+    if raw is None:
+        return default
+    if not _WHOLE_NUMBER.match(raw.strip()) or not low <= int(raw) <= high:
+        raise ValueError(f"'{name}' must be a whole number from {low} to {high}")
+    return int(raw)
+
+
+def _since_param(event: dict) -> datetime | None:
+    """`since` as an aware UTC datetime, or None when absent. Raises ValueError when it is not
+    ISO-8601."""
+    raw = _query_param(event, "since")
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise ValueError("'since' must be an ISO-8601 timestamp") from exc
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _list_findings_route(event: dict) -> dict:
+    """A topic's Findings, newest first (raw items, numbers as JSON numbers): the unexpired ones,
+    or the last `days`, or those `since` a timestamp, or with `next_article=true` what the next
+    daily run will read. `limit` (1 to 20, default 5) is how many are listed; `count` is how many
+    the window holds (a floor when `count_is_at_least`), `more` whether some were not listed."""
+    try:
+        limit = _whole_number_param(event, "limit", 1, FINDINGS_LIMIT_MAX, FINDINGS_LIMIT_DEFAULT)
+        days = _whole_number_param(event, "days", 1, FINDINGS_DAYS_MAX, None)
+        since_given = _since_param(event)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    next_article_raw = _query_param(event, "next_article")
+    if next_article_raw is not None and next_article_raw != "true":
+        return _error(400, "'next_article' must be 'true' when given")
+    next_article = next_article_raw == "true"
+    if sum(1 for chosen in (days, since_given, next_article) if chosen) > 1:
+        return _error(400, "give at most one of 'days', 'since' and 'next_article'")
+
+    topic_id = _path_param(event, "topic_id")
+    topic = get_topic(topic_id)
+    if topic is None:
+        return _error(404, f"topic '{topic_id}' not found")
+
+    now = datetime.now(UTC)
+    unexpired_at: int | None = int(now.timestamp())
+    if next_article:
+        # What the daily run reads: the window from the last article, every item in it whether or
+        # not its TTL has passed, at most the cap (read one more to know whether there are more).
+        since = window_start(topic, now)
+        unexpired_at = None
+        findings, expired, _ = list_findings(
+            topic_id, since=since, limit=FINDINGS_WINDOW_MAX + 1, unexpired_at=None
+        )
+        count, complete = len(findings), len(findings) <= FINDINGS_WINDOW_MAX
+        findings = findings[:limit]
+    else:
+        if days is not None:
+            since = (now - timedelta(days=days)).isoformat()
+        elif since_given is not None:
+            since = since_given.isoformat()
+        else:
+            since = None
+        findings, expired, _ = list_findings(topic_id, since=since, limit=limit, unexpired_at=unexpired_at)
+        count, complete = count_findings(topic_id, since=since, unexpired_at=unexpired_at)
+    body = {
+        "topic_id": topic_id,
+        "since": since,
+        "until": now.isoformat(),
+        "count": count,
+        "count_is_at_least": not complete,
+        "expired_left_out": expired,
+        "more": count > len(findings),
+        "truncated": False,
+        "findings": findings,
+    }
+    while findings and len(json.dumps(body, default=_json_number).encode("utf-8")) > FINDINGS_BODY_MAX_BYTES:
+        findings.pop()  # the oldest
+        body["truncated"] = True
+        body["more"] = True
+    return _response(200, body)
 
 
 # --- Articles ---------------------------------------------------------
@@ -2563,6 +2666,7 @@ _ROUTES = {
     "POST /topics/reschedule": _reschedule_topics,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
+    "GET /topics/{topic_id}/findings": _list_findings_route,
     "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,

@@ -1096,30 +1096,6 @@ def _find_site(asked: str, found: list[dict]) -> list[dict]:
     return matched
 
 
-def _spoken_match(one: dict | None, matched: dict, refusal: str | None) -> tuple[dict, str | None]:
-    """topic_match.pick's note and refusal with every topic named by `spoken_label`, as every
-    template of this round is: pick names topics by their names as the operator set them, and a
-    voice caller is sent this result whole."""
-    candidates = [
-        {"topic_id": each.get("topic_id"), "name": spoken_label(each)}
-        for each in matched.get("did_you_mean") or []
-    ]
-    named = {**matched, "did_you_mean": candidates}
-    if matched.get("name") is not None:
-        named["name"] = spoken_label(one) if one is not None else spoken_label(matched)
-    if one is not None:
-        return named, refusal
-    labels = [each["name"] for each in candidates]
-    how = matched.get("how")
-    if how == "refused":
-        return named, "That isn't a topic I can look up."
-    if how == "ambiguous":
-        return named, f"Did you mean {topic_match._either(labels)}? Say which, and I'll look."
-    if labels:
-        return named, f"I couldn't find that topic. Did you mean {topic_match._either(labels)}?"
-    return named, "I couldn't find that topic, and there are no topics to suggest."
-
-
 def _refusal(spoken: str, matched: dict | None) -> dict:
     return {"spoken": spoken, "findings": [], "matched_topic": matched}
 
@@ -1136,8 +1112,7 @@ def vision_status(topic: str | None = None, *, screen: bool, now: datetime | Non
     found = site_topics(list_topics(), now)
     matched, prefix = None, None
     if topic is not None:
-        one, matched, refusal = topic_match.pick(topic)
-        matched, refusal = _spoken_match(one, matched, refusal)
+        one, matched, refusal = topic_match.pick_spoken(topic)
         if one is None and matched.get("how") == "none" and isinstance(topic, str):
             sites = _find_site(topic.strip()[: topic_match.ASKED_MAX_CHARS], found)
             if len(sites) == 1:

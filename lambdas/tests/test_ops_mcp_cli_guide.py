@@ -576,6 +576,8 @@ FILLER = {
     "article": "f5e88f3a",
     "adapter_config_json": {"sites": [{"id": "sydney", "polygon": [[150.86, -33.58]]}]},
     "findings_window_hours": 192,
+    "limit": 10,
+    "days": 2,
 }
 
 
@@ -591,6 +593,7 @@ def test_the_guides_are_the_ones_the_owner_asked_for():
         "gear",
         "editorial-goals",
         "vision",
+        "findings",
         "first-topic",
         "security",
         "topic-setup",
@@ -646,6 +649,11 @@ def test_every_command_a_guide_names_exists_and_its_main_ones_get_their_help(key
         ("how do I create a topic for rail", "vision"),
         ("start a rail topic", "vision"),
         ("how do I add a satellite site", "vision"),
+        ("how do I see a topic's findings", "findings"),
+        ("what will the next article be written from", "findings"),
+        ("what did research find for the crypto topic, what was found", "findings"),
+        # A rail topic's findings: the vision guide knows rail topics, and names `findings list` too.
+        ("how do I see the findings for my rail topic", "vision"),
         ("how do I create my first topic", "first-topic"),
         ("set up a topic fully", "topic-setup"),
         ("a musing went out blank, how do I fix it", "musings"),
@@ -1023,11 +1031,44 @@ def test_the_website_is_not_a_vision_site(words, guide):
     assert cli_guide._guide_for(words) == guide
 
 
+def test_the_findings_guide_says_how_findings_work_and_builds_the_next_article_command(parser, tables):
+    result = cli_guide.cli_guides("findings")
+    guide = result["guide"]
+    assert guide["title"].startswith("Reading a topic's findings")
+    assert guide["commands"] == ["findings list", "topics findings", "topics update"]
+    assert 2 <= len(guide["explanation"]) <= 5
+    assert result["spoken"].startswith("Research writes a finding only when a topic's source changed")
+    text = " ".join(guide["explanation"])
+    assert "14 days" in text and "at most 48" in text and "findings list shows them in full" in text
+    assert "editorial goals may use only some" in text
+    assert [step["command"] for step in guide["steps"]] == [
+        "findings list", "findings list", "findings list", "topics findings", "topics update",
+    ]  # fmt: skip
+    # The next-article step is a switch, built as the CLI takes it; the days step asks for both numbers.
+    built = cli_command_text(parser, "findings list", {"topic_id": "rail-sydney", "next_article": True})
+    assert built.endswith("findings list rail-sydney --next-article")
+    built = cli_command_text(parser, "findings list", {"topic_id": "crypto", "days": 2, "limit": 10})
+    assert built.endswith("findings list crypto --limit 10 --days 2")
+    assert guide["steps"][2]["ask"] == ["topic_id", "days", "limit"]
+    # The help on screen is the CLI's own, with the window flags in it.
+    helped = {found["where"]["command"]: found["help"] for found in result["findings"] if "help" in found}
+    assert "--next-article" in helped["findings list"] and "--days" in helped["findings list"]
+
+
+def cli_command_text(parser, path: str, options: dict) -> str:
+    command = built(cli_guide.cli_command(path, options))
+    parsed(parser, command)
+    return command
+
+
 def test_the_vision_guide_says_how_it_works_in_plain_words(tables):
     result = cli_guide.cli_guides("vision")
     guide = result["guide"]
     assert guide["title"] == "Vision topics: satellite sites and the Rail Access Monitor"
-    assert guide["commands"] == ["topics create", "topics update", "topics trigger", "topics findings"]
+    assert guide["commands"] == [
+        "topics create", "topics update", "topics trigger", "topics findings", "findings list",
+    ]  # fmt: skip
+    assert [step["command"] for step in guide["steps"]][-2:] == ["topics findings", "findings list"]
     assert result["spoken"].startswith("A vision topic watches a few fixed places in new satellite images")
     assert "rail_access" not in guide["explanation"][0] and "satellite_vision" not in guide["explanation"][0]
     assert "scripts/rail_topics.example.json" in " ".join(guide["explanation"])

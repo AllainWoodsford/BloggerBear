@@ -495,7 +495,7 @@ def _runsheets(api: str | None, status: int | None) -> tuple[Runsheet, ...]:
             "Vision topics measure fixed sites in new Sentinel-2 scenes with a worker in the vision "
             "Region; why a site was not measured is in the topic's running state, which vision_status "
             "reads.",
-            ("vision_status", "log_review"),
+            ("vision_status", "log_review", "topic_findings"),
             (
                 Step(
                     f"/aws/lambda/{PREFIX}{ENV}-vision-worker",

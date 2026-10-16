@@ -150,6 +150,15 @@ python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycl
 python scripts/admin_cli.py topics trigger github-trending --pipeline daily_cycle --force
 python scripts/admin_cli.py topics candidates github-trending
 python scripts/admin_cli.py topics findings github-trending
+# A topic's research Findings, newest first (the raw items, with how many the window holds).
+# Expired ones are left out, except with --next-article, which lists exactly what the next
+# daily article will be written from: since the topic's last article, within its findings
+# window, at most 48. --limit is 1 to 20 (default 5); --days 1 to 14; --since an ISO timestamp.
+# The ops assistant's topic_findings tool and the topic-findings Claude Code skill
+# (.claude/skills/) show the same window.
+python scripts/admin_cli.py findings list rail-sydney
+python scripts/admin_cli.py findings list rail-sydney --next-article
+python scripts/admin_cli.py findings list crypto --days 2 --limit 10
 
 python scripts/admin_cli.py moderation list
 python scripts/admin_cli.py moderation approve <queue_id>

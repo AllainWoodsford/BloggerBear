@@ -172,6 +172,33 @@ def pick(asked) -> tuple[dict | None, dict, str | None]:
     return None, note, "I couldn't find that topic, and there are no topics to suggest."
 
 
+def pick_spoken(asked) -> tuple[dict | None, dict, str | None]:
+    """`pick`, with every topic in its note and its refusal named by `tools.spoken_label`, as every
+    template of the assistant's vision round names topics: `pick` names them as the operator set
+    them (`_label`), and the tools of that round send their result whole to a voice caller."""
+    from ops_mcp.tools import spoken_label  # tools imports nothing of this module
+
+    one, matched, refusal = pick(asked)
+    candidates = [
+        {"topic_id": each.get("topic_id"), "name": spoken_label(each)}
+        for each in matched.get("did_you_mean") or []
+    ]
+    named = {**matched, "did_you_mean": candidates}
+    if matched.get("name") is not None:
+        named["name"] = spoken_label(one) if one is not None else spoken_label(matched)
+    if one is not None:
+        return one, named, refusal
+    labels = [each["name"] for each in candidates]
+    how = matched.get("how")
+    if how == "refused":
+        return None, named, "That isn't a topic I can look up."
+    if how == "ambiguous":
+        return None, named, f"Did you mean {_either(labels)}? Say which, and I'll look."
+    if labels:
+        return None, named, f"I couldn't find that topic. Did you mean {_either(labels)}?"
+    return None, named, "I couldn't find that topic, and there are no topics to suggest."
+
+
 def took(note: dict) -> str:
     """The sentence a tool starts with when it guessed: which topic it took, so the operator can
     stop it. Empty for an exact match."""

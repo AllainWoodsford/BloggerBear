@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -11,6 +12,7 @@ from moto import mock_aws
 from table_schemas import create_table
 
 import admin_api_handler
+import daily_cycle_handler
 from common import evidence
 from common.adapters import MANUAL_REVIEW_ADAPTERS
 
@@ -841,6 +843,200 @@ def test_list_candidates_unknown_topic_returns_404(aws_resources):
     event = _event("GET /topics/{topic_id}/candidates", path_params={"topic_id": "nope"})
     result = admin_api_handler.handler(event, None)
     assert result["statusCode"] == 404
+
+
+# --- GET /topics/{topic_id}/findings (`findings list`) ----------------------------------------------
+
+LIST_FINDINGS = "GET /topics/{topic_id}/findings"
+
+
+def _put_finding(hours_ago: float, *, expires_in_days: float = 14, summary: str | None = None, **more):
+    now = datetime.now(UTC)
+    captured = (now - timedelta(hours=hours_ago)).isoformat()
+    item = {
+        "topic_id": "github-trending",
+        "captured_at": captured,
+        "expires_at": int((now + timedelta(days=expires_in_days)).timestamp()),
+        "summary": summary if summary is not None else f"finding from {hours_ago} hours ago",
+        "raw_snapshot_s3_key": f"snapshots/github-trending/{captured}.json",
+        "source_refs": [{"url": "https://example.test/x", "title": "x", "accessed_at": captured}],
+        **more,
+    }
+    boto3.resource("dynamodb", region_name=REGION).Table("Findings").put_item(Item=item)
+    return item
+
+
+def _list_findings(query: dict | None = None, topic_id: str = "github-trending") -> tuple[int, dict]:
+    event = _event(LIST_FINDINGS, path_params={"topic_id": topic_id})
+    if query is not None:
+        event["queryStringParameters"] = query
+    result = admin_api_handler.handler(event, None)
+    return result["statusCode"], json.loads(result["body"])
+
+
+def test_list_findings_is_newest_first_without_the_expired_and_says_how_many(aws_resources):
+    _put_topic()
+    _put_finding(30, research_call={"input_tokens": Decimal("12"), "output_tokens": Decimal("3")})
+    _put_finding(2)
+    _put_finding(50, expires_in_days=-1)  # expired, not yet deleted by the TTL
+    _put_finding(1)
+    before = datetime.now(UTC)
+
+    status, body = _list_findings()
+
+    assert status == 200
+    assert [f["summary"] for f in body["findings"]] == [
+        "finding from 1 hours ago", "finding from 2 hours ago", "finding from 30 hours ago",
+    ]  # fmt: skip
+    assert body["topic_id"] == "github-trending" and body["since"] is None
+    assert datetime.fromisoformat(body["until"]) >= before
+    assert body["count"] == 3 and body["count_is_at_least"] is False
+    assert body["expired_left_out"] == 1 and body["more"] is False and body["truncated"] is False
+    # Decimals came back as JSON numbers, and the raw item is there whole.
+    assert body["findings"][2]["research_call"] == {"input_tokens": 12, "output_tokens": 3}
+    assert body["findings"][0]["raw_snapshot_s3_key"].startswith("snapshots/github-trending/")
+
+
+def test_list_findings_limit_days_and_since(aws_resources):
+    _put_topic()
+    for hours in (1, 2, 20, 30, 70):
+        _put_finding(hours)
+
+    status, body = _list_findings({"limit": "2"})
+    assert status == 200 and len(body["findings"]) == 2
+    assert body["count"] == 5 and body["more"] is True
+
+    status, body = _list_findings({"days": "1"})
+    assert status == 200
+    assert [f["summary"] for f in body["findings"]] == [f"finding from {h} hours ago" for h in (1, 2, 20)]
+    assert body["count"] == 3 and body["more"] is False
+    assert datetime.fromisoformat(body["since"]) < datetime.now(UTC) - timedelta(hours=23)
+
+    since = (datetime.now(UTC) - timedelta(hours=25)).replace(tzinfo=None).isoformat()  # naive: UTC
+    status, body = _list_findings({"since": since})
+    assert status == 200 and body["since"].endswith("+00:00")
+    assert [f["summary"] for f in body["findings"]] == [f"finding from {h} hours ago" for h in (1, 2, 20)]
+
+    ahead = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
+    status, body = _list_findings({"since": ahead})
+    assert status == 200 and body["findings"] == [] and body["count"] == 0
+
+
+def test_list_findings_next_article_reads_what_the_daily_run_reads(aws_resources):
+    """From the last article, within the topic's window, expired items included (the TTL has not
+    deleted them and the daily run keeps them), at most the daily run's cap."""
+    last_article = datetime.now(UTC) - timedelta(hours=10)
+    _put_topic({**TOPIC, "last_article_at": last_article.isoformat(), "findings_window_hours": 192})
+    _put_finding(1)
+    _put_finding(5, expires_in_days=-1)  # expired but in the window: the daily run reads it
+    _put_finding(12)  # before the last article: not read
+
+    status, body = _list_findings({"next_article": "true", "limit": "1"})
+
+    assert status == 200
+    assert body["since"] == last_article.isoformat()
+    assert [f["summary"] for f in body["findings"]] == ["finding from 1 hours ago"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False
+    assert body["expired_left_out"] == 0 and body["more"] is True
+
+
+def test_list_findings_next_article_caps_at_the_daily_runs_window(aws_resources):
+    assert admin_api_handler.FINDINGS_WINDOW_MAX == daily_cycle_handler.MAX_WINDOW_FINDINGS == 48
+    _put_topic({**TOPIC, "findings_window_hours": 192})
+    for minutes in range(50):
+        _put_finding(minutes / 60)
+
+    status, body = _list_findings({"next_article": "true", "limit": "20"})
+
+    assert status == 200 and len(body["findings"]) == 20
+    assert body["count"] == 49 and body["count_is_at_least"] is True and body["more"] is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"limit": "0"},
+        {"limit": "21"},
+        {"limit": "x"},
+        {"limit": "1.5"},
+        {"days": "0"},
+        {"days": "15"},
+        {"days": "two"},
+        {"since": "yesterday"},
+        {"next_article": "yes"},
+        {"next_article": "false"},
+        {"days": "2", "since": "2026-10-01T00:00:00+00:00"},
+        {"days": "2", "next_article": "true"},
+        {"since": "2026-10-01T00:00:00+00:00", "next_article": "true"},
+    ],
+)
+def test_list_findings_refuses_a_bad_parameter_with_a_400(aws_resources, query):
+    _put_topic()
+    _put_finding(1)
+
+    status, body = _list_findings(query)
+
+    assert status == 400 and "error" in body
+
+
+def test_list_findings_unknown_topic_is_404_and_no_findings_is_an_empty_list(aws_resources):
+    assert _list_findings(topic_id="nope")[0] == 404
+    _put_topic()
+    status, body = _list_findings()
+    assert status == 200 and body["findings"] == [] and body["count"] == 0 and body["more"] is False
+
+
+def test_list_findings_drops_the_oldest_items_when_the_body_would_be_too_large(aws_resources, monkeypatch):
+    _put_topic()
+    for hours in (1, 2, 3, 4):
+        _put_finding(hours, summary="s" * 400)
+    monkeypatch.setattr(admin_api_handler, "FINDINGS_BODY_MAX_BYTES", 1_500)
+
+    status, body = _list_findings()
+
+    assert status == 200 and body["truncated"] is True and body["more"] is True
+    kept = [f["captured_at"] for f in body["findings"]]
+    assert 0 < len(kept) < 4 and kept == sorted(kept, reverse=True)  # the newest stayed
+    assert len(json.dumps(body).encode()) <= 1_500 + 200  # the envelope is what is left over
+
+
+def test_list_findings_calls_only_query_on_the_findings_table(aws_resources):
+    import common.dynamo as dynamo_module
+
+    _put_topic({**TOPIC, "last_article_at": (datetime.now(UTC) - timedelta(hours=3)).isoformat()})
+    _put_finding(1)
+    calls: dict[str, list[str]] = {}
+    real_get_table = dynamo_module.get_table
+
+    class _Recorded:
+        def __init__(self, name, table):
+            self._name, self._table = name, table
+
+        def __getattr__(self, attribute):
+            calls.setdefault(self._name, []).append(attribute)
+            return getattr(self._table, attribute)
+
+    with patch.object(dynamo_module, "get_table", lambda name: _Recorded(name, real_get_table(name))):
+        for query in (None, {"days": "3"}, {"next_article": "true"}, {"since": "2026-01-01"}):
+            assert _list_findings(query)[0] == 200
+
+    assert set(calls["Findings"]) == {"query"}
+    assert set(calls["Topics"]) == {"get_item"}
+
+
+# --- the findings routes are declared where API Gateway reads them (as the musings routes are) ----
+
+
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_every_findings_route_is_in_the_environments_terraform(env):
+    main = (Path(__file__).resolve().parents[2] / "infra" / "environments" / env / "main.tf").read_text(
+        encoding="utf-8"
+    )
+    admin_routes = main[: main.index('"GET /articles/{article_id}/feedback-status"')]
+    routes = [route for route in admin_api_handler._ROUTES if "findings" in route]
+    assert set(routes) == {"GET /topics/{topic_id}/findings/latest", "GET /topics/{topic_id}/findings"}
+    for route in routes:
+        assert f'"{route}",' in admin_routes, route
 
 
 # --- Moderation queue -----------------------------------------------------
