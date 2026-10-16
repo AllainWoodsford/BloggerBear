@@ -17,6 +17,7 @@ import pytest
 
 import vision_eval
 import vision_eval_agent as agent
+import vision_eval_agent_cli
 import vision_eval_driver as driver
 import vision_eval_scoring as scoring
 import vision_runs
@@ -387,3 +388,29 @@ def test_the_three_subcommands_are_vision_evals_and_their_kinds_are_known(capsys
             vision_eval.main([command, "--help"])
         assert done.value.code == 0
         assert "--synthetic" in capsys.readouterr().out
+
+
+def test_building_the_parser_never_imports_the_driver():
+    # Q2a's rule: `pin` and `coverage` run in a venv with the worker's requirements only (no boto3),
+    # so the parser the three subcommands join must not import vision_eval_agent (and so the driver).
+    # A fresh interpreter, so earlier imports do not count; subprocess is not the network.
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys; sys.path[:0] = sys.argv[1:3]; import vision_eval\n"
+        "for argv in (['coverage', '--help'], ['agent', '--help']):\n"
+        "    try:\n"
+        "        vision_eval.main(argv)\n"
+        "    except SystemExit:\n"
+        "        pass\n"
+        "loaded = {'vision_eval_agent', 'vision_eval_driver', 'boto3'} & set(sys.modules)\n"
+        "assert not loaded, sorted(loaded)\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code, str(root / "scripts"), str(root / "lambdas")],
+                          capture_output=True, text=True, timeout=120)  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    assert "--repeats" in done.stdout
+    assert agent.COMMANDS == vision_eval_agent_cli.COMMANDS
+    assert agent.add_parsers is vision_eval_agent_cli.add_parsers

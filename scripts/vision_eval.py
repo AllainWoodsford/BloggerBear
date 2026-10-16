@@ -1802,9 +1802,11 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("index", help="2.9: index.json and RESULTS.md from the run files")
     i.add_argument("--evidence", type=Path, default=EVIDENCE_DIR, help="the evidence directory")
     i.add_argument("--check", action="store_true", help="fail when either file is stale, or a label is wrong")
-    import vision_eval_agent  # the agent, counterfactual and stability subcommands (Q2b)
+    # The agent, counterfactual and stability subcommands (Q2b): their arguments come from a module
+    # that does not import the driver; vision_eval_agent (which does) is imported only to run one.
+    import vision_eval_agent_cli
 
-    vision_eval_agent.add_parsers(sub, MANIFEST_FILE)
+    vision_eval_agent_cli.add_parsers(sub, MANIFEST_FILE)
     args = parser.parse_args(argv)
 
     if args.command == "index":
@@ -1818,7 +1820,9 @@ def main(argv: list[str] | None = None) -> int:
         return _main_failures(args, manifest)
     if args.command == "access-baseline":
         return _main_access_baseline(args, manifest)
-    if args.command in vision_eval_agent.COMMANDS:
+    if args.command in vision_eval_agent_cli.COMMANDS:
+        import vision_eval_agent
+
         return vision_eval_agent.main(args, manifest)
     return _main_coverage(args, manifest)
 

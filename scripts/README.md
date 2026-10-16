@@ -846,7 +846,9 @@ default (`--worker in-process`; it keeps no deadline, so an uncached read is onl
 worker's built-up masks are compared scene to scene and with the first; `--worker <ARN>` leaves the
 IoU unmeasured. `--synthetic --scenes N` runs N synthetic scenes.
 
-All three run on Windows (`py -3.11 scripts\vision_eval.py ...`).
+All three run on Windows (`py -3.11 scripts\vision_eval.py ...`). Their arguments are in
+`vision_eval_agent_cli.py`, which does not import the driver, so `pin` and `coverage` still run in a
+venv without boto3; `vision_eval_agent.py` is imported only to run one of the three.
 
 ## After changing the CLI: `generate_cli_reference.py`
 

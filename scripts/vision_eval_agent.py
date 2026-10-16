@@ -58,6 +58,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import vision_eval_agent_cli as cli
 import vision_eval_driver as driver
 import vision_eval_networks as networks
 import vision_eval_scoring as scoring
@@ -591,10 +592,9 @@ def clouded_to(coverage: float | None, report: dict):
 
 # --- the harness, on the driver ---------------------------------------------------------------------------
 
-DEFAULT_REPEATS = 5
-# Fixture A for the Sydney cases: the file the runsheet's fixture step captures (and the benchmark's
-# scenes file names).
-DEFAULT_NETWORK = SCRIPTS / "vision_benchmark_networks" / "sydney.json"
+DEFAULT_REPEATS = cli.DEFAULT_REPEATS
+# Fixture A for the Sydney cases (sydney.json, the file the runsheet's fixture step captures).
+DEFAULT_NETWORK = cli.DEFAULT_NETWORK
 # C7's clock is moved this far forward when the agent is asked: past the topic's whole allowance.
 DEADLINE_JUMP_SECONDS = 1000.0
 # A decision the agent took part in (vision_decisions.CODES): the gate passed.
@@ -608,14 +608,14 @@ GATE_COVERAGES = {"above": 0.62, "below": 0.58}
 # The counterfactual's scripted model: re-measure at the topic's own reach, then answer by what came
 # back (decide_by_look_again), so CI shows a verdict that follows the tool's numbers.
 COUNTERFACTUAL_SCRIPT = ({"tool": "look_again", "input": {"reach_m": 1000}}, {"decide_by": "look_again"})
-YEAR_SET = "year-2024"
+YEAR_SET = cli.YEAR_SET
 # The production deadline the agent keeps, from the tick's start (the adapter's own default).
 TRIAGE_DEADLINE_SECONDS = driver.rail_access.DEFAULTS["triage_deadline_seconds"]
 # E3's production rule: triage off (every material verdict counts, none is judged away) and the
 # history the adapter keeps by default; the thresholds are the adapter's defaults.
 STABILITY_RULE = {"triage": False, "history_size": 6}
 # The synthetic year: this many clear synthetic scenes, ten days apart (CI's E3).
-SYNTHETIC_YEAR_SCENES = 6
+SYNTHETIC_YEAR_SCENES = cli.SYNTHETIC_YEAR_SCENES
 SYNTHETIC_SITE = {"id": "synthetic", "name": "Synthetic city"}
 # A manifest scene measured under this coverage keeps its cloud on the synthetic city: the west share
 # of the city's SCL set to cloud, as the driver's synthetic cloud scene is (C4's cloud edge in CI).
@@ -1299,45 +1299,12 @@ def real_setup(args, manifest: dict, site_name: str, names: list[str], *, head=N
 
 # --- the command line ---------------------------------------------------------------------------------------
 
-COMMANDS = ("agent", "counterfactual", "stability")
+# The subcommands' names and arguments are vision_eval_agent_cli's (vision_eval.py builds its parser
+# from it without importing this module, and so the driver).
+COMMANDS = cli.COMMANDS
+add_parsers = cli.add_parsers
 KIND = {"agent": "eval-agent", "counterfactual": "eval-counterfactual", "stability": "eval-stability"}
 PRICE_SOURCE = "the built-in price table (common/model_pricing.py); AUD at common/costing.USD_TO_AUD_RATE"
-
-
-def add_parsers(sub, manifest_default: Path) -> None:
-    """The three subcommands' arguments, on vision_eval.py's subparsers."""
-    helps = {
-        "agent": "2.6.1-2.6.3: the agent's cases, scored per class against two baselines; a run file",
-        "counterfactual": "2.6.6: OpenCV's output changed and nothing else, at the agent and at the gate",
-        "stability": "E3: the production rule over the year set, one network; false alarms and spreads",
-    }
-    for name in COMMANDS:
-        p = sub.add_parser(name, help=helps[name])
-        p.add_argument("--manifest", type=Path, default=manifest_default)
-        p.add_argument("--synthetic", action="store_true",
-                       help="the synthetic city, in this process, no network (what CI runs)")  # fmt: skip
-        p.add_argument("--network", type=Path,
-                       help=f"fixture A (default {DEFAULT_NETWORK.name}, or the synthetic one)")  # fmt: skip
-        p.add_argument("--worker", metavar="ARN|in-process",
-                       help="the deployed worker's ARN, or in-process (with --cache)")  # fmt: skip
-        p.add_argument("--cache", type=vision_runs.cache_dir, nargs="?", default=None, metavar="DIR",
-                       const=vision_runs.default_cache_dir(),
-                       help="answer range reads from DIR (~ expanded), filled on first read")  # fmt: skip
-        p.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
-        p.add_argument("--tag", help="a suffix for the run id")
-        if name in ("agent", "counterfactual"):
-            p.add_argument("--case", action="append", metavar="NAME", help="only this case (repeatable)")
-            p.add_argument("--repeats", type=int, default=DEFAULT_REPEATS)
-            p.add_argument("--agent", choices=("bedrock", "scripted"), default="scripted",
-                           help="the live model (with --model-id), or each case's script")  # fmt: skip
-            p.add_argument("--model-id", help="the Bedrock model id the rail topic uses")
-            p.add_argument("--region", help="Bedrock's Region, as replay takes it (default: the SDK's own)")
-        if name == "counterfactual":
-            p.add_argument("--arms", default="a,b", help="a (the agent), b (the gate), or both: a,b")
-        if name == "stability":
-            p.add_argument("--set", default=YEAR_SET, help="the manifest's scene set, in time order")
-            p.add_argument("--scenes", type=int, default=SYNTHETIC_YEAR_SCENES,
-                           help="with --synthetic: how many synthetic scenes")  # fmt: skip
 
 
 def _model(args, converse) -> dict:
