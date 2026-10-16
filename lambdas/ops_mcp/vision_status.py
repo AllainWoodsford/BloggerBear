@@ -26,11 +26,13 @@ LARGE_STATE_BYTES, and nothing at all is read over MAX_STATE_BYTES. Each call ha
 here, 3 s for pipeline_health, 2 s per topic for the watch), S3 is asked with a short timeout and
 no retry, and the deadline is read before GetObject, once it answers, between the chunks a body is
 read in and before the parse (and the budget gives nothing past it). A parse is not interrupted, so
-it is begun only with time left for the state's size at the slowest rate measured
-(PARSE_BYTES_PER_SECOND), and so is the read that leads to it: a call ends by its deadline, or, when
-a parse begun with that time to spare runs slower still (a slower CPU, or parses sharing one), up to
-that parse's own length later. Every body is closed and every thread joined before the call
-returns: nothing keeps reading after the answer.
+it is begun only with time left for the state's size at the slowest rate measured, on the share of
+a vCPU the function's memory buys (parse_bytes_per_second), and so is the read that leads to it: a
+call ends by its deadline, or, when a parse begun with that time to spare runs slower still (parses
+sharing the CPU), up to that parse's own length later. At the function's 512 MB that keeps a real
+rail state (11-23 MB) from being parsed within any call's deadline, and it says not_checked
+(PARSE_BYTES_PER_CPU_SECOND says why, and what would change it). Every body is closed and every
+thread joined before the call returns: nothing keeps reading after the answer.
 
 **What is never spoken.** `spoken` is fixed templates over counts, ages, the Region, topics named
 by `tools.spoken_label`, and words from the adapters' declared vocabularies (each checked against
@@ -91,11 +93,20 @@ CONNECT_TIMEOUT_SECONDS = 1.0
 READ_TIMEOUT_SECONDS = 2.0
 CHUNK_BYTES = 256 * 1024
 # A parse is not interrupted once begun, so it is begun only with time left for its size at the
-# slowest rate measured: json.loads and the adapter's status() took 3.8 s on a 24 MiB state of a
-# million tiny site records (about 6 MiB a second); a real-shaped 24 MiB state takes 0.7 s. The cost
-# is a real state refused in the last seconds of a call (a 22 MB one with under 3.5 s left), which
-# then says "not_checked", as a read the deadline stops does.
-PARSE_BYTES_PER_SECOND = 6 * 1024 * 1024
+# slowest rate measured, on the CPU the function has (parse_bytes_per_second). json.loads and the
+# adapter's status() took 3.96-4.01 CPU-seconds on a 24 MiB state of a million tiny site records,
+# 6.0 MiB per CPU-second (a real-shaped 24 MiB state: 0.72-0.76 CPU-seconds, 33 MiB per CPU-second);
+# the rate is set a third under that, for a margin. Lambda gives a function CPU in proportion to its
+# memory, one vCPU at 1,769 MB, and this one has 512 MB (infra/modules/ops-assistant/main.tf): 0.29
+# of a vCPU, under which that hostile state, begun with the time a whole core needs, ended the 8 s
+# survey at 14.5-15.2 s. Scaled, the rate is 1.16 MiB a second at 512 MB, so a 24 MiB state needs
+# 20.7 s left and a real 11.3 MB one 9.3 s: neither is parsed within the survey's 8 s, and each says
+# "not_checked", as a read the deadline stops does. At 1,769 MB or more it is 4 MiB a second (6 s for
+# 24 MiB). The function's memory is the knob for that (the owner's: it is Terraform and cost).
+PARSE_BYTES_PER_CPU_SECOND = 4 * 1024 * 1024
+LAMBDA_MB_PER_VCPU = 1769
+# Set by Lambda in every function's environment; unset elsewhere (tests, a laptop): a whole core.
+MEMORY_SIZE_ENV = "AWS_LAMBDA_FUNCTION_MEMORY_SIZE"
 # snapshots/ expires after this many days (the content bucket's lifecycle rule, infra/environments/
 # */main.tf): a state older than that is gone, not unreadable.
 SNAPSHOT_DAYS = 21
@@ -278,10 +289,23 @@ def _recently_researched(topic: dict, now: datetime) -> bool:
     return last is not None and now - last <= timedelta(days=SNAPSHOT_DAYS)
 
 
+def parse_bytes_per_second() -> float:
+    """How fast a state is assumed to parse here: PARSE_BYTES_PER_CPU_SECOND times the share of a
+    vCPU the function's memory buys (MEMORY_SIZE_ENV over LAMBDA_MB_PER_VCPU, at most one). A whole
+    core where the memory is not given, or is not a positive number."""
+    try:
+        memory = float(os.environ.get(MEMORY_SIZE_ENV, ""))
+    except ValueError:
+        return PARSE_BYTES_PER_CPU_SECOND
+    if not math.isfinite(memory) or memory <= 0:
+        return PARSE_BYTES_PER_CPU_SECOND
+    return PARSE_BYTES_PER_CPU_SECOND * min(1.0, memory / LAMBDA_MB_PER_VCPU)
+
+
 def _time_to_parse(size: int, deadline: float) -> bool:
-    """Whether a state of `size` bytes, parsed from now at PARSE_BYTES_PER_SECOND, ends before
+    """Whether a state of `size` bytes, parsed from now at parse_bytes_per_second(), ends before
     `deadline` (False once the deadline has passed, whatever the size)."""
-    return deadline - time.monotonic() > size / PARSE_BYTES_PER_SECOND
+    return deadline - time.monotonic() > size / parse_bytes_per_second()
 
 
 def _read_one(client, bucket: str, topic: dict, deadline: float, max_bytes: int, then, now: datetime):

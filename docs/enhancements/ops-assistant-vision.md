@@ -84,10 +84,15 @@ body is read; nothing over 24 MiB is read, and `pipeline_health` and the watch r
 asked with a 1 s connect and 2 s read timeout and no retry, a body is read in chunks with the
 deadline checked between them, and every body is closed and every thread joined before the
 answer. A parse is not interrupted once begun, so a state is read and parsed only with time left
-to parse its size at 6 MiB a second (the slowest shape measured, a dict-dense 24 MiB state at
-3.8 s; a real one of that size takes 0.7 s): a call ends by its deadline, or, when a parse begun
-with that time to spare runs slower still, up to that parse's length later. A state not read in
-time is "not checked this time", never "fine".
+to parse its size at 4 MiB per CPU-second, a third under the slowest shape measured (a dict-dense
+24 MiB state at 4.0 CPU-seconds, 6.0 MiB per CPU-second; a real one of that size takes 0.7), scaled
+by the share of a vCPU the function's memory buys (Lambda gives one vCPU at 1,769 MB; the function
+has 512 MB, 0.29 of one, so 1.16 MiB a second): a call ends by its deadline, or, when a parse begun
+with that time to spare runs slower still, up to that parse's length later. At 512 MB a 24 MiB
+state needs 20.7 s left and a real 11.3 MB rail state 9.3 s: nothing over about 9 MiB is parsed
+within the 8 s survey, so such a topic's sites read "not checked this time" until the function has
+more memory (at 1,769 MB: 6 s for 24 MiB, 2.7 s for 11.3 MB), which is the owner's call. A state
+not read in time is "not checked this time", never "fine".
 
 ## What is spoken, what is on screen
 
