@@ -819,7 +819,9 @@ class Driver:
         calls_before, talks_before = len(self.log.calls), len(self._conversations)
         adapter = self._adapter(spec, clock, spec.news)
         printed = io.StringIO()
-        with evidence.bind(tick=f"eval-tick-{n}", run=f"{n:012d}", topic_id=self.topic_id):
+        # The tick's ids, as the research tick binds its own: a run id that is never twelve digits,
+        # which the account-id checks (and the export's redaction) would read as an AWS account.
+        with evidence.bind(tick=f"eval-tick-{n}", run=f"eval-run-{n}", topic_id=self.topic_id):
             with frozen_now(spec.now), contextlib.redirect_stdout(printed):
                 new_state = adapter.fetch_state(self.topic, state)
                 changed, _summary = adapter.material_diff(state, new_state)
