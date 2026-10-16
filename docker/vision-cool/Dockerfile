@@ -5,7 +5,12 @@
 # Build from the repository root, on (or for) arm64, with the COOL image's URI pinned by digest:
 #
 #   docker build --platform linux/arm64 -f docker/vision-cool/Dockerfile \
-#     --build-arg COOL_IMAGE=<registry>/<repository>@sha256:<digest> -t bloggerbear-vision-cool .
+#     --build-arg COOL_IMAGE=<registry>/<repository>@sha256:<digest> \
+#     --build-arg GIT_SHA=$(git rev-parse HEAD) -t bloggerbear-vision-cool .
+#
+# The image has no git history: GIT_SHA is the commit its run files name (`code.git_sha`). Build it
+# after the Sydney network fixture is in the checkout (scripts/vision_benchmark_networks/), which is
+# copied in beside the benchmark, its run-file module, its scenes and the evaluation's manifest.
 #
 # The URI comes from the Marketplace subscription (docs/deployment-runsheet.md, "The COOL
 # backend"); it is not written here because it belongs to that subscription.
@@ -30,10 +35,14 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements-vision-cool.txt
 COPY lambdas/vision/ /var/task/vision/
 COPY lambdas/vision_worker_handler.py /var/task/
 COPY lambdas/common/__init__.py lambdas/common/vision_contract.py /var/task/common/
-COPY scripts/vision_benchmark.py scripts/vision_benchmark_scenes.json /var/task/bench/
+COPY scripts/vision_benchmark.py scripts/vision_runs.py scripts/vision_benchmark_scenes.json \
+     scripts/vision_eval_manifest.json /var/task/bench/
+COPY scripts/vision_benchmark_networks/ /var/task/bench/vision_benchmark_networks/
 
+ARG GIT_SHA=
 ENV PYTHONPATH=/var/task \
-    VISION_BACKEND=cool
+    VISION_BACKEND=cool \
+    BLOGGERBEAR_GIT_SHA=${GIT_SHA}
 
 # Fail the build, not the first request, if the image's cv2 is not OpenCV 5.
 RUN python3 -c "import cv2, sys; sys.exit(0 if cv2.__version__.startswith('5.') else 'cv2 ' + cv2.__version__ + ' is not OpenCV 5')"
