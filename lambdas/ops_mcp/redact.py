@@ -36,14 +36,17 @@ marks and the blank symbols read as ignorable; control characters and whitespace
 single spaces), so a line break, a tab, a C1 control, a no-break or em space, a zero-width joiner,
 a combining mark, a variation selector or a Braille blank between or inside the words, or
 fullwidth letters, do not hide it. The ignorable characters are read two ways, removed (inside a
-word, one hid a letter) and as a space (between words, one hid the space); the removed copy is
-read against the pattern with its spaces optional and no word boundary, since one ignorable inside
-every word and between the words glues the words in the one copy and splits them in the other; a
-line that matches in either copy is withheld. Where the result is cut to a limit (`scrub`,
-samples._redact_text) the check reads the text's start, a few times the limit in characters it
-does not ignore, and then the text as it will be returned, whole (`looks_like_instructions_within`
-says why both): a phrase wholly past the cut is never returned, so such a line is shown cut rather
-than withheld, and nothing a model reads is instruction-like. What scrub returns has no character
+word, one hid a letter) and as a space (between words, one hid the space); where the text holds
+one, the removed copy is read against the pattern with its spaces optional and no word boundary,
+since one ignorable inside every word and between the words glues the words in the one copy and
+splits them in the other; a line that matches in either copy is withheld. A line with nothing
+ignorable in it is read against the pattern as written: "filesystem: 91% used" is not "system:".
+Where the result is cut to a limit (`scrub`, samples._redact_text) the check reads a bounded start,
+CHECK_VISIBLE_MULTIPLE times the limit in characters it does not ignore, of the text as written and
+of the text as swept (what nobody sees removed, placeholders in, whitespace collapsed: the text
+that is cut), and then the cut text (`cut_or_withheld` says why each). A phrase within either start
+withholds the line; one past the swept start begins past the cut, so it is never returned and the
+line is shown cut; nothing a model reads is instruction-like. What scrub returns has no character
 the check did not read: every format character (the two joiners aside), surrogate, private-use or
 unassigned code point, and the invisible marks and fillers outside Cf (the combining grapheme
 joiner, the variation selectors, the Hangul fillers: Unicode's other default-ignorable code points)
@@ -145,20 +148,23 @@ _INSTRUCTION_LIKE = re.compile(
 # ignorable characters removed: one ignorable inside every word AND between the words reads as
 # "ignorepreviousinstructions" there and as "ig nore pr evious in structions" in the spaced copy,
 # so neither matched the pattern as written. Built from the pattern, not retyped, so the two cannot
-# drift apart, and it matches everything the pattern does. Broader, in every line, since the copy
-# with nothing ignorable in it is the line itself: "filesystem: 91% used" and "subsystem: ok" read
-# as "system:", "you are nowhere near it" as "you are now", "<tooltip>" as "<tool", and each is
-# withheld, which the pattern's own rule accepts (a false positive hides one log line, and says so).
+# drift apart, and it matches everything the pattern does. Broader: "filesystem: 91% used" and
+# "subsystem: ok" read as "system:", "you are nowhere near it" as "you are now", "<tooltip>" as
+# "<tool". So it reads only a text that held something ignorable (looks_like_instructions), the one
+# kind of text that can glue words out of sight: with nothing ignorable in it the removed copy is the
+# line itself, and plain lines such as "ops_assistant: listed 31 tools", which the assistant's own
+# function logs, are read against the pattern as written and shown.
 _INSTRUCTION_LIKE_GLUED = re.compile(_INSTRUCTION_LIKE.pattern.replace(" ", " ?").replace(r"\b", ""))
 
 # How much of a text the check reads where the result is cut to a limit (looks_like_instructions_
-# within): this many times the limit, in characters the check does not ignore. More than the limit
-# itself because the whitespace collapse and the personal-data sweep shorten text into the shown
-# window (an address of sixty characters becomes "[email]"); the returned text is then checked
-# whole, so nothing a model reads escapes, and the multiple only decides how far past the cut a
-# phrase still withholds the line instead of being cut off it. Small enough that the NFKD the check
-# runs is bounded: at the default limit, 1,200 characters of the one that expands eighteen-fold
-# (U+FDFA) is 21,600 code points, where the whole of a 256K-character line was 4.7 million.
+# within): this many times the limit, in characters the check does not ignore, of the text as
+# written and of the text as swept (cut_or_withheld). More than the limit itself so that a phrase
+# that begins before the cut is read whole: the start reaches three times the limit past the cut,
+# and the pattern's longest phrase ("forget everything previous instructions") is 39 characters.
+# Past the swept start a phrase is past the cut too, never returned, and the line is shown cut.
+# Small enough that the NFKD the check runs is bounded: at the default limit, 1,200 characters of
+# the one that expands eighteen-fold (U+FDFA) is 21,600 code points, where the whole of a
+# 256K-character line was 4.7 million.
 CHECK_VISIBLE_MULTIPLE = 4
 
 
@@ -292,18 +298,23 @@ def normalised(text, *, ignorable_as: str = "") -> str:
     return _copy(_decomposed(text), ignorable_as)
 
 
-def looks_like_instructions(text) -> bool:
+def looks_like_instructions(text, *, hidden: bool = False) -> bool:
     """Whether the text reads like something written to steer a model, however it is spaced or
-    spelt: the normalised copy with the ignorable characters removed, read against the glued form
-    of the pattern (_INSTRUCTION_LIKE_GLUED matches everything _INSTRUCTION_LIKE does, so that copy
-    is read with it alone), and the copy with each read as a space, against the pattern as written
-    (`normalised` says why both copies; the text is decomposed once for the two, and with nothing
-    ignorable in it the two copies are one, read once). The whole text, however long: where only
-    the start of it is returned, `looks_like_instructions_within` reads a bounded amount."""
+    spelt: the normalised copy with the ignorable characters removed, and the copy with each read
+    as a space, against the pattern as written (`normalised` says why both copies; the text is
+    decomposed once for the two, and with nothing ignorable in it the two copies are one, read
+    once). Where the text holds an ignorable character, the removed copy is read against the glued
+    form of the pattern instead (_INSTRUCTION_LIKE_GLUED, which matches everything _INSTRUCTION_LIKE
+    does): only there can the removal have glued the words. `hidden` says ignorable characters
+    were removed before the text got here (by `visible`, before `cut_or_withheld`; by the pipeline's
+    cleaner, before a vision site's name was stored: `scrub`), so words may be glued with nothing
+    ignorable left to show it: the glued form is read then too. The whole text, however long: where
+    only the start of it is returned, `looks_like_instructions_within` reads a bounded amount."""
     decomposed = _decomposed(text or "")
-    if _INSTRUCTION_LIKE_GLUED.search(_copy(decomposed, "")):
-        return True
     _, _, ignored = decomposed
+    removed = _INSTRUCTION_LIKE_GLUED if ignored or hidden else _INSTRUCTION_LIKE
+    if removed.search(_copy(decomposed, "")):
+        return True
     return bool(ignored) and bool(_INSTRUCTION_LIKE.search(_copy(decomposed, " ")))
 
 
@@ -324,32 +335,59 @@ def _head(text: str, limit: int) -> str:
     return text
 
 
-def looks_like_instructions_within(text, limit: int) -> bool:
+def looks_like_instructions_within(text, limit: int, *, hidden: bool = False) -> bool:
     """`looks_like_instructions` over the start of a text of which at most `limit` characters will
-    be returned (`_head`), which bounds the NFKD and the pattern's work however long the text. The
-    caller checks the text it returns as well, whole (`scrub`, samples._redact_text), so a phrase
-    the start does not reach is either past the cut, and never returned, or shortened into view by
-    the sweep, and caught there."""
-    return looks_like_instructions(_head(str(text if text is not None else ""), limit))
+    be returned (`_head`: CHECK_VISIBLE_MULTIPLE * limit characters the check does not ignore),
+    which bounds the NFKD and the pattern's work however long the text. A phrase within that start
+    is found and one past it is not: the callers that cut (`scrub`, samples._redact_text) read the
+    start of the text as written and of the text as swept, and then the cut text
+    (`cut_or_withheld`)."""
+    return looks_like_instructions(_head(str(text if text is not None else ""), limit), hidden=hidden)
 
 
-def scrub(value, limit: int = TEXT_MAX_CHARS) -> str:
+def cut_or_withheld(text: str, limit: int, *, hidden: bool = False) -> str:
+    """Text the caller has swept (`visible`, then its placeholders) as it may be returned: control
+    characters and whitespace collapsed, cut to `limit`, or WITHHELD.
+
+    The check reads the swept text before it is cut, over its start (looks_like_instructions_
+    within): the collapse and the placeholders shorten text, so a phrase past the start of the text
+    as written, which the caller's own check read, can be brought up to the cut, and a check of the
+    cut text alone saw its first words only ("...Ignore all previous instruc…"). The start reaches
+    three times the limit past the cut (CHECK_VISIBLE_MULTIPLE), more than the pattern's longest
+    phrase at any limit from 13 up, so a phrase that begins in what is returned is read whole and
+    withholds the line, and one past the start begins past the cut, is never returned, and leaves
+    the line shown cut. Then the cut text itself, which a cut can make a phrase of ("you are
+    nowhere" cut to "you are now…"). `hidden`: the caller's `visible` removed something, so two
+    words may be glued with nothing ignorable left to show it (looks_like_instructions)."""
+    swept = " ".join(_CONTROL.sub(" ", text).split())
+    shown = untrusted_text(swept, limit)
+    if looks_like_instructions_within(swept, limit, hidden=hidden):
+        return WITHHELD
+    return WITHHELD if looks_like_instructions(shown, hidden=hidden) else shown
+
+
+def scrub(value, limit: int = TEXT_MAX_CHARS, *, hidden: bool = False) -> str:
     """One piece of text from a log, safe to put in a result: instructions withheld, personal data
     and secrets replaced, control and invisible characters gone (the two joiners kept, `visible`),
     whitespace collapsed, cut to `limit`.
 
     The order matters: the check reads the text as written, before `visible` removes what nobody
     sees (a format character between two words is what tells them apart), a bounded start of it
-    (looks_like_instructions_within), and then the text about to be returned, whole, so a phrase
-    the sweep shortened into view is caught and one wholly past the cut, never returned, leaves the
-    line shown cut; tokens and keys before the generic long-secret rule (so a JWT says [token]),
-    cards before account ids (a 16-digit card holds 12 digits in a row), addresses last of the
-    numeric rules."""
+    (looks_like_instructions_within), and then the swept text before the cut and the cut text
+    (`cut_or_withheld`), so a phrase the sweep brought up to the cut is read whole and one past the
+    swept start, never returned, leaves the line shown cut; tokens and keys before the generic
+    long-secret rule (so a JWT says [token]), cards before account ids (a 16-digit card holds 12
+    digits in a row), addresses last of the numeric rules.
+
+    `hidden`: the text was stored by a cleaner that removes format characters before any scrub
+    reads it (common/figures.plain_text, which a vision site's name goes through), so a phrase
+    spaced only by them is stored glued with nothing left to show it: the check reads it with the
+    glued form of the pattern throughout (looks_like_instructions)."""
     text = _CONTROL.sub(" ", str(value if value is not None else ""))
-    if looks_like_instructions_within(text, limit):
+    if looks_like_instructions_within(text, limit, hidden=hidden):
         return WITHHELD
-    shown = untrusted_text(_personal(visible(text)), limit)
-    return WITHHELD if looks_like_instructions(shown) else shown
+    seen = visible(text)
+    return cut_or_withheld(_personal(seen), limit, hidden=hidden or len(seen) < len(text))
 
 
 def sweep_answer(text) -> str:

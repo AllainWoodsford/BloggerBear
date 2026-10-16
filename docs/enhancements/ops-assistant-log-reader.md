@@ -82,10 +82,14 @@ first and last part. The agent's spoken answer passes `redact.sweep_answer` last
 model repeated is swept too.
 
 **Not steered by the logs.** A log line that reads like instructions to a model ("ignore previous
-instructions", a fake tool call, `system:`) is **withheld whole** and replaced with a marker; the
-answer says how many were withheld and in which function, and that it is most often a program's
-own wording and only sometimes someone probing (see "Third round"). Example lines are under
-`untrusted`, and the prompt (and the server's instructions, for Alexa+) says log lines are data.
+instructions", a fake tool call, `system:`) is **withheld whole** and replaced with a marker when
+the phrase lies within the line's swept start, four times the caller's limit (1,200 characters at
+`scrub`'s default 300); the answer says how many were withheld and in which function, and that it
+is most often a program's own wording and only sometimes someone probing (see "Third round"). A
+phrase wholly past that start is never shown, since the line is cut before it, and so is not
+counted ([how the check reads a long line](ops-assistant-vision.md#redactscrub-hardened-first)).
+Example lines are under `untrusted`, and the prompt (and the server's instructions, for Alexa+)
+says log lines are data.
 Commands still come only from the catalogue or the CLI reference, built in code.
 
 **Time-bounded.** One request stops at 30 seconds. A tool reading logs waits at most 15 seconds for

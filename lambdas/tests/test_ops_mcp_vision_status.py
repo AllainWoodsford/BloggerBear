@@ -806,9 +806,10 @@ def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkey
         # The site name is stored as the pipeline's own cleaner leaves it (vision_sites.parse_config,
         # common/figures.plain_text): a format character between two words is removed there, before
         # any scrub reads it, so a phrase spaced only by format characters is stored as one glued
-        # word. The check reads its copy against the glued form of the pattern too
-        # (redact._INSTRUCTION_LIKE_GLUED), so that word is withheld like the rest: the marker
-        # appears nowhere, in no column, however it is spelt or split.
+        # word with nothing ignorable left in it. vision_status reads the name with the glued form
+        # of the pattern all the same (redact.scrub's `hidden`: the cleaner hid what the check would
+        # have seen), so that word is withheld like the rest: the marker appears nowhere, in no
+        # column, however it is spelt or split.
         assert not shows(marker(text), whole)
     assert "jane.doe" not in whole and "203.0.113.77" not in whole
     for card in result["findings"]:
@@ -945,10 +946,13 @@ def test_two_large_states_are_never_read_at_once_and_memory_stays_bounded(monkey
 
 
 def test_a_stalled_body_is_closed_at_the_deadline_and_no_thread_is_left(monkeypatch):
+    """The deadline is read between the chunks: six chunks 0.8 s apart would take 4.8 s, past the
+    1 s deadline and the read timeout after it, so only the check inside the loop ends the read in
+    time. The body is small enough to have time to parse (0.3 s on a whole core): it is the stalled
+    chunks, not the parse-time rule, that stop it."""
     monkeypatch.setenv("CONTENT_BUCKET", BUCKET)
-    # Small enough to have time to parse (a quarter of a second at PARSE_BYTES_PER_SECOND): it is the
-    # stalled chunks, not the parse-time rule, that stop it.
-    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 5) + b"}"}, wait=0.3)
+    monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
+    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 5) + b"}"}, wait=0.8)
     before = set(threading.enumerate())
     started = time.monotonic()
     with patch.object(vision_status, "_s3", return_value=fake):
@@ -1030,8 +1034,9 @@ def _stand_in(size: int) -> bytes:
 
 
 def test_a_state_is_read_only_with_time_left_to_parse_it(monkeypatch):
-    """24 MiB is four seconds at PARSE_BYTES_PER_SECOND: with eight left it is read and parsed; with
-    one left it is not checked, before any byte of it is read or the parse begun."""
+    """24 MiB is six seconds on a whole core (PARSE_BYTES_PER_CPU_SECOND): with eight left it is read
+    and parsed; with one left it is not checked, before any byte of it is read or the parse begun."""
+    monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
     fake = FakeS3({key("late"): _stand_in(vision_status.MAX_STATE_BYTES)})
     assert _read_late(fake, 8.0)[1] == "read"
     monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
@@ -1040,14 +1045,38 @@ def test_a_state_is_read_only_with_time_left_to_parse_it(monkeypatch):
     assert fake.bodies[1].closed and not fake.bodies[1].reading
 
 
-def test_a_state_whose_download_leaves_too_little_time_to_parse_it_is_not_parsed():
+def test_a_state_whose_download_leaves_too_little_time_to_parse_it_is_not_parsed(monkeypatch):
     """The time left is read again before the parse: one second's worth of bytes, begun with 1.5 s
     left, whose chunks take 0.6 s to come, leaves too little for its parse."""
-    size = vision_status.PARSE_BYTES_PER_SECOND
+    monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
+    size = vision_status.PARSE_BYTES_PER_CPU_SECOND
     fake = FakeS3({key("late"): _stand_in(size)}, wait=0.6 * vision_status.CHUNK_BYTES / size)
     with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
         assert _read_late(fake, 1.5) == (None, "not_checked")
     assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
+
+
+@pytest.mark.parametrize(
+    ("memory", "needs"),
+    [("512", 20.7), ("1769", 6.0), ("3008", 6.0), (None, 6.0), ("lots", 6.0)],
+)
+def test_a_state_needs_time_to_parse_on_the_cpu_the_function_has(monkeypatch, memory, needs):
+    """Lambda gives a function CPU in proportion to its memory, one vCPU at 1,769 MB, and Lambda
+    says how much it has (AWS_LAMBDA_FUNCTION_MEMORY_SIZE): at the function's 512 MB a 24 MiB state
+    needs about 20.7 s left to be parsed; at 1,769 MB or more, and where the memory is not given
+    (outside Lambda) or not a number, a whole core's 6 s."""
+    if memory is None:
+        monkeypatch.delenv(vision_status.MEMORY_SIZE_ENV, raising=False)
+    else:
+        monkeypatch.setenv(vision_status.MEMORY_SIZE_ENV, memory)
+    size = vision_status.MAX_STATE_BYTES
+    assert size / vision_status.parse_bytes_per_second() == pytest.approx(needs, abs=0.05)
+    fake = FakeS3({key("late"): _stand_in(size)})
+    assert _read_late(fake, needs + 0.7)[1] == "read"
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, needs - 0.7) == (None, "not_checked")
+    assert fake.bodies[1].closed
 
 
 class _Raw:
