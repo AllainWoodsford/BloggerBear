@@ -599,7 +599,9 @@ comparable) and records, per scene, the handler's stage timings with every sampl
 metrics it measured (served share, areas, counts, hubs, flags, the top suggestions) and their
 digest, the figure's sha256 and shape (the PNG is written beside the run file), and the peak
 memory. `worker` invokes a deployed worker, every site id prefixed `bench-` so its lines never
-pass for production's, and adds the round trip. `compare` takes two run files of one kind from
+pass for production's, and adds the round trip; its run file names the worker by Region and by
+the function's `CodeSha256` (null when the caller may not `lambda:GetFunctionConfiguration`),
+never by its ARN, which holds the account id. `compare` takes two run files of one kind from
 one machine and the same inputs (it refuses anything else: "not the same machine", "not the same
 inputs") and reports the speed-up of B over A as the ratio of medians with a seeded bootstrap 95 %
 interval, per case or stage, the headline on the compute stages (`analyse` and `annotate`; `graph`
@@ -637,7 +639,8 @@ pin the scenes they share: a changed ETag refuses the run before any read, "inpu
 `--cache [DIR]` (every range read answered from `DIR` after the first, keyed by URL, ETag and
 range, so repeats and both backends read identical bytes; the default is `~/.cache/bloggerbear-cogs`,
 `%LOCALAPPDATA%\bloggerbear-cogs` on Windows, never inside the repository); `scenes` takes
-`--isolate` (each scene in a fresh interpreter, so its peak memory is its own); `worker` needs
+`--isolate` (each scene in a fresh interpreter, so its peak memory is its own, and the run's
+cache counts and mapped libraries are those of the processes the scenes ran in); `worker` needs
 `--arn`; `compare` takes two run files, `--bootstrap` (2000) and `--seed` (0); `fetch-network`
 takes `--scene NAME` (required), `--scenes-file` and `--out`. The worker runs on one vCPU, so a
 CPU's rows are closest to it with the run pinned to one core.

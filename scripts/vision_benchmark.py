@@ -39,7 +39,8 @@ table is always printed.
 Options that shape a run: `--threads N` (`cv2.setNumThreads`, recorded); `--pin-cpu K` (one core,
 Linux only; elsewhere pin with the OS's own tool, the affinity is recorded either way); `--only
 NAME` (repeatable: these scenes only); `--isolate` (each scene in a fresh interpreter, so its peak
-memory is its own); `--cache DIR` (every range read answered from the cache after the first, so
+memory is its own, and the run's cache counts and mapped libraries are the children's, where the
+scenes ran); `--cache DIR` (every range read answered from the cache after the first, so
 repeats and both backends read identical bytes); `--imds` (the EC2 instance identity, five fields,
 nothing else); `--label k=v` (the COOL product's name, version, delivery, digest, price).
 
@@ -110,6 +111,9 @@ TOP_SUGGESTIONS = 3
 # a machine that is not an EC2 instance answers "no host" in about a second.
 IMDS_BASE = "http://169.254.169.254"
 IMDS_TIMEOUT_SECONDS = 1.0
+# The metadata service is link-local: never asked through an HTTP proxy from the environment
+# (`requests` drops a scheme whose proxy is None), as the AWS SDKs do not.
+IMDS_NO_PROXY = {"http": None, "https": None}
 # The identity document's fields a judge needs, and the names they are stored under. Everything
 # else (accountId, instanceId, privateIp, ...) is dropped before anything is stored: gitleaks
 # flags account ids, and none of it says what ran.
@@ -142,6 +146,9 @@ CONTROLS = (
     ("cool_without_pin", "cool", False, "not_cool"),
     ("opencv_request_to_cool_backend", "opencv", True, "backend_mismatch"),
 )
+# The key under which an isolated scene's row carries what its child process recorded of the run
+# (cache counts, mapped libraries) back to the parent, which removes it before writing.
+CHILD_KEY = "_child"
 
 
 class CompareRefused(Exception):
@@ -266,7 +273,7 @@ def synthetic_network(size: int, lines: int = 4, stations_per_line: int = 5) -> 
 
 def kernels(size: int = 2048, repeats: int = 20) -> dict:
     """Every operation's timing summary with its samples; `analyse_rail_access` also carries the
-    analysis's own stage timings (`stages`: masks, stations, ..., graph, metrics), from
+    analysis's own stage timings (`stages`: masks, access, graph, metrics), from
     `layers["timings"]` of each timed call."""
     import cv2
     import numpy as np
@@ -363,11 +370,13 @@ def select_scenes(scene_list: list[dict], only: list[str] | None) -> list[dict]:
 
 def load_network(scene: dict) -> dict:
     """The scene's OpenStreetMap network from its `network_file` (as `fetch-network` wrote it);
-    FileNotFoundError, saying so, when the scene names none or the file is not there."""
+    FileNotFoundError, saying so, when the scene names none or the file is not there. A leading
+    byte-order mark is skipped: Windows PowerShell 5.1 writes one with `-Encoding utf8`, and the
+    file is taken on the owner's Windows machine."""
     path = scene.get("network_file")
     if not path or not Path(path).is_file():
         raise FileNotFoundError(NETWORK_FILE_MISSING)
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 def request_for(scene: dict, backend: str, network: dict | None = None) -> dict:
@@ -527,7 +536,9 @@ def _run_child(argv: list[str]) -> tuple[int, int | None]:
 def isolate_scene(scene: dict, child_args: list[str], run_child=None, python: str | None = None) -> dict:
     """One scene in a fresh interpreter: this script, `child_args` (the run's own arguments) plus
     `--only NAME --out <tmp>`. The row is the child's, with the child's peak resident set as the
-    scene's own (`peak_scope: scene`); its figure is carried back as bytes."""
+    scene's own (`peak_scope: scene`); its figure is carried back as bytes, and what the child
+    recorded of the run (its cache hits and misses, the OpenCV libraries mapped in it) under
+    `CHILD_KEY`, which `take_children` removes."""
     run_child = run_child or _run_child
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "child.json"
@@ -537,9 +548,15 @@ def isolate_scene(scene: dict, child_args: list[str], run_child=None, python: st
         failed = {"ok": False, "error": None, "count": None, "io": None, "stages": {}}
         if code != 0 or not out.is_file():
             return {**failed, "error": f"isolated run exited {code}"}
-        row = vision_runs.load(out)["results"].get(scene["name"])
+        child = vision_runs.load(out)
+        row = child["results"].get(scene["name"])
         if row is None:
             return {**failed, "error": "isolated run has no row"}
+        row[CHILD_KEY] = {
+            "cache_hits": child["inputs"].get("cache_hits"),
+            "cache_misses": child["inputs"].get("cache_misses"),
+            "libraries": child["environment"].get("libraries"),
+        }
         figure = row.pop("figure", None)
         if figure and (out.parent / figure).is_file():
             row["png"] = (out.parent / figure).read_bytes()
@@ -549,6 +566,27 @@ def isolate_scene(scene: dict, child_args: list[str], run_child=None, python: st
                 row["peak_rss_mb"] = vision_runs.rss_to_mb(maxrss)
             row["peak_scope"] = "scene"
         return row
+
+
+def take_children(results: dict) -> dict:
+    """What the isolated children recorded beside their rows, removed from the rows: their cache
+    hits and misses summed, and the OpenCV libraries mapped in them, each file once (None when no
+    child reported a list: not Linux, or no child finished). The children are where the scenes
+    ran, so these are the run's libraries, not the parent's."""
+    hits = misses = 0
+    libraries: list[dict] | None = None
+    for row in results.values():
+        child = row.pop(CHILD_KEY, None)
+        if not child:
+            continue
+        hits += child.get("cache_hits") or 0
+        misses += child.get("cache_misses") or 0
+        if child.get("libraries") is not None:
+            libraries = libraries or []
+            for lib in child["libraries"]:
+                if lib not in libraries:
+                    libraries.append(lib)
+    return {"cache_hits": hits, "cache_misses": misses, "libraries": libraries}
 
 
 def child_args(argv: list[str]) -> list[str]:
@@ -573,15 +611,7 @@ def child_args(argv: list[str]) -> list[str]:
 def worker(arn: str, scene_list: list[dict], repeats: int, backend: str, client=None) -> dict:
     """A deployed worker, end to end: the caller's round trip next to the worker's own timings.
     Every site id is sent as `bench-<id>`, so the worker's lines never pass for production's."""
-    from common import vision_client
-
-    if client is None:
-        import boto3
-        from botocore.config import Config
-
-        client = boto3.client(
-            "lambda", region_name=vision_client.region_of(arn), config=Config(read_timeout=120)
-        )
+    client = client or lambda_client(arn)
     out = {}
     for scene in scene_list:
         try:
@@ -622,8 +652,20 @@ def worker(arn: str, scene_list: list[dict], repeats: int, backend: str, client=
     return out
 
 
+def lambda_client(arn: str):
+    """A Lambda client in the worker's own Region (from its ARN), with the read timeout a cold
+    rail scene needs."""
+    import boto3
+    from botocore.config import Config
+    from common import vision_client
+
+    return boto3.client("lambda", region_name=vision_client.region_of(arn), config=Config(read_timeout=120))
+
+
 def deployed_code_sha256(client, arn: str) -> str | None:
-    """The deployed function's CodeSha256, when the client may read its configuration."""
+    """The deployed function's CodeSha256 (`worker.code_sha256`: which package answered), when the
+    caller may read its configuration; null otherwise. Only that field is kept: the configuration
+    also names the role, whose ARN holds the account id."""
     try:
         return client.get_function_configuration(FunctionName=arn).get("CodeSha256")
     except Exception:  # no such permission, or a client without the call: the field stays null
@@ -671,6 +713,7 @@ def imds_identity(http=None, base: str = IMDS_BASE, timeout: float = IMDS_TIMEOU
             f"{base}/latest/api/token",
             headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"},
             timeout=(timeout, timeout),
+            proxies=IMDS_NO_PROXY,
         )
         if token.status_code != 200:
             return None
@@ -678,6 +721,7 @@ def imds_identity(http=None, base: str = IMDS_BASE, timeout: float = IMDS_TIMEOU
             f"{base}/latest/dynamic/instance-identity/document",
             headers={"X-aws-ec2-metadata-token": token.text.strip()},
             timeout=(timeout, timeout),
+            proxies=IMDS_NO_PROXY,
         )
         if document.status_code != 200:
             return None
@@ -734,7 +778,8 @@ def mapped_libraries(maps_text: str | None = None, which=shutil.which, run=subpr
             size, sha = Path(path).stat().st_size, vision_runs.sha256_file(Path(path))
         except OSError:
             size, sha = None, None
-        out.append({"path": path, "bytes": size, "sha256": sha, "package": package_of(path, which, run)})
+        package = package_of(path, which, run)
+        out.append({"path": vision_runs.shown_path(path), "bytes": size, "sha256": sha, "package": package})
     return out
 
 
@@ -1437,8 +1482,10 @@ def main(argv: list[str] | None = None) -> int:
             print("not_cool: this interpreter's OpenCV build is not the pinned COOL build", file=sys.stderr)
             return 1
 
-    params = {key: (str(value) if isinstance(value, Path) else value)
-              for key, value in vars(args).items() if key not in ("out", "tag", "label")}  # fmt: skip
+    # Never the worker's ARN (it holds the account id: `worker.region` says where it ran), and
+    # every path as `shown_path` gives it (a home directory names its user).
+    params = {key: (vision_runs.shown_path(value) if isinstance(value, Path) else value)
+              for key, value in vars(args).items() if key not in ("out", "tag", "label", "arn")}  # fmt: skip
     params["cache"] = bool(getattr(args, "cache", None))
     params["labels"] = cool
     inputs: dict = {}
@@ -1457,12 +1504,16 @@ def main(argv: list[str] | None = None) -> int:
             results = kernels(args.size, args.repeats or 20)
             summary = kernels_summary(results)
         elif args.mode == "worker":
-            results = worker(args.arn, scene_list, args.repeats or 5, args.backend)
-            summary = worker_summary(results)
             from common import vision_client
 
-            region = vision_client.region_of(args.arn)
-            worker_record = {"kind": "deployed", "region": region, "code_sha256": None}
+            client = lambda_client(args.arn)
+            results = worker(args.arn, scene_list, args.repeats or 5, args.backend, client=client)
+            summary = worker_summary(results)
+            worker_record = {
+                "kind": "deployed",
+                "region": vision_client.region_of(args.arn),
+                "code_sha256": deployed_code_sha256(client, args.arn),
+            }
             inputs["scenes"] = scene_inputs(scene_list, None)
         else:
             heads, cache, manifest_sha = prepare_inputs(
@@ -1481,10 +1532,17 @@ def main(argv: list[str] | None = None) -> int:
                     isolate = lambda scene: isolate_scene(scene, child_args(argv))  # noqa: E731
                 results = scenes(scene_list, args.repeats or 3, args.backend, fetch=cache, isolate=isolate)
                 summary = scenes_summary(results)
+            # With --isolate the scenes ran in the children: their reads and their libraries.
+            children = take_children(results) if getattr(args, "isolate", False) else None
             if cache is not None:
                 inputs["cache_index_sha256"] = cache.index_sha256()
                 inputs["cache_hits"], inputs["cache_misses"] = cache.hits, cache.misses
+                if children:
+                    inputs["cache_hits"] += children["cache_hits"]
+                    inputs["cache_misses"] += children["cache_misses"]
             libraries = mapped_libraries()
+            if children and children["libraries"] is not None:
+                libraries = children["libraries"]
     except (vision_runs.InputChanged, vision_runs.WrongHost) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1529,7 +1587,8 @@ def _main_compare(args) -> int:
         "bench-compare", env["cpu"], f"{result.get('backend_a')}-vs-{result.get('backend_b')}", env,
         inputs={"scenes": a["inputs"].get("scenes") or [], "networks": a["inputs"].get("networks") or [],
                 "runs": [a["run_id"], b["run_id"]]},
-        params={"a": str(args.a), "b": str(args.b), "bootstrap": args.bootstrap, "seed": args.seed},
+        params={"a": vision_runs.shown_path(args.a), "b": vision_runs.shown_path(args.b),
+                "bootstrap": args.bootstrap, "seed": args.seed},
         tag=args.tag, mode="compare", started=started,
     )  # fmt: skip
     vision_runs.finish(run, result, compare_checks(result), compare_summary(result))

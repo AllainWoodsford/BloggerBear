@@ -710,14 +710,14 @@ class FakeImds:
     def __init__(self, document, fail=False):
         self.document, self.fail, self.calls = document, fail, []
 
-    def put(self, url, headers, timeout):
-        self.calls.append(("PUT", url, headers, timeout))
+    def put(self, url, headers, timeout, proxies=None):
+        self.calls.append(("PUT", url, headers, timeout, proxies))
         if self.fail:
             raise OSError("connect timeout")
         return FakeResponse(200, text="token-1")
 
-    def get(self, url, headers, timeout):
-        self.calls.append(("GET", url, headers, timeout))
+    def get(self, url, headers, timeout, proxies=None):
+        self.calls.append(("GET", url, headers, timeout, proxies))
         return FakeResponse(200, payload=self.document)
 
 
@@ -751,6 +751,8 @@ def test_imds_makes_both_calls_with_one_second_timeouts_and_keeps_five_fields():
         1.0,
     )
     assert get[2] == {"X-aws-ec2-metadata-token": "token-1"}
+    # The link-local service is never asked through a proxy from the environment.
+    assert put[4] == get[4] == {"http": None, "https": None}
     # Off EC2 the connection fails inside the timeout: host is null.
     assert bench.imds_identity(http=FakeImds(IDENTITY, fail=True)) is None
 
@@ -1299,3 +1301,103 @@ def test_the_network_fixture_directory_carries_the_odbl_notice_and_no_fixture_ye
     ) in notice
     assert "sha256" in notice and "query" in notice.lower() and "endpoint" in notice.lower()
     assert "Apache-2.0 licence does not cover" in notice
+
+
+def test_a_network_file_written_with_a_byte_order_mark_still_loads(tmp_path):
+    # Windows PowerShell 5.1 writes one with `-Encoding utf8`, and the owner's machine is Windows.
+    (tmp_path / "sydney.json").write_bytes(b"\xef\xbb\xbf" + json.dumps(STUB_NETWORK).encode("utf-8"))
+    scene = {**rail_scene(), "network_file": str(tmp_path / "sydney.json")}
+    assert bench.load_network(scene) == STUB_NETWORK
+    assert bench.request_for(scene, "opencv")["network"] == STUB_NETWORK
+
+
+def test_isolated_runs_record_the_childrens_cache_counts_and_mapped_libraries(tmp_path, monkeypatch):
+    scene = rail_scene_with_network(tmp_path)
+    library = {"path": "~/stock/lib/python3.12/site-packages/cv2/cv2.abi3.so", "bytes": 4,
+               "sha256": "ab" * 32, "package": "opencv_python_headless-5.0.0.93.dist-info"}  # fmt: skip
+    argvs = []
+
+    def fake_child(argv):
+        argvs.append(argv)
+        name, out = argv[argv.index("--only") + 1], Path(argv[argv.index("--out") + 1])
+        opencv = {"opencv_version": "5.0.0", "build_sha256": "f" * 64}
+        env = {"cpu": "x", "machine": "aarch64", "python": "3.12", "opencv": opencv, "libraries": [library]}
+        run = vision_runs.new_run("bench-scenes", "x", "opencv", env, mode="scenes",
+                                  inputs={"cache": True, "cache_hits": 5, "cache_misses": 2})  # fmt: skip
+        results = {name: bench.scene_row(rail_reply(), {"read": [1.0], "analyse": [2.0], "total": [3.0]})}
+        bench.write_figures(results, out)
+        vision_runs.write(vision_runs.finish(run, results), out)
+        return 0, 100 * 1024
+
+    # take_children: the counts summed, each library once, the rows left without the child's record.
+    rows = bench.scenes(
+        [scene, {**scene, "name": "again"}], 1, "opencv",
+        isolate=lambda s: bench.isolate_scene(s, ["scenes"], run_child=fake_child),
+    )  # fmt: skip
+    assert all(bench.CHILD_KEY in row for row in rows.values())
+    assert bench.take_children(rows) == {"cache_hits": 10, "cache_misses": 4, "libraries": [library]}
+    assert not any(bench.CHILD_KEY in row for row in rows.values())
+    nothing = {"cache_hits": 0, "cache_misses": 0, "libraries": None}
+    assert bench.take_children({"x": {"ok": False}}) == nothing
+    # Through main: the run file's inputs and libraries are the children's, and no child record is left.
+    monkeypatch.setattr(bench, "_run_child", fake_child)
+    monkeypatch.setattr(vision_runs, "default_head", lambda url: {"etag": "e", "bytes": 1})
+    scenes_file = tmp_path / "scenes.json"
+    scenes_file.write_text(
+        json.dumps({"scenes": [{**scene, "network_file": "sydney.json"}]}), encoding="utf-8"
+    )
+    out = tmp_path / "isolated.json"
+    argv = ["scenes", "--scenes-file", str(scenes_file), "--manifest", str(tmp_path / "none.json"),
+            "--isolate", "--repeats", "1", "--cache", str(tmp_path / "cogs"), "--out", str(out)]  # fmt: skip
+    argvs.clear()
+    assert bench.main(argv) == 0
+    run = vision_runs.load(out)
+    assert run["inputs"]["cache"] is True
+    assert (run["inputs"]["cache_hits"], run["inputs"]["cache_misses"]) == (5, 2)
+    assert run["environment"]["libraries"] == [library]
+    row = run["results"]["sydney-rail-2024-01-05"]
+    assert row["peak_scope"] == "scene" and row["peak_rss_mb"] == 100.0 and bench.CHILD_KEY not in row
+    assert "--isolate" not in argvs[0] and argvs[0][argvs[0].index("--cache") + 1] == str(tmp_path / "cogs")
+
+
+def test_worker_mode_records_the_deployed_worker_by_region_and_code_never_its_arn(tmp_path, monkeypatch):
+    arn = "arn:aws:lambda:us-west-2:123456789012:function:bloggerbear-dev-vision-worker"
+
+    class Configured(FakeLambda):
+        def get_function_configuration(self, FunctionName):
+            return {"CodeSha256": "c0de=", "Role": "arn:aws:iam::123456789012:role/worker"}
+
+    fake = Configured(REPLY)
+    monkeypatch.setattr(bench, "lambda_client", lambda arn_: fake)
+    out = tmp_path / "worker.json"
+    argv = ["worker", "--arn", arn, "--repeats", "1", "--only", "botany-bay-2024-01-05", "--out", str(out)]
+    assert bench.main(argv) == 0
+    run = vision_runs.load(out)
+    assert run["kind"] == "bench-worker" and run["mode"] == "worker"
+    assert run["worker"] == {"kind": "deployed", "region": "us-west-2", "code_sha256": "c0de="}
+    assert "arn" not in run["params"]
+    assert run["params"]["scenes_file"] == "scripts/vision_benchmark_scenes.json"
+    text = out.read_text(encoding="utf-8")
+    assert "123456789012" not in text and "arn:" not in text
+    assert fake.calls[0][1]["site"]["id"] == "bench-botany-bay"
+    # A caller that may not read the function's configuration records null.
+    assert bench.deployed_code_sha256(FakeLambda(REPLY), arn) is None
+
+
+def test_shown_path_keeps_the_users_name_out_of_run_files(tmp_path):
+    home = tmp_path / "home" / "someone"
+    root = home / "BloggerBear"
+    (root / "scripts").mkdir(parents=True)
+
+    def show(path):
+        return vision_runs.shown_path(path, root=root, home=home)
+
+    assert show(root / "scripts" / "vision_benchmark_scenes.json") == "scripts/vision_benchmark_scenes.json"
+    assert show(home / "stock" / "lib" / "cv2.abi3.so") == "~/stock/lib/cv2.abi3.so"
+    system = "/usr/lib/aarch64-linux-gnu/libopencv_core.so.5.0"
+    assert show(system) == system and vision_runs.shown_path(None) is None
+    # The environment records cv2's path that way too.
+    from vision import build
+
+    env = vision_runs.environment("x", build.build_info())
+    assert not env["opencv"]["cv2_path"].startswith(str(Path.home()))

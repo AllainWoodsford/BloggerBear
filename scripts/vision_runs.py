@@ -164,6 +164,28 @@ def rss_to_mb(maxrss: int | float, system: str | None = None) -> float:
     return round(kb / 1024.0, 1)
 
 
+def shown_path(path, root: Path = ROOT, home: Path | None = None) -> str | None:
+    """A path as a run file records it: relative to the repository when inside it, `~/...` when
+    under the home directory, else as it is. A home directory names its user (`C:\\Users\\<name>`
+    on the owner's Windows machine), and a user name is personal data, which no run file holds."""
+    if path is None:
+        return None
+    text = str(path)
+    try:
+        home = Path.home() if home is None else home
+    except RuntimeError:  # no home directory to be found: nothing to hide
+        home = None
+    for base, prefix in ((root, None), (home, "~")):
+        if base is None:
+            continue
+        try:
+            relative = Path(text).resolve().relative_to(Path(base).resolve())
+        except (OSError, ValueError):
+            continue
+        return relative.as_posix() if prefix is None else f"{prefix}/{relative.as_posix()}"
+    return text
+
+
 def affinity() -> list[int] | None:
     """The CPUs this process may run on (`taskset` shows here), where the OS reports it."""
     try:
@@ -187,7 +209,7 @@ def environment(cpu: str, opencv: dict, threads: int | None = None, **extra) -> 
     try:
         import cv2
 
-        cv2_path, cv2_threads = cv2.__file__, cv2.getNumThreads()
+        cv2_path, cv2_threads = shown_path(cv2.__file__), cv2.getNumThreads()
     except ImportError:
         cv2_path, cv2_threads = None, None
     env = {
