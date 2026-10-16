@@ -248,9 +248,13 @@ benchmark report, never typed from memory.
 | Agent: tool calls, turns, verdict, tokens, cost | [n], [n], [verdict], [tokens], [USD] | the trail in the running state; Stats `vision_triage` |
 | Kernel benchmark, x86 stock (this build container's CPU, not Graviton) | Intel Xeon at 2.10 GHz, OpenCV 5.0.0 (`0ef08003c311`), 2048 px synthetic images, medians of 20, on 4 vCPUs / pinned to one: `analyse_rail_access` 1,138 / 1,303 ms (a city of 8 lines and 40 stations), `analyse_site` 192 / 225 ms, `thinning_hitmiss` 51 / 44 ms, `distance_transform_l2` 49 / 57 ms, `adaptive_threshold_gaussian_31` 38 / 36 ms; the full table is in [vision.md §7](../enhancements/vision.md#7-measured) | `vision_benchmark.py kernels`, and the same under `taskset -c 0` |
 | Worst-case rail analysis on one core (contract-valid networks built to be slow, with ways reaching the window's edges) | at most 37.5 s and 1.69 GB at a 4096 px window, at most 25.5 s and 1.32 GB at the 3,584 px cap (about 33 s on an arm64 core taken as 1.3 times slower, 41 to 56 s with the read); no real OpenStreetMap network timed yet: PR J's synthetic city (180 stations, 221 nodes) took 9.2 to 9.6 s at 4096 px on four cores, and the deployed Sydney run with the Overpass network will give the real figure | PR J's measurements through `lambda_handler` on one core of the Intel Xeon above, quoted in `vision_worker_handler.py`, `vision/scene.py` and `vision/rail_analyse.py` |
-| Kernel benchmark, Graviton stock | [ms] | the same, on a `c8g` |
-| Kernel benchmark, Graviton COOL | [ms], fingerprint [sha256] | the same, inside the COOL image |
-| Deployed worker end to end | [ms] | `vision_benchmark.py worker --arn` |
+| Kernel benchmark, Graviton stock, one core and four | [ms] | `docs/hackathon/evidence/runs/<date>-bench-kernels-neoverse-v2-graviton4-opencv-1t-r1.json` and `-4t-r1.json`, from the [runsheet's COOL session](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) step 8 |
+| Kernel benchmark, Graviton COOL, one core and four | [ms], fingerprint [sha256] | the same, `-cool-1t-r1.json` and `-cool-4t-r1.json`; the fingerprint is `environment.opencv.build_sha256`, equal to `sha256sum cool-buildinfo.txt` |
+| The real handler on the clear Sydney scene, stock against COOL, one core | speed-up [x] with its 95 % interval on the compute stages, the read apart; `parity: pass` | `<date>-bench-compare-...-scenes-opencv-1t-vs-cool-1t.json`, from the two `bench-scenes` run files it names (each holds the rail metrics, their digest, the figure's hash, the peak memory and the mapped OpenCV libraries) |
+| What OpenCV 5 changed against 4.14 for this workload | speed-up [x] | `<date>-bench-compare-...-scenes-opencv-4x-1t-vs-opencv-1t.json` (`opencv-python-headless==4.14.0.94` against 5.0.0.93, the same venv shape) |
+| The COOL guard's negative controls | 3 of 3 as expected under COOL and under stock | `<date>-bench-controls-neoverse-v2-graviton4-cool.json` and `-opencv.json` |
+| Site coverage of the pinned scenes, and the year's selection counts | coverage per scene; items, passing the cloud filter, passing the footprint rule, under the floor | `docs/hackathon/evidence/runs/2026-10-16-eval-coverage-intel-xeon-processor-2-80ghz-none.json` (`vision_eval.py coverage`, 16 October) |
+| Deployed worker end to end | [ms] | `vision_benchmark.py worker --arn --out docs/hackathon/evidence/runs` |
 
 ## Licences
 
@@ -325,11 +329,19 @@ kept is numbers and one map per scene.
    inbox (`python scripts/admin_cli.py inbox`): the article is held for you.
    `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; the page
    shows the map at `articles/figures/<article>/1.png` with its caption and the credits.
-5. **The benchmark.** `python scripts/vision_benchmark.py kernels --out stock-x86.json` on any
-   machine with `requirements-vision.txt`; the same on a `c8g` from the COOL AMI, after installing
-   networkx alone there (the rail kernels import it; the
-   [runsheet's COOL steps](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) have the
-   pin), and in a stock venv beside it; `worker --arn <VISION_WORKER_ARN>` for the deployed worker.
+5. **The benchmark.** `python scripts/vision_benchmark.py kernels --out docs/hackathon/evidence/runs`
+   on any machine with `requirements-vision.txt` writes a run file (the code's commit, the CPU,
+   the build fingerprint, every sample); `scenes --cache ~/cogs --out docs/hackathon/evidence/runs`
+   runs the real handler on the pinned scenes (`scripts/vision_benchmark_scenes.json`; the rail
+   scenes need the Sydney network fixture) and records the rail metrics, their digest and the
+   figure's hash beside the timings. The Graviton rows come from the
+   [runsheet's COOL session](../deployment-runsheet.md#the-cool-backend-and-the-benchmark): a
+   `c8g.xlarge`, three venvs (COOL on the product's own `cv2`, stock 5.0.0.93, stock 4.14.0.94),
+   the runs of its step 8 interleaved and pinned to one core, `compare` for each stock-COOL pair
+   (the speed-up with its interval, and parity) and `controls` for the guard. Every number in the
+   COOL rows above is read from those run files, whose schema is in
+   [docs/hackathon/evidence/README.md](evidence/README.md); `worker --arn <VISION_WORKER_ARN>` adds
+   the deployed worker end to end.
 
 ## Video shot list
 

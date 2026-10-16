@@ -714,6 +714,15 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
   `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
   (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+- [x] The submission round's benchmark and evaluation inputs (Q1): the benchmark writes run files
+  with the code, machine, build, inputs' ETags and every sample, records the rail metrics, their
+  digest, the figure's hash, the peak memory and the OpenCV libraries mapped during a run, gains
+  `--cache`, `--threads`, `--pin-cpu`, `--isolate`, `--only`, `--imds`, `--label`, `compare` (a
+  seeded bootstrap speed-up with parity) and `controls` (the COOL guard's negative controls); the
+  Sydney scene manifest with `vision_eval.py pin` and `coverage` (the first run file, under
+  `docs/hackathon/evidence/runs/`); the network fixture directory's ODbL notice; the COOL runsheet
+  corrected into the Graviton session's script, with the 4.x pin (`opencv-python-headless==4.14.0.94`)
+  (#308, submission PR Q1)
 
 ## Backlog / not yet scheduled
 
