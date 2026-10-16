@@ -16,6 +16,8 @@ the pipeline, and nothing here runs a command: the operator does, after reading 
                   from their running state (read within a byte and time budget)
 - topic_findings.py topic_findings: a topic's research Findings, newest first, with what the next
                   article will be written from (summaries on screen only, never spoken)
+- vision_evidence.py vision_evidence: what the vision pipeline measured and decided, and what a
+                  person did about it, from the pipeline's evidence lines in the logs
 - suggestions.py  the fixed catalogue of commands a finding can suggest
 - memory.py       what it has suggested and what it is watching: the one table it writes to
 - access.py       the assistant_access switch, checked on every request
