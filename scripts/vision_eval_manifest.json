@@ -1,5 +1,5 @@
 {
- "about": "The evaluation's pinned Sentinel-2 L2A scenes on AWS Open Data (sentinel-cogs, us-west-2), one site inside each. Add a scene; never change one: a run compares every asset's ETag with a HEAD before it reads and refuses the run on a difference, so the run files in docs/hackathon/evidence/runs/ name the bytes they read. scripts/vision_eval.py pin fills each scene's ETags, sizes, capture time and STAC cloud and no-data figures from the bucket itself (the STAC item kept beside the assets; no Earth Search call), and coverage fills site_coverage (the share of the site the worker can measure, from the SCL classes it treats as unusable) and aot_mean (the L2A aerosol optical thickness over the site). Roles: clear, season (the same city in another season), cloud and nodata (each expected to flag low_coverage), smoke (the 2019-20 bushfire season, which SCL does not flag), baseline (November 2019, the smoke scene's season), and year (the 2024 year set: every item of tile 56HLH that passes the production rule, cloud cover at most the adapter's max_cloud_cover of 40 and a footprint that holds the site box, one per date). listings holds the full bucket listing the year set came from, so the selection counts can be re-made. On a date with several items the one kept is the Sentinel-2A or 2B item (Sentinel-2C flew in tandem beside 2A in December 2024: its 14 December item is kept as the duplicate of 2A's, and the 10 December pair fails the footprint rule), then the one with the least tile no-data, then the lowest processing sequence (the two items of 21 August 2024 are two swaths: the second, _1, holds the site, and the first fails the footprint rule); the others are kept as duplicate_of that scene, measured by coverage but outside the year set. The 2024 year set is the year scenes and the named 2024 scenes together that pass the rule and were measured at site coverage 0.95 or more (vision_eval.year_set). expected is null except where a scene is in the manifest to show a failure.",
+ "about": "The evaluation's pinned Sentinel-2 L2A scenes on AWS Open Data (sentinel-cogs, us-west-2), one site inside each. Add a scene; never change one: a run compares every asset's ETag with a HEAD before it reads and refuses the run on a difference, so the run files in docs/hackathon/evidence/runs/ name the bytes they read. scripts/vision_eval.py pin fills each scene's ETags, sizes, capture time and STAC cloud and no-data figures from the bucket itself (the STAC item kept beside the assets; no Earth Search call), and coverage fills site_coverage (the share of the site the worker can measure, from the SCL classes it treats as unusable) and aot_mean (the L2A aerosol optical thickness over the site). Roles: clear, season (the same city in another season), cloud and nodata (each expected to flag low_coverage), smoke (the 2019-20 bushfire season, which SCL does not flag), baseline (November 2019, the smoke scene's season), and year (a candidate for the 2024 year set: every item of tile 56HLH that passes the production rule, cloud cover at most the adapter's max_cloud_cover of 40 and a footprint that holds the site box, one per date). listings holds the full bucket listing the year set came from, so the selection counts can be re-made. On a date with several items the one kept is the Sentinel-2A or 2B item (Sentinel-2C flew in tandem beside 2A in December 2024: its 14 December item is kept as the duplicate of 2A's, and the 10 December pair fails the footprint rule), then the one with the least tile no-data, then the lowest processing sequence (the two items of 21 August 2024 are two swaths: the second, _1, holds the site, and the first fails the footprint rule); the others are kept as duplicate_of that scene, measured by coverage but outside the year set. The 2024 year set is the year scenes and the named 2024 scenes together that pass the rule and were measured at site coverage 0.95 or more (vision_eval.year_set); coverage --write records it, in time order, under sets as year-2024, and a run of the year set selects by that, never by the year role (a candidate measured under 0.95, or another's duplicate, is outside the set). expected is null except where a scene is in the manifest to show a failure.",
  "schema": "bloggerbear.vision-manifest/1",
  "sites": {
   "sydney": {
@@ -3858,6 +3858,34 @@
       -33.425987287151315
      ]
     }
+   ]
+  }
+ },
+ "sets": {
+  "year-2024": {
+   "site": "sydney",
+   "tile": "56HLH",
+   "year": 2024,
+   "max_cloud_cover": 40.0,
+   "min_coverage": 0.95,
+   "scenes": [
+    "sydney-2024-01-24",
+    "sydney-2024-01-29",
+    "sydney-2024-03-14",
+    "sydney-2024-04-23",
+    "sydney-2024-04-28",
+    "sydney-2024-05-23",
+    "sydney-2024-05-28",
+    "sydney-2024-06-27",
+    "sydney-2024-07-17",
+    "sydney-2024-08-21b",
+    "sydney-2024-08-26",
+    "sydney-2024-08-31",
+    "sydney-2024-09-20",
+    "sydney-2024-10-10",
+    "sydney-2024-10-30",
+    "sydney-2024-12-24",
+    "sydney-2024-12-29"
    ]
   }
  }

@@ -308,7 +308,7 @@ def test_what_is_required_and_missing_comes_back_as_questions_not_an_error():
     assert [question["option"] for question in result["questions"]] == ["--topic-id", "--name"]
     assert "What is the topic id?" in result["spoken"]
     pipeline = cli_guide.cli_command("topics trigger", {"topic_id": "ai"})["questions"]
-    assert pipeline[0]["ask"] == "Which pipeline: research_tick or daily_cycle?"
+    assert pipeline[0]["ask"] == "Which pipeline: research_tick or daily_cycle or network_prefetch?"
 
 
 def test_a_command_that_needs_something_to_change_asks_what(admin_cli, parser, monkeypatch):

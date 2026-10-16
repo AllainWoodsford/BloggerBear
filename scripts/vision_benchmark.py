@@ -102,6 +102,10 @@ RAIL_SCALARS = (
 )  # fmt: skip
 PARITY_ABS = {"served_share": 1e-4}
 PARITY_REL = {"desert_km2": 1e-3, "built_up_km2": 1e-3}
+# Two shares rounded to 4 places differ by a whole number of 1e-4 steps, but their float difference
+# lands either side of 1e-4 (0.7313 - 0.7312 is under it, 0.6124 - 0.6123 over): one step passes,
+# always, by comparing against the tolerance plus this.
+PARITY_SLACK = 1e-9
 TOP_SUGGESTIONS = 3
 # IMDSv2: a token first, then the identity document, each with a 1 s connect and read timeout, so
 # a machine that is not an EC2 instance answers "no host" in about a second.
@@ -132,9 +136,10 @@ DELIVERIES = ("ami", "container")
 # The shared objects that are the OpenCV work: the cv2 extension, OpenCV's own libraries and
 # KleidiCV's. Their path, size, sha256 and owning package say which binaries ran.
 LIBRARY_PATTERN = re.compile(r"/(cv2[^/]*\.so[^/]*|libopencv_[^/]*|libkleidicv[^/]*)$")
-# The build-information lines that tell a vendor build apart.
+# The build-information lines that tell a vendor build apart: "Graviton" and "vendor" anywhere in
+# a line (`Graviton4`, `vendors`), "COOL" at the start of a word (`cool_hal`, not `school`).
 BUILD_LINE_PREFIXES = ("C++ Compiler:", "C++ flags", "C Compiler:", "C flags")
-BUILD_LINE_WORDS = re.compile(r"kleidicv|-mcpu|-march|\b(cool|graviton|vendor)\b", re.IGNORECASE)
+BUILD_LINE_WORDS = re.compile(r"kleidicv|-mcpu|-march|graviton|vendor|\bcool", re.IGNORECASE)
 # The negative controls: name, the request's backend, whether the pin is set, the expected code
 # (None: `ok` when this build is the pinned one, else `not_cool`).
 CONTROLS = (
@@ -964,7 +969,7 @@ def parity(ra: dict, rb: dict) -> dict:
         va, vb = ma.get(name), mb.get(name)
         numbers = isinstance(va, int | float) and isinstance(vb, int | float)
         if name in PARITY_ABS and numbers:
-            if abs(va - vb) > PARITY_ABS[name]:
+            if abs(va - vb) > PARITY_ABS[name] + PARITY_SLACK:
                 differences.append(f"{name}: {va} vs {vb} (abs {abs(va - vb):.6f} > {PARITY_ABS[name]})")
         elif name in PARITY_REL and numbers:
             scale = max(abs(va), abs(vb), 1e-12)
@@ -1034,7 +1039,12 @@ def compare(a: dict, b: dict, bootstrap: int = 2000, seed: int = 0, dir_a: Path 
     for name in common:
         ra, rb = a["results"].get(name) or {}, b["results"].get(name) or {}
         if not (ra.get("ok") and rb.get("ok")):
-            out["scenes"][name] = {"skipped": f"not ok in both runs ({ra.get('error')}, {rb.get('error')})"}
+            out["scenes"][name] = row = {"skipped": skipped_reason(ra, rb)}
+            if bool(ra.get("ok")) != bool(rb.get("ok")):
+                # One side measured the scene and the other did not (a COOL run answered not_cool):
+                # nothing shows the two agree, so parity fails rather than passing on silence.
+                row["parity"] = {"pass": False, "equal_digest": False, "differences": [row["skipped"]]}
+                out["parity_pass"] = False
             continue
         row = _compare_scene(ra, rb, bootstrap, rng, out["notes"], name)
         row["parity"] = parity(ra, rb)
@@ -1048,7 +1058,19 @@ def compare(a: dict, b: dict, bootstrap: int = 2000, seed: int = 0, dir_a: Path 
         out["scenes"][name] = row
     compared = [row for row in out["scenes"].values() if "headline" in row]
     out["headline"] = _pooled_headline(compared, bootstrap, rng)
+    if not any("stages" in row for row in out["scenes"].values()):
+        out["parity_pass"] = False
+        out["notes"].append("no scene was ok in both runs: nothing was compared")
     return out
+
+
+def skipped_reason(ra: dict, rb: dict) -> str:
+    """Why a scene the two runs share was not compared: which run did not measure it, and its error."""
+    if ra.get("ok"):
+        return f"not ok in B ({rb.get('error')})"
+    if rb.get("ok"):
+        return f"not ok in A ({ra.get('error')})"
+    return f"not ok in either run ({ra.get('error')}, {rb.get('error')})"
 
 
 def _compare_kernels(ra: dict, rb: dict, bootstrap: int, rng, notes: list[str]) -> dict:
@@ -1123,6 +1145,9 @@ def compare_checks(result: dict) -> list[dict]:
             passed = row["parity"]["pass"]
             got = "equal" if passed else "; ".join(row["parity"]["differences"])[:300]
             checks.append({"name": f"parity:{name}", "expected": "equal", "got": got, "pass": passed})
+    if "scenes" in result:
+        compared = sum(1 for row in result["scenes"].values() if "stages" in row)
+        checks.append({"name": "scenes_compared", "expected": ">= 1", "got": compared, "pass": compared >= 1})
     return checks
 
 
@@ -1402,6 +1427,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="each scene in a fresh interpreter (its own peak memory)")  # fmt: skip
     w = sub.add_parser("worker", parents=[common, backend, picking], help="a deployed worker")
     w.add_argument("--arn", required=True)
+    w.add_argument("--manifest", type=Path, default=MANIFEST_FILE,
+                   help="the manifest whose ETags pin the scenes")  # fmt: skip
     sub.add_parser("controls", parents=[common, timing, backend, picking, reading],
                    help="the COOL guard's negative controls")  # fmt: skip
     cmp_ = sub.add_parser("compare", help="two runs of one kind: speed-up with a bootstrap CI, and parity")
@@ -1484,6 +1511,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.mode == "worker":
             from common import vision_client
 
+            # The deployed worker reads the bucket itself; its pinned assets are HEADed here first,
+            # so a changed input refuses the run and the run file names the ETags it was sent.
+            heads, _cache, manifest_sha = prepare_inputs(
+                scene_list, load_manifest(args.manifest), None, manifest_path=args.manifest
+            )
+            inputs.update({"scenes": scene_inputs(scene_list, heads), "manifest_sha256": manifest_sha})
             client = lambda_client(args.arn)
             results = worker(args.arn, scene_list, args.repeats or 5, args.backend, client=client)
             summary = worker_summary(results)
@@ -1492,7 +1525,6 @@ def main(argv: list[str] | None = None) -> int:
                 "region": vision_client.region_of(args.arn),
                 "code_sha256": deployed_code_sha256(client, args.arn),
             }
-            inputs["scenes"] = scene_inputs(scene_list, None)
         else:
             heads, cache, manifest_sha = prepare_inputs(
                 scene_list, load_manifest(args.manifest), args.cache, manifest_path=args.manifest

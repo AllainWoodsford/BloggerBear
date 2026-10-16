@@ -10,17 +10,20 @@ article and the agent are given.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import sys
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import boto3
 import pytest
+import requests
 from moto import mock_aws
 from terraform_text import INFRA
 
@@ -80,6 +83,14 @@ class Clock:
 
     def advance(self, seconds):
         self.now += seconds
+
+
+class RunningClock(Clock):
+    """The adapter's clock as time.monotonic is: a little later at every reading."""
+
+    def __call__(self):
+        self.now += 1e-6
+        return self.now
 
 
 class FakeStac:
@@ -242,6 +253,19 @@ def adapter():
         return f"vision/{topic_id}/{site_id}/{scene_id}.png"
 
     a.store_image = store
+    # The prefetched networks (vision_sites.store_network / load_network), by (topic, site).
+    a.prefetched, a.loads = {}, []
+
+    def store_network(topic_id, site_id, net):
+        a.prefetched[(topic_id, site_id)] = json.loads(json.dumps(net))
+        return vision_sites.network_key(topic_id, site_id)
+
+    def load_network(topic_id, site_id):
+        a.loads.append((topic_id, site_id))
+        found = a.prefetched.get((topic_id, site_id))
+        return json.loads(json.dumps(found)) if found is not None else None
+
+    a.store_network, a.load_network = store_network, load_network
     return a
 
 
@@ -460,6 +484,10 @@ def test_the_example_city_topics_rotate_one_a_day_and_draft_every_finding_once()
         assert topic["adapter"] == RAIL_ACCESS_ADAPTER_KEY
         config = ra.parse_config(topic["adapter_config"])
         assert len(config["sites"]) == 1 and config["reach_m"] == 1000.0
+        # Sydney's first network takes most of a minute (16 October): its topic runs at the cap.
+        heavy = topic["topic_id"] == "rail-sydney"
+        budget = vision_sites.MAX_TIME_BUDGET_SECONDS if heavy else ra.DEFAULTS["time_budget_seconds"]
+        assert config["time_budget_seconds"] == budget, topic["topic_id"]
         scheduler._validate_schedule_expression(topic["daily_cadence"])
         scheduler.validate_timezone(topic["daily_timezone"])
         minute, hour, weekdays = drafting_days(topic["daily_cadence"])
@@ -936,6 +964,130 @@ def test_a_refresh_of_a_cached_network_keeps_the_reserve_and_the_default_read(ad
     (fetch,) = overpass.calls
     assert fetch["deadline"] == 100.0 + ra.OSM_RESERVE_SECONDS == 130.0
     assert fetch["timeout"] == osm.TIMEOUT_SECONDS == 25.0
+
+
+def overpass_reply(clock, read, compute=0.0, flow=0.0, stall=False):
+    """What requests.post answers Overpass with (stream=True), under the scripted clock: the headers
+    and the preamble at once, the elements after `compute` s of silence (the query running), the
+    rest after `flow` s, then, with `stall`, silence on a connection held open. A read ends when
+    its bytes come, when its `read` timeout passes (raised as requests raises it mid-body) or when
+    osm's shutter shuts the reply (`raw.shutdown`, on its timer: see scripted_timers)."""
+
+    def wait(seconds):
+        timer = next((t for t in clock.timers if t.started and not t.cancelled), None)
+        shut = timer.due if timer else math.inf
+        ends = {"bytes": clock.now + seconds, "read": clock.now + read, "shut": shut}
+        how = min(ends, key=ends.get)
+        clock.now = ends[how]
+        if how == "read":
+            raise requests.exceptions.ConnectionError("Read timed out.")
+        if how == "shut":
+            timer.function(*timer.args)
+            raise requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead")
+
+    class Reply:
+        status_code, headers = 200, {}
+        raw = SimpleNamespace(shutdown=lambda: None)
+
+        def iter_content(self, chunk_size):
+            yield b'{"version": 0.6, '
+            wait(compute)
+            yield b'"elements": ['
+            wait(flow)
+            if stall:
+                wait(math.inf)
+            yield b"]}"
+
+        def close(self):
+            pass
+
+    return Reply()
+
+
+def scripted_timers(monkeypatch, clock):
+    """osm's timer (the _Shutter's) on the scripted clock, recorded in `clock.timers`: armed for
+    `interval` scripted seconds, and fired by overpass_reply's read when it is due."""
+    clock.timers = []
+
+    class ScriptedTimer:
+        def __init__(self, interval, function, args=()):
+            self.due, self.function, self.args = clock.now + interval, function, args
+            self.started = self.cancelled = False
+            clock.timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(osm, "Timer", ScriptedTimer)
+
+
+def real_fetch(post):
+    """common/osm.fetch_network itself, with `post` for requests.post (the adapter's own http_post
+    is the STAC search's)."""
+    return lambda polygon, **kwargs: osm.fetch_network(polygon, **{**kwargs, "http_post": post})
+
+
+@pytest.mark.parametrize(
+    "budget, cached, declared",
+    [
+        (70, False, "[timeout:53]"),  # a first fetch at the default budget: 70 - 2 - 10 - 5
+        (80, False, "[timeout:63]"),  # at the cap
+        (80, True, "[timeout:25]"),  # a refresh: 30 - 5, as before the query followed the read
+    ],
+)
+def test_on_a_running_clock_each_query_declares_the_whole_seconds_it_was_given(
+    adapter, monkeypatch, budget, cached, declared
+):
+    """The adapter reads the clock for the fetch's deadline and fetch_network reads it again a moment
+    later, so the hop's read is a hair under its whole seconds: the query still declares them."""
+    previous = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31) if cached else None
+    clock = RunningClock(100.0)
+    adapter.clock = clock
+    scripted_timers(monkeypatch, clock)
+    hops = []
+
+    def post(url, data, timeout, **kwargs):
+        hops.append((data["data"].split(";", 1)[0].removeprefix("[out:json]"), timeout[1]))
+        return overpass_reply(clock, timeout[1])
+
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=2.0, clock=clock)
+    adapter.http_post, adapter.measure = search, FakeRailWorker({"S1": metrics()})
+    adapter.fetch_network = real_fetch(post)
+    state = adapter.fetch_state(topic(time_budget_seconds=budget), previous_state=previous)
+    ((query_timeout, read),) = hops
+    assert query_timeout == declared and int(declared[9:-1]) - 0.001 < read < int(declared[9:-1])
+    assert state["sites"]["sydney"]["network"]["fetched_at"] == state["fetched_at"]
+
+
+@pytest.mark.parametrize("budget", [70, 80])
+def test_a_first_fetch_whose_reply_stalls_mid_body_still_ends_by_its_deadline(adapter, monkeypatch, budget):
+    """The real fetch_network under the adapter, at the default budget and at the cap: Overpass runs
+    the query for 53 s, streams for 3 s, then the connection goes silent without closing. A read
+    timeout bounds each wait between reads, not the body, so the stall alone would hold the hop
+    for its whole read (53 s or 63 s) more, past the research tick's 120 s at the cap. The reply
+    is shut at the deadline: the fetch ends there, a transient timeout, and the site waits."""
+    clock = Clock()
+    adapter.clock = clock
+    scripted_timers(monkeypatch, clock)
+    hops = []
+
+    def post(url, data, timeout, **kwargs):
+        hops.append((clock.now, timeout[1]))
+        return overpass_reply(clock, timeout[1], compute=53.0, flow=3.0, stall=True)
+
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=2.0, clock=clock)
+    adapter.http_post, adapter.measure = search, FakeRailWorker({})
+    adapter.fetch_network = real_fetch(post)
+    state = adapter.fetch_state(topic(time_budget_seconds=budget))
+    deadline = 2.0 + ra.first_fetch_seconds(budget - 2.0)
+    assert hops == [(2.0, deadline - 2.0 - osm._CONNECT_TIMEOUT_SECONDS)]  # one hop: no time for the mirror
+    assert clock.now == deadline <= budget  # not 58 s + the hop's read
+    record = state["sites"]["sydney"]
+    assert record["last_error"]["code"] == "osm" and record["network_error"]["code"] == "timeout"
+    assert "network" not in record and state["measured"] == []
 
 
 def test_a_long_first_fetch_defers_the_measurement_and_the_next_tick_measures_with_it(adapter, capsys):
@@ -2649,3 +2801,114 @@ def test_a_failed_attempt_leaves_its_lines_and_the_scene_is_measured_again(tick_
     assert [e["scene_id"] for e in state["sites"]["sydney"]["history"]] == ["S0", "S1"]
     (entry,) = (e for e in state["sites"]["sydney"]["decisions"] if e["scene_id"] == "S1")
     assert entry["run"] == again[-1]["run"] and entry["triage"]["reason"]  # the ring keeps the reason
+
+
+# --- the network fetched out of band (prefetch_networks) ----------------------------------------
+# Overpass can think about a city for over a minute before it answers (Sydney, 2026-10-16), longer
+# than any tick can wait: the operator's network_prefetch trigger fetches it with the time it needs
+# and stores it on its own, and the next tick adopts it.
+
+
+def test_a_prefetch_waits_long_for_each_site_and_stores_its_network_apart_from_the_state(adapter):
+    adapter.clock = Clock(1000.0)
+    overpass = FakeOverpass(network())
+    adapter.fetch_network = overpass
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+
+    results = adapter.prefetch_networks(topic(sites=sites))
+
+    assert [r["site_id"] for r in results] == ["sydney", "melbourne"]
+    assert {r["status"] for r in results} == {"stored"}
+    first = overpass.calls[0]
+    assert first["timeout"] == ra.PREFETCH_TIMEOUT_SECONDS > ra.FIRST_FETCH_TIMEOUT_SECONDS
+    assert first["deadline"] == 1000.0 + ra.PREFETCH_BUDGET_SECONDS and first["clock"] is adapter.clock
+    stored = adapter.prefetched[("rail", "melbourne")]
+    assert stored["site_key"] == vision_sites.site_key(MELBOURNE)
+    assert results[0]["fetched_at"] == adapter.prefetched[("rail", "sydney")]["fetched_at"]
+    assert results[0]["counts"] == {"ways": 1, "stations": 1, "pois": 1, "points": 2}
+    assert results[0]["truncated"] is False
+    # A prefetch writes no state of its own and asks no worker: only the stored networks.
+    assert adapter.stored == [] and adapter.loads == []
+    assert ra.PREFETCH_BUDGET_SECONDS + 15 <= 120  # under the research tick's Lambda timeout
+
+
+def test_a_prefetch_says_which_sites_failed_and_leaves_too_little_time_for_the_next_to_another(adapter):
+    adapter.clock = Clock()
+    adapter.fetch_network = FakeOverpass(osm.OsmError("timeout", "ReadTimeout from overpass", transient=True))
+    (failed,) = adapter.prefetch_networks(topic())
+    assert failed == {"site_id": "sydney", "status": "failed", "code": "timeout",
+                      "detail": "ReadTimeout from overpass"}  # fmt: skip
+    assert adapter.prefetched == {}
+
+    adapter.fetch_network = FakeOverpass(ValueError("bad polygon"))
+    (broken,) = adapter.prefetch_networks(topic())
+    assert broken["status"] == "failed" and broken["code"] == "fetch" and "ValueError" in broken["detail"]
+
+    # The first city takes most of the budget: the second is not started, only deferred.
+    slow = ra.PREFETCH_BUDGET_SECONDS - 20
+    adapter.fetch_network = FakeOverpass(network(), takes=slow, clock=adapter.clock)
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    results = adapter.prefetch_networks(topic(sites=sites))
+    assert [r["status"] for r in results] == ["stored", "deferred"]
+    assert len(adapter.fetch_network.calls) == 1 and ("rail", "melbourne") not in adapter.prefetched
+
+
+def test_a_tick_without_a_network_adopts_the_prefetched_one_and_asks_no_overpass(adapter):
+    adapter.fetch_network = FakeOverpass(network())
+    adapter.prefetch_networks(topic())
+    failing = FakeOverpass(osm.OsmError("http", "HTTP 406 from overpass"))
+    error = {"code": "http", "at": "x", "detail": "406"}
+    previous = {"sites": {"sydney": {"history": [], "network_error": error}}}
+
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), failing, previous=previous)
+
+    record = state["sites"]["sydney"]
+    assert failing.calls == [] and state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]
+    assert record["network"] == adapter.prefetched[("rail", "sydney")]
+    assert "network_error" not in record and "last_error" not in record
+    # From then on the running state carries it: the prefetched object is not read again.
+    adapter.loads.clear()
+    run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), failing, previous=state)
+    assert adapter.loads == [] and failing.calls == []
+
+
+def test_a_stale_network_gives_way_only_to_a_newer_prefetched_one_for_the_same_polygon(adapter):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    old = aged(first, 40)
+    old_fetched = old["sites"]["sydney"]["network"]["fetched_at"]
+
+    # Prefetched for another polygon: ignored, and the stale network is refreshed in the tick.
+    now = datetime.now(UTC).isoformat()
+    adapter.prefetched[("rail", "sydney")] = network(fetched_at=now, polygon=MELBOURNE)
+    refresh = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
+    assert len(refresh.calls) == 1
+    assert state["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(SYDNEY)
+
+    # Prefetched for this polygon but older than the cached one: kept as it was, refreshed in the tick.
+    adapter.prefetched[("rail", "sydney")] = network(fetched_at="2020-01-01T00:00:00+00:00")
+    refresh = FakeOverpass(osm.OsmError("timeout", "slow", transient=True))
+    state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
+    assert len(refresh.calls) == 1 and state["sites"]["sydney"]["network"]["fetched_at"] == old_fetched
+
+    # Newer and for this polygon: adopted, and the tick has nothing left to refresh.
+    newer = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    adapter.prefetched[("rail", "sydney")] = network(fetched_at=newer)
+    refresh = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
+    assert refresh.calls == [] and state["sites"]["sydney"]["network"]["fetched_at"] == newer
+
+
+def test_a_fresh_network_never_reads_the_prefetched_one_and_an_unreadable_one_is_no_network(adapter):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    adapter.loads.clear()
+    run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), FakeOverpass(network()), previous=first)
+    assert adapter.loads == []
+
+    def unreadable(topic_id, site_id):
+        raise RuntimeError("AccessDenied")
+
+    adapter.load_network = unreadable
+    overpass = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
+    assert len(overpass.calls) == 1 and state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]

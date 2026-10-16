@@ -19,9 +19,10 @@ The evidence has three homes:
 
 - **One JSON line per step, in the logs** (`lambdas/common/evidence.py`): the research tick, the
   two vision adapters, the vision worker and the admin API each print one line per step. The logs
-  are kept 90 days in both Regions, and Logs Insights reads them in the console today (the
+  are kept 90 days in both Regions, and Logs Insights reads them in the console (the
   queries are in the [deployment runsheet](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided));
-  the operator's assistant and Alexa+ read them in the next pull request.
+  the operator's assistant and Alexa+ read them with `vision_evidence`
+  ([Asking the assistant](#asking-the-assistant)).
 - **A decision ring in the running state** (`lambdas/common/vision_decisions.py`): per site, the
   last twelve decisions with the agent's whole trail, each tool's result included.
 - **An export into git**, later in the round, which makes the code-derived part permanent.
@@ -246,6 +247,127 @@ signature and the model's input; the history entry's shape; `stats_tracking`; mo
 and topic writes (only prints are added); Terraform. `maximum_retry_attempts = 0` on the research
 tick is the owner's call, not this round's.
 
+## Asking the assistant
+
+The owner's question, and the submission round's first-deploy check of it (T1 in the rubric
+tracker), is
+
+> Alexa, ask BloggerBear what the vision agent did for rail Sydney this week.
+
+Alexa+ and the ask page both call `vision_evidence` (`lambdas/ops_mcp/vision_evidence.py`) with
+`topic` as the operator said it, here `"rail Sydney"` and `days` 7, and say its `spoken`:
+
+> Rail access: Sydney made 3 decisions in the last 7 days: 1 first observation, 1 within the usual
+> range, and 1 change checked by the agent. The agent judged 1 real and 0 artefacts; it re-measured
+> with OpenCV once and read the news once. 2 findings were written; 1 article is waiting for
+> review, 0 were approved and 0 rejected. The decisions are on screen.
+
+Of the gate's counts (first observation, too cloudy to count, still building a baseline, within
+the usual range) only those above zero are said, so a quiet week is not a list of zeros; the
+agent's count is always said, as it is what the question is about, and the findings sentence says
+its zeros. A topic with no decision says "made no decisions in the last 7 days: no new clear scene
+was measured." and nothing more, since there is nothing on screen; "The decisions are on screen."
+closes an answer only when the table has a row. When the attempts query was cut at its 1,000 rows
+and every decision of a topic was left out as unknown, the topic is said as "For Rail access:
+Sydney, I couldn't tell which of its decisions in the last 7 days were kept.", followed by "Only
+the newest 1000 log lines were read.", never as "no new clear scene was measured".
+
+The page shows one row per decision: the topic, the site, the scene, how clear it was, OpenCV's
+measures, which measures moved and from which input (the imagery, OpenStreetMap, or both), the
+agent's verdict, what OpenCV re-measured for it, whether a finding was written, what became of its
+article, and who measured it (backend, build, CPU). The "OpenCV re-measured" cell of the look_again
+decision above reads, exactly as the code renders it:
+
+> reach 800 m: 93% clear, built-up area served 64.1% (70.0% at the topic's settings)
+
+It says "at the topic's settings", not the topic's own reach in metres, because that reach is in
+the topic's adapter configuration, which this tool does not read (rule 5: a domain's settings
+belong to its adapter, and the core names none of them); the evidence line carries only the
+re-measurement's settings. The number beside it is the same scene measured at the topic's
+settings, never the baseline. It adds the re-measurement's own coverage ("93% clear") because every `measured_` number
+the look_again step returned is shown, and the coverage says the re-measurement read the same clear
+part of the scene as the decision did, so the two shares are of the same pixels. With no topic, every topic that keeps decision evidence gets its
+own sentence, the demo topic included, and no number is summed across topics.
+
+**The result's shape.** `spoken`, `table` (12 columns), `rows` (one summary per decision),
+`topics` (one entry per topic: `topic_id`, `label`, `decisions`, and its own `counts`, the 17 keys,
+and `spend_aud`), `window`, `queries` (each `complete`, `cut` or `not_checked`), `dropped`,
+`spend_note` and `as_of`. With a `topic`, the top-level `counts` and `spend_aud` are that topic's.
+With no `topic` they are null: per-topic numbers are never summed, so a reader of the all-topics
+answer reads each topic's from `topics[].counts` and `topics[].spend_aud`. Both are also null
+when the decisions or attempts query did not finish. A scene answer adds `decision` (the summary)
+and `other_sites` (below), and its `rows` are the trace's.
+
+**One decision, step by step.** "Walk me through the latest Sydney scene" passes `scene` as
+`"latest"` (or a scene id the table showed). The page shows the trace of
+[the decision ring](#the-decision-ring), one row per step (what was measured, how it compared with
+the baseline and what the gate did, each tool the agent called, its verdict, what the pipeline did,
+what a person did), and Alexa+ hears it in fixed sentences:
+
+> That Rail access: Sydney scene was 93% clear. OpenCV measured built-up area served 70.0%,
+> stations 180. The served share and the station count moved past the topic's thresholds, from the
+> imagery and the OpenStreetMap network, so the agent was asked. It re-measured the scene with
+> OpenCV once, read the news once, and judged the change real. A finding was written. Its article
+> was approved. The steps are on screen.
+
+Facts only, as the trace states them: a re-measurement is said beside the same scene's numbers at
+the topic's settings and never compared with the baseline. A measure is said only when it is
+plausible (below a million once scaled; `SPOKEN_MEASURE_MAX`), otherwise "OpenCV measured it.";
+a decision line whose coverage is outside 0 to 1 is dropped and counted, as any other line that
+fails a check. A scene id decided for several sites of the topic (a tick decides every site in one
+Sentinel-2 tile) shows the newest one's steps, ends with "That scene was decided for 2 sites; the
+newest one's steps are on screen.", and lists the other sites' ids under `other_sites` for the page.
+
+**How it reads the evidence.**
+
+- **From the logs alone**: three fixed Logs Insights queries over the research-tick and admin-api
+  log groups in the home Region, started together and waited for within one budget of 8 seconds
+  (`WAIT_SECONDS`): the topic's `vision_decision` and `vision_triage` lines, the `research_tick`
+  lines of the attempts that made a decision, and the `moderation_decision` lines. Then one short
+  Query on the Articles table's topic index per topic with a finding written
+  (`dynamo.list_articles_for_topic`: at most 200 articles, never a Scan, and only the fields the
+  join uses: the id, status, who published it and when, and the lineage) for the article each
+  finding fed, found by its lineage's `captured_at`. The one-topic answer makes one such read; the
+  all-topics answer one per topic with a finding. The whole call has a deadline of 12 seconds from
+  its start (`DEADLINE_SECONDS`): it answers through API Gateway, which gives up after 29 seconds,
+  and on the ask page the agent's own model calls share those 29 seconds, so an Articles read that
+  would start after it is skipped, and that topic's "what a person did" is not checked, as when a
+  read fails (never "no article yet"). The `vision_site` lines are never read (24 a day per
+  site would fill the 1,000-row cap within weeks), and no `stats` aggregate is used (it would
+  count a failed attempt's lines twice).
+- **By equality, never a pattern**: the only values put into a query are a topic id that passed
+  `ID_PATTERN` and a scene id that passed `^[A-Za-z0-9_.-]{1,100}$`, each a quoted string compared
+  with `=`, so `rail-sydney` never reads `rail-sydney-demo`'s lines.
+- **Parsed, never trusted**: every line goes through `evidence.parse`, and a line is dropped and
+  counted (`dropped`) when its topic is not the one asked for, its event not the query's, its
+  decision code, stop, tool or moved measure not one the pipeline writes (the triage profiles'
+  tools, the union of the adapters' `decision_vocabulary()`), or it lacks the ids it is joined by.
+- **Kept, reported and written**, as above: a decision of an attempt with `stored: false` or no
+  `research_tick` line is not kept, counted under `not_kept` and never as a decision; a scene
+  decided twice is shown once, the kept copy first.
+- **Said when incomplete**: a query that returned the full 1,000 rows was cut ("only the newest
+  1000 log lines were read", `complete: false`); a query that did not finish is "not checked this
+  time", and the decision logs not answering in time is said as such, never as "no decisions".
+- **Spend** is the triages' `cost_usd`, a failed attempt's included, in AUD at the project's
+  fixed rate (`costing.USD_TO_AUD_RATE`), the currency of the Stats page.
+- **Everything is code-derived**: codes, ids, times and numbers, with words from fixed tables and
+  the adapters' vocabularies. There is no "(unverified)" column, so Alexa+ gets what the page
+  gets. `spoken` stays under 120 words and never says a site's name or id, a scene id, the agent's
+  reason, a news host or a build's hex.
+- **The 90-day window** is a named exception to the log reader's 30-day lookback, local to this
+  tool (`EVIDENCE_LOOKBACK_DAYS`): its queries are fixed, filter one topic by equality and read two
+  groups, and the logs keep 90 days. `days` outside 1 to 90 is clamped, and an unreadable one is
+  the default 7, as `log_review` treats its hours.
+- **Nothing new to grant**: both log groups are among those the assistant may already query, and
+  the Articles table and its indexes are among its tables; `infra/modules/ops-assistant/logs.tf`
+  is unchanged, and a test pins it. The tool writes nothing.
+
+**After the deploy**, ask the T1 question once on the page and once through Alexa+: both answers
+should say the same counts, the page should show the decisions, and "walk me through the latest
+Sydney scene" should put the trace on screen. If the answer is "The decision logs didn't answer in
+time", run the runsheet's query (a) for the topic in the console to see whether Logs Insights
+answers at all.
+
 ## Status
 
 | Part | State | Where |
@@ -258,6 +380,6 @@ tick is the owner's call, not this round's.
 | The research tick's and the admin API's lines; the `!r` prints and their AST guard | done | this pull request |
 | `log_review` leaves the lines out; the topic filter matches a whole id | done | this pull request |
 | The runsheet's Logs Insights queries and the first-deploy check | done; to be run once on dev after the deploy | this pull request |
-| The assistant and Alexa+ read the evidence from the logs (`vision_evidence`) | next | the following pull request |
+| The assistant and Alexa+ read the evidence from the logs (`vision_evidence`) | done; the T1 check to be run once after the deploy | the submission round's P2a pull request |
 | The evidence from the running state, the agent's note on screen, the worker's runs | later | after the assistant's vision round |
 | The export into git | later | the evaluation pull requests |

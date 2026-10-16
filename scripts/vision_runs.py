@@ -21,7 +21,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +36,9 @@ BUCKET_PREFIX = f"https://{BUCKET_HOST}/"
 HEAD_TIMEOUT_SECONDS = 10.0
 # The cache's index (what each stored range is, by key) inside the cache directory.
 CACHE_INDEX = "index.json"
+# The commit a copy of the code without its git history was made from (the COOL container image
+# is built with it: docker/vision-cool/Dockerfile), read only when `git` cannot say.
+GIT_SHA_ENV = "BLOGGERBEAR_GIT_SHA"
 
 
 class InputChanged(Exception):
@@ -50,7 +53,10 @@ class WrongHost(ValueError):
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    # timezone.utc, not datetime.UTC (3.11+): the COOL product's own Python may be 3.10, and the
+    # benchmark imports this module before anything else.
+    now = datetime.now(timezone.utc)  # noqa: UP017
+    return now.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def cpu_slug(cpu: str) -> str:
@@ -72,17 +78,25 @@ def make_run_id(kind: str, cpu: str, backend: str, tag: str | None = None, date:
     return "-".join(parts)
 
 
-def code_identity(root: Path = ROOT, run: Callable = subprocess.run) -> dict:
-    """`git_sha` and `dirty` (uncommitted changes under the repository) from `git`; both null when
-    the directory is not a git checkout or git is not installed."""
+def code_identity(root: Path = ROOT, run: Callable = subprocess.run, environ: dict | None = None) -> dict:
+    """`git_sha` and `dirty` (uncommitted changes to tracked files) from `git`. Untracked files do
+    not count: the session's earlier run files and build records sit untracked in the checkout
+    until they are committed, and they change no code. Without a checkout (or without git) the sha
+    is `BLOGGERBEAR_GIT_SHA` when that holds a full commit id, else null, and `dirty` is null."""
     try:
         sha = run(["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, timeout=10)
-        status = run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, timeout=10)
+        status = run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
+                     capture_output=True, text=True, timeout=10)  # fmt: skip
     except (OSError, subprocess.SubprocessError):
-        return {"git_sha": None, "dirty": None}
+        return _code_from_environment(environ)
     if sha.returncode != 0 or status.returncode != 0:
-        return {"git_sha": None, "dirty": None}
+        return _code_from_environment(environ)
     return {"git_sha": sha.stdout.strip(), "dirty": bool(status.stdout.strip())}
+
+
+def _code_from_environment(environ: dict | None) -> dict:
+    value = ((os.environ if environ is None else environ).get(GIT_SHA_ENV) or "").strip().lower()
+    return {"git_sha": value if re.fullmatch(r"[0-9a-f]{40}", value) else None, "dirty": None}
 
 
 def where(

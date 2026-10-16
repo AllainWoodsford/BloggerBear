@@ -322,12 +322,13 @@ thresholds.
 
 **A city's first network takes the measuring time.** With no network cached for the city's
 polygon, the fetch starts when `OSM_RESERVE_SECONDS` (30 s) of the budget remain, like a refresh,
-but may take the rest of the budget less `FIRST_FETCH_MARGIN_SECONDS` (10 s, for the transfer, the
-parse and the stores), never less than 30 s: about 60 s at the default `time_budget_seconds` of 70,
-about 70 s at the cap of 80. Each Overpass hop reads for up to `FIRST_FETCH_TIMEOUT_SECONDS` (75 s)
-within that deadline, and its query declares the same runtime to the server (`[timeout:N]`, the
-hop's read timeout rounded down), so Overpass neither stops a query the client still waits for nor
-runs one the client has left. A refresh of a cached network keeps 30 s and 25 s a hop
+but may take the rest of the budget less `FIRST_FETCH_MARGIN_SECONDS` (10 s, for the parse and the
+stores: a reply still arriving at the deadline is shut, so the transfer is inside it), never less
+than 30 s: about 60 s at the default `time_budget_seconds` of 70, about 70 s at the cap of 80. Each
+Overpass hop reads for up to `FIRST_FETCH_TIMEOUT_SECONDS` (75 s) within that deadline, and its
+query declares the same runtime to the server (`[timeout:N]`, the hop's read timeout rounded down),
+so Overpass neither stops a query the client still waits for nor runs one the client has left.
+A refresh of a cached network keeps 30 s and 25 s a hop
 (`osm.TIMEOUT_SECONDS`): the cached copy serves meanwhile. A first fetch that takes most of the
 minute leaves under 45 s, so the city is measured on the next tick, against the network now
 cached; a failed one is tried again on the next tick (no 6-hour wait: nothing serves meanwhile).

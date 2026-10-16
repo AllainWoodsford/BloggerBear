@@ -26,12 +26,13 @@ that followed it, the tool that interrogates a topic's Findings ([Topic findings
 | Asked | Tool | Reads | Returns |
 |---|---|---|---|
 | "How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney measured?", "Why wasn't Botany Bay measured?" (a site) | **`vision_status(topic?)`** (new) | Topics (one Scan); where vision is on, each vision topic's running state; the pipeline config (each topic's research interval) and this week's stats row (triage spend: the triage agent's calls only, since the worker Lambda's own cost is not tracked) | whether the worker is on and where; per topic and site: when last measured, the newest scene, coverage, the measure and triage, and why a site was not measured; a card per problem with its fix; the sites as a `table` |
-| "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each | one sentence: the worker off, or the vision topics with a site not measured on the last try, or how many were not checked; the same cards |
+| "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each | one sentence: the worker off, or the vision topics whose sites setting doesn't parse and those with a site not measured on the last try (both clauses in the one sentence when both hold), or how many were not checked; the same cards |
 | "Watch the Sydney topic" | `watch(topic)`, then `watch_list` | a watched vision topic's running state, at most two per call | "research is on time" no longer hides sites that were not measured |
 | "Any errors in the vision worker?", "Look at the logs for the rail Sydney topic" | `log_review` | the worker's log group **in `vision_region`**, beside the home Region's functions | the worker's errors by root cause, `scene_unreadable` among them ([the log reader](ops-assistant-log-reader.md#a-second-region-the-vision-worker)) |
 | "How does the vision pipeline work?" | `architecture(feature="vision-pipeline")` (new feature) | nothing: the catalogue | nine steps with this environment's names |
 | "How do I set up a rail topic?" | `cli_guides("vision")` (new guide) | nothing: the CLI reference | the steps, with a sites config never filled in (below) |
 | "How can I check the worker myself?" | `investigate("vision")` (new runsheet) | nothing: the runsheets | the worker's log and function with console links in the vision Region, the research tick's log, the running state in S3 |
+| "What did the vision agent do for rail Sydney this week?", "Walk me through the latest Sydney scene" | **`vision_evidence(topic?, days?, scene?)`** (added in the submission round) | the evidence lines in the research-tick and admin-api log groups (three fixed queries, one 8 s budget, up to 90 days); for a finding written, the Articles table's topic index | per topic: the decisions by code, what the agent did and decided, the findings written, what a person did with each article, and the agent's spend in AUD; the decisions, or one decision's trace, as a `table`; all code-derived, so a voice caller gets the same ([the evidence trail](vision-evidence.md#asking-the-assistant)) |
 
 **Why a site was not measured**, in code (`ops_mcp/vision_status.py`, `classify`), one class per
 site, each a fixed set of words and, for a problem, a card (`ops_mcp/suggestions.py`):
@@ -82,7 +83,16 @@ body is read; nothing over 24 MiB is read, and `pipeline_health` and the watch r
 8 MiB. Each call has a deadline (8 s, 3 s for `pipeline_health`, 2 s per watched topic), S3 is
 asked with a 1 s connect and 2 s read timeout and no retry, a body is read in chunks with the
 deadline checked between them, and every body is closed and every thread joined before the
-answer. A state not read in time is "not checked this time", never "fine".
+answer. A parse is not interrupted once begun, so a state is read and parsed only with time left
+to parse its size at 4 MiB per CPU-second, a third under the slowest shape measured (a dict-dense
+24 MiB state at 4.0 CPU-seconds, 6.0 MiB per CPU-second; a real one of that size takes 0.7), scaled
+by the share of a vCPU the function's memory buys (Lambda gives one vCPU at 1,769 MB; the function
+has 512 MB, 0.29 of one, so 1.16 MiB a second): a call ends by its deadline, or, when a parse begun
+with that time to spare runs slower still, up to that parse's length later. At 512 MB a 24 MiB
+state needs 20.7 s left and a real 11.3 MB rail state 9.3 s: nothing over about 9 MiB is parsed
+within the 8 s survey, so such a topic's sites read "not checked this time" until the function has
+more memory (at 1,769 MB: 6 s for 24 MiB, 2.7 s for 11.3 MB), which is the owner's call. A state
+not read in time is "not checked this time", never "fine".
 
 ## What is spoken, what is on screen
 
@@ -123,12 +133,13 @@ aloud" are prose, and injected text can steer a model past prose. Both are now h
 2. **No echo.** The Ledger keeps every string under an `untrusted` key and every cell of an
    "(unverified)" column, normalised as the instruction check normalises (`redact.normalised`:
    NFKD, so an accented letter is its letter and a mark; format characters such as the two
-   joiners, marks and the Hangul fillers removed; control characters read as spaces; whitespace
-   collapsed), then case-folded, at most 64 KB a turn. The answer is normalised the same way, so
-   a joiner after every word of a cell, or a mark after every letter, does not hide its repeat.
-   An answer that shares a run of six words, or thirty characters, with any of it is replaced
-   by the tools' own `spoken` sentences (then the personal-data sweep, as before), and the
-   handler's log line says `echo=1`.
+   joiners, marks, the Hangul fillers and the blank symbols removed; control characters read as
+   spaces; whitespace collapsed), Hangul syllables recomposed (NFKD had split each into its jamo,
+   and the thresholds count characters), then case-folded, at most 64 KB a turn. The answer is
+   normalised the same way, so a joiner after every word of a cell, or a mark after every letter,
+   does not hide its repeat. An answer that shares a run of six words, or thirty characters, with
+   any of it is replaced by the tools' own `spoken` sentences (then the personal-data sweep, as
+   before), and the handler's log line says `echo=1`.
 
 ## `redact.scrub`, hardened first
 
@@ -136,17 +147,44 @@ Both new tools rely on `redact.scrub` to withhold instruction-like text, and its
 get past: it ran on the raw text, with single spaces in the pattern, so `"ignore\nprevious
 instructions"`, a tab, a double or non-breaking space, a zero-width joiner inside a word or
 fullwidth letters came back as the clean phrase. Now the check runs on a normalised copy (NFKD,
-so an accented letter is its letter and a mark; every format character, mark and Hangul filler
-read as ignorable; C0 and C1 control characters and line separators read as spaces; whitespace
-collapsed). Marks and the fillers are read like format characters because they are not format
-characters: a combining grapheme joiner, a variation selector or a Hangul filler after every
-letter left the words readable and the old copy unmatched, and so did a visible mark (an overline,
-a dot below). The copy is read two ways, with the ignorable characters removed (inside a word, one
-hid a letter) and with each one as a space (between words, one glued the words into a single word
-the pattern does not match), and a line that matches in either is withheld.
+so an accented letter is its letter and a mark; every format character, mark, Hangul filler and
+blank symbol read as ignorable; C0 and C1 control characters and line separators read as spaces;
+whitespace collapsed). Marks, the fillers and the blanks are read like format characters because
+they are not format characters: a combining grapheme joiner, a variation selector or a Hangul
+filler after every letter left the words readable and the old copy unmatched, and so did a visible
+mark (an overline, a dot below); a Braille blank, the musical null notehead or the object
+replacement character (symbols that show nothing) between the words did the same. The copy is read
+two ways, with the ignorable characters removed (inside a word, one hid a letter) and with each one
+as a space (between words, one glued the words into a single word the pattern does not match). The
+removed copy is read against the pattern with its spaces optional and no word boundary, since one
+ignorable inside every word and between the words glues the words in the one copy and splits them
+in the other (a zero-width space inside and between each word of "ignore previous instructions"
+reads as `ignorepreviousinstructions` in the one and `ig nore pr evious in structions` in the
+other); a line that matches in either is withheld. That glued form is broader ("filesystem: 91%
+used" reads as "system:", "you are nowhere near it" as "you are now"), so it reads only a line that
+hid something: one with an ignorable character in it, or one whose ignorable characters were
+removed before the check (from the swept text below; a vision site's name, which the pipeline
+stores through `common/figures.plain_text`). A plain line, such as the assistant's own
+"ops_assistant: listed 31 tools", is read against the pattern as written and shown.
 `looks_like_instructions` reads both copies, so every caller gets them, and it reads the text as
-written, before the invisible characters are removed from what is returned. The returned text
-holds nothing the check did not read: every format character (bidi overrides and isolates,
+written, before the invisible characters are removed from what is returned. Where the result is cut
+to a limit (`scrub`: 300 characters by default, 60 and 120 in `vision_status`'s name and error
+cells, 280 in `topic_findings`' summary, 120, 40 and 10 in `api_errors`; `samples._redact_text`:
+300), the check reads a bounded start, four times that limit in characters it does not ignore,
+found by a plain category scan with no NFKD (a character can decompose to eighteen code points, and
+a 256K-character line of U+FDFA took 5.5 s and 494 MB to scrub when the check read all of it). It
+reads that start twice: of the text as written, and of the text as swept (invisible characters
+out, placeholders in, whitespace collapsed), before the swept text is cut, since the collapse and
+the placeholders can bring a phrase from past the first start up to the cut, where a check of the
+cut text alone saw only its first words ("...Ignore all previous instruc…"). Then the cut text
+itself, which a cut can make a phrase of ("you are nowhere" cut to "you are now…"). So a phrase
+within the line's swept start (four times the caller's limit) is withheld and counted; the start
+reaches three times the limit past the cut, more than the pattern's longest phrase (39 characters)
+at every limit but the 10 of an HTTP method, so a phrase that begins in what is returned is read
+whole; and one wholly past the start is never shown (the line is cut first, and the operator still
+sees its start) and so not counted. The copies themselves are built with `str.translate` over the
+distinct characters of the text, not a per-character loop. The returned text holds nothing the
+check did not read: every format character (bidi overrides and isolates,
 zero-width spaces, a soft hyphen, and the Unicode tag characters, which can spell an instruction
 nobody sees), surrogate, private-use or unassigned code point, and the invisible marks and fillers
 outside Cf (the combining grapheme joiner, the variation selectors, the Hangul fillers: Unicode's
@@ -254,3 +292,4 @@ and `python-ci.yml` runs the tests when a skill changes.
 | `architecture(feature="vision-pipeline")`; `cli_guides("vision")`; sites never filled in | done | #300 |
 | `vision.tf`, `OPS_VISION_REGION`, `OPS_SCREEN_CLIENT_IDS` | done; `terraform test` not run locally | #300 |
 | Interrogating a topic's Findings: `topic_findings`, `GET /topics/{topic_id}/findings`, `findings list`, the `topic-findings` skill, `FINDINGS_TABLE` | done; `terraform validate` not run locally | #307 |
+| `vision_evidence`: what the pipeline measured and decided, and what a person did, from the logs | done | the submission round ([vision-evidence.md](vision-evidence.md#asking-the-assistant)) |

@@ -890,3 +890,68 @@ def test_a_running_state_stored_on_a_quiet_tick_is_said_so(aws_resources, monkey
     assert [(line["outcome"], line["stored"], "finding" in line) for line in lines] == [
         ("material_change", True, True), ("no_change", True, False),
     ]  # fmt: skip
+
+
+# --- the prefetch_network event (the Admin API's network_prefetch trigger) -----------------------
+
+
+def _put_rail_topic(paused=False):
+    item = {
+        "topic_id": "trains",
+        "name": "Trains",
+        "adapter": "rail_access",
+        "adapter_config": {
+            "sites": [{"id": "sydney", "name": "Sydney", "polygon": [
+                [Decimal(lon), Decimal(lat)]
+                for lon, lat in (("150.86", "-34.16"), ("151.56", "-34.16"),
+                                 ("151.56", "-33.58"), ("150.86", "-33.58"))
+            ]}],
+        },  # fmt: skip
+        "is_financial": False,
+    }
+    if paused:
+        item["paused"] = True
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(Item=item)
+
+
+def _overpass_network(polygon, *, now=None, **kwargs):
+    return {"source": "overpass", "fetched_at": now.isoformat(), "query_url": "https://overpass-api.de/x",
+            "ways": [], "stations": [], "pois": [],
+            "counts": {"ways": 0, "stations": 0, "pois": 0, "points": 0}, "truncated": False}  # fmt: skip
+
+
+def test_a_prefetch_event_stores_the_network_in_s3_and_records_no_research(aws_resources, capsys):
+    from common import vision_sites
+
+    _put_rail_topic()
+    with patch.object(RailAccessAdapter, "fetch_network", staticmethod(_overpass_network)):
+        result = research_tick_handler.handler({"topic_id": "trains", "prefetch_network": True}, None)
+
+    assert result["status"] == "network_prefetched" and result["topic_id"] == "trains"
+    assert [site["status"] for site in result["sites"]] == ["stored"]
+    stored = vision_sites.load_network("trains", "sydney")
+    assert stored["site_key"] and stored["fetched_at"] == result["sites"][0]["fetched_at"]
+    assert vision_sites.load_network("trains", "melbourne") is None  # a missing object is None
+    topics = boto3.resource("dynamodb", region_name=REGION).Table("Topics")
+    topic = topics.get_item(Key={"topic_id": "trains"})
+    assert "last_research_at" not in topic["Item"]
+    s3 = boto3.client("s3", region_name=REGION)
+    keys = [o["Key"] for o in s3.list_objects_v2(Bucket="bloggerbear-content-test").get("Contents", [])]
+    assert keys == [vision_sites.network_key("trains", "sydney")]  # no running state, no snapshot
+    assert "network_prefetch trains/sydney: stored" in capsys.readouterr().out
+
+
+def test_a_prefetch_event_refuses_a_paused_topic_or_one_with_no_network(aws_resources):
+    _put_rail_topic(paused=True)
+    with patch.object(RailAccessAdapter, "fetch_network") as fetch:
+        result = research_tick_handler.handler({"topic_id": "trains", "prefetch_network": True}, None)
+    assert result == {"status": "paused", "topic_id": "trains"} and not fetch.called
+
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item={"topic_id": "gh", "name": "GH", "adapter": "github_trending", "adapter_config": {},
+              "is_financial": False}  # fmt: skip
+    )
+    result = research_tick_handler.handler({"topic_id": "gh", "prefetch_network": True}, None)
+    assert result == {"status": "error", "reason": "adapter github_trending has no network to prefetch"}
+    result = research_tick_handler.handler({"topic_id": "nope", "prefetch_network": True}, None)
+    assert result == {"status": "error", "reason": "unknown topic_id: nope"}

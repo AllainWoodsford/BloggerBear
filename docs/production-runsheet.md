@@ -266,8 +266,11 @@ satisfactory, in order:
 3. Create the topic in production with the same `adapter_config` that worked on dev (for the
    rail cities, the same bodies from `scripts/rail_topics.example.json`, as in the runsheet's
    [`rail_access` topics](deployment-runsheet.md#rail_access-topics)), and trigger its first tick
-   by hand. The CLI waits 30 s for the Finding and a vision tick that measures a scene can run
-   longer, so "No new Finding after 30s" is expected: wait about two minutes, or until
+   by hand. A large rail city's first tick only fetches its OpenStreetMap network and measures
+   nothing (Sydney's takes most of a minute: the runsheet's "A large city's first network can take
+   a minute"), so trigger a second tick, or wait for the next hourly one, to measure it. The CLI
+   waits 30 s for the Finding and a vision tick that measures a scene can run longer, so "No new
+   Finding after 30s" is expected: wait about two minutes after the tick that measures, or until
    `topics findings <id>` shows the Finding, before you trigger its daily cycle.
 
 `force_manual_review` is forced on every vision topic: **every vision article waits for a

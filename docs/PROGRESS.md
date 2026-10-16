@@ -762,6 +762,27 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   cached network keeps 30 s. The third of the first live tick's defects, after #305 (the content
   bucket's ListBucket) and #310 (the Overpass User-Agent) (#312, rail PR U;
   `lambdas/common/adapters/rail_access.py`, `lambdas/common/osm.py`)
+- [x] The submission round's `vision_evidence`: the operator's assistant and Alexa+ answer "what did
+  the vision agent do for rail Sydney this week?" from the evidence lines alone, read-only: three
+  fixed Logs Insights queries by field equality within one 8-second budget, every line parsed and
+  checked, kept, reported and written told apart, one decision's trace step by step, what a person
+  did from the Articles table's topic index, the agent's spend in AUD, one sentence per topic and
+  nothing summed across topics, and no new grant (#313, submission PR P2a, on the integration branch
+  after the evidence trail; `lambdas/ops_mcp/vision_evidence.py`, `lambdas/common/dynamo.py`;
+  [design](enhancements/vision-evidence.md#asking-the-assistant))
+- [x] A slow city's network fetched out of band: `topics trigger <topic> --pipeline
+  network_prefetch` runs the research tick's function only to fetch each site's network, with up to
+  90 s per Overpass reply and 100 s in all, into `vision/<topic>/<site>/network.json`; the next tick
+  adopts it for a site with none, or whose own is stale and older. No Finding, running state or
+  research time is written. For a city that still misses #312's first-fetch minute (#315, rail;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/research_tick_handler.py`)
+- [x] `vision_evidence`'s review nits: the call has a 12-second deadline, and an Articles read that
+  would start after it is said as not checked; that read takes only the fields the join uses and at
+  most 200 articles; no "on screen" when nothing is; a topic whose decisions were all cut off says
+  so, never "nothing was measured"; titles keep their spend whole; a scene of several sites says
+  how many; implausible numbers are never spoken; the vision runsheet lists the tool. The rubric
+  tracker's rows as of 16 October (C1 to C3, S3, S7, A2, A3, O1 met, O2, O5) (#322, rail PR W;
+  `lambdas/ops_mcp/vision_evidence.py`, `docs/hackathon/rubric-tracker.md`)
 
 ## Backlog / not yet scheduled
 

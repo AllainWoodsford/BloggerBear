@@ -4067,3 +4067,42 @@ def test_changed_config_knows_no_key_and_keeps_only_numbers_and_switches():
     }  # fmt: skip
     assert admin_api_handler.changed_config({"a": 1}, "not a dict")["config_keys"] == ["a"]
     assert admin_api_handler.changed_fields({"a": 1, "b": 2}, {"a": 1, "b": 3, "c": None}) == ["b", "c"]
+
+
+def test_trigger_network_prefetch_invokes_the_research_tick_for_a_rail_topic_only(aws_resources):
+    _put_topic({**TOPIC, "topic_id": "trains", "adapter": "rail_access"})
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "trains"},
+            body={"pipeline": "network_prefetch"},
+        )
+        result = admin_api_handler.handler(event, None)
+
+    assert result["statusCode"] == 202
+    assert json.loads(result["body"]) == {"triggered": "network_prefetch", "topic_id": "trains"}
+    mock_client.invoke.assert_called_once_with(
+        FunctionName="research-tick-fn",
+        InvocationType="Event",
+        Payload=json.dumps({"topic_id": "trains", "prefetch_network": True}).encode("utf-8"),
+    )
+
+    _put_topic()  # github-trending: no network to prefetch
+    mock_client = MagicMock()
+    with patch("admin_api_handler._get_lambda_client", return_value=mock_client):
+        event = _event(
+            "POST /topics/{topic_id}/trigger",
+            path_params={"topic_id": "github-trending"},
+            body={"pipeline": "network_prefetch"},
+        )
+        result = admin_api_handler.handler(event, None)
+    assert result["statusCode"] == 400 and "rail_access" in json.loads(result["body"])["error"]
+    mock_client.invoke.assert_not_called()
+
+    event = _event(
+        "POST /topics/{topic_id}/trigger",
+        path_params={"topic_id": "trains"},
+        body={"pipeline": "network_prefetch", "force": True},
+    )
+    assert admin_api_handler.handler(event, None)["statusCode"] == 400
