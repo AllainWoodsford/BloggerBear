@@ -774,6 +774,128 @@ A topic may hold up to three cities (`MAX_RAIL_SITES`), measured one per tick, e
 network in the running state; one city per topic is the design, since each city's network is
 about 3 MB of the state and articles are about one city.
 
+### Evidence: what the pipeline measured and decided
+
+Every step the vision pipeline takes leaves one JSON line in the logs, and every decision an
+entry in the site's decision ring in the running state ([the evidence
+trail](enhancements/vision-evidence.md)). The lines are read in the CloudWatch console (Logs →
+Logs Insights, pick the Region, the log group and a window) with the fixed queries below, which
+filter by field equality: a query on `rail-sydney` never matches `rail-sydney-demo`. The
+operator's assistant and Alexa+ read the same lines in the next round.
+
+- (a), (b), (c), (c2) and (f) run on `/aws/lambda/<prefix>-<env>-research-tick` in the home
+  Region;
+- (d) and (g) on `/aws/lambda/<prefix>-<env>-vision-worker` in `us-west-2` (the vision Region);
+- (e) on `/aws/lambda/<prefix>-<env>-admin-api` in the home Region.
+
+```
+(a) A topic's decisions (one topic: equality, so rail-sydney never matches rail-sydney-demo)
+fields @timestamp, site_id, scene_id, code, moved, network_changed, verdict, reported, coverage, tick, run
+| filter evidence = "bloggerbear/1" and event = "vision_decision" and topic_id = "rail-sydney"
+| sort @timestamp desc | limit 50
+
+(b) What the agent did
+fields @timestamp, topic_id, site_id, scene_id, verdict, stop, tools, look_again, steps_total, elapsed_ms, cost_usd
+| filter evidence = "bloggerbear/1" and event = "vision_triage"
+| sort @timestamp desc | limit 50
+
+(c) One tick, end to end, with Lambda's own lines (paste its tick id)
+fields @timestamp, event, run, site_id, outcome, code, stored, worker_request_ids, worker_request_id, @message
+| filter tick = "<tick id>" or @requestId = "<tick id>"
+| sort @timestamp asc
+
+(c2) The agent's whole trail for that tick (read the JSON; do not name flattened step fields)
+fields @timestamp, @message
+| filter evidence = "bloggerbear/1" and event = "vision_triage" and tick = "<tick id>"
+
+(d) The worker, by build and CPU (us-west-2; evaluation and benchmark calls left out)
+filter evidence = "bloggerbear/1" and event = "vision_measure" and site_id not like /^(eval|bench)-/
+| stats count(*) as runs, pct(total_ms, 50) as p50_ms, pct(total_ms, 95) as p95_ms,
+        max(total_ms) as max_ms, max(rss_peak_mb) as peak_mb by backend, build, cpu, ok, code
+
+(e) What people decided (the admin-api group)
+fields @timestamp, event, topic_id, article_id, queue_id, decision, from_status, action, config_keys
+| filter evidence = "bloggerbear/1" and event in ["moderation_decision", "topic_changed"]
+| sort @timestamp desc
+
+(f) Ticks by outcome, and the attempts that timed out (two queries on the research-tick group)
+filter evidence = "bloggerbear/1" and event = "research_tick"
+| stats count(*) by topic_id, outcome, stored
+
+filter @type = "REPORT"
+| stats count(*) as runs, sum(strcontains(@message, "Status: timeout")) as timeouts
+
+(g) The worker's runs as Lambda saw them (us-west-2): the ones killed before they could log
+filter @type = "REPORT"
+| stats count(*) as runs, sum(strcontains(@message, "Status: timeout")) as timeouts,
+        max(@maxMemoryUsed) as max_memory_bytes, pct(@duration, 95) as p95_ms
+```
+
+Reading a line: `event` says the step, `tick` the research tick's Lambda request id and `run`
+the attempt (a tick Lambda retried after a timeout keeps its request id; `run` is new each time).
+A decision is **kept** when its tick's `research_tick` line says `stored: true`; a tick that
+failed after deciding says `stored: false`, a tick that timed out has no `research_tick` line at
+all, and in both cases the scene is measured and decided again on the next tick. A decision whose
+tick's line carries `finding` equal to its `at` wrote a Finding. The worker's lines carry no topic
+id: join them to a tick through `worker_request_id` (c), or read them by site id (d), which is why
+the demo topic's site is `demo-sydney`, not `sydney`.
+
+**The first-deploy check**, once, on dev, right after the deploy that carries this:
+
+1. Force a tick (`python scripts/admin_cli.py topics trigger rail-sydney --pipeline
+   research_tick`) and run (c) with its tick id (the `START RequestId:` line of the invocation,
+   or the `tick` field of any evidence line in the window). Every line of the tick must come
+   back with Lambda's own `START`, `END` and `REPORT` lines.
+2. Take a `worker_request_id` from the `vision_site` line. In `us-west-2`, on the worker's group,
+   run `filter @requestId = "<id>" or request_id = "<id>"`: the worker's `vision_measure` line
+   and its `REPORT` line must both come back.
+3. Check that (a) discovers its fields (the console offers `site_id`, `code`, `moved` in the
+   fields pane), and that one line of each event parses. Paste one line into the parser, from
+   the repository root:
+
+   ```bash
+   echo '<one evidence line, as the console shows it>' | python -c "import sys; sys.path.insert(0, 'lambdas'); from common import evidence; print(evidence.parse(sys.stdin.readline()))"
+   ```
+
+   The parser prints the line's fields as a dict, or `None` for a line it does not take. In the
+   same window, confirm that a multi-line print (any `Traceback`) came through as several
+   CloudWatch events, one per line, which is what the Text log format does and what the
+   evidence writer's single-line ASCII relies on.
+4. **The retry key.** Look in the research-tick group for two `START RequestId: <id>` lines with
+   the same id (a tick Lambda retried after a timeout). If a retried attempt ever shows a new id,
+   `run` is still the attempt key and nothing changes; record which it is here.
+
+**The demo topic's two-tick procedure.** A city's second clear scene can come days after the
+deploy, and the agent runs only when the numbers move. The demo topic makes the first live
+triage happen on a known day: thresholds of 0 send its second clear scene to the agent whatever
+the numbers did. The report and the video disclose it as such, beside its thresholds, and its
+articles are rejected in the inbox, never published.
+
+1. **Pick two scenes.** List the Sydney tile's (56HLH) items of the last 30 days with each
+   item's STAC cloud cover and its coverage over the Sydney polygon. Choose **A**, an older item
+   with site coverage at least 0.95; **B**, the newest item with STAC cloud cover at most 40 that
+   covers the site whole, with site coverage at least 0.6 (and B is not A); and a cloud cover
+   **X** with `A.cloud <= X <` the cloud cover of every item newer than A that covers the site
+   whole, so that the newest item at cloud cover X or less is A (the scene search sorts newest
+   first and keeps the first that covers the site whole). If no such pair exists in the last 30
+   days, use the evaluation's replay trace and say so.
+2. **Create the topic** `rail-sydney-demo`, named "Rail access: Sydney (demo)" (so every spoken
+   count says which topic it is), with the Sydney polygon but **site id `demo-sydney`** (so the
+   worker's lines, which carry no topic id, are told apart from the city's),
+   `served_share_threshold: 0`, `desert_relative_threshold: 0`, `min_baseline: 1`,
+   `max_cloud_cover: X`, `lookback_days` large enough to reach A, and Sydney's cadence.
+3. **Tick 1.** Force a tick. A is measured; it is the topic's first observation (a Finding, then
+   a held article: reject it).
+4. **Tick 2.** `python scripts/admin_cli.py topics update rail-sydney-demo --adapter-config-json
+   '<the same config with max_cloud_cover 40 and lookback_days 20>'` (`adapter_config` is a
+   whole-block replace: send all of it), then force a tick. B is not in the site's history, so
+   it is measured; with both thresholds at 0 the verdict is material and goes to the agent.
+5. **Check** with (b) and (c), and with the assistant's `vision_evidence` once it is live.
+6. **Afterwards**, once its articles are rejected and the trace is captured, pause the demo topic
+   (`topics pause rail-sydney-demo`): every later clear scene would otherwise cost a worker run
+   and a Bedrock triage, measuring Sydney's scenes a second time. Delete it (`topics delete`) only
+   after the last export.
+
 ### The COOL backend and the benchmark
 
 COOL (OpenCV's Graviton-tuned OpenCV 5) is what the competition's COOL award scores, and it is

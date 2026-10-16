@@ -381,6 +381,7 @@ and never calls an area safe, clear or unaffected. A topic's own `primary_focus`
 | What | Where |
 |---|---|
 | Per-site history, `last_error`, `last_attempt_at`, triage trails | `snapshots/<topic>/running-state.json` in the content bucket, and each Finding's snapshot (`snapshots/<topic>/<captured_at>.json`) |
+| Each site's decision ring: the last 12 decisions, each with the numbers it was made from, its code, what moved, the agent's trail with each tool's result, who measured, and whether it was reported ([the evidence trail](vision-evidence.md)) | `decisions` on the site's record in the same running state; one `vision_decision` line per entry in the research tick's log |
 | The rail task's cached OpenStreetMap network, per site, with its polygon's `site_key`, `network_error` after a failed refresh, and `failed_scene` after a refusal | The same running state (never in a prompt or the review evidence) |
 | When the topic's first observation was reported | `first_observed_at` in the running state |
 | Figures, as the worker drew them | `vision/<topic>/<site>/<scene>.png` in the content bucket (private) |
@@ -483,8 +484,12 @@ news results are cut (title 200, snippet 300, source 100 characters) and made on
 a link kept only when it is http(s) and at most 500 characters, a date only when it is one; the
 brief carries at most 20 flags with `flag_count`, and never the network or the station list. Its
 reason is one plain line of at most 300 characters, and a summary quotes it as
-`the vision agent's note (not a measurement): "…"`. The trail (tools, inputs, outcome, verdict,
-reason, model, tokens) is stored in the state under `triage`, and the spend on the Stats page.
+`the vision agent's note (not a measurement): "…"`. The trail, with each tool's result (what
+`look_again` measured at which settings, the previous scene's id, how many scenes or news results
+the other tools gave), how the loop stopped, its time and its spend, is kept in each site's
+decision ring in the running state (the last 12 decisions, `common/vision_decisions.py`) and
+logged as one `vision_triage` line of codes and numbers ([the evidence trail](vision-evidence.md));
+the spend lands on the Stats page.
 
 ### 6.4 Running state
 
@@ -818,8 +823,9 @@ None of this is automatic.
 3. COOL's price after the trial.
 4. Inter-region transfer cost of the worker's replies against reading `sentinel-cogs` from Sydney:
    measure both on dev.
-5. Lambda `arm64`'s CPU generation: adding the benchmark's `cpu_identity` to the worker's reply
-   would answer it from one invoke.
+5. Lambda `arm64`'s CPU generation: answered from the first invoke once deployed, by the worker's
+   `build.cpu` (`common/vision_contract.cpu_identity`, shared with the benchmark) in its reply and
+   its `vision_measure` line; the runsheet's query (d) groups the worker's runs by build and CPU.
 6. Whether "Sentinel models" in the original brief meant the Sentinel-2 data (assumed here) or a
    geospatial model trained on it; the latter would be another worker backend.
 7. **The COOL run on Graviton**, by the operator (§9): the benchmark's Graviton stock and COOL

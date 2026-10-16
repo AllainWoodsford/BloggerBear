@@ -718,6 +718,16 @@ All shipped and deployed; the design and decisions for each are in
   for the assistant's work after #285; `lambdas/ops_mcp/vision_status.py`,
   `lambdas/common/adapters/base.py`, `lambdas/ops_agent/policy.py`,
   `infra/modules/ops-assistant/vision.tf`; [design](enhancements/ops-assistant-vision.md))
+- [x] The submission round's evidence trail: one JSON line of codes and numbers per step (a tick
+  ran, a site's turn, OpenCV measured, the numbers were compared, the agent decided, a person
+  decided, a topic changed), a decision ring of the last 12 decisions per site in the running
+  state with the agent's trail and each tool's result, the worker's request id on every result,
+  the worker's own line with its CPU, the research tick's and the admin API's lines, `log_review`
+  leaving the lines out and its topic filter matching a whole id, and the runsheet's Logs Insights
+  queries (on the integration branch after the assistant's vision round;
+  `lambdas/common/evidence.py`, `lambdas/common/vision_decisions.py`,
+  `lambdas/common/vision_triage.py`, `lambdas/vision_worker_handler.py`;
+  [design](enhancements/vision-evidence.md))
 
 ## Backlog / not yet scheduled
 
