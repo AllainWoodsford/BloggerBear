@@ -19,9 +19,10 @@ The evidence has three homes:
 
 - **One JSON line per step, in the logs** (`lambdas/common/evidence.py`): the research tick, the
   two vision adapters, the vision worker and the admin API each print one line per step. The logs
-  are kept 90 days in both Regions, and Logs Insights reads them in the console today (the
+  are kept 90 days in both Regions, and Logs Insights reads them in the console (the
   queries are in the [deployment runsheet](../deployment-runsheet.md#evidence-what-the-pipeline-measured-and-decided));
-  the operator's assistant and Alexa+ read them in the next pull request.
+  the operator's assistant and Alexa+ read them with `vision_evidence`
+  ([Asking the assistant](#asking-the-assistant)).
 - **A decision ring in the running state** (`lambdas/common/vision_decisions.py`): per site, the
   last twelve decisions with the agent's whole trail, each tool's result included.
 - **An export into git**, later in the round, which makes the code-derived part permanent.
@@ -246,6 +247,88 @@ signature and the model's input; the history entry's shape; `stats_tracking`; mo
 and topic writes (only prints are added); Terraform. `maximum_retry_attempts = 0` on the research
 tick is the owner's call, not this round's.
 
+## Asking the assistant
+
+The owner's question, and the submission round's first-deploy check of it (T1 in the rubric
+tracker), is
+
+> Alexa, ask BloggerBear what the vision agent did for rail Sydney this week.
+
+Alexa+ and the ask page both call `vision_evidence` (`lambdas/ops_mcp/vision_evidence.py`) with
+`topic` as the operator said it, here `"rail Sydney"` and `days` 7, and say its `spoken`:
+
+> Rail access: Sydney made 3 decisions in the last 7 days: 1 first observation, 1 within the usual
+> range, and 1 change checked by the agent. The agent judged 1 real and 0 artefacts; it re-measured
+> with OpenCV once and read the news once. 2 findings were written; 1 article is waiting for
+> review, 0 were approved and 0 rejected. The decisions are on screen.
+
+The page shows one row per decision: the topic, the site, the scene, how clear it was, OpenCV's
+measures, which measures moved and from which input (the imagery, OpenStreetMap, or both), the
+agent's verdict, what OpenCV re-measured for it ("reach 800 m: built-up area served 64.1% (70.0%
+at the topic's settings)"), whether a finding was written, what became of its article, and who
+measured it (backend, build, CPU). With no topic, every topic that keeps decision evidence gets its
+own sentence, the demo topic included, and no number is summed across topics.
+
+**One decision, step by step.** "Walk me through the latest Sydney scene" passes `scene` as
+`"latest"` (or a scene id the table showed). The page shows the trace of
+[the decision ring](#the-decision-ring), one row per step (what was measured, how it compared with
+the baseline and what the gate did, each tool the agent called, its verdict, what the pipeline did,
+what a person did), and Alexa+ hears it in fixed sentences:
+
+> That Rail access: Sydney scene was 93% clear. OpenCV measured built-up area served 70.0%,
+> stations 180. The served share and the station count moved past the topic's thresholds, from the
+> imagery and the OpenStreetMap network, so the agent was asked. It re-measured the scene with
+> OpenCV once, read the news once, and judged the change real. A finding was written. Its article
+> was approved. The steps are on screen.
+
+Facts only, as the trace states them: a re-measurement is said beside the same scene's numbers at
+the topic's settings and never compared with the baseline.
+
+**How it reads the evidence.**
+
+- **From the logs alone**: three fixed Logs Insights queries over the research-tick and admin-api
+  log groups in the home Region, started together and waited for within one budget of 8 seconds
+  (`WAIT_SECONDS`): the topic's `vision_decision` and `vision_triage` lines, the `research_tick`
+  lines of the attempts that made a decision, and the `moderation_decision` lines. Then, for a
+  topic with a finding written, one Query on the Articles table's topic index
+  (`dynamo.list_articles_for_topic`, at most 200 articles, never a Scan) for the article each
+  finding fed, found by its lineage's `captured_at`. Eight seconds and a short DynamoDB read keep
+  a voice answer inside Alexa's own limit. The `vision_site` lines are never read (24 a day per
+  site would fill the 1,000-row cap within weeks), and no `stats` aggregate is used (it would
+  count a failed attempt's lines twice).
+- **By equality, never a pattern**: the only values put into a query are a topic id that passed
+  `ID_PATTERN` and a scene id that passed `^[A-Za-z0-9_.-]{1,100}$`, each a quoted string compared
+  with `=`, so `rail-sydney` never reads `rail-sydney-demo`'s lines.
+- **Parsed, never trusted**: every line goes through `evidence.parse`, and a line is dropped and
+  counted (`dropped`) when its topic is not the one asked for, its event not the query's, its
+  decision code, stop, tool or moved measure not one the pipeline writes (the triage profiles'
+  tools, the union of the adapters' `decision_vocabulary()`), or it lacks the ids it is joined by.
+- **Kept, reported and written**, as above: a decision of an attempt with `stored: false` or no
+  `research_tick` line is not kept, counted under `not_kept` and never as a decision; a scene
+  decided twice is shown once, the kept copy first.
+- **Said when incomplete**: a query that returned the full 1,000 rows was cut ("only the newest
+  1000 log lines were read", `complete: false`); a query that did not finish is "not checked this
+  time", and the decision logs not answering in time is said as such, never as "no decisions".
+- **Spend** is the triages' `cost_usd`, a failed attempt's included, in AUD at the project's
+  fixed rate (`costing.USD_TO_AUD_RATE`), the currency of the Stats page.
+- **Everything is code-derived**: codes, ids, times and numbers, with words from fixed tables and
+  the adapters' vocabularies. There is no "(unverified)" column, so Alexa+ gets what the page
+  gets. `spoken` stays under 120 words and never says a site's name or id, a scene id, the agent's
+  reason, a news host or a build's hex.
+- **The 90-day window** is a named exception to the log reader's 30-day lookback, local to this
+  tool (`EVIDENCE_LOOKBACK_DAYS`): its queries are fixed, filter one topic by equality and read two
+  groups, and the logs keep 90 days. `days` outside 1 to 90 is clamped, and an unreadable one is
+  the default 7, as `log_review` treats its hours.
+- **Nothing new to grant**: both log groups are among those the assistant may already query, and
+  the Articles table and its indexes are among its tables; `infra/modules/ops-assistant/logs.tf`
+  is unchanged, and a test pins it. The tool writes nothing.
+
+**After the deploy**, ask the T1 question once on the page and once through Alexa+: both answers
+should say the same counts, the page should show the decisions, and "walk me through the latest
+Sydney scene" should put the trace on screen. If the answer is "The decision logs didn't answer in
+time", run the runsheet's query (a) for the topic in the console to see whether Logs Insights
+answers at all.
+
 ## Status
 
 | Part | State | Where |
@@ -258,6 +341,6 @@ tick is the owner's call, not this round's.
 | The research tick's and the admin API's lines; the `!r` prints and their AST guard | done | this pull request |
 | `log_review` leaves the lines out; the topic filter matches a whole id | done | this pull request |
 | The runsheet's Logs Insights queries and the first-deploy check | done; to be run once on dev after the deploy | this pull request |
-| The assistant and Alexa+ read the evidence from the logs (`vision_evidence`) | next | the following pull request |
+| The assistant and Alexa+ read the evidence from the logs (`vision_evidence`) | done; the T1 check to be run once after the deploy | the submission round's P2a pull request |
 | The evidence from the running state, the agent's note on screen, the worker's runs | later | after the assistant's vision round |
 | The export into git | later | the evaluation pull requests |
