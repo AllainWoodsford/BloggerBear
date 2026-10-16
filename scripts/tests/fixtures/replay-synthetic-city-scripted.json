@@ -1,0 +1,1247 @@
+{
+  "schema": "bloggerbear.vision-eval/1",
+  "run_id": "2026-10-16-eval-replay-intel-xeon-processor-2-10ghz-opencv-synthetic-city-scripted",
+  "kind": "eval-replay",
+  "mode": "replay",
+  "backend": "opencv",
+  "started_at": "2026-10-16T23:10:15Z",
+  "finished_at": "2026-10-16T23:10:16Z",
+  "code": {
+    "git_sha": "2f05360558c035e45d85565735378840ce9e9581",
+    "dirty": false
+  },
+  "environment": {
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "machine": "x86_64",
+    "python": "3.11.17",
+    "opencv": {
+      "opencv_version": "5.0.0",
+      "build_sha256": "0ef08003c31127b3b5d34410ab13483c511e73b99e278b1a8abd6ddcb265699a",
+      "arch": "x86_64",
+      "kleidicv": false,
+      "cpu_baseline": "SSE SSE2 SSE3",
+      "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
+      "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+      "cpu_count": 4,
+      "cv2_path": "~/.cache/bloggerbear/venv311/lib/python3.11/site-packages/cv2/__init__.py"
+    },
+    "cpu_count": 4,
+    "affinity": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "threads": 4,
+    "numpy": "2.4.4",
+    "networkx": "3.4.2",
+    "where": "linux",
+    "host": null,
+    "cool": null,
+    "libraries": null
+  },
+  "worker": {
+    "kind": "in-process",
+    "region": null,
+    "code_sha256": "5319aae163203cae4ed12a6bff5f97979815894658058304ef3a88a18809e980"
+  },
+  "inputs": {
+    "manifest_sha256": null,
+    "cache": false,
+    "scenes": [
+      {
+        "name": "synthetic-1",
+        "scene_id": "synthetic-1",
+        "etag_by_asset": {
+          "red": null,
+          "nir": null,
+          "swir16": null,
+          "scl": null
+        }
+      },
+      {
+        "name": "synthetic-2-cloud",
+        "scene_id": "synthetic-2-cloud",
+        "etag_by_asset": {
+          "red": null,
+          "nir": null,
+          "swir16": null,
+          "scl": null
+        }
+      },
+      {
+        "name": "synthetic-3",
+        "scene_id": "synthetic-3",
+        "etag_by_asset": {
+          "red": null,
+          "nir": null,
+          "swir16": null,
+          "scl": null
+        }
+      },
+      {
+        "name": "synthetic-4",
+        "scene_id": "synthetic-4",
+        "etag_by_asset": {
+          "red": null,
+          "nir": null,
+          "swir16": null,
+          "scl": null
+        }
+      }
+    ],
+    "networks": [
+      {
+        "label": "A",
+        "file": "scripts/tests/fixtures/synthetic-city-network.json",
+        "sha256": "8e3da3b38b21373bb555f99c357cd73d156a0a5688c784c6c7350b4ce59a3e7d"
+      },
+      {
+        "label": "B",
+        "file": null,
+        "sha256": null,
+        "derived": "A with a five-station line through the previous scene's largest area beyond reach"
+      }
+    ],
+    "cache_index_sha256": null
+  },
+  "params": {
+    "sequence": "synthetic-city",
+    "agent": "scripted",
+    "worker": "in-process",
+    "backend": "opencv",
+    "thresholds": "demo",
+    "limit": null,
+    "synthetic": true,
+    "model_id": "scripted",
+    "from": null,
+    "tick_lag_hours": 6.0,
+    "scripted": {
+      "tools": [
+        "look_again",
+        "web_context"
+      ],
+      "look_again": {
+        "reach_m": 800
+      },
+      "rule": "real when the station count changed (the network moved), else artefact"
+    }
+  },
+  "results": {
+    "sequence": {
+      "site": "synthetic",
+      "scenes": [
+        "synthetic-1",
+        "synthetic-2-cloud",
+        "synthetic-3",
+        "synthetic-4"
+      ],
+      "networks": "AAAB",
+      "news": []
+    },
+    "topic_id": "eval-synthetic-city",
+    "site_id": "eval-synthetic",
+    "ticks": [
+      {
+        "n": 1,
+        "scene": "synthetic-1",
+        "scene_id": "synthetic-1",
+        "captured_at": "2024-06-27T00:06:11Z",
+        "at": "2024-06-27T06:06:11+00:00",
+        "network": "A",
+        "network_fetched_at": "2026-01-01T00:00:00+00:00",
+        "network_digest": "f4d264d874c787de68ec27fd1ccbe06655889054710dcce0e539f634abfcae71",
+        "measured": true,
+        "changed": true,
+        "codes": [
+          "first_observation"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-06-27T06:06:11+00:00",
+            "tick": "eval-tick-1",
+            "run": "000000000001",
+            "scene_id": "synthetic-1",
+            "captured_at": "2024-06-27T00:06:11Z",
+            "coverage": 0.9913,
+            "measure": {
+              "served_share": 0.3906,
+              "desert_km2": 3.8416,
+              "built_up_km2": 6.3036,
+              "station_count": 12,
+              "flag_count": 0
+            },
+            "baseline": null,
+            "delta": null,
+            "relative": null,
+            "baseline_scenes": 0,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.0,
+              "desert_relative_threshold": 0.0
+            },
+            "code": "first_observation",
+            "moved": [],
+            "network_changed": null,
+            "triage": null,
+            "reported": true,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "0ef08003c311",
+              "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+              "worker_request_id": null,
+              "worker_ms": 0
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-1\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247248, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 29, \"graph_ms\": 18, \"annotate_ms\": 122, \"total_ms\": 155, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 101}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-1\", \"run\": \"000000000001\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-1\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-1\", \"run\": \"000000000001\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-1\", \"at\": \"2024-06-27T06:06:11+00:00\", \"captured_at\": \"2024-06-27T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"built_up_km2\": 6.3036, \"station_count\": 12, \"flag_count\": 0}, \"baseline_scenes\": 0, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"first_observation\", \"moved\": \"\", \"triaged\": false, \"reported\": true, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-synthetic",
+            "scene_id": "synthetic-1",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.3906,
+              "desert_km2": 3.8416,
+              "built_up_km2": 6.3036,
+              "station_count": 12,
+              "snapped_station_count": 12,
+              "node_count": 12,
+              "edge_count": 12,
+              "components": 1,
+              "hubs": [
+                "s:nh0_0",
+                "s:nh0_1",
+                "s:nh0_2",
+                "s:nh1_1",
+                "s:nv0_1"
+              ],
+              "flags": [],
+              "suggestions": [
+                "feeder_corridor:s:nv1_2>s:nh1_1",
+                "feeder_corridor:s:nv0_2>s:nv0_1",
+                "feeder_corridor:s:nh1_0>s:nh1_1"
+              ],
+              "coverage": 0.9913
+            },
+            "metrics_digest": "1c7444dd5e1a661231f98df676ef1ff12c0c7a28a23ff38d41dbaefb3790d0df"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "clock_overrun": false,
+        "figure": null
+      },
+      {
+        "n": 2,
+        "scene": "synthetic-2-cloud",
+        "scene_id": "synthetic-2-cloud",
+        "captured_at": "2024-07-07T00:06:11Z",
+        "at": "2024-07-07T06:06:11+00:00",
+        "network": "A",
+        "network_fetched_at": "2026-01-01T00:00:00+00:00",
+        "network_digest": null,
+        "measured": true,
+        "changed": false,
+        "codes": [
+          "below_floor"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-07-07T06:06:11+00:00",
+            "tick": "eval-tick-2",
+            "run": "000000000002",
+            "scene_id": "synthetic-2-cloud",
+            "captured_at": "2024-07-07T00:06:11Z",
+            "coverage": 0.2668,
+            "measure": {
+              "served_share": 0.9243,
+              "desert_km2": 0.0504,
+              "built_up_km2": 0.6656,
+              "station_count": 12,
+              "flag_count": 0
+            },
+            "baseline": null,
+            "delta": null,
+            "relative": null,
+            "baseline_scenes": 1,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.0,
+              "desert_relative_threshold": 0.0
+            },
+            "code": "below_floor",
+            "moved": [],
+            "network_changed": false,
+            "triage": null,
+            "reported": false,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "0ef08003c311",
+              "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+              "worker_request_id": null,
+              "worker_ms": 0
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-2-cloud\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247288, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 16, \"graph_ms\": 8, \"annotate_ms\": 138, \"total_ms\": 158, \"coverage\": 0.2668, \"quality_flags\": \"low_coverage\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 103}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-2\", \"run\": \"000000000002\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-2-cloud\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-2\", \"run\": \"000000000002\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-2-cloud\", \"at\": \"2024-07-07T06:06:11+00:00\", \"captured_at\": \"2024-07-07T00:06:11Z\", \"coverage\": 0.2668, \"measure\": {\"served_share\": 0.9243, \"desert_km2\": 0.0504, \"built_up_km2\": 0.6656, \"station_count\": 12, \"flag_count\": 0}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"below_floor\", \"moved\": \"\", \"network_changed\": false, \"triaged\": false, \"reported\": false, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-synthetic",
+            "scene_id": "synthetic-2-cloud",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.9243,
+              "desert_km2": 0.0504,
+              "built_up_km2": 0.6656,
+              "station_count": 12,
+              "snapped_station_count": 12,
+              "node_count": 12,
+              "edge_count": 12,
+              "components": 1,
+              "hubs": [
+                "s:nv1_0",
+                "s:nv1_1",
+                "s:nv1_2"
+              ],
+              "flags": [],
+              "suggestions": [
+                "feeder_corridor:s:nh0_2>s:nv1_0",
+                "feeder_corridor:s:nh1_2>s:nv1_2"
+              ],
+              "coverage": 0.2668
+            },
+            "metrics_digest": "c21055d5d143fce3365de555c1330bc65d3cbc6edb5bccf7f998e4fe4496467f"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "clock_overrun": false,
+        "figure": null
+      },
+      {
+        "n": 3,
+        "scene": "synthetic-3",
+        "scene_id": "synthetic-3",
+        "captured_at": "2024-07-17T00:06:11Z",
+        "at": "2024-07-17T06:06:11+00:00",
+        "network": "A",
+        "network_fetched_at": "2026-01-01T00:00:00+00:00",
+        "network_digest": null,
+        "measured": true,
+        "changed": false,
+        "codes": [
+          "artefact"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-07-17T06:06:11+00:00",
+            "tick": "eval-tick-3",
+            "run": "000000000003",
+            "scene_id": "synthetic-3",
+            "captured_at": "2024-07-17T00:06:11Z",
+            "coverage": 0.9913,
+            "measure": {
+              "served_share": 0.3906,
+              "desert_km2": 3.8416,
+              "built_up_km2": 6.3036,
+              "station_count": 12,
+              "flag_count": 0
+            },
+            "baseline": {
+              "served_share": 0.3906,
+              "desert_km2": 3.8416,
+              "station_count": 12
+            },
+            "delta": {
+              "served_share": 0.0,
+              "desert_km2": 0.0,
+              "station_count": 0
+            },
+            "relative": {
+              "desert_km2": 0.0
+            },
+            "baseline_scenes": 1,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.0,
+              "desert_relative_threshold": 0.0
+            },
+            "code": "artefact",
+            "moved": [
+              "served_share",
+              "desert_km2"
+            ],
+            "network_changed": false,
+            "triage": {
+              "verdict": "artefact",
+              "stop": "answered",
+              "model_id": "scripted",
+              "model_calls": 3,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cost_usd": null,
+              "elapsed_ms": 0,
+              "deadline_left_s": 85.0,
+              "figure": true,
+              "steps": [
+                {
+                  "tool": "look_again",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "settings": {
+                      "reach_m": 800
+                    },
+                    "measured": {
+                      "coverage": 0.9913,
+                      "served_share": 0.1154,
+                      "desert_km2": 5.576,
+                      "built_up_km2": 6.3036,
+                      "station_count": 12
+                    },
+                    "quality_flags": [],
+                    "build": "0ef08003c311",
+                    "worker_ms": 0
+                  }
+                },
+                {
+                  "tool": "web_context",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "results": 0,
+                    "dated": 0
+                  }
+                }
+              ],
+              "steps_total": 2,
+              "budget_refusals": 0,
+              "hosts": [],
+              "reason": "Scripted answer, no model was asked: the station count did not change, so only imagery-derived measures moved."
+            },
+            "reported": false,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "0ef08003c311",
+              "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+              "worker_request_id": null,
+              "worker_ms": 0
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247283, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 93, \"total_ms\": 115, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 104}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-3\", \"run\": \"000000000003\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-3\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247283, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 94, \"total_ms\": 115, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 12, \"snapped\": 12, \"nodes\": 12, \"edges\": 12, \"components\": 1, \"rss_peak_mb\": 104}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-3\", \"run\": \"000000000003\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"verdict\": \"artefact\", \"stop\": \"answered\", \"model_id\": \"scripted\", \"model_calls\": 3, \"input_tokens\": 0, \"output_tokens\": 0, \"elapsed_ms\": 0, \"deadline_left_s\": 85.0, \"figure\": true, \"tools\": \"look_again,web_context\", \"tools_total\": 2, \"look_again\": 1, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"look_again\", \"ok\": true, \"ms\": 0, \"result\": {\"settings\": {\"reach_m\": 800}, \"measured\": {\"coverage\": 0.9913, \"served_share\": 0.1154, \"desert_km2\": 5.576, \"built_up_km2\": 6.3036, \"station_count\": 12}, \"quality_flags\": [], \"build\": \"0ef08003c311\", \"worker_ms\": 0}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 0, \"dated\": 0}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"65b145b89145\"}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-3\", \"run\": \"000000000003\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-3\", \"at\": \"2024-07-17T06:06:11+00:00\", \"captured_at\": \"2024-07-17T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"built_up_km2\": 6.3036, \"station_count\": 12, \"flag_count\": 0}, \"baseline\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"station_count\": 12}, \"delta\": {\"served_share\": 0.0, \"desert_km2\": 0.0, \"station_count\": 0}, \"relative\": {\"desert_km2\": 0.0}, \"baseline_scenes\": 1, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"artefact\", \"moved\": \"served_share,desert_km2\", \"network_changed\": false, \"triaged\": true, \"verdict\": \"artefact\", \"stop\": \"answered\", \"reported\": false, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-synthetic",
+            "scene_id": "synthetic-3",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.3906,
+              "desert_km2": 3.8416,
+              "built_up_km2": 6.3036,
+              "station_count": 12,
+              "snapped_station_count": 12,
+              "node_count": 12,
+              "edge_count": 12,
+              "components": 1,
+              "hubs": [
+                "s:nh0_0",
+                "s:nh0_1",
+                "s:nh0_2",
+                "s:nh1_1",
+                "s:nv0_1"
+              ],
+              "flags": [],
+              "suggestions": [
+                "feeder_corridor:s:nv1_2>s:nh1_1",
+                "feeder_corridor:s:nv0_2>s:nv0_1",
+                "feeder_corridor:s:nh1_0>s:nh1_1"
+              ],
+              "coverage": 0.9913
+            },
+            "metrics_digest": "1c7444dd5e1a661231f98df676ef1ff12c0c7a28a23ff38d41dbaefb3790d0df"
+          },
+          {
+            "kind": "look_again",
+            "site_id": "eval-synthetic",
+            "scene_id": "synthetic-3",
+            "params": {
+              "reach_m": 800
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.1154,
+              "desert_km2": 5.576,
+              "built_up_km2": 6.3036,
+              "station_count": 12,
+              "snapped_station_count": 12,
+              "node_count": 12,
+              "edge_count": 12,
+              "components": 1,
+              "hubs": [
+                "s:nh0_0",
+                "s:nh0_1",
+                "s:nh0_2",
+                "s:nh1_1",
+                "s:nv0_1"
+              ],
+              "flags": [],
+              "suggestions": [
+                "feeder_corridor:s:nv1_2>s:nh1_1",
+                "feeder_corridor:s:nv0_2>s:nv0_1",
+                "feeder_corridor:s:nh1_0>s:nh1_1"
+              ],
+              "coverage": 0.9913
+            },
+            "metrics_digest": "9387845356ec62976d648fc81be75438507b53d72b8e8b9492a25e6320d9cc0e"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "clock_overrun": false,
+        "figure": null
+      },
+      {
+        "n": 4,
+        "scene": "synthetic-4",
+        "scene_id": "synthetic-4",
+        "captured_at": "2024-07-27T00:06:11Z",
+        "at": "2024-07-27T06:06:11+00:00",
+        "network": "B",
+        "network_fetched_at": "2026-01-02T00:00:00+00:00",
+        "network_digest": "725319f514ef0132265b60f5291c65e7784738fcc74bc152571c23e1ab172e5c",
+        "measured": true,
+        "changed": true,
+        "codes": [
+          "reported"
+        ],
+        "decisions": [
+          {
+            "v": 1,
+            "at": "2024-07-27T06:06:11+00:00",
+            "tick": "eval-tick-4",
+            "run": "000000000004",
+            "scene_id": "synthetic-4",
+            "captured_at": "2024-07-27T00:06:11Z",
+            "coverage": 0.9913,
+            "measure": {
+              "served_share": 0.9686,
+              "desert_km2": 0.198,
+              "built_up_km2": 6.3036,
+              "station_count": 17,
+              "flag_count": 1
+            },
+            "baseline": {
+              "served_share": 0.3906,
+              "desert_km2": 3.8416,
+              "station_count": 12
+            },
+            "delta": {
+              "served_share": 0.578,
+              "desert_km2": -3.6436,
+              "station_count": 5
+            },
+            "relative": {
+              "desert_km2": -0.948
+            },
+            "baseline_scenes": 2,
+            "thresholds": {
+              "coverage_floor": 0.6,
+              "min_baseline": 1,
+              "served_share_threshold": 0.0,
+              "desert_relative_threshold": 0.0
+            },
+            "code": "reported",
+            "moved": [
+              "served_share",
+              "desert_km2",
+              "station_count"
+            ],
+            "network_changed": true,
+            "triage": {
+              "verdict": "real",
+              "stop": "answered",
+              "model_id": "scripted",
+              "model_calls": 3,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "cost_usd": null,
+              "elapsed_ms": 0,
+              "deadline_left_s": 85.0,
+              "figure": true,
+              "steps": [
+                {
+                  "tool": "look_again",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "settings": {
+                      "reach_m": 800
+                    },
+                    "measured": {
+                      "coverage": 0.9913,
+                      "served_share": 0.6716,
+                      "desert_km2": 2.0704,
+                      "built_up_km2": 6.3036,
+                      "station_count": 17
+                    },
+                    "quality_flags": [],
+                    "build": "0ef08003c311",
+                    "worker_ms": 0
+                  }
+                },
+                {
+                  "tool": "web_context",
+                  "ok": true,
+                  "ms": 0,
+                  "result": {
+                    "results": 0,
+                    "dated": 0
+                  }
+                }
+              ],
+              "steps_total": 2,
+              "budget_refusals": 0,
+              "hosts": [],
+              "reason": "Scripted answer, no model was asked: the station count changed, so the mapped network moved."
+            },
+            "reported": true,
+            "measured_by": {
+              "backend": "opencv",
+              "build": "0ef08003c311",
+              "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+              "worker_request_id": null,
+              "worker_ms": 0
+            }
+          }
+        ],
+        "lines": [
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247281, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 17, \"graph_ms\": 8, \"annotate_ms\": 89, \"total_ms\": 111, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 17, \"snapped\": 17, \"nodes\": 17, \"edges\": 16, \"components\": 2, \"rss_peak_mb\": 104}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_site\", \"tick\": \"eval-tick-4\", \"run\": \"000000000004\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"outcome\": \"measured\", \"scene_id\": \"synthetic-4\", \"worker_ms\": 0, \"budget_left_s\": 70.0}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_measure\", \"tick\": null, \"run\": null, \"topic_id\": null, \"task\": \"rail_access\", \"backend\": \"opencv\", \"ok\": true, \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"build\": \"0ef08003c311\", \"opencv\": \"5.0.0\", \"kleidicv\": false, \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\", \"cpu_count\": 4, \"arch\": \"x86_64\", \"window_px\": {\"w\": 256, \"h\": 256}, \"io_requests\": 14, \"io_bytes\": 247281, \"levels\": {\"swir16\": 0, \"red\": 0, \"nir\": 0, \"scl\": 0}, \"read_ms\": 4, \"analyse_ms\": 18, \"graph_ms\": 8, \"annotate_ms\": 90, \"total_ms\": 111, \"coverage\": 0.9913, \"quality_flags\": \"\", \"stations\": 17, \"snapped\": 17, \"nodes\": 17, \"edges\": 16, \"components\": 2, \"rss_peak_mb\": 104}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_triage\", \"tick\": \"eval-tick-4\", \"run\": \"000000000004\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"verdict\": \"real\", \"stop\": \"answered\", \"model_id\": \"scripted\", \"model_calls\": 3, \"input_tokens\": 0, \"output_tokens\": 0, \"elapsed_ms\": 0, \"deadline_left_s\": 85.0, \"figure\": true, \"tools\": \"look_again,web_context\", \"tools_total\": 2, \"look_again\": 1, \"budget_refusals\": 0, \"steps\": [{\"tool\": \"look_again\", \"ok\": true, \"ms\": 0, \"result\": {\"settings\": {\"reach_m\": 800}, \"measured\": {\"coverage\": 0.9913, \"served_share\": 0.6716, \"desert_km2\": 2.0704, \"built_up_km2\": 6.3036, \"station_count\": 17}, \"quality_flags\": [], \"build\": \"0ef08003c311\", \"worker_ms\": 0}}, {\"tool\": \"web_context\", \"ok\": true, \"ms\": 0, \"result\": {\"results\": 0, \"dated\": 0}}], \"steps_total\": 2, \"worker_request_ids\": \"\", \"reason_sha256\": \"a72d11f1331e\"}",
+          "{\"evidence\": \"bloggerbear/1\", \"event\": \"vision_decision\", \"tick\": \"eval-tick-4\", \"run\": \"000000000004\", \"topic_id\": \"eval-synthetic-city\", \"site_id\": \"eval-synthetic\", \"scene_id\": \"synthetic-4\", \"at\": \"2024-07-27T06:06:11+00:00\", \"captured_at\": \"2024-07-27T00:06:11Z\", \"coverage\": 0.9913, \"measure\": {\"served_share\": 0.9686, \"desert_km2\": 0.198, \"built_up_km2\": 6.3036, \"station_count\": 17, \"flag_count\": 1}, \"baseline\": {\"served_share\": 0.3906, \"desert_km2\": 3.8416, \"station_count\": 12}, \"delta\": {\"served_share\": 0.578, \"desert_km2\": -3.6436, \"station_count\": 5}, \"relative\": {\"desert_km2\": -0.948}, \"baseline_scenes\": 2, \"thresholds\": {\"coverage_floor\": 0.6, \"min_baseline\": 1, \"served_share_threshold\": 0.0, \"desert_relative_threshold\": 0.0}, \"code\": \"reported\", \"moved\": \"served_share,desert_km2,station_count\", \"network_changed\": true, \"triaged\": true, \"verdict\": \"real\", \"stop\": \"answered\", \"reported\": true, \"backend\": \"opencv\", \"build\": \"0ef08003c311\", \"cpu\": \"Intel(R) Xeon(R) Processor @ 2.10GHz\"}"
+        ],
+        "printed": 0,
+        "measurements": [
+          {
+            "kind": "tick",
+            "site_id": "eval-synthetic",
+            "scene_id": "synthetic-4",
+            "params": {
+              "reach_m": 1000.0
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.9686,
+              "desert_km2": 0.198,
+              "built_up_km2": 6.3036,
+              "station_count": 17,
+              "snapped_station_count": 17,
+              "node_count": 17,
+              "edge_count": 16,
+              "components": 2,
+              "hubs": [
+                "s:nh0_0",
+                "s:nh0_1",
+                "s:nh0_2",
+                "s:nh1_1",
+                "s:eval-line-3"
+              ],
+              "flags": [
+                [
+                  "ghost_line",
+                  "s:nv1_0+s:nv1_1+s:nv1_2"
+                ]
+              ],
+              "suggestions": [
+                "feeder_corridor:s:nv0_2>s:nh1_1",
+                "feeder_corridor:s:nv1_1>s:nh0_2",
+                "feeder_corridor:s:nv1_2>s:nh1_1"
+              ],
+              "coverage": 0.9913
+            },
+            "metrics_digest": "6fc159e34b91cac9e13e839f75e82f019eed61f96ed5db06770d0eddba8181bb"
+          },
+          {
+            "kind": "look_again",
+            "site_id": "eval-synthetic",
+            "scene_id": "synthetic-4",
+            "params": {
+              "reach_m": 800
+            },
+            "ok": true,
+            "code": null,
+            "request_id": null,
+            "metrics": {
+              "served_share": 0.6716,
+              "desert_km2": 2.0704,
+              "built_up_km2": 6.3036,
+              "station_count": 17,
+              "snapped_station_count": 17,
+              "node_count": 17,
+              "edge_count": 16,
+              "components": 2,
+              "hubs": [
+                "s:nh0_1",
+                "s:nh0_2",
+                "s:nh1_1",
+                "s:nv0_1",
+                "s:eval-line-3"
+              ],
+              "flags": [],
+              "suggestions": [
+                "feeder_corridor:s:nv1_2>s:nh1_1",
+                "feeder_corridor:s:nv1_1>s:nh0_2",
+                "feeder_corridor:s:nv0_2>s:nv0_1"
+              ],
+              "coverage": 0.9913
+            },
+            "metrics_digest": "88effca7b54e3e51a25315ec5137692ab633108acf9a791b3348daf8a2cd63ec"
+          }
+        ],
+        "clock": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "clock_overrun": false,
+        "figure": null
+      }
+    ],
+    "ring": [
+      {
+        "v": 1,
+        "at": "2024-06-27T06:06:11+00:00",
+        "tick": "eval-tick-1",
+        "run": "000000000001",
+        "scene_id": "synthetic-1",
+        "captured_at": "2024-06-27T00:06:11Z",
+        "coverage": 0.9913,
+        "measure": {
+          "served_share": 0.3906,
+          "desert_km2": 3.8416,
+          "built_up_km2": 6.3036,
+          "station_count": 12,
+          "flag_count": 0
+        },
+        "baseline": null,
+        "delta": null,
+        "relative": null,
+        "baseline_scenes": 0,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.0,
+          "desert_relative_threshold": 0.0
+        },
+        "code": "first_observation",
+        "moved": [],
+        "network_changed": null,
+        "triage": null,
+        "reported": true,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "0ef08003c311",
+          "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+          "worker_request_id": null,
+          "worker_ms": 0
+        }
+      },
+      {
+        "v": 1,
+        "at": "2024-07-07T06:06:11+00:00",
+        "tick": "eval-tick-2",
+        "run": "000000000002",
+        "scene_id": "synthetic-2-cloud",
+        "captured_at": "2024-07-07T00:06:11Z",
+        "coverage": 0.2668,
+        "measure": {
+          "served_share": 0.9243,
+          "desert_km2": 0.0504,
+          "built_up_km2": 0.6656,
+          "station_count": 12,
+          "flag_count": 0
+        },
+        "baseline": null,
+        "delta": null,
+        "relative": null,
+        "baseline_scenes": 1,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.0,
+          "desert_relative_threshold": 0.0
+        },
+        "code": "below_floor",
+        "moved": [],
+        "network_changed": false,
+        "triage": null,
+        "reported": false,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "0ef08003c311",
+          "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+          "worker_request_id": null,
+          "worker_ms": 0
+        }
+      },
+      {
+        "v": 1,
+        "at": "2024-07-17T06:06:11+00:00",
+        "tick": "eval-tick-3",
+        "run": "000000000003",
+        "scene_id": "synthetic-3",
+        "captured_at": "2024-07-17T00:06:11Z",
+        "coverage": 0.9913,
+        "measure": {
+          "served_share": 0.3906,
+          "desert_km2": 3.8416,
+          "built_up_km2": 6.3036,
+          "station_count": 12,
+          "flag_count": 0
+        },
+        "baseline": {
+          "served_share": 0.3906,
+          "desert_km2": 3.8416,
+          "station_count": 12
+        },
+        "delta": {
+          "served_share": 0.0,
+          "desert_km2": 0.0,
+          "station_count": 0
+        },
+        "relative": {
+          "desert_km2": 0.0
+        },
+        "baseline_scenes": 1,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.0,
+          "desert_relative_threshold": 0.0
+        },
+        "code": "artefact",
+        "moved": [
+          "served_share",
+          "desert_km2"
+        ],
+        "network_changed": false,
+        "triage": {
+          "verdict": "artefact",
+          "stop": "answered",
+          "model_id": "scripted",
+          "model_calls": 3,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_usd": null,
+          "elapsed_ms": 0,
+          "deadline_left_s": 85.0,
+          "figure": true,
+          "steps": [
+            {
+              "tool": "look_again",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "settings": {
+                  "reach_m": 800
+                },
+                "measured": {
+                  "coverage": 0.9913,
+                  "served_share": 0.1154,
+                  "desert_km2": 5.576,
+                  "built_up_km2": 6.3036,
+                  "station_count": 12
+                },
+                "quality_flags": [],
+                "build": "0ef08003c311",
+                "worker_ms": 0
+              }
+            },
+            {
+              "tool": "web_context",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "results": 0,
+                "dated": 0
+              }
+            }
+          ],
+          "steps_total": 2,
+          "budget_refusals": 0,
+          "hosts": [],
+          "reason": "Scripted answer, no model was asked: the station count did not change, so only imagery-derived measures moved."
+        },
+        "reported": false,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "0ef08003c311",
+          "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+          "worker_request_id": null,
+          "worker_ms": 0
+        }
+      },
+      {
+        "v": 1,
+        "at": "2024-07-27T06:06:11+00:00",
+        "tick": "eval-tick-4",
+        "run": "000000000004",
+        "scene_id": "synthetic-4",
+        "captured_at": "2024-07-27T00:06:11Z",
+        "coverage": 0.9913,
+        "measure": {
+          "served_share": 0.9686,
+          "desert_km2": 0.198,
+          "built_up_km2": 6.3036,
+          "station_count": 17,
+          "flag_count": 1
+        },
+        "baseline": {
+          "served_share": 0.3906,
+          "desert_km2": 3.8416,
+          "station_count": 12
+        },
+        "delta": {
+          "served_share": 0.578,
+          "desert_km2": -3.6436,
+          "station_count": 5
+        },
+        "relative": {
+          "desert_km2": -0.948
+        },
+        "baseline_scenes": 2,
+        "thresholds": {
+          "coverage_floor": 0.6,
+          "min_baseline": 1,
+          "served_share_threshold": 0.0,
+          "desert_relative_threshold": 0.0
+        },
+        "code": "reported",
+        "moved": [
+          "served_share",
+          "desert_km2",
+          "station_count"
+        ],
+        "network_changed": true,
+        "triage": {
+          "verdict": "real",
+          "stop": "answered",
+          "model_id": "scripted",
+          "model_calls": 3,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cost_usd": null,
+          "elapsed_ms": 0,
+          "deadline_left_s": 85.0,
+          "figure": true,
+          "steps": [
+            {
+              "tool": "look_again",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "settings": {
+                  "reach_m": 800
+                },
+                "measured": {
+                  "coverage": 0.9913,
+                  "served_share": 0.6716,
+                  "desert_km2": 2.0704,
+                  "built_up_km2": 6.3036,
+                  "station_count": 17
+                },
+                "quality_flags": [],
+                "build": "0ef08003c311",
+                "worker_ms": 0
+              }
+            },
+            {
+              "tool": "web_context",
+              "ok": true,
+              "ms": 0,
+              "result": {
+                "results": 0,
+                "dated": 0
+              }
+            }
+          ],
+          "steps_total": 2,
+          "budget_refusals": 0,
+          "hosts": [],
+          "reason": "Scripted answer, no model was asked: the station count changed, so the mapped network moved."
+        },
+        "reported": true,
+        "measured_by": {
+          "backend": "opencv",
+          "build": "0ef08003c311",
+          "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+          "worker_request_id": null,
+          "worker_ms": 0
+        }
+      }
+    ],
+    "excluded": [
+      "tick",
+      "run",
+      "measured_by",
+      "triage.elapsed_ms",
+      "triage.deadline_left_s",
+      "triage.cost_usd",
+      "triage.steps[].ms",
+      "triage.steps[].result.worker_request_id",
+      "triage.steps[].result.worker_ms",
+      "triage.steps[].result.build"
+    ],
+    "parity": null
+  },
+  "agent": {
+    "mode": "scripted",
+    "model_id": "scripted",
+    "responses": [
+      {
+        "tick": 3,
+        "site_id": "eval-synthetic",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "toolUse": {
+                      "toolUseId": "scripted-3-1",
+                      "name": "look_again",
+                      "input": {
+                        "reach_m": 800
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "toolUse": {
+                      "toolUseId": "scripted-3-2",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "{\"verdict\": \"artefact\", \"reason\": \"Scripted answer, no model was asked: the station count did not change, so only imagery-derived measures moved.\"}"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0
+            }
+          }
+        ]
+      },
+      {
+        "tick": 4,
+        "site_id": "eval-synthetic",
+        "turns": [
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "toolUse": {
+                      "toolUseId": "scripted-4-1",
+                      "name": "look_again",
+                      "input": {
+                        "reach_m": 800
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "toolUse": {
+                      "toolUseId": "scripted-4-2",
+                      "name": "web_context",
+                      "input": {}
+                    }
+                  }
+                ]
+              }
+            },
+            "stopReason": "tool_use",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0
+            }
+          },
+          {
+            "output": {
+              "message": {
+                "role": "assistant",
+                "content": [
+                  {
+                    "text": "{\"verdict\": \"real\", \"reason\": \"Scripted answer, no model was asked: the station count changed, so the mapped network moved.\"}"
+                  }
+                ]
+              }
+            },
+            "stopReason": "end_turn",
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0
+            }
+          }
+        ]
+      }
+    ],
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": null,
+    "cost_aud": null,
+    "price_source": "common/model_pricing.py's built-in table"
+  },
+  "checks": [],
+  "summary": {
+    "steps": 4,
+    "decisions": 4,
+    "triaged": 2,
+    "look_again": 2,
+    "verdict_real": 1,
+    "verdict_artefact": 1,
+    "finding": 2
+  }
+}
