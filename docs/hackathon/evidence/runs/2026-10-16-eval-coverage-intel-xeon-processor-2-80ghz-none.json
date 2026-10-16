@@ -4,10 +4,10 @@
   "kind": "eval-coverage",
   "mode": "coverage",
   "backend": "none",
-  "started_at": "2026-10-16T04:17:36Z",
-  "finished_at": "2026-10-16T04:17:36Z",
+  "started_at": "2026-10-16T09:40:59Z",
+  "finished_at": "2026-10-16T09:45:03Z",
   "code": {
-    "git_sha": "e46b6ddfd7885db0f63efa9e7fced4840e53cbe2",
+    "git_sha": "8071a4f22d369fc0d578d67cd0ca432016196d85",
     "dirty": false
   },
   "environment": {
@@ -21,7 +21,7 @@
       "kleidicv": false,
       "cpu_baseline": "SSE SSE2 SSE3",
       "cpu_dispatch": "SSE4_1 SSE4_2 AVX FP16 AVX2 AVX512_SKX",
-      "cv2_path": "/root/.cache/bloggerbear/venv311/lib/python3.11/site-packages/cv2/__init__.py"
+      "cv2_path": "~/.cache/bloggerbear/venv311/lib/python3.11/site-packages/cv2/__init__.py"
     },
     "cpu_count": 4,
     "affinity": [
@@ -44,7 +44,7 @@
     "code_sha256": null
   },
   "inputs": {
-    "manifest_sha256": "c48c2ec75bb8b2a92146f19f175995da349bb5eb0f2d68cb144c851ae7a3e667",
+    "manifest_sha256": "8317b44a005e5203e7edf09c2ec3c6a2d5e4d409811b29e2b68229d5f074f819",
     "cache": true,
     "scenes": [
       {
