@@ -560,8 +560,8 @@ Called out separately because it cuts across every phase, not just one:
 ## Enhancements since Phase 8
 
 All shipped and deployed; the design and decisions for each are in
-`docs/project-plan.md` §11. The vision entries at the end are on the integration branch
-(#285) until it merges into `dev`.
+`docs/project-plan.md` §11. The vision entries merged into `dev` on 15 October (#285); the
+submission-round entries after them are docs and tests, with nothing to deploy.
 
 - [x] Static article publishing — every publish path renders a static page
 - [x] Custom domain (bloggerbear.com) via Route 53 + ACM
@@ -710,8 +710,10 @@ All shipped and deployed; the design and decisions for each are in
 - [x] The submission round, for the OpenCV AI Competition 2026: the rubric tracker
   (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
   step, with its status, what it needs, the evidence, the gap, what closes it and what the
-  assistant may say, updated by the PR that closes a row; a format test that fails CI on a
-  malformed row (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
+  assistant may say, updated by the PR that closes a row; a format test that fails on a
+  malformed row, run by the Python CI on a pull request that also touches `lambdas/` or
+  `scripts/` and by hand on a docs-only one until `python-ci.yml` lists `docs/hackathon/**`
+  (#303, submission PR P0; `scripts/tests/test_hackathon_docs.py`)
 
 ## Backlog / not yet scheduled
 

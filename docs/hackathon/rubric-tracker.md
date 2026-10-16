@@ -8,7 +8,10 @@ A: Agentic Vision), one for the owner's own ask (T1), and one per step only the 
 owner step is done, the owner (or a session asked to) sets its Status and Checked date, with its
 evidence committed. Status is `met`, `partly` or `missing`; Needs is any of `code`, `docs`,
 `deploy`, `run`, `owner`, or `-` once met. Say is what the assistant may speak, from a closed list
-held in code. `scripts/tests/test_hackathon_docs.py` checks this file's format.
+held in code. `scripts/tests/test_hackathon_docs.py` checks this file's format: the Python CI runs
+it on a pull request that also touches `lambdas/` or `scripts/`; on a docs-only change, run it by
+hand (`pytest scripts/tests/test_hackathon_docs.py`) until `python-ci.yml` lists
+`docs/hackathon/**`.
 
 Demo topics: `rail-sydney-demo` (thresholds of 0, disclosed in the report; every count reports it
 apart from the cities).
