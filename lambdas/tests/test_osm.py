@@ -424,6 +424,17 @@ def test_capping_again_keeps_an_earlier_truncation_on_record():
 # --- fetching ----------------------------------------------------------------------------------
 
 
+def test_every_hop_names_itself_with_the_bots_user_agent():
+    """Overpass refuses an anonymous python-requests client: overpass-api.de with a 406 that is
+    not worth the mirror, the mirror with a 429 asking for a User-Agent (dev, 2026-10-16)."""
+    _, fake = fetch(reply(status=429), reply())
+
+    assert len(fake.kwargs) == 2
+    for kwargs in fake.kwargs:
+        assert kwargs["headers"] == {"User-Agent": osm.USER_AGENT}
+    assert osm.USER_AGENT.startswith("BloggerBearResearchBot/") and "+https://" in osm.USER_AGENT
+
+
 def test_fetch_posts_the_query_once_and_returns_the_network_shape():
     network, fake = fetch(reply())
 
@@ -612,7 +623,9 @@ def test_staleness_reads_naive_timestamps_as_utc():
 
 def test_every_request_refuses_redirects_and_streams_the_body():
     _, fake = fetch(reply())
-    assert fake.kwargs == [{"allow_redirects": False, "stream": True}]
+    assert fake.kwargs == [
+        {"headers": {"User-Agent": osm.USER_AGENT}, "allow_redirects": False, "stream": True}
+    ]
 
 
 def test_a_redirect_is_refused_and_no_second_host_is_asked():
