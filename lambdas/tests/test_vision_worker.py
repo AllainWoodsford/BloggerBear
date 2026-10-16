@@ -22,6 +22,7 @@ import cv2
 import numpy as np
 import pytest
 import requests
+from botocore.awsrequest import AWSResponse
 from vision_fakes import fetcher, write_tiff
 
 import vision_worker_handler as worker
@@ -1171,7 +1172,7 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     shorter = vision_client._client("us-west-2", 58)
     assert default is vision_client._client("us-west-2") and shorter is vision_client._client("us-west-2", 58)
     assert default is not shorter
-    retries = {"max_attempts": 1, "mode": "standard"}
+    retries = {"total_max_attempts": 1, "mode": "standard"}
     assert made == [("lambda", "us-west-2", 5, 90, retries), ("lambda", "us-west-2", 5, 58, retries)]
     # The connect allowance is exported: the triage agent counts it before the answer turn.
     assert vision_client.CONNECT_TIMEOUT_SECONDS == 5 and vision_client.DEFAULT_READ_TIMEOUT_SECONDS == 90
@@ -1180,6 +1181,37 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     assert made[-1][1:4] == ("us-west-2", 5, 30) and len(made) == 3
     vision_client.measure(SITE, SCENE, read_timeout=30)
     assert len(made) == 3
+
+
+class _Raw:
+    def stream(self, **kwargs):
+        yield b""
+
+
+def test_the_worker_is_invoked_once_with_no_retry(configured, monkeypatch):
+    """What botocore resolves, not the dict handed to it: its `max_attempts` counts retries, so
+    an Invoke that fails with a 500 is sent once, not twice inside the research tick's timeout.
+    A client with a shorter read timeout keeps the one attempt."""
+    for name, value in {"AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(vision_client, "_clients", {})
+    for read_timeout in (None, 58):
+        config = vision_client._client("us-west-2", read_timeout).meta.config
+        assert config.retries["total_max_attempts"] == 1 and config.connect_timeout == 5
+        assert config.read_timeout == (read_timeout or vision_client.DEFAULT_READ_TIMEOUT_SECONDS)
+    sent = []
+
+    def answer(request, **kwargs):
+        sent.append(request.url)
+        return AWSResponse(request.url, 500, {}, _Raw())
+
+    for read_timeout in (None, 58):
+        events = vision_client._client("us-west-2", read_timeout).meta.events
+        events.register("before-send.lambda.Invoke", answer)
+        with pytest.raises(vision_client.VisionError) as err:
+            vision_client.measure(SITE, SCENE, read_timeout=read_timeout)
+        assert err.value.code == "invoke"
+    assert len(sent) == 2  # one each
 
 
 # --- the worker's evidence line (common/evidence.py's vision_measure) -----------------------------

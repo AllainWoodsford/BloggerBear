@@ -62,7 +62,10 @@ GROUP_PATTERN = re.compile(
     r"(?P<env>[a-z][a-z0-9]{1,31})-[a-z0-9][a-z0-9-]{0,100}$"
 )
 
-_LOGS_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 2, "mode": "standard"})
+# One retry, two attempts in all: queries are started and polled together, and Logs throttles bursts.
+_LOGS_CONFIG = Config(
+    connect_timeout=3, read_timeout=8, retries={"total_max_attempts": 2, "mode": "standard"}
+)
 _clients: dict[str, object] = {}
 # A group's tags, by (Region, name): the same name in another Region is another group.
 _tags: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}

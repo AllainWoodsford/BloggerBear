@@ -30,7 +30,7 @@ AWS platform friction gets its own section.
 | Planning the hackathons | 4 | too many deadlines; ideas the data can't support |
 | Alexa+ and MCP | 26 | the rules and the spec say less, or something else, than a first reading |
 | Stats, scans and listings | 8 | a number copied from the code drifts; a lesson written down is not yet a fix |
-| Vision and rail (OpenCV 2026) | 24 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed; a scanner's false positive met first with its allowlist |
+| Vision and rail (OpenCV 2026) | 25 | a stacked PR's green CI is not dev's; a build container that can't reach the data's catalogue; a bound timed on the wrong hardware; PRs reviewed alone, seams missed; a scanner's false positive met first with its allowlist; a first live tick that found what no mock or fake could |
 
 ---
 
@@ -1109,6 +1109,31 @@ now runs the email rule from `.gitleaks.toml`, with its allowlist, over the Pyth
 `lambdas/` and `scripts/`, so the next one shows before CI. **Lesson:** on your own unmerged branch,
 rewrite the commit; never widen a scanner's allowlist for your own text. An allowlist entry is for
 a finding already in the shared history that cannot be rewritten. (#298, rail PR L)
+
+**12.25 The first live tick found three defects no test could.** The first rail topic in dev,
+`trains-sydney`, was created on 16 October and measured nothing that day. Every hourly tick failed
+before the adapter ran, with `AccessDenied` reading the running state; once that was fixed, every
+tick recorded `osm`, "HTTP 406 from https://overpass-api.de/api/interpreter"; once that was fixed,
+the owner ran Sydney's query from a workstation: one 200 took 54 s end to end (5,925 elements,
+5.5 MB), while the tick gave a city's first network 30 s, each hop 25 s, and the query
+`[timeout:25]`. A run through `fetch_network` with that 30 s deadline hit the 25 s read timeout,
+and both endpoints then answered 502 and 500 for several minutes. **Why:** each defect sat where
+the tests stood in for the world. The research tick reads a state with GetObject and expects
+`NoSuchKey` on a first tick, but S3 answers a missing key with 403 to a caller without
+`s3:ListBucket`, and moto, which the tests run on, does not model IAM's effect on the error code.
+Overpass refuses a client that does not name itself (overpass-api.de with a 406 that is not
+transient, so the mirror was never asked), and the fakes model no third party's User-Agent policy.
+And the fakes answer at once, so nothing measured a big city's query against the 30 s the code
+gave it. Each defect also hid the next: the tick never reached Overpass until S3 answered, and
+never reached the slow query until Overpass accepted the request. **Fix:** #305 grants the Lambda
+role `s3:ListBucket` on the content bucket, with a wiring test pinned to the handler's except
+clause; #310 sends the bot's User-Agent on every Overpass hop; #312 gives a city's first network
+the tick's measuring time (the rest of the budget less 10 s, each hop's read and the query's
+`[timeout:]` following it), so the first tick fetches and the next measures, and the network is
+then cached for up to `osm_ttl_days`. **Lesson:** a mock is the author's model of a service, and
+a fake knows neither a third party's policies nor its real latency; a first deploy needs one real
+tick per adapter, read in its log, before anything depends on it. (#305, #310, #312, rail PR U;
+[vision.md §8](enhancements/vision.md#8-what-went-wrong-and-what-it-taught) lesson 16)
 
 ## Patterns worth keeping
 

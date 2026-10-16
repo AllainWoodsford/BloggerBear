@@ -59,11 +59,18 @@ from ops_mcp import redact
 MAX_TOKENS = 600
 
 # API Gateway gives up on a request after 29 seconds, so nothing here may wait long: one retry on
-# a Bedrock error, and a read that does not hang.
+# a Bedrock error, and a read that does not hang. Two attempts in all: botocore reads
+# `max_attempts` as the number of retries, so it is `total_max_attempts` that says two.
+# One call's worst case is still more than 29 s: two attempts of 5 s connect and 20 s read, with up
+# to 1 s of backoff between them, is 51 s. It is kept: the retry is for an error that comes back at
+# once (a throttle, a 5xx), and the retry of a read that timed out is stopped by the function's own
+# 29 s timeout (infra/modules/ops-assistant/agent.tf), the caller told it failed either way. Two
+# whole attempts inside 29 s would need reads of 9 s, less than a MAX_TOKENS answer, not streamed,
+# can take; and a question is several model calls and tool calls, which share the 29 s.
 _BEDROCK_CONFIG = Config(
     connect_timeout=5,
     read_timeout=20,
-    retries={"max_attempts": 2, "mode": "standard"},
+    retries={"total_max_attempts": 2, "mode": "standard"},
     user_agent_extra="bloggerbear-ops-agent",
 )
 _MCP_STARTUP_TIMEOUT_SECONDS = 10

@@ -755,6 +755,13 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `docs/hackathon/evidence/runs/`); the network fixture directory's ODbL notice; the COOL runsheet
   corrected into the Graviton session's script, with the 4.x pin (`opencv-python-headless==4.14.0.94`)
   (#308, submission PR Q1)
+- [x] A city's first OpenStreetMap network gets the tick's measuring time: with none cached for its
+  polygon, the fetch may take the rest of the budget less 10 s (about 60 s at the default 70 s,
+  70 s at the 80 s cap) instead of 30 s, each Overpass hop reading for as long as that leaves and
+  its query's `[timeout:]` the same; the city is measured on the next tick, and a refresh of a
+  cached network keeps 30 s. The third of the first live tick's defects, after #305 (the content
+  bucket's ListBucket) and #310 (the Overpass User-Agent) (#312, rail PR U;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/common/osm.py`)
 - [x] The submission round's `vision_evidence`: the operator's assistant and Alexa+ answer "what did
   the vision agent do for rail Sydney this week?" from the evidence lines alone, read-only: three
   fixed Logs Insights queries by field equality within one 8-second budget, every line parsed and
