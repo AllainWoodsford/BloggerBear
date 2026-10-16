@@ -110,6 +110,20 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 # 14 days); '' clears it. Also on `topics create`. Editing `findings_window_hours` in DynamoDB works too.
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours 192
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
+# A topic that rotates through its subjects, one a day (docs/enhancements/dailysubject_hook.md;
+# read only by an adapter that names a day subject: none does yet, the rail adapter will). Two
+# keys of its adapter_config (--config-json on create, --adapter-config-json on update, each the
+# whole config: read it with `topics get`, edit it, send all of it back):
+#   "rotation": the seven weekdays each naming a subject, every subject at least once,
+#       {"MON": "sydney", "TUE": "melbourne", "WED": "singapore", "THU": "boston",
+#        "FRI": "sydney", "SAT": "melbourne", "SUN": "singapore"},
+#     or a list of subjects cycled one a day: ["sydney", "melbourne", "singapore", "boston"]
+#   "rotation_timezone": the IANA zone whose calendar day decides, e.g. "Australia/Sydney"
+#     (unset: the topic's daily_timezone when its adapter passes it, else UTC)
+# Set --findings-window-hours to the longest gap between one subject's days, plus a day (24 h a
+# day). Give a rota to a new topic, not to one that has published: each subject's first window
+# starts from the findings window, not from the topic's last article, so it would draft again
+# Findings the last article used (docs/configuration.md).
 # Fresh-data review of each draft before it is checked and published. `shadow` (the
 # default) runs it and records the result on the article and, if it goes to moderation,
 # on its queue item (`review_notes`, shown by `moderation list`) without changing any

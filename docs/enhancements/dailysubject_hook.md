@@ -1,6 +1,6 @@
 # The day-subject hook: one topic that rotates through the cities it is configured to watch
 
-**Status:** S1 in review (this PR); S2 not started · **Date:** 2026-10-15 · **Pick up after:** the assistant's
+**Status:** S1 merged (#320); S1b, its review's leftovers, in review; S2 in progress · **Date:** 2026-10-15 · **Pick up after:** the assistant's
 vision round (PR M, PR N) and before the competition report (Phase 3), or after the deadline ·
 **Builds on:** [rail-access-monitor.md](rail-access-monitor.md), [vision.md](vision.md) §5,
 `common/editorial_goals.py` (the crypto feed's day goals), PR K (`findings_window_hours`, #297)
@@ -220,8 +220,9 @@ why:
   `common/findings_window.window_start`, which now takes `subject_key`. The daily cycle passes the
   day's subject. The assistant's `topic_findings` and `GET /topics/{topic_id}/findings` (with
   `admin_cli findings list --subject`) take an optional `subject`, with `next_article` only;
-  given alone, it is refused (a fixed sentence, or a 400). Without one, both are unchanged. The
-  assistant never speaks the subject, because it is the operator's text; the result echoes it.
+  given alone, it is refused (a fixed sentence, or a 400). Without one, both were unchanged in
+  S1; since S1b they read a rotating topic for today's subject (below). The assistant never speaks
+  the subject, because it is the operator's text; the result echoes it.
 - **Selection:** `_select_subject_and_findings` dispatches. `_select_goal_and_findings`, the
   crypto path, is untouched, and its tests call it. The subject is asked once, at `run_started`,
   after the paused check, so a paused rotating topic stays paused and its rota is not read. It is
@@ -246,11 +247,35 @@ why:
   module at its top: the module imports the adapter registry, which imports every adapter, only
   inside `resolve_day_subject`, so the import is not a cycle.
 - **Not changed:** no new evidence event or field (a Finding's subject count on the
-  `research_tick` line is a follow-up), `admin_api._update_topic`'s whole-item write (the 3.4
-  race, now on one more field, is a follow-up), and the 48-Finding cap, which applies to the
-  window before the subject filter.
+  `research_tick` line is a follow-up), and `admin_api._update_topic`'s whole-item write (the 3.4
+  race, now on one more field, is a follow-up). The 48-Finding cap applied to the window before
+  the subject filter in S1; S1b moved it after (below).
 - **The operator's view:** `topics_overview`'s single-topic view lists the last article per
   subject. The list view's columns are unchanged.
+
+**S1b (the review's leftovers, after S1 merged mid-review):**
+
+- **The next article, with no subject.** `findings_window.next_article_subject(topic, at)` is the
+  one rule for which subject a run writes about: the daily cycle asks it at `run_started`, and
+  `topic_findings` and `GET /topics/{topic_id}/findings` ask it at `now` when `next_article` comes
+  without a subject. A rotating topic is then read for today's subject (its window, its Findings,
+  the subject echoed); every other topic is read byte for byte as before. A hook that raises is
+  the tool's error and the route's 500, never the topic-wide window, which no run of a rotating
+  topic reads.
+- **The cap after the filter.** A rotating topic's readers (the daily cycle, Re-Write, the tool,
+  the route) read up to `findings_window.SUBJECT_READ_LIMIT` (4 x 48 = 192: every Finding a
+  one-slot rota of 7 subjects can gather at one an hourly tick, in its 192 h window), keep the
+  subject's Findings, then cap those at 48. Capped first, other subjects' newer Findings pushed a
+  subject's older ones out, and its stamp then passed them for good. The daily cycle logs how many
+  of the subject's own the cap left out. A topic that does not rotate makes the same Query with
+  the same limit.
+- **The hook's output.** `clean_subjects` reads any finite iterable of keys (a generator, a set in
+  sorted order); a string, a mapping or a number raises, so the research tick's log says the
+  subjects were dropped. A `DaySubject`'s label, mandate and style reach the prompts as one plain
+  line each (`figures.plain_text`); a mandate or style longer than the editorial goals' 1,000
+  characters, or a label longer than a site name's 80, stops the run.
+- **The stamp map.** A `last_article_by_subject` that is not a map (a hand edit) is replaced by
+  one holding the subject's stamp, and the log says so, rather than failing every run.
 
 What S2 needs from this: `RailAccessAdapter.subjects` returns the reported site ids.
 `day_subject` parses the rota with `parse_rotation(adapter_config, site_ids,
@@ -328,6 +353,13 @@ matters for the demo.
   falls back to the unfiltered window with a printed line, never an empty prompt.
 - A Finding older than the subject's stamp but newer than the topic's: not drafted (the subject
   stamp wins when present).
+- A topic that adopts a rota after it has published: each subject's first window starts from
+  `findings_window_hours`, not from the topic's last article (no stamp of its own means the window
+  alone bounds it, 3.4), so Findings the last plain article already used are drafted again on each
+  subject's first day. Kept by choice (7.3: state is not migrated): a topic that has published
+  adopts a rota by being created anew (4.4, restart, not migrate), and `configuration.md` says so;
+  converting it with `topics update` risks re-drafting those Findings
+  (`test_findings_window.py::test_a_subject_never_written_about_is_bounded_by_the_window_alone`).
 - `force`: ignores both stamps, keeps the subject filter.
 
 ## 6. Order, size and where it sits
