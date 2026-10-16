@@ -806,9 +806,10 @@ def test_planted_text_reaches_only_an_unverified_cell_scrubbed(aws, text, monkey
         # The site name is stored as the pipeline's own cleaner leaves it (vision_sites.parse_config,
         # common/figures.plain_text): a format character between two words is removed there, before
         # any scrub reads it, so a phrase spaced only by format characters is stored as one glued
-        # word. The check reads its copy against the glued form of the pattern too
-        # (redact._INSTRUCTION_LIKE_GLUED), so that word is withheld like the rest: the marker
-        # appears nowhere, in no column, however it is spelt or split.
+        # word with nothing ignorable left in it. vision_status reads the name with the glued form
+        # of the pattern all the same (redact.scrub's `hidden`: the cleaner hid what the check would
+        # have seen), so that word is withheld like the rest: the marker appears nowhere, in no
+        # column, however it is spelt or split.
         assert not shows(marker(text), whole)
     assert "jane.doe" not in whole and "203.0.113.77" not in whole
     for card in result["findings"]:

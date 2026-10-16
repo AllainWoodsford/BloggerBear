@@ -484,7 +484,11 @@ def checked(raw: dict, words: frozenset | None = None) -> dict:
         sites.append(
             {
                 "site_id": _site_id(site.get("site_id")),
-                "name": redact.scrub(site.get("name"), NAME_CELL_CHARS) if site.get("name") else "",
+                # Stored through common/figures.plain_text (vision_sites.parse_config), which removes
+                # the format characters a phrase can be spaced with: read glued (redact.scrub's hidden).
+                "name": (
+                    redact.scrub(site.get("name"), NAME_CELL_CHARS, hidden=True) if site.get("name") else ""
+                ),
                 "order": int(order) if order is not None and order >= 1 else None,
                 "scenes": int(scenes) if scenes is not None and scenes >= 0 else 0,
                 "last_scene": _scene(site.get("last_scene")),

@@ -155,19 +155,31 @@ removed copy is read against the pattern with its spaces optional and no word bo
 ignorable inside every word and between the words glues the words in the one copy and splits them
 in the other (a zero-width space inside and between each word of "ignore previous instructions"
 reads as `ignorepreviousinstructions` in the one and `ig nore pr evious in structions` in the
-other); a line that matches in either is withheld. That glued form is broader, in every line:
-"filesystem: 91% used" reads as "system:", "you are nowhere near it" as "you are now", and each is
-withheld, a false positive the pattern's own rule accepts (it hides one log line, and says so).
+other); a line that matches in either is withheld. That glued form is broader ("filesystem: 91%
+used" reads as "system:", "you are nowhere near it" as "you are now"), so it reads only a line that
+hid something: one with an ignorable character in it, or one whose ignorable characters were
+removed before the check (from the swept text below; a vision site's name, which the pipeline
+stores through `common/figures.plain_text`). A plain line, such as the assistant's own
+"ops_assistant: listed 31 tools", is read against the pattern as written and shown.
 `looks_like_instructions` reads both copies, so every caller gets them, and it reads the text as
 written, before the invisible characters are removed from what is returned. Where the result is cut
-(`scrub` to 300 characters, `samples._redact_text` likewise), it reads a bounded start of the text,
-four times the limit in characters it does not ignore, found by a plain category scan with no NFKD
-(a character can decompose to eighteen code points, and a 256K-character line of U+FDFA took 5.5 s
-and 494 MB to scrub when the check read all of it), and then the text about to be returned, whole: a
-phrase the sweep shortened into view is caught there, and one wholly past the cut is never returned,
-so that line is shown cut rather than withheld. The copies themselves are built with `str.translate`
-over the distinct characters of the text, not a per-character loop. The returned text
-holds nothing the check did not read: every format character (bidi overrides and isolates,
+to a limit (`scrub`: 300 characters by default, 60 and 120 in `vision_status`'s name and error
+cells, 280 in `topic_findings`' summary, 120, 40 and 10 in `api_errors`; `samples._redact_text`:
+300), the check reads a bounded start, four times that limit in characters it does not ignore,
+found by a plain category scan with no NFKD (a character can decompose to eighteen code points, and
+a 256K-character line of U+FDFA took 5.5 s and 494 MB to scrub when the check read all of it). It
+reads that start twice: of the text as written, and of the text as swept (invisible characters
+out, placeholders in, whitespace collapsed), before the swept text is cut, since the collapse and
+the placeholders can bring a phrase from past the first start up to the cut, where a check of the
+cut text alone saw only its first words ("...Ignore all previous instruc…"). Then the cut text
+itself, which a cut can make a phrase of ("you are nowhere" cut to "you are now…"). So a phrase
+within the line's swept start (four times the caller's limit) is withheld and counted; the start
+reaches three times the limit past the cut, more than the pattern's longest phrase (39 characters)
+at every limit but the 10 of an HTTP method, so a phrase that begins in what is returned is read
+whole; and one wholly past the start is never shown (the line is cut first, and the operator still
+sees its start) and so not counted. The copies themselves are built with `str.translate` over the
+distinct characters of the text, not a per-character loop. The returned text holds nothing the
+check did not read: every format character (bidi overrides and isolates,
 zero-width spaces, a soft hyphen, and the Unicode tag characters, which can spell an instruction
 nobody sees), surrogate, private-use or unassigned code point, and the invisible marks and fillers
 outside Cf (the combining grapheme joiner, the variation selectors, the Hangul fillers: Unicode's
