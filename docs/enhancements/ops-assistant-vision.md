@@ -122,9 +122,11 @@ aloud" are prose, and injected text can steer a model past prose. Both are now h
    text at all.
 2. **No echo.** The Ledger keeps every string under an `untrusted` key and every cell of an
    "(unverified)" column, normalised as the instruction check normalises (`redact.normalised`:
-   NFKC, format characters such as the two joiners removed, control characters read as spaces,
-   whitespace collapsed), then case-folded, at most 64 KB a turn. The answer is normalised the
-   same way, so a joiner after every word of a cell does not hide its repeat. An answer that shares a run of six words, or thirty characters, with any of it is replaced
+   NFKD, so an accented letter is its letter and a mark; format characters such as the two
+   joiners, marks and the Hangul fillers removed; control characters read as spaces; whitespace
+   collapsed), then case-folded, at most 64 KB a turn. The answer is normalised the same way, so
+   a joiner after every word of a cell, or a mark after every letter, does not hide its repeat.
+   An answer that shares a run of six words, or thirty characters, with any of it is replaced
    by the tools' own `spoken` sentences (then the personal-data sweep, as before), and the
    handler's log line says `echo=1`.
 
@@ -133,19 +135,31 @@ aloud" are prose, and injected text can steer a model past prose. Both are now h
 Both new tools rely on `redact.scrub` to withhold instruction-like text, and its check was easy to
 get past: it ran on the raw text, with single spaces in the pattern, so `"ignore\nprevious
 instructions"`, a tab, a double or non-breaking space, a zero-width joiner inside a word or
-fullwidth letters came back as the clean phrase. Now the check runs on a normalised copy (NFKC,
-every format character removed, C0 and C1 control characters and line separators read as spaces,
-whitespace collapsed), and `looks_like_instructions` uses the same copy, so every caller gets it.
-The returned text holds nothing the check did not read: every format character (bidi overrides
-and isolates, zero-width spaces, a soft hyphen, and the Unicode tag characters, which can spell an
-instruction nobody sees), surrogate, private-use or unassigned code point is removed from it, as
-`common/osm.py` cleans a name. U+200C and U+200D stay, because Persian and Indic OpenStreetMap
-names are spelt with them and they cannot reorder text.
+fullwidth letters came back as the clean phrase. Now the check runs on a normalised copy (NFKD,
+so an accented letter is its letter and a mark; every format character, mark and Hangul filler
+read as ignorable; C0 and C1 control characters and line separators read as spaces; whitespace
+collapsed). Marks and the fillers are read like format characters because they are not format
+characters: a combining grapheme joiner, a variation selector or a Hangul filler after every
+letter left the words readable and the old copy unmatched, and so did a visible mark (an overline,
+a dot below). The copy is read two ways, with the ignorable characters removed (inside a word, one
+hid a letter) and with each one as a space (between words, one glued the words into a single word
+the pattern does not match), and a line that matches in either is withheld.
+`looks_like_instructions` reads both copies, so every caller gets them, and it reads the text as
+written, before the invisible characters are removed from what is returned. The returned text
+holds nothing the check did not read: every format character (bidi overrides and isolates,
+zero-width spaces, a soft hyphen, and the Unicode tag characters, which can spell an instruction
+nobody sees), surrogate, private-use or unassigned code point, and the invisible marks and fillers
+outside Cf (the combining grapheme joiner, the variation selectors, the Hangul fillers: Unicode's
+other default-ignorable code points) are removed from it, as `common/osm.py` cleans a name.
+U+200C and U+200D stay, because Persian and Indic OpenStreetMap names are spelt with them and they
+cannot reorder text; a visible mark stays too, since it is seen.
 
 `samples._redact_text` (`table_sample`) now withholds instruction-like text the same way, and
-drops the same invisible characters first. That is
+drops the same invisible characters. That is
 a security fix outside the ask: `table_sample`'s findings rows showed model summaries with no
-instruction check.
+instruction check. Both modules' e-mail rule is anchored to the start of a run: unanchored, a long
+run of e-mail-safe characters with no "@" in it (a 256 KB CloudWatch event, a 400 KB DynamoDB
+attribute) was tried from every position, 80 s in one call against the function's 30 s.
 
 ## A sites config is never filled in
 

@@ -13,6 +13,7 @@ Against moto: real tables with real tags, the default tags as the module passes 
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -342,6 +343,17 @@ def test_text_spelt_in_tag_characters_is_not_shown():
 def test_an_ordinary_value_still_has_only_its_addresses_masked():
     shown = samples.redact("from 10.0.0.1 by someone@example.com: prices rose")
     assert shown == "from [ip] by [email]: prices rose"
+
+
+def test_a_long_run_with_no_at_sign_is_redacted_in_bounded_time():
+    """samples._EMAIL is anchored to a run's start, as redact._EMAIL is: unanchored, an attribute
+    of e-mail-safe characters with no "@" (up to 400 KB) was tried from every position, 80 s on
+    256 KB. Anchored it takes milliseconds; 3 s is a margin for a slow runner."""
+    run = "a1" * (128 * 1024)
+    started = time.perf_counter()
+    text = samples._redact_text(run)
+    assert time.perf_counter() - started < 3.0
+    assert text == run[: samples.VALUE_MAX_CHARS - 1] + "\u2026"  # cut as untrusted_text cuts, not whole
 
 
 def test_personal_fields_are_replaced_whole_wherever_they_are():

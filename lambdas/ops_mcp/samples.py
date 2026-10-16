@@ -122,7 +122,9 @@ _PERSONAL_FIELDS = re.compile(
 )
 REDACTED = "[redacted]"
 
-_EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Anchored to a run's start, as redact._EMAIL is: a 400 KB attribute with no "@" would backtrack from
+# every position (80 s on 256 KB).
+_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _IPV4 = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 _IPV6 = re.compile(r"(?<![0-9A-Za-z:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![0-9A-Za-z:])")
 
@@ -233,13 +235,14 @@ def redact(value: Any, key: str = "") -> Any:
 
 def _redact_text(text: str) -> str:
     # A value that reads like instructions to a model (a Finding's summary is a model's words from
-    # source data) is not shown at all: the same rule, and the same normalisation, as the log tools'
-    # (redact.looks_like_instructions). What nobody sees (format characters such as the tag
-    # characters, which can spell an instruction the check never reads) is dropped first, as
-    # redact.scrub drops it. This module keeps its own [ip] masking.
-    text = visible(text)
+    # source data) is not shown at all: the same rule, the same normalisation and the same two copies
+    # as the log tools' (redact.looks_like_instructions), read as written, since a format character
+    # between two words is what tells them apart. Then what nobody sees (format characters such as
+    # the tag characters, which can spell an instruction the check never reads, and the invisible
+    # marks and fillers) is dropped, as redact.scrub drops it. This module keeps its own [ip] masking.
     if looks_like_instructions(text):
         return WITHHELD
+    text = visible(text)
     text = _EMAIL.sub("[email]", text)
     text = _IPV4.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)
     text = _IPV6.sub(lambda m: "[ip]" if _is_ip(m.group(0)) else m.group(0), text)

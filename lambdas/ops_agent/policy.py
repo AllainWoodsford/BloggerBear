@@ -319,9 +319,10 @@ def _under_untrusted(value: Any, depth: int, inside: bool = False):
 
 def _normal(text: str) -> str:
     """Text as the echo rule compares it: the instruction check's copy (redact.normalised:
-    compatibility forms folded, format characters such as the two joiners redact.scrub keeps
-    removed, control characters read as spaces, whitespace collapsed), case folded. Both sides
-    alike, so a zero-width non-joiner after every word of an "(unverified)" cell does not hide its
+    compatibility forms decomposed, format characters such as the two joiners redact.scrub keeps
+    and marks such as an accent or the combining grapheme joiner removed, control characters read
+    as spaces, whitespace collapsed), case folded. Both sides alike, so a zero-width non-joiner
+    after every word of an "(unverified)" cell, or a mark after every letter, does not hide its
     repeat."""
     return " ".join(normalised(text).casefold().split())
 
