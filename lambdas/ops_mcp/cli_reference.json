@@ -1,7 +1,7 @@
 {
   "about": "Generated from scripts/admin_cli.py by `python scripts/generate_cli_reference.py`. Do not edit by hand.",
   "program": "python scripts/admin_cli.py",
-  "help_python": "3.13",
+  "help_python": "3.11",
   "help_columns": 100,
   "destructive_verbs": [
     "clear",
@@ -52,7 +52,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n                    ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,findings,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    findings            Research Findings\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -71,7 +71,7 @@
         "pause",
         "resume"
       ],
-      "help_text": "usage: admin_cli.py topics [-h] <action> ...\n\npositional arguments:\n  <action>\n    list        List all topics\n    get         Get one topic\n    create      Create a topic\n    update      Update a topic\n    delete      Delete a topic\n    trigger     Manually trigger a pipeline run\n    candidates  List candidate ideas considered for a topic\n    findings    Show the most recent research Finding for a topic\n    schedule    Show every topic's slot, state and the two schedules written for it, in plain\n                words and as written (the stagger: docs/project-plan.md, Staggered schedules)\n    reschedule  Rewrite every topic's two schedules with the stagger as it is now: after changing\n                --stagger-minutes, after adding or deleting a topic (the daily delay is the number\n                of topics), or to give older topics their slots\n    pause       Pause a topic: no research tick, no candidate ideas, no daily article until it is\n                resumed. Its schedules are disabled, the topic page says Paused, and the bear\n                muses about it\n    resume      Resume a paused topic: its schedules are enabled again from the next heartbeat\n\noptions:\n  -h, --help    show this help message and exit\n"
+      "help_text": "usage: admin_cli.py topics [-h] <action> ...\n\npositional arguments:\n  <action>\n    list      List all topics\n    get       Get one topic\n    create    Create a topic\n    update    Update a topic\n    delete    Delete a topic\n    trigger   Manually trigger a pipeline run\n    candidates\n              List candidate ideas considered for a topic\n    findings  Show the most recent research Finding for a topic\n    schedule  Show every topic's slot, state and the two schedules written for it, in plain words\n              and as written (the stagger: docs/project-plan.md, Staggered schedules)\n    reschedule\n              Rewrite every topic's two schedules with the stagger as it is now: after changing\n              --stagger-minutes, after adding or deleting a topic (the daily delay is the number\n              of topics), or to give older topics their slots\n    pause     Pause a topic: no research tick, no candidate ideas, no daily article until it is\n              resumed. Its schedules are disabled, the topic page says Paused, and the bear muses\n              about it\n    resume    Resume a paused topic: its schedules are enabled again from the next heartbeat\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "topics list": {
       "help": "List all topics",
@@ -983,10 +983,26 @@
           "metavar": null,
           "destructive": false,
           "value": true
+        },
+        {
+          "name": "--subject",
+          "dest": "subject",
+          "kind": "option",
+          "flags": [
+            "--subject"
+          ],
+          "help": "with --next-article, for a topic that rotates through subjects: what its next article on this subject reads (from that subject's last article, its Findings only)",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py findings list [-h] [--limit LIMIT] [--days DAYS | --since SINCE |\n                                  --next-article]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help      show this help message and exit\n  --limit LIMIT   how many to list, 1 to 20 (default 5)\n  --days DAYS     only the last D days, 1 to 14 (unexpired ones)\n  --since SINCE   only those captured at or after this ISO-8601 timestamp\n  --next-article  what the topic's next article will be written from: every Finding since its last\n                  article within its findings window (--findings-window-hours), at most 48,\n                  expired or not; `count` says how many and `more` whether some were not listed\n"
+      "help_text": "usage: admin_cli.py findings list [-h] [--limit LIMIT]\n                                  [--days DAYS | --since SINCE | --next-article]\n                                  [--subject SUBJECT]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help         show this help message and exit\n  --limit LIMIT      how many to list, 1 to 20 (default 5)\n  --days DAYS        only the last D days, 1 to 14 (unexpired ones)\n  --since SINCE      only those captured at or after this ISO-8601 timestamp\n  --next-article     what the topic's next article will be written from: every Finding since its\n                     last article within its findings window (--findings-window-hours), at most\n                     48, expired or not; `count` says how many and `more` whether some were not\n                     listed\n  --subject SUBJECT  with --next-article, for a topic that rotates through subjects: what its next\n                     article on this subject reads (from that subject's last article, its Findings\n                     only)\n"
     },
     "articles": {
       "help": "Manage articles",
@@ -1114,7 +1130,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
+      "help_text": "usage: admin_cli.py articles rewrite [-h] --instructions INSTRUCTIONS [--model MODEL_ID] [--force]\n                                     article_id\n\npositional arguments:\n  article_id\n\noptions:\n  -h, --help            show this help message and exit\n  --instructions INSTRUCTIONS, -i INSTRUCTIONS\n                        What is wrong with the article, e.g. \"the second section confuses staking\n                        with lending\"\n  --model MODEL_ID      A registered model to rewrite with (admin_cli models list). Default: the\n                        topic's model\n  --force               Published articles only: take it down now, before rewriting, instead of\n                        leaving it up until the rewrite is ready. If the rewrite then fails, it\n                        waits in the inbox, down\n"
     },
     "articles feedback-lock": {
       "help": "Stop taking feedback on one article (its feedback_locked flag, set to true)",
@@ -2337,7 +2353,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME\n                               --provider PROVIDER --input-price INPUT_PRICE\n                               --output-price OUTPUT_PRICE [--disabled]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n"
+      "help_text": "usage: admin_cli.py models add [-h] --model-id MODEL_ID --display-name DISPLAY_NAME --provider\n                               PROVIDER --input-price INPUT_PRICE --output-price OUTPUT_PRICE\n                               [--disabled]\n\noptions:\n  -h, --help            show this help message and exit\n  --model-id MODEL_ID\n  --display-name DISPLAY_NAME\n  --provider PROVIDER\n  --input-price INPUT_PRICE\n                        USD per 1k input tokens\n  --output-price OUTPUT_PRICE\n                        USD per 1k output tokens\n  --disabled            Register the model as disabled (default: enabled)\n"
     },
     "model-config": {
       "help": "Manage the global default/fallback model",

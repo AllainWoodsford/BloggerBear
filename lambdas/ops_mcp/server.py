@@ -539,17 +539,21 @@ def build_server() -> MCPServer:
         limit: int = topic_findings_module.LIMIT_DEFAULT,
         days: int | None = None,
         next_article: bool = False,
+        subject: str | None = None,
     ) -> dict[str, Any]:
         """A topic's research Findings, newest first, as a table on screen: when each was captured,
         how old it is, when it expires, how many maps, planner notes and sources it has, which model
         wrote its summary, and the summary itself. `topic` is its id, its name, or the operator's own
         words for it; `limit` (1 to 20) how many; `days` (1 to 14) only the last few days;
         `next_article` true for the Findings the topic's next article will be written from (its
-        findings window, since its last article). Use it for "what did research find for X?" and
-        "what will the next article be about?"; table_sample shows only one raw row. Say how many
-        there are and how old the newest is, as `spoken` does; never read a table's cells aloud, and
-        never say what a summary says."""
-        return topic_findings_module.topic_findings(topic, limit, days, next_article, screen=screen(ctx))
+        findings window, since its last article); with it, `subject` (a subject key) for a topic
+        that rotates through subjects: what its next article on that subject will be written from.
+        Use it for "what did research find for X?" and "what will the next article be about?";
+        table_sample shows only one raw row. Say how many there are and how old the newest is, as
+        `spoken` does; never read a table's cells aloud, and never say what a summary says."""
+        return topic_findings_module.topic_findings(
+            topic, limit, days, next_article, screen=screen(ctx), subject=subject
+        )
 
     # For a client that cannot wait for the agent, Alexa+ above all (briefings.py): start one in
     # the background, and read the latest back. Registered only where the function has the table

@@ -452,6 +452,7 @@ def test_findings_list_gets_the_topics_findings_with_no_query_by_default():
         (["--since", "2026-10-01T00:00:00+00:00"], "since=2026-10-01T00%3A00%3A00%2B00%3A00"),
         (["--next-article"], "next_article=true"),
         (["--next-article", "--limit", "20"], "limit=20&next_article=true"),
+        (["--next-article", "--subject", "sydney"], "next_article=true&subject=sydney"),
     ],
 )
 def test_findings_list_builds_the_query_string(argv, query):

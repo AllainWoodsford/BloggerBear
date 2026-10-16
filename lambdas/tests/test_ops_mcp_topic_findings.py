@@ -336,6 +336,95 @@ def test_the_next_articles_window_follows_the_daily_runs_rule(aws, topic, since)
     assert said == ("last_article_at" in topic and bounded_by_article)
 
 
+# --- the next article on one subject (a topic that rotates, common/day_subject.py) -------------------
+
+
+def _rotating(aws):
+    """A topic whose last article (on any subject) was 2 hours ago, and on north 30 hours ago."""
+    put_topic(
+        aws,
+        findings_window_hours=96,
+        last_article_at=(NOW - timedelta(hours=2)).isoformat(),
+        last_article_by_subject={"north": (NOW - timedelta(hours=30)).isoformat()},
+    )
+    put_finding(aws, 1, subjects=["north"])
+    put_finding(aws, 5, subjects=["south"])
+    put_finding(aws, 10, subjects=["north", "south"])
+    put_finding(aws, 20)  # no subjects: a rotating topic's run never drafts it
+    put_finding(aws, 40, subjects=["north"])  # before north's last article
+
+
+def test_a_subject_reads_what_the_next_article_on_it_reads_as_the_daily_run_does(aws):
+    _rotating(aws)
+
+    result = ask(next_article=True, subject="north")
+
+    since = (NOW - timedelta(hours=30)).isoformat()
+    assert result["window"] == {
+        "since": since, "until": NOW.isoformat(), "rule": "next_article", "subject": "north",
+    }  # fmt: skip
+    stored = aws.Table("Topics").get_item(Key={"topic_id": "rail-sydney"})["Item"]
+    assert since == findings_window.window_start(stored, NOW, subject_key="north")  # the one rule
+    assert [row["age"] for row in result["rows"]] == ["60 minutes", "10 hours"]
+    assert result["count"] == 2 and result["count_is_at_least"] is False and result["more"] is False
+    assert result["spoken"] == (
+        "Rail access: Sydney has 2 findings for its next article on that subject since its last one, "
+        "the newest 60 minutes ago. They're on screen."
+    )
+    assert "north" not in result["spoken"]  # the operator's own text is never spoken
+
+
+def test_a_subject_never_written_about_reads_the_whole_window(aws):
+    _rotating(aws)
+
+    result = ask(next_article=True, subject="south")
+
+    assert result["window"]["since"] == (NOW - timedelta(hours=96)).isoformat()
+    assert [row["age"] for row in result["rows"]] == ["5 hours", "10 hours"]
+    assert result["spoken"].startswith(
+        "Rail access: Sydney has 2 findings for its next article on that subject, the newest 5 hours ago."
+    )
+
+
+def test_without_a_subject_the_next_article_is_what_it_always_was(aws):
+    _rotating(aws)
+
+    result = ask(next_article=True)
+
+    assert result["window"] == {
+        "since": (NOW - timedelta(hours=2)).isoformat(), "until": NOW.isoformat(), "rule": "next_article",
+    }  # fmt: skip
+    assert result["count"] == 1 and "subject" not in result["spoken"]
+
+
+def test_a_subject_counts_what_the_run_reads_and_says_when_the_window_held_more(aws):
+    put_topic(aws, findings_window_hours=192)
+    for minutes in range(50):
+        put_finding(aws, minutes / 60, subjects=["north"] if minutes % 2 else ["south"])
+
+    result = ask(next_article=True, subject="north", limit=3)
+
+    assert result["count"] == 24 and result["count_is_at_least"] is True  # of the run's 48, then more
+    assert len(result["rows"]) == 3 and result["more"] is True
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "spoken"),
+    [
+        ({"next_article": True, "subject": "no rth"}, topic_findings.NOT_A_SUBJECT),
+        ({"next_article": True, "subject": "x" * 65}, topic_findings.NOT_A_SUBJECT),
+        ({"next_article": True, "subject": 7}, topic_findings.NOT_A_SUBJECT),
+        ({"subject": "north"}, topic_findings.SUBJECT_NEEDS_NEXT_ARTICLE),
+        ({"days": 2, "subject": "north"}, topic_findings.SUBJECT_NEEDS_NEXT_ARTICLE),
+    ],
+)
+def test_a_subject_that_is_not_one_or_without_next_article_reads_nothing(aws, kwargs, spoken):
+    _rotating(aws)
+    with no_reads(), patch.object(topic_findings, "count_findings", side_effect=AssertionError("counted")):
+        result = ask(**kwargs)
+    assert result == {"spoken": spoken, "findings": [], "rows": [], "matched_topic": None}
+
+
 def test_more_than_the_daily_runs_cap_and_summaries_past_its_draft_budget(aws):
     assert topic_findings.MAX_WINDOW_FINDINGS == daily_cycle_handler.MAX_WINDOW_FINDINGS
     assert topic_findings.SUMMARIES_MAX_CHARS == daily_cycle_handler.SUMMARIES_MAX_CHARS

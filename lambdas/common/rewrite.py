@@ -51,6 +51,7 @@ from common import compliance, fresh_review
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, pricing_for
+from common.day_subject import ARTICLE_SUBJECT_FIELD, subject_findings
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     delete_musings_for_article,
@@ -260,11 +261,28 @@ def _findings_for(article: dict, topic: dict) -> list[dict]:
     it from (common/findings_window.py): a day, or more for a topic that writes on some days only,
     whose article drew on the findings of its off days too. The previous article is not known
     here, so a wide window can also hold findings an earlier article used: more context, never
-    less. Empty once they have aged out of the Findings table."""
+    less. Empty once they have aged out of the Findings table.
+
+    An article written on a rotating topic's day subject (its `subject`, common/day_subject.py)
+    was drafted from that subject's Findings only, so only those are kept: the fresh-data review
+    and the compliance review then see its own subject's research, not its neighbours'. If none
+    of the window's Findings report it (the subject has since left the topic's rota, say), the
+    whole window is used and the log says so: never an empty prompt."""
     created_at = article.get("created_at") or datetime.now(UTC).isoformat()
     since = (datetime.fromisoformat(created_at) - timedelta(hours=findings_window_hours(topic))).isoformat()
     findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
-    return [f for f in findings if (f.get("captured_at") or "") <= created_at]
+    findings = [f for f in findings if (f.get("captured_at") or "") <= created_at]
+    subject = article.get(ARTICLE_SUBJECT_FIELD)
+    if not isinstance(subject, str) or not subject:
+        return findings
+    own = subject_findings(findings, subject)
+    if own or not findings:
+        return own
+    print(
+        f"rewrite: no findings on the article's subject {subject!r:.70} in its window; "
+        f"rewriting from all {len(findings)} of the window's findings instead"
+    )
+    return findings
 
 
 def _load_snapshot(findings: list[dict]) -> dict | None:

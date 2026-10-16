@@ -115,6 +115,7 @@ def put_finding(
     research_call: dict | None = None,
     figures: list[dict] | None = None,
     planner_notes: list[dict] | None = None,
+    subjects: list[str] | None = None,
 ) -> None:
     """Write a Finding item to the Findings table.
 
@@ -135,6 +136,10 @@ def put_finding(
     `planner_notes` is the adapter's rule-based notes on what it measured
     (Adapter.planner_notes: the rail adapter's flags and simulations), DynamoDB-ready
     (numbers as Decimal), stored likewise only when there is at least one.
+
+    `subjects` are the subject keys the observation reports (Adapter.subjects, cleaned by
+    common/day_subject.clean_subjects), for a topic that rotates through several: its daily cycle
+    drafts the Finding on each of their days. Stored likewise only when there is at least one.
     """
     table = get_table(os.environ["FINDINGS_TABLE"])
     item = {
@@ -151,6 +156,8 @@ def put_finding(
         item["figures"] = figures
     if planner_notes:
         item["planner_notes"] = planner_notes
+    if subjects:
+        item["subjects"] = list(subjects)
     table.put_item(Item=item)
 
 
@@ -414,8 +421,13 @@ def put_article(
     equipment_used: list[dict] | None = None,
     attribution: list[dict] | None = None,
     figures: list[dict] | None = None,
+    subject: str | None = None,
 ) -> dict:
     """Write an Articles item and return it.
+
+    `subject` is the key of the day's subject the article was written about, for a topic that
+    rotates through several (common/day_subject.py): Re-Write reads that subject's Findings back.
+    Stored only when given; every other article has no such field.
 
     `attribution` is the source credit this article was drafted with (common/attribution.py:
     [{"text", "label", "url"}], copied from its topic's adapter), kept so the article goes on
@@ -470,6 +482,8 @@ def put_article(
         item["attribution"] = attribution
     if figures:
         item["figures"] = figures
+    if subject is not None:
+        item["subject"] = subject
     table.put_item(Item=item)
     return {**item, "lineage": lineage}
 
@@ -537,16 +551,38 @@ def put_topic(item: dict) -> None:
     table.put_item(Item=item)
 
 
-def set_topic_last_article_at(topic_id: str, timestamp: str) -> None:
+def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | None = None) -> None:
     """Set only a Topic's `last_article_at` (ISO-8601 UTC), leaving every other
     attribute alone. Fails (ConditionalCheckFailedException) rather than
     creating a Topic that no longer exists.
+
+    With `subject_key` (a topic that rotates through subjects, common/day_subject.py), also that
+    subject's entry in `last_article_by_subject` (a map of subject key to ISO time; the other
+    subjects' entries are left alone). DynamoDB refuses to set a map and a key inside it in one
+    expression, so it is two writes: the map is made if the topic has none, then the subject's
+    entry and `last_article_at` are set together, so the two stamps never disagree. If the first
+    write fails, neither stamp is set.
     """
     table = get_table(os.environ["TOPICS_TABLE"])
+    if subject_key is None:
+        table.update_item(
+            Key={"topic_id": topic_id},
+            UpdateExpression="SET last_article_at = :t",
+            ConditionExpression="attribute_exists(topic_id)",
+            ExpressionAttributeValues={":t": timestamp},
+        )
+        return
     table.update_item(
         Key={"topic_id": topic_id},
-        UpdateExpression="SET last_article_at = :t",
+        UpdateExpression="SET last_article_by_subject = if_not_exists(last_article_by_subject, :empty)",
         ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeValues={":empty": {}},
+    )
+    table.update_item(
+        Key={"topic_id": topic_id},
+        UpdateExpression="SET last_article_at = :t, last_article_by_subject.#subject = :t",
+        ConditionExpression="attribute_exists(topic_id)",
+        ExpressionAttributeNames={"#subject": subject_key},
         ExpressionAttributeValues={":t": timestamp},
     )
 

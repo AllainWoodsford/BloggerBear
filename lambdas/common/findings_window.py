@@ -15,6 +15,13 @@ or written before a bound changed) is skipped and the default applies, never tru
 does anything that wants to show what the next article will be written from (the operator's
 assistant's topic_findings, the Admin API's findings route), so the two can never disagree.
 
+A topic that rotates through several subjects (common/day_subject.py) writes about one of them a
+day, so its previous article on *that subject* bounds the window, not its previous article on any:
+the topic item keeps one stamp per subject (`last_article_by_subject`, a map of subject key to ISO
+time) beside `last_article_at`, which every topic keeps as before. With `subject_key`, the window
+reads the subject's own stamp and ignores the topic-wide one; a subject never written about yet is
+bounded by the window alone.
+
 Topic-agnostic: nothing here knows about any adapter or domain.
 """
 
@@ -24,6 +31,10 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 FIELD = "findings_window_hours"
+# The topic item's stamps: when its last article began, on any subject and per subject (the daily
+# cycle's _record_article_written, common/dynamo.set_topic_last_article_at).
+LAST_ARTICLE_FIELD = "last_article_at"
+SUBJECT_STAMPS_FIELD = "last_article_by_subject"
 FINDINGS_WINDOW_HOURS = 24
 # Two weeks: Findings expire after research_tick_handler.FINDING_TTL_DAYS (14), so a longer window
 # would reach back to nothing. tests/test_daily_cycle_handler.py holds the two together.
@@ -60,7 +71,25 @@ def findings_window_hours(topic: dict) -> int:
     return FINDINGS_WINDOW_HOURS if hours is None else hours
 
 
-def window_start(topic: dict, now: datetime, *, force: bool = False, hours: int | None = None) -> str:
+def last_article_at(topic: dict, subject_key: str | None = None):
+    """The stored stamp that bounds the topic's next window: `last_article_at`, or with
+    `subject_key` that subject's entry in `last_article_by_subject` (None when the map, or the
+    subject in it, is missing or the map is not a map). As stored: not parsed or checked."""
+    topic = topic or {}
+    if subject_key is None:
+        return topic.get(LAST_ARTICLE_FIELD)
+    stamps = topic.get(SUBJECT_STAMPS_FIELD)
+    return stamps.get(subject_key) if isinstance(stamps, dict) else None
+
+
+def window_start(
+    topic: dict,
+    now: datetime,
+    *,
+    force: bool = False,
+    hours: int | None = None,
+    subject_key: str | None = None,
+) -> str:
     """ISO timestamp Findings must be captured at or after to feed the topic's next article.
 
     The window is the topic's findings window (`hours`, which defaults to `findings_window_hours`:
@@ -71,13 +100,18 @@ def window_start(topic: dict, now: datetime, *, force: bool = False, hours: int 
     still applies. A `last_article_at` that is missing, unreadable or naive is read as the daily
     cycle reads it: missing or unreadable leaves the window alone, naive is UTC.
 
+    `subject_key`, for a topic that rotates through subjects (the day's subject, or the one an
+    operator asks about): the previous article *on that subject* bounds the window instead (its
+    entry in `last_article_by_subject`, read the same way), and the topic-wide stamp is not read.
+    `force` ignores both. None, the default, is the rule every other topic has always had.
+
     Pure: `now` is passed in, and nothing is read or written.
     """
     floor = now - timedelta(hours=findings_window_hours(topic) if hours is None else hours)
-    last_article_at = None if force else (topic or {}).get("last_article_at")
-    if last_article_at:
+    previous_at = None if force else last_article_at(topic, subject_key)
+    if previous_at:
         try:
-            previous = datetime.fromisoformat(last_article_at)
+            previous = datetime.fromisoformat(previous_at)
         except (TypeError, ValueError):
             previous = None
         if previous is not None:

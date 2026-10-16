@@ -11,6 +11,7 @@ import pytest
 from moto import mock_aws
 from table_schemas import create_table
 
+import common.dynamo as dynamo
 import daily_cycle_handler
 from common import compliance, rewrite
 
@@ -254,6 +255,82 @@ def test_a_topic_without_one_is_rewritten_from_the_day_before_its_article(aws):
 
     prompt = mock_invoke.call_args.args[0]
     assert "Bitcoin was at $81,000" in prompt and "Four days earlier" not in prompt
+
+
+def _seed_on_subject(subject):
+    """A held article a rotating topic wrote on its day subject (common/day_subject.py), stored the
+    way the daily cycle stores it, and Findings on its subject, on another, and on none."""
+    _seed(topic={**TOPIC, "findings_window_hours": 96})
+    dynamo.put_article(
+        article_id="a1",
+        topic_id=TOPIC["topic_id"],
+        title="Buy Bitcoin Now",
+        body_s3_key="articles/a1.md",
+        status="pending_moderation",
+        created_at="2026-09-26T09:00:00+00:00",
+        lineage={"calls": [{"stage": "draft", "model_id": MODEL, "input_tokens": 100, "output_tokens": 50}]},
+        subject=subject,
+    )
+    assert _table("Articles").get_item(Key={"article_id": "a1"})["Item"].get("subject") == subject
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": "2026-09-25T08:00:00+00:00",
+            "summary": "North: a new station opened.",
+            "subjects": ["north"],
+        }
+    )
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": "2026-09-24T08:00:00+00:00",
+            "summary": "Both: the shared line reopened.",
+            "subjects": ["south", "north"],
+        }
+    )
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": "2026-09-23T08:00:00+00:00",
+            "summary": "South: a depot closed.",
+            "subjects": ["south"],
+        }
+    )
+
+
+def test_an_article_on_a_subject_is_rewritten_from_its_own_subjects_findings_only(aws):
+    _seed_on_subject("north")
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    assert "North: a new station opened." in prompt and "Both: the shared line reopened." in prompt
+    assert "South: a depot closed." not in prompt
+    assert "Bitcoin was at $81,000" not in prompt  # _seed's Finding reports no subject
+
+
+def test_an_article_whose_subject_has_no_findings_falls_back_to_the_whole_window_and_says_so(aws, capsys):
+    _seed_on_subject("east")  # a subject no longer in the topic's rota
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    for summary in ("North: a new station opened.", "South: a depot closed.", "Bitcoin was at $81,000"):
+        assert summary in prompt
+    assert "rewrite: no findings on the article's subject 'east' in its window" in capsys.readouterr().out
+
+
+def test_an_article_without_a_subject_keeps_every_finding_in_its_window(aws):
+    _seed_on_subject(None)
+
+    _, mock_invoke, _ = _run()
+
+    prompt = mock_invoke.call_args.args[0]
+    for summary in ("North: a new station opened.", "South: a depot closed.", "Bitcoin was at $81,000"):
+        assert summary in prompt
+    assert "subject" not in _table("Articles").get_item(Key={"article_id": "a1"})["Item"]
 
 
 def test_a_steered_rewrite_follows_the_persons_note_and_records_it(aws):

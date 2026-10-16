@@ -50,6 +50,7 @@ from common import evidence
 from common.adapters.base import SEEN_KEY
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
+from common.day_subject import clean_subjects
 from common.dynamo import (
     get_latest_finding,
     get_pipeline_config,
@@ -155,6 +156,18 @@ def _planner_notes(adapter, new_state: dict) -> list[dict]:
         return json.loads(text, parse_float=Decimal)
     except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it
         print(f"research_tick_handler: planner notes dropped: {type(exc).__name__}: {exc!r}")
+        return []
+
+
+def _subjects(adapter, new_state: dict) -> list[str]:
+    """The subjects the observation reports (Adapter.subjects), as a Finding keeps them
+    (common/day_subject.clean_subjects: plain keys, each once, at most MAX_SUBJECTS_PER_FINDING).
+    A hook that fails costs the subjects and never the Finding: by now its summary has been paid
+    for. It is said in the log, since a rotating topic never drafts a Finding without subjects."""
+    try:
+        return clean_subjects(adapter.subjects(new_state))
+    except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it
+        print(f"research_tick_handler: subjects dropped: {type(exc).__name__}: {exc!r}")
         return []
 
 
@@ -418,6 +431,9 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     # only when there are any (common/figures.py).
     figures = clean_figures(adapter.figures(new_state))[:MAX_FIGURES_PER_FINDING]
     planner_notes = _planner_notes(adapter, new_state)
+    # Which subjects it reports (Adapter.subjects), for a topic that rotates through several
+    # (common/day_subject.py); stored only when there are any.
+    subjects = _subjects(adapter, new_state)
 
     put_finding(
         topic_id=topic_id,
@@ -429,6 +445,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
         research_call=research_call,
         figures=figures,
         planner_notes=planner_notes,
+        subjects=subjects,
     )
     evidence.note(finding=captured_at)
 
