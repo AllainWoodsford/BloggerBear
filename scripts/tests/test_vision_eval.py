@@ -473,6 +473,7 @@ def test_coverage_counts_e2_from_the_listing_and_main_writes_the_run_file(tmp_pa
     assert code == 0 and len(heads) == 4  # SCL and AOT of each scene
     run = vision_runs.load(next(runs.glob("*.json")))
     assert run["kind"] == "eval-coverage" and run["backend"] == "none" and run["mode"] == "coverage"
+    assert run["started_at"] <= run["finished_at"]
     assert run["run_id"].startswith(run["started_at"][:10] + "-eval-coverage-") and run["run_id"].endswith(
         "-none"
     )

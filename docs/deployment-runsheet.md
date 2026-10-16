@@ -924,7 +924,7 @@ shadow them, and the handler would answer `not_cool`).
    CPU=neoverse-v2-graviton4               # the cpu slug in every run id: check it against the first file written
    SHA=<step 4's sha256>
    L="--imds --label cool_product=<product id> --label cool_version=<version> --label cool_delivery=<ami|container>"
-   C="--cache ~/cogs"
+   C="--cache $HOME/cogs"
    ```
 
    Each run writes `$E/$D-bench-<mode>-$CPU-<backend>-<tag>.json` (`--out $E` with `--tag`), and

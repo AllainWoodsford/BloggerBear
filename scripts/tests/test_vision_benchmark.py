@@ -430,6 +430,7 @@ def test_main_writes_the_run_file_schema_and_its_run_id(tmp_path, capsys):
     assert run["schema"] == "bloggerbear.vision-eval/1" and run["kind"] == "bench-kernels"
     assert run["mode"] == "kernels" and run["backend"] == "opencv"
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", run["finished_at"])
+    assert run["started_at"] <= run["finished_at"]
     assert set(run["code"]) == {"git_sha", "dirty"}
     env = run["environment"]
     for key in ("cpu", "machine", "python", "opencv", "cpu_count", "affinity", "threads", "numpy", "networkx",
@@ -477,6 +478,16 @@ def test_out_path_takes_a_directory_or_a_file(tmp_path):
     assert vision_runs.out_path(run, tmp_path / "x.json") == tmp_path / "x.json"
     (tmp_path / "there").mkdir()
     assert vision_runs.out_path(run, tmp_path / "there") == tmp_path / "there" / "r1.json"
+
+
+def test_new_run_keeps_the_start_it_is_given_and_cache_dir_expands_the_home(tmp_path):
+    env = {"cpu": "x", "machine": "x86_64", "python": "3.11", "opencv": {}}
+    run = vision_runs.new_run("bench-kernels", "x", "opencv", env, started="2026-10-19T01:02:03Z")
+    assert run["started_at"] == "2026-10-19T01:02:03Z"
+    assert run["run_id"] == "2026-10-19-bench-kernels-x-opencv"
+    # The runsheet's `C="--cache ~/cogs"` reaches the script with the tilde unexpanded.
+    assert vision_runs.cache_dir("~/cogs") == Path.home() / "cogs"
+    assert vision_runs.cache_dir(str(tmp_path / "cogs")) == tmp_path / "cogs"
 
 
 def test_threads_and_the_affinity_are_recorded_and_pin_cpu_is_refused_off_linux(
@@ -626,7 +637,7 @@ def test_the_cache_fills_then_serves_and_refuses_a_changed_etag(tmp_path):
     assert vision_runs.default_cache_dir().name == "bloggerbear-cogs"
 
 
-def test_a_manifest_etag_that_changed_refuses_the_run_before_any_read(tmp_path, monkeypatch):
+def test_a_manifest_etag_that_changed_refuses_the_run_before_any_read(tmp_path, monkeypatch, capsys):
     scene = rail_scene_with_network(tmp_path)
     pinned_url = scene["assets"]["red"]
     manifest = {"scenes": [{"assets": {"red": {"url": pinned_url, "etag": "pinned-etag", "bytes": 1}}}]}
@@ -684,6 +695,15 @@ def test_a_manifest_etag_that_changed_refuses_the_run_before_any_read(tmp_path, 
     assert "png" not in row and row["metrics"]["served_share"] == 0.7312
     assert run["summary"]["sydney-rail-2024-01-05.served_share"] == 0.7312
     assert run["summary"]["sydney-rail-2024-01-05.total_ms"] == 1330.0
+    assert run["started_at"] <= run["finished_at"]
+    # A scenes file whose asset is at another host is refused before any request, with exit 1.
+    foreign = {**scene, "network_file": "sydney.json", "assets": {**scene["assets"]}}
+    foreign["assets"]["red"] = "https://example.com/B04.tif"
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text(json.dumps({"scenes": [foreign]}), encoding="utf-8")
+    argv = ["scenes", "--scenes-file", str(elsewhere), "--manifest", str(manifest_file), "--repeats", "1"]
+    assert bench.main([*argv, "--cache", str(tmp_path / "cogs")]) == 1
+    assert "not under https://sentinel-cogs" in capsys.readouterr().err
 
 
 class FakeImds:

@@ -220,9 +220,12 @@ def new_run(
     params: dict | None = None,
     tag: str | None = None,
     mode: str | None = None,
+    started: str | None = None,
 ) -> dict:
-    """A run record with its `started_at`; `finish` fills the rest."""
-    started = utc_now()
+    """A run record with its `started_at` (`started`, taken by the caller before the measurement,
+    so the run's date and duration are the measurement's; now when not given); `finish` fills the
+    rest."""
+    started = started or utc_now()
     return {
         "schema": SCHEMA,
         "run_id": make_run_id(kind, cpu, backend, tag, started[:10]),
@@ -361,6 +364,13 @@ def default_cache_dir() -> Path:
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "bloggerbear-cogs"
     return Path.home() / ".cache" / "bloggerbear-cogs"
+
+
+def cache_dir(text: str) -> Path:
+    """`--cache DIR` as a path, with `~` expanded: a shell variable that holds `--cache ~/cogs`
+    (the runsheet's `$C`) reaches the script with the tilde unexpanded, and without this the cache
+    would land in a directory named `~` under the working directory."""
+    return Path(text).expanduser()
 
 
 class CachedFetch:

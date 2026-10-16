@@ -1363,8 +1363,10 @@ def main(argv: list[str] | None = None) -> int:
     reading = argparse.ArgumentParser(add_help=False)
     reading.add_argument("--manifest", type=Path, default=MANIFEST_FILE,
                          help="the manifest whose ETags pin the scenes")  # fmt: skip
-    reading.add_argument("--cache", type=Path, nargs="?", const=vision_runs.default_cache_dir(), default=None,
-                         metavar="DIR", help="answer range reads from DIR, filled on first read")  # fmt: skip
+    reading.add_argument(
+        "--cache", type=vision_runs.cache_dir, nargs="?", const=vision_runs.default_cache_dir(),
+        default=None, metavar="DIR", help="answer range reads from DIR (~ expanded), filled on first read",
+    )
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -1414,6 +1416,7 @@ def main(argv: list[str] | None = None) -> int:
         cool = parse_labels(args.label)
     except ValueError as exc:
         parser.error(str(exc))
+    started = vision_runs.utc_now()  # the run's start: before the pin, the threads, IMDS and the work
     if getattr(args, "pin_cpu", None) is not None:
         refusal = pin_cpu(args.pin_cpu)
         if refusal:
@@ -1482,7 +1485,7 @@ def main(argv: list[str] | None = None) -> int:
                 inputs["cache_index_sha256"] = cache.index_sha256()
                 inputs["cache_hits"], inputs["cache_misses"] = cache.hits, cache.misses
             libraries = mapped_libraries()
-    except vision_runs.InputChanged as exc:
+    except (vision_runs.InputChanged, vision_runs.WrongHost) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
@@ -1493,7 +1496,7 @@ def main(argv: list[str] | None = None) -> int:
         env["build_lines"] = build_lines(cv2.getBuildInformation())
     run = vision_runs.new_run(
         f"bench-{args.mode}", env["cpu"], args.backend, env, worker=worker_record, inputs=inputs,
-        params=params, tag=args.tag, mode=args.mode,
+        params=params, tag=args.tag, mode=args.mode, started=started,
     )  # fmt: skip
     if args.mode == "controls":
         vision_runs.finish(run, results, checks, summary)
@@ -1514,6 +1517,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main_compare(args) -> int:
+    started = vision_runs.utc_now()
     try:
         a, b = vision_runs.load(args.a), vision_runs.load(args.b)
         result = compare(a, b, args.bootstrap, args.seed, dir_a=args.a.parent, dir_b=args.b.parent)
@@ -1526,7 +1530,7 @@ def _main_compare(args) -> int:
         inputs={"scenes": a["inputs"].get("scenes") or [], "networks": a["inputs"].get("networks") or [],
                 "runs": [a["run_id"], b["run_id"]]},
         params={"a": str(args.a), "b": str(args.b), "bootstrap": args.bootstrap, "seed": args.seed},
-        tag=args.tag, mode="compare",
+        tag=args.tag, mode="compare", started=started,
     )  # fmt: skip
     vision_runs.finish(run, result, compare_checks(result), compare_summary(result))
     print(markdown(run))

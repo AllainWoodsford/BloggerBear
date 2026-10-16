@@ -585,8 +585,10 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("coverage", help="E1 per scene and E2 over the year's listing; a run file")
     c.add_argument("--manifest", type=Path, default=MANIFEST_FILE)
     c.add_argument("--only", action="append", metavar="NAME", help="only this scene (repeatable)")
-    c.add_argument("--cache", type=Path, nargs="?", const=vision_runs.default_cache_dir(), default=None,
-                   metavar="DIR", help="answer range reads from DIR, filled on first read")  # fmt: skip
+    c.add_argument(
+        "--cache", type=vision_runs.cache_dir, nargs="?", const=vision_runs.default_cache_dir(),
+        default=None, metavar="DIR", help="answer range reads from DIR (~ expanded), filled on first read",
+    )
     c.add_argument("--write", action="store_true", help="put site_coverage and aot_mean into the manifest")
     c.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     c.add_argument("--tag", help="a suffix for the run id")
@@ -643,6 +645,7 @@ def _main_coverage(args, manifest: dict) -> int:
         scenes = [scene for scene in scenes if scene["name"] in args.only]
     urls = [scene["assets"]["scl"]["url"] for scene in scenes]
     urls += [aot_url(scene["scene_id"]) for scene in scenes]
+    started = vision_runs.utc_now()  # before the HEADs and the reads: the run's own start
     try:
         heads = vision_runs.head_assets(urls)
         vision_runs.check_pinned(heads, vision_runs.pinned_etags(manifest))
@@ -673,6 +676,7 @@ def _main_coverage(args, manifest: dict) -> int:
     env = vision_runs.environment(cpu_identity(), build.build_info())
     run = vision_runs.new_run(
         "eval-coverage", env["cpu"], "none", env, inputs=inputs, tag=args.tag, mode="coverage",
+        started=started,
         params={"only": args.only, "cache": cache is not None, "floor": rail_rule()[0],
                 "max_cloud_cover": rail_rule()[1], "year_set_min_coverage": YEAR_SET_MIN_COVERAGE},
     )  # fmt: skip
