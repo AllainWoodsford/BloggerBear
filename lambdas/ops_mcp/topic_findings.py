@@ -117,10 +117,15 @@ def _count(value) -> int:
 
 
 def _epoch(value) -> datetime | None:
+    """Epoch seconds as a datetime, or None for anything that is not one: a non-number, a negative,
+    or a value past the year 9999 (a millisecond epoch, a hand-edited TTL), which datetime refuses."""
     seconds = _plain(value)
-    if not isinstance(seconds, int | float) or not 0 <= seconds < 2**40:
+    if not isinstance(seconds, int | float) or seconds < 0:
         return None
-    return datetime.fromtimestamp(seconds, tz=UTC)
+    try:
+        return datetime.fromtimestamp(seconds, tz=UTC)
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def _model_id(value) -> str | None:

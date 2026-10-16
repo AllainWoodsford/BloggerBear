@@ -11,6 +11,7 @@ import shlex
 from pathlib import Path
 
 import pytest
+import yaml
 
 import admin_cli
 import generate_cli_reference as generator
@@ -38,16 +39,16 @@ def _skills() -> list[Path]:
 
 
 def _frontmatter(text: str) -> dict[str, str]:
-    """The `key: value` lines between the opening and closing `---`; a key with no value, or a
-    line that is not one, fails (no YAML library: the frontmatter is meant to be this plain)."""
+    """The YAML between the opening and closing `---`, parsed as a skill loader parses it: a mapping
+    of plain strings, none empty. A hand split on the first colon once passed a description a YAML
+    parser rejects (an unquoted `Admin CLI: list them`), so this is a real parse."""
     assert text.startswith("---\n"), "a skill starts with its frontmatter"
     body = text[4:]
     end = body.index("\n---\n")
-    fields: dict[str, str] = {}
-    for line in body[:end].splitlines():
-        key, sep, value = line.partition(":")
-        assert sep and key.strip() and value.strip(), line
-        fields[key.strip()] = value.strip()
+    fields = yaml.safe_load(body[:end])  # raises yaml.YAMLError on what a loader would refuse
+    assert isinstance(fields, dict) and fields, "the frontmatter is a mapping"
+    for key, value in fields.items():
+        assert isinstance(key, str) and isinstance(value, str) and value.strip(), key
     return fields
 
 
@@ -90,6 +91,14 @@ def test_a_skill_is_a_name_and_a_description_and_nothing_that_pre_approves(skill
     assert set(fields) == {"name", "description"}  # no allowed-tools
     assert fields["name"] == skill.parent.name
     assert len(fields["description"]) > 40
+
+
+def test_the_frontmatter_check_refuses_what_a_yaml_loader_refuses():
+    """The class of mistake the first skill shipped with: `: ` inside an unquoted value."""
+    with pytest.raises(yaml.YAMLError):
+        _frontmatter("---\nname: a-skill\ndescription: Findings with the Admin CLI: list them.\n---\n")
+    quoted = _frontmatter('---\nname: a-skill\ndescription: "Findings with the Admin CLI: list them."\n---\n')
+    assert quoted == {"name": "a-skill", "description": "Findings with the Admin CLI: list them."}
 
 
 @pytest.mark.parametrize("skill", _skills(), ids=lambda path: path.parent.name)

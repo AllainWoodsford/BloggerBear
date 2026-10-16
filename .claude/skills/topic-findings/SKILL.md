@@ -1,6 +1,6 @@
 ---
 name: topic-findings
-description: Interrogate a BloggerBear topic's research Findings with the Admin CLI: list them newest first, see what the next article will be written from, and read what each field means (summary, figures, planner notes, research_call, expiry). Use when asked what a topic found, why it did or did not write, or what its next article will draw on, or what a Finding holds.
+description: "Interrogate a BloggerBear topic's research Findings with the Admin CLI: list them newest first, see what the next article will be written from, and read what each field means (summary, figures, planner notes, research_call, expiry). Use when asked what a topic found, why it did or did not write, or what its next article will draw on, or what a Finding holds."
 ---
 
 # A topic's Findings

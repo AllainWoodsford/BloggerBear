@@ -442,6 +442,27 @@ def test_old_findings_without_the_newer_fields_read_as_zeros(aws):
     assert result["spoken"].endswith("It's on screen.")
 
 
+@pytest.mark.parametrize(
+    "expires_at",
+    [253402300800, Decimal(300_000_000_000), Decimal(2**40 - 1), Decimal(2**40)],
+    ids=["year-10000", "millisecond-epoch", "below-the-old-guard", "at-the-old-guard"],
+)
+def test_an_expires_at_past_the_calendar_reads_as_no_expiry_and_the_tool_still_answers(aws, expires_at):
+    """datetime stops at the year 9999, so a millisecond epoch or a hand-edited TTL past it is no
+    expiry (the item is not expired either: the number is in the future). Every window answers."""
+    assert topic_findings._epoch(253402300799) == datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+    assert topic_findings._epoch(expires_at) is None
+    assert topic_findings._epoch(Decimal("1e300")) is None  # past DynamoDB's own 38 digits, too
+    put_topic(aws)
+    put_finding(aws, 1, expires_at=expires_at)
+    for kwargs in ({}, {"days": 2}, {"next_article": True}):
+        result = ask(**kwargs)
+        (row,) = result["rows"]
+        assert row["expires_at"] is None and row["expires_in"] is None and row["expired"] is False
+        assert column(result, "Expires in") == [""] and result["count"] == 1
+        assert result["spoken"].endswith("It's on screen.")
+
+
 def test_an_application_profile_arn_is_never_shown_and_no_account_id_reaches_the_result(aws):
     put_topic(aws)
     put_finding(aws, 1, research_call=research_call(APP_PROFILE_ARN))
