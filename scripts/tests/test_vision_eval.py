@@ -1,8 +1,12 @@
-"""Tests for scripts/vision_eval.py (`pin`, `coverage`) and the scene manifest.
+"""Tests for scripts/vision_eval.py (`pin`, `coverage`, `failures`, `access-baseline`, `index`) and
+the scene manifest; `replay` has its own file (test_vision_eval_replay.py).
 
 Nothing here touches the network: `pin` is given fake HEAD and GET answers, `coverage` reads
-in-memory COGs built with the worker's own test writer (lambdas/tests/vision_fakes.py), and
-requests, urllib and socket connections raise for every test.
+in-memory COGs built with the worker's own test writer (lambdas/tests/vision_fakes.py), the
+failure rows answer from a scripted handler, `access-baseline` measures the synthetic city, and
+requests, urllib, boto3 and socket connections raise for every test. `index --check` and the
+failure catalogue's collection check run here against the repository itself: CI fails when a run
+file is added without re-indexing, or a test the catalogue names is renamed.
 """
 
 from __future__ import annotations
@@ -42,6 +46,10 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(requests.Session, "request", refuse)
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
     monkeypatch.setattr(socket.socket, "connect", refuse)
+    import boto3
+
+    monkeypatch.setattr(boto3, "client", refuse)
+    monkeypatch.setattr(boto3, "resource", refuse)
 
 
 # --- the manifest file ------------------------------------------------------------------------------
@@ -531,3 +539,313 @@ def test_coverage_counts_e2_from_the_listing_and_main_writes_the_run_file(tmp_pa
     assert vision_eval.main(["coverage", "--manifest", str(path)]) == 1
     assert "input changed" in capsys.readouterr().err
     assert vision_eval.main(["coverage", "--manifest", str(path), "--only", "nope"]) == 2
+
+
+# --- failures (2.5) ---------------------------------------------------------------------------------
+
+
+def test_every_test_the_failure_catalogue_names_is_collected_by_pytest():
+    # The CI check: node ids, never line numbers, and every one of them collected as it is named.
+    cases = vision_eval.FAILURE_CASES
+    assert [case["case"] for case in cases] == [
+        "cloud", "swath_nodata", "smoke", "site_outside_scene", "window_too_large", "graph_too_large",
+        "betweenness_sampled", "unreadable_scene", "url_off_allowlist", "wrong_build", "overpass_fails",
+        "out_of_time", "agent_fails", "injected_news",
+    ]  # fmt: skip
+    nodes = [node for case in cases for node in vision_eval.node_ids(case)]
+    pattern = r"lambdas/tests/test_\w+\.py::test_\w+"
+    assert len(nodes) == 42 and all(re.fullmatch(pattern, node) for node in nodes)
+    files = sorted({node.split("::")[0] for node in nodes})
+    collected = vision_eval.collected_tests(files)
+    assert collected and vision_eval.missing_tests(cases, collected) == []
+    assert vision_eval.missing_tests(cases, collected - {nodes[0]}) == [nodes[0]]
+
+
+def scripted_handler(reads: list):
+    """The worker handler for the failure rows, scripted by scene and polygon: what the real handler
+    answers on each real input, with its header reads for the refusals that follow them."""
+
+    def handler(request, context, fetch=None):
+        import os
+
+        scene = request["scene"]["id"]
+        lons = [lon for lon, _ in request["site"]["polygon"]]
+        assets = request["scene"]["assets"]
+        if any(not url.startswith(vision_runs.BUCKET_PREFIX) for url in assets.values()):
+            return {"version": 1, "ok": False, "error": "bad_request", "detail": "not at an allowed location"}
+        if request["backend"] != os.environ.get("VISION_BACKEND", "opencv"):
+            return {"version": 1, "ok": False, "error": "backend_mismatch", "detail": "x"}
+        if request["backend"] == "cool":
+            return {"version": 1, "ok": False, "error": "not_cool", "detail": "x"}
+        refused = None
+        if min(lons) > 152.0:
+            refused = "site_outside_scene"
+        elif max(lons) - min(lons) > 0.8:
+            refused = "window_too_large"
+        elif assets["swir16"].endswith("-missing.tif"):
+            return {"version": 1, "ok": False, "error": "unreadable_scene", "detail": "HTTP 403"}
+        if refused:
+            for url in assets.values():
+                fetch(url, 0, 65535)
+                reads.append(url)
+            return {"version": 1, "ok": False, "error": refused, "detail": "x"}
+        coverage = {
+            "S2A_56HLH_20240105_0_L2A": 0.1467,
+            "S2B_56HLH_20240821_0_L2A": 0.086,
+            "S2B_56HLH_20191226_0_L2A": 0.9949,
+        }[scene]
+        flags = ["low_coverage"] if coverage < 0.6 else []
+        metrics = {"coverage": coverage, "quality_flags": flags, "served_share": 0.4}
+        return {"version": 1, "ok": True, "metrics": metrics}
+
+    return handler
+
+
+def test_the_failure_rows_decide_on_what_the_worker_answers(tmp_path, monkeypatch, capsys):
+    import vision_worker_handler
+
+    import vision_eval_driver as driver
+
+    manifest = vision_eval.load_manifest()
+    pinned = vision_runs.pinned_etags(manifest)
+    heads, reads = [], []
+
+    def head(url):
+        heads.append(url)
+        return {"etag": pinned[url], "bytes": 1}
+
+    monkeypatch.setattr(vision_runs, "default_head", head)
+    monkeypatch.setattr(vision_worker_handler, "lambda_handler", scripted_handler(reads))
+    monkeypatch.setattr(
+        vision_worker_handler, "http_fetch", lambda url, start, end: b"\0" * (end - start + 1)
+    )
+    gate = []
+    picked_metrics = {
+        "task": "rail_access", "coverage": 0.4891, "served_share": 0.5, "desert_km2": 10.0,
+        "built_up_km2": 900.0, "station_count": 0, "flags": [], "quality_flags": [],
+    }  # fmt: skip
+
+    def picked(fetch, environ=None):
+        def measure(site, scene, **kwargs):
+            gate.append(scene["id"])
+            return driver.scripted_measure(lambda s, sc, p: dict(picked_metrics))(site, scene, **kwargs)
+
+        return measure
+
+    monkeypatch.setattr(driver, "in_process_measure", picked)
+    out = tmp_path / "runs"
+    code = vision_eval.main(
+        ["failures", "--no-collect", "--cache", str(tmp_path / "cogs"), "--out", str(out)]
+    )
+    assert code == 0, capsys.readouterr()
+    run = vision_runs.load(next(out.glob("*.json")))
+    rows = run["results"]
+    assert run["kind"] == "eval-failures" and run["summary"]["rows"] == 14
+    assert run["summary"]["ran"] == run["summary"]["as_expected"] == 8
+    cloud = rows["cloud"]["got"]
+    assert cloud["measured"] == {"code": None, "coverage": 0.1467, "quality_flags": ["low_coverage"]}
+    assert cloud["chosen_by_the_search"] is False  # cloud cover 66 over 40, and its footprint misses
+    assert cloud["gate"]["picked_by_the_search"] is True and cloud["gate"]["codes"] == ["below_floor"]
+    assert cloud["gate"]["model_calls"] == 0 and cloud["gate"]["first_observed_at"] is None
+    assert gate == ["S2A_56HLH_20240228_0_L2A"]
+    assert rows["swath_nodata"]["got"]["chosen_by_the_search"] is False  # its footprint stops short
+    assert (
+        rows["window_too_large"]["got"]["tile_reads"] == 0 and rows["window_too_large"]["got"]["reads"] == 4
+    )
+    assert rows["site_outside_scene"]["got"]["code"] == "site_outside_scene"
+    assert rows["unreadable_scene"]["got"] == {"code": "unreadable_scene"}
+    assert rows["url_off_allowlist"]["got"] == {"code": "bad_request", "reads": 0}
+    both = {"cool_to_stock": "backend_mismatch", "cool_without_pin": "not_cool", "reads": 0}
+    assert rows["wrong_build"]["got"] == both
+    assert not rows["graph_too_large"]["ran"] and rows["agent_fails"]["elsewhere"] == "agent C6-C9 (Q2b)"
+    names = {s["name"] for s in run["inputs"]["scenes"]}
+    read = ("sydney-2024-01-05", "sydney-2024-02-28", "sydney-2024-08-21a", "sydney-2019-12-26-smoke")
+    assert names == {*read, "sydney-2024-08-26"}
+    assert (
+        run["inputs"]["cache"] is True
+        and run["inputs"]["networks"][0]["note"] == "no fixture: an empty network"
+    )
+    # A row whose worker answered otherwise is said, and the run fails its check.
+    monkeypatch.setattr(
+        vision_worker_handler,
+        "lambda_handler",
+        lambda request, context, fetch=None: {"version": 1, "ok": True,
+                                              "metrics": {"coverage": 0.9, "quality_flags": []}},
+    )  # fmt: skip
+    argv = [
+        "failures",
+        "--no-collect",
+        "--only",
+        "smoke",
+        "--only",
+        "swath_nodata",
+        "--cache",
+        str(tmp_path / "c"),
+    ]
+    assert vision_eval.main(argv) == 1
+    assert "swath_nodata: NOT AS EXPECTED" in capsys.readouterr().out
+    # A pinned ETag that moved refuses the reading rows before any read.
+    monkeypatch.setattr(vision_runs, "default_head", lambda url: {"etag": "moved", "bytes": 1})
+    code = vision_eval.main(
+        ["failures", "--no-collect", "--only", "cloud", "--cache", str(tmp_path / "cogs")]
+    )
+    assert code == vision_eval.REFUSED and "input changed" in capsys.readouterr().err
+
+
+def test_without_the_cache_only_the_rows_that_read_nothing_run_and_the_collection_is_checked(
+    tmp_path, monkeypatch, capsys
+):
+    nodes = {node for case in vision_eval.FAILURE_CASES for node in vision_eval.node_ids(case)}
+    monkeypatch.setattr(vision_eval, "collected_tests", lambda files: nodes | {"x::y"})
+    out = tmp_path / "runs"
+    assert vision_eval.main(["failures", "--out", str(out)]) == 0
+    run = vision_runs.load(next(out.glob("*.json")))
+    assert run["summary"] == {"rows": 14, "ran": 2, "as_expected": 2, "tests_named": 42, "tests_missing": 0}
+    assert run["results"]["cloud"]["why_not"].startswith("reads the bucket")
+    first = {"name": "every test the catalogue names is collected", "expected": [], "got": [], "pass": True}
+    assert run["checks"][0] == first
+    gone = sorted(nodes)[0]
+    monkeypatch.setattr(vision_eval, "collected_tests", lambda files: nodes - {gone})
+    assert vision_eval.main(["failures"]) == 1
+    assert vision_eval.main(["failures", "--only", "nope"]) == vision_eval.REFUSED
+    assert "no case named ['nope']" in capsys.readouterr().err
+
+
+# --- access-baseline (E5) ------------------------------------------------------------------------------
+
+
+def test_the_buffer_is_discs_and_the_precise_transform_is_euclidean():
+    import numpy as np
+
+    built = np.ones((101, 101), np.uint8)
+    masks, times = vision_eval.served_masks(built, [(50.0, 50.0), None], 20.0)
+    yy, xx = np.mgrid[:101, :101]
+    euclid = np.hypot(xx - 50, yy - 50) <= 20.0
+    assert np.array_equal(masks["precise"], euclid)
+    assert abs(int(masks["buffer"].sum()) - int(euclid.sum())) <= 0.02 * euclid.sum()
+    assert abs(int(masks["production"].sum()) - int(euclid.sum())) <= 0.02 * euclid.sum()
+    assert set(times) == {"production", "precise", "buffer"} and all(v >= 0 for v in times.values())
+    empty, _ = vision_eval.served_masks(built, [], 20.0)
+    assert not any(mask.any() for mask in empty.values())
+
+
+def test_access_baseline_on_the_synthetic_city_writes_e5s_run_file(tmp_path, capsys):
+    out = tmp_path / "runs"
+    assert vision_eval.main(["access-baseline", "--scene", "synthetic-1", "--out", str(out)]) == 0
+    run = vision_runs.load(next(out.glob("*.json")))
+    assert run["kind"] == "eval-access-baseline" and run["mode"] == "access-baseline"
+    assert set(run["summary"]) == {
+        "delta_vs_precise", "delta_vs_buffer", "iou_vs_precise", "iou_vs_buffer", "ms_production",
+        "ms_precise", "ms_buffer",
+    }  # fmt: skip
+    methods = run["results"]["methods"]
+    assert methods["production"]["iou_vs_production"] == 1.0
+    assert 0.9 < run["summary"]["iou_vs_precise"] <= 1.0 and 0.9 < run["summary"]["iou_vs_buffer"] <= 1.0
+    assert abs(run["summary"]["delta_vs_precise"]) < 0.01 and abs(run["summary"]["delta_vs_buffer"]) < 0.01
+    assert (
+        run["checks"][0]["pass"] and run["results"]["reach_px"] == 50.0 and run["results"]["stations"] == 12
+    )
+    assert run["inputs"]["networks"][0]["file"] == "scripts/tests/fixtures/synthetic-city-network.json"
+    assert "| production | " in capsys.readouterr().out
+    assert vision_eval.main(["access-baseline", "--scene", "synthetic-9"]) == vision_eval.REFUSED
+    missing = tmp_path / "none.json"
+    assert vision_eval.main(["access-baseline", "--network", str(missing)]) == vision_eval.REFUSED
+    assert "network_file missing" in capsys.readouterr().err
+
+
+# --- index (2.9) -----------------------------------------------------------------------------------------
+
+
+def test_the_committed_index_is_current():
+    # The CI check: a run file added to docs/hackathon/evidence/runs/ without re-indexing fails here.
+    assert vision_eval.main(["index", "--check"]) == 0
+
+
+def evidence_copy(tmp_path: Path) -> Path:
+    import shutil
+
+    evidence = tmp_path / "evidence"
+    (evidence / "runs").mkdir(parents=True)
+    for path in (ROOT / "docs" / "hackathon" / "evidence" / "runs").glob("*.json"):
+        shutil.copy(path, evidence / "runs" / path.name)
+    return evidence
+
+
+def test_index_writes_one_table_per_kind_and_check_fails_until_a_new_run_is_indexed(tmp_path, capsys):
+    evidence = evidence_copy(tmp_path)
+    assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 1
+    assert "stale: index.json, RESULTS.md" in capsys.readouterr().err
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0
+    assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 0
+    index = json.loads((evidence / "index.json").read_text(encoding="utf-8"))
+    row = index["runs"][0]
+    assert index["schema"] == "bloggerbear.vision-index/1" and row["kind"] == "eval-coverage"
+    assert set(row) >= {"run_id", "kind", "date", "cpu", "backend", "build12", "git_sha", "summary"}
+    assert row["build12"] == "0ef08003c311" and row["file"] == f"runs/{row['run_id']}.json"
+    # A replay run file added without re-indexing: --check fails; indexed, it gets its own table.
+    fixture = Path(__file__).with_name("fixtures") / "replay-synthetic-city-scripted.json"
+    recording = json.loads(fixture.read_text(encoding="utf-8"))
+    (evidence / "runs" / f"{recording['run_id']}.json").write_text(json.dumps(recording), encoding="utf-8")
+    assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 1
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0
+    text = (evidence / "RESULTS.md").read_text(encoding="utf-8")
+    assert text.index("## eval-coverage (1 run)") < text.index("## eval-replay (1 run)")
+    assert f"[{recording['run_id']}](runs/{recording['run_id']}.json)" in text
+    assert "| steps | decisions | triaged | look_again | verdict_real | verdict_artefact | finding |" in text
+    # A note for a run measured on older code is rendered; one for a run that is not there is refused.
+    notes = evidence / "older-code.json"
+    notes.write_text(json.dumps({row["run_id"]: "coverage reads SCL only"}), encoding="utf-8")
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0
+    assert "measured on older code: coverage reads SCL only" in (evidence / "RESULTS.md").read_text()
+    notes.write_text(json.dumps({"2026-01-01-nothing": "x"}), encoding="utf-8")
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == vision_eval.REFUSED
+    assert "is not a run file in runs/" in capsys.readouterr().err
+
+
+def _with(path: Path, **changes) -> None:
+    path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), **changes}), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "spoil, said",
+    [
+        (lambda path: path.write_text("{not json", encoding="utf-8"), "not a run file"),
+        (lambda path: _with(path, kind="eval-dreams"), "unknown run kind 'eval-dreams'"),
+        (lambda path: path.rename(path.with_name("renamed.json")), "named 'renamed' but its run_id is"),
+        (lambda path: _with(path, summary={"a": "b"}), "summary must map codes to numbers"),
+    ],
+)
+def test_index_refuses_a_malformed_run_file_naming_it(tmp_path, capsys, spoil, said):
+    evidence = evidence_copy(tmp_path)
+    spoil(next((evidence / "runs").glob("*.json")))
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == vision_eval.REFUSED
+    err = capsys.readouterr().err
+    assert said in err and "runs/" in err
+
+
+def test_index_checks_the_operators_labels_when_there_are_any(tmp_path, capsys):
+    evidence = evidence_copy(tmp_path)
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0  # no live/ yet: nothing to check
+    assert vision_eval.label_problems(evidence) == ([], 0)
+    live = evidence / "live" / "2026-10-24"
+    live.mkdir(parents=True)
+    good = (
+        "# reasons: looks_real, network_edit, cloud_or_haze, season, other_artefact, unsure\n"
+        "decision,verdict,figure,trace,label,reason\n"
+        "rail-sydney-demo/demo-sydney/S2A_56HLH_20241010_0_L2A,artefact,f.png,t.md,agree,cloud_or_haze\n"
+        "rail-cities/sydney/S2B_56HLH_20241015_0_L2A,real,f.png,t.md,disagree,network_edit\n"
+    )
+    (live / "labels.csv").write_text(good, encoding="utf-8")
+    assert vision_eval.label_problems(evidence) == ([], 2)
+    assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 0
+    (live / "labels.csv").write_text(
+        good + "rail-cities/sydney,maybe,f.png,t.md,sure,because\n", encoding="utf-8"
+    )
+    problems, read = vision_eval.label_problems(evidence)
+    assert read == 3 and len(problems) == 4
+    assert all(problem.startswith("live/2026-10-24/labels.csv row 4") for problem in problems)
+    assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 1
+    (evidence / "live" / "labels.csv").write_text("decision,verdict,label\n", encoding="utf-8")
+    assert (
+        "live/labels.csv: no column ['figure', 'trace', 'reason']" in vision_eval.label_problems(evidence)[0]
+    )
