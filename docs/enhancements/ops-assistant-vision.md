@@ -18,8 +18,8 @@ and to hear about a site that keeps failing at the next "what needs my attention
 read-only, keep to its own environment, and not be steered by text written outside the project
 (site names, OpenStreetMap names, error details, model summaries).
 
-Delivered as two pull requests: the assistant's vision round (#300), and the Findings round that
-followed it, the tool that interrogates a topic's Findings ([Topic findings](#topic-findings)).
+Delivered as two pull requests: the assistant's vision round (#300), and the Findings round (#307)
+that followed it, the tool that interrogates a topic's Findings ([Topic findings](#topic-findings)).
 
 ## What it is
 
@@ -233,4 +233,4 @@ and `python-ci.yml` runs the tests when a skill changes.
 | The worker's log in its own Region; the `vision` runsheet; `scene_unreadable` | done | #300 |
 | `architecture(feature="vision-pipeline")`; `cli_guides("vision")`; sites never filled in | done | #300 |
 | `vision.tf`, `OPS_VISION_REGION`, `OPS_SCREEN_CLIENT_IDS` | done; `terraform test` not run locally | #300 |
-| Interrogating a topic's Findings: `topic_findings`, `GET /topics/{topic_id}/findings`, `findings list`, the `topic-findings` skill, `FINDINGS_TABLE` | done; `terraform validate` not run locally | the Findings round, after #300 |
+| Interrogating a topic's Findings: `topic_findings`, `GET /topics/{topic_id}/findings`, `findings list`, the `topic-findings` skill, `FINDINGS_TABLE` | done; `terraform validate` not run locally | #307 |

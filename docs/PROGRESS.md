@@ -725,8 +725,8 @@ All shipped and deployed; the design and decisions for each are in
   `--days`, `--since` and `--next-article`), and the repository's first Claude Code skill,
   `topic-findings`, with its rules for Finding text in a developer's session; the findings
   window's start moved to `common/findings_window.window_start`, shared by the daily cycle, the
-  tool and the route; Findings joins the assistant's readable tables (the Findings round, on the
-  integration branch after #300; `lambdas/ops_mcp/topic_findings.py`,
+  tool and the route; Findings joins the assistant's readable tables (the Findings round, #307,
+  after #300 on the integration branch; `lambdas/ops_mcp/topic_findings.py`,
   `.claude/skills/topic-findings/SKILL.md`, `scripts/tests/test_claude_skills.py`;
   [design](enhancements/ops-assistant-vision.md#topic-findings))
 
