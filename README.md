@@ -488,7 +488,7 @@ scripts/
                               personal strings
   vision_benchmark.py        times the vision worker's OpenCV work (stock
                               against COOL); fetches a rail scene's network
-  rail_topics.example.json   the Rail Access Monitor's four city topics
+  rail_topics.example.json   the Rail Access Monitor's topic: four cities, one a day
   README.md                  the full CLI reference
   tests/                     pytest coverage for the scripts
 

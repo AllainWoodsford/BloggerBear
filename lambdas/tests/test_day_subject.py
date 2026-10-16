@@ -6,12 +6,16 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from common import day_subject
+from common.adapters import RAIL_ACCESS_ADAPTER_KEY
 from common.adapters.base import SUBJECT_KEY, Adapter, DaySubject
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.vision_sites import SITE_ID
@@ -39,14 +43,24 @@ def test_anything_but_a_list_is_no_subjects():
         assert day_subject.clean_subjects(raw) == []
 
 
-def test_every_registered_adapter_names_no_day_subject_and_no_subjects_by_default():
-    """S1 adds the hooks and no adapter uses them: every topic is as it was (S2 opts rail in)."""
+def test_every_registered_adapter_but_rail_names_no_day_subject_and_no_subjects_by_default():
+    """S1 adds the hooks; S2 opts the rail adapter in (tests/test_rail_access_adapter.py), and every
+    other adapter's topics are as they were. A rail topic without a `rotation` names no subject
+    either."""
     topic = {"topic_id": "t", "adapter": "web_search", "adapter_config": {}}
     at = datetime(2026, 10, 16, 9, 5, tzinfo=UTC)
     for key, adapter_class in ADAPTER_REGISTRY.items():
+        if key == RAIL_ACCESS_ADAPTER_KEY:
+            continue
         assert adapter_class.day_subject is Adapter.day_subject, key
         assert adapter_class.subjects is Adapter.subjects, key
         assert adapter_class().day_subject({**topic, "adapter": key}, at) is None
+    rail = ADAPTER_REGISTRY[RAIL_ACCESS_ADAPTER_KEY]
+    assert rail.day_subject is not Adapter.day_subject and rail.subjects is not Adapter.subjects
+    polygon = [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58]]
+    one_city = {**topic, "adapter": RAIL_ACCESS_ADAPTER_KEY,
+                "adapter_config": {"sites": [{"id": "s", "polygon": polygon}]}}  # fmt: skip
+    assert rail().day_subject(one_city, at) is None
 
 
 def test_a_day_subject_is_plain_frozen_data():
@@ -237,3 +251,38 @@ def test_a_list_rota_cycles_one_a_day_from_1970():
 def test_a_rota_that_cannot_be_used_says_why(config, words):
     with pytest.raises(ValueError, match=re.escape(words)):
         day_subject.parse_rotation(config, CITIES)
+
+
+# --- what the module is --------------------------------------------------------------------------
+
+
+def _fresh_import(code: str) -> str:
+    lambdas_dir = Path(day_subject.__file__).resolve().parents[1]
+    code = "import sys; sys.path.insert(0, sys.argv[1]); " + code
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(lambdas_dir)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
+
+
+def test_an_adapter_module_can_import_this_one_at_its_top():
+    """An adapter names its day subject with the rota (parse_rotation, rotation_subject), imported at
+    its module's top. The registry imports every adapter module, so a registry import at this
+    module's top would be an import cycle every pipeline Lambda fails on. In a fresh interpreter,
+    importing this module loads no adapter module but the base, and it still imports while the
+    registry is part-way through importing its adapters (the moment an adapter imports it)."""
+    loaded = _fresh_import(
+        "import common.day_subject; "
+        "print(sorted(m for m in sys.modules if m.startswith('common.adapters.')))"
+    )
+    assert loaded == "['common.adapters.base']"
+
+    midway = _fresh_import(
+        "import types; "
+        "sys.modules['common.adapters.registry'] = types.ModuleType('common.adapters.registry'); "
+        "from common.day_subject import parse_rotation, rotation_subject; print('imported')"
+    )
+    assert midway == "imported"

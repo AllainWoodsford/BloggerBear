@@ -29,10 +29,13 @@ from terraform_text import INFRA
 
 import daily_cycle_handler
 import research_tick_handler
+from common import day_subject as day_subject_module
 from common import evidence, findings_window, osm, scheduler, vision_client, vision_sites, vision_triage
 from common.adapters import MANUAL_REVIEW_ADAPTERS, RAIL_ACCESS_ADAPTER_KEY
 from common.adapters import rail_access as ra
+from common.adapters.base import DaySubject
 from common.adapters.registry import ADAPTER_REGISTRY
+from common.editorial_resolver import ADAPTER_DEFAULTS
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS, clean_figures
 from common.rail_notes import NOTES_LEAD, format_notes, planner_notes
 
@@ -253,16 +256,17 @@ def adapter():
         return f"vision/{topic_id}/{site_id}/{scene_id}.png"
 
     a.store_image = store
-    # The prefetched networks (vision_sites.store_network / load_network), by (topic, site).
-    a.prefetched, a.loads = {}, []
+    # The network objects (vision_sites.store_network / load_network), by (topic, site): the one
+    # store the tick's fetches and prefetch_networks both write, and every visit reads.
+    a.objects, a.loads = {}, []
 
     def store_network(topic_id, site_id, net):
-        a.prefetched[(topic_id, site_id)] = json.loads(json.dumps(net))
+        a.objects[(topic_id, site_id)] = json.loads(json.dumps(net))
         return vision_sites.network_key(topic_id, site_id)
 
     def load_network(topic_id, site_id):
         a.loads.append((topic_id, site_id))
-        found = a.prefetched.get((topic_id, site_id))
+        found = a.objects.get((topic_id, site_id))
         return json.loads(json.dumps(found)) if found is not None else None
 
     a.store_network, a.load_network = store_network, load_network
@@ -273,6 +277,28 @@ def run(adapter, stac, worker, overpass=None, previous=None, **config):
     adapter.http_post, adapter.measure = stac, worker
     adapter.fetch_network = overpass or FakeOverpass(network())
     return adapter.fetch_state(topic(**config), previous_state=previous)
+
+
+def stored_network(adapter, site="sydney"):
+    """The site's network as its object holds it (the fixture's store): its only copy."""
+    return adapter.objects.get(("rail", site))
+
+
+def network_fields(record):
+    """What a site's record keeps of its network (rail_access.NETWORK_FIELDS)."""
+    return {key: record[key] for key in ra.NETWORK_FIELDS if key in record}
+
+
+def with_network(adapter, site_id, net, record=None):
+    """A site's record as a tick leaves it with `net` stored in its object, which is put there."""
+    adapter.objects[("rail", site_id)] = json.loads(json.dumps(net))
+    return {
+        **(record or {"history": []}),
+        "network_key": vision_sites.network_key("rail", site_id),
+        "network_fetched_at": net["fetched_at"],
+        "network_site_key": net["site_key"],
+        "network_counts": net["counts"],
+    }
 
 
 def scene(n, day=3):
@@ -339,7 +365,7 @@ def test_the_adapters_import_without_numpy_opencv_or_networkx():
         {"sites": SITES, "history_size": "inf"},
         {"sites": SITES, "min_baseline": 6},  # the history keeps 6: at most 5 earlier scenes
         {"sites": SITES, "max_sites_per_tick": 0},
-        {"sites": SITES, "max_sites_per_tick": 4},  # at most MAX_RAIL_SITES (3)
+        {"sites": SITES, "max_sites_per_tick": 9},  # at most MAX_RAIL_SITES (8)
         {"sites": SITES, "coverage_floor": 1.5},
         {"sites": SITES, "coverage_floor": "nan"},
         {"sites": SITES, "served_share_threshold": -0.01},
@@ -399,14 +425,15 @@ def test_names_are_one_plain_line_and_the_bounds_are_inclusive():
                                                                                      "polygon": SYDNEY}
 
 
-def test_a_topic_watches_at_most_three_cities():
-    """One topic per city is the design: each city's network rides in the running state, which
-    the research tick (512 MB) loads whole, so a topic may hold MAX_RAIL_SITES of them."""
-    assert ra.MAX_RAIL_SITES == 3
-    cities = [{"id": f"city-{n}", "polygon": SYDNEY} for n in range(4)]
-    config = ra.parse_config({"sites": cities[:3], "max_sites_per_tick": 3})
-    assert [site["id"] for site in config["sites"]] == ["city-0", "city-1", "city-2"]
-    with pytest.raises(ra.ConfigError, match="1 to 3 sites"):
+def test_a_topic_watches_at_most_eight_cities():
+    """A week of one city a day, and one more: each city's network is in its own object, so the
+    running state the research tick (512 MB) loads whole holds only histories (the measured sizes
+    are in MAX_RAIL_SITES's comment)."""
+    assert ra.MAX_RAIL_SITES == 8
+    cities = [{"id": f"city-{n}", "polygon": SYDNEY} for n in range(9)]
+    config = ra.parse_config({"sites": cities[:8], "max_sites_per_tick": 8})
+    assert [site["id"] for site in config["sites"]] == [f"city-{n}" for n in range(8)]
+    with pytest.raises(ra.ConfigError, match="1 to 8 sites"):
         ra.parse_config({"sites": cities})
     # The ships adapter keeps its own cap.
     assert vision_sites.MAX_SITES == 10
@@ -420,102 +447,150 @@ def test_an_unusable_ttl_reads_as_stale_rather_than_breaking_the_tick():
     assert ra._is_stale(network(now.isoformat()), now, 30) is False
 
 
-# EventBridge's day-of-week names, in date.weekday() order (Monday is 0).
+# EventBridge's day-of-week names, in date.weekday() order (Monday is 0): the rota's keys too.
 WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 
 
-def drafting_days(cadence):
-    """(minute, hour, weekdays) of an EventBridge `cron(M H ? * DAYS *)` that runs on named days."""
-    fields = cadence.removeprefix("cron(").removesuffix(")").split()
-    minute, hour, day_of_month, month, day_of_week, year = fields
-    assert minute.isdigit() and hour.isdigit(), cadence
-    # Some days of every week (EventBridge takes `?` in one of the two day fields).
-    assert (day_of_month, month, year) == ("?", "*", "*"), cadence
-    return int(minute), int(hour), sorted(WEEKDAYS.index(day) for day in day_of_week.split(","))
+def longest_gaps(rotation: dict) -> dict:
+    """Each city's longest gap between two of its days, in days, round the week."""
+    days = [rotation[day] for day in WEEKDAYS]
+    gaps = {}
+    for index, city in enumerate(days):
+        gap = next(step for step in range(1, 8) if days[(index + step) % 7] == city)
+        gaps[city] = max(gaps.get(city, 0), gap)
+    return gaps
 
 
-def longest_gap_days(weekdays):
-    """The most days from one of a city's drafting days to its next, round the week."""
-    return max((later - earlier) % 7 or 7 for earlier, later in zip(weekdays, weekdays[1:] + weekdays[:1]))
-
-
-def simulate_rotation(topic, start, finding_minute, weeks=4):
-    """The daily cycle's windows for one city over `weeks`, with one Finding a day at a fixed UTC
-    time (`finding_minute` past midnight). The city's run is at its cron's local time on its days;
-    each window is the daily cycle's own _window_start, and `last_article_at` is stamped with the
-    run's start whenever the window holds a Finding, as _run_daily_cycle stamps it (on every
-    article written, published or held for review; a run with nothing to write stamps nothing).
-    Returns (the Findings made before the last run, how many runs drafted each Finding)."""
-    minute, hour, weekdays = drafting_days(topic["daily_cadence"])
+def simulate_one_topic(topic, start, finding_minute, weeks=4, two_city_weekday=2):
+    """The daily cycle of one rotating topic over `weeks`, with the real rail_access.day_subject,
+    the real window (daily_cycle_handler._window_start, with the day's city) and the real choice of
+    Findings (_select_subject_and_findings), and the stamps set as _record_article_written sets
+    them: the topic's and the city's, only when the run had something to draft. Every city makes one
+    Finding a day at `finding_minute` past UTC midnight, and on one weekday a Finding reports two
+    cities (spec §5). The run is every day at the cadence's local time. Returns the runs as (UTC
+    time, city), how often each (Finding, city) pair was drafted, for the pairs whose city had a run
+    after the Finding was made, and the Findings."""
     zone = ZoneInfo(topic["daily_timezone"])
-    end = start + timedelta(weeks=weeks)
-    findings = [start + timedelta(days=day, minutes=finding_minute) for day in range(weeks * 7)]
+    minute, hour = (int(field) for field in topic["daily_cadence"].removeprefix("cron(").split()[:2])
+    cities = [site["id"] for site in topic["adapter_config"]["sites"]]
+    findings = []
+    for day in range(weeks * 7):
+        at = (start + timedelta(days=day, minutes=finding_minute)).isoformat()
+        findings += [{"captured_at": at, "subjects": [city]} for city in cities]
+        if (start + timedelta(days=day)).weekday() == two_city_weekday:
+            findings.append({"captured_at": at, "subjects": cities[:2], "both": True})
+    adapter, item, runs = ra.RailAccessAdapter(), dict(topic), []
+    drafted = {(index, city): 0 for index, finding in enumerate(findings) for city in finding["subjects"]}
     first_day = start.astimezone(zone).date()
-    runs = []
     for day in range(weeks * 7 + 1):
-        local_day = first_day + timedelta(days=day)
-        run_at = datetime.combine(local_day, time(hour, minute), tzinfo=zone).astimezone(UTC)
-        if local_day.weekday() in weekdays and start <= run_at <= end:
-            runs.append(run_at)
-    item = dict(topic)  # no last_article_at yet: a new topic
-    drafted = dict.fromkeys(findings, 0)
-    for run_started in runs:
-        since = datetime.fromisoformat(daily_cycle_handler._window_start(item, run_started, force=False))
-        window = [finding for finding in findings if since <= finding <= run_started]
-        if window:
-            for finding in window:
-                drafted[finding] += 1
+        run_started = datetime.combine(first_day + timedelta(days=day), time(hour, minute), tzinfo=zone)
+        run_started = run_started.astimezone(UTC)
+        if not start <= run_started <= start + timedelta(weeks=weeks):
+            continue
+        subject = adapter.day_subject(item, run_started)
+        runs.append((run_started, subject.key))
+        since = datetime.fromisoformat(
+            daily_cycle_handler._window_start(item, run_started, force=False, subject_key=subject.key)
+        )
+        window = [f for f in findings if since <= datetime.fromisoformat(f["captured_at"]) <= run_started]
+        chosen, kept = daily_cycle_handler._select_subject_and_findings(item, window, subject)
+        assert chosen is subject
+        for finding in kept:
+            drafted[(findings.index(finding), subject.key)] += 1
+        if kept:
             item["last_article_at"] = run_started.isoformat()
-    return [finding for finding in findings if finding < runs[-1]], drafted
+            item["last_article_by_subject"] = {**item.get("last_article_by_subject", {}),
+                                               subject.key: run_started.isoformat()}  # fmt: skip
+    last = {city: max(run for run, key in runs if key == city) for city in cities}
+    made = {(index, city): count for (index, city), count in drafted.items()
+            if datetime.fromisoformat(findings[index]["captured_at"]) < last[city]}  # fmt: skip
+    return runs, made, findings
 
 
-def test_the_example_city_topics_rotate_one_a_day_and_draft_every_finding_once():
-    """scripts/rail_topics.example.json holds four complete rail_access topic bodies the adapter
-    accepts, and the cities take turns: each day of the week one city's daily cycle runs. A city
-    drafts on some days only, so its findings_window_hours covers its longest gap between them:
-    every Finding made between two of its runs is drafted at the next, once, whatever the time of
-    day it was made and across a daylight-saving change in the topics' time zone."""
+def test_the_example_topic_watches_four_cities_and_writes_about_one_a_day():
+    """scripts/rail_topics.example.json holds one complete rail_access topic body the adapter
+    accepts: the four starting cities, the owner's rota read on Sydney's calendar, a daily run at
+    09:05 Sydney time (after the other topics' 09:00 to 09:03), an editorial goal that names no
+    city (the day's mandate adds it), and a findings window that covers the rota's longest gap."""
     assert findings_window.FINDINGS_WINDOW_HOURS == 24  # the default the runsheet quotes
-    topics = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
-    cities = ["rail-sydney", "rail-melbourne", "rail-singapore", "rail-boston"]
-    assert [t["topic_id"] for t in topics] == cities
-    city_of_day = {}
-    for topic in topics:
-        assert topic["adapter"] == RAIL_ACCESS_ADAPTER_KEY
-        config = ra.parse_config(topic["adapter_config"])
-        assert len(config["sites"]) == 1 and config["reach_m"] == 1000.0
-        # Sydney's first network takes most of a minute (16 October): its topic runs at the cap.
-        heavy = topic["topic_id"] == "rail-sydney"
-        budget = vision_sites.MAX_TIME_BUDGET_SECONDS if heavy else ra.DEFAULTS["time_budget_seconds"]
-        assert config["time_budget_seconds"] == budget, topic["topic_id"]
-        scheduler._validate_schedule_expression(topic["daily_cadence"])
-        scheduler.validate_timezone(topic["daily_timezone"])
-        minute, hour, weekdays = drafting_days(topic["daily_cadence"])
-        # All at 09:05 Sydney time, after the other topics' 09:00 to 09:03.
-        assert (hour, minute, topic["daily_timezone"]) == (9, 5, "Australia/Sydney"), topic["topic_id"]
-        for weekday in weekdays:
-            assert weekday not in city_of_day, (WEEKDAYS[weekday], topic["topic_id"], city_of_day[weekday])
-            city_of_day[weekday] = topic["topic_id"]
-        hours = topic["findings_window_hours"]
-        assert findings_window.findings_window_error(hours) is None  # the admin API takes it
-        assert longest_gap_days(weekdays) * 24 <= hours <= findings_window.MAX_FINDINGS_WINDOW_HOURS
-    assert sorted(city_of_day) == list(range(7))  # every day features exactly one city
+    (topic,) = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
+    assert (topic["topic_id"], topic["adapter"]) == ("rail-cities", RAIL_ACCESS_ADAPTER_KEY)
+    config = ra.parse_config(topic["adapter_config"], topic["daily_timezone"])
+    assert [site["id"] for site in config["sites"]] == ["sydney", "melbourne", "singapore", "boston"]
+    assert len(config["sites"]) <= ra.MAX_RAIL_SITES and config["reach_m"] == 1000.0
+    # Sydney's first network takes most of a minute (16 October): the topic runs at the cap.
+    assert config["time_budget_seconds"] == vision_sites.MAX_TIME_BUDGET_SECONDS
+    assert config["max_sites_per_tick"] == 1  # one city a tick, in turn, whatever the day
+    rotation = config["rotation"]
+    assert rotation["kind"] == "weekly" and rotation["timezone"] == "Australia/Sydney"
+    assert dict(zip(WEEKDAYS, rotation["slots"], strict=True)) == ROTA  # the owner's rota (16 October)
+    scheduler._validate_schedule_expression(topic["daily_cadence"])
+    scheduler.validate_timezone(topic["daily_timezone"])
+    assert (topic["daily_cadence"], topic["daily_timezone"]) == ("cron(5 9 * * ? *)", "Australia/Sydney")
+    goals = json.dumps(topic["editorial_goals"])
+    assert not [city for city in ("Sydney", "Melbourne", "Singapore", "Boston") if city in goals]
+    assert topic["force_manual_review"] is True and topic["is_financial"] is False
 
-    # Four weeks around each of Sydney's clock changes (back on 5 April 2026, forward on 4 October
-    # 2026), with the day's Finding at every half hour of the UTC day: 22:30 UTC falls after the
-    # 09:05 run in summer time and before it in standard time.
+
+def test_the_example_topics_window_covers_the_longest_gap_in_its_rota():
+    """The arithmetic (spec §3.4: 24 hours a day of the longest gap between a city's days, and a
+    day for a clock change or a late run). The spec put it at 120 hours for this rota, which is
+    right for the three two-day cities (4 days at most between their days) but not for Boston,
+    whose one Thursday is 7 days from the next: 192 hours."""
+    (topic,) = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
+    gaps = longest_gaps(topic["adapter_config"]["rotation"])
+    assert gaps == {"sydney": 4, "melbourne": 4, "singapore": 4, "boston": 7}
+    hours = topic["findings_window_hours"]
+    assert hours == 24 * max(gaps.values()) + 24 == 192
+    assert 24 * max(gaps[city] for city in ("sydney", "melbourne", "singapore")) + 24 == 120
+    assert findings_window.findings_window_error(hours) is None  # the admin API takes it
+    assert hours <= findings_window.MAX_FINDINGS_WINDOW_HOURS
+    # Four cities in seven days: one of them has a single day, whatever the weekly rota.
+    assert len(WEEKDAYS) < 2 * len(gaps)
+
+
+def test_the_example_topic_drafts_every_finding_once_on_each_of_its_cities_days():
+    """Spec §4.3's one-topic simulation, with the real hook, window and choice of Findings: four
+    weeks around each of Sydney's clock changes (back on 5 April 2026, forward on 4 October 2026),
+    every city making a Finding every day at every half hour of the UTC day (22:30 UTC falls after
+    the 09:05 run in summer time and before it in standard time), and one Finding a week about two
+    cities. Every weekday has its city, each run writes about that city alone, and every Finding is
+    drafted exactly once on each of its cities' days, the two-city one on both (spec §5) and never
+    again after its city's own stamp, which wins over the topic's. With 120 hours Boston's Findings
+    from just after one Thursday are gone by the next."""
+    (topic,) = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
+    narrow = {**topic, "findings_window_hours": 120}
     for start in (datetime(2026, 3, 23, tzinfo=UTC), datetime(2026, 9, 21, tzinfo=UTC)):
         for finding_minute in range(0, 24 * 60, 30):
-            for topic in topics:
-                made, drafted = simulate_rotation(topic, start, finding_minute)
-                assert made and max(drafted.values()) == 1, (topic["topic_id"], start, finding_minute)
-                missed = [finding.isoformat() for finding in made if drafted[finding] != 1]
-                assert not missed, (topic["topic_id"], start, finding_minute, missed)
-                # The default window (a day) drops Findings: on two of a city's days at least
-                # three days apart, a day's window misses the days between.
-                default = {key: value for key, value in topic.items() if key != "findings_window_hours"}
-                made, drafted = simulate_rotation(default, start, finding_minute)
-                assert any(drafted[finding] == 0 for finding in made), (topic["topic_id"], start)
+            runs, drafted, findings = simulate_one_topic(topic, start, finding_minute)
+            local_days = {run.astimezone(SYDNEY_TIME).date(): city for run, city in runs}
+            by_weekday = {day.weekday(): city for day, city in local_days.items()}
+            assert by_weekday == dict(enumerate(ROTA.values()))
+            missed = sorted((findings[i]["captured_at"], city) for (i, city), n in drafted.items() if n != 1)
+            assert not missed, (start, finding_minute, missed[:4])
+            both = [pair for pair in drafted if findings[pair[0]].get("both")]
+            assert both and all(drafted[pair] == 1 for pair in both)
+            # The spec's 120 hours drop some of Boston's Findings, and only Boston's.
+            _, short, findings = simulate_one_topic(narrow, start, finding_minute)
+            lost = {city for (i, city), n in short.items() if n == 0}
+            assert lost == {"boston"}, (start, finding_minute, lost)
+
+
+def test_a_forced_run_reads_the_whole_window_but_only_the_days_city():
+    """Spec §5: `force` ignores both stamps (the city's and the topic's) and keeps the day's city."""
+    (topic,) = json.loads(EXAMPLE_TOPICS.read_text(encoding="utf-8"))["topics"]
+    monday = sydney_time(2026, 10, 19)
+    item = {**topic, "last_article_at": (monday - timedelta(hours=1)).isoformat(),
+            "last_article_by_subject": {"sydney": (monday - timedelta(days=3)).isoformat()}}  # fmt: skip
+    subject = ra.RailAccessAdapter().day_subject(item, monday)
+    assert subject.key == "sydney"
+    since = daily_cycle_handler._window_start(item, monday, force=False, subject_key="sydney")
+    assert since == item["last_article_by_subject"]["sydney"]  # the city's stamp, not the topic's
+    forced = daily_cycle_handler._window_start(item, monday, force=True, subject_key="sydney")
+    assert forced == (monday - timedelta(hours=192)).isoformat()
+    old = {"captured_at": (monday - timedelta(days=6)).isoformat(), "subjects": ["sydney"]}
+    other = {"captured_at": (monday - timedelta(days=1)).isoformat(), "subjects": ["boston"]}
+    assert daily_cycle_handler._select_subject_and_findings(item, [old, other], subject)[1] == [old]
 
 
 # --- fetching ------------------------------------------------------------------------------------
@@ -535,8 +610,16 @@ def test_the_first_tick_fetches_the_network_then_measures(adapter):
     seconds = ra.DEFAULTS["time_budget_seconds"] - ra.FIRST_FETCH_MARGIN_SECONDS
     assert fetch["deadline"] == pytest.approx(adapter.clock() + seconds, abs=5)
     assert fetch["timeout"] == ra.FIRST_FETCH_TIMEOUT_SECONDS
-    assert record["network"]["counts"]["stations"] == 1
-    assert record["network"]["fetched_at"] == state["fetched_at"]
+    # The network is kept in its own object, and the record only names it.
+    assert stored_network(adapter)["counts"]["stations"] == 1
+    assert stored_network(adapter)["fetched_at"] == state["fetched_at"]
+    assert stored_network(adapter)["site_key"] == vision_sites.site_key(SYDNEY)
+    assert network_fields(record) == {
+        "network_key": "vision/rail/sydney/network.json", "network_fetched_at": state["fetched_at"],
+        "network_site_key": vision_sites.site_key(SYDNEY),
+        "network_counts": {"ways": 1, "stations": 1, "pois": 1, "points": 2},
+    }  # fmt: skip
+    assert "network" not in record and "Central" not in json.dumps(state)
     assert "network_error" not in record and "last_error" not in record
     assert record["last_attempt_at"] == state["fetched_at"] and record["name"] == "Sydney"
 
@@ -575,10 +658,13 @@ def test_the_search_asks_for_the_rail_bands_within_the_rail_defaults(adapter):
     assert end - start == timedelta(days=20)
 
 
-def aged(state, days, site="sydney"):
-    """`state` with the site's cached network fetched `days` ago."""
+def aged(adapter, state, days, site="sydney"):
+    """`state` with the site's network fetched `days` ago: the network in its object, and what the
+    site's record says of it."""
     copy = json.loads(json.dumps(state))
-    copy["sites"][site]["network"]["fetched_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    when = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    copy["sites"][site]["network_fetched_at"] = when
+    adapter.objects[("rail", site)]["fetched_at"] = when
     return copy
 
 
@@ -587,40 +673,42 @@ def test_a_fresh_network_is_reused_and_a_stale_one_refreshed_when_there_is_nothi
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
     second = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=first)
     assert len(overpass.calls) == 1
-    assert second["sites"]["sydney"]["network"] == first["sites"]["sydney"]["network"]
+    assert network_fields(second["sites"]["sydney"]) == network_fields(first["sites"]["sydney"])
     assert second["sites"]["sydney"]["history"][-1]["network_fetched_at"] == first["fetched_at"]
     assert second["sites"]["sydney"]["history"][-1]["network_stale"] is False
 
-    # Past the TTL with a new scene: the scene comes first, measured against the cached network.
-    old = aged(second, 31)
+    # Past the TTL with a new scene: the scene comes first, measured against the stored network.
+    old = aged(adapter, second, 31)
     third = run(adapter, scene(3), FakeRailWorker({"S3": metrics()}), overpass, previous=old)
     assert len(overpass.calls) == 1 and third["measured"] == [{"site_id": "sydney", "scene_id": "S3"}]
     entry = third["sites"]["sydney"]["history"][-1]
     assert entry["network_stale"] is True
-    assert entry["network_fetched_at"] == old["sites"]["sydney"]["network"]["fetched_at"]
-    # Nothing new on the next tick: that tick's time refreshes the network.
+    assert entry["network_fetched_at"] == old["sites"]["sydney"]["network_fetched_at"]
+    # Nothing new on the next tick: that tick's time refreshes the network, in its object.
     fourth = run(adapter, scene(3), FakeRailWorker({}), overpass, previous=third)
     assert len(overpass.calls) == 2 and fourth["measured"] == []
-    assert fourth["sites"]["sydney"]["network"]["fetched_at"] == fourth["fetched_at"]
+    assert fourth["sites"]["sydney"]["network_fetched_at"] == fourth["fetched_at"]
+    assert stored_network(adapter)["fetched_at"] == fourth["fetched_at"]
     assert fourth["sites"]["sydney"]["last_attempt_at"] == fourth["fetched_at"]  # worked on: stamped
     assert not {"network_error", "last_error"} & set(fourth["sites"]["sydney"])
     # A fresh network and nothing new: nothing to do.
     run(adapter, scene(3), FakeRailWorker({}), overpass, previous=fourth)
     assert len(overpass.calls) == 2
     # A shorter TTL refreshes sooner.
-    run(adapter, scene(3), FakeRailWorker({}), overpass, previous=aged(fourth, 8), osm_ttl_days=7)
+    run(adapter, scene(3), FakeRailWorker({}), overpass, previous=aged(adapter, fourth, 8), osm_ttl_days=7)
     assert len(overpass.calls) == 3
 
 
 def test_a_failed_refresh_keeps_the_cached_network_and_waits_before_it_tries_again(adapter):
-    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
-    old = first["sites"]["sydney"]["network"]["fetched_at"]
+    first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    old = first["sites"]["sydney"]["network_fetched_at"]
 
     failing = FakeOverpass(osm.OsmError("rate_limited", "HTTP 429 from overpass-api.de", transient=True))
     state = run(adapter, scene(1), FakeRailWorker({}), failing, previous=first)
     record = state["sites"]["sydney"]
     assert len(failing.calls) == 1 and state["measured"] == []
-    assert record["network"] == first["sites"]["sydney"]["network"]  # kept
+    assert network_fields(record) == network_fields(first["sites"]["sydney"])  # kept
+    assert stored_network(adapter)["fetched_at"] == old
     assert record["network_error"]["code"] == "rate_limited"
     assert "HTTP 429" in record["network_error"]["detail"]
     assert record["network_error"]["at"] == state["fetched_at"]
@@ -644,7 +732,7 @@ def test_a_failed_refresh_keeps_the_cached_network_and_waits_before_it_tries_aga
     later["sites"]["sydney"]["network_error"]["at"] = seven_hours_ago
     recovered = run(adapter, scene(2), FakeRailWorker({}), FakeOverpass(network()), previous=later)
     assert "network_error" not in recovered["sites"]["sydney"]
-    assert recovered["sites"]["sydney"]["network"]["fetched_at"] == recovered["fetched_at"]
+    assert recovered["sites"]["sydney"]["network_fetched_at"] == recovered["fetched_at"]
 
 
 def test_a_slow_failing_overpass_never_stops_a_city_with_a_cached_network(adapter):
@@ -653,7 +741,7 @@ def test_a_slow_failing_overpass_never_stops_a_city_with_a_cached_network(adapte
     refresh is tried on a tick with nothing new, fails slowly, and the next scene is measured too."""
     clock = Clock()
     adapter.clock = clock
-    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     slow = FakeOverpass(osm.OsmError("http", "HTTP 504 from overpass-api.de", transient=True), 29.0, clock)
 
     worker = FakeRailWorker({"S2": metrics(), "S3": metrics()}, takes=20.0, clock=clock)
@@ -663,7 +751,7 @@ def test_a_slow_failing_overpass_never_stops_a_city_with_a_cached_network(adapte
 
     quiet = run(adapter, scene(2), worker, slow, previous=state)
     assert len(slow.calls) == 1 and quiet["sites"]["sydney"]["network_error"]["code"] == "http"
-    assert quiet["sites"]["sydney"]["network"] == first["sites"]["sydney"]["network"]
+    assert network_fields(quiet["sites"]["sydney"]) == network_fields(first["sites"]["sydney"])
 
     third = run(adapter, scene(3), worker, slow, previous=quiet)
     assert third["measured"] == [{"site_id": "sydney", "scene_id": "S3"}] and len(slow.calls) == 1
@@ -676,7 +764,8 @@ def test_no_network_means_no_measurement_and_a_last_error(adapter):
     record = state["sites"]["sydney"]
     assert worker.calls == [] and len(stac.bodies) == 1 and state["measured"] == []  # the scene first
     assert record["last_error"]["code"] == "osm" and "no answer" in record["last_error"]["detail"]
-    assert record["network_error"]["code"] == "timeout" and "network" not in record
+    assert record["network_error"]["code"] == "timeout" and not network_fields(record)
+    assert stored_network(adapter) is None
     assert record["last_attempt_at"] == state["fetched_at"]  # tried, so the next tick may try others first
     changed, summary = adapter.material_diff(None, state)
     assert not changed and summary == "nothing measured yet: Sydney: osm"
@@ -696,7 +785,7 @@ def test_a_changed_polygon_gets_its_own_network(adapter):
     bbox's. If the new one cannot be fetched, the site waits, and the old network is dropped."""
     overpass = FakeOverpass(network())
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
-    assert first["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(SYDNEY)
+    assert first["sites"]["sydney"]["network_site_key"] == vision_sites.site_key(SYDNEY)
     wider = [[150.5, -34.3], [151.7, -34.3], [151.7, -33.4], [150.5, -33.4]]
     sites = [{"id": "sydney", "name": "Sydney", "polygon": wider}]
 
@@ -704,13 +793,14 @@ def test_a_changed_polygon_gets_its_own_network(adapter):
     waiting = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), failing, previous=first, sites=sites)
     assert waiting["measured"] == [] and [c["polygon"] for c in failing.calls] == [wider]
     assert waiting["sites"]["sydney"]["last_error"]["code"] == "osm"
-    assert "network" not in waiting["sites"]["sydney"]  # the old polygon's is dropped, never used
+    assert not network_fields(waiting["sites"]["sydney"])  # the old polygon's is never named, never used
 
     fresh = FakeOverpass(network(polygon=wider))
     state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), fresh, previous=first, sites=sites)
     assert [c["polygon"] for c in fresh.calls] == [wider] and len(overpass.calls) == 1
     assert state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
-    assert state["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(wider)
+    assert state["sites"]["sydney"]["network_site_key"] == vision_sites.site_key(wider)
+    assert stored_network(adapter)["site_key"] == vision_sites.site_key(wider)  # written over the old
     assert state["sites"]["sydney"]["history"][-1]["site_key"] == vision_sites.site_key(wider)
     assert adapter.source_refs(state)[1]["url"] == osm.query_url(wider) != osm.query_url(SYDNEY)
 
@@ -737,7 +827,7 @@ def test_a_scene_the_worker_refuses_for_what_it_is_is_not_sent_every_tick(adapte
     until a newer scene appears or NETWORK_RETRY_HOURS pass. A tick that skips it has nothing new,
     so a stale network is refreshed meanwhile (step (d))."""
     assert ra.REFUSED_SCENE_CODES == ("window_too_large", "site_outside_scene", "bad_request")
-    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     refusing = FakeRailWorker({}, error=vision_client.VisionError(code, "the worker's detail"))
     overpass = FakeOverpass(network())
     failed = run(adapter, scene(2), refusing, overpass, previous=first)
@@ -752,7 +842,7 @@ def test_a_scene_the_worker_refuses_for_what_it_is_is_not_sent_every_tick(adapte
     skipped = run(adapter, scene(2), refusing, overpass, previous=failed)
     record = skipped["sites"]["sydney"]
     assert len(refusing.calls) == 1 and skipped["measured"] == []  # not sent again
-    assert len(overpass.calls) == 1 and record["network"]["fetched_at"] == skipped["fetched_at"]
+    assert len(overpass.calls) == 1 and record["network_fetched_at"] == skipped["fetched_at"]
     assert record["last_attempt_at"] == skipped["fetched_at"]  # worked on: nothing new
     assert record["last_error"]["code"] == code  # still why there is nothing new
     assert record["failed_scene"] == failed["sites"]["sydney"]["failed_scene"]
@@ -845,7 +935,8 @@ def test_measuring_is_deferred_when_the_budget_is_nearly_spent(adapter):
     record = state["sites"]["sydney"]
     assert worker.calls == [] and state["measured"] == []
     assert record["last_error"] == {"at": state["fetched_at"], "code": "time_budget", "detail": "next tick"}
-    assert record["network"]["counts"]["stations"] == 1  # the network was still fetched and kept
+    assert record["network_counts"]["stations"] == 1  # the network was still fetched and kept
+    assert stored_network(adapter)["fetched_at"] == state["fetched_at"]
     assert "last_attempt_at" not in record  # deferred, not worked on to an outcome
 
     # The next tick has the network and measures at once.
@@ -864,7 +955,7 @@ def test_a_new_scene_waits_for_the_measuring_reserve_and_is_then_measured_with_a
     adapter.clock = clock
     sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
     old = (datetime.now(UTC) - timedelta(days=40)).isoformat()
-    cached = {"name": "Melbourne", "network": network(old, MELBOURNE), "history": []}
+    cached = with_network(adapter, "melbourne", network(old, MELBOURNE), {"name": "Melbourne", "history": []})
     previous = {"sites": {"melbourne": cached}}
     overpass = FakeOverpass(network())
     worker = FakeRailWorker({"S1": metrics()}, takes=50.0, clock=clock)
@@ -873,7 +964,8 @@ def test_a_new_scene_waits_for_the_measuring_reserve_and_is_then_measured_with_a
     assert [m["site_id"] for m in state["measured"]] == ["sydney"]
     assert [c["polygon"] for c in overpass.calls] == [SYDNEY]  # Sydney had none; Melbourne's not refreshed
     melbourne = state["sites"]["melbourne"]
-    assert melbourne["network"]["fetched_at"] == old and "network_error" not in melbourne
+    assert melbourne["network_fetched_at"] == old and "network_error" not in melbourne
+    assert stored_network(adapter, "melbourne")["fetched_at"] == old
     assert melbourne["last_error"]["code"] == "time_budget"
     # Deferred for the budget is not an attempt: Melbourne goes first next tick.
     assert "last_attempt_at" not in melbourne
@@ -896,11 +988,11 @@ def test_no_network_is_fetched_with_under_the_osm_reserve_left(adapter):
     record = state["sites"]["sydney"]
     assert overpass.calls == [] and worker.calls == [] and state["measured"] == []
     assert record["last_error"] == {"at": state["fetched_at"], "code": "time_budget", "detail": "next tick"}
-    assert "last_attempt_at" not in record and "network" not in record and "network_error" not in record
+    assert "last_attempt_at" not in record and not network_fields(record) and "network_error" not in record
     # With the reserve left (30 s) it is fetched, and kept for the measurement next tick.
     on_time = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=40.0, clock=clock)
     state = run(adapter, on_time, worker, overpass)
-    assert len(overpass.calls) == 1 and state["sites"]["sydney"]["network"]["counts"]["stations"] == 1
+    assert len(overpass.calls) == 1 and state["sites"]["sydney"]["network_counts"]["stations"] == 1
 
 
 def test_a_stale_network_is_not_refreshed_with_under_the_osm_reserve_left(adapter):
@@ -909,7 +1001,7 @@ def test_a_stale_network_is_not_refreshed_with_under_the_osm_reserve_left(adapte
     was worked on to an outcome, nothing new). A later tick with the time refreshes it."""
     clock = Clock()
     adapter.clock = clock
-    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     overpass = FakeOverpass(network())
     slow_search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=41.0, clock=clock)
     state = run(adapter, slow_search, FakeRailWorker({}), overpass, previous=first)
@@ -917,10 +1009,10 @@ def test_a_stale_network_is_not_refreshed_with_under_the_osm_reserve_left(adapte
     assert overpass.calls == [] and state["measured"] == []
     assert not {"network_error", "last_error"} & set(record)
     assert record["last_attempt_at"] == state["fetched_at"]
-    assert record["network"] == first["sites"]["sydney"]["network"]
+    assert network_fields(record) == network_fields(first["sites"]["sydney"])
     again = run(adapter, scene(1), FakeRailWorker({}), overpass, previous=state)
     assert len(overpass.calls) == 1
-    assert again["sites"]["sydney"]["network"]["fetched_at"] == again["fetched_at"]
+    assert again["sites"]["sydney"]["network_fetched_at"] == again["fetched_at"]
 
 
 # --- a city's first network (step (b)): the measuring time, not the reserve ------------------------
@@ -956,7 +1048,7 @@ def test_a_refresh_of_a_cached_network_keeps_the_reserve_and_the_default_read(ad
     """Step (d): a stale cached network and nothing new. The refresh gets OSM_RESERVE_SECONDS and
     osm.TIMEOUT_SECONDS a hop, as before, however much of the budget is left: the cached network
     serves meanwhile."""
-    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     clock = Clock(100.0)
     adapter.clock = clock
     overpass = FakeOverpass(network())
@@ -1043,7 +1135,9 @@ def test_on_a_running_clock_each_query_declares_the_whole_seconds_it_was_given(
 ):
     """The adapter reads the clock for the fetch's deadline and fetch_network reads it again a moment
     later, so the hop's read is a hair under its whole seconds: the query still declares them."""
-    previous = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31) if cached else None
+    previous = None
+    if cached:
+        previous = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     clock = RunningClock(100.0)
     adapter.clock = clock
     scripted_timers(monkeypatch, clock)
@@ -1059,7 +1153,7 @@ def test_on_a_running_clock_each_query_declares_the_whole_seconds_it_was_given(
     state = adapter.fetch_state(topic(time_budget_seconds=budget), previous_state=previous)
     ((query_timeout, read),) = hops
     assert query_timeout == declared and int(declared[9:-1]) - 0.001 < read < int(declared[9:-1])
-    assert state["sites"]["sydney"]["network"]["fetched_at"] == state["fetched_at"]
+    assert state["sites"]["sydney"]["network_fetched_at"] == state["fetched_at"]
 
 
 @pytest.mark.parametrize("budget", [70, 80])
@@ -1087,7 +1181,7 @@ def test_a_first_fetch_whose_reply_stalls_mid_body_still_ends_by_its_deadline(ad
     assert clock.now == deadline <= budget  # not 58 s + the hop's read
     record = state["sites"]["sydney"]
     assert record["last_error"]["code"] == "osm" and record["network_error"]["code"] == "timeout"
-    assert "network" not in record and state["measured"] == []
+    assert not network_fields(record) and state["measured"] == []
 
 
 def test_a_long_first_fetch_defers_the_measurement_and_the_next_tick_measures_with_it(adapter, capsys):
@@ -1105,7 +1199,8 @@ def test_a_long_first_fetch_defers_the_measurement_and_the_next_tick_measures_wi
     (fetch,) = overpass.calls
     assert fetch["deadline"] == 60.0 and clock.now == 54.0
     assert worker.calls == [] and state["measured"] == []
-    assert record["network"]["fetched_at"] == state["fetched_at"] and "network_error" not in record
+    assert record["network_fetched_at"] == state["fetched_at"] and "network_error" not in record
+    assert stored_network(adapter)["fetched_at"] == state["fetched_at"]
     assert record["last_error"] == {"at": state["fetched_at"], "code": "time_budget", "detail": "next tick"}
     assert "last_attempt_at" not in record
     (line,) = evidence_lines(capsys, "vision_site")
@@ -1210,7 +1305,7 @@ def test_a_site_past_the_budget_is_not_attempted_at_all(adapter):
     state = run(adapter, stac, worker, previous=None, sites=sites, max_sites_per_tick=2)
     melbourne = state["sites"]["melbourne"]
     assert melbourne["last_error"]["code"] == "time_budget" and "last_attempt_at" not in melbourne
-    assert len(stac.bodies) == 1 and "network" not in melbourne
+    assert len(stac.bodies) == 1 and not network_fields(melbourne)
 
 
 def test_a_site_that_fails_slowly_every_tick_does_not_starve_the_next(adapter):
@@ -1233,7 +1328,7 @@ def test_a_site_that_fails_slowly_every_tick_does_not_starve_the_next(adapter):
     assert first["sites"]["melbourne"]["last_attempt_at"] == first["fetched_at"]
     sydney = first["sites"]["sydney"]
     assert sydney["last_error"]["code"] == "time_budget" and "last_attempt_at" not in sydney
-    assert sydney["network"]["counts"]["stations"] == 1  # fetched in the 41 s left, kept
+    assert sydney["network_counts"]["stations"] == 1  # fetched in the 41 s left, kept
 
     clock.now = 0.0
     second = run(adapter, scene(1), worker, fetch, previous=first, sites=sites)
@@ -1248,7 +1343,7 @@ def test_sites_rotate_one_per_tick_the_unvisited_first(adapter):
 
     first = run(adapter, stac, worker, overpass, sites=sites)
     assert [m["site_id"] for m in first["measured"]] == ["sydney"]
-    assert not {"last_attempt_at", "network"} & set(first["sites"]["melbourne"])
+    assert not {"last_attempt_at", *ra.NETWORK_FIELDS} & set(first["sites"]["melbourne"])
 
     second = run(adapter, stac, worker, overpass, previous=first, sites=sites)
     assert [m["site_id"] for m in second["measured"]] == ["melbourne"]
@@ -1728,17 +1823,20 @@ def test_source_refs_link_the_scene_and_the_overpass_query(adapter):
             "accessed_at": state["fetched_at"],
         },
         {
-            "url": state["sites"]["sydney"]["network"]["query_url"],
+            "url": stored_network(adapter)["query_url"],
             "title": "OpenStreetMap rail data for Sydney via the Overpass API",
-            "accessed_at": state["sites"]["sydney"]["network"]["fetched_at"],
+            "accessed_at": stored_network(adapter)["fetched_at"],
         },
     ]
     assert refs[1]["url"].startswith("https://overpass-api.de/api/interpreter?data=")
     assert len(refs[1]["url"]) <= 400
-    # A network cached without its link (an older state) gets one from the site's polygon.
-    bare = json.loads(json.dumps(state))
-    del bare["sites"]["sydney"]["network"]["query_url"]
-    assert adapter.source_refs(bare)[1]["url"] == osm.query_url(SYDNEY)
+    # Without the network this tick measured with (its query in hand), the record's fetch time and
+    # a link from the site's polygon.
+    adapter._networks = {}
+    assert adapter.source_refs(state)[1] == {
+        "url": osm.query_url(SYDNEY), "title": "OpenStreetMap rail data for Sydney via the Overpass API",
+        "accessed_at": state["sites"]["sydney"]["network_fetched_at"],
+    }  # fmt: skip
 
 
 def test_review_evidence_is_the_stored_measurement_without_the_network(adapter):
@@ -1845,8 +1943,12 @@ def test_the_running_state_round_trips_through_the_research_tick(tick_env, monke
     assert "satellite imagery and OpenStreetMap data" in prompt
     state = running_state()
     sydney = state["sites"]["sydney"]
-    assert sydney["network"]["counts"]["stations"] == 1
-    assert sydney["network"]["fetched_at"] == state["fetched_at"]
+    # The network is in its own object, outside snapshots/; the running state only names it.
+    assert sydney["network_key"] == "vision/rail/sydney/network.json" and "network" not in sydney
+    assert sydney["network_counts"]["stations"] == 1 and sydney["network_fetched_at"] == state["fetched_at"]
+    kept = vision_sites.load_network("rail", "sydney")
+    assert kept["fetched_at"] == state["fetched_at"] and kept["stations"][0]["name"] == "Central"
+    assert "Central" not in json.dumps(state)
     assert sydney["history"][-1]["image_key"] == "vision/rail/sydney/S0.png"
     png = boto3.client("s3", region_name=REGION).get_object(Bucket=BUCKET, Key="vision/rail/sydney/S0.png")
     assert png["Body"].read() == PNG and png["ContentType"] == "image/png"
@@ -1863,7 +1965,7 @@ def test_the_running_state_round_trips_through_the_research_tick(tick_env, monke
     bedrock.assert_not_called()  # rule 2: no Bedrock without material change
     state = running_state()
     assert [e["scene_id"] for e in state["sites"]["sydney"]["history"]] == ["S0", "S1"]
-    assert state["sites"]["sydney"]["network"]["fetched_at"] == sydney["network"]["fetched_at"]
+    assert state["sites"]["sydney"]["network_fetched_at"] == sydney["network_fetched_at"]
 
     # A change the agent calls real: a Finding whose prompt carries the measured change.
     moved = metrics(served_share=0.70, station_count=180)
@@ -1902,13 +2004,14 @@ def test_a_tick_spent_on_the_first_fetch_keeps_the_network_and_the_next_measures
     bedrock.assert_not_called()
     sydney = running_state()["sites"]["sydney"]
     assert sydney["history"] == [] and sydney["last_error"]["code"] == "time_budget"
-    assert sydney["network"]["counts"]["stations"] == 1
+    assert sydney["network_counts"]["stations"] == 1
+    assert vision_sites.load_network("rail", "sydney")["fetched_at"] == sydney["network_fetched_at"]
 
     result, bedrock = tick_with(monkeypatch, "S0", metrics(), "2026-09-10T00:00:00Z", overpass=slow)
     assert result["status"] == "material_change" and len(slow.calls) == 1
     state = running_state()
     assert [e["scene_id"] for e in state["sites"]["sydney"]["history"]] == ["S0"]
-    assert state["sites"]["sydney"]["history"][-1]["network_fetched_at"] == sydney["network"]["fetched_at"]
+    assert state["sites"]["sydney"]["history"][-1]["network_fetched_at"] == sydney["network_fetched_at"]
     assert "First observation. Sydney" in bedrock.call_args[0][0]
 
 
@@ -2271,23 +2374,25 @@ def test_status_after_a_measured_tick(adapter, no_egress):
 
 
 def test_a_big_network_never_reaches_the_status(adapter, no_egress):
+    """A state written before each network had its object keeps it inline: status reads its fetch
+    time and polygon, never its lists."""
     state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
     record = state["sites"]["sydney"]
     way = {"points": [[151.2, -33.9]] * 30, "name": "Line"}
-    record["network"]["ways"] = [{"id": f"w{n}", **way} for n in range(5000)]
+    record["network"] = {**stored_network(adapter), "ways": [{"id": f"w{n}", **way} for n in range(5000)]}
     assert len(json.dumps(state)) > 2_000_000
     status = status_of(adapter, state)
     assert len(json.dumps(status)) < 2_000 and not keys_of(status) & set(NEVER_IN_STATUS)
 
 
 def test_a_stale_network_and_a_failed_refresh_with_a_cached_copy(adapter, no_egress):
-    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    first = aged(adapter, run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
     assert status_of(adapter, first)["sites"][0]["inputs"][0]["stale"] is True
     failing = FakeOverpass(osm.OsmError("rate_limited", "HTTP 429 from overpass-api.de", transient=True))
     state = run(adapter, scene(1), FakeRailWorker({}), failing, previous=first)
     site = status_of(adapter, state)["sites"][0]
     (network_input,) = site["inputs"]
-    assert network_input["fetched_at"] == first["sites"]["sydney"]["network"]["fetched_at"]
+    assert network_input["fetched_at"] == first["sites"]["sydney"]["network_fetched_at"]
     assert network_input["stale"] is True
     assert network_input["error"] == {
         "code": "rate_limited",
@@ -2627,12 +2732,14 @@ def test_each_sites_turn_leaves_a_line_at_its_branch(adapter, capsys):
     assert line["code"] == "invoke" and line["scene_id"] == "S2" and "worker_request_id" not in line
 
     failing = FakeOverpass(osm.OsmError("timeout", "no answer from either endpoint", transient=True))
+    adapter.objects.clear()  # no network stored yet
     run(adapter, scene(1), worker, failing)
     (line,) = evidence_lines(capsys, "vision_site")
     assert line["outcome"] == "none" and line["code"] == "osm" and "scene_id" not in line
 
     clock = Clock()
     adapter.clock = clock
+    adapter.objects.clear()
     run(adapter, scene(1), worker, FakeOverpass(network(), takes=28.0, clock=clock))
     (line,) = evidence_lines(capsys, "vision_site")
     assert line["outcome"] == "deferred" and line["code"] == "time_budget" and line["budget_left_s"] == 42.0
@@ -2690,9 +2797,9 @@ def test_network_changed_says_whether_the_baseline_was_measured_against_another_
     (first,) = adapter.assess(history_state(adapter, [(0.73, 111.3, 178)]))
     assert first["network_changed"] is None  # no comparable baseline
     # A stale network is refreshed on a quiet tick; the next scene is measured against the new copy.
-    stale = aged(same, 31)
+    stale = aged(adapter, same, 31)
     refreshed = run(adapter, scene(1, day=11), FakeRailWorker({}), previous=stale)
-    assert refreshed["sites"]["sydney"]["network"]["fetched_at"] == refreshed["fetched_at"]
+    assert refreshed["sites"]["sydney"]["network_fetched_at"] == refreshed["fetched_at"]
     moved = FakeRailWorker({"S2": metrics(0.68, 111.3, 178)})
     state = run(adapter, scene(2, day=12), moved, previous=refreshed)
     (verdict,) = adapter.assess(state)
@@ -2806,7 +2913,7 @@ def test_a_failed_attempt_leaves_its_lines_and_the_scene_is_measured_again(tick_
 # --- the network fetched out of band (prefetch_networks) ----------------------------------------
 # Overpass can think about a city for over a minute before it answers (Sydney, 2026-10-16), longer
 # than any tick can wait: the operator's network_prefetch trigger fetches it with the time it needs
-# and stores it on its own, and the next tick adopts it.
+# and stores it in the site's object, the one the tick reads and writes, so the next tick uses it.
 
 
 def test_a_prefetch_waits_long_for_each_site_and_stores_its_network_apart_from_the_state(adapter):
@@ -2822,9 +2929,9 @@ def test_a_prefetch_waits_long_for_each_site_and_stores_its_network_apart_from_t
     first = overpass.calls[0]
     assert first["timeout"] == ra.PREFETCH_TIMEOUT_SECONDS > ra.FIRST_FETCH_TIMEOUT_SECONDS
     assert first["deadline"] == 1000.0 + ra.PREFETCH_BUDGET_SECONDS and first["clock"] is adapter.clock
-    stored = adapter.prefetched[("rail", "melbourne")]
+    stored = stored_network(adapter, "melbourne")
     assert stored["site_key"] == vision_sites.site_key(MELBOURNE)
-    assert results[0]["fetched_at"] == adapter.prefetched[("rail", "sydney")]["fetched_at"]
+    assert results[0]["fetched_at"] == stored_network(adapter)["fetched_at"]
     assert results[0]["counts"] == {"ways": 1, "stations": 1, "pois": 1, "points": 2}
     assert results[0]["truncated"] is False
     # A prefetch writes no state of its own and asks no worker: only the stored networks.
@@ -2838,7 +2945,7 @@ def test_a_prefetch_says_which_sites_failed_and_leaves_too_little_time_for_the_n
     (failed,) = adapter.prefetch_networks(topic())
     assert failed == {"site_id": "sydney", "status": "failed", "code": "timeout",
                       "detail": "ReadTimeout from overpass"}  # fmt: skip
-    assert adapter.prefetched == {}
+    assert adapter.objects == {}
 
     adapter.fetch_network = FakeOverpass(ValueError("bad polygon"))
     (broken,) = adapter.prefetch_networks(topic())
@@ -2850,10 +2957,10 @@ def test_a_prefetch_says_which_sites_failed_and_leaves_too_little_time_for_the_n
     sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
     results = adapter.prefetch_networks(topic(sites=sites))
     assert [r["status"] for r in results] == ["stored", "deferred"]
-    assert len(adapter.fetch_network.calls) == 1 and ("rail", "melbourne") not in adapter.prefetched
+    assert len(adapter.fetch_network.calls) == 1 and stored_network(adapter, "melbourne") is None
 
 
-def test_a_tick_without_a_network_adopts_the_prefetched_one_and_asks_no_overpass(adapter):
+def test_a_tick_without_a_network_uses_the_prefetched_one_and_asks_no_overpass(adapter):
     adapter.fetch_network = FakeOverpass(network())
     adapter.prefetch_networks(topic())
     failing = FakeOverpass(osm.OsmError("http", "HTTP 406 from overpass"))
@@ -2864,51 +2971,452 @@ def test_a_tick_without_a_network_adopts_the_prefetched_one_and_asks_no_overpass
 
     record = state["sites"]["sydney"]
     assert failing.calls == [] and state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]
-    assert record["network"] == adapter.prefetched[("rail", "sydney")]
+    assert record["network_fetched_at"] == stored_network(adapter)["fetched_at"]
+    assert record["network_key"] == "vision/rail/sydney/network.json" and "network" not in record
+    # A network fetched since the one the record knew (none here): the older failure no longer holds.
     assert "network_error" not in record and "last_error" not in record
-    # From then on the running state carries it: the prefetched object is not read again.
+    # The object stays the network's only home: each visit reads it, and nothing fetches again.
     adapter.loads.clear()
     run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), failing, previous=state)
-    assert adapter.loads == [] and failing.calls == []
+    assert adapter.loads == [("rail", "sydney")] and failing.calls == []
 
 
-def test_a_stale_network_gives_way_only_to_a_newer_prefetched_one_for_the_same_polygon(adapter):
+def test_the_prefetch_and_the_tick_share_one_store_and_the_last_write_is_the_network(adapter):
+    """No adoption rule is left: whatever the site's object holds when the tick reads it is the
+    network, if it is this polygon's. A prefetch for another polygon is no network (fetched again
+    for this one, written over it); an older one is a stale one (refreshed); a newer one serves."""
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
-    old = aged(first, 40)
-    old_fetched = old["sites"]["sydney"]["network"]["fetched_at"]
+    old = aged(adapter, first, 40)
+    old_fetched = old["sites"]["sydney"]["network_fetched_at"]
 
-    # Prefetched for another polygon: ignored, and the stale network is refreshed in the tick.
+    # Another polygon's in the object: this polygon's is fetched (a first fetch's time) and replaces it.
     now = datetime.now(UTC).isoformat()
-    adapter.prefetched[("rail", "sydney")] = network(fetched_at=now, polygon=MELBOURNE)
+    adapter.objects[("rail", "sydney")] = network(fetched_at=now, polygon=MELBOURNE)
     refresh = FakeOverpass(network())
     state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
-    assert len(refresh.calls) == 1
-    assert state["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(SYDNEY)
+    assert len(refresh.calls) == 1 and refresh.calls[0]["timeout"] == ra.FIRST_FETCH_TIMEOUT_SECONDS
+    assert state["sites"]["sydney"]["network_site_key"] == vision_sites.site_key(SYDNEY)
+    assert stored_network(adapter)["site_key"] == vision_sites.site_key(SYDNEY)
 
-    # Prefetched for this polygon but older than the cached one: kept as it was, refreshed in the tick.
-    adapter.prefetched[("rail", "sydney")] = network(fetched_at="2020-01-01T00:00:00+00:00")
+    # An older one for this polygon: it is the network, stale, so the tick refreshes it; a failed
+    # refresh keeps it and the record says what it holds.
+    adapter.objects[("rail", "sydney")] = network(fetched_at="2020-01-01T00:00:00+00:00")
     refresh = FakeOverpass(osm.OsmError("timeout", "slow", transient=True))
     state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
-    assert len(refresh.calls) == 1 and state["sites"]["sydney"]["network"]["fetched_at"] == old_fetched
+    assert len(refresh.calls) == 1 and refresh.calls[0]["timeout"] == osm.TIMEOUT_SECONDS
+    assert state["sites"]["sydney"]["network_fetched_at"] == "2020-01-01T00:00:00+00:00" != old_fetched
+    assert state["sites"]["sydney"]["network_error"]["code"] == "timeout"
 
-    # Newer and for this polygon: adopted, and the tick has nothing left to refresh.
+    # A newer one for this polygon (a prefetch): used, and the tick has nothing left to refresh.
     newer = (datetime.now(UTC) - timedelta(days=1)).isoformat()
-    adapter.prefetched[("rail", "sydney")] = network(fetched_at=newer)
+    adapter.objects[("rail", "sydney")] = network(fetched_at=newer)
     refresh = FakeOverpass(network())
     state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
-    assert refresh.calls == [] and state["sites"]["sydney"]["network"]["fetched_at"] == newer
+    assert refresh.calls == [] and state["sites"]["sydney"]["network_fetched_at"] == newer
 
 
-def test_a_fresh_network_never_reads_the_prefetched_one_and_an_unreadable_one_is_no_network(adapter):
+def test_a_missing_or_unreadable_object_is_no_network_and_is_fetched_again(adapter):
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
-    adapter.loads.clear()
-    run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), FakeOverpass(network()), previous=first)
-    assert adapter.loads == []
+    adapter.objects.clear()  # gone: deleted by hand, say
+    overpass = FakeOverpass(network())
+    state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=first)
+    assert len(overpass.calls) == 1 and state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert stored_network(adapter)["fetched_at"] == state["sites"]["sydney"]["network_fetched_at"]
 
     def unreadable(topic_id, site_id):
         raise RuntimeError("AccessDenied")
 
     adapter.load_network = unreadable
+    overpass = FakeOverpass(osm.OsmError("timeout", "slow", transient=True))
+    state = run(adapter, scene(3), FakeRailWorker({"S3": metrics()}), overpass, previous=state)
+    assert len(overpass.calls) == 1 and state["measured"] == []
+    record = state["sites"]["sydney"]
+    assert record["last_error"]["code"] == "osm" and not network_fields(record)  # it claims none
+
+
+def test_a_network_that_cannot_be_stored_is_a_failed_fetch(adapter):
+    """Kept nowhere, it would be fetched again every tick: the fetch is recorded as failed ("store"),
+    a first fetch leaves the site waiting, a refresh keeps the stored network."""
+
+    def full(topic_id, site_id, net):
+        raise OSError("SlowDown")
+
+    adapter.store_network = full
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    record = state["sites"]["sydney"]
+    assert state["measured"] == [] and record["last_error"]["code"] == "osm"
+    assert record["network_error"]["code"] == "store"
+    assert "OSError: SlowDown" in record["network_error"]["detail"]
+    assert not network_fields(record)
+
+
+# --- a state written before each network had its object (the transition) ---------------------------
+# Until S2 the network rode in the running state (`network` in the site's record). The owner's
+# deployed topic has one there. The first tick after the deploy moves it to the object, keeps it
+# inline until that has worked, and never fetches it again for the move.
+
+
+def legacy_state(adapter, fetched_at=None, polygon=SYDNEY):
+    """A running state as a tick before S2 left it: one measured scene, the network inline."""
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    record = state["sites"]["sydney"]
+    for field in ra.NETWORK_FIELDS:
+        record.pop(field)
+    record["network"] = network(fetched_at or record["history"][-1]["network_fetched_at"], polygon)
+    adapter.objects.clear()
+    adapter.loads.clear()
+    return json.loads(json.dumps(state))
+
+
+def test_an_inline_network_is_moved_to_its_object_once_and_never_fetched_again(adapter):
+    old = legacy_state(adapter)
+    inline = old["sites"]["sydney"]["network"]
     overpass = FakeOverpass(network())
-    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
-    assert len(overpass.calls) == 1 and state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]
+    state = run(adapter, scene(1), FakeRailWorker({}), overpass, previous=old)  # nothing new
+    record = state["sites"]["sydney"]
+    assert overpass.calls == [] and stored_network(adapter) == inline
+    assert "network" not in record and "Central" not in json.dumps(state)
+    assert network_fields(record) == {
+        "network_key": "vision/rail/sydney/network.json", "network_fetched_at": inline["fetched_at"],
+        "network_site_key": inline["site_key"], "network_counts": inline["counts"],
+    }  # fmt: skip
+    # The next tick measures with it, from the object.
+    worker = FakeRailWorker({"S2": metrics()})
+    later = run(adapter, scene(2), worker, overpass, previous=state)
+    assert overpass.calls == [] and later["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert worker.calls[0]["network"] == ra.worker_network(inline)
+    assert later["sites"]["sydney"]["history"][-1]["network_fetched_at"] == inline["fetched_at"]
+
+
+def test_an_inline_network_gives_way_only_to_a_newer_object_for_its_polygon(adapter):
+    """A prefetch the tick had not yet adopted may already be in the object: the newer of the two
+    for the site's polygon is kept; otherwise the inline one is written."""
+    old = legacy_state(adapter, fetched_at="2026-10-01T03:00:00+00:00")
+    newer = network(fetched_at="2026-10-10T03:00:00+00:00")
+    adapter.objects[("rail", "sydney")] = newer
+    state = run(adapter, scene(1), FakeRailWorker({}), previous=old)
+    assert stored_network(adapter) == newer
+    assert state["sites"]["sydney"]["network_fetched_at"] == newer["fetched_at"]
+
+    for there in (network(fetched_at="2026-09-01T03:00:00+00:00"), network(polygon=MELBOURNE)):
+        adapter.objects[("rail", "sydney")] = there  # older, or another polygon's
+        state = run(adapter, scene(1), FakeRailWorker({}), previous=old)
+        assert stored_network(adapter) == old["sites"]["sydney"]["network"]
+        assert state["sites"]["sydney"]["network_fetched_at"] == "2026-10-01T03:00:00+00:00"
+
+
+def test_an_inline_network_that_cannot_be_moved_stays_and_still_serves(adapter):
+    old = legacy_state(adapter)
+    inline = old["sites"]["sydney"]["network"]
+
+    def full(topic_id, site_id, net):
+        raise OSError("SlowDown")
+
+    store = adapter.store_network
+    adapter.store_network = full
+    worker, overpass = FakeRailWorker({"S2": metrics()}), FakeOverpass(network())
+    state = run(adapter, scene(2), worker, overpass, previous=old)
+    record = state["sites"]["sydney"]
+    assert record["network"] == inline and not network_fields(record)  # kept where it was
+    assert overpass.calls == [] and worker.calls[0]["network"] == ra.worker_network(inline)
+    assert state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    # Status still reads it, without its lists.
+    assert status_of(adapter, state)["sites"][0]["inputs"][0]["fetched_at"] == inline["fetched_at"]
+    # The next tick moves it.
+    adapter.store_network = store
+    moved = run(adapter, scene(2), FakeRailWorker({}), overpass, previous=state)
+    assert stored_network(adapter) == inline and "network" not in moved["sites"]["sydney"]
+
+
+def test_a_state_from_before_reaches_the_object_through_the_research_tick(tick_env, monkeypatch):
+    """The owner's topic as deployed: its running state carries the network inline. One tick
+    through the real handler and the real object store (moto) moves it, and the running state it
+    stores no longer carries it."""
+    s3 = boto3.client("s3", region_name=REGION)
+    inline = network(fetched_at=(datetime.now(UTC) - timedelta(days=2)).isoformat())
+    before = {"fetched_at": "2026-10-15T00:00:00+00:00", "task": "rail_access", "first_observed_at": None,
+              "sites": {"sydney": {"name": "Sydney", "history": [], "network": inline}},
+              "measured": []}  # fmt: skip
+    s3.put_object(Bucket=BUCKET, Key="snapshots/rail/running-state.json", Body=json.dumps(before).encode())
+    overpass = FakeOverpass(osm.OsmError("timeout", "never asked", transient=True))
+    result, _ = tick_with(monkeypatch, "S0", metrics(), "2026-10-15T00:00:00Z", overpass=overpass)
+    assert result["status"] == "material_change" and overpass.calls == []
+    assert vision_sites.load_network("rail", "sydney") == inline
+    sydney = running_state()["sites"]["sydney"]
+    assert "network" not in sydney and sydney["network_fetched_at"] == inline["fetched_at"]
+    assert sydney["history"][-1]["network_fetched_at"] == inline["fetched_at"]
+
+
+# --- one city a day: the day-subject round (docs/enhancements/dailysubject_hook.md §4.2, §5) -------
+
+SINGAPORE = [[103.56, 1.61], [104.08, 1.61], [104.08, 1.09], [103.56, 1.09]]
+BOSTON = [[-71.30, 42.42], [-70.90, 42.42], [-70.90, 42.15], [-71.30, 42.15]]
+CITIES = [
+    {"id": "sydney", "name": "Sydney", "polygon": SYDNEY},
+    {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE},
+    {"id": "singapore", "name": "Singapore", "polygon": SINGAPORE},
+    {"id": "boston", "name": "Boston", "polygon": BOSTON},
+]
+# The owner's rota (16 October): two days a week each, Boston one.
+ROTA = {"MON": "sydney", "TUE": "melbourne", "WED": "singapore", "THU": "boston", "FRI": "sydney",
+        "SAT": "melbourne", "SUN": "singapore"}  # fmt: skip
+SYDNEY_TIME = ZoneInfo("Australia/Sydney")
+
+
+def rotating(**config):
+    """A rail topic over the four cities with the owner's rota, read in Sydney."""
+    settings = {"rotation": ROTA, "rotation_timezone": "Australia/Sydney", **config}
+    return {**topic(sites=CITIES, **settings), "daily_timezone": "Australia/Sydney"}
+
+
+def sydney_time(year, month, day, hour=9, minute=5, second=0):
+    return datetime(year, month, day, hour, minute, second, tzinfo=SYDNEY_TIME).astimezone(UTC)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"rotation": {**ROTA, "THU": "perth"}}, "'perth', which is not one of the topic's subjects"),
+        ({"rotation": {**ROTA, "THU": "sydney"}}, "gives no day to boston"),
+        ({"rotation": {key: value for key, value in ROTA.items() if key != "SUN"}}, "must name each of"),
+        ({"rotation": ["sydney", "melbourne", "singapore"]}, "gives no day to boston"),
+        ({"rotation": "sydney"}, "an object of weekdays or a list"),
+        ({"rotation_timezone": "not a zone"}, "must be an IANA zone name"),
+        ({"rotation_timezone": "Mars/Olympus_Mons"}, "is not a zone this system knows"),
+        ({"rotation": None, "rotation_timezone": "UTC"}, "is set but there is no 'rotation'"),
+    ],
+)
+def test_a_rota_that_names_no_site_leaves_a_site_out_or_has_no_zone_is_refused(change, message):
+    """Spec §5: a city in the rota that is not one of the sites, a site the rota gives no day, or a
+    rotation_timezone that is not a zone: ConfigError, at tick time (the topic's last_error) and
+    for the daily run alike (which then stops before any model call)."""
+    config = {"sites": CITIES, "rotation": ROTA, "rotation_timezone": "Australia/Sydney", **change}
+    config = {key: value for key, value in config.items() if value is not None}
+    with pytest.raises(ra.ConfigError, match=re.escape(message)):
+        ra.parse_config(config)
+    adapter = ra.RailAccessAdapter()
+    with pytest.raises(ra.ConfigError):
+        adapter.fetch_state({**rotating(), "adapter_config": config})
+    with pytest.raises(ra.ConfigError):
+        adapter.day_subject({**rotating(), "adapter_config": config}, datetime(2026, 10, 19, tzinfo=UTC))
+
+
+def test_a_rota_is_parsed_with_its_zone_and_a_topic_without_one_has_none():
+    config = ra.parse_config({"sites": CITIES, "rotation": ROTA, "rotation_timezone": "Australia/Sydney"})
+    assert config["rotation"] == {
+        "kind": "weekly", "timezone": "Australia/Sydney",
+        "slots": ("sydney", "melbourne", "singapore", "boston", "sydney", "melbourne", "singapore"),
+    }  # fmt: skip
+    # Without rotation_timezone, the topic's daily_timezone; without either, UTC.
+    rota_only = {"sites": CITIES, "rotation": ROTA}
+    assert ra.parse_config(rota_only, "Australia/Sydney")["rotation"]["timezone"] == "Australia/Sydney"
+    assert ra.parse_config(rota_only)["rotation"]["timezone"] == "UTC"
+    # A list rota, cycled one a day.
+    cycled = ra.parse_config({"sites": CITIES[:2], "rotation": ["sydney", "melbourne", "sydney"]})["rotation"]
+    assert cycled["kind"] == "cycle" and cycled["slots"] == ("sydney", "melbourne", "sydney")
+    # A topic without a rota (the owner's trains-sydney): none, and no day subject.
+    assert ra.parse_config({"sites": SITES})["rotation"] is None
+    monday = datetime(2026, 10, 19, tzinfo=UTC)
+    assert ra.RailAccessAdapter().day_subject(topic(), monday) is None
+    in_sydney = {**topic(), "daily_timezone": "Australia/Sydney"}
+    assert ra.RailAccessAdapter().day_subject(in_sydney, monday) is None
+
+
+def test_the_day_subject_is_the_rotas_city_on_sydneys_calendar_with_its_name_folded_in():
+    adapter = ra.RailAccessAdapter()
+    # Monday 19 October 2026 to Sunday 25 October, at 09:05 Sydney time.
+    week = [adapter.day_subject(rotating(), sydney_time(2026, 10, 19 + n)) for n in range(7)]
+    assert [subject.key for subject in week] == [
+        "sydney", "melbourne", "singapore", "boston", "sydney", "melbourne", "singapore",
+    ]  # fmt: skip
+    monday = week[0]
+    assert monday == DaySubject(
+        key="sydney", label="Sydney", mandate=ra.subject_mandate("Sydney"), style=ra.subject_style("Sydney")
+    )
+    assert day_subject_module.day_subject_error(monday) is None  # what the daily cycle accepts
+    assert monday.mandate.startswith("Report only what was measured for Sydney: proxies from Sentinel-2")
+    assert monday.mandate == ADAPTER_DEFAULTS["rail_access"].replace(
+        "Report only what was measured", "Report only what was measured for Sydney", 1
+    )
+    assert monday.mandate != ADAPTER_DEFAULTS["rail_access"]  # the lead is there to fold the name into
+    assert monday.style.startswith("a plain report of what the rail access measurements show for Sydney: ")
+    # Through the daily cycle's own resolution (common/day_subject.resolve_day_subject).
+    assert day_subject_module.resolve_day_subject(rotating(), sydney_time(2026, 10, 22)).label == "Boston"
+
+
+def test_the_day_turns_at_midnight_in_the_rotas_zone_not_utc():
+    """Spec §5: the daily cycle reads the rota once, at its run's start, on the rota zone's
+    calendar. 23:59:59 on Wednesday in Sydney is Singapore's day; a second later it is Boston's,
+    though both moments are Wednesday in UTC."""
+    adapter = ra.RailAccessAdapter()
+    before, after = sydney_time(2026, 10, 21, 23, 59, 59), sydney_time(2026, 10, 22, 0, 0, 0)
+    assert before.date() == after.date() == datetime(2026, 10, 21).date()  # one UTC day
+    assert adapter.day_subject(rotating(), before).key == "singapore"
+    assert adapter.day_subject(rotating(), after).key == "boston"
+    # Across the start of daylight saving (Sunday 4 October 2026): the local day still decides.
+    assert adapter.day_subject(rotating(), sydney_time(2026, 10, 4, 9, 5)).key == "singapore"
+    assert adapter.day_subject(rotating(), sydney_time(2026, 10, 5, 0, 30)).key == "sydney"
+    # The same rota read in UTC: 09:05 Sydney on Monday is still Sunday in UTC.
+    utc = rotating(rotation_timezone="UTC")
+    assert adapter.day_subject(utc, sydney_time(2026, 10, 19)).key == "singapore"
+
+
+def test_a_label_is_one_plain_line_with_no_markup_and_the_id_without_a_name():
+    sites = [{"id": "sydney", "name": 'Sydney <b>"CBD"</b> [x](y)', "polygon": SYDNEY},
+             {"id": "melbourne", "polygon": MELBOURNE}]  # fmt: skip
+    config = {**rotating(), "adapter_config": {"sites": sites, "rotation": ["sydney", "melbourne"]}}
+    adapter = ra.RailAccessAdapter()
+    epoch = datetime(1970, 1, 1, 0, tzinfo=UTC)  # day 0 of a list rota, in Sydney too (10:00)
+    first = adapter.day_subject(config, epoch)
+    assert first.label == "Sydney b'CBD'/b (x)(y)"
+    assert not {"<", ">", '"', "["} & set(first.mandate + first.style)
+    second = adapter.day_subject(config, epoch + timedelta(days=1))
+    assert (second.key, second.label) == ("melbourne", "melbourne")
+
+
+def test_subjects_are_the_cities_the_summary_reported(adapter):
+    """Spec §4.2: the sites whose scenes the diff summary reported (the rule figures and planner
+    notes follow): a city below the coverage floor, or one the agent doubted, is not a subject; a
+    tick that reports two cities makes a Finding with two (drafted on each one's day)."""
+    two = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    adapter.http_post, adapter.fetch_network = scene(1), FakeOverpass(network())
+    cloudy = metrics(coverage=0.3)
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": cloudy}})
+    state = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2))
+    assert [m["site_id"] for m in state["measured"]] == ["sydney", "melbourne"]
+    assert adapter.subjects(state) == ["sydney", "melbourne"]  # before the diff: every scene measured
+    changed, summary = adapter.material_diff(None, state)
+    assert changed and summary.startswith("First observation. Sydney:") and "Melbourne" not in summary
+    assert adapter.subjects(state) == ["sydney"]  # the cloudy city is not reported, so not a subject
+
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": metrics()}})
+    state = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2))
+    assert adapter.material_diff(None, state)[0] and adapter.subjects(state) == ["sydney", "melbourne"]
+
+    # The agent doubts Melbourne's change: only Sydney is reported, and only Sydney is a subject.
+    def agent(**kwargs):
+        doubted = kwargs["site"]["id"] == "melbourne"
+        return {"verdict": "artefact" if doubted else "real", "reason": "haze" if doubted else "a new line",
+                "tool_calls": [], "model_calls": 1}  # fmt: skip
+
+    adapter.triage_agent, adapter.http_post = agent, scene(2, day=4)
+    adapter.measure = SiteRailWorker({"sydney": {"S2": metrics(served_share=0.6)},
+                                      "melbourne": {"S2": metrics(served_share=0.6)}})  # fmt: skip
+    later = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2), previous_state=state)
+    changed, summary = adapter.material_diff(state, later)
+    assert changed and "Melbourne" not in summary and adapter.subjects(later) == ["sydney"]
+    assert adapter.subjects({"measured": [], "sites": {}}) == []
+
+
+def everywhere_scene(scene_id, when):
+    """A stand-in scene whose box covers every city (a tile never does; the search's rule does)."""
+    return FakeStac([item(scene_id, when, bbox=(-180.0, -90.0, 180.0, 90.0))])
+
+
+def test_the_tick_never_reads_the_rota_and_tags_the_finding_with_the_city_it_measured(tick_env, monkeypatch):
+    """Spec §5: the tick does not read the day's subject, so a day that turns while it runs has
+    nothing to agree on. Whatever the day, the city order_sites reaches is measured, and its Finding
+    reports that city: here Boston (first in the config, none visited yet), on whatever day the
+    test runs, which is Boston's one day in seven at most."""
+    item_ = {**rotating(), "topic_id": "rail"}
+    item_["adapter_config"]["sites"] = [CITIES[3], *CITIES[:3]]
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item=json.loads(json.dumps(item_), parse_float=Decimal)
+    )
+
+    def never(*args, **kwargs):
+        raise AssertionError("the tick read the day's subject")
+
+    monkeypatch.setattr(ra.RailAccessAdapter, "day_subject", never)
+    monkeypatch.setattr(ra.RailAccessAdapter, "triage_agent", staticmethod(FakeAgent()))
+    monkeypatch.setattr(ra.RailAccessAdapter, "choose_model", staticmethod(lambda topic: ("m", None)))
+    monkeypatch.setattr(ra.RailAccessAdapter, "http_post", everywhere_scene("S0", "2026-10-18T00:00:00Z"))
+    monkeypatch.setattr(ra.RailAccessAdapter, "measure", FakeRailWorker({"S0": metrics()}))
+    monkeypatch.setattr(ra.RailAccessAdapter, "fetch_network", FakeOverpass(network(polygon=BOSTON)))
+    tracked = {"text": "summary", "model_id": "m", "input_tokens": 1, "output_tokens": 1}
+    tracked["used_fallback"] = False
+    with patch("research_tick_handler.invoke_model_tracked", return_value=tracked):
+        result = research_tick_handler.handler({"topic_id": "rail"}, None)
+    assert result["status"] == "material_change"
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    assert finding["subjects"] == ["boston"]
+    assert [m["site_id"] for m in running_state()["measured"]] == ["boston"]
+
+
+def test_a_topic_without_a_rota_still_tags_its_findings_and_has_no_day_subject(tick_env, monkeypatch):
+    """The owner's trains-sydney has no rota: no day subject, so the daily cycle drafts every Finding
+    as before (the plain path); its Findings still say which city they report, so a rota added
+    later finds the recent ones."""
+    result, _ = tick_with(monkeypatch, "S0", metrics(), "2026-10-18T00:00:00Z")
+    assert result["status"] == "material_change"
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    assert finding["subjects"] == ["sydney"]
+    assert day_subject_module.resolve_day_subject(topic(), datetime.now(UTC)) is None
+
+
+def test_each_citys_first_clear_scene_is_its_own_first_observation_once(adapter, capsys):
+    """Spec §4.4: a rotating topic starts with a first observation per city. After the topic's
+    first (Sydney), Melbourne's first clear scene is reported as Melbourne's, with that code in
+    its ring and Melbourne as the Finding's subject, so Melbourne's day has something to write;
+    a cloudy scene before it is not one, and no later scene of Melbourne is first again, not even
+    after cloudy scenes trim every clear one from its history."""
+    two = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    adapter.fetch_network = FakeOverpass(network())
+
+    def tick(n, melbourne, previous):
+        adapter.http_post = scene(n, day=n)
+        adapter.measure = SiteRailWorker({"sydney": {f"S{n}": metrics()}, "melbourne": {f"S{n}": melbourne}})
+        config = topic(sites=two, max_sites_per_tick=2, history_size=2)
+        state = adapter.fetch_state(config, previous_state=previous)
+        capsys.readouterr()
+        return state, adapter.material_diff(previous, state)
+
+    first, (changed, summary) = tick(1, metrics(coverage=0.3), None)
+    assert changed and summary.startswith("First observation. Sydney:") and "Melbourne" not in summary
+    assert first["first_observed_at"] == first["sites"]["sydney"]["first_observed_at"] == first["fetched_at"]
+    assert first["sites"]["melbourne"]["first_observed_at"] is None
+    assert adapter.subjects(first) == ["sydney"]
+
+    second, (changed, summary) = tick(2, metrics(), first)
+    assert changed and summary.startswith("First observation. Melbourne: served share 73 %, 178 stations")
+    assert "Sydney" not in summary  # within its usual range: not reported
+    assert adapter.subjects(second) == ["melbourne"]
+    assert second["sites"]["melbourne"]["first_observed_at"] == second["fetched_at"]
+    assert second["sites"]["sydney"]["first_observed_at"] == first["fetched_at"]  # carried forward
+    assert second["first_observed_at"] == first["fetched_at"]  # the topic's, unchanged
+    codes = {site: second["sites"][site]["decisions"][-1]["code"] for site in ("sydney", "melbourne")}
+    assert codes == {"sydney": "within_range", "melbourne": "first_observation"}
+
+    third, (changed, _summary) = tick(3, metrics(), second)
+    assert not changed  # compared with its baseline now, and within range
+    later = third
+    for n in (4, 5):  # two cloudy scenes: the history (size 2) keeps no clear one of Melbourne
+        later, _ = tick(n, metrics(coverage=0.3), later)
+    assert all(entry["coverage"] < 0.6 for entry in later["sites"]["melbourne"]["history"])
+    last, (changed, summary) = tick(6, metrics(), later)
+    assert not changed and "First observation" not in summary
+    assert last["sites"]["melbourne"]["first_observed_at"] == second["fetched_at"]
+
+
+def test_a_city_in_a_state_from_before_is_first_only_if_it_never_had_a_clear_scene(adapter):
+    """A state written before each city kept its own marker: a city with a clear scene in its
+    history was observed (the owner's trains-sydney, one city, stays as it was); one with none
+    gets its first observation when its first clear scene comes."""
+    two = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    adapter.fetch_network = FakeOverpass(network())
+    clear = {"scene_id": "S-1", "coverage": 0.9, "served_share": 0.7, "desert_km2": 100.0}
+    clear["station_count"] = 178
+    cloudy = {**clear, "scene_id": "S-2", "coverage": 0.2}
+    before = {
+        "fetched_at": "2026-10-01T00:00:00+00:00", "first_observed_at": "2026-09-01T00:00:00+00:00",
+        "thresholds": {"coverage_floor": 0.6},
+        "sites": {"sydney": {"name": "Sydney", "history": [clear]}, "melbourne": {"name": "Melbourne",
+                                                                              "history": [cloudy]}},
+    }  # fmt: skip
+    adapter.http_post = scene(1)
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": metrics()}})
+    state = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2), previous_state=before)
+    assert state["sites"]["sydney"]["first_observed_at"] == before["fetched_at"]  # observed before
+    assert state["sites"]["melbourne"]["first_observed_at"] == state["fetched_at"]  # first now
+    changed, summary = adapter.material_diff(before, state)
+    assert changed and summary.startswith("First observation. Melbourne:") and "Sydney:" not in summary

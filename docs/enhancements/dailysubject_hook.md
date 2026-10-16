@@ -1,6 +1,6 @@
 # The day-subject hook: one topic that rotates through the cities it is configured to watch
 
-**Status:** S1 in review (this PR); S2 not started · **Date:** 2026-10-15 · **Pick up after:** the assistant's
+**Status:** S1 and S2 built · **Date:** 2026-10-15 · **Pick up after:** the assistant's
 vision round (PR M, PR N) and before the competition report (Phase 3), or after the deadline ·
 **Builds on:** [rail-access-monitor.md](rail-access-monitor.md), [vision.md](vision.md) §5,
 `common/editorial_goals.py` (the crypto feed's day goals), PR K (`findings_window_hours`, #297)
@@ -242,7 +242,9 @@ why:
 - **The rota (3.7)** is a generic library in `common/day_subject.py`: `parse_rotation` checks
   either the seven weekdays (all seven must be named) or a list cycled from 1970-01-01, that every
   subject has a day, and the zone. It raises ValueError, which the adapter wraps in its
-  ConfigError. `rotation_subject` names the subject for the local day.
+  ConfigError. `rotation_subject` names the subject for the local day. An adapter imports the
+  module at its top: the module imports the adapter registry, which imports every adapter, only
+  inside `resolve_day_subject`, so the import is not a cycle.
 - **Not changed:** no new evidence event or field (a Finding's subject count on the
   `research_tick` line is a follow-up), `admin_api._update_topic`'s whole-item write (the 3.4
   race, now on one more field, is a follow-up), and the 48-Finding cap, which applies to the
@@ -313,6 +315,75 @@ or delete them). Their articles stay published under their own topic ids. The al
 one-off script that copies each old topic's `sites[<city>]` record into the new running state,
 keeps the baselines but is more code than it saves; only do it if a week of first observations
 matters for the demo.
+
+### 4.5 S2 as built
+
+S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's network prefetch
+(#315), U's first fetch (#312, #319), P1's evidence lines and decision ring (#316) and PR M's
+`vision_status`, so some of 4.1 to 4.4 moved. What differs, and why:
+
+- **The network's object is #315's, not a new one.** The prefetch already kept a site's network at
+  `vision/<topic>/<site>/network.json` in the content bucket, outside `snapshots/` (which the
+  bucket expires after 21 days), where 4.1's `snapshots/<topic>/sites/<site>/network.json` would
+  have gone. That object is now the network's only home: the tick's first fetch and refresh write
+  it through `vision_sites.store_network`, every visit reads it (`_load_network`, a plain load where
+  `_adopt_prefetched` was), and the prefetch and the tick share one store, the last write being the
+  network. `prefetch_networks`, its timeouts, results and log lines are unchanged. A missing or
+  unreadable object is no network (fetched again, with a first fetch's time); a network that
+  cannot be written is a failed fetch (`network_error` code `store`), so the record never names one
+  the object does not hold.
+- **What the record keeps:** `NETWORK_FIELDS`, `network_key`, `network_fetched_at`,
+  `network_site_key` and `network_counts`. `network_stale` stays where it always was, on each
+  history entry, and so does `network_fetched_at`, which is all the decision ring's
+  `network_changed` compares: no content hash was needed. The network a scene was measured with is
+  held on the adapter for the tick only, for the triage agent's `look_again` and the source
+  reference. `vision_status` reads the record's fields through the adapter's `status`, never the
+  object, so PR M's byte budgets and IAM (`snapshots/*/running-state.json` only) are unchanged.
+- **The transition:** a state written before S2 kept each network inline (`network` in the site's
+  record). The first tick moves it to the object, unless the object already holds one at least as
+  new for the site's polygon (a prefetch the tick had not adopted), and keeps it inline, serving
+  from it, until the move has worked. The owner's `trains-sydney` (one city, no rota) keeps its
+  network, fetches nothing for the move, and otherwise behaves as before.
+- **`MAX_RAIL_SITES` is 8,** measured with the real research tick in a fresh process: 8 cities at
+  `osm.py`'s caps (2.8 MB of network JSON each), 6-entry histories, 2,000 station rows in each
+  newest scene, names at the 80-character cap and full decision rings make a 7.3 MB state, and a
+  tick measuring one scene peaks at 107 MB (16.4 MB and 128 MB with 80 CJK characters a name; two
+  scenes a tick 124 and 145 MB; all eight at once, which no budget allows, 220 and 247 MB). The
+  first tick on a three-city state from before (11.3 MB) peaks at 134 MB and leaves 3.6 MB.
+- **The hook (4.2):** `day_subject(topic, at)` parses the rota with S1's `parse_rotation` over the
+  site ids, the zone defaulting to the topic's `daily_timezone`; `parse_config` runs the same check,
+  so a broken rota is the topic's `last_error` at tick time and an error before any model call in
+  the daily run (§5). The label is the site's name by `rail_notes`' name rule (now public as
+  `rail_notes.clean_name`), else its id. The mandate is `ADAPTER_DEFAULTS["rail_access"]` with
+  "for <city>" folded into its first sentence ("Report only what was measured for Sydney: ..."),
+  and the style line is the old city templates' editorial goal ("a plain report of what the rail
+  access measurements show for Sydney: ..."). `subjects` is `_reported_scenes`' site ids, and is
+  kept whether or not the topic has a rota, so a topic that gains one later finds its recent
+  Findings tagged.
+- **Each city has its own first observation.** 4.4 counts on each city of a new topic starting
+  with a first observation, but the first observation was the topic's: after it, every other
+  city's first clear scene was only "baseline still building", which is never a Finding, so three
+  of four cities' days would have had nothing to write until one of them changed. Each site's
+  record now keeps `first_observed_at` too, set and carried forward the way the topic's is, and the
+  first clear scene of a city the topic had not yet seen clearly is reported as that city's first
+  observation (the ring's code `first_observation`). A record from before counts as observed if its
+  history holds a clear scene. The shared `vision_sites` helpers, which `satellite_vision` uses,
+  are unchanged.
+- **The window is 192 hours, not 120 (4.3).** It must cover the longest gap between a city's days
+  plus a day. The three two-day cities are at most 4 days apart (120 hours), but Boston's one
+  Thursday is 7 days from the next, and four cities cannot all have two of seven days: 192 hours.
+  The test checks the arithmetic and simulates both (120 hours loses Boston's Findings and only
+  Boston's). A list rota of the four (one day in four each) would need 120.
+- **The template (4.3)** is one topic, `rail-cities`: the four sites, the owner's rota read in
+  Sydney, a run every day at 09:05 Sydney time (`cron(5 9 * * ? *)`), the 80 s budget cap for
+  Sydney's first network, and a goal that names no city.
+- **Migration (4.4)** is the restart: create `rail-cities`, one tick per city as the first-deploy
+  check, then `topics pause` the old city topic (`trains-sydney` on dev); the runsheet's
+  [`rail_access` topics](../deployment-runsheet.md#rail_access-topics) has the steps. The
+  benchmark's Sydney network fixture is now taken from the object, not the running state.
+- **An import cycle, fixed once:** `common/day_subject.py` imported the adapter registry at its top,
+  and the rail adapter imports the module for the rota; S1's review fixes (7176098) import the
+  registry inside `resolve_day_subject`, which S2 needed too.
 
 ## 5. Edge cases (each with a test)
 

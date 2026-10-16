@@ -25,27 +25,40 @@ lives in common/vision_sites.py. What a topic watches is configuration, not code
       "max_sites_per_tick": 1, "time_budget_seconds": 70,  # one city per tick; the budget is capped at 80
       "triage": true, "triage_max_tool_calls": 3, "triage_deadline_seconds": 85,
       "web_context": true,                                 # the agent may ask the news search
+      "rotation": {"MON": "sydney", ...},                  # optional: one city a day (below)
+      "rotation_timezone": "Australia/Sydney",             # whose calendar day; default daily_timezone
     }
 
 **Per tick**, for each site in turn (common/vision_sites.order_sites: those never attempted first,
 then the longest unattempted, so a topic with several cities rotates through them one per tick)
 and within the tick's budget, the scene first and the network refreshed only when there is
 nothing new to measure: (a) the newest Sentinel-2 L2A scene over the whole site (Earth Search
-STAC, free, no key); a scene the site already has is nothing new. (b) No usable cached network
-(none, or one fetched for another polygon: each carries its polygon's `site_key`): fetch it now
-through the Overpass API (common/osm.py) when OSM_RESERVE_SECONDS remain, with the rest of the
-budget less FIRST_FETCH_MARGIN_SECONDS (a big city's query runs for most of a minute); a fetch that
-takes that long leaves the scene to the next tick, which measures it against the network now
-cached. A failure is `last_error` "osm" and the site waits for the next tick (no
-NETWORK_RETRY_HOURS: nothing serves meanwhile). (c) A new scene: the worker measures it against
-the cached network, stale or not (the entry says `network_stale`), when MEASURE_RESERVE_SECONDS
-remain, else next tick. (d) Nothing new and the network older than `osm_ttl_days`: fetch it again
-with the time this tick would not otherwise use, within OSM_RESERVE_SECONDS; a failure keeps the
-cached network, records `network_error` and is not tried again for NETWORK_RETRY_HOURS. A slow
-or failing Overpass therefore never stops a city with a cached network from being measured. A
-scene the worker refuses for what it is (REFUSED_SCENE_CODES, recorded as `failed_scene`) is
-nothing new until a newer scene appears or NETWORK_RETRY_HOURS pass, so it is not sent again every
-hour and (d) still gets its ticks. Not measured is never "nothing there".
+STAC, free, no key); a scene the site already has is nothing new. Then the site's network is read
+from its object (`_load_network`). (b) No usable network (none stored, one that cannot be read, or
+one fetched for another polygon: each carries its polygon's `site_key`): fetch it now through the
+Overpass API (common/osm.py) when OSM_RESERVE_SECONDS remain, with the rest of the budget less
+FIRST_FETCH_MARGIN_SECONDS (a big city's query runs for most of a minute); a fetch that takes that
+long leaves the scene to the next tick, which measures it against the network now stored. A
+failure is `last_error` "osm" and the site waits for the next tick (no NETWORK_RETRY_HOURS: nothing
+serves meanwhile). (c) A new scene: the worker measures it against the stored network, stale or not
+(the entry says `network_stale`), when MEASURE_RESERVE_SECONDS remain, else next tick. (d) Nothing
+new and the network older than `osm_ttl_days`: fetch it again with the time this tick would not
+otherwise use, within OSM_RESERVE_SECONDS; a failure keeps the stored network, records
+`network_error` and is not tried again for NETWORK_RETRY_HOURS. A slow or failing Overpass
+therefore never stops a city with a stored network from being measured. A scene the worker refuses
+for what it is (REFUSED_SCENE_CODES, recorded as `failed_scene`) is nothing new until a newer scene
+appears or NETWORK_RETRY_HOURS pass, so it is not sent again every hour and (d) still gets its
+ticks. Not measured is never "nothing there".
+
+**One city a day** (docs/enhancements/dailysubject_hook.md §4, the day-subject round): with a
+`rotation` (the seven weekdays each naming a site, or a list of sites cycled one a day; every site
+needs a day) the topic writes about one city a day, read on the calendar of `rotation_timezone`
+(the topic's `daily_timezone` when unset, else UTC). `day_subject` names the day's city to the
+daily cycle (common/day_subject.py) with the adapter's own mandate and style, and `subjects` tells
+the research tick which cities a Finding reports: the sites its summary reported, the rule
+`figures` and `planner_notes` follow. The tick never reads the rota: every city is measured as the
+order above reaches it, so each city's Findings are waiting when its day comes. Without a
+`rotation` the topic writes about every city it watches, every run, as before.
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py, the rail profile) looks at the figure and the evidence, may
@@ -61,11 +74,15 @@ same echoed parameters, so an operator's edit of the reach or the polygon starts
 rather than reading as a change), and the served share moved by at least
 `served_share_threshold` against their median, or the desert area by at least
 `desert_relative_threshold` of its median (at least 1 km²), or the station count differs from the
-previous such scene's. The first tick with a scene at or above the coverage floor is the first
-observation and is reported as such, once: the state records when (`first_observed_at`), so a run
-of cloudy scenes that trims every clear one from the history, or a raised floor, never makes a
-later scene "first" again. A tick before that, with nothing measured or only scenes below the
-floor, is not material.
+previous such scene's. The first tick with a scene at or above the coverage floor is the topic's
+first observation and is reported as such, once: the state records when (`first_observed_at`), so
+a run of cloudy scenes that trims every clear one from the history, or a raised floor, never makes
+a later scene "first" again. A tick before that, with nothing measured or only scenes below the
+floor, is not material. Each city then has a first observation of its own, once, the same way: the
+first clear scene of a city the topic had not yet seen clearly (one added later, or any city of a
+rotating topic after the first) is reported as that city's first observation, and its record keeps
+`first_observed_at` too. Without it, a topic of four cities would report one city's first scene
+and nothing about the other three until one of them changed.
 
 **What is honest.** The heat is a built-up density proxy from imagery, not population; walking
 reach is straight-line distance; the network is OpenStreetMap's (ODbL, credited) and the imagery
@@ -73,15 +90,23 @@ only verifies and scores it. The summary prompt says so, and says what was not m
 
 **State between ticks.** `keeps_running_state`: the research tick keeps the state after a
 no-change tick too, so the baseline includes every scene measured and the network is fetched once
-a month, not once a tick. A city Overpass is too slow for in a tick is fetched out of band
-(`prefetch_networks`, the operator's `network_prefetch` trigger) into its own object, which the
-next tick adopts (`_adopt_prefetched`). The figure for each scene is stored in the content bucket under
-`vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the
-newest to the article (common/figures.py). The network (about 3 MB of JSON per city at
-common/osm.py's caps with ASCII names, more with long non-ASCII ones; the worker request is sent
-as UTF-8, not escaped) is in the state and the worker request, and nowhere a prompt or a reviewer
-would see it. Only the newest history entry keeps the per-scene lists (NEWEST_ONLY_KEYS); with
-MAX_RAIL_SITES that keeps the state within what the research tick's 512 MB can load.
+a month, not once a tick. Each site's network (about 3 MB of JSON per city at common/osm.py's caps
+with ASCII names, more with long non-ASCII ones; the worker request is sent as UTF-8, not escaped)
+is kept in one object of its own, `vision/<topic>/<site>/network.json` in the content bucket
+(common/vision_sites.network_key), outside `snapshots/`, whose objects the bucket expires: the
+tick's own fetches write it, and so does `prefetch_networks` (the operator's `network_prefetch`
+trigger, for a city Overpass is too slow for in a tick), so the two share one store and the tick
+reads whichever wrote last. The site's record keeps only what readers need without it
+(NETWORK_FIELDS: the object's key, when the network was fetched, its polygon's `site_key` and its
+counts), and a history entry its `network_fetched_at`, so the decision ring's `network_changed`
+compares copies without reading any. A state written before kept each network inline: the first
+tick moves it to the object (`_move_inline_network`) and keeps it inline until that has worked, so
+it is never lost. The figure for each scene is stored in the content bucket under
+`vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the newest to
+the article (common/figures.py). The network is in its object and the worker request, and nowhere a
+prompt, a reviewer or the running state would see it. Only the newest history entry keeps the
+per-scene lists (NEWEST_ONLY_KEYS); with the networks out of it, the state of MAX_RAIL_SITES cities
+is well within what the research tick's 512 MB can load.
 """
 
 from __future__ import annotations
@@ -92,9 +117,12 @@ import statistics
 import time
 from datetime import UTC, datetime, timedelta
 
+from common import day_subject as rota
 from common import osm, rail_notes, vision_client, vision_decisions, vision_sites, vision_triage
 from common import vision_contract as contract
-from common.adapters.base import Adapter, render_review_evidence
+from common.adapters import RAIL_ACCESS_ADAPTER_KEY
+from common.adapters.base import Adapter, DaySubject, render_review_evidence
+from common.editorial_resolver import ADAPTER_DEFAULTS
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS
 from common.model_routing import resolve_model
 from common.vision_sites import (
@@ -193,17 +221,43 @@ NETWORK_RETRY_HOURS = 6
 REFUSED_SCENE_CODES = ("window_too_large", "site_outside_scene", "bad_request")
 # The longest a cached network may serve before it is due again: a year of OpenStreetMap edits.
 MAX_OSM_TTL_DAYS = 365.0
-# One topic per city is the design (docs §2), so a topic watches at most this many. Each city's
-# network is in the running state, which the research tick (512 MB) loads whole, deep-copies site
-# by site and writes back. Measured (ru_maxrss) for 3 cities at common/osm.py's caps (2.6-3 MB of
-# network JSON each), history_size 20, 2000 station rows per scene and a tick measuring a new one:
-# with every entry keeping its lists the state was 54 MB and the tick peaked at 390 MB; with only
-# the newest keeping them (NEWEST_ONLY_KEYS) 10 MB and 146 MB, 38 MB of that the imports. A review
-# with every name at its 80-character cap measured 11.3 MB and 155 MB (22.6 MB and 181 MB with 80
-# CJK characters each). The one tick that slims a state written before peaks at 293 MB.
-MAX_RAIL_SITES = 3
+# A topic watches at most this many cities: a week of one city a day, and one more. The research
+# tick (512 MB) loads the running state whole, deep-copies it site by site and writes it back; each
+# network is in its own object (NETWORK_FIELDS), read only for the site visited. Measured
+# (ru_maxrss, the real handler in a fresh process) for 8 cities at common/osm.py's caps (2.8 MB of
+# network JSON each), history_size 6, 2000 station rows in each newest scene, every name at its
+# 80-character cap and a full decision ring (12 entries with 8-step trails) per city: the state is
+# 7.3 MB, and a tick measuring one new scene (the default max_sites_per_tick) peaks at 107 MB, 39 MB
+# of that the imports; two a tick, 124 MB; all eight at once, which no budget allows, 220 MB. With
+# 80 CJK characters a name: 16.4 MB, 128 MB, 145 MB and 247 MB. History_size 20 adds about 1.5 KB
+# an older entry (16.6 MB and 129 MB, CJK). Until the day-subject round each network was in the
+# state, and three cities made 11.3 MB (22.6 MB CJK); the first tick on such a state moves the three
+# to their objects and peaks at 134 MB (142 MB), leaving 3.6 MB (8.2 MB). The one tick that slims a
+# state written before NEWEST_ONLY_KEYS (history_size 20, every entry with its lists) peaked at
+# 293 MB.
+MAX_RAIL_SITES = 8
+# A day about one city (day_subject): the adapter's standing goal, whose first sentence names what
+# is reported, gains the city's name there (subject_mandate) ...
+_MANDATE_LEAD = "Report only what was measured"
+# ... and the article style is the example city topics' editorial goal, as it was before one topic
+# rotated through them (scripts/rail_topics.example.json, until the day-subject round).
+SUBJECT_STYLE = (
+    "a plain report of what the rail access measurements show for {label}: the share of its built-up "
+    "area within walking reach of a rail station, the built-up area beyond it, the station count, the "
+    "scene's capture date and coverage, and the rule-based flags and simulations, as proxies measured "
+    "from satellite imagery and OpenStreetMap."
+)
+
 # What a budget-starved site returns from _visit: it waits for the next tick, unstamped.
 DEFERRED = "deferred"
+
+# What a site's record keeps of its network, now that the network is in its own object
+# (vision_sites.network_key, written by the tick's fetches and by prefetch_networks): the object's
+# key, when the network was fetched, the `site_key` of the polygon it was fetched for, and its
+# counts. A few hundred bytes where the network was about 3 MB: the operator's status
+# (ops_mcp/vision_status.py, which reads the running state only) and the source references read
+# these, and a history entry keeps its own `network_fetched_at` for the decision ring.
+NETWORK_FIELDS = ("network_key", "network_fetched_at", "network_site_key", "network_counts")
 
 # A history entry keeps each station's row cut to these fields (the worker's rows also carry
 # `kind`, `snapped` and `catchment_coverage`), at most this many: about 2000 rows of ten fields
@@ -270,11 +324,15 @@ DECISION_VOCABULARY = {
 }
 
 
-def parse_config(adapter_config: dict | None) -> dict:
+def parse_config(adapter_config: dict | None, daily_timezone: str | None = None) -> dict:
     """adapter_config with defaults filled in, or ConfigError: the checks every vision topic
     shares (common/vision_sites.py) with at most MAX_RAIL_SITES sites, then `reach_m` within the
-    worker contract's bounds, a network TTL in (0, MAX_OSM_TTL_DAYS] and `params` as an object (the
-    contract checks each parameter before any call)."""
+    worker contract's bounds, a network TTL in (0, MAX_OSM_TTL_DAYS], `params` as an object (the
+    contract checks each parameter before any call), and the optional rota (`rotation`,
+    `rotation_timezone`: common/day_subject.parse_rotation's rule over the site ids, the zone
+    defaulting to the topic's `daily_timezone`, else UTC), which `rotation` then holds parsed, or
+    None when there is none: a slot that is not a site, a site with no day, or a zone that is not
+    one is a ConfigError."""
     config = vision_sites.parse_site_config(
         adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS, max_sites=MAX_RAIL_SITES
     )
@@ -285,7 +343,25 @@ def parse_config(adapter_config: dict | None) -> dict:
         raise ConfigError(f"osm_ttl_days must be more than 0 and at most {MAX_OSM_TTL_DAYS:g}")
     if not isinstance(config["params"], dict):
         raise ConfigError("params must be an object")
+    try:
+        config[rota.ROTATION_KEY] = rota.parse_rotation(
+            config, [site["id"] for site in config["sites"]], daily_timezone
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     return config
+
+
+def subject_mandate(label: str) -> str:
+    """The editorial mandate of a day about one city: the adapter's standing goal
+    (editorial_resolver.ADAPTER_DEFAULTS), with the city's name folded into its first sentence."""
+    return ADAPTER_DEFAULTS[RAIL_ACCESS_ADAPTER_KEY].replace(_MANDATE_LEAD, f"{_MANDATE_LEAD} for {label}", 1)
+
+
+def subject_style(label: str) -> str:
+    """The article style of a day about one city: the example topics' editorial goal (one per city
+    before the day-subject round), as a style line."""
+    return SUBJECT_STYLE.format(label=label)
 
 
 def worker_params(config: dict) -> dict:
@@ -339,14 +415,19 @@ class RailAccessAdapter(Adapter):
     # Set by fetch_state for the decision ring: each site's worker call this tick (site id ->
     # vision_decisions.measured_by or failed_by), for the evidence lines and the ring entry.
     _visits: dict | None = None
+    # Set by fetch_state: the network each site measured this tick was measured with (site id ->
+    # network), for the triage agent's look_again and the source references; never stored.
+    _networks: dict | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
-        config = parse_config(topic_config.get("adapter_config"))
+        # The rota is checked here too (a broken one is the topic's last_error, as any config is), but
+        # the tick never reads the day's city: it measures every city as order_sites reaches it.
+        config = parse_config(topic_config.get("adapter_config"), topic_config.get("daily_timezone"))
         # Kept for material_diff on this same instance (the research tick makes one per tick): the
         # triage agent needs the topic's model and the sites' polygons, and the diff is only given
         # the two states.
         self._topic, self._config = topic_config, config
-        self._visits = {}
+        self._visits, self._networks = {}, {}
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
         budget = Budget(self.clock, config["time_budget_seconds"])
@@ -355,9 +436,11 @@ class RailAccessAdapter(Adapter):
         sites, measured = {}, []
         for site in config["sites"]:
             record = copy.deepcopy(previous_sites.get(site["id"])) or {"history": []}
-            # A state written before NEWEST_ONLY_KEYS is slimmed on its first tick.
+            # A state written before NEWEST_ONLY_KEYS is slimmed on its first tick ...
             record["history"] = _slim_history(record.get("history") or [])
             record["name"] = site.get("name") or site["id"]
+            # ... and one written before each network had its own object has it moved there.
+            self._move_inline_network(site, record, topic_id)
             sites[site["id"]] = record
 
         # Each site's turn leaves a `vision_site` line as it happens, so a tick that times out
@@ -389,6 +472,11 @@ class RailAccessAdapter(Adapter):
                 visit=self._visits.get(site["id"]),
             )
 
+        # Each city's own first observation, set and carried forward the way the topic's is.
+        for site_id, record in sites.items():
+            record[vision_sites.FIRST_OBSERVED_KEY] = _site_first_observed_at(
+                previous_state, site_id, record, measured, config["coverage_floor"], now.isoformat()
+            )
         return {
             "fetched_at": now.isoformat(),
             "task": TASK,
@@ -420,17 +508,16 @@ class RailAccessAdapter(Adapter):
         # polygon or parameters is a new request, so it is sent at once.
         refused = new_scene and _refused_before(record, scene["id"], now, key, worker_params(config))
         new_scene = new_scene and not refused
-        network = self._adopt_prefetched(site, record, now, key, config, topic_id)
-        if not (isinstance(network, dict) and network.get("site_key") == key):
+        network = self._load_network(site, record, key, topic_id)
+        if network is None:
             # (b) No usable network: none yet, or the old polygon's (it is never measured against).
             # Entered with OSM_RESERVE_SECONDS left, as a refresh is, but it may take the rest of
             # the budget less FIRST_FETCH_MARGIN_SECONDS: nothing is measured until it succeeds.
-            record.pop("network", None)
             remaining = budget.remaining()
             if remaining < OSM_RESERVE_SECONDS:
                 return DEFERRED
             network = self._fetch_network(
-                site, record, now, key,
+                site, record, now, key, topic_id,
                 seconds=first_fetch_seconds(remaining), timeout=FIRST_FETCH_TIMEOUT_SECONDS,
             )  # fmt: skip
             if network is None:
@@ -449,7 +536,7 @@ class RailAccessAdapter(Adapter):
                 and budget.remaining() >= OSM_RESERVE_SECONDS
             ):
                 self._fetch_network(
-                    site, record, now, key, seconds=OSM_RESERVE_SECONDS, timeout=osm.TIMEOUT_SECONDS
+                    site, record, now, key, topic_id, seconds=OSM_RESERVE_SECONDS, timeout=osm.TIMEOUT_SECONDS
                 )
             if not refused:
                 record.pop("last_error", None)
@@ -496,38 +583,78 @@ class RailAccessAdapter(Adapter):
         record["history"] = _slim_history([*record["history"], entry][-config["history_size"] :])
         record.pop("last_error", None)
         record.pop("failed_scene", None)
+        # The triage agent's look_again re-measures with it, after the loop: kept for this tick only.
+        self._networks[site["id"]] = network
         return {"site_id": site["id"], "scene_id": scene["id"]}
 
-    def _adopt_prefetched(
-        self, site: dict, record: dict, now: datetime, key: str, config: dict, topic_id: str
-    ) -> dict | None:
-        """The site's network as this tick should use it: the record's, unless it has none for
-        this polygon, or it is stale and one fetched out of band (prefetch_networks) for this
-        polygon is newer. That one then replaces it in `record`, so the running state carries it
-        from here on. The prefetched object is read only in those two cases, not every tick."""
-        network = record.get("network")
-        usable = isinstance(network, dict) and network.get("site_key") == key
-        if usable and not _is_stale(network, now, config["osm_ttl_days"]):
-            return network
+    def _load_network(self, site: dict, record: dict, key: str, topic_id: str) -> dict | None:
+        """The site's network as this tick uses it, read from its object (the one store the tick's
+        fetches and prefetch_networks both write, so whichever wrote last), or None when there is no
+        usable one: none stored, one that cannot be read, or one for another polygon (`key`). The
+        record's NETWORK_FIELDS are made to say what was read, or dropped when nothing usable was:
+        the record never claims a network the object does not hold. A network newer than the one
+        the record knew was fetched since (a prefetch), so an older refresh failure no longer
+        holds. A network a state written before could not yet move to its object serves from the
+        record, as it did then."""
+        inline = record.get("network")
+        if isinstance(inline, dict):
+            if inline.get("site_key") == key:
+                return inline
+            record.pop("network")  # the old polygon's: never measured against, as before
         try:
-            prefetched = self.load_network(topic_id, site["id"])
-        except Exception as exc:  # noqa: BLE001 - a cache that cannot be read is no cache
-            print(f"rail_access: could not read the prefetched network for {site['id']}: {exc!r}")
-            return network
-        if not (isinstance(prefetched, dict) and prefetched.get("site_key") == key):
-            return network
-        if usable and not _fetched_later(prefetched, network):
-            return network
-        record["network"] = prefetched
-        record.pop("network_error", None)
-        return prefetched
+            network = self.load_network(topic_id, site["id"])
+        except Exception as exc:  # noqa: BLE001 - a network that cannot be read is no network
+            print(f"rail_access: could not read the network for {site['id']}: {exc!r}")
+            network = None
+        if not (isinstance(network, dict) and network.get("site_key") == key):
+            _forget_network(record)
+            return None
+        if not record.get("network_fetched_at") or _fetched_later(
+            network, {"fetched_at": record.get("network_fetched_at")}
+        ):
+            record.pop("network_error", None)
+        _remember_network(record, network, vision_sites.network_key(topic_id, site["id"]))
+        return network
+
+    def _move_inline_network(self, site: dict, record: dict, topic_id: str) -> None:
+        """A state written before each network had its own object keeps it in the site's record
+        (`network`): move it to the object, unless the object already holds one at least as new for
+        the site's polygon (a prefetch the tick had not adopted), and keep NETWORK_FIELDS in its
+        place. If it cannot be stored it stays in the record, which this tick serves it from
+        (`_load_network`), and the next tick tries again: never lost."""
+        inline = record.get("network")
+        if inline is None:
+            return
+        if not isinstance(inline, dict):
+            record.pop("network")  # not a network: nothing to keep
+            return
+        key = site_key(site["polygon"])
+        try:
+            stored = self.load_network(topic_id, site["id"])
+        except Exception as exc:  # noqa: BLE001 - an object that cannot be read is overwritten
+            print(f"rail_access: could not read the network for {site['id']}: {exc!r}")
+            stored = None
+        stored_usable = isinstance(stored, dict) and stored.get("site_key") == key
+        inline_newer = inline.get("site_key") == key and _fetched_later(inline, stored or {})
+        if stored_usable and not inline_newer:
+            network, object_key = stored, vision_sites.network_key(topic_id, site["id"])
+        else:
+            try:
+                object_key = self.store_network(topic_id, site["id"], inline)
+            except Exception as exc:  # noqa: BLE001 - kept in the state, moved on the next tick
+                print(f"rail_access: could not move the network for {site['id']} to its object: {exc!r}")
+                return
+            network = inline
+        record.pop("network")
+        _remember_network(record, network, object_key)
 
     def prefetch_networks(self, topic_config: dict) -> list[dict]:
         """Each site's network from Overpass with the time a slow city needs
         (PREFETCH_TIMEOUT_SECONDS a hop, PREFETCH_BUDGET_SECONDS in all), stored with its
-        polygon's `site_key` where the next tick adopts it (_adopt_prefetched). Run by the research
-        tick's `prefetch_network` event, never by the hourly heartbeat; it changes no running
-        state, Finding or research time. One result per site, in the configured order:
+        polygon's `site_key` in the site's object, the one the tick reads and writes, so the next
+        tick measures with it (_load_network). Run by the research tick's `prefetch_network` event,
+        never by the hourly heartbeat; it changes no running state, Finding or research time. One
+        result per site, in the configured order:
 
             {"site_id", "status": "stored", "fetched_at", "counts", "truncated"}
             {"site_id", "status": "failed", "code", "detail"}   (osm.OsmError codes, or "fetch")
@@ -573,11 +700,14 @@ class RailAccessAdapter(Adapter):
         return results
 
     def _fetch_network(
-        self, site: dict, record: dict, now: datetime, key: str, *, seconds: float, timeout: float
+        self, site: dict, record: dict, now: datetime, key: str, topic_id: str, *, seconds: float,
+        timeout: float,
     ) -> dict | None:
         """The site's network from Overpass within `seconds` from now (both hops included, each
-        reading for at most `timeout`), kept in `record` with the polygon's `site_key`; None on
-        failure, with `network_error` recorded and whatever was cached left as it was."""
+        reading for at most `timeout`), with the polygon's `site_key`, written to its object (the
+        one prefetch_networks writes) and named in `record` (NETWORK_FIELDS); None on failure, with
+        `network_error` recorded and whatever was stored left as it was. A network that cannot be
+        written is a failure too ("store"): kept nowhere, it would be fetched again every tick."""
         try:
             network = self.fetch_network(
                 site["polygon"],
@@ -590,11 +720,17 @@ class RailAccessAdapter(Adapter):
         except osm.OsmError as exc:
             record["network_error"] = _error(now, exc.code, exc.detail)
             return None
-        except Exception as exc:  # noqa: BLE001 - a fetch that breaks keeps the cached network too
+        except Exception as exc:  # noqa: BLE001 - a fetch that breaks keeps the stored network too
             record["network_error"] = _error(now, "fetch", f"{type(exc).__name__}: {exc}")
             return None
         network["site_key"] = key
-        record["network"] = network
+        try:
+            object_key = self.store_network(topic_id, site["id"], network)
+        except Exception as exc:  # noqa: BLE001 - the stored network, if any, still serves
+            record["network_error"] = _error(now, "store", f"{type(exc).__name__}: {exc}")
+            return None
+        record.pop("network", None)  # an inline copy a state written before could not move
+        _remember_network(record, network, object_key)
         record.pop("network_error", None)
         return network
 
@@ -640,12 +776,23 @@ class RailAccessAdapter(Adapter):
                 return False, not_yet
             summary = "First observation. " + "; ".join(_first_line(v) for v in clear)
             return True, self._with_planner_notes(summary, clear, new_state)
-        self._triage(new_state, [v for v in verdicts if v["material"]])
-        self._record(new_state, verdicts, moved, first_clear=None, floor=floor)
-        material = [v for v in verdicts if v["material"]]
-        if not material:
+        # The topic was observed before. A city whose first clear scene this is (one added later, or
+        # any city of a rotating topic after the first) is its own first observation, reported once.
+        firsts = [
+            v
+            for v in verdicts
+            if v["coverage"] >= floor and not _site_observed_before(old_state, v["site_id"], floor)
+        ]
+        others = [v for v in verdicts if v not in firsts]
+        self._triage(new_state, [v for v in others if v["material"]])
+        first_clear = {v["site_id"] for v in firsts} or None
+        self._record(new_state, verdicts, moved, first_clear=first_clear, floor=floor)
+        material = [v for v in others if v["material"]]
+        if not firsts and not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
-        return True, self._with_planner_notes("; ".join(_describe(v) for v in material), material, new_state)
+        parts = ["First observation. " + "; ".join(_first_line(v) for v in firsts)] if firsts else []
+        parts += ["; ".join(_describe(v) for v in material)] if material else []
+        return True, self._with_planner_notes(". ".join(parts), firsts + material, new_state)
 
     def _record(self, new_state: dict, verdicts: list[dict], moved: dict, *, first_clear, floor) -> None:
         """One decision ring entry and one `vision_decision` line per verdict, on every return path
@@ -676,7 +823,8 @@ class RailAccessAdapter(Adapter):
         for verdict in candidates:
             record = new_state["sites"][verdict["site_id"]]
             latest = record["history"][-1]
-            network = record.get("network")
+            # The network the scene was measured with this tick (none on the review path).
+            network = (self._networks or {}).get(verdict["site_id"])
             if model_id is None:
                 outcome = vision_triage.closed_outcome(failure, "no_model")
             else:
@@ -712,6 +860,33 @@ class RailAccessAdapter(Adapter):
     @classmethod
     def decision_vocabulary(cls) -> dict:
         return DECISION_VOCABULARY
+
+    def day_subject(self, topic_config: dict, at: datetime) -> DaySubject | None:
+        """The city a topic with a `rotation` writes about at `at` (the daily run's start), or None
+        for a topic without one (it writes about every city it watches, as before). The rota is
+        read on the calendar of `rotation_timezone`, else the topic's `daily_timezone`, else UTC
+        (common/day_subject.rotation_subject): pure, so the daily cycle and anything else that asks
+        agree. The label is the site's name by rail_notes' name rule (one line, no markup), else
+        its id; the mandate and the style are this adapter's own words with the name folded in
+        (subject_mandate, subject_style). A rota that does not parse raises ConfigError, which
+        stops the daily run before any model call."""
+        topic_config = topic_config or {}
+        config = parse_config(topic_config.get("adapter_config"), topic_config.get("daily_timezone"))
+        rotation = config[rota.ROTATION_KEY]
+        if rotation is None:
+            return None
+        key = rota.rotation_subject(rotation, at)
+        site = next(site for site in config["sites"] if site["id"] == key)
+        label = rail_notes.clean_name(site.get("name")) or key
+        return DaySubject(key=key, label=label, mandate=subject_mandate(label), style=subject_style(label))
+
+    def subjects(self, new_state: dict) -> list[str]:
+        """The cities this observation reports: the sites whose scenes the diff summary reported
+        (`_reported_scenes`, the rule figures and planner_notes follow), so a Finding about two
+        cities is drafted on each one's day and a city it does not report never sees it. Kept
+        whether or not the topic has a rota: a topic that gains one later still finds its recent
+        Findings tagged."""
+        return [site_id for site_id, _latest in self._reported_scenes(new_state)]
 
     def _with_planner_notes(self, summary: str, verdicts: list[dict], new_state: dict) -> str:
         """`summary` with the planner notes of the sites it reports, which are the sites
@@ -776,13 +951,14 @@ class RailAccessAdapter(Adapter):
 
     def source_refs(self, new_state: dict) -> list[dict]:
         """The STAC item of each scene measured, and the Overpass query the site's network came
-        from (its bbox form, which a reader can open)."""
+        from (its bbox form, which a reader can open): the query of the network the scene was
+        measured with this tick, else, from the record, its polygon's."""
         measured = new_state.get("measured") or []
         refs = vision_sites.stac_refs(measured, new_state.get("fetched_at"))
         polygons = {site["id"]: site["polygon"] for site in (self._config or {}).get("sites") or []}
         for m in measured:
             record = (new_state.get("sites") or {}).get(m["site_id"]) or {}
-            network = record.get("network")
+            network = (self._networks or {}).get(m["site_id"]) or _network_summary(record)
             if not isinstance(network, dict):
                 continue
             url = network.get("query_url")
@@ -903,7 +1079,7 @@ def _network_status(site: dict, record: dict, config: dict | None, now: datetime
     this polygon was fetched (None when there is none: no network yet, or only the old polygon's),
     whether it is past the topic's TTL (None when that cannot be told), and the last refresh that
     failed, in osm.ERROR_WORDS."""
-    network = record.get("network") if isinstance(record.get("network"), dict) else None
+    network = _network_summary(record)
     usable = network is not None and network.get("site_key") == site_key(site.get("polygon"))
     fetched_at = network.get("fetched_at") if usable else None
     stale = None
@@ -941,6 +1117,41 @@ def _refusal_status(site: dict, record: dict, config: dict, now: datetime) -> di
     }
 
 
+def _remember_network(record: dict, network: dict, object_key: str) -> None:
+    """Name in the site's record the network its object holds (NETWORK_FIELDS): where it is, when
+    it was fetched, for which polygon, and its counts. What `status`, `source_refs` and a person
+    reading the running state need, without the network."""
+    record.update(
+        network_key=object_key,
+        network_fetched_at=network.get("fetched_at"),
+        network_site_key=network.get("site_key"),
+        network_counts=network.get("counts"),
+    )
+
+
+def _forget_network(record: dict) -> None:
+    """The record no longer names a network: none usable was found (the object is missing, cannot be
+    read, or is another polygon's)."""
+    for field in NETWORK_FIELDS:
+        record.pop(field, None)
+
+
+def _network_summary(record: dict) -> dict | None:
+    """What the record says of the site's network, in the network's own keys (`fetched_at`,
+    `site_key`, `counts`), or None when it names none. A state written before the networks had
+    their objects keeps the network itself (`network`): its own keys are read, never its lists."""
+    inline = record.get("network")
+    if isinstance(inline, dict):
+        return {key: inline.get(key) for key in ("fetched_at", "site_key", "counts", "query_url")}
+    if not record.get("network_key"):
+        return None
+    return {
+        "fetched_at": record.get("network_fetched_at"),
+        "site_key": record.get("network_site_key"),
+        "counts": record.get("network_counts"),
+    }
+
+
 def _error(now: datetime, code: str, detail: str) -> dict:
     return {"at": now.isoformat(), "code": code, "detail": (detail or "")[:300]}
 
@@ -959,6 +1170,43 @@ def _failed_scene_id(record: dict, now: datetime) -> str | None:
     failed = record.get("failed_scene")
     if isinstance(failed, dict) and failed.get("at") == now.isoformat() and isinstance(failed.get("id"), str):
         return failed["id"]
+    return None
+
+
+def _site_observed_before(old_state: dict | None, site_id: str, floor: float) -> bool:
+    """Whether the city's first observation was reported before this tick: its record in `old_state`
+    carries `first_observed_at` with a time. A record written before each city kept its own (none in
+    it at all) is judged by its own scenes, against the coverage floor the state stored (`floor`
+    only when it stored none): whether it has one at or above it."""
+    record = ((old_state or {}).get("sites") or {}).get(site_id)
+    if not isinstance(record, dict):
+        return False
+    if vision_sites.FIRST_OBSERVED_KEY in record:
+        return bool(record[vision_sites.FIRST_OBSERVED_KEY])
+    stored = ((old_state or {}).get("thresholds") or {}).get("coverage_floor")
+    return vision_sites.anything_measured({"sites": {site_id: record}}, floor if stored is None else stored)
+
+
+def _site_first_observed_at(
+    previous_state: dict | None,
+    site_id: str,
+    record: dict,
+    measured: list[dict],
+    floor: float,
+    fetched_at: str,
+) -> str | None:
+    """The city's `first_observed_at` in the state a fetch builds: its previous one, carried forward
+    (for a record from before it existed that was already observed, `_site_observed_before`, the
+    previous state's `fetched_at`); else `fetched_at` when this tick measured the city's newest scene
+    at or above the coverage `floor`; else None."""
+    if _site_observed_before(previous_state, site_id, floor):
+        previous = previous_state["sites"][site_id].get(vision_sites.FIRST_OBSERVED_KEY)
+        return previous or previous_state.get("fetched_at") or fetched_at
+    history = record.get("history") or []
+    for m in measured:
+        if m.get("site_id") == site_id and history and history[-1].get("scene_id") == m.get("scene_id"):
+            if (history[-1].get("coverage") or 0) >= floor:
+                return fetched_at
     return None
 
 

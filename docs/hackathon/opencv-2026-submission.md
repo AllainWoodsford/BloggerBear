@@ -125,7 +125,8 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
 - The article is two to four plain sentences (three to six with planner notes) with the station
   and line names exactly as mapped, the served share, the area beyond reach, the capture date,
   and what was not measured.
-- Adding a city is adding a topic with the admin CLI; the operator's assistant reports which
+- One topic watches the cities and writes about one a day by a fixed weekly rota; adding a city is
+  adding a site and giving it a day (up to eight a topic). The operator's assistant reports which
   sites were measured and why the others were not (`vision_status`, from each topic's running
   state), reads the worker's log in its own Region, and walks through the pipeline
   (`architecture(feature="vision-pipeline")`), all read-only
@@ -201,12 +202,12 @@ the whole rail analysis) are in it beside the ship kernels.
 ```
 home region (all state)                                   us-west-2 (beside the imagery)
 ───────────────────────────────────────────────           ──────────────────────────────
-topic: rail_access, sites (city polygons), reach_m, daily_cadence, findings_window_hours,
-       force_manual_review
+topic: rail_access, sites (city polygons), reach_m, rotation (one city a day),
+       findings_window_hours, force_manual_review
    │ research tick (120 s)
    ▼
 adapter ── Earth Search STAC: the newest clear scene over the whole site
-   │    ── Overpass: ways, stations, intermodal points (cached 30 days, decimated, capped)
+   │    ── Overpass: ways, stations, intermodal points (one object a city, 30 days, decimated, capped)
    │  request {task, assets {red, nir, swir16, scl}, network, params}
    ├────────────────────── cross-region invoke ──────────► vision worker (arm64, OpenCV 5
    │                                                          or COOL, networkx)
@@ -309,31 +310,34 @@ kept is numbers and one map per scene.
    tick gets the worker's ARN. The repository variable also turns the worker on in production at
    the next release, unless the `production` environment sets `VISION_ENABLED` to `false`.
    ([runsheet](../deployment-runsheet.md#vision-optional))
-2. **Create the topics.** The four city topics are complete topic bodies in
-   `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000,
-   Sydney at the 80 s `time_budget_seconds` cap for its slow first network, one city drafted a
-   day, each article from every Finding since that city's last, through a 192-hour
+2. **Create the topics.** The rail topic, `rail-cities`, is a complete topic body in
+   `scripts/rail_topics.example.json` (Sydney, Melbourne, Singapore and Boston, `reach_m` 1000, the
+   80 s `time_budget_seconds` cap for Sydney's slow first network, a rota that writes about one
+   city a day, each article from every Finding about that city since its last, through a 192-hour
    `findings_window_hours`); the runsheet's
-   [rail_access topics](../deployment-runsheet.md#rail_access-topics) creates them with the admin
+   [rail_access topics](../deployment-runsheet.md#rail_access-topics) creates it with the admin
    CLI. For the ship task, `adapter: "satellite_vision"` with a Botany Bay polygon and
    `object_noun: "large vessels"`. `force_manual_review` is set for you.
-3. **Force two ticks.** `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick`.
+3. **Force two ticks.** `python scripts/admin_cli.py topics trigger rail-cities --pipeline research_tick`.
    A large city's first tick only fetches its OpenStreetMap network from Overpass: Sydney's query
    runs for most of a minute, which leaves too little of the tick to measure, so the scene waits
-   (the tick's `vision_site` line says `deferred` for `time_budget`) and the network is cached
+   (the tick's `vision_site` line says `deferred` for `time_budget`) and the network is stored
    (the runsheet's [`rail_access` topics](../deployment-runsheet.md#rail_access-topics), "A large
-   city's first network can take a minute"). Trigger it again, or wait for the next hourly tick:
-   that tick measures the newest scene against the cached network, and if its coverage is at least
+   city's first network can take a minute"). Trigger it again (with four cities, the next three
+   ticks take the other cities first, so trigger until Sydney's turn comes back, or wait): that
+   tick measures the newest scene against the stored network, and if its coverage is at least
    0.6, that is the first observation and a Finding appears, carrying the map and the planner
    notes (a cloudy scene reports nothing, and the next clear one is first). The figure is in the
    content bucket under `vision/<topic>/<site>/<scene>.png`, and the running state at
    `snapshots/<topic>/running-state.json` holds the history, the reply's metrics and timings, the
-   cached network and, from the second clear scene on, the agent's trail. The CLI waits only 30 s
+   network's key and fetch time (the network itself is `vision/<topic>/<site>/network.json`) and,
+   from the second clear scene on, the agent's trail. The CLI waits only 30 s
    for the Finding, so its "No new Finding after 30s" is expected on both ticks (the first makes
    none; the second runs up to 58 s of worker, then the summary, inside 120 s): after the second,
-   wait about two minutes, or until `python scripts/admin_cli.py topics findings rail-sydney`
+   wait about two minutes, or until `python scripts/admin_cli.py topics findings rail-cities`
    shows it.
-4. **Run the daily cycle** (`--pipeline daily_cycle`) once the Finding is there, and open the
+4. **Run the daily cycle** (`--pipeline daily_cycle`) once the Finding is there, on that city's
+   day (Monday or Friday for Sydney: the run writes about the day's city only), and open the
    inbox (`python scripts/admin_cli.py inbox`): the article is held for you.
    `python scripts/admin_cli.py approve` goes through what is waiting and publishes it; the page
    shows the map at `articles/figures/<article>/1.png` with its caption and the credits.
