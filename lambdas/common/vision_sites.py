@@ -249,14 +249,15 @@ def store_image(topic_id: str, site_id: str, scene_id: str, png: bytes) -> str:
 
 
 def network_key(topic_id: str, site_id: str) -> str:
-    """Where a site's rail network fetched outside the hourly tick is kept (rail_access's
-    prefetch_networks): its own object, so the long fetch never writes the running state the tick
-    rewrites each hour."""
+    """Where a site's rail network is kept: its only copy, in an object of its own, written by the
+    tick's fetches and by rail_access's prefetch_networks (the operator's out-of-band fetch) alike,
+    so the running state the tick rewrites each hour carries none of it. Outside `snapshots/`, whose
+    objects the content bucket expires."""
     return f"vision/{topic_id}/{site_id}/network.json"
 
 
 def store_network(topic_id: str, site_id: str, network: dict) -> str:
-    """The prefetched network for one site, in the content bucket; returns its key."""
+    """A site's network, in the content bucket (written over the one before); returns its key."""
     key = network_key(topic_id, site_id)
     boto3.client("s3").put_object(
         Bucket=os.environ["CONTENT_BUCKET"],
@@ -268,7 +269,7 @@ def store_network(topic_id: str, site_id: str, network: dict) -> str:
 
 
 def load_network(topic_id: str, site_id: str) -> dict | None:
-    """The prefetched network for one site, or None when none was ever stored."""
+    """A site's network, or None when none was ever stored."""
     s3 = boto3.client("s3")
     try:
         response = s3.get_object(Bucket=os.environ["CONTENT_BUCKET"], Key=network_key(topic_id, site_id))
