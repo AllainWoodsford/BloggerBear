@@ -10,17 +10,20 @@ article and the agent are given.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import sys
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import boto3
 import pytest
+import requests
 from moto import mock_aws
 from terraform_text import INFRA
 
@@ -80,6 +83,14 @@ class Clock:
 
     def advance(self, seconds):
         self.now += seconds
+
+
+class RunningClock(Clock):
+    """The adapter's clock as time.monotonic is: a little later at every reading."""
+
+    def __call__(self):
+        self.now += 1e-6
+        return self.now
 
 
 class FakeStac:
@@ -460,6 +471,10 @@ def test_the_example_city_topics_rotate_one_a_day_and_draft_every_finding_once()
         assert topic["adapter"] == RAIL_ACCESS_ADAPTER_KEY
         config = ra.parse_config(topic["adapter_config"])
         assert len(config["sites"]) == 1 and config["reach_m"] == 1000.0
+        # Sydney's first network takes most of a minute (16 October): its topic runs at the cap.
+        heavy = topic["topic_id"] == "rail-sydney"
+        budget = vision_sites.MAX_TIME_BUDGET_SECONDS if heavy else ra.DEFAULTS["time_budget_seconds"]
+        assert config["time_budget_seconds"] == budget, topic["topic_id"]
         scheduler._validate_schedule_expression(topic["daily_cadence"])
         scheduler.validate_timezone(topic["daily_timezone"])
         minute, hour, weekdays = drafting_days(topic["daily_cadence"])
@@ -936,6 +951,130 @@ def test_a_refresh_of_a_cached_network_keeps_the_reserve_and_the_default_read(ad
     (fetch,) = overpass.calls
     assert fetch["deadline"] == 100.0 + ra.OSM_RESERVE_SECONDS == 130.0
     assert fetch["timeout"] == osm.TIMEOUT_SECONDS == 25.0
+
+
+def overpass_reply(clock, read, compute=0.0, flow=0.0, stall=False):
+    """What requests.post answers Overpass with (stream=True), under the scripted clock: the headers
+    and the preamble at once, the elements after `compute` s of silence (the query running), the
+    rest after `flow` s, then, with `stall`, silence on a connection held open. A read ends when
+    its bytes come, when its `read` timeout passes (raised as requests raises it mid-body) or when
+    osm's shutter shuts the reply (`raw.shutdown`, on its timer: see scripted_timers)."""
+
+    def wait(seconds):
+        timer = next((t for t in clock.timers if t.started and not t.cancelled), None)
+        shut = timer.due if timer else math.inf
+        ends = {"bytes": clock.now + seconds, "read": clock.now + read, "shut": shut}
+        how = min(ends, key=ends.get)
+        clock.now = ends[how]
+        if how == "read":
+            raise requests.exceptions.ConnectionError("Read timed out.")
+        if how == "shut":
+            timer.function(*timer.args)
+            raise requests.exceptions.ChunkedEncodingError("Connection broken: IncompleteRead")
+
+    class Reply:
+        status_code, headers = 200, {}
+        raw = SimpleNamespace(shutdown=lambda: None)
+
+        def iter_content(self, chunk_size):
+            yield b'{"version": 0.6, '
+            wait(compute)
+            yield b'"elements": ['
+            wait(flow)
+            if stall:
+                wait(math.inf)
+            yield b"]}"
+
+        def close(self):
+            pass
+
+    return Reply()
+
+
+def scripted_timers(monkeypatch, clock):
+    """osm's timer (the _Shutter's) on the scripted clock, recorded in `clock.timers`: armed for
+    `interval` scripted seconds, and fired by overpass_reply's read when it is due."""
+    clock.timers = []
+
+    class ScriptedTimer:
+        def __init__(self, interval, function, args=()):
+            self.due, self.function, self.args = clock.now + interval, function, args
+            self.started = self.cancelled = False
+            clock.timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(osm, "Timer", ScriptedTimer)
+
+
+def real_fetch(post):
+    """common/osm.fetch_network itself, with `post` for requests.post (the adapter's own http_post
+    is the STAC search's)."""
+    return lambda polygon, **kwargs: osm.fetch_network(polygon, **{**kwargs, "http_post": post})
+
+
+@pytest.mark.parametrize(
+    "budget, cached, declared",
+    [
+        (70, False, "[timeout:53]"),  # a first fetch at the default budget: 70 - 2 - 10 - 5
+        (80, False, "[timeout:63]"),  # at the cap
+        (80, True, "[timeout:25]"),  # a refresh: 30 - 5, as before the query followed the read
+    ],
+)
+def test_on_a_running_clock_each_query_declares_the_whole_seconds_it_was_given(
+    adapter, monkeypatch, budget, cached, declared
+):
+    """The adapter reads the clock for the fetch's deadline and fetch_network reads it again a moment
+    later, so the hop's read is a hair under its whole seconds: the query still declares them."""
+    previous = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31) if cached else None
+    clock = RunningClock(100.0)
+    adapter.clock = clock
+    scripted_timers(monkeypatch, clock)
+    hops = []
+
+    def post(url, data, timeout, **kwargs):
+        hops.append((data["data"].split(";", 1)[0].removeprefix("[out:json]"), timeout[1]))
+        return overpass_reply(clock, timeout[1])
+
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=2.0, clock=clock)
+    adapter.http_post, adapter.measure = search, FakeRailWorker({"S1": metrics()})
+    adapter.fetch_network = real_fetch(post)
+    state = adapter.fetch_state(topic(time_budget_seconds=budget), previous_state=previous)
+    ((query_timeout, read),) = hops
+    assert query_timeout == declared and int(declared[9:-1]) - 0.001 < read < int(declared[9:-1])
+    assert state["sites"]["sydney"]["network"]["fetched_at"] == state["fetched_at"]
+
+
+@pytest.mark.parametrize("budget", [70, 80])
+def test_a_first_fetch_whose_reply_stalls_mid_body_still_ends_by_its_deadline(adapter, monkeypatch, budget):
+    """The real fetch_network under the adapter, at the default budget and at the cap: Overpass runs
+    the query for 53 s, streams for 3 s, then the connection goes silent without closing. A read
+    timeout bounds each wait between reads, not the body, so the stall alone would hold the hop
+    for its whole read (53 s or 63 s) more, past the research tick's 120 s at the cap. The reply
+    is shut at the deadline: the fetch ends there, a transient timeout, and the site waits."""
+    clock = Clock()
+    adapter.clock = clock
+    scripted_timers(monkeypatch, clock)
+    hops = []
+
+    def post(url, data, timeout, **kwargs):
+        hops.append((clock.now, timeout[1]))
+        return overpass_reply(clock, timeout[1], compute=53.0, flow=3.0, stall=True)
+
+    search = FakeStac([item("S1", "2026-10-03T00:00:00Z")], takes=2.0, clock=clock)
+    adapter.http_post, adapter.measure = search, FakeRailWorker({})
+    adapter.fetch_network = real_fetch(post)
+    state = adapter.fetch_state(topic(time_budget_seconds=budget))
+    deadline = 2.0 + ra.first_fetch_seconds(budget - 2.0)
+    assert hops == [(2.0, deadline - 2.0 - osm._CONNECT_TIMEOUT_SECONDS)]  # one hop: no time for the mirror
+    assert clock.now == deadline <= budget  # not 58 s + the hop's read
+    record = state["sites"]["sydney"]
+    assert record["last_error"]["code"] == "osm" and record["network_error"]["code"] == "timeout"
+    assert "network" not in record and state["measured"] == []
 
 
 def test_a_long_first_fetch_defers_the_measurement_and_the_next_tick_measures_with_it(adapter, capsys):
