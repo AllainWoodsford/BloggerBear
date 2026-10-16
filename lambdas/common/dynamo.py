@@ -226,10 +226,14 @@ FINDINGS_PAGES_MAX = 5
 FINDINGS_COUNT_PAGES_MAX = 10
 
 
-def _findings_condition(topic_id: str, since: str | None):
+def _findings_condition(topic_id: str, since: str | None, until: str | None = None):
     condition = Key("topic_id").eq(topic_id)
+    if since is not None and until is not None:
+        return condition & Key("captured_at").between(since, until)
     if since is not None:
         condition = condition & Key("captured_at").gte(since)
+    elif until is not None:
+        condition = condition & Key("captured_at").lte(until)
     return condition
 
 
@@ -245,14 +249,20 @@ def finding_is_expired(item: dict, unexpired_at: int | None) -> bool:
 
 
 def list_findings_page(
-    topic_id: str, *, since: str | None = None, limit: int, start_key: dict | None = None
+    topic_id: str,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int,
+    start_key: dict | None = None,
 ) -> tuple[list[dict], dict | None]:
     """One page of a topic's Findings, newest first: at most `limit` items captured at or after
-    `since` (an ISO-8601 UTC timestamp, the sort key's own form), from `start_key` on. Returns
-    the items and the key to continue from (None when there are no more)."""
+    `since` and, when `until` is given, at or before it (ISO-8601 UTC timestamps, the sort key's
+    own form, compared as it is), from `start_key` on. Returns the items and the key to continue
+    from (None when there are no more)."""
     table = get_table(os.environ["FINDINGS_TABLE"])
     kwargs = {
-        "KeyConditionExpression": _findings_condition(topic_id, since),
+        "KeyConditionExpression": _findings_condition(topic_id, since, until),
         "ScanIndexForward": False,
         "Limit": limit,
     }
@@ -266,20 +276,23 @@ def list_findings(
     topic_id: str,
     *,
     since: str | None = None,
+    until: str | None = None,
     limit: int,
     unexpired_at: int | None = None,
     max_pages: int = FINDINGS_PAGES_MAX,
 ) -> tuple[list[dict], int, bool]:
-    """Up to `limit` of a topic's Findings, newest first, captured at or after `since`, paging
-    `list_findings_page` at most `max_pages` times. With `unexpired_at` (epoch seconds, now), an
-    item whose `expires_at` has passed is skipped and counted. Returns the items kept, how many
-    expired items were skipped, and whether more items were there than were kept."""
+    """Up to `limit` of a topic's Findings, newest first, captured at or after `since` and at or
+    before `until` (when given: Re-Write reads an article's window, which ends at its creation, so
+    no read is spent on Findings captured since), paging `list_findings_page` at most `max_pages`
+    times. With `unexpired_at` (epoch seconds, now), an item whose `expires_at` has passed is
+    skipped and counted. Returns the items kept, how many expired items were skipped, and whether
+    more items were there than were kept."""
     kept: list[dict] = []
     expired = 0
     start_key = None
     for _ in range(max_pages):
         items, start_key = list_findings_page(
-            topic_id, since=since, limit=limit + 1 - len(kept), start_key=start_key
+            topic_id, since=since, until=until, limit=limit + 1 - len(kept), start_key=start_key
         )
         for item in items:
             if finding_is_expired(item, unexpired_at):

@@ -89,13 +89,15 @@ def clean_subjects(raw) -> list[str]:
     are SUBJECT_KEY-shaped, each once, in the order given, the first MAX_SUBJECTS_PER_FINDING.
 
     Any iterable of keys is read: a list or a tuple, a generator (the rail adapter's reported
-    scenes are one), or a set, read in sorted order so every tick keeps the same ones. At most
-    MAX_SUBJECT_VALUES_EXAMINED values are looked at, so a generator that never ends, or yields
-    only duplicates or junk, still returns; a set longer than that raises ValueError before it is
-    sorted. None is none. Anything else (a string, which would be read a character at a time; a
-    mapping; a number) raises TypeError, so the research tick's log says the subjects were dropped
-    and why (research_tick_handler._subjects), as it does for a hook that raises: a rotating topic
-    never drafts a Finding without subjects, so a wrong type must not go quiet."""
+    scenes are one), or a set, whose strings are read in sorted order so every tick keeps the same
+    ones (only a string can be kept, so nothing else is sorted: a str() of each value could cost
+    far more than the set). At most MAX_SUBJECT_VALUES_EXAMINED values are looked at, so a
+    generator that never ends, or yields only duplicates or junk, still returns; a set longer than
+    that raises ValueError before it is sorted. None is none. Anything else (a string, which would
+    be read a character at a time; a mapping; a number) raises TypeError, so the research tick's
+    log says the subjects were dropped and why (research_tick_handler._subjects), as it does for a
+    hook that raises: a rotating topic never drafts a Finding without subjects, so a wrong type must
+    not go quiet."""
     if raw is None:
         return []
     if isinstance(raw, str | bytes | bytearray | Mapping) or not isinstance(raw, Iterable):
@@ -105,7 +107,7 @@ def clean_subjects(raw) -> list[str]:
             raise ValueError(
                 f"subjects is a set of {len(raw)} values, more than the {MAX_SUBJECT_VALUES_EXAMINED} read"
             )
-        raw = sorted(raw, key=str)
+        raw = sorted(value for value in raw if isinstance(value, str))
     kept: list[str] = []
     for value in islice(raw, MAX_SUBJECT_VALUES_EXAMINED):
         if isinstance(value, str) and SUBJECT_KEY.fullmatch(value) and value not in kept:

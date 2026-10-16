@@ -417,8 +417,8 @@ def test_a_read_that_stops_at_its_limit_or_the_page_cap_says_so(aws, capsys, mon
 
     page = dynamo.list_findings_page
 
-    def ten_a_page(topic_id, *, since=None, limit, start_key=None):  # a megabyte of big Findings
-        return page(topic_id, since=since, limit=min(limit, 10), start_key=start_key)
+    def ten_a_page(topic_id, *, since=None, until=None, limit, start_key=None):  # a megabyte of big Findings
+        return page(topic_id, since=since, until=until, limit=min(limit, 10), start_key=start_key)
 
     monkeypatch.setattr(dynamo, "list_findings_page", ten_a_page)
     rewrite._findings_for(_on("south"), _WIDE_TOPIC)
@@ -433,6 +433,37 @@ def test_a_read_that_holds_the_whole_window_says_nothing_of_stopping(aws, capsys
 
     rewrite._findings_for(_on("south"), {**TOPIC, "findings_window_hours": 96})
 
+    assert "stopped at" not in capsys.readouterr().out
+
+
+def test_a_late_rewrite_reads_the_articles_window_not_the_findings_captured_since(aws, capsys):
+    """Re-Write may run days after the article (a rail topic's article waits for a person). The
+    read ends at the article's created_at, so the SUBJECT_READ_LIMIT Findings captured since, more
+    than the whole read, spend none of it: the subject's Findings in the window, the one captured
+    as the article was created among them, are all found, and nothing is said of stopping."""
+    _put_subject_findings("south", 3, hours_before=10)
+    _put_subject_findings("north", 5, hours_before=8)
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": _CREATED.isoformat(),  # the window's end is its own
+            "summary": "south at creation",
+            "subjects": ["south"],
+        }
+    )
+    for n in range(rewrite.SUBJECT_READ_LIMIT + 8):  # one an hour since: eight days of them
+        _table("Findings").put_item(
+            Item={
+                "topic_id": TOPIC["topic_id"],
+                "captured_at": (_CREATED + timedelta(hours=1 + n)).isoformat(),
+                "summary": f"since {n:03d}",
+                "subjects": ["south" if n % 7 == 0 else "north"],
+            }
+        )
+
+    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == ["south at creation", "south 002", "south 001", "south 000"]
     assert "stopped at" not in capsys.readouterr().out
 
 

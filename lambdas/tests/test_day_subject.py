@@ -8,6 +8,8 @@ import dataclasses
 import re
 import subprocess
 import sys
+import time
+import tracemalloc
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -233,6 +235,27 @@ def test_clean_subjects_looks_at_a_bounded_number_of_values():
     for too_many in ({*at_the_cap, "s9999"}, frozenset(range(10**6))):
         with pytest.raises(ValueError, match="more than the 1000 read"):
             day_subject.clean_subjects(too_many)
+
+
+def test_a_set_sorts_its_strings_alone_so_a_few_values_cannot_cost_a_str_each():
+    """Only a string can be kept, so only the strings of a set are sorted. Sorting every value by
+    its str() would build a copy of each: 1,000 tuples sharing one 100 KB string would cost 100 MB
+    (a 2 MB one, about 2 GB and 8 s), from a set that holds the string once."""
+    big = "x" * 100_000
+    shared = {(n, big) for n in range(day_subject.MAX_SUBJECT_VALUES_EXAMINED)}
+    tracemalloc.start()
+    try:
+        began = time.perf_counter()
+        kept = day_subject.clean_subjects(shared)
+        took = time.perf_counter() - began
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert kept == []
+    assert peak < len(big)  # not even one copy of the string
+    assert took < 1.0
+    assert day_subject.clean_subjects({(1, big), "south", 7, "north"}) == ["north", "south"]
 
 
 def test_a_day_subject_reaches_the_prompts_as_one_plain_line_each(monkeypatch):

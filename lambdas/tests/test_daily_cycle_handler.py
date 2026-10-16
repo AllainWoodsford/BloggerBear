@@ -3378,8 +3378,8 @@ def test_a_read_that_the_page_cap_stops_says_so_too(rotating, capsys, monkeypatc
     cap (common/dynamo.FINDINGS_PAGES_MAX) before SUBJECT_READ_LIMIT: said the same way."""
     page = dynamo.list_findings_page
 
-    def ten_a_page(topic_id, *, since=None, limit, start_key=None):  # a megabyte of big Findings
-        return page(topic_id, since=since, limit=min(limit, 10), start_key=start_key)
+    def ten_a_page(topic_id, *, since=None, until=None, limit, start_key=None):  # a megabyte of big Findings
+        return page(topic_id, since=since, until=until, limit=min(limit, 10), start_key=start_key)
 
     monkeypatch.setattr(dynamo, "list_findings_page", ten_a_page)
     rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=96))

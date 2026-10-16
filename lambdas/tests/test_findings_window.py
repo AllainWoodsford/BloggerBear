@@ -493,6 +493,22 @@ def test_list_findings_pages_until_it_has_kept_enough_and_says_whether_more_rema
     assert [f["summary"] for f in kept] == ["finding 9", "finding 8"] and more is False
 
 
+def test_list_findings_bounds_the_window_at_its_end_too_when_asked(findings_table):
+    """Re-Write's read of an article's window (common/rewrite._findings_for): captured at or after
+    `since` and at or before `until`, both ends kept, so nothing captured after the window's end
+    takes a place in the read. `until` alone reads up to it; without it, the read is as it was."""
+
+    def summaries(**kwargs):
+        kept, _, more = dynamo.list_findings("t", **kwargs)
+        return [f["summary"] for f in kept], more
+
+    window = {"since": "2026-09-20T03:00:00+00:00", "until": "2026-09-20T05:00:00+00:00"}
+    assert summaries(**window, limit=5) == (["finding 5", "finding 4", "finding 3"], False)
+    assert summaries(**window, limit=2) == (["finding 5", "finding 4"], True)
+    assert summaries(until="2026-09-20T01:00:00+00:00", limit=5) == (["finding 1", "finding 0"], False)
+    assert summaries(since="2026-09-20T08:00:00+00:00", limit=5) == (["finding 9", "finding 8"], False)
+
+
 def test_count_findings_counts_the_unexpired_in_the_window_and_knows_when_it_stopped_short(findings_table):
     for hour in (0, 1):
         _set_expiry(findings_table, hour, _epoch(days=-2))

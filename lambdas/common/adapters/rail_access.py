@@ -250,7 +250,8 @@ SUBJECT_STYLE = (
     "from satellite imagery and OpenStreetMap."
 )
 
-# What a budget-starved site returns from _visit: it waits for the next tick, unstamped.
+# What _visit returns for a budget-starved site, or one whose record names a stored network that S3
+# could not read (NETWORK_READ_ERROR): it waits for the next tick, unstamped.
 DEFERRED = "deferred"
 
 # What a site's record keeps of its network, now that the network is in its own object
@@ -502,8 +503,9 @@ class RailAccessAdapter(Adapter):
     def _visit(self, site: dict, record: dict, config: dict, now: datetime, budget: Budget, topic_id: str):
         """One site's turn, scene first (the module docstring's (a) to (d)). Returns
         {"site_id", "scene_id"} when a scene was measured, DEFERRED when the budget left too little
-        time for what was due, and None for any other outcome (nothing new, or an error recorded
-        in `record`)."""
+        time for what was due or a stored network the record names could not be read from S3
+        (NETWORK_READ_ERROR), and None for any other outcome (nothing new, or an error recorded in
+        `record`)."""
         try:
             scene = search_newest_scene(site, config, now, http_post=self.http_post, assets=ASSETS_RAIL)
         except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
@@ -1164,7 +1166,8 @@ def _remember_network(record: dict, network: dict, object_key: str) -> None:
 
 def _forget_network(record: dict) -> None:
     """The record no longer names a network: none usable was found (the object is missing, cannot be
-    read, or is another polygon's)."""
+    read and is not named by the record, or is another polygon's). One the record names that cannot
+    be read is kept, and the site waits (`_load_network`, NETWORK_READ_ERROR)."""
     for field in NETWORK_FIELDS:
         record.pop(field, None)
 
