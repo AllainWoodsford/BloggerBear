@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 import boto3
 import pytest
 import requests
+from botocore.exceptions import ClientError
 from moto import mock_aws
 from terraform_text import INFRA
 
@@ -3015,7 +3016,7 @@ def test_the_prefetch_and_the_tick_share_one_store_and_the_last_write_is_the_net
     assert refresh.calls == [] and state["sites"]["sydney"]["network_fetched_at"] == newer
 
 
-def test_a_missing_or_unreadable_object_is_no_network_and_is_fetched_again(adapter):
+def test_a_missing_object_is_no_network_and_is_fetched_again(adapter):
     first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
     adapter.objects.clear()  # gone: deleted by hand, say
     overpass = FakeOverpass(network())
@@ -3023,15 +3024,84 @@ def test_a_missing_or_unreadable_object_is_no_network_and_is_fetched_again(adapt
     assert len(overpass.calls) == 1 and state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
     assert stored_network(adapter)["fetched_at"] == state["sites"]["sydney"]["network_fetched_at"]
 
-    def unreadable(topic_id, site_id):
-        raise RuntimeError("AccessDenied")
 
-    adapter.load_network = unreadable
-    overpass = FakeOverpass(osm.OsmError("timeout", "slow", transient=True))
-    state = run(adapter, scene(3), FakeRailWorker({"S3": metrics()}), overpass, previous=state)
-    assert len(overpass.calls) == 1 and state["measured"] == []
+def _s3_fails(topic_id, site_id):
+    raise ClientError({"Error": {"Code": "InternalError", "Message": "try again"}}, "GetObject")
+
+
+def test_a_named_network_s3_fails_to_hand_back_is_kept_and_the_city_waits_a_tick(adapter, capsys):
+    """S3 failing to answer (a read timeout, a 500, a body cut off) is not a missing object: the
+    record names this polygon's network, so the visit waits for the next tick with its place kept,
+    the record keeps NETWORK_FIELDS and the refresh failure (its backoff), and Overpass is not asked
+    for a network S3 still holds. Before, the record forgot it and a first fetch took the tick."""
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    refresh_failed = {"at": first["fetched_at"], "code": "timeout", "detail": "no answer"}
+    first["sites"]["sydney"]["network_error"] = refresh_failed
+    kept = network_fields(first["sites"]["sydney"])
+    readable = adapter.load_network
+    adapter.load_network = _s3_fails
+    overpass = FakeOverpass(network())
+    capsys.readouterr()
+
+    state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=first)
+
     record = state["sites"]["sydney"]
-    assert record["last_error"]["code"] == "osm" and not network_fields(record)  # it claims none
+    assert overpass.calls == [] and state["measured"] == []
+    assert network_fields(record) == kept and record["network_error"] == refresh_failed
+    assert record["last_error"]["code"] == ra.NETWORK_READ_ERROR == "network_read"
+    assert record["last_error"]["detail"].startswith("ClientError: An error occurred (InternalError)")
+    assert record["last_attempt_at"] == first["sites"]["sydney"]["last_attempt_at"]  # not an attempt
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert (line["outcome"], line["code"]) == ("deferred", "network_read")
+    status = status_of(adapter, state)
+    error = status["sites"][0]["error"]
+    assert (error["code"], error["kind"], error["words"]) == (
+        "network_read", "source", "its stored rail network couldn't be read",
+    )  # fmt: skip
+    assert set(said(status)) <= ra.RailAccessAdapter.status_vocabulary()
+
+    # Read on the next tick: measured against the network it kept, and nothing fetched.
+    adapter.load_network = readable
+    again = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=state)
+    assert overpass.calls == [] and again["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+    assert "last_error" not in again["sites"]["sydney"]
+
+
+def test_an_unreadable_object_the_record_does_not_name_for_this_polygon_is_fetched_again(adapter):
+    """The record names no network for this polygon (none yet, or the old polygon's), so nothing is
+    known to be in the object: an object S3 fails to hand back is no network, as before."""
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    adapter.load_network = _s3_fails
+    overpass = FakeOverpass(osm.OsmError("timeout", "slow", transient=True))
+    wider = [{"id": "sydney", "name": "Sydney", "polygon": [[150.5, -34.3], *SYDNEY[1:]]}]
+    state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=first, sites=wider)
+    record = state["sites"]["sydney"]
+    assert len(overpass.calls) == 1 and overpass.calls[0]["timeout"] == ra.FIRST_FETCH_TIMEOUT_SECONDS
+    assert state["measured"] == [] and record["last_error"]["code"] == "osm"
+    assert not network_fields(record)  # it claims none
+
+    never = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    assert never["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]  # no record: fetched
+
+
+def test_an_object_whose_body_is_not_a_network_is_fetched_again_even_when_named(adapter):
+    """A body read whole that is not JSON, or a map that is not a network, is no network now or
+    next tick: waiting would wait for ever, so it is fetched again and written over."""
+    for broken in (ValueError("Expecting value: line 1 column 1 (char 0)"), {"not": "a network"}):
+        first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+        readable = adapter.load_network
+
+        def load(topic_id, site_id, broken=broken):
+            if isinstance(broken, Exception):
+                raise broken
+            return broken
+
+        adapter.load_network = load
+        overpass = FakeOverpass(network())
+        state = run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), overpass, previous=first)
+        assert len(overpass.calls) == 1 and state["measured"] == [{"site_id": "sydney", "scene_id": "S2"}]
+        assert state["sites"]["sydney"]["network_fetched_at"] == stored_network(adapter)["fetched_at"]
+        adapter.load_network = readable
 
 
 def test_a_network_that_cannot_be_stored_is_a_failed_fetch(adapter):

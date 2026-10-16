@@ -263,17 +263,24 @@ why:
   the tool's error and the route's 500, never the topic-wide window, which no run of a rotating
   topic reads.
 - **The cap after the filter.** A rotating topic's readers (the daily cycle, Re-Write, the tool,
-  the route) read up to `findings_window.SUBJECT_READ_LIMIT` (4 x 48 = 192: every Finding a
-  one-slot rota of 7 subjects can gather at one an hourly tick, in its 192 h window), keep the
-  subject's Findings, then cap those at 48. Capped first, other subjects' newer Findings pushed a
-  subject's older ones out, and its stamp then passed them for good. The daily cycle logs how many
-  of the subject's own the cap left out. A topic that does not rotate makes the same Query with
-  the same limit.
-- **The hook's output.** `clean_subjects` reads any finite iterable of keys (a generator, a set in
-  sorted order); a string, a mapping or a number raises, so the research tick's log says the
-  subjects were dropped. A `DaySubject`'s label, mandate and style reach the prompts as one plain
-  line each (`figures.plain_text`); a mandate or style longer than the editorial goals' 1,000
-  characters, or a label longer than a site name's 80, stops the run.
+  the route) read up to `findings_window.SUBJECT_READ_LIMIT` (4 x 48 = 192), keep the subject's
+  Findings, then cap those at 48. Capped first, other subjects' newer Findings pushed a subject's
+  older ones out, and its stamp then passed them for good. The daily cycle logs how many of the
+  subject's own the cap left out. What 192 guarantees is every Finding of a one-slot rota of up to
+  7 subjects at one Finding an hour (its 192 h window), within the read's page cap (5 DynamoDB
+  pages of up to 1 MB, so Findings of up to about 26 KB each). A wider window (up to 336 h), a
+  longer rota (a list rota may have 62 slots) or larger Findings can hold more than the read
+  reaches; the daily cycle and Re-Write then log where the read stopped (the limit or the page cap)
+  and how many Findings it held, and the tool and the route give their count as a floor
+  (`count_is_at_least`). A topic that does not rotate makes the same Query with the same limit.
+- **The hook's output.** `clean_subjects` reads any iterable of keys (a generator, a set in sorted
+  order), looking at no more than 1,000 values (`MAX_SUBJECT_VALUES_EXAMINED`), so a hook that
+  yields junk without end still returns; a set larger than that is refused before it is sorted. A
+  string, a mapping or a number raises, so the research tick's log says the subjects were dropped.
+  A `DaySubject`'s label, mandate and style reach the prompts as one plain line each
+  (`figures.plain_text`); a mandate or style longer than the editorial goals' 1,000 characters, or
+  a label longer than a site name's 80, stops the run, and raw text over four times its bound
+  (`DAY_SUBJECT_RAW_TEXT_MULTIPLE`) is refused before it is cleaned.
 - **The stamp map.** A `last_article_by_subject` that is not a map (a hand edit) is replaced by
   one holding the subject's stamp, and the log says so, rather than failing every run.
 
@@ -353,10 +360,14 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   have gone. That object is now the network's only home: the tick's first fetch and refresh write
   it through `vision_sites.store_network`, every visit reads it (`_load_network`, a plain load where
   `_adopt_prefetched` was), and the prefetch and the tick share one store, the last write being the
-  network. `prefetch_networks`, its timeouts, results and log lines are unchanged. A missing or
-  unreadable object is no network (fetched again, with a first fetch's time); a network that
-  cannot be written is a failed fetch (`network_error` code `store`), so the record never names one
-  the object does not hold.
+  network. `prefetch_networks`, its timeouts, results and log lines are unchanged. A missing object,
+  one for another polygon, or one whose body is not a network is no network (fetched again, with a
+  first fetch's time). An object the record names for this polygon that S3 fails to hand back (a
+  read timeout, a 500, a body cut off) is not a missing one: the city waits for the next tick
+  (`last_error` `network_read`) and the record keeps the network and any refresh failure, rather
+  than spend most of the tick on Overpass for a network S3 still holds (the round's tidy-up). A network that cannot
+  be written is a failed fetch (`network_error` code `store`), so the record never names one the
+  object does not hold.
 - **What the record keeps:** `NETWORK_FIELDS`, `network_key`, `network_fetched_at`,
   `network_site_key` and `network_counts`. `network_stale` stays where it always was, on each
   history entry, and so does `network_fetched_at`, which is all the decision ring's

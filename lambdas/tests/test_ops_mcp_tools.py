@@ -559,3 +559,20 @@ def test_the_spoken_name_pattern_is_topic_matchs_with_a_colon():
     from ops_mcp import topic_match
 
     assert tools.SPOKEN_NAME.pattern == topic_match._SAYABLE.pattern.replace("+-]", "+:-]")
+
+
+def test_the_colon_is_kept_for_the_city_topics_named_before_the_rota_not_for_the_template():
+    """The example template is one rotating topic since the day-subject round, "Rail access", with no
+    colon, so the comment that keeps ":" sayable cites the names operators gave their city topics
+    before it (dev's trains-sydney), never the template, which no longer supports it."""
+    from pathlib import Path
+
+    root = Path(tools.__file__).resolve().parents[2]
+    example = json.loads((root / "scripts" / "rail_topics.example.json").read_text())
+    assert [topic["name"] for topic in example["topics"]] == ["Rail access"]
+    assert tools.spoken_label({"topic_id": "trains-sydney", "name": "Rail access: Sydney"}) == (
+        "Rail access: Sydney"
+    )
+    source = Path(tools.__file__).read_text()
+    comment = source[: source.index("SPOKEN_NAME = ")].rsplit("\n\n", 1)[1]
+    assert "Rail access: Sydney" in comment and "rail_topics.example.json" not in comment

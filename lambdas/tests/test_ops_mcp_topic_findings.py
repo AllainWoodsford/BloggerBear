@@ -440,6 +440,24 @@ def test_a_subjects_older_finding_behind_another_subjects_48_newer_ones_is_still
     assert column(result, "Summary (unverified)") == ["south new", "south old"]
 
 
+def test_a_subjects_draft_budget_counts_only_the_48_the_run_drafts(aws):
+    """over_draft_limit is the run's: the summaries of the subject's newest 48, which the daily
+    run drafts from, not of every one of its Findings the read held."""
+    put_topic(aws, findings_window_hours=192)
+    for minutes in range(48):
+        put_finding(aws, minutes / 60, subjects=["north"], summary="n" * 500)  # 24,000 characters
+    for hours in (2, 3):
+        put_finding(aws, hours, subjects=["north"], summary="o" * 20_000)  # past the run's 48th
+
+    result = ask(next_article=True, subject="north", limit=3)
+
+    assert result["count"] == 50 and result["over_draft_limit"] is False
+    assert "longer than the draft reads" not in result["spoken"]
+
+    put_finding(aws, 0.5 / 60, subjects=["north"], summary="w" * 20_000)  # now among the newest 48
+    assert ask(next_article=True, subject="north", limit=3)["over_draft_limit"] is True
+
+
 def test_a_subject_with_more_findings_than_the_run_reads_says_the_run_reads_48(aws, monkeypatch):
     put_topic(aws, findings_window_hours=192)
     for minutes in range(52):

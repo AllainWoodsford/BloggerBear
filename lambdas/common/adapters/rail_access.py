@@ -34,7 +34,9 @@ then the longest unattempted, so a topic with several cities rotates through the
 and within the tick's budget, the scene first and the network refreshed only when there is
 nothing new to measure: (a) the newest Sentinel-2 L2A scene over the whole site (Earth Search
 STAC, free, no key); a scene the site already has is nothing new. Then the site's network is read
-from its object (`_load_network`). (b) No usable network (none stored, one that cannot be read, or
+from its object (`_load_network`); one the record names for this polygon that S3 fails to hand back
+this time is not a missing one: the site waits for the next tick (`last_error` "network_read") and
+keeps it. (b) No usable network (none stored, one the record does not name that cannot be read, or
 one fetched for another polygon: each carries its polygon's `site_key`): fetch it now through the
 Overpass API (common/osm.py) when OSM_RESERVE_SECONDS remain, with the rest of the budget less
 FIRST_FETCH_MARGIN_SECONDS (a big city's query runs for most of a minute); a fetch that takes that
@@ -274,11 +276,14 @@ MAX_HISTORY_STATIONS = 2000
 NEWEST_ONLY_KEYS = ("stations", "flags", "suggestions", "deserts")
 
 # What the operator's assistant may say about a rail topic's sites (status): the shared codes, and
-# this adapter's own "osm" (a site with no usable network, so it waits). The network's own
-# refresh failures are an input's errors, in osm.ERROR_WORDS (a code not in them: "another error").
+# this adapter's own "osm" (a site with no usable network, so it waits) and NETWORK_READ_ERROR (its
+# stored network could not be read this tick, so it waits and keeps it). The network's own refresh
+# failures are an input's errors, in osm.ERROR_WORDS (a code not in them: "another error").
+NETWORK_READ_ERROR = "network_read"
 STATUS_WORDS = {
     **vision_sites.STATUS_WORDS,
     "osm": ("source", "its OpenStreetMap rail data couldn't be fetched"),
+    NETWORK_READ_ERROR: ("source", "its stored rail network couldn't be read"),
 }
 _NETWORK_WORDS = {code: ("source", words) for code, words in osm.ERROR_WORDS.items()}
 # Fixed words for the measure and the input the status reports.
@@ -456,9 +461,13 @@ class RailAccessAdapter(Adapter):
                 continue
             outcome = self._visit(site, record, config, now, budget, topic_id)
             if outcome == DEFERRED:
-                # Not an attempt: the site keeps its place and goes ahead of those worked on.
-                record["last_error"] = _error(now, "time_budget", "next tick")
-                vision_decisions.site_line(site["id"], "deferred", code="time_budget", budget=budget)
+                # Not an attempt: the site keeps its place and goes ahead of those worked on. It waits
+                # for time, unless the visit stamped another reason (NETWORK_READ_ERROR).
+                if _stamped_code(record, now) is None:
+                    record["last_error"] = _error(now, "time_budget", "next tick")
+                vision_decisions.site_line(
+                    site["id"], "deferred", code=_stamped_code(record, now), budget=budget
+                )
                 continue
             record["last_attempt_at"] = now.isoformat()
             if outcome is not None:
@@ -508,7 +517,9 @@ class RailAccessAdapter(Adapter):
         # polygon or parameters is a new request, so it is sent at once.
         refused = new_scene and _refused_before(record, scene["id"], now, key, worker_params(config))
         new_scene = new_scene and not refused
-        network = self._load_network(site, record, key, topic_id)
+        network = self._load_network(site, record, key, topic_id, now)
+        if network is DEFERRED:
+            return DEFERRED  # its stored network could not be read this time (NETWORK_READ_ERROR)
         if network is None:
             # (b) No usable network: none yet, or the old polygon's (it is never measured against).
             # Entered with OSM_RESERVE_SECONDS left, as a refresh is, but it may take the rest of
@@ -587,15 +598,25 @@ class RailAccessAdapter(Adapter):
         self._networks[site["id"]] = network
         return {"site_id": site["id"], "scene_id": scene["id"]}
 
-    def _load_network(self, site: dict, record: dict, key: str, topic_id: str) -> dict | None:
+    def _load_network(
+        self, site: dict, record: dict, key: str, topic_id: str, now: datetime
+    ) -> dict | str | None:
         """The site's network as this tick uses it, read from its object (the one store the tick's
         fetches and prefetch_networks both write, so whichever wrote last), or None when there is no
-        usable one: none stored, one that cannot be read, or one for another polygon (`key`). The
-        record's NETWORK_FIELDS are made to say what was read, or dropped when nothing usable was:
-        the record never claims a network the object does not hold. A network newer than the one
-        the record knew was fetched since (a prefetch), so an older refresh failure no longer
-        holds. A network a state written before could not yet move to its object serves from the
-        record, as it did then."""
+        usable one: none stored, one for another polygon (`key`), a payload that is not a network,
+        or one that cannot be read and that the record does not name. The record's NETWORK_FIELDS
+        are made to say what was read, or dropped when nothing usable was: the record never claims a
+        network the object does not hold. A network newer than the one the record knew was fetched
+        since (a prefetch), so an older refresh failure no longer holds. A network a state written
+        before could not yet move to its object serves from the record, as it did then.
+
+        DEFERRED when reading the object fails (load_network raises: a read timeout, a 500, a body
+        cut off; a missing object is None, not a failure) while the record names this polygon's
+        network: the object was written and is most likely still there, so the visit waits for the
+        next tick with `last_error` NETWORK_READ_ERROR, and the record keeps NETWORK_FIELDS and any
+        `network_error` (its NETWORK_RETRY_HOURS backoff). Fetching it again would spend most of the
+        tick on Overpass for a network S3 still holds. A body that is not JSON (ValueError) was read
+        whole and is no network, now or next tick, so it is fetched again like a missing one."""
         inline = record.get("network")
         if isinstance(inline, dict):
             if inline.get("site_key") == key:
@@ -603,8 +624,14 @@ class RailAccessAdapter(Adapter):
             record.pop("network")  # the old polygon's: never measured against, as before
         try:
             network = self.load_network(topic_id, site["id"])
-        except Exception as exc:  # noqa: BLE001 - a network that cannot be read is no network
+        except ValueError as exc:  # read, but not JSON: no network, as a payload that is not one
+            print(f"rail_access: the network stored for {site['id']} is not one: {exc!r}")
+            network = None
+        except Exception as exc:  # noqa: BLE001 - not read this time: the visit waits, or no network
             print(f"rail_access: could not read the network for {site['id']}: {exc!r}")
+            if record.get("network_site_key") == key:
+                record["last_error"] = _error(now, NETWORK_READ_ERROR, f"{type(exc).__name__}: {exc}")
+                return DEFERRED
             network = None
         if not (isinstance(network, dict) and network.get("site_key") == key):
             _forget_network(record)

@@ -353,6 +353,89 @@ def test_an_article_on_a_subject_keeps_its_older_findings_behind_another_subject
     assert "North 59." not in prompt
 
 
+# Re-Write's reads for an article on a subject, called directly: the article as the daily cycle
+# stores it, on a topic whose window reaches back two weeks.
+_CREATED = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
+_WIDE_TOPIC = {**TOPIC, "findings_window_hours": 336}
+
+
+def _on(subject):
+    return {"topic_id": TOPIC["topic_id"], "created_at": _CREATED.isoformat(), "subject": subject}
+
+
+def _put_subject_findings(subject, count, *, hours_before=60, prefix=None):
+    """`count` Findings on `subject`, one every 30 minutes up to `hours_before` the article."""
+    for n in range(count):
+        captured = _CREATED - timedelta(hours=hours_before) + timedelta(minutes=30 * n)
+        _table("Findings").put_item(
+            Item={
+                "topic_id": TOPIC["topic_id"],
+                "captured_at": captured.isoformat(),
+                "summary": f"{prefix or subject} {n:03d}",
+                "subjects": [subject],
+            }
+        )
+
+
+def test_an_article_on_a_subject_with_more_than_48_of_its_own_is_rewritten_from_the_newest_48(aws):
+    """The daily cycle drafted from the subject's newest 48 (MAX_WINDOW_FINDINGS): Re-Write keeps
+    those, not the 50 the window holds."""
+    _put_subject_findings("south", 50)
+
+    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == [f"south {n:03d}" for n in range(49, 1, -1)]
+    assert rewrite.MAX_FINDINGS == daily_cycle_handler.MAX_WINDOW_FINDINGS == 48
+
+
+def test_with_none_on_its_subject_it_falls_back_to_the_windows_newest_48_and_says_so(aws, capsys):
+    _put_subject_findings("north", 50)
+
+    findings = rewrite._findings_for(_on("east"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == [f"north {n:03d}" for n in range(49, 1, -1)]
+    assert (
+        "rewrite: no findings on the article's subject 'east' in its window; rewriting from the "
+        "window's 48 newest findings instead"
+    ) in capsys.readouterr().out
+
+
+def test_a_read_that_stops_at_its_limit_or_the_page_cap_says_so(aws, capsys, monkeypatch):
+    """As the daily cycle's: a window holding more than SUBJECT_READ_LIMIT, or more than the read's
+    pages hold, leaves the subject's older Findings unread, and the log says where it stopped."""
+    _put_subject_findings("south", 1, hours_before=200, prefix="south old")
+    _put_subject_findings("north", rewrite.SUBJECT_READ_LIMIT, hours_before=100)
+    _put_subject_findings("south", 1, hours_before=1, prefix="south new")
+
+    findings = rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+
+    assert [f["summary"] for f in findings] == ["south new 000"]
+    assert (
+        "rewrite: subject 'south' topic_id=github-trending read 192 findings of its window and stopped "
+        "at its read limit (192); any of its older ones were not read"
+    ) in capsys.readouterr().out
+
+    page = dynamo.list_findings_page
+
+    def ten_a_page(topic_id, *, since=None, limit, start_key=None):  # a megabyte of big Findings
+        return page(topic_id, since=since, limit=min(limit, 10), start_key=start_key)
+
+    monkeypatch.setattr(dynamo, "list_findings_page", ten_a_page)
+    rewrite._findings_for(_on("south"), _WIDE_TOPIC)
+    assert (
+        f"rewrite: subject 'south' topic_id=github-trending read {dynamo.FINDINGS_PAGES_MAX * 10} "
+        "findings of its window and stopped at the page cap; any of its older ones were not read"
+    ) in capsys.readouterr().out
+
+
+def test_a_read_that_holds_the_whole_window_says_nothing_of_stopping(aws, capsys):
+    _seed_on_subject("south")
+
+    rewrite._findings_for(_on("south"), {**TOPIC, "findings_window_hours": 96})
+
+    assert "stopped at" not in capsys.readouterr().out
+
+
 def test_an_article_without_a_subject_keeps_every_finding_in_its_window(aws):
     _seed_on_subject(None)
 

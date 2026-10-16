@@ -185,6 +185,56 @@ def test_a_day_subjects_bounds_are_the_editorial_goals_and_a_site_names():
     assert day_subject.day_subject_error(at_the_bounds) is None
 
 
+def test_raw_text_far_past_its_bound_is_refused_before_it_is_cleaned(monkeypatch):
+    """Cleaning costs time and memory in proportion to the raw text, so text longer than
+    DAY_SUBJECT_RAW_TEXT_MULTIPLE times its bound is refused without being cleaned, with the same
+    words, even when it would clean down to almost nothing. Within that, it is judged once cleaned."""
+    assert day_subject.DAY_SUBJECT_RAW_TEXT_MULTIPLE == 4
+    most = day_subject.MAX_DAY_SUBJECT_TEXT_CHARS
+    padded = "m" + " " * (4 * most) + "m"  # cleans to "m m"
+    calls = []
+    monkeypatch.setattr(day_subject, "plain_text", lambda text: calls.append(text) or text.strip())
+
+    returned = DaySubject(key="north", label="N", mandate=padded, style="S")
+    assert day_subject.day_subject_error(returned) == f"has a mandate longer than {most} characters"
+    assert padded not in calls  # refused before plain_text saw it
+
+    monkeypatch.undo()
+    indented = DaySubject(key="north", label="N", mandate="m" + " " * (4 * most - 2) + "m", style="S")
+    assert day_subject.day_subject_error(indented) is None  # 4,000 raw, "m m" cleaned
+    label = "N" + "\u200b" * (4 * day_subject.MAX_DAY_SUBJECT_LABEL_CHARS)
+    assert day_subject.day_subject_error(DaySubject(key="north", label=label, mandate="M", style="S")) == (
+        f"has a label longer than {day_subject.MAX_DAY_SUBJECT_LABEL_CHARS} characters"
+    )
+
+
+def test_clean_subjects_looks_at_a_bounded_number_of_values():
+    """A hook that keeps yielding duplicates or junk costs at most MAX_SUBJECT_VALUES_EXAMINED
+    values, never the research tick's timeout (and its Finding); a set past that is refused before it
+    is sorted, so the research tick's log says the subjects were dropped."""
+    assert day_subject.MAX_SUBJECT_VALUES_EXAMINED == 1_000
+    pulled = []
+
+    def many(value):  # as good as endless (bounded, so a regression fails here rather than hangs)
+        for _ in range(100 * day_subject.MAX_SUBJECT_VALUES_EXAMINED):
+            pulled.append(value)
+            yield value
+
+    assert day_subject.clean_subjects(many("k0")) == ["k0"]
+    assert len(pulled) == day_subject.MAX_SUBJECT_VALUES_EXAMINED
+    pulled.clear()
+    assert day_subject.clean_subjects(many("not a key")) == []
+    assert len(pulled) == day_subject.MAX_SUBJECT_VALUES_EXAMINED
+    late = [*(["junk!"] * 1_000), "sydney"]  # the 1,001st value is not looked at
+    assert day_subject.clean_subjects(late) == []
+
+    at_the_cap = {f"s{n:04d}" for n in range(day_subject.MAX_SUBJECT_VALUES_EXAMINED)}
+    assert day_subject.clean_subjects(at_the_cap) == [f"s{n:04d}" for n in range(10)]
+    for too_many in ({*at_the_cap, "s9999"}, frozenset(range(10**6))):
+        with pytest.raises(ValueError, match="more than the 1000 read"):
+            day_subject.clean_subjects(too_many)
+
+
 def test_a_day_subject_reaches_the_prompts_as_one_plain_line_each(monkeypatch):
     """A newline in a label, mandate or style (folded in from a topic's config, say) could start a
     prompt section of its own: each is one plain line by the time the daily cycle sees it, cut to

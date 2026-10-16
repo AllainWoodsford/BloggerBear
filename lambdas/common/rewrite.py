@@ -67,7 +67,7 @@ from common.dynamo import (
     update_article_after_rewrite,
     update_article_status,
 )
-from common.findings_window import SUBJECT_READ_LIMIT, findings_window_hours
+from common.findings_window import SUBJECT_READ_LIMIT, findings_window_hours, read_stopped_at
 from common.model_pricing import model_label
 from common.model_routing import resolve_model
 from common.relevance import topic_label
@@ -267,9 +267,10 @@ def _findings_for(article: dict, topic: dict) -> list[dict]:
     An article written on a rotating topic's day subject (its `subject`, common/day_subject.py)
     was drafted from that subject's Findings only, so only those are kept, at most MAX_FINDINGS of
     them, as the daily cycle caps them: the window is read further first (SUBJECT_READ_LIMIT, as
-    the daily cycle reads it), so other subjects' newer Findings never push the subject's out. The
-    fresh-data review and the compliance review then see its own subject's research, not its
-    neighbours'. If none of the window's Findings report it (the subject has since left the
+    the daily cycle reads it), so other subjects' newer Findings never push the subject's out; when
+    the window holds more than that read reaches, the log says where it stopped, as the daily cycle's
+    does. The fresh-data review and the compliance review then see its own subject's research, not
+    its neighbours'. If none of the window's Findings report it (the subject has since left the
     topic's rota, say), the newest MAX_FINDINGS of the whole window are used and the log says so:
     never an empty prompt."""
     created_at = article.get("created_at") or datetime.now(UTC).isoformat()
@@ -278,9 +279,15 @@ def _findings_for(article: dict, topic: dict) -> list[dict]:
     if not isinstance(subject, str) or not subject:
         findings = list_recent_findings(article["topic_id"], limit=MAX_FINDINGS, since=since)
         return [f for f in findings if (f.get("captured_at") or "") <= created_at]
-    findings, _, _ = list_findings(
+    findings, _, more = list_findings(
         article["topic_id"], since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None
     )
+    if more:
+        print(
+            f"rewrite: subject {subject!r:.70} topic_id={article['topic_id']} read {len(findings)} findings "
+            f"of its window and stopped at {read_stopped_at(len(findings))}; any of its older ones were "
+            "not read"
+        )
     findings = [f for f in findings if (f.get("captured_at") or "") <= created_at]
     own = subject_findings(findings, subject)
     if own or not findings:
