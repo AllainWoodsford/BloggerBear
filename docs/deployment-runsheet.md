@@ -874,7 +874,17 @@ shadow them, and the handler would answer `not_cool`).
      A changed ETag is said and exits 1: every benchmark run then refuses that scene ("input
      changed") until the manifest is re-pinned with `--write`, which is a new input, not the one
      earlier runs read. `coverage` was run on 16 October too (its run file is in
-     `docs/hackathon/evidence/runs/`); it need not be re-run for the session.
+     `docs/hackathon/evidence/runs/`); it need not be re-run for the session, and when it is (a
+     re-pinned scene, or a scene added), it runs anywhere with internet, about 60 range requests
+     and 0.7 MB a scene:
+
+     ```sh
+     python scripts/vision_eval.py coverage --write --out docs/hackathon/evidence/runs
+     ```
+
+     ```powershell
+     py -3.11 scripts\vision_eval.py coverage --write --out docs\hackathon\evidence\runs
+     ```
 6. **The COOL venv**, on the product's own Python, with the system site-packages visible so the
    product's `cv2` and numpy are the ones imported:
 
