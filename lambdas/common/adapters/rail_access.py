@@ -33,16 +33,19 @@ and within the tick's budget, the scene first and the network refreshed only whe
 nothing new to measure: (a) the newest Sentinel-2 L2A scene over the whole site (Earth Search
 STAC, free, no key); a scene the site already has is nothing new. (b) No usable cached network
 (none, or one fetched for another polygon: each carries its polygon's `site_key`): fetch it now
-through the Overpass API (common/osm.py) with OSM_RESERVE_SECONDS; a failure is `last_error`
-"osm" and the site waits. (c) A new scene: the worker measures it against the cached network,
-stale or not (the entry says `network_stale`), when MEASURE_RESERVE_SECONDS remain, else next
-tick. (d) Nothing new and the network older than `osm_ttl_days`: fetch it again with the time
-this tick would not otherwise use; a failure keeps the cached network, records `network_error`
-and is not tried again for NETWORK_RETRY_HOURS. A slow or failing Overpass therefore never stops
-a city with a cached network from being measured. A scene the worker refuses for what it is
-(REFUSED_SCENE_CODES, recorded as `failed_scene`) is nothing new until a newer scene appears or
-NETWORK_RETRY_HOURS pass, so it is not sent again every hour and (d) still gets its ticks. Not
-measured is never "nothing there".
+through the Overpass API (common/osm.py) when OSM_RESERVE_SECONDS remain, with the rest of the
+budget less FIRST_FETCH_MARGIN_SECONDS (a big city's query runs for most of a minute); a fetch that
+takes that long leaves the scene to the next tick, which measures it against the network now
+cached. A failure is `last_error` "osm" and the site waits for the next tick (no
+NETWORK_RETRY_HOURS: nothing serves meanwhile). (c) A new scene: the worker measures it against
+the cached network, stale or not (the entry says `network_stale`), when MEASURE_RESERVE_SECONDS
+remain, else next tick. (d) Nothing new and the network older than `osm_ttl_days`: fetch it again
+with the time this tick would not otherwise use, within OSM_RESERVE_SECONDS; a failure keeps the
+cached network, records `network_error` and is not tried again for NETWORK_RETRY_HOURS. A slow
+or failing Overpass therefore never stops a city with a cached network from being measured. A
+scene the worker refuses for what it is (REFUSED_SCENE_CODES, recorded as `failed_scene`) is
+nothing new until a newer scene appears or NETWORK_RETRY_HOURS pass, so it is not sent again every
+hour and (d) still gets its ticks. Not measured is never "nothing there".
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py, the rail profile) looks at the figure and the evidence, may
@@ -135,8 +138,24 @@ _FLOAT_KEYS = vision_sites.FLOAT_KEYS + (
 )  # fmt: skip
 
 # The tick's 120 s, shared out (docs §5 risk 1): the network is fetched only with this much of the
-# measuring budget left and must finish within it (both Overpass hops included) ...
+# measuring budget left, and a refresh of a cached one (c, d) must finish within it (both Overpass
+# hops included) ...
 OSM_RESERVE_SECONDS = 30.0
+# ... but a site's first network (b: none cached for its polygon) may take the rest of the measuring
+# budget less this margin, never less than OSM_RESERVE_SECONDS (first_fetch_seconds). A big city's
+# query runs for most of a minute on Overpass (Sydney's took 54 s from a workstation on 16 October),
+# so it could never succeed within 30 s, and until it does nothing is measured. The margin is for
+# what follows the reply: the body's transfer once bytes flow (a read timeout does not bound it),
+# parsing and capping several MB of it, then the tick stores the state and writes its lines. With
+# the default budget of 70 s the fetch gets about 60 s, at the 80 s cap about 70 s. A refresh (c,
+# d) keeps OSM_RESERVE_SECONDS: a cached network serves meanwhile. A long first fetch leaves under
+# MEASURE_RESERVE_SECONDS, so its scene is measured on the next tick, against the cached network.
+FIRST_FETCH_MARGIN_SECONDS = 10.0
+# ... and each of its Overpass hops reads for at most this long, its query's `[timeout:]` the same
+# (common/osm.py's TIMEOUT_SECONDS says why), where a refresh keeps osm.TIMEOUT_SECONDS (25 s). The
+# deadline is the tighter bound with today's constants (at the 80 s budget cap a hop reads for at
+# most 80 - 10 - 5 = 65 s, 5 s being the connect allowance); this one holds should the cap rise.
+FIRST_FETCH_TIMEOUT_SECONDS = 75.0
 # ... the worker is asked only with this much left (vision_sites.time_to_measure) ...
 MEASURE_RESERVE_SECONDS = vision_sites.MEASURE_RESERVE_SECONDS
 # ... and is waited on for at most this long (its own timeout is 60 s; the client's default 90 s
@@ -145,7 +164,12 @@ WORKER_READ_TIMEOUT = vision_sites.WORKER_READ_TIMEOUT
 # After a refresh of a stale network fails, the cached one keeps serving and the refresh waits
 # this long: Overpass fails in spells (429s, 504s, timeouts), each try may take OSM_RESERVE_SECONDS
 # of a tick, and a struggling mirror asked again every hour only stays struggling. Four tries a day
-# is still far inside the 30-day TTL.
+# is still far inside the 30-day TTL. A failed FIRST fetch (b) does not wait: with no network nothing
+# is measured, so every tick skipped is a tick lost, and the ticks are already the retry's pace (the
+# topic's research interval: hourly by default, and the example rail topics set no other). A spell
+# like the one seen on 16 October (502s and 500s from both endpoints for several minutes) is over
+# by the next tick, and a polygon too big to ever answer is the operator's to shrink (the status
+# says "osm", the runsheet says what to do).
 NETWORK_RETRY_HOURS = 6
 # A scene the worker refuses for what it is (the site is outside it or too big for the worker's
 # window, the request does not fit the contract) would be refused again for the same polygon and
@@ -262,6 +286,14 @@ def worker_network(network: dict) -> dict:
     return {key: network.get(key) for key in ("ways", "stations", "pois", "fetched_at")}
 
 
+def first_fetch_seconds(remaining: float) -> float:
+    """How long a site's first network fetch (b) may take, from now, with `remaining` seconds of the
+    measuring budget left (at least OSM_RESERVE_SECONDS, or it is not started): the rest less
+    FIRST_FETCH_MARGIN_SECONDS, never less than OSM_RESERVE_SECONDS. Never more than `remaining`, so
+    it ends inside the budget, as a refresh does."""
+    return max(OSM_RESERVE_SECONDS, remaining - FIRST_FETCH_MARGIN_SECONDS)
+
+
 class RailAccessAdapter(Adapter):
     uses_previous_state = True
     keeps_running_state = True
@@ -375,10 +407,16 @@ class RailAccessAdapter(Adapter):
         network = record.get("network")
         if not (isinstance(network, dict) and network.get("site_key") == key):
             # (b) No usable network: none yet, or the old polygon's (it is never measured against).
+            # Entered with OSM_RESERVE_SECONDS left, as a refresh is, but it may take the rest of
+            # the budget less FIRST_FETCH_MARGIN_SECONDS: nothing is measured until it succeeds.
             record.pop("network", None)
-            if budget.remaining() < OSM_RESERVE_SECONDS:
+            remaining = budget.remaining()
+            if remaining < OSM_RESERVE_SECONDS:
                 return DEFERRED
-            network = self._fetch_network(site, record, now, key)
+            network = self._fetch_network(
+                site, record, now, key,
+                seconds=first_fetch_seconds(remaining), timeout=FIRST_FETCH_TIMEOUT_SECONDS,
+            )  # fmt: skip
             if network is None:
                 error = record.get("network_error") or {}
                 record["last_error"] = _error(now, "osm", error.get("detail") or "no network fetched yet")
@@ -394,7 +432,9 @@ class RailAccessAdapter(Adapter):
                 and not _retry_waits(record, now)
                 and budget.remaining() >= OSM_RESERVE_SECONDS
             ):
-                self._fetch_network(site, record, now, key)
+                self._fetch_network(
+                    site, record, now, key, seconds=OSM_RESERVE_SECONDS, timeout=osm.TIMEOUT_SECONDS
+                )
             if not refused:
                 record.pop("last_error", None)
             return None
@@ -442,17 +482,20 @@ class RailAccessAdapter(Adapter):
         record.pop("failed_scene", None)
         return {"site_id": site["id"], "scene_id": scene["id"]}
 
-    def _fetch_network(self, site: dict, record: dict, now: datetime, key: str) -> dict | None:
-        """The site's network from Overpass within OSM_RESERVE_SECONDS (both hops included), kept
-        in `record` with the polygon's `site_key`; None on failure, with `network_error` recorded and
-        whatever was cached left as it was."""
+    def _fetch_network(
+        self, site: dict, record: dict, now: datetime, key: str, *, seconds: float, timeout: float
+    ) -> dict | None:
+        """The site's network from Overpass within `seconds` from now (both hops included, each
+        reading for at most `timeout`), kept in `record` with the polygon's `site_key`; None on
+        failure, with `network_error` recorded and whatever was cached left as it was."""
         try:
             network = self.fetch_network(
                 site["polygon"],
                 http_post=self.http_post,
                 now=now,
-                deadline=self.clock() + OSM_RESERVE_SECONDS,
+                deadline=self.clock() + seconds,
                 clock=self.clock,
+                timeout=timeout,
             )
         except osm.OsmError as exc:
             record["network_error"] = _error(now, exc.code, exc.detail)
