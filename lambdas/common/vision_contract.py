@@ -25,14 +25,21 @@ A reply is either {"version": 1, "ok": true, "task": ..., ...measurement} or
 
 Asset URLs must start with an allowed prefix (by default the public `sentinel-cogs` bucket): the
 worker fetches whatever URL it is given, so the list is what stops it being pointed anywhere else.
+
+`cpu_identity` lives here too: the worker's reply (`build.cpu`), its evidence line, the benchmark
+and the operator's assistant all name the CPU the same way, and this is the one module all three
+packages ship (the worker's zip and the COOL image copy it beside the handler; the assistant's
+package copies `common/` whole).
 """
 
 from __future__ import annotations
 
 import math
+import platform
 import re
 import unicodedata
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 VERSION = 1
@@ -357,6 +364,47 @@ def error(code: str, detail: str = "") -> dict:
     if code not in ERROR_CODES:
         code = "internal"
     return {"version": VERSION, "ok": False, "error": code, "detail": detail[:500]}
+
+
+# ARM's CPU part numbers (/proc/cpuinfo "CPU part") for the cores AWS's Graviton generations use.
+ARM_PARTS = {
+    "0xd0c": "Neoverse N1 (Graviton2)",
+    "0xd40": "Neoverse V1 (Graviton3)",
+    "0xd4f": "Neoverse V2 (Graviton4)",
+    "0xd84": "Neoverse V3 (Graviton5?)",
+}
+_CPUINFO_PATH = Path("/proc/cpuinfo")
+# /proc/cpuinfo, read once per process (None until then): a warm worker names its CPU on every
+# invoke, and the file does not change under it.
+_cpuinfo_cache: str | None = None
+
+
+def _read_cpuinfo() -> str:
+    global _cpuinfo_cache
+    if _cpuinfo_cache is None:
+        try:
+            _cpuinfo_cache = _CPUINFO_PATH.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            _cpuinfo_cache = ""  # no procfs (Windows, macOS): the machine name stands in
+    return _cpuinfo_cache
+
+
+def cpu_identity(cpuinfo: str | None = None, machine: str | None = None) -> str:
+    """A readable name for the CPU: the x86 model name, or the Arm core and Graviton generation
+    (ARM_PARTS), from `cpuinfo` (/proc/cpuinfo's text; read once per process when not given), or
+    `machine` (platform.machine()) when neither names it. A fixed, code-derived string: the
+    evidence line's `cpu` kind takes it, and the benchmark reports it per row."""
+    machine = machine or platform.machine()
+    if cpuinfo is None:
+        cpuinfo = _read_cpuinfo()
+    for line in cpuinfo.splitlines():
+        key, _, value = line.partition(":")
+        key, value = key.strip().lower(), value.strip()
+        if key == "model name" and value:
+            return value
+        if key == "cpu part" and value:
+            return ARM_PARTS.get(value.lower(), f"Arm core {value}")
+    return machine or "unknown"
 
 
 def validate_reply(reply: object) -> dict:

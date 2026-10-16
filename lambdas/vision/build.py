@@ -10,16 +10,23 @@ recorded beside it, and a `cool` request answered by any other build fails rathe
 from __future__ import annotations
 
 import hashlib
+import os
 import platform
 import re
 
 import cv2
 
+from common.vision_contract import cpu_identity
+
 
 def build_info() -> dict:
     """`opencv_version`, `build_sha256` (of the full build information), `arch` (the machine),
-    `kleidicv` (whether the build says it uses KleidiCV) and `cpu_baseline` / `cpu_dispatch` as
-    the build reports them."""
+    `kleidicv` (whether the build says it uses KleidiCV), `cpu_baseline` / `cpu_dispatch` as the
+    build reports them, and the CPU the build ran on: `cpu` (common/vision_contract.cpu_identity:
+    the x86 model name or the Arm core and Graviton generation, which answers which CPU Lambda's
+    arm64 gives the worker from its first invoke) and `cpu_count` (the cores this process may
+    use). The fingerprint stays the hash of the build information alone: the same build on
+    another CPU is the same build."""
     text = cv2.getBuildInformation()
     return {
         "opencv_version": cv2.__version__,
@@ -28,7 +35,18 @@ def build_info() -> dict:
         "kleidicv": bool(re.search(r"kleidicv[^\n]*\b(YES|ON|enabled|\d+\.\d+)", text, re.IGNORECASE)),
         "cpu_baseline": _field(text, "Baseline"),
         "cpu_dispatch": _field(text, "Dispatched code generation"),
+        "cpu": cpu_identity(),
+        "cpu_count": _cpu_count(),
     }
+
+
+def _cpu_count() -> int | None:
+    """The cores this process may run on: the affinity mask where there is one (Linux), else the
+    machine's count (Windows, macOS), else None."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return os.cpu_count()
 
 
 def matches(info: dict, expected_sha256: str | None) -> bool:

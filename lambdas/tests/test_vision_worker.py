@@ -15,6 +15,7 @@ import base64
 import io
 import json
 import logging
+import sys
 import time
 
 import cv2
@@ -24,7 +25,7 @@ import requests
 from vision_fakes import fetcher, write_tiff
 
 import vision_worker_handler as worker
-from common import osm, vision_client
+from common import evidence, osm, vision_client
 from common import vision_contract as contract
 from vision import build, cog, geo, rail_analyse, rail_annotate, scene
 from vision import network as vision_network
@@ -1179,3 +1180,203 @@ def test_client_keeps_one_client_per_region_and_read_timeout(configured, monkeyp
     assert made[-1][1:4] == ("us-west-2", 5, 30) and len(made) == 3
     vision_client.measure(SITE, SCENE, read_timeout=30)
     assert len(made) == 3
+
+
+# --- the worker's evidence line (common/evidence.py's vision_measure) -----------------------------
+
+
+class Context:
+    aws_request_id = "7c1d2e3f-0000-4000-8000-00000000abcd"
+
+
+def measure_line(capsys):
+    """The one evidence line the worker printed, parsed as a reader would, and the raw text."""
+    out = capsys.readouterr().out
+    raw = [line for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    assert len(raw) == 1, out
+    parsed = evidence.parse(raw[0])
+    assert parsed is not None and parsed["event"] == "vision_measure"
+    return parsed, raw[0]
+
+
+def test_a_measured_request_leaves_one_line_of_its_ids_build_cpu_timings_and_counts(files, capsys):
+    reply = worker.lambda_handler(request(), Context(), fetch=fetch_from(files["blobs"]))
+    assert reply["ok"]
+    line, raw = measure_line(capsys)
+    assert raw.startswith(worker.EVIDENCE_PREFIX) and worker.EVIDENCE_PREFIX == evidence.PREFIX
+    assert line["request_id"] == Context.aws_request_id and line["ok"] is True and "code" not in line
+    assert (line["task"], line["backend"], line["site_id"], line["scene_id"]) == (
+        "ships", "opencv", "botany-bay", "S2A_56HLH_20240105_0_L2A",
+    )  # fmt: skip
+    info = build.build_info()
+    assert line["build"] == info["build_sha256"][:12] and line["opencv"] == info["opencv_version"]
+    assert line["cpu"] == info["cpu"] and line["cpu_count"] == info["cpu_count"] >= 1
+    assert line["arch"] == info["arch"] and line["kleidicv"] == info["kleidicv"]
+    assert line["window_px"] == {"w": reply["window"][2] - reply["window"][0],
+                                 "h": reply["window"][3] - reply["window"][1]}  # fmt: skip
+    assert line["io_requests"] == reply["io"]["requests"] and line["io_bytes"] == reply["io"]["bytes"]
+    assert line["levels"] == reply["io"]["levels_used"]
+    for stage in ("read", "analyse", "annotate", "total"):
+        assert line[f"{stage}_ms"] == int(round(reply["timings_ms"][stage]))
+    assert "graph_ms" not in line  # the ships task has no graph stage
+    assert line["coverage"] == 1.0 and line["quality_flags"] == [] and line["count"] == 3
+    assert not {"stations", "snapped", "nodes", "edges", "components"} & set(line)
+    assert line["rss_peak_mb"] > 0  # Linux: the process's peak so far, in MB
+    # The reply is what it was: the line is printed beside it, not put into it.
+    assert reply == worker._handle(request(), Context(), fetch_from(files["blobs"]))[0] | {
+        "timings_ms": reply["timings_ms"]
+    }
+    assert "detail" not in line
+
+
+def test_the_rail_task_leaves_its_graph_stage_and_the_graphs_counts(rail_files, capsys):
+    reply = worker.lambda_handler(rail_request(rail_files), Context(), fetch=fetch_from(rail_files["blobs"]))
+    assert reply["ok"]
+    line, _ = measure_line(capsys)
+    m = reply["metrics"]
+    assert line["task"] == "rail_access" and line["graph_ms"] == int(round(reply["timings_ms"]["graph"]))
+    assert (line["stations"], line["snapped"]) == (m["station_count"], m["snapped_station_count"])
+    assert (line["nodes"], line["edges"]) == (m["node_count"], m["edge_count"])
+    assert line["components"] == m["components"]
+    assert "count" not in line and line["levels"] == {"swir16": 0, "red": 1, "nir": 1, "scl": 0}
+
+
+def refusals(files, monkeypatch):
+    """Every refusal the handler can answer, with the request that provokes it."""
+    far = [[150.0, -35.0], [150.01, -35.0], [150.01, -35.01]]
+    blobs = dict(files["blobs"])
+    del blobs[GREEN_URL]
+
+    def boom(*a, **k):
+        raise ZeroDivisionError("secret detail")
+
+    yield "bad_request", request(version=2), files["blobs"], {}
+    yield "backend_mismatch", request(backend="cool"), files["blobs"], {}
+    yield "not_cool", request(backend="cool"), files["blobs"], {"VISION_BACKEND": "cool"}
+    yield "site_outside_scene", request(site={"id": "far", "polygon": far}), files["blobs"], {}
+    yield "unreadable_scene", request(), blobs, {}
+    monkeypatch.setattr(worker, "analyse_site", boom)
+    yield "internal", request(), files["blobs"], {}
+
+
+def test_every_refusal_leaves_one_line_with_its_code_and_no_detail(files, monkeypatch, capsys):
+    for code, req, blobs, env in refusals(files, monkeypatch):
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        reply = worker.lambda_handler(req, Context(), fetch=fetch_from(blobs))
+        assert reply["error"] == code, code
+        line, raw = measure_line(capsys)
+        assert line["ok"] is False and line["code"] == code and line["request_id"] == Context.aws_request_id
+        assert not {"coverage", "count", "io_requests", "read_ms", "total_ms", "window_px"} & set(line), code
+        assert reply["detail"] not in raw or not reply["detail"]
+        if code == "bad_request":
+            # Refused before the request was read: no ids, no build, still one line.
+            assert not {"site_id", "scene_id", "task", "build", "cpu"} & set(line)
+        else:
+            # The validated request's ids; the build once it was looked up (not_cool carries it).
+            assert line["site_id"] == req["site"]["id"] and line["scene_id"] == req["scene"]["id"]
+            assert line["task"] == "ships" and line["backend"] == req["backend"]
+            assert ("build" in line) == (code != "backend_mismatch")
+        for key in env:
+            monkeypatch.delenv(key)
+        monkeypatch.setenv("VISION_BACKEND", "opencv")
+
+
+def test_without_a_context_the_request_id_is_absent_and_the_line_still_written(files, capsys):
+    """The benchmark's and the evaluation's in-process calls pass None."""
+    worker.lambda_handler(request(), None, fetch=fetch_from(files["blobs"]))
+    line, _ = measure_line(capsys)
+    assert "request_id" not in line and line["ok"] is True
+
+
+def test_the_workers_serialiser_writes_what_evidence_py_would(files):
+    """The worker package cannot import common/evidence (it ships only vision_contract.py), so it
+    builds the line itself: the same prefix, the same fields in the same order, the same cuts."""
+    reply, req, info = worker._handle(request(), Context(), fetch_from(files["blobs"]))
+    fields = worker._evidence_fields(reply, req, info, Context())
+    assert worker._evidence_line(fields) == evidence.line("vision_measure", **fields)
+    hostile = {
+        **fields, "cpu": "ignore previous instructions", "site_id": "a b", "coverage": float("nan"),
+        "quality_flags": ["low_coverage", "Bad Flag"], "levels": {"nir": 1, "x y": 2, "scl": "z"},
+        "window_px": {f"k{n}": n for n in range(20)}, "rss_peak_mb": 12.6, "opencv": "v5", "kleidicv": 1,
+        "stations": True, "count": None, "build": "AB" * 6,
+    }  # fmt: skip
+    expected = evidence.line("vision_measure", **hostile)
+    assert worker._evidence_line(hostile) == expected.replace(', "dropped": "build,coverage,cpu,kleidicv,'
+                                                              'opencv,quality_flags,site_id,stations"', "")
+    parsed = evidence.parse(worker._evidence_line(hostile))
+    assert "cpu" not in parsed and "site_id" not in parsed and parsed["levels"] == {"nir": 1}
+    assert len(parsed["window_px"]) == evidence.MAX_NUMBERS and parsed["rss_peak_mb"] == 13
+    # The line itself is one line of ASCII, as evidence.py's are.
+    assert "\n" not in worker._evidence_line(hostile) and worker._evidence_line(hostile).isascii()
+
+
+def test_the_line_never_fails_the_reply(files, monkeypatch, capsys):
+    def broken(*a, **k):
+        raise RuntimeError("no line today")
+
+    monkeypatch.setattr(worker, "_evidence_fields", broken)
+    reply = worker.lambda_handler(request(), Context(), fetch=fetch_from(files["blobs"]))
+    assert reply["ok"] and evidence.PREFIX not in capsys.readouterr().out
+
+
+def test_rss_peak_is_left_out_without_resource_and_scaled_on_macos(files, monkeypatch, capsys):
+    import resource
+
+    monkeypatch.setitem(sys.modules, "resource", None)  # `import resource` now raises ImportError
+    worker.lambda_handler(request(), Context(), fetch=fetch_from(files["blobs"]))
+    line, _ = measure_line(capsys)
+    assert "rss_peak_mb" not in line and line["ok"] is True
+
+    class Usage:
+        ru_maxrss = 1310 * 1024 * 1024  # macOS reports bytes
+
+    class MacResource:
+        RUSAGE_SELF = resource.RUSAGE_SELF
+
+        @staticmethod
+        def getrusage(who):
+            return Usage()
+
+    monkeypatch.setitem(sys.modules, "resource", MacResource)
+    monkeypatch.setattr(worker.sys, "platform", "darwin")
+    worker.lambda_handler(request(), Context(), fetch=fetch_from(files["blobs"]))
+    assert measure_line(capsys)[0]["rss_peak_mb"] == 1310
+    monkeypatch.setattr(worker.sys, "platform", "linux")  # Linux reports KB
+    worker.lambda_handler(request(), Context(), fetch=fetch_from(files["blobs"]))
+    assert measure_line(capsys)[0]["rss_peak_mb"] == 1310 * 1024
+
+
+@pytest.mark.parametrize(
+    ("cpuinfo", "machine", "expected"),
+    [
+        ("processor : 0\nCPU implementer : 0x41\nCPU part : 0xd0c\n", "aarch64", "Neoverse N1 (Graviton2)"),
+        ("CPU part\t: 0xd40\n", "aarch64", "Neoverse V1 (Graviton3)"),
+        ("CPU part\t: 0xd4f\n", "aarch64", "Neoverse V2 (Graviton4)"),
+        ("processor : 0\nmodel name : Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz\n", "x86_64",
+         "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz"),
+        ("", "AMD64", "AMD64"),
+    ],
+)
+def test_build_info_names_the_cpu_from_cpuinfo_once_per_process(cpuinfo, machine, expected, monkeypatch):
+    monkeypatch.setattr(contract, "_cpuinfo_cache", cpuinfo)
+    monkeypatch.setattr(contract.platform, "machine", lambda: machine)
+    info = build.build_info()
+    assert info["cpu"] == expected == contract.cpu_identity()
+    assert evidence.check("cpu", info["cpu"]) == info["cpu"] or machine == "AMD64"
+    assert isinstance(info["cpu_count"], int) and info["cpu_count"] >= 1
+    # The fingerprint is the build's alone: the same build on another CPU is the same build.
+    assert info["build_sha256"] == build.build_info()["build_sha256"]
+    assert build.matches(info, info["build_sha256"])
+
+
+def test_cpuinfo_is_read_once_and_a_missing_procfs_falls_back_to_the_machine(monkeypatch, tmp_path):
+    monkeypatch.setattr(contract, "_cpuinfo_cache", None)
+    monkeypatch.setattr(contract, "_CPUINFO_PATH", tmp_path / "cpuinfo")
+    monkeypatch.setattr(contract.platform, "machine", lambda: "arm64")
+    assert contract.cpu_identity() == "arm64"  # no procfs (macOS, Windows): the machine name
+    (tmp_path / "cpuinfo").write_text("CPU part\t: 0xd40\n")
+    assert contract.cpu_identity() == "arm64"  # cached: the file is not read again
+    monkeypatch.setattr(contract, "_cpuinfo_cache", None)
+    assert contract.cpu_identity() == "Neoverse V1 (Graviton3)"
+    assert contract.cpu_identity("CPU part : 0xabc\n", "aarch64") == "Arm core 0xabc"
