@@ -44,8 +44,9 @@ nowhere else; `frozen_now` sets it by replacing the module's `datetime` name for
   what the store holds) or a callable `state -> network` (sydney-c1's line laid on the previous
   tick's largest desert, `with_new_line`).
 - `Driver(..., look_again_measure=fn)` answers `look_again` with another measure than the tick's
-  own (2.6.6 (a)'s arms); `in_process_measure(fetch=...)` takes any fetch, so a hook that rewrites
-  SCL pixels to cloud before the analysis (2.6.6 (b)) runs through the real handler; `topic_config(
+  own (2.6.6 (a)'s arms); `in_process_measure(fetch=...)` takes any fetch, so
+  `rewritten_fetch(fetch, scl_url, change)`, which answers one band from a rewritten copy, sets
+  SCL pixels to cloud before the analysis (2.6.6 (b), C4) through the real handler; `topic_config(
   ..., overrides={"triage": False, "history_size": 6})` is E3's production rule with triage off.
 - A `TickResult` (a dict) holds the tick's evidence lines as printed, the ring entries it appended,
   every worker call (the tick's own and each `look_again`, with the metrics record and its digest,
@@ -1002,6 +1003,33 @@ def synthetic_fetch(blobs: dict[str, bytes] | None = None, log: list | None = No
 
 
 SYNTHETIC_ENVIRON = {"VISION_ALLOWED_URL_PREFIXES": SYNTHETIC_PREFIX}
+
+
+def rewritten_fetch(fetch: Callable, url: str, change: Callable) -> Callable:
+    """`fetch` with one band answered from a rewritten copy: the band at `url` read whole (its full
+    image, through `fetch`, so through the cache), `change(array) -> array` applied, and the result
+    written back on the same grid (`geotiff`), which then answers every range of `url`; any other
+    URL passes through. How a counterfactual sets a share of a scene's SCL to cloud before the
+    analysis (2.6.6 (b), case C4), with the real handler and its own reads."""
+    from vision import cog
+
+    state: dict = {}
+
+    def blob() -> bytes:
+        if "blob" not in state:
+            info, src = cog.read_info(url, fetch)
+            data, _ = cog.read_window(url, (0, 0, info.width, info.height), fetch, (info, src))
+            out = change(data.copy()).astype(data.dtype)
+            nodata = None if info.nodata is None else f"{info.nodata:g}"
+            state["blob"] = geotiff(out, info.transform, info.epsg, nodata=nodata)
+        return state["blob"]
+
+    def call(asked: str, start: int, end: int) -> bytes:
+        if asked != url:
+            return fetch(asked, start, end)
+        return blob()[start : end + 1]
+
+    return call
 
 
 def synthetic_network(size: int = SYNTHETIC_SIZE) -> dict:

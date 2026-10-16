@@ -849,3 +849,14 @@ def test_index_checks_the_operators_labels_when_there_are_any(tmp_path, capsys):
     assert (
         "live/labels.csv: no column ['figure', 'trace', 'reason']" in vision_eval.label_problems(evidence)[0]
     )
+
+
+def test_access_baseline_refuses_a_scene_whose_pinned_etag_moved(tmp_path, monkeypatch, capsys):
+    import vision_worker_handler
+
+    network = tmp_path / "sydney.json"
+    network.write_text(json.dumps({"ways": [], "stations": [], "pois": [], "fetched_at": None}))
+    monkeypatch.setattr(vision_runs, "default_head", lambda url: {"etag": "moved", "bytes": 1})
+    monkeypatch.setattr(vision_worker_handler, "http_fetch", lambda *a: pytest.fail("must not read"))
+    code = vision_eval.main(["access-baseline", "--network", str(network), "--cache", str(tmp_path / "c")])
+    assert code == vision_eval.REFUSED and "input changed" in capsys.readouterr().err
