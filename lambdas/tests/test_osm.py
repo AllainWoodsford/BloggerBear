@@ -168,6 +168,36 @@ def test_the_query_selects_rail_stations_and_the_intermodal_classes_as_json():
     assert query.rstrip().endswith(".rail out geom; .stations out center; .pois out center;")
 
 
+# The query as it always was with the default 25 s, byte for byte.
+DEFAULT_QUERY = (
+    "[out:json][timeout:25];\n"
+    '( way["railway"~"^(rail|light_rail|subway)$"]["service"!~"^(yard|siding|spur|crossover)$"]\n'
+    '     ["usage"!~"^(industrial|military|tourism)$"](poly:"{p}"); ) -> .rail;\n'
+    '( node["railway"~"^(station|halt)$"](poly:"{p}");\n'
+    '  way["railway"~"^(station|halt)$"](poly:"{p}"); ) -> .stations;\n'
+    '( node["amenity"="bus_station"](poly:"{p}"); way["amenity"="bus_station"](poly:"{p}");\n'
+    '  node["amenity"="ferry_terminal"](poly:"{p}"); way["amenity"="ferry_terminal"](poly:"{p}");\n'
+    '  node["park_ride"](poly:"{p}"); way["park_ride"](poly:"{p}");\n'
+    '  node["highway"="bus_stop"](around.stations:400); ) -> .pois;\n'
+    ".rail out geom; .stations out center; .pois out center;\n"
+).replace("{p}", CLOSED_POLY)
+
+
+def test_the_default_query_is_unchanged_and_a_hops_read_timeout_is_its_timeout_rounded_down():
+    """Overpass' `[timeout:]` is a server-side limit on the query's runtime: each hop declares the
+    read timeout it gets, in whole seconds rounded down, so the server never aborts a query the
+    client would still wait for, nor keeps running one the client has given up on."""
+    assert osm.overpass_query(POLY) == osm.overpass_query(POLY, osm.TIMEOUT_SECONDS) == DEFAULT_QUERY
+    assert osm.TIMEOUT_SECONDS == 25.0
+    longer = osm.overpass_query(POLY, 57.9)
+    assert longer == DEFAULT_QUERY.replace("[timeout:25];", "[timeout:57];", 1)
+    assert osm.overpass_query(POLY, 65.0).startswith("[out:json][timeout:65];\n")
+    assert osm.overpass_query(POLY, 2.0).startswith("[out:json][timeout:2];\n")  # _MIN_HOP_SECONDS
+    assert osm.overpass_query(POLY, 0.4).startswith("[out:json][timeout:1];\n")  # never 0
+    with pytest.raises(ValueError):
+        osm.overpass_query([[151.2, -33.9]], 60.0)
+
+
 def test_the_poly_is_closed_lat_lon_pairs_and_the_same_in_every_selector():
     query = osm.overpass_query(POLY)
 
@@ -684,6 +714,43 @@ def test_the_deadline_bounds_each_hop_and_skips_a_hop_with_no_time():
     with pytest.raises(osm.OsmError) as caught:
         fetch(reply(), deadline=100.0, clock=lambda: 99.0)
     assert caught.value.code == "timeout"
+
+
+def hop_timeout(call) -> str:
+    """The `[timeout:N]` a hop's query declared."""
+    return call[1]["data"].split(";", 1)[0].removeprefix("[out:json]")
+
+
+def test_each_hops_query_declares_the_read_timeout_that_hop_gets():
+    """A first fetch (the rail adapter's FIRST_FETCH_TIMEOUT_SECONDS of 75 s a hop, 58.4 s to its
+    deadline): the first hop reads for 58.4 - 5 = 53.4 s and its query says 53; the mirror, after a
+    503 at 40 s, gets 13.4 s and says 13. Without a deadline both hops ask for the timeout given."""
+    ticks = iter([100.0, 140.0])
+    network, fake = fetch(reply(status=503), reply(), timeout=75.0, deadline=158.4, clock=lambda: next(ticks))
+    assert [call[2] for call in fake.calls] == [(5.0, pytest.approx(53.4)), (5.0, pytest.approx(13.4))]
+    assert [hop_timeout(call) for call in fake.calls] == ["[timeout:53]", "[timeout:13]"]
+    assert fake.calls[0][1]["data"] == osm.overpass_query(POLY, 53.4)
+    assert network["endpoint"] == MIRROR
+
+    # The hop cap holds when the deadline is further off than it.
+    ticks = iter([100.0])
+    _, fake = fetch(reply(), timeout=75.0, deadline=300.0, clock=lambda: next(ticks))
+    assert fake.calls[0][2] == (5.0, 75.0) and hop_timeout(fake.calls[0]) == "[timeout:75]"
+
+    _, fake = fetch(reply(status=429), reply(), timeout=40.0)
+    assert [call[2] for call in fake.calls] == [(5.0, 40.0), (5.0, 40.0)]
+    assert [hop_timeout(call) for call in fake.calls] == ["[timeout:40]", "[timeout:40]"]
+
+    # The default, as before: 25 s a hop, and the query as it always was.
+    _, fake = fetch(reply())
+    assert fake.calls[0][1]["data"] == DEFAULT_QUERY and fake.calls[0][2] == (5, 25.0)
+
+
+def test_a_bad_polygon_is_refused_before_anything_is_asked_even_with_no_time_left():
+    fake = FakeOverpass(reply())
+    with pytest.raises(ValueError):
+        osm.fetch_network([[151.2, -33.9]], http_post=fake, deadline=100.0, clock=lambda: 99.0)
+    assert fake.calls == []
 
 
 def test_malformed_element_shapes_are_skipped_and_unparseable_bodies_are_coded():

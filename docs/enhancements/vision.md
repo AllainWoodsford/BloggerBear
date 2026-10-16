@@ -320,6 +320,20 @@ tick by default, `reach_m` and the network cache's `osm_ttl_days`, the agent's `
 three material rules (served share, desert area, station count, §6.2) in place of the count's two
 thresholds.
 
+**A city's first network takes the measuring time.** With no network cached for the city's
+polygon, the fetch starts when `OSM_RESERVE_SECONDS` (30 s) of the budget remain, like a refresh,
+but may take the rest of the budget less `FIRST_FETCH_MARGIN_SECONDS` (10 s, for the transfer, the
+parse and the stores), never less than 30 s: about 60 s at the default `time_budget_seconds` of 70,
+about 70 s at the cap of 80. Each Overpass hop reads for up to `FIRST_FETCH_TIMEOUT_SECONDS` (75 s)
+within that deadline, and its query declares the same runtime to the server (`[timeout:N]`, the
+hop's read timeout rounded down), so Overpass neither stops a query the client still waits for nor
+runs one the client has left. A refresh of a cached network keeps 30 s and 25 s a hop
+(`osm.TIMEOUT_SECONDS`): the cached copy serves meanwhile. A first fetch that takes most of the
+minute leaves under 45 s, so the city is measured on the next tick, against the network now
+cached; a failed one is tried again on the next tick (no 6-hour wait: nothing serves meanwhile).
+Raise `time_budget_seconds` to 80 for a heavy city; the runsheet's
+[rail_access topics](../deployment-runsheet.md#rail_access-topics) says when (§8 lesson 16).
+
 ### Bounds every vision topic shares
 
 `common/vision_sites.parse_site_config` refuses a config the tick could not keep to, before any
@@ -758,8 +772,10 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     120 s and 512 MB for everything: the STAC search, a network fetch, the worker, the agent, the
     summary call and the stores. The split, in code: one city per tick (`max_sites_per_tick` 1); a
     70 s measuring budget (`time_budget_seconds`, 45 to 80); the network fetched only with
-    30 s of it left and finished within them, both Overpass hops included (`OSM_RESERVE_SECONDS`,
-    25 s per hop); the worker asked only with 45 s left (`MEASURE_RESERVE_SECONDS`) and waited on
+    30 s of it left and, for a refresh of a cached one, finished within them, both Overpass hops
+    included (`OSM_RESERVE_SECONDS`, 25 s per hop), while a city's first network may take the rest
+    of the budget less 10 s (lesson 16); the worker asked only with 45 s left
+    (`MEASURE_RESERVE_SECONDS`) and waited on
     for 58 s (`WORKER_READ_TIMEOUT`, under its own 60 s timeout; the client's default 90 s would
     run the tick out), a rule the ship adapter lacked until the integration review found it could
     run the tick out of time, so both adapters now keep it in one place
@@ -796,6 +812,28 @@ into the latest `dev`; each rail PR added its own, with the full suite green bef
     lines of a test file, which ruff caught. Each was resolved as dev's version plus the stack's
     hunk, and the checks `dev` runs now (a Checkov job the stack never saw) were run on the merged
     tree (friction 12.1, 12.4).
+16. **The first live tick found three defects no test could.** The first rail topic in dev,
+    `trains-sydney` (the Sydney box of `scripts/rail_topics.example.json`), was created on 16
+    October and measured nothing that day; the owner found and fixed three defects in turn, each
+    hidden behind the one before. (a) Every tick failed before the adapter ran: the research tick
+    reads a running state with GetObject and expects `NoSuchKey` on a first tick, but S3 answers
+    a missing key with 403 `AccessDenied` to a caller without `s3:ListBucket` on the bucket, and
+    the Lambda role had none (#305 grants it, with a wiring test). (b) Then every tick recorded
+    `osm` with "HTTP 406 from https://overpass-api.de/api/interpreter": the Overpass POST went out
+    with no User-Agent, as python-requests, which overpass-api.de refuses with a 406 (not
+    transient, so the mirror was never asked; the mirror asks for a User-Agent with a 429). #310
+    sends the bot's name on every hop. (c) Then the fetch itself could not succeed: the first
+    network had 30 s (`OSM_RESERVE_SECONDS`), each hop 25 s, and the query `[timeout:25]`, while
+    Sydney's query took 54 s from a workstation (5,925 elements, 5.5 MB); a run through
+    `fetch_network` with the 30 s deadline hit the 25 s read timeout, and both endpoints then
+    answered 502 and 500 for several minutes. #312 gives the first fetch the measuring time (§5): the
+    rest of the budget less 10 s, each hop's read and the query's `[timeout:]` following it, the
+    measurement on the next tick; the network is then cached for up to `osm_ttl_days`, so the cost
+    is paid once per city. The tests had moto for S3 and fakes for Overpass, and neither models
+    what failed: moto does not model IAM's effect on GetObject's error code, and a fake models
+    neither a third party's User-Agent policy nor its real latency. The lesson: a first deploy
+    needs one real tick per adapter, read in its log, before anything depends on it (friction
+    12.25).
 
 ---
 
