@@ -86,8 +86,11 @@ def home_region() -> str | None:
     return architecture.region() or os.environ.get("AWS_DEFAULT_REGION") or None
 
 
-def group_arn(name: str, region: str) -> str:
-    return f"arn:aws:logs:{region}:{samples._account_id()}:log-group:{name}"
+def group_arn(name: str, region: str, *, sts: Callable[[], object] | None = None) -> str:
+    """A group's ARN. `sts`, when given, makes the STS client the account id is asked with while it
+    is not known yet (samples._account_id)."""
+    account = samples._account_id() if sts is None else samples._account_id(sts)
+    return f"arn:aws:logs:{region}:{account}:log-group:{name}"
 
 
 def check_name(name: str) -> str:
@@ -104,8 +107,19 @@ def check_name(name: str) -> str:
     return match.group("env")
 
 
-def check_group(name: str, *, region: str | None = None, now: float | None = None) -> dict[str, str]:
-    """The group's tags, if both its name and its tags allow reading it; otherwise NotAllowed."""
+def check_group(
+    name: str,
+    *,
+    region: str | None = None,
+    now: float | None = None,
+    clients: Callable[[str], object] | None = None,
+    sts: Callable[[], object] | None = None,
+) -> dict[str, str]:
+    """The group's tags, if both its name and its tags allow reading it; otherwise NotAllowed.
+    `clients` (a region's Logs client) and `sts` (group_arn's), when given, make the clients the
+    tags and the account id are asked with, in place of the shared ones: vision_evidence passes
+    clients that hold each request to its call's time left, and a request out of time fails as a
+    botocore error does."""
     env_from_name = check_name(name)
     region = region or home_region()
     if not region:
@@ -116,7 +130,8 @@ def check_group(name: str, *, region: str | None = None, now: float | None = Non
         tags = cached[1]
     else:
         try:
-            tags = client(region).list_tags_for_resource(resourceArn=group_arn(name, region)).get("tags", {})
+            arn = group_arn(name, region, sts=sts)  # before the Logs client, which takes the time left
+            tags = (clients or client)(region).list_tags_for_resource(resourceArn=arn).get("tags", {})
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code", "")
             if code == "ResourceNotFoundException":
@@ -137,13 +152,19 @@ def check_group(name: str, *, region: str | None = None, now: float | None = Non
     return {key: tags[key] for key in (*samples.REQUIRED_TAG_KEYS, "Environment")}
 
 
-def readable(names: list[str], *, region: str | None = None) -> tuple[list[str], list[dict]]:
+def readable(
+    names: list[str],
+    *,
+    region: str | None = None,
+    clients: Callable[[str], object] | None = None,
+    sts: Callable[[], object] | None = None,
+) -> tuple[list[str], list[dict]]:
     """The groups of `names` this assistant may read, and for each refused one why (fixed text).
-    A tool reads the first list and reports the second."""
+    A tool reads the first list and reports the second. `clients` and `sts` are check_group's."""
     allowed, refused = [], []
     for name in dict.fromkeys(names):
         try:
-            check_group(name, region=region)
+            check_group(name, region=region, clients=clients, sts=sts)
         except NotAllowed as exc:
             refused.append({"log_group": name, "why": str(exc)})
         else:

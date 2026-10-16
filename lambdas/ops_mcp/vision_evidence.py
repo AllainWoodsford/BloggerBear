@@ -9,14 +9,25 @@ for within one budget (WAIT_SECONDS): a topic's `vision_decision` and `vision_tr
 `research_tick` lines of the attempts that made a decision, and the `moderation_decision` lines of
 what people did. Then, for each topic with a Finding written, one short DynamoDB Query on the
 Articles table's topic index (common/dynamo.list_articles_for_topic, which reads only the fields
-the join uses) for the articles the Findings fed, each ending by DEADLINE_SECONDS from the call's
-start: every page of a read is given the time left as its read timeout, a short connect and no
-retry (_BoundedArticles). A read that would start later is skipped, and one that times out or runs
-out of time between pages is stopped; that topic's article counts and what people did are then
-not checked, as when a read fails, never a partial count. Nothing else: `vision_site` lines are
-never read (24 a day per site would fill the 1,000-row cap within weeks), no `stats` aggregate is
-used (it would count lines, so a failed attempt's decisions would count twice), and the running
-state is not opened.
+the join uses) for the articles the Findings fed. A read that would start after DEADLINE_SECONDS
+is skipped, and one that times out or runs out of time between pages is stopped; that topic's
+article counts and what people did are then not checked, as when a read fails, never a partial
+count. Nothing else: `vision_site` lines are never read (24 a day per site would fill the
+1,000-row cap within weeks), no `stats` aggregate is used (it would count lines, so a failed
+attempt's decisions would count twice), and the running state is not opened.
+
+**One limit for the whole call** (CALL_LIMIT_SECONDS, 12 s from its start: Alexa+ gives up after
+roughly 15 s, API Gateway after 29). Every AWS call is held to the time left before it: the Topics
+read, the access check (the log groups' tags and the account id), starting the queries, polling
+them, stopping the ones still running, and the Articles reads. Each request goes through a client
+built for it with a one-second connect, the time left as its read timeout and one attempt
+(_Budget, _Bounded), and one that would start at or after the limit is not made. A step out of
+time ends as when it fails, never as a partial count or an exception. The worst case for a request
+that stalls is 12 + 1 + 0.1 + 0.2 = 13.3 s: the limit, one connect, the read timeout's floor and
+the request's client build (0.2 s measured cold). A read timeout is an idle bound, though: a
+request whose bytes keep trickling in is bounded only by the Lambda's 30 s timeout, and a hard end
+per request would need a thread, which reads this small (a DynamoDB Query of at most 200 small
+items) do not warrant.
 
 **Parsed, never trusted** (the submission round's rule 7). The only values put into a query are a
 topic id that passed suggestions.ID_PATTERN and a scene id that passed SCENE_ID, each a quoted
@@ -65,8 +76,9 @@ queries are fixed text, filter by field equality on one topic, and read only the
 admin-api groups, so a 90-day scan stays small. The logs' own retention is 90 days. The window
 helper itself is unchanged; the exception is EVIDENCE_LOOKBACK_DAYS here.
 
-**Read-only.** StartQuery and GetQueryResults through logs.run_queries (after its tag check), and a
-DynamoDB Query per topic with a Finding written. Nothing here writes.
+**Read-only.** The Topics read (dynamo.list_topics, or topic_match's lookup), StartQuery,
+GetQueryResults and StopQuery through logs.run_queries (after its tag check), and a DynamoDB Query
+per topic with a Finding written. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -80,6 +92,7 @@ from functools import partial
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 from common import evidence, vision_decisions
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -96,23 +109,40 @@ DAYS_DEFAULT = 7
 # research-tick and admin-api groups, so a 90-day scan stays small. The logs' own retention is 90
 # days. logs.window itself is unchanged.
 EVIDENCE_LOOKBACK_DAYS = 90
-# One budget for every query of one call. Alexa+'s own limit is close to 15 s (alexa/README.md), and
-# this plus the short Articles reads under DEADLINE_SECONDS keeps the call inside it.
+# The Logs wait: one budget for every query of one call, counted from when they are started, and
+# cut short by CALL_LIMIT_SECONDS when that comes first.
 WAIT_SECONDS = 8.0
-# The whole call's deadline, from its start. The tool answers through API Gateway, which gives up
-# after 29 s, and on the ask page the ops agent's own model calls share those 29 s
-# (ops_agent/agent.py); Alexa+'s own limit is closer still. So after the 8 s Logs wait only a few
-# seconds are left for the Articles reads, one per topic with a Finding written: a read that would
-# start after this is skipped, every page of one that has started is given only the time left
-# (_BoundedArticles), and that topic's articles and person step are then said as not checked.
-# The worst case, from the call's start, is the 8 s Logs wait, plus the reads, which end by the
-# 12 s deadline (its last 4 s), plus one connect and the read timeout's floor: 8 + 4 + 1 + 0.1 =
-# 13.1 s, inside Alexa+'s limit and API Gateway's 29 s. The topic list, the access check and
-# starting the queries come before the wait and out of the reads' 4 s: when they run long, the
-# reads are skipped rather than the call made longer.
-DEADLINE_SECONDS = 12.0
-# Each Articles page's connect, as vision_status._s3's, and the least read timeout it is given
-# (botocore needs one above zero). One attempt in all: the next question asks again.
+# The whole call's hard limit, from its start. Alexa+ gives up after roughly 15 s (alexa/README.md),
+# and the tool answers through API Gateway, which gives up after 29 s (on the ask page the ops
+# agent's own model calls share those 29 s, ops_agent/agent.py), inside the ops-mcp Lambda's 30 s.
+# So every AWS call the tool makes is held to the time left before it: the Topics read, the access
+# check (the two log groups' tags, and the account id their ARNs need), starting the queries,
+# polling them, stopping the ones still running, and the Articles reads. Each request goes through
+# a client built for it with a one-second connect, the time left as its read timeout (at least
+# MIN_READ_SECONDS) and one attempt (_Budget, _Bounded); a request that would start at or after the
+# limit is not made (OutOfTime). A step out of time ends as when it fails: the access check refuses
+# the log, a query is not checked ("didn't answer in time"), a stop is skipped (a query left running
+# is cheap, and ends by itself), an Articles read is not checked, the Topics read is said as not
+# read (TOPICS_NOT_READ). Normally the steps before the wait are a few small requests, the wait
+# takes at most its 8 s, and the Articles reads have the rest of the 12 s.
+# The worst case for a request that stalls, from the call's start, is a sum: the last request starts
+# before the limit and ends by its connect, its read timeout and the build of its client, which comes
+# after the time left is read: 12 + 1 + 0.1 + 0.2 = 13.3 s (the build measured 0.2 s for the first
+# client of a service in a process, 10 ms after), inside Alexa+'s 15 s and API Gateway's 29 s.
+# A read timeout is an idle bound, the longest wait between two reads of the socket, so a request
+# that stalls ends as above but one whose bytes keep trickling in is bounded only by the Lambda's
+# 30 s timeout: a hard end per request would need a thread, which a DynamoDB Query of at most 200
+# small items, or a Logs answer of at most 1,000 short rows, does not warrant.
+CALL_LIMIT_SECONDS = 12.0
+# The Articles reads' deadline, from the call's start: a read that would start at or after it is
+# skipped, every page of one that has started is given only the time left before it, and that
+# topic's articles and person step are then said as not checked. It is the call's limit: the reads
+# are its last AWS calls, so a later deadline could not be kept and an earlier one would only skip
+# reads that have time to run. A page that stalls at it ends, as any request, by 12 + 1 + 0.1 + 0.2
+# = 13.3 s from the call's start (above), and one that trickles by the Lambda's 30 s.
+DEADLINE_SECONDS = CALL_LIMIT_SECONDS
+# Each request's connect, as vision_status._s3's, and the least read timeout it is given (botocore
+# needs one above zero). One attempt in all: the next question asks again.
 CONNECT_SECONDS = 1.0
 MIN_READ_SECONDS = 0.1
 # The functions whose log groups are read, by their catalogue keys (architecture.py).
@@ -204,6 +234,8 @@ PERSON_SENTENCES = {
     "finding_expired": "The finding expired before an article was drafted.",
 }
 NOT_IN_TIME = "The decision logs didn't answer in time. Ask again in a minute."
+# The Topics read failed or ran out of time: which topics to read is not known.
+TOPICS_NOT_READ = "I couldn't read the topics just now. Ask again in a minute."
 PEOPLE_NOT_CHECKED = "What people decided wasn't checked this time."
 ON_SCREEN = "The decisions are on screen."
 STEPS_ON_SCREEN = "The steps are on screen."
@@ -1131,42 +1163,92 @@ def _spend_aud(triages: list[dict]) -> float | None:
     return round(sum(priced) * USD_TO_AUD_RATE, 4) if priced else None
 
 
-# --- the Articles read --------------------------------------------------------------------------------
+# --- every AWS call, held to the call's limit -----------------------------------------------------
 
 
-def _articles_table(read_timeout: float):
-    """The Articles table for one page of one read, as vision_status._s3 builds its client: a
-    short connect, `read_timeout` (the time left) and one attempt in all. common/dynamo's shared
-    resource keeps botocore's defaults (60 s each way, ten attempts for DynamoDB), which no deadline
-    here could bound."""
-    config = Config(
+class OutOfTime(BotoCoreError):
+    """A request this call did not make: its time had run out. A botocore error, so each step takes
+    it as it takes a request that failed (logs.check_group refuses the group, logs.run_queries says
+    the query did not finish or skips the stop)."""
+
+    fmt = "The call's time ran out before this request was made."
+
+
+def _config(read_timeout: float) -> Config:
+    """One request's client, as vision_status._s3 builds its own: a short connect, `read_timeout`
+    (the time left; at least MIN_READ_SECONDS) and one attempt in all. The shared clients keep
+    longer bounds (logs._LOGS_CONFIG: 3 s, 8 s and two attempts; common/dynamo's resource:
+    botocore's 60 s each way and ten attempts), which no limit here could hold."""
+    return Config(
         connect_timeout=CONNECT_SECONDS,
         read_timeout=max(read_timeout, MIN_READ_SECONDS),
         retries={"total_max_attempts": 1, "mode": "standard"},
     )
-    return boto3.resource("dynamodb", config=config).Table(os.environ["ARTICLES_TABLE"])
 
 
-class _BoundedArticles:
-    """What dynamo.list_articles_for_topic reads through for one topic: each page (each Query) goes
-    through _articles_table with the time left before `deadline` as its read timeout, and a page
-    that would start at or after the deadline is not made. The read then raises, so one cut between
-    pages is a failed read (not checked), never a partial count."""
+def _articles_table(read_timeout: float):
+    """The Articles table for one page of one read."""
+    return boto3.resource("dynamodb", config=_config(read_timeout)).Table(os.environ["ARTICLES_TABLE"])
 
-    def __init__(self, clock, deadline: float):
-        self.clock, self.deadline = clock, deadline
 
-    def query(self, **kwargs):
-        left = self.deadline - self.clock()
+def _topics_table(read_timeout: float):
+    """The Topics table for one request of the Topics read (a GetItem, or one page of the Scan)."""
+    return boto3.resource("dynamodb", config=_config(read_timeout)).Table(os.environ["TOPICS_TABLE"])
+
+
+class _Bounded:
+    """A table as this call reads it, through dynamo's own functions (`table=`): each request (a
+    GetItem, or one page of a Query or a Scan) goes through a table `build` makes for it with the
+    time left before `deadline` on `clock` as its read timeout, and a request that would start at or
+    after the deadline is not made (OutOfTime). A read cut between pages so fails whole, never a
+    partial count. Only reads are passed on."""
+
+    READS = frozenset({"get_item", "query", "scan"})
+
+    def __init__(self, build, clock, deadline: float):
+        self._build, self._clock, self._deadline = build, clock, deadline
+
+    def __getattr__(self, name: str):
+        if name not in _Bounded.READS:
+            raise AttributeError(name)
+        left = self._deadline - self._clock()
         if left <= 0:
-            raise TimeoutError("the Articles read ran out of time")
-        return _articles_table(left).query(**kwargs)
+            raise OutOfTime()
+        return getattr(self._build(left), name)
+
+
+class _Budget:
+    """The time a call has left before CALL_LIMIT_SECONDS from its start, on `clock`, and the AWS
+    clients that hold each of its requests to it: each built for one request, or OutOfTime when no
+    time is left. `logs` and `sts` are what logs.readable and logs.run_queries ask with, `sleep`
+    their pause between polls, and `topics` the Topics table."""
+
+    def __init__(self, clock, started: float):
+        self.clock, self.limit = clock, started + CALL_LIMIT_SECONDS
+
+    def left(self) -> float:
+        left = self.limit - self.clock()
+        if left <= 0:
+            raise OutOfTime()
+        return left
+
+    def logs(self, region: str):
+        return boto3.client("logs", region_name=region, config=_config(self.left()))
+
+    def sts(self):
+        return boto3.client("sts", config=_config(self.left()))
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(max(0.0, min(seconds, self.limit - self.clock())))
+
+    def topics(self) -> _Bounded:
+        return _Bounded(_topics_table, self.clock, self.limit)
 
 
 def _read_articles(topic_id: str, since: str, *, clock, deadline: float) -> list[dict]:
     """A topic's articles created since `since` (dynamo.list_articles_for_topic), every page of the
-    read ending by `deadline` on `clock`, plus a connect."""
-    return list_articles_for_topic(topic_id, since, table=_BoundedArticles(clock, deadline))
+    read given the time left before `deadline` on `clock` (_Bounded)."""
+    return list_articles_for_topic(topic_id, since, table=_Bounded(_articles_table, clock, deadline))
 
 
 # --- the tool ---------------------------------------------------------------------------------------
@@ -1208,11 +1290,13 @@ def vision_evidence(
     """What the vision pipeline measured and decided and what a person did about it, from the
     logs, over the last `days` (1 to EVIDENCE_LOOKBACK_DAYS): for `topic` (as the operator said
     it), or every topic that keeps decision evidence; with `scene` (a scene id, or "latest") one
-    decision's chain step by step. `run`, `readable`, `articles` and `clock` are the tests' seams
-    for logs.run_queries, logs.readable, the bounded Articles read (_read_articles) and
+    decision's chain step by step. Every AWS call it makes is held to CALL_LIMIT_SECONDS from its
+    start (_Budget). `run`, `readable`, `articles` and `clock` are the tests' seams for
+    logs.run_queries, logs.readable, the bounded Articles read (_read_articles) and
     time.monotonic."""
     clock = clock or time.monotonic
     started = clock()
+    budget = _Budget(clock, started)
     now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
     env = architecture.environment()
     if env is None:
@@ -1225,10 +1309,17 @@ def vision_evidence(
         return _refusal("Say which topic the scene belongs to, and I'll walk through it.")
     vocabularies = declared_vocabularies()
     matched = None
+    try:  # the Topics read, held to the call's limit: not read is said, never raised
+        if topic is not None:
+            # As the operator said it; named with spoken_label throughout, since a voice caller gets
+            # the whole result (topic_match.pick_spoken, the vision round's way of naming topics).
+            one, matched, refusal = topic_match.pick_spoken(topic, table=budget.topics())
+        else:
+            listed = list_topics(table=budget.topics())
+    except (BotoCoreError, ClientError) as exc:  # OutOfTime among them
+        print(f"ops_vision_evidence: topics read failed error={type(exc).__name__}")
+        return _refusal(TOPICS_NOT_READ)
     if topic is not None:
-        # As the operator said it; named with spoken_label throughout, since a voice caller gets the
-        # whole result (topic_match.pick_spoken, the vision round's way of naming topics).
-        one, matched, refusal = topic_match.pick_spoken(topic)
         if one is None:
             return _refusal(refusal, matched)
         if not isinstance(one.get("topic_id"), str) or not ID_PATTERN.match(one["topic_id"]):
@@ -1238,7 +1329,7 @@ def vision_evidence(
         items = [one]
     else:
         items = sorted(
-            (item for item in list_topics() if _keeps_evidence(item, vocabularies)),
+            (item for item in listed if _keeps_evidence(item, vocabularies)),
             key=lambda item: item["topic_id"],
         )
     took = topic_match.took(matched).strip() if matched is not None else ""
@@ -1274,11 +1365,14 @@ def vision_evidence(
         result["window"]["complete"] = True
         return result
 
-    # The two log groups, named from the catalogue, through the access check (logs.py).
+    # The two log groups, named from the catalogue, through the access check (logs.py), whose tags
+    # and account id are asked for within the call's limit.
     region = logs.home_region()
     tick_group, admin_group = _lambda_group(TICK_FUNCTION, env), _lambda_group(ADMIN_FUNCTION, env)
     if readable is None:
-        readable = lambda names, where: logs.readable(names, region=where)  # noqa: E731
+        readable = lambda names, where: logs.readable(  # noqa: E731
+            names, region=where, clients=budget.logs, sts=budget.sts
+        )
     allowed, refused = readable([tick_group, admin_group], region)
     if tick_group not in allowed:
         why = next((each["why"] for each in refused if each.get("log_group") == tick_group), None)
@@ -1293,8 +1387,11 @@ def vision_evidence(
     ]
     if admin_group in allowed:
         jobs.append(((EVIDENCE, "people"), region, admin_group, text["people"], since, until))
-    if run is None:
-        run = lambda batch: logs.run_queries(batch, label="ops_vision_evidence", wait_seconds=WAIT_SECONDS)  # noqa: E731
+    if run is None:  # started, polled and stopped within the call's limit
+        run = partial(
+            logs.run_queries, client=budget.logs, wait_seconds=WAIT_SECONDS, sleep=budget.sleep,
+            label="ops_vision_evidence",
+        )  # fmt: skip
     results = run(jobs)
 
     # Complete or not; then parse, then check.
@@ -1329,7 +1426,7 @@ def vision_evidence(
     for line in parsed["people"]:  # newest first: an article's newest decision
         people_by_article.setdefault(line["article_id"], line)
     vocabulary_of = {item["topic_id"]: vocabularies[item["adapter"]] for item in items}
-    if articles is None:  # every page ends by the deadline (_BoundedArticles)
+    if articles is None:  # every page is given the time left before the deadline (_Bounded)
         articles = partial(_read_articles, clock=clock, deadline=started + DEADLINE_SECONDS)
     article_by_at: dict[str, dict[str, dict] | None] = {}
     rendered = []

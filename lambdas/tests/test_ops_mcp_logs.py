@@ -18,6 +18,7 @@ from ops_mcp import logs, samples
 
 NOW = datetime(2026, 10, 5, 9, 0, tzinfo=UTC)
 TAGS = {"ManagedBy": "Terraform", "Project": "BloggerBear"}
+_ACCOUNT_ID = samples._account_id  # the real one: the fixtures below stub it
 
 
 class FakeTags:
@@ -190,6 +191,41 @@ def test_readable_splits_allowed_from_refused_with_reasons(dev, monkeypatch):
     assert allowed == [good]
     assert refused == [{"log_group": "/aws/lambda/bloggerbear-production-x", "why": refused[0]["why"]}]
     assert refused[0]["why"]
+
+
+class FakeSts:
+    def __init__(self):
+        self.asked = 0
+
+    def get_caller_identity(self):
+        self.asked += 1
+        return {"Account": "111111111111"}
+
+
+def test_a_caller_may_ask_with_its_own_clients_and_the_shared_ones_are_never_used(dev, monkeypatch):
+    """vision_evidence's way in: `clients` and `sts` make the clients the tags and the account id
+    are asked with, each built when its request is about to be made (the account first, so the Logs
+    client is built with the time left after it). Neither shared client is asked or built."""
+    monkeypatch.setattr(samples, "_account_id", _ACCOUNT_ID)
+    monkeypatch.setattr(samples, "_account", [])
+    monkeypatch.setattr(samples, "_sts_client", None)
+    monkeypatch.setattr(samples.boto3, "client", lambda *args, **kwargs: pytest.fail("a client was built"))
+    monkeypatch.setattr(logs, "client", lambda region: pytest.fail("the shared Logs client was asked"))
+    good = "/aws/lambda/bloggerbear-dev-research-tick"
+    tags, sts, built = FakeTags({good: {**TAGS, "Environment": "dev"}}), FakeSts(), []
+
+    def clients(region):
+        built.append(("logs", region))
+        return tags
+
+    def account():
+        built.append(("sts",))
+        return sts
+
+    allowed, refused = logs.readable([good], region="ap-southeast-2", clients=clients, sts=account)
+    assert (allowed, refused) == ([good], [])
+    assert built == [("sts",), ("logs", "ap-southeast-2")] and sts.asked == 1
+    assert tags.asked == [f"arn:aws:logs:ap-southeast-2:111111111111:log-group:{good}"]
 
 
 # --- the runner ------------------------------------------------------------------------------------

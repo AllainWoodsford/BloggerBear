@@ -227,9 +227,13 @@ sent ([ops-assistant-vision.md](../docs/enhancements/ops-assistant-vision.md)).
 Alexa+ hears what the page shows: the decisions counted, what the agent did, the findings written
 and what became of their articles ([vision-evidence.md](../docs/enhancements/vision-evidence.md#asking-the-assistant)).
 It waits at most 8 seconds for its logs, then makes one short Articles read per topic with a finding
-written, each ending by 12 seconds after the question (plus a one-second connect at most): a read
-that would start later is skipped, one that runs out of time is stopped, and what people decided is
-then said as not checked, about 13 seconds in all at worst.
+written. Every request it makes to AWS (the topic list, the log access check, starting, polling and
+stopping the log queries, the Articles reads) is held to 12 seconds after the question: a request
+that would start later is not made, and one that runs out of time is stopped, so what it could not
+read in time is said to be unread, never counted as none. A request that stalls ends by 12 + 1 + 0.1 +
+0.2 = 13.3 seconds after the question at worst (the limit, a one-second connect, the shortest read
+timeout and building the request's client); one whose answer keeps trickling in slowly is cut only
+by the function's 30-second timeout.
 
 A log read waits for Logs Insights (up to 15 seconds), which can be close to Alexa's own time limit.
 If Alexa gives up, ask for a briefing instead ("ask BloggerBear to start a briefing"): the agent
