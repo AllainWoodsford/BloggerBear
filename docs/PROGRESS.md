@@ -805,7 +805,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   session); the dependency audit, the judges' `constraints-py311.txt` and a pin test; CI prints
   its `pip freeze --all` and runs the docs test on a `docs/hackathon/` change; the claim fixes;
   responsible use; the video script with its redaction checklist and the demo plan; the Devpost
-  checklist and `scripts/submission_check.py` (submission PR R1; `docs/hackathon/`,
+  checklist and `scripts/submission_check.py` (#333, submission PR R1; `docs/hackathon/`,
   `scripts/submission_check.py`, `lambdas/tests/test_requirements.py`)
 
 ## Backlog / not yet scheduled
