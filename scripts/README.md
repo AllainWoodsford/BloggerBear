@@ -111,7 +111,7 @@ python scripts/admin_cli.py pipeline-config set --research-interval-hours ""
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours 192
 python scripts/admin_cli.py topics update rail-sydney --findings-window-hours ""
 # A topic that rotates through its subjects, one a day (docs/enhancements/dailysubject_hook.md;
-# read only by an adapter that names a day subject: none does yet, the rail adapter will). Two
+# read by an adapter that names a day subject: rail_access, whose sites are the subjects). Two
 # keys of its adapter_config (--config-json on create, --adapter-config-json on update, each the
 # whole config: read it with `topics get`, edit it, send all of it back):
 #   "rotation": the seven weekdays each naming a subject, every subject at least once,

@@ -430,6 +430,11 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   converting it with `topics update` risks re-drafting those Findings
   (`test_findings_window.py::test_a_subject_never_written_about_is_bounded_by_the_window_alone`).
 - `force`: ignores both stamps, keeps the subject filter.
+- A rail topic whose stored config does not parse (hand-edited past `topics update`'s check): the
+  adapter cannot say whether it rotates, so the daily run stops with its `ConfigError` before any
+  model call, and the next-article read (`topic_findings`, `findings list --next-article`) fails
+  the same way, a tool error or a 500, rather than answer with a window the daily run would not
+  read. A rail topic always has sites: `parse_config` refuses one without.
 
 ## 6. Order, size and where it sits
 
