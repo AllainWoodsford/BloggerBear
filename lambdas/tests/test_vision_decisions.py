@@ -305,6 +305,29 @@ def test_the_triage_line_carries_the_steps_the_tools_and_the_reasons_hash_never_
     assert vd.reason_prefix("") is None and vd.reason_prefix(None) is None
 
 
+def test_a_model_that_asked_for_many_tools_still_leaves_its_line_cut_and_counted(capsys):
+    """Five allowed calls and seven refusals (the budget) in one turn: the trail keeps all twelve,
+    the line keeps the first MAX_STEPS with the totals beside them, says what it cut, and is
+    still written."""
+    allowed = [{"tool": "site_history", "ok": True, "ms": 3, "result": {"scenes": 4}}] * 5
+    refused = [{"tool": "look_again", "ok": False, "ms": 0, "result": {"code": "budget"}}] * 7
+    given = outcome(steps=allowed + refused, steps_total=12, budget_refusals=7)
+    vd.triage_line("sydney", "S2", given)
+    (line,) = lines(capsys, "vision_triage")
+    assert len(line["steps"]) == evidence.MAX_STEPS == 8 and line["steps_total"] == 12
+    assert line["budget_refusals"] == 7 and line["tools_total"] == 12 and line["look_again"] == 7
+    assert len(line["tools"]) == evidence.MAX_CODES == 12 and line["cut"] == ["steps"]  # twelve tools fit
+    assert [step["result"] for step in line["steps"][5:]] == [{"code": "budget"}] * 3
+    # One refusal more and the tools are cut too, named in order.
+    thirteen = outcome(steps=allowed + refused + refused[:1], steps_total=13, budget_refusals=8)
+    vd.triage_line("sydney", "S2", thirteen)
+    (line,) = lines(capsys, "vision_triage")
+    assert len(line["tools"]) == 12 and line["tools_total"] == 13 and line["cut"] == ["tools", "steps"]
+    # The ring keeps the same first eight, with the total.
+    built, (entry,) = record([material(triage={"verdict": "real", "reason": "x"})], triage={"sydney": given})
+    assert len(entry["triage"]["steps"]) == 8 and entry["triage"]["steps_total"] == 12
+
+
 # --- the trace --------------------------------------------------------------------------------------
 
 
