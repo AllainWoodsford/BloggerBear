@@ -274,9 +274,19 @@ the newest 1000 log lines were read.", never as "no new clear scene was measured
 
 The page shows one row per decision: the topic, the site, the scene, how clear it was, OpenCV's
 measures, which measures moved and from which input (the imagery, OpenStreetMap, or both), the
-agent's verdict, what OpenCV re-measured for it ("reach 800 m: built-up area served 64.1% (70.0%
-at the topic's settings)"), whether a finding was written, what became of its article, and who
-measured it (backend, build, CPU). With no topic, every topic that keeps decision evidence gets its
+agent's verdict, what OpenCV re-measured for it, whether a finding was written, what became of its
+article, and who measured it (backend, build, CPU). The "OpenCV re-measured" cell of the look_again
+decision above reads, exactly as the code renders it:
+
+> reach 800 m: 93% clear, built-up area served 64.1% (70.0% at the topic's settings)
+
+It says "at the topic's settings", not the topic's own reach in metres, because that reach is in
+the topic's adapter configuration, which this tool does not read (rule 5: a domain's settings
+belong to its adapter, and the core names none of them); the evidence line carries only the
+re-measurement's settings. The number beside it is the same scene measured at the topic's
+settings, never the baseline. It adds the re-measurement's own coverage ("93% clear") because every `measured_` number
+the look_again step returned is shown, and the coverage says the re-measurement read the same clear
+part of the scene as the decision did, so the two shares are of the same pixels. With no topic, every topic that keeps decision evidence gets its
 own sentence, the demo topic included, and no number is summed across topics.
 
 **The result's shape.** `spoken`, `table` (12 columns), `rows` (one summary per decision),
