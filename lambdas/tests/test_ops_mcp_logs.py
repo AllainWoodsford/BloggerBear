@@ -375,6 +375,7 @@ def test_a_throttled_start_is_tried_once_more_only_for_a_caller_that_opts_in(cod
     results, slept = _run(fake, jobs, wait_seconds=5, recover_throttles=True)
     assert results == {("done", "a"): None, ("also", "a"): [{"n": "2"}]}
     assert fake.asked.count("StartQuery") == 4 and fake.started == ["also"]
+    assert slept == [logs.POLL_SECONDS]  # one pause for both retried starts, not one each
     fake = ThrottledLogs(statuses, starts=1, code=code)
     results, slept = _run(fake, jobs, wait_seconds=5)
     assert results == {("done", "a"): None, ("also", "a"): [{"n": "2"}]}
