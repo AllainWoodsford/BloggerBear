@@ -564,20 +564,21 @@ def test_the_trace_words_are_plain_and_cover_every_code():
 
 def test_a_full_ring_at_the_caps_stays_small():
     """Twelve entries with eight look_again steps (the largest kind), five hosts and a
-    300-character reason each, for three sites (MAX_RAIL_SITES): about 3.4 KB an entry, some
-    125 KB in all, against a rail state of about 10 MB."""
+    300-character reason each, for eight sites (MAX_RAIL_SITES): about 3.4 KB an entry, some
+    330 KB in all, against a rail state of about 7 MB (rail_access.MAX_RAIL_SITES's comment)."""
+    sites = [f"s{n}" for n in range(8)]
     steps = [outcome()["steps"][0]] * evidence.MAX_STEPS
     full = outcome(steps=steps, steps_total=8, hosts=[f"news{n}.example" for n in range(5)], reason="r" * 300)
-    built = state([material(triage={"verdict": "real", "reason": "x"}, site_id=s) for s in ("a", "b", "c")],
-                  triage={s: full for s in ("a", "b", "c")})  # fmt: skip
+    built = state([material(triage={"verdict": "real", "reason": "x"}, site_id=s) for s in sites],
+                  triage={s: full for s in sites})  # fmt: skip
     for n in range(12):
         built["fetched_at"] = f"2026-10-{n + 1:02d}T00:00:00+00:00"
         verdicts = [material(triage={"verdict": "real", "reason": "x"}, site_id=s, scene_id=f"S{n}")
-                    for s in ("a", "b", "c")]  # fmt: skip
+                    for s in sites]  # fmt: skip
         vd.record(built, verdicts, moved=vd.moved_by_site(verdicts), first_clear=None, floor=0.6, visits={},
                   vocabulary=RAIL_VOCABULARY)  # fmt: skip
-    rings = {s: built["sites"][s]["decisions"] for s in ("a", "b", "c")}
+    rings = {s: built["sites"][s]["decisions"] for s in sites}
     assert all(len(ring) == 12 for ring in rings.values())
     size = len(json.dumps(rings))
-    assert 60_000 < size < 150_000, size
-    assert json.loads(json.dumps(built))["sites"]["a"]["decisions"] == rings["a"]  # JSON-plain, as stored
+    assert 160_000 < size < 400_000, size
+    assert json.loads(json.dumps(built))["sites"]["s0"]["decisions"] == rings["s0"]  # JSON-plain, as stored

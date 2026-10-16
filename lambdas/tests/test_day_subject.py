@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from common import day_subject
+from common.adapters import RAIL_ACCESS_ADAPTER_KEY
 from common.adapters.base import SUBJECT_KEY, Adapter, DaySubject
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.editorial_resolver import MAX_GOAL_TEXT_CHARS
@@ -62,14 +63,24 @@ def test_what_is_not_an_iterable_of_keys_raises_so_the_tick_says_why(raw):
         day_subject.clean_subjects(raw)
 
 
-def test_every_registered_adapter_names_no_day_subject_and_no_subjects_by_default():
-    """S1 adds the hooks and no adapter uses them: every topic is as it was (S2 opts rail in)."""
+def test_every_registered_adapter_but_rail_names_no_day_subject_and_no_subjects_by_default():
+    """S1 adds the hooks; S2 opts the rail adapter in (tests/test_rail_access_adapter.py), and every
+    other adapter's topics are as they were. A rail topic without a `rotation` names no subject
+    either."""
     topic = {"topic_id": "t", "adapter": "web_search", "adapter_config": {}}
     at = datetime(2026, 10, 16, 9, 5, tzinfo=UTC)
     for key, adapter_class in ADAPTER_REGISTRY.items():
+        if key == RAIL_ACCESS_ADAPTER_KEY:
+            continue
         assert adapter_class.day_subject is Adapter.day_subject, key
         assert adapter_class.subjects is Adapter.subjects, key
         assert adapter_class().day_subject({**topic, "adapter": key}, at) is None
+    rail = ADAPTER_REGISTRY[RAIL_ACCESS_ADAPTER_KEY]
+    assert rail.day_subject is not Adapter.day_subject and rail.subjects is not Adapter.subjects
+    polygon = [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58]]
+    one_city = {**topic, "adapter": RAIL_ACCESS_ADAPTER_KEY,
+                "adapter_config": {"sites": [{"id": "s", "polygon": polygon}]}}  # fmt: skip
+    assert rail().day_subject(one_city, at) is None
 
 
 def test_a_day_subject_is_plain_frozen_data():

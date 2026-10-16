@@ -78,7 +78,18 @@ def aws(monkeypatch):
     dynamo_module._dynamodb_resource = None
 
 
+# A real rail topic's config: one city and no rota. Since S2 the rail adapter reads its config to
+# name the day's subject, so a rail topic stored without sites would be refused as misconfigured.
+RAIL_CONFIG = json.loads(
+    '{"sites": [{"id": "sydney", "name": "Sydney",'
+    ' "polygon": [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58], [150.86, -33.58]]}]}',
+    parse_float=Decimal,
+)
+
+
 def put_topic(aws, topic_id="rail-sydney", name="Rail access: Sydney", adapter="rail_access", **more):
+    if adapter == "rail_access":
+        more.setdefault("adapter_config", RAIL_CONFIG)
     aws.Table("Topics").put_item(Item={"topic_id": topic_id, "name": name, "adapter": adapter, **more})
 
 

@@ -258,6 +258,8 @@ def test_delete_musings_for_an_article_with_none_is_a_no_op(musings_table):
 # --- window_start: the one rule for where a topic's findings window starts ---------------------
 
 RUN = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
+# A small Sydney polygon (lon, lat), as test_rail_access_adapter.py draws it.
+SYDNEY = [[150.86, -34.16], [151.56, -34.16], [151.56, -33.58], [150.86, -33.58]]
 
 
 def _hours_before(hours: int) -> str:
@@ -409,8 +411,12 @@ def test_next_article_subject_is_the_day_subject_of_a_rotating_topic_and_none_of
 
     assert subject == DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
     assert rotating_adapter.asked == [RUN]
-    for plain in ({"adapter": "web_search"}, {"adapter": "rail_access"}, {"adapter": "nope"}, {}):
+    for plain in ({"adapter": "web_search"}, {"adapter": "nope"}, {}):
         assert findings_window.next_article_subject(plain, RUN) is None
+    # rail_access names a day subject only for a topic with a rota (S2): one city, no rota, none.
+    one_city = {"sites": [{"id": "sydney", "name": "Sydney", "polygon": SYDNEY}]}
+    rail = {"adapter": "rail_access", "adapter_config": one_city}
+    assert findings_window.next_article_subject(rail, RUN) is None
 
 
 def test_a_topic_with_a_daily_goal_keeps_it_and_its_adapter_is_never_asked(rotating_adapter, monkeypatch):

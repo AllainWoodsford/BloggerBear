@@ -790,8 +790,9 @@ CATALOGUE: tuple[Component, ...] = (
         purpose=(
             "Article bodies (articles/), the raw source snapshots research works from (snapshots/, "
             "expiring after 21 days), each vision topic's running state "
-            "(snapshots/<topic>/running-state.json) and the vision figures "
-            "(vision/<topic>/<site>/<scene>.png)."
+            "(snapshots/<topic>/running-state.json), the vision figures "
+            "(vision/<topic>/<site>/<scene>.png) and each rail city's network "
+            "(vision/<topic>/<site>/network.json)."
         ),
         details=(("Name", "unique across all of AWS, which is why each deployment has its own prefix"),),
         aliases=("content-bucket", "s3"),
@@ -1280,11 +1281,11 @@ FEATURES: tuple[Feature, ...] = (
                 "waiting site first; a site left without time waits for the next tick.",
                 ("function:research-tick", "Earth Search STAC (Sentinel-2 L2A)"),
             ),
-            # common/osm.py; rail_access.py's network cache.
+            # common/osm.py; rail_access.py's network objects (vision_sites.network_key).
             Step(
                 "Map data (rail)",
                 "A rail topic reads each city's rail network from OpenStreetMap through the "
-                "Overpass API and keeps it in the running state for osm_ttl_days.",
+                "Overpass API and keeps it in its own object in the content bucket for osm_ttl_days.",
                 ("OpenStreetMap Overpass API",),
             ),
             # vision_worker_handler.py, lambdas/vision/, common/vision_client.py.

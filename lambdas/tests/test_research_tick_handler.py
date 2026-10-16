@@ -801,8 +801,9 @@ def test_subjects_that_fail_cost_the_subjects_never_the_finding(aws_resources, m
 def test_an_adapter_reports_no_subjects_unless_it_says_so_and_its_finding_has_no_such_field(
     aws_resources, monkeypatch
 ):
-    for adapter_class in research_tick_handler.ADAPTER_REGISTRY.values():
-        assert adapter_class.subjects is Adapter.subjects  # no registered adapter rotates yet (S2)
+    for key, adapter_class in research_tick_handler.ADAPTER_REGISTRY.items():
+        if key != "rail_access":  # the one adapter that names its subjects: its cities (S2)
+            assert adapter_class.subjects is Adapter.subjects, key
     assert GitHubTrendingAdapter().subjects({"repos": []}) == []  # the base class's default
 
     _run_one_tick(monkeypatch, _tracked("a summary"))

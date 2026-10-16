@@ -28,7 +28,7 @@ from moto import mock_aws
 from test_ops_mcp_redact import BYPASSES
 
 import research_tick_handler
-from common import osm, vision_client
+from common import osm, vision_client, vision_sites
 from common.adapters import rail_access as ra
 from common.adapters import satellite_vision as sv
 from ops_agent import policy
@@ -119,6 +119,17 @@ def rail_state(previous=None, *, stac=None, worker=None, overpass=None, topic=No
     adapter.fetch_network = overpass or rail.FakeOverpass(rail.network())
     adapter.store_image = lambda *args: "vision/rail-sydney/sydney/S1.png"
     return adapter.fetch_state(topic or rail_topic(), previous_state=previous)
+
+
+def aged_rail(state, days, topic_id="rail-sydney", site="sydney"):
+    """A rail state whose site's network was fetched `days` ago: the network in its object (moto's
+    content bucket, where the adapter keeps it) and what the site's record says of it."""
+    copy = json.loads(json.dumps(state))
+    when = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    copy["sites"][site]["network_fetched_at"] = when
+    network = vision_sites.load_network(topic_id, site)
+    vision_sites.store_network(topic_id, site, {**network, "fetched_at": when})
+    return copy
 
 
 def recent():
@@ -676,7 +687,7 @@ def test_the_checks_drop_whatever_a_hook_gets_wrong():
 
 def test_a_stale_network_and_a_failed_refresh_with_a_cached_copy_are_not_failing(aws):
     put_topic(aws, rail_topic(last_research_at=recent()))
-    first = rail.aged(rail_state(), 31)
+    first = aged_rail(rail_state(), 31)
     failing = rail.FakeOverpass(osm.OsmError("rate_limited", "HTTP 429", transient=True))
     put_state("rail-sydney", rail_state(first, overpass=failing))
     result = status()
@@ -726,8 +737,10 @@ def test_an_unreadable_scene_is_a_worker_error_not_a_refusal(aws):
 def test_the_rail_network_never_reaches_the_result(aws):
     put_topic(aws, rail_topic(last_research_at=recent()))
     state = rail_state()
+    # A state written before each network had its own object carries it inline.
     way = {"points": [[151.2, -33.9]] * 30, "name": "Line"}
-    state["sites"]["sydney"]["network"]["ways"] = [{"id": f"w{n}", **way} for n in range(5000)]
+    network = vision_sites.load_network("rail-sydney", "sydney")
+    state["sites"]["sydney"]["network"] = {**network, "ways": [{"id": f"w{n}", **way} for n in range(5000)]}
     assert len(json.dumps(state)) > 2_500_000
     put_state("rail-sydney", state)
     text = json.dumps(status())
@@ -773,7 +786,7 @@ def _planted_everywhere(aws, text, monkeypatch):
                                         worker=failing, topic=ships_item))  # fmt: skip
     put_topic(aws, rail_topic(last_research_at=recent()))
     refusing = rail.FakeOverpass(osm.OsmError("rate_limited", text, transient=True))
-    put_state("rail-sydney", rail_state(rail.aged(rail_state(), 31), overpass=refusing))
+    put_state("rail-sydney", rail_state(aged_rail(rail_state(), 31), overpass=refusing))
     put_topic(aws, topic_item("broken", "Broken", "satellite_vision", BROKEN))
     parse = sv.parse_config
 

@@ -215,8 +215,8 @@ default, `bloggerbear-dev-topics`. Use the admin CLI
 | A user locked out of the assistant after failed sign-ins | `<prefix>-<env>-sign-ins`, one item per sign-in event | `sign-ins list`, `sign-ins unlock <username>` | Locked after 5 failures in 15 minutes; lifts by itself |
 | Reader feedback limits and lockdown | the feedback configuration | `feedback-config set …`, `feedback-lock`, `feedback-unlock` | See `feedback-config --help` |
 | A topic: its adapter, schedule, time zone, editorial goals, model, rotation, whether it is financial | `<prefix>-<env>-topics`, one item per topic | `topics create`, `topics update` | Daily at 9 AM `Australia/Sydney`; hourly research heartbeat |
-| How far back a topic's daily article reads findings (`findings_window_hours`), never past its last article. Widen it for a topic that does not write every day (one day of a rotation, such as a city topic whose `daily_cadence` runs two days a week, or a weekly topic), so a finding made on a day it does not write is still drafted. Whole hours, 1 to 336: findings expire after 14 days | same item | `topics create\|update --findings-window-hours N` (`""` clears it) | 24 hours |
-| A topic that rotates through its subjects, one a day ([the day-subject hook](enhancements/dailysubject_hook.md)): `rotation` in its `adapter_config`, either the seven weekdays each naming a subject (`{"MON": "sydney", ...}`) or a list of subjects cycled one a day, every subject at least once, and `rotation_timezone`, the zone whose calendar day decides (an IANA name; unset, the topic's `daily_timezone` when its adapter passes it, as the rail adapter will, else UTC). Read only by an adapter that names a day subject: none does yet (the rail adapter will, with S2). The daily cycle then writes about the day's subject only, from the Findings that report it (at most 48 of that subject's own), and keeps that subject's last article (`last_article_by_subject`, beside `last_article_at`: `topics get` and the assistant's `topics_overview` for one topic show it). `findings list --next-article` and the assistant's `topic_findings` answer for the day's subject. Set `findings_window_hours` to the longest gap between one subject's days, plus a day. **Adopt a rota on a new topic, not on one that has published:** each subject's first window starts from `findings_window_hours`, not from the topic's last article (a subject with no last article of its own is bounded by the window alone), so a topic changed with `topics update` would draft again, on each subject's first day, Findings its last article already used. Create the rotating topic and pause or delete the old one ([restart, not migrate](enhancements/dailysubject_hook.md#44-migrating-the-four-deployed-topics)) | same item | `topics create --config-json`, or `topics update --adapter-config-json` on a topic that has not published yet (the whole config: read it, edit it, send it back) | No rota: the topic writes about everything it watches. `rotation_timezone` unset: the topic's `daily_timezone` if the adapter passes it, else UTC |
+| How far back a topic's daily article reads findings (`findings_window_hours`), never past its last article. Widen it for a topic that does not write every day about the same thing (a rotating topic, whose cities each have some days of the week, or a weekly topic), so a finding made on a day it does not write about its subject is still drafted. Whole hours, 1 to 336: findings expire after 14 days | same item | `topics create\|update --findings-window-hours N` (`""` clears it) | 24 hours |
+| A topic that rotates through its subjects, one a day ([the day-subject hook](enhancements/dailysubject_hook.md)): `rotation` in its `adapter_config`, either the seven weekdays each naming a subject (`{"MON": "sydney", ...}`) or a list of subjects cycled one a day, every subject at least once, and `rotation_timezone`, the zone whose calendar day decides (an IANA name). Read by an adapter that names a day subject: `rail_access` (its sites are the subjects, and `rotation_timezone` defaults to the topic's `daily_timezone`; [A `rail_access` topic](#a-rail_access-topic)). The daily cycle then writes about the day's subject only, from the Findings that report it (at most 48 of that subject's own), and keeps that subject's last article (`last_article_by_subject`, beside `last_article_at`: `topics get` and the assistant's `topics_overview` for one topic show it). `findings list --next-article` and the assistant's `topic_findings` answer for the day's subject. Set `findings_window_hours` to the longest gap between one subject's days, plus a day. **Adopt a rota on a new topic, not on one that has published:** each subject's first window starts from `findings_window_hours`, not from the topic's last article (a subject with no last article of its own is bounded by the window alone), so a topic changed with `topics update` would draft again, on each subject's first day, Findings its last article already used. Create the rotating topic and pause or delete the old one ([restart, not migrate](enhancements/dailysubject_hook.md#44-migrating-the-four-deployed-topics)) | same item | `topics create --config-json`, or `topics update --adapter-config-json` on a topic that has not published yet (the whole config: read it, edit it, send it back) | No rota: the topic writes about everything it watches. `rotation_timezone` unset: the topic's `daily_timezone` if the adapter passes it (`rail_access` does), else UTC |
 
 Seeding the model tables, with a sample item, is in
 [The model registry](deployment-runsheet.md#the-model-registry-seeding-and-rotation).
@@ -366,21 +366,25 @@ list of them; [vision.md](enhancements/vision.md#5-configuration) points here.
 goal (`ADAPTER_DEFAULTS` in `lambdas/common/editorial_resolver.py`, #298), not the global one:
 report only what was measured, with the capture dates; give no ridership, patronage, journey time,
 cost, cause, forecast or recommendation (the flags and simulations are proxies, never
-recommendations); use no number or place name that is not in the findings. Four ready topic
-bodies, one per starting city, are in `scripts/rail_topics.example.json`, each with a goal of its
-own: the cities take turns, one a day, and each sets the topic field `findings_window_hours` to 192
-([DynamoDB settings](#dynamodb-settings-changed-with-no-deploy)), so each article drafts every
-Finding since the city's last. The runsheet's
-[rail_access topics](deployment-runsheet.md#rail_access-topics) creates them and says how to add a
-city.
+recommendations); use no number or place name that is not in the findings. One ready topic body,
+`rail-cities`, over the four starting cities, is in `scripts/rail_topics.example.json`, with a goal
+that names no city: its `rotation` gives each city its days of the week (Sydney Monday and Friday,
+Melbourne Tuesday and Saturday, Singapore Wednesday and Sunday, Boston Thursday), the daily cycle
+runs every day and writes about the day's city alone, and the topic field `findings_window_hours`
+is 192 ([DynamoDB settings](#dynamodb-settings-changed-with-no-deploy)): Boston's 7 days between
+its Thursdays plus a day, so each article drafts every Finding about its city since that city's
+last. The runsheet's [rail_access topics](deployment-runsheet.md#rail_access-topics) creates it
+and says how to add a city.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `sites` | required | 1 to 3 cities (`MAX_RAIL_SITES`; one city per topic is the design), each `{"id", "polygon": [[lon, lat], ...]}` with an optional `"name"` (the id when absent), a polygon of 3 to 64 points. The polygon must sit inside one Sentinel-2 tile: the scene search takes only scenes that hold the whole site. |
+| `sites` | required | 1 to 8 cities (`MAX_RAIL_SITES`: a week of one city a day, and one more; each city's network is its own object, `vision/<topic>/<site>/network.json`, so the running state holds only the histories), each `{"id", "polygon": [[lon, lat], ...]}` with an optional `"name"` (the id when absent), a polygon of 3 to 64 points. The polygon must sit inside one Sentinel-2 tile: the scene search takes only scenes that hold the whole site. |
+| `rotation` | none | Optional: one city a day. The seven weekdays each naming a site (`{"MON": "sydney", ..., "SUN": "singapore"}`) or a list of sites cycled one a day; every site needs a day, and a day that names no site is refused. With it the daily cycle writes about the day's city alone, from the Findings that report it ([the day-subject hook](enhancements/dailysubject_hook.md)); without it, about every city, every run. The research tick never reads it. Set `findings_window_hours` to the longest gap between one city's days plus a day. |
+| `rotation_timezone` | the topic's `daily_timezone`, else UTC | The IANA zone whose calendar day decides the rota's day, so "Tuesday" is Tuesday there. Only with a `rotation`. |
 | `backend` | `"opencv"` | Or `"cool"`, once a COOL worker exists. |
 | `params` | `{}` | Rail parameter overrides, any of the `RailParams` fields in [vision.md's table](enhancements/vision.md#the-rail-tasks-request), within the worker contract's bounds (checked before any call). |
 | `reach_m` | 1000 | Walking reach of a station, straight-line metres, 200 to 5000 (the contract's bounds). Always sent to the worker; a `reach_m` in `params` wins over it. |
-| `osm_ttl_days` | 30 | How long the cached OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. |
+| `osm_ttl_days` | 30 | How long a city's stored OpenStreetMap network serves before it is fetched again; more than 0 and at most 365. |
 | `max_cloud_cover` | 40 | Scene-level cloud filter in the search, %. |
 | `lookback_days` | 20 | How far back to search for a scene. |
 | `coverage_floor` | 0.6 | 0 to 1. Below it a scene is never material and never part of a baseline, and never the first observation. |
@@ -388,7 +392,7 @@ city.
 | `min_baseline` | 1 | Earlier clear scenes, measured with the same polygon and parameters, needed before a change can be material; at least 1 and under `history_size`. |
 | `served_share_threshold` | 0.02 | A move of the served share of at least this from the baseline median is material. Not negative. |
 | `desert_relative_threshold` | 0.10 | A move of the desert area of at least this times the baseline median (at least 1 km²) is material. Not negative. A changed station count is material on its own. |
-| `max_sites_per_tick` | 1 | 1 to 3. One city per tick: the network fetch, the worker and the agent share the tick's 120 s. A site skipped for this cap, or deferred for time, keeps its place in the rotation. |
+| `max_sites_per_tick` | 1 | 1 to 8. One city per tick: the network fetch, the worker and the agent share the tick's 120 s. A site skipped for this cap, or deferred for time, keeps its place in the rotation. |
 | `time_budget_seconds` | 70 | The measuring budget, 45 to 80 s. The network is fetched only with 30 s of it left (a refresh of a cached one within those 30 s; a city's first network within the rest of the budget less 10 s, so set 80 for a heavy city, as the runsheet's `rail_access` topics says), the worker asked only with 45 s left (`vision_sites.time_to_measure`, the rule `satellite_vision` keeps too) and waited on for at most 58 s. |
 | `triage` | true | Run the agent on a numeric change. |
 | `triage_max_tool_calls` | 3 | The agent's tool budget, 0 to 5; it gets that plus two model turns. |
@@ -402,8 +406,9 @@ research tick, with the reason in the research tick's log, until it is fixed wit
 `topics update <id> --adapter-config-json '...'`. That flag replaces the whole `adapter_config`,
 not the keys it names: `'{"time_budget_seconds": 70}'` alone drops `sites`, and the tick then
 fails on that instead. Read the config with `topics get <id>`, edit it, and send all of it back;
-for a rail city, keep its `sites` entry with the same `id` and polygon, so its history and cached
-network still match.
+for a rail city, keep its `sites` entry with the same `id` and polygon, so its history and its
+network still match, and keep the `rotation` (without it the topic writes about every city every
+day).
 
 ### No keys
 

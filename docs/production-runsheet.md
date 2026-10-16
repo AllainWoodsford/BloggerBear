@@ -264,9 +264,9 @@ satisfactory, in order:
    worker's ARN (`VISION_WORKER_ARN`) and the pipeline's shared execution role one policy to
    invoke it; nothing else in production changes.
 3. Create the topic in production with the same `adapter_config` that worked on dev (for the
-   rail cities, the same bodies from `scripts/rail_topics.example.json`, as in the runsheet's
-   [`rail_access` topics](deployment-runsheet.md#rail_access-topics)), and trigger its first tick
-   by hand. A large rail city's first tick only fetches its OpenStreetMap network and measures
+   rail cities, the same body from `scripts/rail_topics.example.json`, as in the runsheet's
+   [`rail_access` topics](deployment-runsheet.md#rail_access-topics), one topic over the four
+   cities), and trigger its first tick by hand (for the rail topic, one tick per city). A large rail city's first tick only fetches its OpenStreetMap network and measures
    nothing (Sydney's takes most of a minute: the runsheet's "A large city's first network can take
    a minute"), so trigger a second tick, or wait for the next hourly one, to measure it. The CLI
    waits 30 s for the Finding and a vision tick that measures a scene can run longer, so "No new
