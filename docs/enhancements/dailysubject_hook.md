@@ -242,7 +242,9 @@ why:
 - **The rota (3.7)** is a generic library in `common/day_subject.py`: `parse_rotation` checks
   either the seven weekdays (all seven must be named) or a list cycled from 1970-01-01, that every
   subject has a day, and the zone. It raises ValueError, which the adapter wraps in its
-  ConfigError. `rotation_subject` names the subject for the local day.
+  ConfigError. `rotation_subject` names the subject for the local day. An adapter imports the
+  module at its top: the module imports the adapter registry, which imports every adapter, only
+  inside `resolve_day_subject`, so the import is not a cycle.
 - **Not changed:** no new evidence event or field (a Finding's subject count on the
   `research_tick` line is a follow-up), `admin_api._update_topic`'s whole-item write (the 3.4
   race, now on one more field, is a follow-up), and the 48-Finding cap, which applies to the
