@@ -102,12 +102,17 @@ def _paginated_query(
 # --- Topics / Findings (research-tick worker) -------------------------------
 
 
-def get_topic(topic_id: str) -> dict | None:
+def get_topic(topic_id: str, *, table=None) -> dict | None:
     """Fetch a Topic item by `topic_id` from the Topics table.
 
     Returns None if no such topic exists.
+
+    `table`, when given, is read instead of the shared resource's Topics table (which keeps
+    botocore's default timeouts and retries): the operator's assistant passes one that gives each
+    request only the time its call has left (ops_mcp/vision_evidence._Bounded).
     """
-    table = get_table(os.environ["TOPICS_TABLE"])
+    if table is None:
+        table = get_table(os.environ["TOPICS_TABLE"])
     response = table.get_item(Key={"topic_id": topic_id})
     return response.get("Item")
 
@@ -541,9 +546,13 @@ def put_moderation_item(
 # --- Admin API ---------------------------------------------------------------
 
 
-def list_topics() -> list[dict]:
-    """Return every Topic item (Scan -- acceptable at this project's scale)."""
-    table = get_table(os.environ["TOPICS_TABLE"])
+def list_topics(*, table=None) -> list[dict]:
+    """Return every Topic item (Scan -- acceptable at this project's scale).
+
+    `table`, when given, is what every page is scanned through instead of the shared resource's
+    Topics table, as for get_topic."""
+    if table is None:
+        table = get_table(os.environ["TOPICS_TABLE"])
     response = table.scan()
     items = response.get("Items", [])
     while "LastEvaluatedKey" in response:
@@ -1445,7 +1454,7 @@ def list_articles_for_topic(
 
     `table`, when given, is what every page is queried through instead of the shared resource's
     Articles table (which keeps botocore's default timeouts and retries): the assistant passes one
-    that gives each page only the time its call has left (vision_evidence._BoundedArticles)."""
+    that gives each page only the time its call has left (vision_evidence._Bounded)."""
     if table is None:
         table = get_table(os.environ["ARTICLES_TABLE"])
     items = _paginated_query(

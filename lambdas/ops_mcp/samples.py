@@ -141,13 +141,19 @@ def _dynamodb():
     return _dynamodb_client
 
 
-def _account_id() -> str:
-    """This account's id, for a table's ARN. GetCallerIdentity needs no permission."""
+def _account_id(sts=None) -> str:
+    """This account's id, for a table's ARN. GetCallerIdentity needs no permission. `sts`, when
+    given, makes the STS client asked while the id is not known yet, in place of the shared one
+    (vision_evidence's, which holds the request to its call's time left: logs.group_arn)."""
     global _sts_client
     if not _account:
-        if _sts_client is None:
-            _sts_client = boto3.client("sts")
-        _account.append(_sts_client.get_caller_identity()["Account"])
+        if sts is not None:
+            client = sts()
+        else:
+            if _sts_client is None:
+                _sts_client = boto3.client("sts")
+            client = _sts_client
+        _account.append(client.get_caller_identity()["Account"])
     return _account[0]
 
 
