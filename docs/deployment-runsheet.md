@@ -745,12 +745,29 @@ heavy city, raise the topic's `time_budget_seconds` to the cap, 80, which gives 
 `adapter_config` and send all of it back with `topics update <id> --adapter-config-json '...'` (it
 replaces the config: see `reach_m` below). A failed first fetch is tried again on the next tick,
 with no 6-hour wait: nothing is measured without a network. If the status keeps saying `osm` with
-"OpenStreetMap timed out" at the 80 s budget, the query is too big for Overpass to answer in a
-tick: shrink the polygon (it starts a new baseline, and a new network is fetched for it).
+"OpenStreetMap timed out" at the 80 s budget (Overpass took 39 to 75 s to start answering for
+Sydney on 16 October, so a busy hour can miss), fetch the network out of band:
+
+```bash
+python scripts/admin_cli.py topics trigger rail-sydney --pipeline network_prefetch
+```
+
+It runs the research tick's function in a mode that only fetches each site's network, with up to
+90 s per Overpass reply and 100 s in all, and stores it at `vision/<topic>/<site>/network.json` in
+the content bucket. It writes no Finding, no running state and no research time, so the CLI does
+not wait: each site's result is a `network_prefetch` line in the research-tick log (`stored`,
+`failed` with the Overpass error, or `deferred` when the time ran out before a second site; trigger
+again for those). The next tick adopts the stored network for a site that has none, or whose own is
+past its TTL and older, and carries it in the running state from then on; it is read in no other
+case. When a city's cached network goes stale (`osm_ttl_days`, 30 by default) and the tick's
+30 s refresh keeps failing, the old network is still measured against; run the prefetch again to
+replace it. If even the prefetch fails with a timeout, the query is too big for Overpass to answer:
+shrink the polygon (it starts a new baseline, and a new network is fetched for it).
 
 **Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
 drew it, `vision/<topic>/<site>/<scene>.png` (for example
-`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); the running state, rewritten every
+`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); a network fetched by
+`network_prefetch`, `vision/<topic>/<site>/network.json`; the running state, rewritten every
 tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
 `snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the
 newest entry with its station, flag, suggestion and desert lists), the cached network, and any

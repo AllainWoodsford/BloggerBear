@@ -1220,3 +1220,17 @@ def test_musings_regenerate_needs_exactly_one_of_the_two(argv, capsys):
     assert exc_info.value.code != 0
     m.assert_not_called()
     assert "Give one of" in capsys.readouterr().err
+
+
+def test_topics_trigger_network_prefetch_posts_once_and_never_polls(capsys):
+    # Waiting is the default, but a prefetch writes no Finding or candidate to poll for.
+    with patch("admin_cli.signed_request", return_value=FakeResponse(202, {})) as m:
+        _run(["topics", "trigger", "trains", "--pipeline", "network_prefetch"])
+    m.assert_called_once_with(
+        "POST",
+        "https://api.example.com",
+        "/topics/trains/trigger",
+        "ap-southeast-2",
+        body={"pipeline": "network_prefetch"},
+    )
+    assert "network_prefetch" in capsys.readouterr().err

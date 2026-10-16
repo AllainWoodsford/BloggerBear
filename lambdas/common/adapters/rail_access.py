@@ -73,7 +73,9 @@ only verifies and scores it. The summary prompt says so, and says what was not m
 
 **State between ticks.** `keeps_running_state`: the research tick keeps the state after a
 no-change tick too, so the baseline includes every scene measured and the network is fetched once
-a month, not once a tick. The figure for each scene is stored in the content bucket under
+a month, not once a tick. A city Overpass is too slow for in a tick is fetched out of band
+(`prefetch_networks`, the operator's `network_prefetch` trigger) into its own object, which the
+next tick adopts (`_adopt_prefetched`). The figure for each scene is stored in the content bucket under
 `vision/<topic>/<site>/<scene>.png`; the state holds only its key, and `figures` hands the
 newest to the article (common/figures.py). The network (about 3 MB of JSON per city at
 common/osm.py's caps with ASCII names, more with long non-ASCII ones; the worker request is sent
@@ -156,6 +158,16 @@ FIRST_FETCH_MARGIN_SECONDS = 10.0
 # deadline is the tighter bound with today's constants (at the 80 s budget cap a hop reads for at
 # most 80 - 10 - 5 = 65 s, 5 s being the connect allowance); this one holds should the cap rise.
 FIRST_FETCH_TIMEOUT_SECONDS = 75.0
+# Even a first fetch's minute is not always enough: on 16 October Overpass took 39 to 75 s to start
+# answering for Sydney. A city that keeps missing it is fetched out of band, by the research tick's
+# `prefetch_network` event (`topics trigger <topic> --pipeline network_prefetch`), which has the
+# function's whole 120 s for nothing else: one hop may wait this long for its reply ...
+PREFETCH_TIMEOUT_SECONDS = 90.0
+# ... all the sites' fetches together end by this long after the invocation started, under the
+# research tick's 120 s Lambda timeout with room to store what came back ...
+PREFETCH_BUDGET_SECONDS = 100.0
+# ... and a site is not started with less than this left: it would only time out.
+PREFETCH_MIN_SECONDS = 30.0
 # ... the worker is asked only with this much left (vision_sites.time_to_measure) ...
 MEASURE_RESERVE_SECONDS = vision_sites.MEASURE_RESERVE_SECONDS
 # ... and is waited on for at most this long (its own timeout is 60 s; the client's default 90 s
@@ -309,6 +321,8 @@ class RailAccessAdapter(Adapter):
     fetch_network = staticmethod(osm.fetch_network)
     store_image = staticmethod(vision_sites.store_image)
     load_image = staticmethod(vision_sites.load_image)
+    store_network = staticmethod(vision_sites.store_network)
+    load_network = staticmethod(vision_sites.load_network)
     triage_agent = staticmethod(vision_triage.triage)
     choose_model = staticmethod(resolve_model)
     web_search = staticmethod(search_web)
@@ -404,7 +418,7 @@ class RailAccessAdapter(Adapter):
         # polygon or parameters is a new request, so it is sent at once.
         refused = new_scene and _refused_before(record, scene["id"], now, key, worker_params(config))
         new_scene = new_scene and not refused
-        network = record.get("network")
+        network = self._adopt_prefetched(site, record, now, key, config, topic_id)
         if not (isinstance(network, dict) and network.get("site_key") == key):
             # (b) No usable network: none yet, or the old polygon's (it is never measured against).
             # Entered with OSM_RESERVE_SECONDS left, as a refresh is, but it may take the rest of
@@ -481,6 +495,80 @@ class RailAccessAdapter(Adapter):
         record.pop("last_error", None)
         record.pop("failed_scene", None)
         return {"site_id": site["id"], "scene_id": scene["id"]}
+
+    def _adopt_prefetched(
+        self, site: dict, record: dict, now: datetime, key: str, config: dict, topic_id: str
+    ) -> dict | None:
+        """The site's network as this tick should use it: the record's, unless it has none for
+        this polygon, or it is stale and one fetched out of band (prefetch_networks) for this
+        polygon is newer. That one then replaces it in `record`, so the running state carries it
+        from here on. The prefetched object is read only in those two cases, not every tick."""
+        network = record.get("network")
+        usable = isinstance(network, dict) and network.get("site_key") == key
+        if usable and not _is_stale(network, now, config["osm_ttl_days"]):
+            return network
+        try:
+            prefetched = self.load_network(topic_id, site["id"])
+        except Exception as exc:  # noqa: BLE001 - a cache that cannot be read is no cache
+            print(f"rail_access: could not read the prefetched network for {site['id']}: {exc!r}")
+            return network
+        if not (isinstance(prefetched, dict) and prefetched.get("site_key") == key):
+            return network
+        if usable and not _fetched_later(prefetched, network):
+            return network
+        record["network"] = prefetched
+        record.pop("network_error", None)
+        return prefetched
+
+    def prefetch_networks(self, topic_config: dict) -> list[dict]:
+        """Each site's network from Overpass with the time a slow city needs
+        (PREFETCH_TIMEOUT_SECONDS a hop, PREFETCH_BUDGET_SECONDS in all), stored with its
+        polygon's `site_key` where the next tick adopts it (_adopt_prefetched). Run by the research
+        tick's `prefetch_network` event, never by the hourly heartbeat; it changes no running
+        state, Finding or research time. One result per site, in the configured order:
+
+            {"site_id", "status": "stored", "fetched_at", "counts", "truncated"}
+            {"site_id", "status": "failed", "code", "detail"}   (osm.OsmError codes, or "fetch")
+            {"site_id", "status": "deferred"}                   (too little time left: trigger again)
+        """
+        config = parse_config(topic_config.get("adapter_config"))
+        topic_id = topic_config.get("topic_id", "topic")
+        now = datetime.now(UTC)
+        deadline = self.clock() + PREFETCH_BUDGET_SECONDS
+        results = []
+        for site in config["sites"]:
+            if deadline - self.clock() < PREFETCH_MIN_SECONDS:
+                results.append({"site_id": site["id"], "status": "deferred"})
+                continue
+            try:
+                network = self.fetch_network(
+                    site["polygon"],
+                    http_post=self.http_post,
+                    timeout=PREFETCH_TIMEOUT_SECONDS,
+                    now=now,
+                    deadline=deadline,
+                    clock=self.clock,
+                )
+            except osm.OsmError as exc:
+                failed = {"status": "failed", "code": exc.code, "detail": exc.detail}
+                results.append({"site_id": site["id"], **failed})
+                continue
+            except Exception as exc:  # noqa: BLE001 - one site's failure must not stop the others
+                detail = f"{type(exc).__name__}: {exc}"
+                results.append({"site_id": site["id"], "status": "failed", "code": "fetch", "detail": detail})
+                continue
+            network["site_key"] = site_key(site["polygon"])
+            self.store_network(topic_id, site["id"], network)
+            results.append(
+                {
+                    "site_id": site["id"],
+                    "status": "stored",
+                    "fetched_at": network.get("fetched_at"),
+                    "counts": network.get("counts"),
+                    "truncated": network.get("truncated"),
+                }
+            )
+        return results
 
     def _fetch_network(
         self, site: dict, record: dict, now: datetime, key: str, *, seconds: float, timeout: float
@@ -960,6 +1048,18 @@ def _is_stale(network: dict, now: datetime, ttl_days) -> bool:
         return osm.is_stale(network, now, ttl_days)
     except (ArithmeticError, ValueError, TypeError):
         return True
+
+
+def _fetched_later(network: dict, other: dict) -> bool:
+    """Whether `network` was fetched after `other`; False when either time cannot be read."""
+    try:
+        mine = datetime.fromisoformat(network["fetched_at"])
+        theirs = datetime.fromisoformat(other["fetched_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    mine = mine if mine.tzinfo else mine.replace(tzinfo=UTC)
+    theirs = theirs if theirs.tzinfo else theirs.replace(tzinfo=UTC)
+    return mine > theirs
 
 
 def _retry_waits(record: dict, now: datetime) -> bool:

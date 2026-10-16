@@ -242,6 +242,19 @@ def adapter():
         return f"vision/{topic_id}/{site_id}/{scene_id}.png"
 
     a.store_image = store
+    # The prefetched networks (vision_sites.store_network / load_network), by (topic, site).
+    a.prefetched, a.loads = {}, []
+
+    def store_network(topic_id, site_id, net):
+        a.prefetched[(topic_id, site_id)] = json.loads(json.dumps(net))
+        return vision_sites.network_key(topic_id, site_id)
+
+    def load_network(topic_id, site_id):
+        a.loads.append((topic_id, site_id))
+        found = a.prefetched.get((topic_id, site_id))
+        return json.loads(json.dumps(found)) if found is not None else None
+
+    a.store_network, a.load_network = store_network, load_network
     return a
 
 
@@ -2649,3 +2662,114 @@ def test_a_failed_attempt_leaves_its_lines_and_the_scene_is_measured_again(tick_
     assert [e["scene_id"] for e in state["sites"]["sydney"]["history"]] == ["S0", "S1"]
     (entry,) = (e for e in state["sites"]["sydney"]["decisions"] if e["scene_id"] == "S1")
     assert entry["run"] == again[-1]["run"] and entry["triage"]["reason"]  # the ring keeps the reason
+
+
+# --- the network fetched out of band (prefetch_networks) ----------------------------------------
+# Overpass can think about a city for over a minute before it answers (Sydney, 2026-10-16), longer
+# than any tick can wait: the operator's network_prefetch trigger fetches it with the time it needs
+# and stores it on its own, and the next tick adopts it.
+
+
+def test_a_prefetch_waits_long_for_each_site_and_stores_its_network_apart_from_the_state(adapter):
+    adapter.clock = Clock(1000.0)
+    overpass = FakeOverpass(network())
+    adapter.fetch_network = overpass
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+
+    results = adapter.prefetch_networks(topic(sites=sites))
+
+    assert [r["site_id"] for r in results] == ["sydney", "melbourne"]
+    assert {r["status"] for r in results} == {"stored"}
+    first = overpass.calls[0]
+    assert first["timeout"] == ra.PREFETCH_TIMEOUT_SECONDS > ra.FIRST_FETCH_TIMEOUT_SECONDS
+    assert first["deadline"] == 1000.0 + ra.PREFETCH_BUDGET_SECONDS and first["clock"] is adapter.clock
+    stored = adapter.prefetched[("rail", "melbourne")]
+    assert stored["site_key"] == vision_sites.site_key(MELBOURNE)
+    assert results[0]["fetched_at"] == adapter.prefetched[("rail", "sydney")]["fetched_at"]
+    assert results[0]["counts"] == {"ways": 1, "stations": 1, "pois": 1, "points": 2}
+    assert results[0]["truncated"] is False
+    # A prefetch writes no state of its own and asks no worker: only the stored networks.
+    assert adapter.stored == [] and adapter.loads == []
+    assert ra.PREFETCH_BUDGET_SECONDS + 15 <= 120  # under the research tick's Lambda timeout
+
+
+def test_a_prefetch_says_which_sites_failed_and_leaves_too_little_time_for_the_next_to_another(adapter):
+    adapter.clock = Clock()
+    adapter.fetch_network = FakeOverpass(osm.OsmError("timeout", "ReadTimeout from overpass", transient=True))
+    (failed,) = adapter.prefetch_networks(topic())
+    assert failed == {"site_id": "sydney", "status": "failed", "code": "timeout",
+                      "detail": "ReadTimeout from overpass"}  # fmt: skip
+    assert adapter.prefetched == {}
+
+    adapter.fetch_network = FakeOverpass(ValueError("bad polygon"))
+    (broken,) = adapter.prefetch_networks(topic())
+    assert broken["status"] == "failed" and broken["code"] == "fetch" and "ValueError" in broken["detail"]
+
+    # The first city takes most of the budget: the second is not started, only deferred.
+    slow = ra.PREFETCH_BUDGET_SECONDS - 20
+    adapter.fetch_network = FakeOverpass(network(), takes=slow, clock=adapter.clock)
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    results = adapter.prefetch_networks(topic(sites=sites))
+    assert [r["status"] for r in results] == ["stored", "deferred"]
+    assert len(adapter.fetch_network.calls) == 1 and ("rail", "melbourne") not in adapter.prefetched
+
+
+def test_a_tick_without_a_network_adopts_the_prefetched_one_and_asks_no_overpass(adapter):
+    adapter.fetch_network = FakeOverpass(network())
+    adapter.prefetch_networks(topic())
+    failing = FakeOverpass(osm.OsmError("http", "HTTP 406 from overpass"))
+    error = {"code": "http", "at": "x", "detail": "406"}
+    previous = {"sites": {"sydney": {"history": [], "network_error": error}}}
+
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), failing, previous=previous)
+
+    record = state["sites"]["sydney"]
+    assert failing.calls == [] and state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]
+    assert record["network"] == adapter.prefetched[("rail", "sydney")]
+    assert "network_error" not in record and "last_error" not in record
+    # From then on the running state carries it: the prefetched object is not read again.
+    adapter.loads.clear()
+    run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), failing, previous=state)
+    assert adapter.loads == [] and failing.calls == []
+
+
+def test_a_stale_network_gives_way_only_to_a_newer_prefetched_one_for_the_same_polygon(adapter):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    old = aged(first, 40)
+    old_fetched = old["sites"]["sydney"]["network"]["fetched_at"]
+
+    # Prefetched for another polygon: ignored, and the stale network is refreshed in the tick.
+    now = datetime.now(UTC).isoformat()
+    adapter.prefetched[("rail", "sydney")] = network(fetched_at=now, polygon=MELBOURNE)
+    refresh = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
+    assert len(refresh.calls) == 1
+    assert state["sites"]["sydney"]["network"]["site_key"] == vision_sites.site_key(SYDNEY)
+
+    # Prefetched for this polygon but older than the cached one: kept as it was, refreshed in the tick.
+    adapter.prefetched[("rail", "sydney")] = network(fetched_at="2020-01-01T00:00:00+00:00")
+    refresh = FakeOverpass(osm.OsmError("timeout", "slow", transient=True))
+    state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
+    assert len(refresh.calls) == 1 and state["sites"]["sydney"]["network"]["fetched_at"] == old_fetched
+
+    # Newer and for this polygon: adopted, and the tick has nothing left to refresh.
+    newer = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    adapter.prefetched[("rail", "sydney")] = network(fetched_at=newer)
+    refresh = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({}), refresh, previous=old)
+    assert refresh.calls == [] and state["sites"]["sydney"]["network"]["fetched_at"] == newer
+
+
+def test_a_fresh_network_never_reads_the_prefetched_one_and_an_unreadable_one_is_no_network(adapter):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), FakeOverpass(network()))
+    adapter.loads.clear()
+    run(adapter, scene(2), FakeRailWorker({"S2": metrics()}), FakeOverpass(network()), previous=first)
+    assert adapter.loads == []
+
+    def unreadable(topic_id, site_id):
+        raise RuntimeError("AccessDenied")
+
+    adapter.load_network = unreadable
+    overpass = FakeOverpass(network())
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), overpass)
+    assert len(overpass.calls) == 1 and state["measured"] == [{"site_id": "sydney", "scene_id": "S1"}]

@@ -197,6 +197,16 @@ def handler(event, context) -> dict:
     # elapsed.
     force = (event or {}).get("force") is True
 
+    if (event or {}).get("prefetch_network") is True:
+        # Only the Admin API's network_prefetch trigger sets this: fetch the topic's rail networks
+        # with the time a slow Overpass needs, and nothing else (no Finding, no research time).
+        print(f"research_tick_handler: prefetching networks for topic_id={topic_id}")
+        try:
+            return _run_network_prefetch(topic_id)
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            print(f"research_tick_handler: unhandled exception prefetching for topic_id={topic_id}: {exc!r}")
+            return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+
     print(f"research_tick_handler: starting run for topic_id={topic_id} force={force}")
     tick = getattr(context, "aws_request_id", None)
     with evidence.bind(tick=tick, run=evidence.new_run(), topic_id=topic_id):
@@ -276,6 +286,27 @@ def _record_research_check(topic_id: str, now: datetime) -> None:
         set_topic_last_research_at(topic_id, now.isoformat())
     except Exception as exc:  # noqa: BLE001
         print(f"research_tick_handler: could not record last_research_at for {topic_id}: {exc!r}")
+
+
+def _run_network_prefetch(topic_id: str) -> dict:
+    """The `prefetch_network` event: the adapter's prefetch_networks (rail_access), one log line
+    per site. A paused topic fetches nothing, as for a tick."""
+    topic = get_topic(topic_id)
+    if topic is None:
+        return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
+    if topic.get("paused") is True:
+        print(f"research_tick_handler: {topic_id} is paused; nothing fetched")
+        return {"status": "paused", "topic_id": topic_id}
+    adapter_key = topic.get("adapter")
+    adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
+    if adapter_cls is None or not hasattr(adapter_cls, "prefetch_networks"):
+        return {"status": "error", "reason": f"adapter {adapter_key} has no network to prefetch"}
+    sites = adapter_cls().prefetch_networks(topic)
+    for site in sites:
+        detail = {key: value for key, value in site.items() if key not in ("site_id", "status")}
+        where = f"{topic_id}/{site['site_id']}"
+        print(f"research_tick_handler: network_prefetch {where}: {site['status']} {detail}")
+    return {"status": "network_prefetched", "topic_id": topic_id, "sites": sites}
 
 
 def _run_research_tick(topic_id: str, force: bool = False) -> dict:
