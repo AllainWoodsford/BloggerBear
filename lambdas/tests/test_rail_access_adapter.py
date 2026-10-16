@@ -2421,3 +2421,43 @@ def test_the_vocabulary_is_fixed_words_for_the_rings_measures_and_settings():
     }  # fmt: skip
     for word in ra.vision_decisions.vocabulary_words(vocabulary):
         assert ra.vision_decisions.WORD.match(word), word
+
+
+def test_a_failed_attempt_leaves_its_lines_and_the_scene_is_measured_again(tick_env, monkeypatch, capsys):
+    """The summary call raises after material_diff: the `vision_decision` and `vision_triage` lines
+    are already printed, the `research_tick` line says `error` and `stored: false`, nothing is
+    written, and the next tick (a new run) measures the same scene again."""
+    tick_with(monkeypatch, "S0", metrics(), "2026-09-10T00:00:00Z")
+    capsys.readouterr()
+    moved = metrics(served_share=0.70, station_count=180)
+    monkeypatch.setattr(ra.RailAccessAdapter, "triage_agent", staticmethod(TrailAgent()))
+    monkeypatch.setattr(ra.RailAccessAdapter, "choose_model", staticmethod(lambda topic: ("m", None)))
+    monkeypatch.setattr(ra.RailAccessAdapter, "http_post", FakeStac([item("S1", "2026-09-11T00:00:00Z")]))
+    monkeypatch.setattr(ra.RailAccessAdapter, "measure", FakeRailWorker({"S1": moved}, request_id="req-1"))
+    monkeypatch.setattr(ra.RailAccessAdapter, "fetch_network", FakeOverpass(network()))
+    with patch("research_tick_handler.invoke_model_tracked", side_effect=RuntimeError("bedrock throttled")):
+        result = research_tick_handler.handler({"topic_id": "rail"}, None)
+    assert result == {"status": "error", "topic_id": "rail", "reason": "bedrock throttled"}
+    lines = evidence_lines(capsys)
+    events = ["vision_site", "vision_triage", "vision_decision", "research_tick"]
+    assert [line["event"] for line in lines] == events
+    site, triage, decision, tick = lines
+    assert site["outcome"] == "measured" and site["worker_request_id"] == "req-1"
+    assert decision["code"] == "reported" and decision["worker_request_id"] == "req-1"
+    assert tick["outcome"] == "error" and tick["stored"] is False and tick["error_type"] == "RuntimeError"
+    assert tick["decisions"] == 1 and tick["triages"] == 1 and "finding" not in tick
+    assert len({line["run"] for line in lines}) == 1 and all(line["topic_id"] == "rail" for line in lines)
+    assert [e["scene_id"] for e in running_state()["sites"]["sydney"]["history"]] == ["S0"]  # not stored
+
+    # The next attempt: a new run, the scene measured and decided again, and kept this time.
+    result, _ = tick_with(monkeypatch, "S1", moved, "2026-09-11T00:00:00Z", agent=TrailAgent())
+    assert result["status"] == "material_change"
+    again = evidence_lines(capsys)
+    assert [line["event"] for line in again] == events
+    assert again[0]["scene_id"] == "S1" and again[-1]["run"] != tick["run"]
+    assert again[-1]["outcome"] == "material_change" and again[-1]["stored"] is True
+    assert again[-1]["finding"] == again[2]["at"]  # the Finding's captured_at is the decision's `at`
+    state = running_state()
+    assert [e["scene_id"] for e in state["sites"]["sydney"]["history"]] == ["S0", "S1"]
+    (entry,) = (e for e in state["sites"]["sydney"]["decisions"] if e["scene_id"] == "S1")
+    assert entry["run"] == again[-1]["run"] and entry["triage"]["reason"]  # the ring keeps the reason

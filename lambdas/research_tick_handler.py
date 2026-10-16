@@ -27,16 +27,26 @@ throttle) surfaced as a raw unhandled Lambda function-error instead of a
 clean, structured log entry. Matches every other handler in this
 codebase now: never raises unhandled, always returns a `{"status":
 "error", ...}` dict on failure.
+
+The evidence trail (common/evidence.py, docs/enhancements/vision-evidence.md): every invocation
+binds its ids (Lambda's request id as `tick`, a fresh `run` per attempt, the topic) so each line
+an adapter prints carries them, and prints one `research_tick` line in a `finally`: the outcome,
+whether the running state or the snapshot was stored in this attempt, how many decisions and
+triages the adapter logged, and the Finding's captured_at if one was written. A timed-out tick
+never reaches the finally: readers treat the missing line as "not kept". The handler stays
+topic-agnostic: the adapter key is stored as typed and never branched on.
 """
 from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import boto3
 
+from common import evidence
 from common.adapters.base import SEEN_KEY
 from common.adapters.registry import ADAPTER_REGISTRY
 from common.bedrock import invoke_model_tracked
@@ -144,7 +154,7 @@ def _planner_notes(adapter, new_state: dict) -> list[dict]:
         text = json.dumps(notes[:MAX_PLANNER_NOTES_PER_FINDING], allow_nan=False)
         return json.loads(text, parse_float=Decimal)
     except Exception as exc:  # noqa: BLE001 - an extra on the Finding, never a reason to lose it
-        print(f"research_tick_handler: planner notes dropped: {type(exc).__name__}: {exc}")
+        print(f"research_tick_handler: planner notes dropped: {type(exc).__name__}: {exc!r}")
         return []
 
 
@@ -188,11 +198,47 @@ def handler(event, context) -> dict:
     force = (event or {}).get("force") is True
 
     print(f"research_tick_handler: starting run for topic_id={topic_id} force={force}")
-    try:
-        return _run_research_tick(topic_id, force=force)
-    except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
-        print(f"research_tick_handler: unhandled exception for topic_id={topic_id}: {exc!r}")
-        return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+    tick = getattr(context, "aws_request_id", None)
+    with evidence.bind(tick=tick, run=evidence.new_run(), topic_id=topic_id):
+        started = time.monotonic()
+        outcome, error_type = "error", None
+        try:
+            result = _run_research_tick(topic_id, force=force)
+            outcome = _outcome(result)
+            return result
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            error_type = type(exc).__name__
+            print(f"research_tick_handler: unhandled exception for topic_id={topic_id}: {exc!r}")
+            return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
+        finally:
+            evidence.emit(
+                "research_tick",
+                adapter=evidence.bound("adapter"),
+                outcome=outcome,
+                stored=bool(evidence.bound("stored")),
+                decisions=evidence.emitted("vision_decision"),
+                triages=evidence.emitted("vision_triage"),
+                finding=evidence.bound("finding"),
+                force=force,
+                ms=int((time.monotonic() - started) * 1000),
+                error_type=error_type,
+            )
+
+
+# The tick's result statuses as the evidence line's outcome codes; an error result is told apart
+# by its reason's fixed start.
+_ERROR_OUTCOMES = (("unknown topic_id", "unknown_topic"), ("unknown adapter", "unknown_adapter"))
+
+
+def _outcome(result: dict) -> str:
+    """The `research_tick` line's outcome for a result of _run_research_tick: its status
+    (`not_due`, `paused`, `no_change`, `material_change`), or for an error `unknown_topic`,
+    `unknown_adapter` or `error`."""
+    status = result.get("status") if isinstance(result, dict) else None
+    if status != "error":
+        return status if isinstance(status, str) else "error"
+    reason = str(result.get("reason") or "")
+    return next((code for start, code in _ERROR_OUTCOMES if reason.startswith(start)), "error")
 
 
 def _not_due(topic: dict, now: datetime) -> dict | None:
@@ -254,6 +300,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
     if adapter_cls is None:
         return {"status": "error", "reason": f"unknown adapter: {adapter_key}"}
+    evidence.note(adapter=adapter_key)  # the registry key as typed: stored, never branched on
 
     adapter = adapter_cls()
     bucket = os.environ["CONTENT_BUCKET"]
@@ -286,6 +333,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
             if seen:
                 running[SEEN_KEY] = seen
             _store_state(bucket, _running_state_key(topic_id), running)
+            evidence.note(stored=True)
         return {"status": "no_change"}
 
     # The same precedence as the daily cycle (rotation candidates -> the topic's
@@ -330,6 +378,7 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     _store_state(bucket, snapshot_key, snapshot)
     if adapter.keeps_running_state:
         _store_state(bucket, _running_state_key(topic_id), snapshot)
+    evidence.note(stored=True)
 
     expires_at = int((datetime.now(UTC) + timedelta(days=FINDING_TTL_DAYS)).timestamp())
     refs = adapter.source_refs(new_state)
@@ -350,5 +399,6 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
         figures=figures,
         planner_notes=planner_notes,
     )
+    evidence.note(finding=captured_at)
 
     return {"status": "material_change", "summary": summary}

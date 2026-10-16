@@ -18,6 +18,10 @@ lambda-build/
 # every apply (see infra/environments/*/main.tf's frontend_dir comment) -- never commit it either
 frontend-dist/
 
+# Raw evidence pulled from CloudWatch by hand (docs/enhancements/vision-evidence.md): log lines
+# as the pipeline printed them, before the export checks them. Never committed as they are.
+evidence-raw/
+
 # .tfstate files
 *.tfstate
 *.tfstate.*

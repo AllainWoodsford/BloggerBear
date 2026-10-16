@@ -625,7 +625,7 @@ class CryptoFeedAdapter(Adapter):
             try:
                 state["web_results"] = self._fetch_web_results(adapter_config, goal)
             except Exception as exc:  # noqa: BLE001
-                print(f"crypto_feed: no headlines this tick ({exc}); continuing with the market data")
+                print(f"crypto_feed: no headlines this tick ({exc!r}); continuing with the market data")
                 state["web_results"] = []
         return state
 
@@ -670,7 +670,7 @@ class CryptoFeedAdapter(Adapter):
                 adapter_config, goal, deadline=time.monotonic() + REVIEW_HEADLINES_BUDGET_SECONDS
             )
         except Exception as exc:  # noqa: BLE001 - headlines are context, not the point
-            print(f"crypto_feed: no headlines for the review ({exc})")
+            print(f"crypto_feed: no headlines for the review ({exc!r})")
             headlines = []
         evidence["headlines"] = [
             {"title": r["title"], "source": r.get("source"), "published_at": r.get("published_at")}

@@ -11,6 +11,7 @@ from moto import mock_aws
 from table_schemas import create_table
 
 import admin_api_handler
+from common import evidence
 from common.adapters import MANUAL_REVIEW_ADAPTERS
 
 REGION = "ap-southeast-2"
@@ -3564,3 +3565,223 @@ def test_get_article_has_an_empty_figures_list_when_there_are_none(aws_resources
         _, body = _get_article_route()
 
     assert body["figures"] == []
+
+
+# --- the evidence lines (common/evidence.py's moderation_decision and topic_changed) ---------------
+
+
+class Context:
+    aws_request_id = "7c1d2e3f-0000-4000-8000-00000000abcd"
+
+
+API_REQUEST_ID = "9b1c3e2a-0000-4000-8000-0000000000aa"
+
+
+def _api_event(route_key, request_id=API_REQUEST_ID, **kwargs):
+    event = _event(route_key, **kwargs)
+    caller = {"userArn": "arn:aws:iam::123456789012:user/x"}  # what API Gateway knows; never written
+    event["requestContext"] = {"requestId": request_id, "identity": caller}
+    return event
+
+
+def admin_lines(capsys):
+    out = capsys.readouterr().out
+    lines = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    assert "arn:" not in out and "userArn" not in out and "123456789012" not in out  # never who
+    return lines
+
+
+def _decided(capsys, decision, from_status, queue_id="queue-1", article_id="article-1"):
+    (line,) = admin_lines(capsys)
+    assert line == {
+        "evidence": evidence.VERSION, "event": "moderation_decision", "tick": Context.aws_request_id,
+        "topic_id": "github-trending", "api_request_id": API_REQUEST_ID, "queue_id": queue_id,
+        "article_id": article_id, "decision": decision, "from_status": from_status, "by": "human",
+    }, line  # fmt: skip
+    return line
+
+
+def test_approving_or_rejecting_a_held_article_leaves_a_decision_line_and_never_who(aws_resources, capsys):
+    _put_article()
+    _put_moderation_item()
+    _put_topic()
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _api_event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "approved", "pending_moderation")
+
+    _put_article(article_id="article-2")
+    _put_moderation_item(queue_id="queue-2", article_id="article-2")
+    with patch("admin_api_handler.generate_and_store_rejection_musing"):
+        event = _api_event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-2"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "rejected", "pending_moderation", queue_id="queue-2", article_id="article-2")
+
+    # A route that fails before the write leaves no line.
+    event = _api_event("POST /moderation-queue/{queue_id}/approve", path_params={"queue_id": "queue-1"})
+    assert admin_api_handler.handler(event, Context())["statusCode"] == 409
+    assert admin_lines(capsys) == []
+
+
+def test_force_publishing_and_unpublishing_leave_their_lines(aws_resources, capsys):
+    _put_article(status="pending_moderation")
+    _put_moderation_item()
+    _put_topic()
+    with (
+        patch("admin_api_handler.read_article_body", return_value="# Body"),
+        patch("admin_api_handler.render_and_publish_article_page"),
+        patch("admin_api_handler.generate_and_store_article_musing"),
+    ):
+        event = _api_event("POST /articles/{article_id}/publish", path_params={"article_id": "article-1"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "force_published", "pending_moderation")
+
+    with (
+        patch("admin_api_handler.remove_article_page"),
+        patch("admin_api_handler.delete_musings_for_article", return_value=1),
+        patch("admin_api_handler.invalidate_article_page", return_value=True),
+    ):
+        event = _api_event("POST /articles/{article_id}/unpublish", path_params={"article_id": "article-1"})
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    _decided(capsys, "unpublished", "published")
+
+
+def test_sending_an_article_back_for_a_rewrite_leaves_a_line_held_or_published(aws_resources, capsys):
+    _put_model_row()
+    _put_article()
+    _put_moderation_item(reasons=["Fabricated claim: x"])
+    body = {"model_id": REWRITE_MODEL, "instructions": "Fix the second section."}
+    event = _api_event("POST /moderation-queue/{queue_id}/rewrite", path_params={"queue_id": "queue-1"},
+                       body=body)  # fmt: skip
+    with patch("admin_api_handler._get_lambda_client", return_value=MagicMock()):
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 202
+    line = _decided(capsys, "sent_back", "pending_moderation")
+    assert "Fix the second section" not in json.dumps(line) and REWRITE_MODEL not in json.dumps(line)
+
+    _put_article(article_id="article-2", status="published")
+    event = _api_event("POST /articles/{article_id}/rewrite", path_params={"article_id": "article-2"},
+                       body={"instructions": "The second section is out of date."})  # fmt: skip
+    with (
+        patch("admin_api_handler._get_lambda_client", return_value=MagicMock()),
+        patch("admin_api_handler.remove_article_page"),
+        patch("admin_api_handler.delete_musings_for_article", return_value=2),
+        patch("admin_api_handler.invalidate_article_page", return_value=True),
+    ):
+        result = admin_api_handler.handler(event, Context())
+    assert result["statusCode"] == 202
+    (line,) = admin_lines(capsys)
+    assert line["decision"] == "sent_back" and line["from_status"] == "published"
+    assert line["article_id"] == "article-2" and line["queue_id"] == json.loads(result["body"])["rewriting"]
+
+    # A rewrite that cannot be started is not a decision taken.
+    _put_article(article_id="article-3")
+    _put_moderation_item(queue_id="queue-3", article_id="article-3", reasons=["Fabricated claim: x"])
+    client = MagicMock()
+    client.invoke.side_effect = RuntimeError("lambda down")
+    event = _api_event("POST /moderation-queue/{queue_id}/rewrite", path_params={"queue_id": "queue-3"},
+                       body={"model_id": REWRITE_MODEL})  # fmt: skip
+    with patch("admin_api_handler._get_lambda_client", return_value=client):
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 502
+    assert admin_lines(capsys) == []
+
+
+SITES = [{"id": "sydney", "name": "Sydney (demo)", "polygon": [[150.86, -34.16], [151.56, -33.58]]}]
+
+
+def test_creating_and_changing_a_topic_leaves_lines_of_keys_and_numbers_never_text(aws_resources, capsys):
+    with patch("admin_api_handler._apply_topic_schedules"):
+        goals = {"primary_focus": "Watch the rail network", "exclusion_criteria": "planners' opinions"}
+        body = {"topic_id": "rail-sydney", "name": "Rail access: Sydney", "adapter": "rail_access",
+                "adapter_config": {"sites": SITES, "triage": True, "served_share_threshold": 0.02},
+                "editorial_goals": goals}  # fmt: skip
+        result = admin_api_handler.handler(_api_event("POST /topics", body=body), Context())
+        assert result["statusCode"] == 201, result
+        (line,) = admin_lines(capsys)
+        assert line["event"] == "topic_changed" and line["action"] == "created"
+        assert line["topic_id"] == "rail-sydney" and line["api_request_id"] == API_REQUEST_ID
+        # Every key set, cut to the codes cap (a new topic has more than twelve) and said so.
+        assert {"adapter", "adapter_config", "name", "editorial_goals"} <= set(line["fields"])
+        assert len(line["fields"]) == evidence.MAX_CODES and line["cut"] == ["fields"]
+        assert line["config_keys"] == ["served_share_threshold", "sites", "triage"]
+        assert line["config_numbers"] == {"served_share_threshold": 0.02} and line["config_on"] == ["triage"]
+        assert line["force_manual_review"] is True  # a rail topic is always held for a person
+        text = json.dumps(line)
+        for never in ("Sydney", "150.86", "Watch the rail", "planners", "Rail access"):
+            assert never not in text
+
+        # A threshold changed, triage switched off, a polygon edited: the keys, the number and
+        # the switch; the polygon never.
+        changed = {"sites": [{**SITES[0], "polygon": [[150.80, -34.2], [151.56, -33.58]]}], "triage": False,
+                   "served_share_threshold": 0.03}  # fmt: skip
+        event = _api_event("PUT /topics/{topic_id}", path_params={"topic_id": "rail-sydney"},
+                           body={"adapter_config": changed})  # fmt: skip
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+        (line,) = admin_lines(capsys)
+        assert line["action"] == "updated"
+        assert "adapter_config" in line["fields"] and "name" not in line["fields"]
+        assert line["config_keys"] == ["served_share_threshold", "sites", "triage"]
+        assert line["config_numbers"] == {"served_share_threshold": 0.03} and line["config_off"] == ["triage"]
+        assert line["config_on"] == [] and "150.8" not in json.dumps(line)
+
+        # An unrelated edit names only what it touched.
+        event = _api_event("PUT /topics/{topic_id}", path_params={"topic_id": "rail-sydney"},
+                           body={"name": "Sydney"})  # fmt: skip
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+        (line,) = admin_lines(capsys)
+        assert line["fields"] == ["name"] and line["config_keys"] == [] and "Sydney" not in json.dumps(line)
+
+        # A refused request writes nothing and leaves no line.
+        event = _api_event("PUT /topics/{topic_id}", path_params={"topic_id": "rail-sydney"},
+                           body={"adapter_config": "not an object"})  # fmt: skip
+        assert admin_api_handler.handler(event, Context())["statusCode"] == 400
+        assert admin_lines(capsys) == []
+
+
+def test_pausing_and_resuming_a_topic_leave_lines(aws_resources, capsys):
+    _put_topic()
+    with (
+        patch("admin_api_handler.set_topic_schedules_state", return_value=[]),
+        patch("admin_api_handler.generate_and_store_pause_musing"),
+    ):
+        for action in ("pause", "resume", "resume"):
+            route = f"POST /topics/{{topic_id}}/{action}"
+            event = _api_event(route, path_params={"topic_id": "github-trending"})
+            assert admin_api_handler.handler(event, Context())["statusCode"] == 200
+    lines = admin_lines(capsys)
+    assert [(line["action"], line["fields"]) for line in lines] == [
+        ("paused", ["paused", "paused_at"]), ("resumed", ["paused", "resumed_at"]),
+    ]  # fmt: skip  # the third call changed nothing
+
+
+def test_the_api_request_id_is_bound_only_when_it_is_an_id(aws_resources, capsys):
+    _put_topic()
+    with (
+        patch("admin_api_handler.set_topic_schedules_state", return_value=[]),
+        patch("admin_api_handler.generate_and_store_pause_musing"),
+    ):
+        event = _api_event("POST /topics/{topic_id}/pause", request_id="not an id\n",
+                           path_params={"topic_id": "github-trending"})  # fmt: skip
+        assert admin_api_handler.handler(event, None)["statusCode"] == 200
+    (line,) = admin_lines(capsys)
+    assert "api_request_id" not in line and "tick" not in line and line["topic_id"] == "github-trending"
+
+
+def test_changed_config_knows_no_key_and_keeps_only_numbers_and_switches():
+    before = {"a": 1, "b": True, "polygon": [[1, 2]], "name": "x", "same": 3}
+    after = {"a": Decimal("2.5"), "b": False, "polygon": [[1, 3]], "name": "y", "same": 3, "new": "text",
+             "Bad Key": 1, "inf": float("inf"), "n": 7}  # fmt: skip
+    assert admin_api_handler.changed_config(before, after) == {
+        "config_keys": ["a", "b", "inf", "n", "name", "new", "polygon"],
+        "config_numbers": {"a": 2.5, "n": 7},
+        "config_on": [],
+        "config_off": ["b"],
+    }
+    assert admin_api_handler.changed_config(None, {"triage": True}) == {
+        "config_keys": ["triage"], "config_numbers": {}, "config_on": ["triage"], "config_off": [],
+    }  # fmt: skip
+    assert admin_api_handler.changed_config({"a": 1}, "not a dict")["config_keys"] == ["a"]
+    assert admin_api_handler.changed_fields({"a": 1, "b": 2}, {"a": 1, "b": 3, "c": None}) == ["b", "c"]
