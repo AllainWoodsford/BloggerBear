@@ -1,7 +1,9 @@
 # The day-subject hook: one topic that rotates through the cities it is configured to watch
 
-**Status:** S1 and S2 built (#320, #323), with S1's review leftovers in S1b (#324) · **Date:** 2026-10-15 · **Pick up after:** the assistant's
-vision round (PR M, PR N) and before the competition report (Phase 3), or after the deadline ·
+**Status:** S1 and S2 built (#320, #323), with S1's review leftovers in S1b (#324), S2's review
+fixes in #327 and both reviews' nits in S3 · **Date:** 2026-10-15 · **Pick up after:** the
+assistant's vision round (PR M, PR N) and before the competition report (Phase 3), or after the
+deadline ·
 **Builds on:** [rail-access-monitor.md](rail-access-monitor.md), [vision.md](vision.md) §5,
 `common/editorial_goals.py` (the crypto feed's day goals), PR K (`findings_window_hours`, #297)
 
@@ -129,9 +131,13 @@ last_article_at)`. With subjects:
   bound is `last_article_by_subject.get(key)`; absent means "never written about this subject",
   so the window alone bounds it. `force` ignores both stamps, as now.
 - `_record_article_written(topic_id, run_started, subject_key=None)`: one `UpdateExpression`
-  that sets `last_article_at` and, when a key is given, `last_article_by_subject.#k`
-  (`SET last_article_by_subject = if_not_exists(last_article_by_subject, :empty)` first, then the
-  key; two statements in one transaction are not needed, two sequential updates are fine).
+  that sets `last_article_at` and, when a key is given, `last_article_by_subject.#k`. DynamoDB
+  refuses to set a map and a key inside it in one expression, so it is two sequential writes (no
+  transaction needed). The first is a conditional overwrite, `SET last_article_by_subject = :empty`
+  only when the topic exists and the field is missing or not a map (`attribute_not_exists(...) OR
+  NOT attribute_type(..., :map)`); a map already there fails the condition and is left alone, and a
+  field that was not a map (a hand edit) is replaced and logged. The second sets the key and
+  `last_article_at` together (as built: `dynamo.set_topic_last_article_at`, 3.10).
 - **A known gap, not widened here:** `admin_api._update_topic` reads the topic and writes it
   back whole (`put_item`), so an edit that lands between the stamp and the read restores the old
   stamps (vision.md §10). With a map it is the same race on more fields. Fixing it is a
@@ -263,17 +269,24 @@ why:
   the tool's error and the route's 500, never the topic-wide window, which no run of a rotating
   topic reads.
 - **The cap after the filter.** A rotating topic's readers (the daily cycle, Re-Write, the tool,
-  the route) read up to `findings_window.SUBJECT_READ_LIMIT` (4 x 48 = 192: every Finding a
-  one-slot rota of 7 subjects can gather at one an hourly tick, in its 192 h window), keep the
-  subject's Findings, then cap those at 48. Capped first, other subjects' newer Findings pushed a
-  subject's older ones out, and its stamp then passed them for good. The daily cycle logs how many
-  of the subject's own the cap left out. A topic that does not rotate makes the same Query with
-  the same limit.
-- **The hook's output.** `clean_subjects` reads any finite iterable of keys (a generator, a set in
-  sorted order); a string, a mapping or a number raises, so the research tick's log says the
-  subjects were dropped. A `DaySubject`'s label, mandate and style reach the prompts as one plain
-  line each (`figures.plain_text`); a mandate or style longer than the editorial goals' 1,000
-  characters, or a label longer than a site name's 80, stops the run.
+  the route) read up to `findings_window.SUBJECT_READ_LIMIT` (4 x 48 = 192), keep the subject's
+  Findings, then cap those at 48. Capped first, other subjects' newer Findings pushed a subject's
+  older ones out, and its stamp then passed them for good. The daily cycle logs how many of the
+  subject's own the cap left out. What 192 guarantees is every Finding of a one-slot rota of up to
+  7 subjects at one Finding an hour (its 192 h window), within the read's page cap (5 DynamoDB
+  pages of up to 1 MB, so Findings of up to about 26 KB each). A wider window (up to 336 h), a
+  longer rota (a list rota may have 62 slots) or larger Findings can hold more than the read
+  reaches; the daily cycle and Re-Write then log where the read stopped (the limit or the page cap)
+  and how many Findings it held, and the tool and the route give their count as a floor
+  (`count_is_at_least`). A topic that does not rotate makes the same Query with the same limit.
+- **The hook's output.** `clean_subjects` reads any iterable of keys (a generator, a set in sorted
+  order), looking at no more than 1,000 values (`MAX_SUBJECT_VALUES_EXAMINED`), so a hook that
+  yields junk without end still returns; a set larger than that is refused before it is sorted. A
+  string, a mapping or a number raises, so the research tick's log says the subjects were dropped.
+  A `DaySubject`'s label, mandate and style reach the prompts as one plain line each
+  (`figures.plain_text`); a mandate or style longer than the editorial goals' 1,000 characters, or
+  a label longer than a site name's 80, stops the run, and raw text over four times its bound
+  (`DAY_SUBJECT_RAW_TEXT_MULTIPLE`) is refused before it is cleaned.
 - **The stamp map.** A `last_article_by_subject` that is not a map (a hand edit) is replaced by
   one holding the subject's stamp, and the log says so, rather than failing every run.
 
@@ -353,10 +366,14 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   have gone. That object is now the network's only home: the tick's first fetch and refresh write
   it through `vision_sites.store_network`, every visit reads it (`_load_network`, a plain load where
   `_adopt_prefetched` was), and the prefetch and the tick share one store, the last write being the
-  network. `prefetch_networks`, its timeouts, results and log lines are unchanged. A missing or
-  unreadable object is no network (fetched again, with a first fetch's time); a network that
-  cannot be written is a failed fetch (`network_error` code `store`), so the record never names one
-  the object does not hold.
+  network. `prefetch_networks`, its timeouts, results and log lines are unchanged. A missing object,
+  one for another polygon, or one whose body is not a network is no network (fetched again, with a
+  first fetch's time). An object the record names for this polygon that S3 fails to hand back (a
+  read timeout, a 500, a body cut off) is not a missing one: the city waits for the next tick
+  (`last_error` `network_read`) and the record keeps the network and any refresh failure, rather
+  than spend most of the tick on Overpass for a network S3 still holds (the round's tidy-up). A network that cannot
+  be written is a failed fetch (`network_error` code `store`), so the record never names one the
+  object does not hold.
 - **What the record keeps:** `NETWORK_FIELDS`, `network_key`, `network_fetched_at`,
   `network_site_key` and `network_counts`. `network_stale` stays where it always was, on each
   history entry, and so does `network_fetched_at`, which is all the decision ring's
@@ -432,11 +449,15 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   converting it with `topics update` risks re-drafting those Findings
   (`test_findings_window.py::test_a_subject_never_written_about_is_bounded_by_the_window_alone`).
 - `force`: ignores both stamps, keeps the subject filter.
-- A rail topic whose stored config does not parse (hand-edited past `topics update`'s check): the
-  adapter cannot say whether it rotates, so the daily run stops with its `ConfigError` before any
-  model call, and the next-article read (`topic_findings`, `findings list --next-article`) fails
-  the same way, a tool error or a 500, rather than answer with a window the daily run would not
-  read. A rail topic always has sites: `parse_config` refuses one without.
+- A rail topic whose stored config does not parse (hand-edited past `topics update`'s check):
+  `day_subject` answers None before it parses anything when `adapter_config` sets neither
+  `rotation` nor `rotation_timezone` (#327), so a rail topic without a rota reads as one with no
+  subject: its daily run and its next-article read are what they always were, and the broken config
+  is the tick's `last_error`. Only a rail topic that sets a rota (either key) and whose stored
+  config does not parse cannot say whose day it is: the daily run stops with its `ConfigError`
+  before any model call, and the next-article read (`topic_findings`, `findings list
+  --next-article`) fails the same way, a tool error or a 500, rather than answer with a window the
+  daily run would not read.
 
 ## 6. Order, size and where it sits
 

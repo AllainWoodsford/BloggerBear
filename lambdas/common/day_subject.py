@@ -39,6 +39,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
+from itertools import islice
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from common.adapters.base import SUBJECT_KEY, DaySubject
@@ -52,6 +53,11 @@ SUBJECTS_FIELD = "subjects"
 # measures at most a few per tick. Ten keys of at most 64 characters are under 1 KB of a Findings
 # item's 400 KB.
 MAX_SUBJECTS_PER_FINDING = 10
+# How many values `clean_subjects` looks at, kept or not: far past any real hook (the rail adapter
+# reports at most common/adapters/rail_access.MAX_RAIL_SITES), so a hook that yields duplicates or
+# junk without end costs at most this many, never the research tick's timeout and its Finding. A
+# set is sorted before it is read, so one longer than this is refused before the sort.
+MAX_SUBJECT_VALUES_EXAMINED = 1_000
 # The article's field: the key of the subject it was written about (daily_cycle_handler.py).
 ARTICLE_SUBJECT_FIELD = "subject"
 # How long a day subject's text may be where it reaches a prompt (`clean_day_subject`): its mandate
@@ -62,6 +68,11 @@ ARTICLE_SUBJECT_FIELD = "subject"
 # always a label.
 MAX_DAY_SUBJECT_TEXT_CHARS = MAX_GOAL_TEXT_CHARS
 MAX_DAY_SUBJECT_LABEL_CHARS = 80
+# The bound is on the text once cleaned (plain_text collapses whitespace and drops control and
+# invisible characters), and cleaning costs time and memory in proportion to the raw text. So raw
+# text longer than this many times its bound is refused before it is cleaned: room for indentation,
+# line breaks and invisible characters many times over, and a pathological string is refused at once.
+DAY_SUBJECT_RAW_TEXT_MULTIPLE = 4
 
 # The rota's two adapter_config keys, its weekday names (Monday first, as date.weekday counts), the
 # day a list rota counts from, and how long a list rota may be (two months of days, one each).
@@ -77,20 +88,28 @@ def clean_subjects(raw) -> list[str]:
     """The subjects a Finding keeps, from what an adapter's `subjects` returned: the strings that
     are SUBJECT_KEY-shaped, each once, in the order given, the first MAX_SUBJECTS_PER_FINDING.
 
-    Any finite iterable of keys is read: a list or a tuple, a generator (the rail adapter's
-    reported scenes are one), or a set, read in sorted order so every tick keeps the same ones.
-    None is none. Anything else (a string, which would be read a character at a time; a mapping;
-    a number) raises TypeError, so the research tick's log says the subjects were dropped and why
-    (research_tick_handler._subjects), as it does for a hook that raises: a rotating topic never
-    drafts a Finding without subjects, so a wrong type must not go quiet."""
+    Any iterable of keys is read: a list or a tuple, a generator (the rail adapter's reported
+    scenes are one), or a set, whose strings are read in sorted order so every tick keeps the same
+    ones (only a string can be kept, so nothing else is sorted: a str() of each value could cost
+    far more than the set). At most MAX_SUBJECT_VALUES_EXAMINED values are looked at, so a
+    generator that never ends, or yields only duplicates or junk, still returns; a set longer than
+    that raises ValueError before it is sorted. None is none. Anything else (a string, which would
+    be read a character at a time; a mapping; a number) raises TypeError, so the research tick's
+    log says the subjects were dropped and why (research_tick_handler._subjects), as it does for a
+    hook that raises: a rotating topic never drafts a Finding without subjects, so a wrong type must
+    not go quiet."""
     if raw is None:
         return []
     if isinstance(raw, str | bytes | bytearray | Mapping) or not isinstance(raw, Iterable):
         raise TypeError(f"subjects must be an iterable of subject keys, not a {type(raw).__name__}")
     if isinstance(raw, set | frozenset):
-        raw = sorted(raw, key=str)
+        if len(raw) > MAX_SUBJECT_VALUES_EXAMINED:
+            raise ValueError(
+                f"subjects is a set of {len(raw)} values, more than the {MAX_SUBJECT_VALUES_EXAMINED} read"
+            )
+        raw = sorted(value for value in raw if isinstance(value, str))
     kept: list[str] = []
-    for value in raw:
+    for value in islice(raw, MAX_SUBJECT_VALUES_EXAMINED):
         if isinstance(value, str) and SUBJECT_KEY.fullmatch(value) and value not in kept:
             kept.append(value)
             if len(kept) == MAX_SUBJECTS_PER_FINDING:
@@ -118,7 +137,8 @@ def day_subject_error(subject) -> str | None:
     them once cleaned to one plain line (`clean_day_subject`: they go into the prompts), the label
     at most MAX_DAY_SUBJECT_LABEL_CHARS and the mandate and style at most
     MAX_DAY_SUBJECT_TEXT_CHARS. Too long is refused, not cut: a mandate cut short is not the one
-    the adapter wrote, and a broken day subject writes nothing."""
+    the adapter wrote, and a broken day subject writes nothing. Raw text over
+    DAY_SUBJECT_RAW_TEXT_MULTIPLE times the bound is refused the same way before it is cleaned."""
     if not isinstance(subject, DaySubject):
         return f"is a {type(subject).__name__}, not a DaySubject"
     if not isinstance(subject.key, str) or not SUBJECT_KEY.fullmatch(subject.key):
@@ -129,6 +149,8 @@ def day_subject_error(subject) -> str | None:
         ("style", MAX_DAY_SUBJECT_TEXT_CHARS),
     ):
         value = getattr(subject, name)
+        if isinstance(value, str) and len(value) > DAY_SUBJECT_RAW_TEXT_MULTIPLE * most:
+            return f"has a {name} longer than {most} characters"
         text = plain_text(value) if isinstance(value, str) else ""
         if not text:
             return f"has no {name}"

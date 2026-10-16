@@ -18,21 +18,25 @@ spend) are already readable.
 
 **Why the reads are safe and bounded.** The role may read only `snapshots/*/running-state.json`
 (infra/modules/ops-assistant/vision.tf), and the key is built here only from an id that passes
-ID_PATTERN: any other id is refused before S3 is called. A rail state can pass 20 MB, the
-function has 512 MB, and pipeline_health opens every briefing, so the reads share one budget,
-weighted by each object's ContentLength and taken before its body is read (IN_FLIGHT_BYTES): two
-large states never parse at once. pipeline_health and the memory watch read nothing over
-LARGE_STATE_BYTES, and nothing at all is read over MAX_STATE_BYTES. Each call has a deadline (8 s
-here, 3 s for pipeline_health, 2 s per topic for the watch), S3 is asked with a short timeout and
+ID_PATTERN: any other id is refused before S3 is called. A rail state is 11 to 23 MB until the
+day-subject round's first tick moves its networks out, and 3.6 to 16.4 MB after it
+(common/adapters/rail_access.py, MAX_RAIL_SITES's comment, has the measurements); the function has
+512 MB, and pipeline_health opens every briefing, so the reads share one budget, weighted by each
+object's ContentLength and taken before its body is read (IN_FLIGHT_BYTES): two large states never
+parse at once. pipeline_health and the memory watch read nothing over LARGE_STATE_BYTES, and
+nothing at all is read over MAX_STATE_BYTES. Each call has a deadline (8 s here, 3 s for
+pipeline_health, 2 s per topic for the watch), S3 is asked with a short timeout and
 no retry, and the deadline is read before GetObject, once it answers, between the chunks a body is
 read in and before the parse (and the budget gives nothing past it). A parse is not interrupted, so
 it is begun only with time left for the state's size at the slowest rate measured, on the share of
 a vCPU the function's memory buys (parse_bytes_per_second), and so is the read that leads to it: a
 call ends by its deadline, or, when a parse begun with that time to spare runs slower still (parses
-sharing the CPU), up to that parse's own length later. At the function's 512 MB that keeps a real
-rail state (11-23 MB) from being parsed within any call's deadline, and it says not_checked
-(PARSE_BYTES_PER_CPU_SECOND says why, and what would change it). Every body is closed and every
-thread joined before the call returns: nothing keeps reading after the answer.
+sharing the CPU), up to that parse's own length later. At the function's 512 MB the survey's 8 s
+parses a state of up to about 9 MiB: most rail states after the day-subject round's first tick
+(a four-city one among them), none from before it; pipeline_health and the watch stop near 3.5 and
+2.3 MiB. A state not parsed in time says not_checked (PARSE_BYTES_PER_CPU_SECOND says why, and what
+would change it). Every body is closed and every thread joined before the call returns: nothing
+keeps reading after the answer.
 
 **What is never spoken.** `spoken` is fixed templates over counts, ages, the Region, topics named
 by `tools.spoken_label`, and words from the adapters' declared vocabularies (each checked against
@@ -74,13 +78,14 @@ VISION_REGION_ENV = "OPS_VISION_REGION"
 WORKER_FUNCTION = "vision-worker"
 
 # The read budgets (the module docstring says why). The bytes bound the download, not the parsed
-# size. A real rail state (11.3 MB measured, 22.6 MB with CJK names at the caps: common/adapters/
-# rail_access.py, MAX_RAIL_SITES) parses to about six times its bytes; a 24 MiB JSON of a million
-# tiny site records, which only a hostile writer of the content bucket could put under snapshots/
-# (the research tick alone writes there), parses and is copied (topic_status's records and stamps)
-# to about seventeen times, 496 MB. The in-flight budget serialises such reads to one at a time in
-# the process; the function's memory (512 MB, infra/modules/ops-assistant/main.tf) is the knob if a
-# state ever grows past that. Neither constant can shrink: MAX_STATE_BYTES below a real state would
+# size. A real rail state (11 to 23 MB before the day-subject round's first tick, 3.6 to 16.4 MB
+# after it: common/adapters/rail_access.py, MAX_RAIL_SITES's comment) parses to about six times its
+# bytes (measured at 11.3 MB); a 24 MiB JSON of a million tiny site records, which only a hostile
+# writer of the content bucket could put under snapshots/ (the research tick alone writes there),
+# parses and is copied (topic_status's records and stamps) to about seventeen times, 496 MB. The
+# in-flight budget serialises such reads to one at a time in the process; the function's memory
+# (512 MB, infra/modules/ops-assistant/main.tf) is the knob if a state ever grows past that.
+# Neither constant can shrink: MAX_STATE_BYTES below a state written before that first tick would
 # refuse it, and IN_FLIGHT_BYTES below MAX_STATE_BYTES would refuse the largest readable one.
 MAX_STATE_BYTES = 24 * 1024 * 1024
 LARGE_STATE_BYTES = 8 * 1024 * 1024
@@ -100,9 +105,11 @@ CHUNK_BYTES = 256 * 1024
 # memory, one vCPU at 1,769 MB, and this one has 512 MB (infra/modules/ops-assistant/main.tf): 0.29
 # of a vCPU, under which that hostile state, begun with the time a whole core needs, ended the 8 s
 # survey at 14.5-15.2 s. Scaled, the rate is 1.16 MiB a second at 512 MB, so a 24 MiB state needs
-# 20.7 s left and a real 11.3 MB one 9.3 s: neither is parsed within the survey's 8 s, and each says
-# "not_checked", as a read the deadline stops does. Every call is held to it: pipeline_health's 3 s
-# parses nothing over about 3.5 MiB and the watch's 2 s nothing over about 2.3 MiB, well under the
+# 20.7 s left, and a rail state from before the day-subject round's first tick (11 to 23 MB) 9.3 s
+# or more: neither is parsed within the survey's 8 s, and each says "not_checked", as a read the
+# deadline stops does. After that tick most rail states are parsed (3.6 MB in about 3 s; the sizes
+# are in MAX_RAIL_SITES's comment). Every call is held to it: pipeline_health's 3 s parses nothing
+# over about 3.5 MiB and the watch's 2 s nothing over about 2.3 MiB, well under the
 # LARGE_STATE_BYTES they may read. At 1,769 MB or more it is 4 MiB a second (6 s for 24 MiB; 8 MiB
 # within those two again). The function's memory is the knob for that (the owner's: Terraform, cost).
 PARSE_BYTES_PER_CPU_SECOND = 4 * 1024 * 1024

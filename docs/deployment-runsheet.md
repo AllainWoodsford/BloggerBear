@@ -652,14 +652,17 @@ clear scene, each listing its city in `subjects`.
 
 **How the cadence works.** Like every topic, `rail-cities` has two schedules. The research
 heartbeat (`rate(1 hour)` by default) asks whether the topic is due (its `research_interval_hours`,
-else the pipeline-wide interval) and, when it is, the adapter works on one city: the one never
-attempted, else the one attempted longest ago (`max_sites_per_tick` 1). It searches Earth Search
-for the newest scene over the whole city in the last 20 days. Sentinel-2 passes every few days, so
-most ticks find a scene the city already has: nothing is measured, no model is called, and the
-tick may instead refresh a network past its 30-day TTL. A new scene is measured; only a material
-change (or the first observation) makes a Finding, and the Finding lists the city it reports in
-`subjects`. The tick never reads the rota: with four cities and an hourly heartbeat every city is
-looked at every four hours, whatever the day, so its Findings are waiting when its day comes.
+else the pipeline-wide interval) and, when it is, the adapter takes the cities in order (the one
+never attempted first, else the one attempted longest ago) and each tick looks at the cities in that
+order until it has measured one new scene (`max_sites_per_tick` 1 caps measured scenes, not
+cities looked at). For each it searches Earth Search for the newest scene over the whole city in
+the last 20 days. Sentinel-2 passes every few days, so most visits find a scene the city already
+has: nothing is measured, no model is called, the tick may instead refresh a network past its
+30-day TTL, and it goes on to the next city. A new scene is measured; only a material change (or
+the first observation) makes a Finding, and the Finding lists the city it reports in `subjects`.
+The tick never reads the rota: with an hourly heartbeat every city is looked at about every hour,
+and at least one is measured when it has a new scene, whatever the day, so its Findings are
+waiting when its day comes.
 
 The daily cycle runs on `daily_cadence` in `daily_timezone`, every day at 09:05 Sydney time, after
 the other topics' 09:00 to 09:03. At the start of each run it asks the rota whose day it is, on the
@@ -803,9 +806,9 @@ rewritten every tick, `snapshots/<topic>/running-state.json`; and each Finding's
 entry with its station, flag, suggestion and desert lists), what it knows of the network without
 holding it (`network_key`, `network_fetched_at`, the polygon's `network_site_key` and
 `network_counts`), and any `last_error`, `network_error` or `failed_scene`; and `first_observed_at`
-for the topic. When the article is published, each figure is copied to the site bucket,
-`<prefix>-<env>-site`, as `articles/figures/<article>/<n>.png`, and the page shows it under the
-credits with its caption.
+for the topic, and each city's own `first_observed_at`. When the article is published, each figure
+is copied to the site bucket, `<prefix>-<env>-site`, as `articles/figures/<article>/<n>.png`, and
+the page shows it under the credits with its caption.
 
 ```bash
 aws s3 cp s3://<prefix>-dev-content/snapshots/rail-cities/running-state.json - | python -m json.tool | less

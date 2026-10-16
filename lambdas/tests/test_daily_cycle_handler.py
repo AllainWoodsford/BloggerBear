@@ -3344,9 +3344,57 @@ def test_the_cap_counts_only_the_day_subjects_findings_and_the_log_says_how_many
 
     assert result["status"] == "published"
     assert drafted == [f"south {n:02d}" for n in range(49, 1, -1)]  # the newest 48 of south's 50
+    out = capsys.readouterr().out
     assert (
         "daily_cycle_handler: day_subject=south topic_id=rota has 50 findings in its window; drafting "
         "from the newest 48, 2 older ones left out"
+    ) in out
+    assert "stopped at" not in out  # the read held the whole window
+
+
+def test_a_read_that_stops_at_its_limit_says_so_and_how_many_it_read(rotating, capsys):
+    """The reviewer's probe: a window wider than the rota needs holds more Findings than the read
+    reaches (SUBJECT_READ_LIMIT), so south's oldest is never seen. That is said in the log, naming
+    the topic, the subject and the Findings read, as the 48-cap's line is."""
+    rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=336))
+    tuesday = _local(date(2026, 9, 29), 9, 5)  # South's day
+    _put_subject_finding(rotating, tuesday - timedelta(hours=200), "south old", ["south"])
+    for n in range(findings_window.SUBJECT_READ_LIMIT):
+        captured = tuesday - timedelta(hours=100) + timedelta(minutes=30 * n)
+        _put_subject_finding(rotating, captured, f"north {n:03d}", ["north"])
+    _put_subject_finding(rotating, tuesday - timedelta(minutes=10), "south new", ["south"])
+
+    result, drafted, _, _ = _run_at(rotating, tuesday)
+
+    assert result["status"] == "published" and drafted == ["south new"]  # "south old" was not read
+    assert (
+        "daily_cycle_handler: day_subject=south topic_id=rota read 192 findings of its window and "
+        "stopped at its read limit (192); any of its older ones were not read"
+    ) in capsys.readouterr().out
+
+
+def test_a_read_that_the_page_cap_stops_says_so_too(rotating, capsys, monkeypatch):
+    """DynamoDB's 1 MB pages hold fewer large Findings than asked, and the read stops at its page
+    cap (common/dynamo.FINDINGS_PAGES_MAX) before SUBJECT_READ_LIMIT: said the same way."""
+    page = dynamo.list_findings_page
+
+    def ten_a_page(topic_id, *, since=None, until=None, limit, start_key=None):  # a megabyte of big Findings
+        return page(topic_id, since=since, until=until, limit=min(limit, 10), start_key=start_key)
+
+    monkeypatch.setattr(dynamo, "list_findings_page", ten_a_page)
+    rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=96))
+    tuesday = _local(date(2026, 9, 29), 9, 5)
+    for n in range(60):
+        captured = tuesday - timedelta(hours=40) + timedelta(minutes=30 * n)
+        _put_subject_finding(rotating, captured, f"south {n:02d}", ["south"])
+
+    result, drafted, _, _ = _run_at(rotating, tuesday)
+
+    assert result["status"] == "published" and len(drafted) == 48
+    reads = dynamo.FINDINGS_PAGES_MAX * 10
+    assert (
+        f"daily_cycle_handler: day_subject=south topic_id=rota read {reads} findings of its window and "
+        "stopped at the page cap; any of its older ones were not read"
     ) in capsys.readouterr().out
 
 

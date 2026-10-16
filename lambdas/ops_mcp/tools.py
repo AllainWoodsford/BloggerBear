@@ -117,8 +117,9 @@ def _topic_label(topic: dict | None, topic_id: str) -> str:
 
 
 # What a topic's name may be made of to be spoken: topic_match._SAYABLE's characters, and ":" as
-# well, since the rail city topics are named "Rail access: Sydney" and so on
-# (scripts/rail_topics.example.json). A test holds the two patterns to that one difference.
+# well, for names such as "Rail access: Sydney", which operators gave the city topics they created
+# before the day-subject round (dev's trains-sydney among them). A test holds the two patterns to
+# that one difference.
 SPOKEN_NAME = re.compile(r"^[A-Za-z0-9 &'’_.,()/+:-]+$")
 SPOKEN_NAME_MAX_CHARS = 60
 

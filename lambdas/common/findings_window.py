@@ -53,11 +53,16 @@ MAX_FINDINGS_WINDOW_HOURS = 336
 # Findings and cap those at the 48 an article is written from (daily_cycle_handler's
 # MAX_WINDOW_FINDINGS, and the same cap in Re-Write, topic_findings and the findings route; a test
 # holds this to four of it). Capping first would let other subjects' newer Findings push the
-# subject's older ones out, and the subject's stamp would then pass them for good. 4 x 48 = 192 is
-# every Finding a rota of up to 7 subjects can gather: one slot each needs a window of 24 h a day
-# plus a day (192 h, dailysubject_hook.md 3.4), and the hourly research tick writes at most one
-# Finding a run. Bounded, so a busier window still costs a bounded read; a topic that does not
-# rotate reads exactly what it always read.
+# subject's older ones out, and the subject's stamp would then pass them for good. What 4 x 48 =
+# 192 guarantees: every Finding of a one-slot rota of up to 7 subjects at one Finding an hour (its
+# window is 24 h a day of the longest gap plus a day, 192 h, dailysubject_hook.md 3.4, and the
+# hourly research tick writes at most one Finding a run), within the read's page cap
+# (common/dynamo.FINDINGS_PAGES_MAX pages of up to 1 MB: 192 Findings of about 26 KB each at most).
+# A wider window (up to MAX_FINDINGS_WINDOW_HOURS), a longer rota or larger Findings can hold more
+# than the read reaches: the daily cycle and Re-Write then say in the log where the read stopped
+# and how many it held (`read_stopped_at`), as they say what the 48-cap left out. Bounded, so a
+# busier window still costs a bounded read; a topic that does not rotate reads exactly what it
+# always read.
 SUBJECT_READ_LIMIT = 4 * 48
 
 
@@ -139,6 +144,16 @@ def window_start(
                 previous = previous.replace(tzinfo=UTC)  # stored in UTC
             return max(floor, previous).isoformat()
     return floor.isoformat()
+
+
+def read_stopped_at(read: int) -> str:
+    """Where a rotating topic's read of its window stopped when the window held more (the paged read,
+    common/dynamo.list_findings, said so): at SUBJECT_READ_LIMIT, or, with fewer read, at the read's
+    page cap, DynamoDB's 1 MB pages having held fewer Findings than asked. For the log line the
+    daily cycle and Re-Write print then: any of the subject's Findings beyond it were not read."""
+    if read >= SUBJECT_READ_LIMIT:
+        return f"its read limit ({SUBJECT_READ_LIMIT})"
+    return "the page cap"
 
 
 def next_article_subject(topic: dict, at: datetime) -> DaySubject | None:

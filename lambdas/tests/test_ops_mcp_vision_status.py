@@ -1121,6 +1121,29 @@ def test_each_call_parses_only_its_deadlines_worth_on_the_cpu_the_function_has(
         assert _read_late(fake, seconds) == (None, "not_checked")
 
 
+@pytest.mark.parametrize(
+    ("size", "parsed"),
+    [(3_600_000, True), (4_400_000, True), (11_300_000, False), (16_400_000, False)],
+)
+def test_at_512_mb_the_survey_parses_most_rail_states_after_the_day_subject_round(monkeypatch, size, parsed):
+    """The rail state sizes in common/adapters/rail_access.py's MAX_RAIL_SITES comment: a three-city
+    state is 11.3 MB until the round's first tick moves its networks out, and 3.6 MB after it (four
+    cities about 4.4 MB; eight with CJK names at the caps, 16.4 MB). At the function's 512 MB the
+    survey's 8 s parses the smaller ones, which used to read "not checked" always, and not one from
+    before; the module says so instead of "never parsed"."""
+    monkeypatch.setenv(vision_status.MEMORY_SIZE_ENV, "512")
+    fake = FakeS3({key("late"): _stand_in(size)})
+    if parsed:
+        assert _read_late(fake, vision_status.READ_SECONDS)[1] == "read"
+    else:
+        monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+        with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+            assert _read_late(fake, vision_status.READ_SECONDS) == (None, "not_checked")
+    doc = " ".join(vision_status.__doc__.split())
+    assert "11 to 23 MB until the day-subject round's first tick" in doc and "3.6 to 16.4 MB after it" in doc
+    assert "MAX_RAIL_SITES's comment" in doc and "keeps a real rail state" not in doc
+
+
 class _Raw:
     def stream(self, **kwargs):
         yield b""

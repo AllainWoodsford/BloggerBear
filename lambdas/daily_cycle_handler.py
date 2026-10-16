@@ -87,6 +87,7 @@ from common.findings_window import (
     findings_window_error,
     findings_window_hours,
     next_article_subject,
+    read_stopped_at,
     window_start,
 )
 from common.lambda_timing import track_lambda_duration
@@ -291,10 +292,18 @@ def _read_window(topic_id: str, since: str, day_subject: DaySubject | None) -> l
     SUBJECT_READ_LIMIT, paged as the assistant's topic_findings and the findings route read it),
     so the cap falls on its day subject's own findings, after the subject filter: capped first,
     other subjects' newer findings would push the subject's older ones out, and its stamp would
-    then pass them for good."""
+    then pass them for good. When the window holds more than that read reaches (SUBJECT_READ_LIMIT,
+    or fewer when DynamoDB's 1 MB pages run out first), the log says where it stopped and how many
+    it read, as it says what the cap left out: the subject's older findings were not seen."""
     if day_subject is None:
         return list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
-    findings, _, _ = list_findings(topic_id, since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None)
+    findings, _, more = list_findings(topic_id, since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None)
+    if more:
+        print(
+            f"daily_cycle_handler: day_subject={day_subject.key} topic_id={topic_id} read {len(findings)} "
+            f"findings of its window and stopped at {read_stopped_at(len(findings))}; any of its older "
+            "ones were not read"
+        )
     return findings
 
 
