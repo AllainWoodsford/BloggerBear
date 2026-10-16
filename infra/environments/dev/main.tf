@@ -380,6 +380,20 @@ data "aws_iam_policy_document" "lambda_exec" {
     resources = ["${aws_s3_bucket.content.arn}/*"]
   }
 
+  # research_tick_handler._load_running_state reads an adapter's running state with GetObject and
+  # takes a missing object as "first tick". S3 answers a GetObject for a missing key with 404
+  # NoSuchKey only when the caller may ListBucket; without it the answer is 403 AccessDenied, which
+  # the handler rightly does not swallow, so a vision topic (rail_access, satellite_vision) failed
+  # on its first tick and every one after. On the bucket ARN itself, not its objects: ListBucket is
+  # a bucket action. No s3:prefix condition on purpose: whether S3 evaluates one for that implicit
+  # check is not documented, and the bucket holds only this deployment's own snapshots and figures.
+  statement {
+    sid       = "ContentBucketMissingKeys"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.content.arn]
+  }
+
   # Static article publishing (docs/project-plan.md §11): lets
   # common/static_pages.py write a rendered article page into the site
   # bucket -- scoped to the articles/ prefix only, not the whole bucket,

@@ -1713,6 +1713,30 @@ def test_security_events_expire_and_have_an_open_incidents_index():
     assert security_events.RETENTION_DAYS == 120
 
 
+@pytest.mark.parametrize("env", ["dev", "production"])
+def test_the_lambda_role_may_list_the_content_bucket_so_a_missing_key_reads_as_no_such_key(env):
+    """research_tick_handler._load_running_state catches only NoSuchKey: an adapter that keeps
+    running state (rail_access, satellite_vision) has none before its first tick. S3 answers a
+    GetObject for a missing key with 404 NoSuchKey only when the caller may s3:ListBucket on the
+    bucket; without that it is 403 AccessDenied, which the handler rightly lets through, and the
+    topic failed every tick (dev, 2026-10-16). The grant is on the bucket ARN itself, where
+    ListBucket is evaluated, not on its objects."""
+    handler = (ROOT / "lambdas" / "research_tick_handler.py").read_text(encoding="utf-8")
+    assert "except _get_s3_client().exceptions.NoSuchKey:" in handler
+
+    text = _read("environments", env, "main.tf")
+    policy = _uncommented(
+        re.search(r'^data "aws_iam_policy_document" "lambda_exec" \{\n(.*?)^\}', text, re.S | re.M).group(1)
+    )
+    statements = [s for s in policy.split("statement {") if 'sid       = "ContentBucketMissingKeys"' in s]
+    assert len(statements) == 1
+    statement = statements[0]
+    assert re.search(r'effect\s*=\s*"Allow"', statement)
+    assert re.search(r'actions\s*=\s*\["s3:ListBucket"\]', statement)
+    assert re.search(r"resources\s*=\s*\[aws_s3_bucket\.content\.arn\]", statement)
+    assert "condition" not in statement
+
+
 # --- The operator's assistant (infra/modules/ops-assistant) -------------------------------------
 # "Read-only, behind a sign-in" is a claim about the deployment, not the code: these hold the parts
 # of it that a plan would happily change. The module's own terraform test
