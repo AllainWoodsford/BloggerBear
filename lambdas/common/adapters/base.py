@@ -35,8 +35,10 @@ class DaySubject:
     """The subject a rotating topic writes about on a given day (Adapter.day_subject): to a topic
     that watches several subjects (cities, say) what the crypto feed's day goal is to it
     (common/editorial_goals.py). Written by the adapter's code, never by a model: the daily cycle
-    folds `mandate` and `style` into its ideation and drafting prompts as they are, and prints `key`
-    and `label` (common/day_subject.py)."""
+    folds `mandate` and `style` into its ideation and drafting prompts and prints `key` in its log;
+    `label` is the adapter's to fold into the mandate. Each text is checked and cleaned to one plain
+    line within its bound before any prompt sees it (common/day_subject.day_subject_error and
+    clean_day_subject)."""
 
     key: str  # a stable id, SUBJECT_KEY-shaped: a site id such as "sydney"
     label: str  # how the subject is named: "Sydney"

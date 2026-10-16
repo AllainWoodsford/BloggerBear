@@ -36,10 +36,14 @@ here names an adapter or a domain (docs/project-plan.md §2 rule 5).
 
 from __future__ import annotations
 
+import dataclasses
+from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from common.adapters.base import SUBJECT_KEY, DaySubject
+from common.editorial_resolver import MAX_GOAL_TEXT_CHARS
+from common.figures import plain_text
 from common.scheduler import validate_timezone
 
 # The Finding's field (research_tick_handler.py, common/dynamo.put_finding).
@@ -50,6 +54,14 @@ SUBJECTS_FIELD = "subjects"
 MAX_SUBJECTS_PER_FINDING = 10
 # The article's field: the key of the subject it was written about (daily_cycle_handler.py).
 ARTICLE_SUBJECT_FIELD = "subject"
+# How long a day subject's text may be where it reaches a prompt (`clean_day_subject`): its mandate
+# and its style are a topic's editorial goal for the day, so they have the editorial goals' bound
+# (common/editorial_resolver.MAX_GOAL_TEXT_CHARS, what the Admin API lets an operator store); its
+# label names one of the topic's subjects, a vision site for the rail adapter, so it has a site
+# name's (common/vision_sites.MAX_SITE_NAME_CHARS; a test holds the two equal), and a site's name is
+# always a label.
+MAX_DAY_SUBJECT_TEXT_CHARS = MAX_GOAL_TEXT_CHARS
+MAX_DAY_SUBJECT_LABEL_CHARS = 80
 
 # The rota's two adapter_config keys, its weekday names (Monday first, as date.weekday counts), the
 # day a list rota counts from, and how long a list rota may be (two months of days, one each).
@@ -64,9 +76,19 @@ DEFAULT_ROTATION_TIMEZONE = "UTC"
 def clean_subjects(raw) -> list[str]:
     """The subjects a Finding keeps, from what an adapter's `subjects` returned: the strings that
     are SUBJECT_KEY-shaped, each once, in the order given, the first MAX_SUBJECTS_PER_FINDING.
-    Anything that is not a list or tuple is none."""
-    if not isinstance(raw, list | tuple):
+
+    Any finite iterable of keys is read: a list or a tuple, a generator (the rail adapter's
+    reported scenes are one), or a set, read in sorted order so every tick keeps the same ones.
+    None is none. Anything else (a string, which would be read a character at a time; a mapping;
+    a number) raises TypeError, so the research tick's log says the subjects were dropped and why
+    (research_tick_handler._subjects), as it does for a hook that raises: a rotating topic never
+    drafts a Finding without subjects, so a wrong type must not go quiet."""
+    if raw is None:
         return []
+    if isinstance(raw, str | bytes | bytearray | Mapping) or not isinstance(raw, Iterable):
+        raise TypeError(f"subjects must be an iterable of subject keys, not a {type(raw).__name__}")
+    if isinstance(raw, set | frozenset):
+        raw = sorted(raw, key=str)
     kept: list[str] = []
     for value in raw:
         if isinstance(value, str) and SUBJECT_KEY.fullmatch(value) and value not in kept:
@@ -93,16 +115,41 @@ def subject_findings(findings: list[dict], key: str) -> list[dict]:
 def day_subject_error(subject) -> str | None:
     """What is wrong with what an adapter's `day_subject` returned, or None: it must be a DaySubject
     whose key is SUBJECT_KEY-shaped and whose label, mandate and style are text with something in
-    them (they go into the prompts and the log as they are)."""
+    them once cleaned to one plain line (`clean_day_subject`: they go into the prompts), the label
+    at most MAX_DAY_SUBJECT_LABEL_CHARS and the mandate and style at most
+    MAX_DAY_SUBJECT_TEXT_CHARS. Too long is refused, not cut: a mandate cut short is not the one
+    the adapter wrote, and a broken day subject writes nothing."""
     if not isinstance(subject, DaySubject):
         return f"is a {type(subject).__name__}, not a DaySubject"
     if not isinstance(subject.key, str) or not SUBJECT_KEY.fullmatch(subject.key):
         return "has a key that is not a plain subject key"
-    for name in ("label", "mandate", "style"):
+    for name, most in (
+        ("label", MAX_DAY_SUBJECT_LABEL_CHARS),
+        ("mandate", MAX_DAY_SUBJECT_TEXT_CHARS),
+        ("style", MAX_DAY_SUBJECT_TEXT_CHARS),
+    ):
         value = getattr(subject, name)
-        if not isinstance(value, str) or not value.strip():
+        text = plain_text(value) if isinstance(value, str) else ""
+        if not text:
             return f"has no {name}"
+        if len(text) > most:
+            return f"has a {name} longer than {most} characters"
     return None
+
+
+def clean_day_subject(subject: DaySubject) -> DaySubject:
+    """A usable DaySubject (day_subject_error says None) as the prompts get it: its label, mandate
+    and style each one plain line (common/figures.plain_text, the rule a site's name is cleaned by:
+    no newline or control character, no invisible one, whitespace collapsed), so nothing an
+    adapter folds in from a topic's config can start a section of its own in a prompt. The same
+    object when there is nothing to clean."""
+    cleaned = dataclasses.replace(
+        subject,
+        label=plain_text(subject.label),
+        mandate=plain_text(subject.mandate),
+        style=plain_text(subject.style),
+    )
+    return subject if cleaned == subject else cleaned
 
 
 def resolve_day_subject(topic: dict, at: datetime) -> DaySubject | None:
@@ -110,7 +157,8 @@ def resolve_day_subject(topic: dict, at: datetime) -> DaySubject | None:
     `day_subject`, or None: the adapter names none (every adapter but one that rotates), or the
     topic's adapter is not registered. Raises ValueError for anything that is not a usable
     DaySubject, and lets whatever the hook raises through: a broken rota stops the run, it never
-    becomes an article about every subject at once."""
+    becomes an article about every subject at once. A usable one comes back cleaned
+    (`clean_day_subject`)."""
     # Imported when asked, not with this module: an adapter that names its subjects by the rota
     # below imports this module, and the registry imports every adapter.
     from common.adapters.registry import ADAPTER_REGISTRY
@@ -125,7 +173,7 @@ def resolve_day_subject(topic: dict, at: datetime) -> DaySubject | None:
     problem = day_subject_error(subject)
     if problem:
         raise ValueError(f"the {adapter_key} adapter's day subject {problem}")
-    return subject
+    return clean_day_subject(subject)
 
 
 # --- a rota: which subject has which day ----------------------------------------------------------

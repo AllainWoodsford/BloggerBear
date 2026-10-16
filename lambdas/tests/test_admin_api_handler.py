@@ -15,6 +15,9 @@ import admin_api_handler
 import daily_cycle_handler
 from common import evidence
 from common.adapters import MANUAL_REVIEW_ADAPTERS
+from common.adapters.base import DaySubject
+from common.adapters.github_trending import GitHubTrendingAdapter
+from common.adapters.registry import ADAPTER_REGISTRY
 
 REGION = "ap-southeast-2"
 
@@ -1011,9 +1014,87 @@ def test_list_findings_next_article_on_a_subject_reads_what_that_subjects_day_re
     assert summaries == ["finding from 5 hours ago", "finding from 10 hours ago"]
     assert datetime.fromisoformat(body["since"]) < now - timedelta(hours=95)
 
-    status, body = _list_findings({"next_article": "true"})  # without a subject: as it always was
+    status, body = _list_findings({"next_article": "true"})  # a topic that does not rotate: as it always was
     assert status == 200 and "subject" not in body
     assert [f["summary"] for f in body["findings"]] == ["finding from 1 hours ago"]
+
+
+class _SouthToday(GitHubTrendingAdapter):
+    """A topic whose rota says today is south's day, as an adapter that rotates would."""
+
+    def day_subject(self, topic_config, at):
+        return DaySubject(key="south", label="South", mandate="Report for South.", style="Plain.")
+
+
+def _south_day():
+    """The reviewer's repro: the last article (on north) 2 hours ago; a north Finding since, and two
+    south ones before it."""
+    now = datetime.now(UTC)
+    _put_topic(
+        {
+            **TOPIC,
+            "adapter": "rota_test",
+            "findings_window_hours": 96,
+            "last_article_at": (now - timedelta(hours=2)).isoformat(),
+            "last_article_by_subject": {"north": (now - timedelta(hours=2)).isoformat()},
+        }
+    )
+    _put_finding(1, subjects=["north"])
+    _put_finding(5, subjects=["south"])
+    _put_finding(10, subjects=["south"])
+
+
+def test_list_findings_next_article_on_a_rotating_topic_reads_todays_subject_as_the_run_does(
+    aws_resources, monkeypatch
+):
+    """With no subject, a topic that rotates is read for the subject the daily cycle would write
+    about now, never for the topic-wide window no run of it reads; the body names the subject."""
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rota_test", _SouthToday)
+    _south_day()
+
+    status, body = _list_findings({"next_article": "true"})
+
+    assert status == 200 and body["subject"] == "south"
+    summaries = [f["summary"] for f in body["findings"]]
+    assert summaries == ["finding from 5 hours ago", "finding from 10 hours ago"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False
+    assert datetime.fromisoformat(body["since"]) < datetime.now(UTC) - timedelta(hours=95)
+    status, named = _list_findings({"next_article": "true", "subject": "south"})
+    assert status == 200 and named["findings"] == body["findings"] and named["count"] == body["count"]
+
+
+def test_list_findings_next_article_on_a_rotating_topic_whose_rota_breaks_is_a_500(
+    aws_resources, monkeypatch
+):
+    class _Broken(_SouthToday):
+        def day_subject(self, topic_config, at):
+            raise ValueError("the rota broke")
+
+    monkeypatch.setitem(ADAPTER_REGISTRY, "rota_test", _Broken)
+    _south_day()
+
+    status, body = _list_findings({"next_article": "true"})
+
+    assert status == 500 and body["error"] == "internal server error"
+
+
+def test_list_findings_on_a_subject_caps_its_own_findings_not_the_windows_newest_48(aws_resources):
+    """The reviewer's probe: 60 newer Findings for north fill the window's newest 48, and south's
+    older one is still read, as the daily run on south's day reads it."""
+    _put_topic({**TOPIC, "findings_window_hours": 96})
+    _put_finding(50, subjects=["south"], summary="south old")
+    for n in range(60):
+        _put_finding(45 - n * 0.5, subjects=["north"], summary=f"north {n:02d}")
+    _put_finding(1, subjects=["south"], summary="south new")
+
+    status, body = _list_findings({"next_article": "true", "subject": "south"})
+
+    assert status == 200 and [f["summary"] for f in body["findings"]] == ["south new", "south old"]
+    assert body["count"] == 2 and body["count_is_at_least"] is False
+
+    status, body = _list_findings({"next_article": "true", "subject": "north", "limit": "20"})
+    assert status == 200 and len(body["findings"]) == 20
+    assert body["count"] == 60 and body["count_is_at_least"] is False and body["more"] is True
 
 
 @pytest.mark.parametrize(

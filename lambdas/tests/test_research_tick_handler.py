@@ -755,6 +755,38 @@ def test_an_adapters_subjects_are_stored_on_the_finding_cleaned_and_capped(aws_r
     assert stored == ["sydney", "melbourne", *[f"city-{n}" for n in range(8)]]  # plain keys, once, in order
 
 
+class _GeneratorSubjectsAdapter(GitHubTrendingAdapter):
+    """Reports its subjects as a generator, as the rail adapter's reported scenes are one."""
+
+    def subjects(self, new_state):
+        return (site for site in ("sydney", "boston", "sydney"))
+
+
+class _WrongTypeSubjectsAdapter(GitHubTrendingAdapter):
+    def subjects(self, new_state):
+        return "sydney"  # one key, not a list of them
+
+
+def test_subjects_reported_as_a_generator_are_kept_as_a_list_is(aws_resources, monkeypatch):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _GeneratorSubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    assert _the_finding()["subjects"] == ["sydney", "boston"]
+
+
+def test_subjects_that_are_not_an_iterable_of_keys_are_dropped_and_said(aws_resources, monkeypatch, capsys):
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _WrongTypeSubjectsAdapter)
+
+    result, _ = _run_one_tick(monkeypatch, _tracked("a summary"))
+
+    assert result["status"] == "material_change"
+    finding = _the_finding()
+    assert finding["summary"] == "a summary" and "subjects" not in finding
+    assert "subjects dropped: TypeError" in capsys.readouterr().out
+
+
 def test_subjects_that_fail_cost_the_subjects_never_the_finding(aws_resources, monkeypatch, capsys):
     monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _BrokenSubjectsAdapter)
 

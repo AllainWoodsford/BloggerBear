@@ -1103,6 +1103,9 @@ GUIDES: dict[str, dict] = {
             "The next article reads every finding since the topic's last article, within its "
             "findings window, at most 48, newest first; a topic with editorial goals may use only "
             "some.",
+            # common/day_subject.py, findings_window.next_article_subject: a topic that rotates.
+            "A topic that rotates through subjects writes about the day's subject: its next article "
+            "reads only that subject's findings, since that subject's last article.",
             # common/figures.py, Adapter.planner_notes: what a vision Finding carries besides its summary.
             "A finding's summary is written by a model; a vision finding also carries maps and "
             "planner notes.",

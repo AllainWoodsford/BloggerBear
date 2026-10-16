@@ -322,6 +322,37 @@ def test_an_article_whose_subject_has_no_findings_falls_back_to_the_whole_window
     assert "rewrite: no findings on the article's subject 'east' in its window" in capsys.readouterr().out
 
 
+def test_an_article_on_a_subject_keeps_its_older_findings_behind_another_subjects_newer_48(aws):
+    """The reviewer's probe, as Re-Write reads it: 60 newer north Findings fill the window's newest
+    48, and the south article is still rewritten from both of south's, as its run drafted it."""
+    _seed_on_subject("south")
+    created = datetime(2026, 9, 26, 9, 0, tzinfo=UTC)
+    for n in range(60):
+        _table("Findings").put_item(
+            Item={
+                "topic_id": TOPIC["topic_id"],
+                "captured_at": (created - timedelta(hours=45) + timedelta(minutes=30 * n)).isoformat(),
+                "summary": f"North {n:02d}.",
+                "subjects": ["north"],
+            }
+        )
+    _table("Findings").put_item(
+        Item={
+            "topic_id": TOPIC["topic_id"],
+            "captured_at": (created - timedelta(hours=1)).isoformat(),
+            "summary": "South: a platform reopened.",
+            "subjects": ["south"],
+        }
+    )
+
+    result, mock_invoke, _ = _run()
+
+    assert result["status"] == "rewritten"
+    prompt = mock_invoke.call_args.args[0]
+    assert "South: a platform reopened." in prompt and "South: a depot closed." in prompt
+    assert "North 59." not in prompt
+
+
 def test_an_article_without_a_subject_keeps_every_finding_in_its_window(aws):
     _seed_on_subject(None)
 

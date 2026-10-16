@@ -569,6 +569,12 @@ def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | 
     expression, so it is two writes: the map is made if the topic has none, then the subject's
     entry and `last_article_at` are set together, so the two stamps never disagree. If the first
     write fails, neither stamp is set.
+
+    A `last_article_by_subject` that is there but is not a map (edited by hand: the Admin API never
+    writes it) is replaced by a fresh one in the first write, and the log says so: DynamoDB refuses
+    a key inside anything else, and a topic whose stamp could never be set would read its subject's
+    whole window again every run. Its readers already read such a field as no stamps
+    (common/findings_window.last_article_at), so only this subject's stamp is in the new map.
     """
     table = get_table(os.environ["TOPICS_TABLE"])
     if subject_key is None:
@@ -579,12 +585,27 @@ def set_topic_last_article_at(topic_id: str, timestamp: str, subject_key: str | 
             ExpressionAttributeValues={":t": timestamp},
         )
         return
-    table.update_item(
-        Key={"topic_id": topic_id},
-        UpdateExpression="SET last_article_by_subject = if_not_exists(last_article_by_subject, :empty)",
-        ConditionExpression="attribute_exists(topic_id)",
-        ExpressionAttributeValues={":empty": {}},
-    )
+    try:
+        # Made when missing, replaced when not a map; a map (the usual case) fails the condition
+        # and is left alone, and so is a missing topic, which the second write then refuses.
+        replaced = table.update_item(
+            Key={"topic_id": topic_id},
+            UpdateExpression="SET last_article_by_subject = :empty",
+            ConditionExpression=(
+                "attribute_exists(topic_id) AND (attribute_not_exists(last_article_by_subject) "
+                "OR NOT attribute_type(last_article_by_subject, :map))"
+            ),
+            ExpressionAttributeValues={":empty": {}, ":map": "M"},
+            ReturnValues="UPDATED_OLD",
+        ).get("Attributes") or {}
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        replaced = {}
+    if "last_article_by_subject" in replaced:
+        print(
+            f"dynamo: topic_id={topic_id} had a last_article_by_subject that was a "
+            f"{type(replaced['last_article_by_subject']).__name__}, not a map; replaced it with a "
+            f"map holding subject={subject_key}'s stamp"
+        )
     table.update_item(
         Key={"topic_id": topic_id},
         UpdateExpression="SET last_article_at = :t, last_article_by_subject.#subject = :t",

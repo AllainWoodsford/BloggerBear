@@ -168,7 +168,8 @@ CATALOGUE: tuple[Component, ...] = (
             (
                 "Written by",
                 "the Admin API (admin_cli topics ...); research-tick and daily-cycle "
-                "stamp last_research_at and last_article_at",
+                "stamp last_research_at and last_article_at, and, for a topic that rotates through "
+                "subjects, last_article_by_subject (each subject's last article)",
             ),
             ("Read by", "every pipeline function, the public API, the assistant"),
         ),
@@ -187,7 +188,8 @@ CATALOGUE: tuple[Component, ...] = (
                 "topic_id, captured_at, expires_at, summary (written by a model from the source "
                 "data), raw_snapshot_s3_key, source_refs, research_call (model, tokens, fallback, "
                 "stop reason), figures (maps, from the vision adapters), planner_notes (rail: flags "
-                "and simulations)",
+                "and simulations), subjects (the subject keys it reports, for a topic that rotates "
+                "through subjects)",
             ),
             (
                 "Written by",
@@ -241,6 +243,11 @@ CATALOGUE: tuple[Component, ...] = (
             ),
             ("Read by", "the public API (home, topic pages, RSS), the Admin API, the assistant"),
             ("Bodies", "in the content bucket under articles/, not in the table"),
+            (
+                "Day subject",
+                "subject: on an article of a topic that rotates through subjects, the key of the "
+                "subject it was written about",
+            ),
         ),
         aliases=("article", "posts"),
         assistant_reads=True,
@@ -465,7 +472,8 @@ CATALOGUE: tuple[Component, ...] = (
         details=(
             (
                 "Writes",
-                "candidate-ideas, articles, moderation-queue, the content bucket; topics.last_article_at",
+                "candidate-ideas, articles, moderation-queue, the content bucket; topics.last_article_at "
+                "and, for a topic that rotates through subjects, topics.last_article_by_subject",
             ),
             ("Schedules", f"{PREFIX}{ENV}-<topic_id>-daily-cycle"),
         ),

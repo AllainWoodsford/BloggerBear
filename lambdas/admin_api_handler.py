@@ -104,7 +104,12 @@ from common.editorial_resolver import (
 )
 from common.fact_check import fact_check_label
 from common.figures import clean_figures
-from common.findings_window import findings_window_error, window_start
+from common.findings_window import (
+    SUBJECT_READ_LIMIT,
+    findings_window_error,
+    next_article_subject,
+    window_start,
+)
 from common.fresh_review import (
     on_unavailable_error,
     resolve_on_unavailable,
@@ -931,6 +936,8 @@ def _get_latest_finding_route(event: dict) -> dict:
 # run reads (common/findings_window.window_start, no expiry filter, at most MAX_WINDOW_FINDINGS).
 # With `subject` too (a topic that rotates through subjects, common/day_subject.py), what the next
 # daily run on that subject's day reads: from that subject's last article, its Findings only.
+# Without one, a rotating topic is read for today's subject, as the daily cycle asks it
+# (common/findings_window.next_article_subject); every other topic as it always was.
 FINDINGS_LIMIT_DEFAULT, FINDINGS_LIMIT_MAX = 5, 20
 FINDINGS_DAYS_MAX = 14
 FINDINGS_WINDOW_MAX = 48  # daily_cycle_handler.MAX_WINDOW_FINDINGS; a test holds the two equal
@@ -972,9 +979,12 @@ def _list_findings_route(event: dict) -> dict:
 
     `subject` (with `next_article=true` only), for a topic that rotates through subjects: what
     the next daily run on that subject's day reads, as the daily cycle reads it (its window from
-    the subject's own last article, the run's cap, then only the Findings that report the
-    subject). `count` is then how many of those the run reads, a floor when the window held more
-    than the cap. Absent, the route is what it always was."""
+    the subject's own last article, read up to SUBJECT_READ_LIMIT, only the Findings that report
+    the subject, then the run's cap of those). `count` is then how many of the subject's Findings
+    the read held, a floor when the read stopped at its limit; the run reads at most
+    FINDINGS_WINDOW_MAX of them. Absent, a rotating topic is read for today's subject (the one the
+    daily cycle would write about now), named in the body's `subject`; a hook that raises is the
+    route's 500, never the topic-wide window. Every other topic is read as it always was."""
     try:
         limit = _whole_number_param(event, "limit", 1, FINDINGS_LIMIT_MAX, FINDINGS_LIMIT_DEFAULT)
         days = _whole_number_param(event, "days", 1, FINDINGS_DAYS_MAX, None)
@@ -1001,18 +1011,24 @@ def _list_findings_route(event: dict) -> dict:
 
     now = datetime.now(UTC)
     unexpired_at: int | None = int(now.timestamp())
+    if next_article and subject is None:
+        # A topic that rotates writes its next article on the day's subject, as the daily cycle
+        # asks it; None (every other topic) leaves the route as it always was.
+        today = next_article_subject(topic, now)
+        if today is not None:
+            subject = today.key
     if next_article and subject is not None:
         # What the daily run on the subject's day reads: the window from the subject's last
-        # article, at most the cap of it (one more is read to know whether there was more), then
-        # the Findings that report the subject.
+        # article, read further than the run's cap, then the Findings that report the subject, and
+        # the run's cap of those.
         since = window_start(topic, now, subject_key=subject)
         unexpired_at = None
-        window, expired, _ = list_findings(
-            topic_id, since=since, limit=FINDINGS_WINDOW_MAX + 1, unexpired_at=None
+        window, expired, cut = list_findings(
+            topic_id, since=since, limit=SUBJECT_READ_LIMIT, unexpired_at=None
         )
-        findings = subject_findings(window[:FINDINGS_WINDOW_MAX], subject)
-        count, complete = len(findings), len(window) <= FINDINGS_WINDOW_MAX
-        findings = findings[:limit]
+        own = subject_findings(window, subject)
+        count, complete = len(own), not cut
+        findings = own[:FINDINGS_WINDOW_MAX][:limit]
     elif next_article:
         # What the daily run reads: the window from the last article, every item in it whether or
         # not its TTL has passed, at most the cap (read one more to know whether there are more).
