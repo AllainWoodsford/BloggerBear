@@ -840,8 +840,9 @@ def test_mapped_libraries_from_a_maps_fixture_with_dpkg_rpm_and_pip_records(tmp_
         return Done()
 
     libraries = bench.mapped_libraries(maps, which=which, run=run)
-    assert [lib["path"] for lib in libraries] == [str(cv2_so), str(core), str(kleidi)]
-    assert libraries[0] == {"path": str(cv2_so), "bytes": 4, "sha256": vision_runs.sha256_bytes(b"cv2!"),
+    shown = [vision_runs.shown_path(path) for path in (cv2_so, core, kleidi)]  # as tmp_path is
+    assert [lib["path"] for lib in libraries] == shown
+    assert libraries[0] == {"path": shown[0], "bytes": 4, "sha256": vision_runs.sha256_bytes(b"cv2!"),
                             "package": "opencv_python_headless-5.0.0.93.dist-info"}  # fmt: skip
     assert libraries[1]["package"] == "libopencv-core5.0" and libraries[1]["bytes"] == 6
     assert libraries[2]["package"] == "not packaged"
