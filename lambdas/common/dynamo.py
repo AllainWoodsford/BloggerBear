@@ -70,12 +70,15 @@ def _paginated_query(
     *,
     newest_first: bool = False,
     limit: int | None = None,
+    fields: tuple[str, ...] | None = None,
 ) -> list[dict]:
     """Query an index to completion (or until `limit` items have been gathered) and return them.
 
     Every index here sorts on `created_at`, so `newest_first` returns the most recent first.
     `limit` is applied after the filter: DynamoDB's own Limit counts items *before* filtering,
     which could stop a page short of a match, so this keeps paging until it has enough instead.
+    `fields`, when given, are the only attributes read (a ProjectionExpression, each name through
+    a placeholder, since several are DynamoDB reserved words, `status` among them).
     """
     kwargs = {
         "IndexName": index_name,
@@ -84,6 +87,10 @@ def _paginated_query(
     }
     if filter_expression is not None:
         kwargs["FilterExpression"] = filter_expression
+    if fields:
+        names = {f"#f{n}": field for n, field in enumerate(fields)}
+        kwargs["ProjectionExpression"] = ", ".join(names)
+        kwargs["ExpressionAttributeNames"] = names
     response = table.query(**kwargs)
     items = response.get("Items", [])
     while "LastEvaluatedKey" in response and (limit is None or len(items) < limit):
@@ -1362,14 +1369,19 @@ def get_newest_article_for_topic(topic_id: str) -> dict | None:
 # joins a window of at most 1,000 decision lines to the articles their Findings fed, and a topic
 # writes at most one article a day.
 ARTICLES_FOR_TOPIC_MAX = 200
+# The only attributes list_articles_for_topic reads: what ops_mcp/vision_evidence.py's join uses (the
+# lineage's captured_at finds the article; its id, status, who published it and when say what a
+# person did). Never the title or the body's key, so a topic's 200 articles stay a short read.
+ARTICLES_FOR_TOPIC_FIELDS = ("article_id", "status", "published_by", "created_at", "published_at", "lineage")
 
 
 def list_articles_for_topic(
     topic_id: str, since_iso: str, *, limit: int = ARTICLES_FOR_TOPIC_MAX
 ) -> list[dict]:
     """The topic's articles created at or after `since_iso`, in any status, newest first and at
-    most `limit` of them: one Query on the topic index (by_topic_created_at), with `created_at` in
-    the key condition, paginated, never a Scan. For the operator's assistant
+    most `limit` of them (between one and ARTICLES_FOR_TOPIC_MAX, whatever is asked): one Query on
+    the topic index (by_topic_created_at), with `created_at` in the key condition, paginated, never
+    a Scan, reading only ARTICLES_FOR_TOPIC_FIELDS. For the operator's assistant
     (ops_mcp/vision_evidence.py), which finds the article a vision decision's Finding fed by the
     lineage's `captured_at`, and reads its status and `published_by` for what a person did. Lineage
     Decimals come back as plain numbers, as list_articles_by_status gives them."""
@@ -1379,7 +1391,8 @@ def list_articles_for_topic(
         ARTICLES_BY_TOPIC_INDEX,
         Key("topic_id").eq(topic_id) & Key("created_at").gte(since_iso),
         newest_first=True,
-        limit=max(1, int(limit)),
+        limit=max(1, min(ARTICLES_FOR_TOPIC_MAX, int(limit))),
+        fields=ARTICLES_FOR_TOPIC_FIELDS,
     )
     for item in items:
         if "lineage" in item:

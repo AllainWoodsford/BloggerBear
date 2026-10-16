@@ -262,12 +262,31 @@ Alexa+ and the ask page both call `vision_evidence` (`lambdas/ops_mcp/vision_evi
 > with OpenCV once and read the news once. 2 findings were written; 1 article is waiting for
 > review, 0 were approved and 0 rejected. The decisions are on screen.
 
+Of the gate's counts (first observation, too cloudy to count, still building a baseline, within
+the usual range) only those above zero are said, so a quiet week is not a list of zeros; the
+agent's count is always said, as it is what the question is about, and the findings sentence says
+its zeros. A topic with no decision says "made no decisions in the last 7 days: no new clear scene
+was measured." and nothing more, since there is nothing on screen; "The decisions are on screen."
+closes an answer only when the table has a row. When the attempts query was cut at its 1,000 rows
+and every decision of a topic was left out as unknown, the topic is said as "For Rail access:
+Sydney, I couldn't tell which of its decisions in the last 7 days were kept.", followed by "Only
+the newest 1000 log lines were read.", never as "no new clear scene was measured".
+
 The page shows one row per decision: the topic, the site, the scene, how clear it was, OpenCV's
 measures, which measures moved and from which input (the imagery, OpenStreetMap, or both), the
 agent's verdict, what OpenCV re-measured for it ("reach 800 m: built-up area served 64.1% (70.0%
 at the topic's settings)"), whether a finding was written, what became of its article, and who
 measured it (backend, build, CPU). With no topic, every topic that keeps decision evidence gets its
 own sentence, the demo topic included, and no number is summed across topics.
+
+**The result's shape.** `spoken`, `table` (12 columns), `rows` (one summary per decision),
+`topics` (one entry per topic: `topic_id`, `label`, `decisions`, and its own `counts`, the 17 keys,
+and `spend_aud`), `window`, `queries` (each `complete`, `cut` or `not_checked`), `dropped`,
+`spend_note` and `as_of`. With a `topic`, the top-level `counts` and `spend_aud` are that topic's.
+With no `topic` they are null: per-topic numbers are never summed, so a reader of the all-topics
+answer reads each topic's from `topics[].counts` and `topics[].spend_aud`. Both are also null
+when the decisions or attempts query did not finish. A scene answer adds `decision` (the summary)
+and `other_sites` (below), and its `rows` are the trace's.
 
 **One decision, step by step.** "Walk me through the latest Sydney scene" passes `scene` as
 `"latest"` (or a scene id the table showed). The page shows the trace of
@@ -282,18 +301,28 @@ what a person did), and Alexa+ hears it in fixed sentences:
 > was approved. The steps are on screen.
 
 Facts only, as the trace states them: a re-measurement is said beside the same scene's numbers at
-the topic's settings and never compared with the baseline.
+the topic's settings and never compared with the baseline. A measure is said only when it is
+plausible (below a million once scaled; `SPOKEN_MEASURE_MAX`), otherwise "OpenCV measured it.";
+a decision line whose coverage is outside 0 to 1 is dropped and counted, as any other line that
+fails a check. A scene id decided for several sites of the topic (a tick decides every site in one
+Sentinel-2 tile) shows the newest one's steps, ends with "That scene was decided for 2 sites; the
+newest one's steps are on screen.", and lists the other sites' ids under `other_sites` for the page.
 
 **How it reads the evidence.**
 
 - **From the logs alone**: three fixed Logs Insights queries over the research-tick and admin-api
   log groups in the home Region, started together and waited for within one budget of 8 seconds
   (`WAIT_SECONDS`): the topic's `vision_decision` and `vision_triage` lines, the `research_tick`
-  lines of the attempts that made a decision, and the `moderation_decision` lines. Then, for a
-  topic with a finding written, one Query on the Articles table's topic index
-  (`dynamo.list_articles_for_topic`, at most 200 articles, never a Scan) for the article each
-  finding fed, found by its lineage's `captured_at`. Eight seconds and a short DynamoDB read keep
-  a voice answer inside Alexa's own limit. The `vision_site` lines are never read (24 a day per
+  lines of the attempts that made a decision, and the `moderation_decision` lines. Then one short
+  Query on the Articles table's topic index per topic with a finding written
+  (`dynamo.list_articles_for_topic`: at most 200 articles, never a Scan, and only the fields the
+  join uses: the id, status, who published it and when, and the lineage) for the article each
+  finding fed, found by its lineage's `captured_at`. The one-topic answer makes one such read; the
+  all-topics answer one per topic with a finding. The whole call has a deadline of 12 seconds from
+  its start (`DEADLINE_SECONDS`): it answers through API Gateway, which gives up after 29 seconds,
+  and on the ask page the agent's own model calls share those 29 seconds, so an Articles read that
+  would start after it is skipped, and that topic's "what a person did" is not checked, as when a
+  read fails (never "no article yet"). The `vision_site` lines are never read (24 a day per
   site would fill the 1,000-row cap within weeks), and no `stats` aggregate is used (it would
   count a failed attempt's lines twice).
 - **By equality, never a pattern**: the only values put into a query are a topic id that passed
