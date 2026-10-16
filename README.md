@@ -319,7 +319,11 @@ account linking. It has its own Cognito sign-in (MFA in production) and its own 
   `investigate("vision")` and `cli_guides("vision")` cover checking it yourself and setting up a
   topic. Site names and error text are on the page only, in "(unverified)" columns; Alexa+ hears
   counts and reasons. The assistant never fills in a sites config, and after reading text written
-  outside the project it changes no list and repeats none of that text aloud.
+  outside the project it changes no list and repeats none of that text aloud. `vision_evidence`
+  answers "what did the vision agent do for rail Sydney this week?" from the pipeline's
+  [evidence lines](docs/enhancements/vision-evidence.md#asking-the-assistant) in the logs: each
+  decision, what the agent did (OpenCV re-measurements included), whether a finding was written
+  and what a person did with its article, or one decision step by step.
 - **A topic's findings:** "what did research find for rail Sydney?" and "what will the next crypto
   article be written from?" call `topic_findings`, which puts the topic's research Findings on
   screen newest first (captured, age, expiry, maps, planner notes, sources, the model, the

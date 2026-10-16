@@ -709,10 +709,11 @@ again the Findings an earlier article already used.
 **What the first tick does.** Trigger it by hand rather than wait for the heartbeat:
 `python scripts/admin_cli.py topics trigger rail-sydney --pipeline research_tick` (a manual tick
 ignores the interval). In order: the scene search; the city's OpenStreetMap network from the
-Overpass API, since none is cached (within 30 s, both endpoints included; a failure is
-`last_error` `osm` and the city waits for the next tick); then, if 45 s of the 70 s measuring
-budget remain, the worker measures the newest scene with that network (if the fetch was slow, the
-measurement is deferred to the next tick, which uses the cached network). If the scene's coverage
+Overpass API, since none is cached (started when 30 s of the 70 s measuring budget remain, and
+given the rest of the budget less 10 s, both endpoints included: about 60 s; a failure is
+`last_error` `osm` and the city waits for the next tick); then, if 45 s of the budget remain, the
+worker measures the newest scene with that network (if the fetch was slow, the measurement is
+deferred to the next tick, which uses the cached network). If the scene's coverage
 is at least 0.6, that is the first observation: a Finding, its summary written by the model from
 "First observation. Sydney: served share … %, … stations, … km² beyond 1 km of a station
 (coverage … %)" (the area beyond reach printed to one decimal, such as 12.3 km²) and the planner
@@ -729,9 +730,44 @@ compliance review says. A daily cycle started before the Finding is written find
 draft on a first tick (run it again); on a later tick, with other Findings in the window, it
 drafts without the new one, which is then lost ("One Finding can still be missed", above).
 
+**A large city's first network can take a minute.** Overpass answers a big city's rail query
+slowly: Sydney's took 54 s from a workstation on 16 October (5,925 elements, 5.5 MB). So the first
+fetch gets the tick's measuring time, not the 30 s a refresh of a cached network gets (#312): the
+rest of the budget less 10 s, each Overpass hop reading for as long as that leaves and the query
+asking the server for the same (`FIRST_FETCH_MARGIN_SECONDS` and `FIRST_FETCH_TIMEOUT_SECONDS` in
+`lambdas/common/adapters/rail_access.py`). Such a fetch leaves too little of the budget to measure,
+so **the first tick fetches and the next measures**: the first tick's `vision_site` line says
+`deferred` for `time_budget`, and the ops assistant's vision status shows the network's
+`fetched_at` from that tick; the next tick (an hour later by default) measures the city against
+the cached network, which then serves for `osm_ttl_days` (a refresh that fails keeps it). For a
+heavy city, raise the topic's `time_budget_seconds` to the cap, 80, which gives the fetch about
+70 s: read the config with `topics get <id>`, add `"time_budget_seconds": 80` to the whole
+`adapter_config` and send all of it back with `topics update <id> --adapter-config-json '...'` (it
+replaces the config: see `reach_m` below). A failed first fetch is tried again on the next tick,
+with no 6-hour wait: nothing is measured without a network. If the status keeps saying `osm` with
+"OpenStreetMap timed out" at the 80 s budget (Overpass took 39 to 75 s to start answering for
+Sydney on 16 October, so a busy hour can miss), fetch the network out of band:
+
+```bash
+python scripts/admin_cli.py topics trigger rail-sydney --pipeline network_prefetch
+```
+
+It runs the research tick's function in a mode that only fetches each site's network, with up to
+90 s per Overpass reply and 100 s in all, and stores it at `vision/<topic>/<site>/network.json` in
+the content bucket. It writes no Finding, no running state and no research time, so the CLI does
+not wait: each site's result is a `network_prefetch` line in the research-tick log (`stored`,
+`failed` with the Overpass error, or `deferred` when the time ran out before a second site; trigger
+again for those). The next tick adopts the stored network for a site that has none, or whose own is
+past its TTL and older, and carries it in the running state from then on; it is read in no other
+case. When a city's cached network goes stale (`osm_ttl_days`, 30 by default) and the tick's
+30 s refresh keeps failing, the old network is still measured against; run the prefetch again to
+replace it. If even the prefetch fails with a timeout, the query is too big for Overpass to answer:
+shrink the polygon (it starts a new baseline, and a new network is fetched for it).
+
 **Where things land.** In the content bucket, `<prefix>-<env>-content`: the figure as the worker
 drew it, `vision/<topic>/<site>/<scene>.png` (for example
-`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); the running state, rewritten every
+`vision/rail-sydney/sydney/S2A_56HLH_20240105_0_L2A.png`); a network fetched by
+`network_prefetch`, `vision/<topic>/<site>/network.json`; the running state, rewritten every
 tick, `snapshots/<topic>/running-state.json`; and each Finding's own snapshot,
 `snapshots/<topic>/<captured_at>.json`. The running state holds, per city, the history (the
 newest entry with its station, flag, suggestion and desert lists), the cached network, and any

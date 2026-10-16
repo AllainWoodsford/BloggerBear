@@ -394,6 +394,51 @@ def test_a_paused_topic_has_no_next_article_until_it_is_resumed(aws):
         assert "paused" not in ask(next_article=True)["spoken"], running
 
 
+def test_a_paused_topic_with_no_findings_says_it_only_for_the_next_article(aws):
+    """The zero-count answer has its own templates: the guard is the same there, the next-article
+    window and only it."""
+    put_topic(aws, paused=True, last_research_at=(NOW - timedelta(hours=2)).isoformat())
+    put_finding(aws, 24 * 20, expires_in_days=-6)  # expired, and before the window: none counted
+    assert ask()["count"] == 0 and ask(days=2)["count"] == 0 and ask(next_article=True)["count"] == 0
+    assert "paused" not in ask()["spoken"] and "paused" not in ask(days=2)["spoken"]
+    assert ask(next_article=True)["spoken"].endswith(
+        "a tick writes a finding only when something changed. " + topic_findings.PAUSED_NO_NEXT_ARTICLE
+    )
+
+
+def test_a_paused_topic_never_researched_says_it_for_the_next_article(aws):
+    put_topic(aws, paused=True)
+    assert ask(next_article=True)["spoken"] == (
+        "Rail access: Sydney has no findings for its next article, and it hasn't been researched yet. "
+        + topic_findings.PAUSED_NO_NEXT_ARTICLE
+    )
+    assert "paused" not in ask()["spoken"]
+
+
+def test_a_paused_topic_with_a_long_name_keeps_the_paused_sentence_under_the_cap(aws):
+    """The word cap drops sentences from the end, and a long name is said twice when it was
+    guessed: the paused sentence, the most decisive thing the answer says, is never what goes."""
+    name = "Crypto & investing: the coins, the rules and the risks of it"
+    assert len(name) == 60 and len(name.split()) == 12
+    put_topic(aws, "crypto", name, "crypto_feed", findings_window_hours=192, paused=True)
+    figure = [{"key": "vision/x/y/S1.png", "caption": "Map", "alt": "Map"}]
+    for minutes in range(50):
+        put_finding(
+            aws, minutes / 60, topic_id="crypto", summary="s" * 1_000,
+            research_call=research_call(stop_reason="max_tokens"), figures=figure,
+            planner_notes=[{"kind": "flag", "type": "ghost_line", "stations": [], "text": "t"}],
+        )  # fmt: skip
+    result = ask("crypto investing coins", next_article=True, limit=20)
+    spoken = result["spoken"]
+    assert result["matched_topic"]["how"] == "fuzzy" and spoken.startswith(f"I took that to mean {name};")
+    assert spoken.endswith(topic_findings.PAUSED_NO_NEXT_ARTICLE)
+    assert len(spoken.split()) < topic_findings.SPOKEN_MAX_WORDS
+    # The cap still did its work: the weakest sentences went, the first two stayed.
+    assert "A topic with editorial goals may use only some of them." not in spoken
+    assert "has at least 49 findings for its next article, the newest 0 minutes ago." in spoken
+    assert "The newest 20 are on screen." in spoken
+
+
 # --- the rows: item shapes ------------------------------------------------------------------------------
 
 

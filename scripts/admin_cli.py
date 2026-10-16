@@ -342,6 +342,19 @@ def _cmd_topics_trigger(args: argparse.Namespace) -> None:
     # look instantly "done" without this pipeline run having done anything.
     baseline_captured_at = None
     baseline_candidate_count = None
+    if pipeline == "network_prefetch":
+        # Nothing to poll for: a prefetch writes no Finding or candidate, only the network the
+        # next research tick adopts. Its result is one log line per site.
+        _do_request(args, "POST", f"/topics/{topic_id}/trigger", body=body)
+        print(
+            "network_prefetch started; it can take up to two minutes. Each site's result is a "
+            "'network_prefetch' line in the research-tick log:\n"
+            "  aws logs tail /aws/lambda/<research-tick function name> --since 5m "
+            "--filter-pattern network_prefetch\n"
+            "The next hourly research tick uses a stored network.",
+            file=sys.stderr,
+        )
+        return
     if args.wait:
         if pipeline == "research_tick":
             baseline_captured_at = _latest_finding_captured_at(args, topic_id)
@@ -1230,7 +1243,14 @@ def build_parser() -> argparse.ArgumentParser:
     trigger_parser = topics_sub.add_parser("trigger", help="Manually trigger a pipeline run")
     trigger_parser.add_argument("topic_id")
     trigger_parser.add_argument(
-        "--pipeline", required=True, choices=["research_tick", "daily_cycle"]
+        "--pipeline",
+        required=True,
+        choices=["research_tick", "daily_cycle", "network_prefetch"],
+        help=(
+            "network_prefetch (rail_access topics): fetch the topic's rail networks from "
+            "Overpass with up to 90 s per reply, for a city too slow for the hourly tick; "
+            "the next tick uses them. Never waits"
+        ),
     )
     trigger_parser.add_argument(
         "--no-wait",

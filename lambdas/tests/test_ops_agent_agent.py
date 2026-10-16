@@ -9,8 +9,11 @@ code guarantees whichever it does. Nothing here calls Bedrock or AWS.
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
+from botocore.awsrequest import AWSResponse
+from botocore.exceptions import ClientError
 from ops_agent_fakes import CutOff, FakeTool, ScriptedModel, finding, tool_results
 
 from ops_agent import agent, policy
@@ -375,6 +378,36 @@ def test_the_bedrock_model_comes_from_the_environment_with_its_output_capped(mon
     assert model.get_config()["max_tokens"] == agent.MAX_TOKENS <= 600
     assert model.get_config()["streaming"] is False
     assert model.client.meta.region_name == "ap-southeast-2"
+
+
+class _Raw:
+    def stream(self, **kwargs):
+        yield b""
+
+
+def test_bedrock_is_asked_with_short_timeouts_and_one_retry(monkeypatch):
+    """What botocore resolves through Strands, not the dict handed to it: its `max_attempts`
+    counts retries, so a Converse that fails with a 500 is sent twice in all, the one retry the
+    comment says, not three times. Stopped before anything is sent."""
+    monkeypatch.setenv("OPS_AGENT_MODEL_ID", "au.anthropic.claude-haiku-4-5-20251001-v1:0")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    client = agent.bedrock_model().client
+    assert client.meta.config.connect_timeout == 5 and client.meta.config.read_timeout == 20
+    assert client.meta.config.retries["total_max_attempts"] == 2
+    sent = []
+
+    def answer(request, **kwargs):
+        sent.append(request.url)
+        return AWSResponse(request.url, 500, {}, _Raw())
+
+    client.meta.events.register("before-send.bedrock-runtime.Converse", answer)
+    with pytest.raises(ClientError):
+        client.converse(
+            modelId=os.environ["OPS_AGENT_MODEL_ID"], messages=[{"role": "user", "content": [{"text": "hi"}]}]
+        )
+    assert len(sent) == 2
 
 
 def test_the_request_strands_builds_is_one_the_pinned_botocore_accepts(monkeypatch):
@@ -835,6 +868,24 @@ def test_the_model_is_told_how_to_answer_what_research_found():
         assert rule in prompt, rule
     assert "topic_findings" not in policy.DEEP_DIVE_TOOLS
     assert "findings" in cli_guide.GUIDES
+
+
+def test_the_model_is_told_to_interrogate_the_vision_evidence():
+    """The owner's ask of the submission round: the agent and Alexa+ can interrogate the evidence
+    (ops_mcp/vision_evidence.py). Offered on every turn: not a deep dive, and the budgets and the
+    briefing's tools are unchanged."""
+    prompt = agent.SYSTEM_PROMPT
+    assert (
+        "Asked what the vision pipeline or its agent did, why a change was or was not reported, or for "
+        "evidence that OpenCV's output changed a decision: call vision_evidence (`scene` for one decision "
+        "step by step). Say what its `spoken` says; the rows are on screen."
+    ) in prompt
+    assert policy.DEEP_DIVE_TOOLS == {"firewall_review"}
+    assert policy.BUDGETS == {"briefing": 8, "follow_up": 3}
+    assert "vision_evidence" in policy.offered(["vision_evidence", "firewall_review"], policy.BRIEFING)
+    import ops_agent_handler
+
+    assert "vision_evidence" not in ops_agent_handler._BRIEFING_TOOLS
 
 
 # --- the echo guard and the list lock, through the real agent (the assistant's vision round) ------

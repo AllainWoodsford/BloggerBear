@@ -11,6 +11,7 @@ import json
 from datetime import UTC, datetime
 
 import pytest
+from botocore.awsrequest import AWSResponse
 from botocore.exceptions import ClientError
 
 from ops_mcp import logs, samples
@@ -234,6 +235,38 @@ def test_queries_run_together_and_one_still_running_is_stopped():
         ("broken", "a"): None,
     }
     assert fake.stopped == ["slow"]
+
+
+class _Raw:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def stream(self, **kwargs):
+        yield self.body
+
+
+def test_logs_is_asked_with_short_timeouts_and_one_retry(monkeypatch):
+    """What botocore resolves, not the dict handed to it: its `max_attempts` counts retries, so a
+    throttled call is sent twice in all, one retry, not three times."""
+    for name, value in {"AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(logs, "_clients", {})
+    client = logs.client("ap-southeast-2")
+    assert client is logs.client("ap-southeast-2")
+    assert client.meta.config.connect_timeout == 3 and client.meta.config.read_timeout == 8
+    assert client.meta.config.retries["total_max_attempts"] == 2
+    sent = []
+    throttled = json.dumps({"__type": "ThrottlingException", "message": "Rate exceeded"}).encode()
+
+    def answer(request, **kwargs):
+        sent.append(request.url)
+        return AWSResponse(request.url, 400, {}, _Raw(throttled))
+
+    client.meta.events.register("before-send.cloudwatch-logs.GetQueryResults", answer)
+    with pytest.raises(ClientError) as err:
+        client.get_query_results(queryId="q-1")
+    assert err.value.response["Error"]["Code"] == "ThrottlingException"
+    assert len(sent) == 2
 
 
 @pytest.mark.parametrize(("value", "counted"), [("3", 3), ("2.0", 2), ("-1", 0), (None, 0), ("x", 0)])

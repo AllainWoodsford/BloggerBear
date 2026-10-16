@@ -1358,6 +1358,35 @@ def get_newest_article_for_topic(topic_id: str) -> dict | None:
     return items[0] if items else None
 
 
+# How many of a topic's articles list_articles_for_topic reads at most: the operator's assistant
+# joins a window of at most 1,000 decision lines to the articles their Findings fed, and a topic
+# writes at most one article a day.
+ARTICLES_FOR_TOPIC_MAX = 200
+
+
+def list_articles_for_topic(
+    topic_id: str, since_iso: str, *, limit: int = ARTICLES_FOR_TOPIC_MAX
+) -> list[dict]:
+    """The topic's articles created at or after `since_iso`, in any status, newest first and at
+    most `limit` of them: one Query on the topic index (by_topic_created_at), with `created_at` in
+    the key condition, paginated, never a Scan. For the operator's assistant
+    (ops_mcp/vision_evidence.py), which finds the article a vision decision's Finding fed by the
+    lineage's `captured_at`, and reads its status and `published_by` for what a person did. Lineage
+    Decimals come back as plain numbers, as list_articles_by_status gives them."""
+    table = get_table(os.environ["ARTICLES_TABLE"])
+    items = _paginated_query(
+        table,
+        ARTICLES_BY_TOPIC_INDEX,
+        Key("topic_id").eq(topic_id) & Key("created_at").gte(since_iso),
+        newest_first=True,
+        limit=max(1, int(limit)),
+    )
+    for item in items:
+        if "lineage" in item:
+            item["lineage"] = _lineage_from_item(item["lineage"])
+    return items
+
+
 # --- FailedExecutions (DLQ consumer) -------------------------------------
 #
 # Owned by the dlq_handler worker. A FailedExecutions item is written once

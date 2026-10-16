@@ -36,8 +36,13 @@ OVERPASS_ENDPOINTS = (
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 )
-# Overpass' own query timeout is the same figure (`[timeout:]` in the query), so a slow server
-# answers with a 504 or a "timed out" remark before the client gives up on the read.
+# A hop's read timeout when the caller sets none. Each hop's query declares the read timeout that hop
+# actually gets as Overpass' own `[timeout:]`, in whole seconds rounded down (`overpass_query`): the
+# server-side limit on the query's runtime, past which Overpass aborts it with a 504 or a "timed out"
+# remark. Equal, the server never aborts a query the client would still wait for (a lower figure
+# would fail a big city's query that the read could have taken), and never keeps running one, in one
+# of this client's slots, after the client has stopped reading (a higher one would; and Overpass
+# turns away a query declaring a longer runtime sooner when it is busy).
 TIMEOUT_SECONDS = 25.0
 # Overpass' usage policy asks every client to name itself. Without a User-Agent the request goes out
 # as python-requests: overpass-api.de's front answers 406 Not Acceptable (not transient, so the
@@ -159,11 +164,14 @@ def _ring(polygon) -> list[tuple[float, float]]:
     return points if points[0] == points[-1] else [*points, points[0]]
 
 
-def overpass_query(polygon) -> str:
+def overpass_query(polygon, timeout: float = TIMEOUT_SECONDS) -> str:
     """The Overpass QL for `polygon` ([[lon, lat], ...]): rail ways with their geometry, stations
-    and intermodal points with their centres, as JSON."""
+    and intermodal points with their centres, as JSON, with `timeout` (the hop's read timeout) as
+    the query's `[timeout:]` in whole seconds, rounded down and at least 1 (TIMEOUT_SECONDS says
+    why the two match). With the default timeout the text is the one the query has always had."""
     poly = " ".join(f"{_coord(lat)} {_coord(lon)}" for lon, lat in _ring(polygon))
-    return _QUERY.replace("{timeout}", str(int(TIMEOUT_SECONDS))).replace("{poly}", poly)
+    seconds = max(1, math.floor(timeout))
+    return _QUERY.replace("{timeout}", str(seconds)).replace("{poly}", poly)
 
 
 def query_url(polygon, endpoint: str = OVERPASS_ENDPOINTS[0]) -> str:
@@ -471,15 +479,17 @@ def fetch_network(
     Without a `deadline` the worst case is two hops of connect plus `timeout` plus the transfer.
     With one (a `clock()` value, `time.monotonic` by default), each hop gets at most the time left
     before it, less the connect allowance, and a hop that would get under _MIN_HOP_SECONDS is not
-    made: the failure so far is raised, or "timeout" if there was none. `http_post` stands in for
-    `requests.post` in tests; `endpoints` must be allow-listed (OVERPASS_ENDPOINTS)."""
+    made: the failure so far is raised, or "timeout" if there was none. Each hop's query declares
+    the read timeout that hop gets as its `[timeout:]` (`overpass_query`), so a mirror hop with less
+    time left asks the server for no more. `http_post` stands in for `requests.post` in tests;
+    `endpoints` must be allow-listed (OVERPASS_ENDPOINTS)."""
     if not endpoints:
         raise ValueError("no endpoints")
     for endpoint in endpoints:
         if endpoint not in OVERPASS_ENDPOINTS:
             raise ValueError(f"endpoint {endpoint!r} is not one of {OVERPASS_ENDPOINTS}")
     post = http_post or requests.post
-    query = overpass_query(polygon)
+    overpass_query(polygon, timeout)  # a polygon that is not one is refused before anything is asked
     fetched_at = (now or datetime.now(UTC)).isoformat()
     failure: OsmError | None = None
     for endpoint in endpoints:
@@ -489,7 +499,7 @@ def fetch_network(
             if hop_timeout < _MIN_HOP_SECONDS:
                 raise failure or OsmError("timeout", "no time left before the deadline")
         try:
-            elements = _request(post, endpoint, query, hop_timeout)
+            elements = _request(post, endpoint, overpass_query(polygon, hop_timeout), hop_timeout)
             break
         except OsmError as exc:
             failure = exc

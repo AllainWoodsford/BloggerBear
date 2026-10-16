@@ -60,7 +60,7 @@ UNTRUSTED_BUDGET_CHARS = 6_000  # all "(unverified)" cells of one result, togeth
 SPOKEN_MAX_WORDS = 120
 # A paused topic (`topics pause`) has no next article until it is resumed: the daily cycle returns
 # `paused` before it reads the window (daily_cycle_handler._run_daily_cycle, the same `is True`).
-# Said after the next-article window's counts, and only there.
+# Said after the next-article window's counts, and only there; the word cap never drops it.
 PAUSED_NO_NEXT_ARTICLE = "It is paused, so there is no next article until it is resumed."
 FINDINGS_TABLE_ENV = "FINDINGS_TABLE"
 LEFT_OUT = "(left out: ask for fewer)"
@@ -323,13 +323,17 @@ def _spoken(
             )
         if resolve_goal_for_topic(topic, now.date()) is not None:
             sentences.append("A topic with editorial goals may use only some of them.")
-        if paused:
-            sentences.append(PAUSED_NO_NEXT_ARTICLE)
+    # The cap drops sentences from the end, never the first two. The paused sentence is the most
+    # decisive thing the answer says, so it is kept out of what the cap drops: the others are
+    # trimmed to leave it room, then it is added. Words add up exactly over a join with one space,
+    # so the cap holds as it did before: under SPOKEN_MAX_WORDS, unless only the first two are left.
+    kept = [PAUSED_NO_NEXT_ARTICLE] if paused else []
+    room = SPOKEN_MAX_WORDS - sum(len(sentence.split()) for sentence in kept)
     text = " ".join(sentences)
-    while len(text.split()) >= SPOKEN_MAX_WORDS and len(sentences) > 2:
+    while len(text.split()) >= room and len(sentences) > 2:
         sentences.pop()
         text = " ".join(sentences)
-    return text
+    return " ".join([*sentences, *kept])
 
 
 # --- the tool ---------------------------------------------------------------------------------------
