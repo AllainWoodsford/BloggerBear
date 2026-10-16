@@ -976,9 +976,11 @@ def _empty_counts() -> dict:
     return {key: 0 for key in COUNT_KEYS} | {"untriaged": 0}
 
 
-def _count(counts: dict, summary: dict, articles_seen: set) -> None:
+def _count(counts: dict, summary: dict, articles_seen: set, findings_seen: set) -> None:
     """One kept decision's part of its topic's counts: its gate code, the agent's verdict and tools,
-    whether it was reported and a Finding written, and its article (each article once)."""
+    whether it was reported, and its Finding and its article, each once. One tick writes one Finding
+    for every site it reports (each decision's `at` is the tick's, the Finding's captured_at), so
+    Findings are counted by that key, not by decision; an article can hold several Findings."""
     counts["decisions"] += 1
     if summary["code"] in _GATE_CODES:
         counts[summary["code"]] += 1
@@ -992,7 +994,8 @@ def _count(counts: dict, summary: dict, articles_seen: set) -> None:
         counts["untriaged"] += 1
     if summary["reported"]:
         counts["reported"] += 1
-    if summary["action"] == "finding_written":
+    if summary["action"] == "finding_written" and summary["finding_at"] not in findings_seen:
+        findings_seen.add(summary["finding_at"])
         counts["findings_written"] += 1
     key = summary["article_id"] or (summary["topic_id"], summary["at"])
     if summary["person"] in _ARTICLE_COUNTS and key not in articles_seen:
@@ -1185,10 +1188,10 @@ def vision_evidence(
 
     # The counts, per topic: never one topic's into another's.
     per_topic = {topic_id: _empty_counts() for topic_id in ids}
-    seen: dict[str, set] = {topic_id: set() for topic_id in ids}
+    seen: dict[str, tuple[set, set]] = {topic_id: (set(), set()) for topic_id in ids}
     for entry, _rows, summary in rendered:
         if entry["kept"]:
-            _count(per_topic[entry["topic_id"]], summary, seen[entry["topic_id"]])
+            _count(per_topic[entry["topic_id"]], summary, *seen[entry["topic_id"]])
     for topic_id, copies in not_kept.items():
         per_topic[topic_id]["not_kept"] += copies
     spend = {topic_id: _spend_aud([t for t in triages if t["topic_id"] == topic_id]) for topic_id in ids}
