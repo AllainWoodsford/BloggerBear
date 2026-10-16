@@ -51,6 +51,7 @@ In the order you are likely to need them.
 | [Deployment runsheet](docs/deployment-runsheet.md) | Your first deploy: bootstrap, GitHub settings, one AWS account or two, the dev environment, seeding a topic, the model registry, another region, local development. |
 | [Separate AWS accounts](docs/deployment-separate-accounts.md) | Dev in one account and production in another: what you do twice, both bootstrap commands, the GitHub OIDC trust for your fork, the firewall, a checklist. |
 | [Configuration](docs/configuration.md) | Every setting in one table, and where it goes: GitHub, Terraform, SSM, DynamoDB, your machine. |
+| [Cost saving](docs/cost-saving.md) | The firewall switches: what each one saves, what it gives up, how to set it, and why the admin API's allowlist stays on whatever you switch off. Hardened by default; at your own risk. |
 | [Admin CLI quick start](scripts/QUICKSTART.md) | `scripts/QUICKSTART.md`: point the CLI at your environment, run your first commands, and where to look when one fails. |
 | [Admin CLI reference](scripts/README.md) | Every command: topics, the review inbox, models, pipeline settings, feedback. |
 | [Production runsheet](docs/production-runsheet.md) | Your domain, DNS, the first production release, rolling back, what it costs. |
@@ -214,7 +215,11 @@ Both cadences are per topic. The admin API creates, updates and deletes each top
 Scheduler schedules as topics change: topics are runtime data, not Terraform. The research
 schedule is a heartbeat; each tick decides from DynamoDB whether it is due. A Step Functions
 wrapper gives the daily cycle retries and a dead-letter queue; the research tick bypasses Step
-Functions.
+Functions. Topics take turns: each has a **slot**, and the pipeline's **stagger** (5 minutes by
+default) puts slot 1's heartbeat at :05 past the hour, slot 2's at :10, and every daily cycle
+after the hour's heartbeats, one slot apart, so no two topics call their sources or Bedrock at
+once (`admin_cli topics schedule`). A topic can be **paused** (`topics pause`): nothing of it
+runs until it is resumed, its page says so, and the bear muses about it.
 
 Held articles wait in the review inbox (`admin_cli approve`), where they can be approved,
 rejected, or **re-written** in the background by a chosen model, which runs the reviews again.
@@ -497,6 +502,7 @@ docs/
   deployment-runsheet.md        your first deploy, step by step
   deployment-separate-accounts.md  dev and production in two AWS accounts
   configuration.md              every setting and where it goes
+  cost-saving.md                the firewall switches, hardened by default
   architecture/                 the project by feature: article research, ...
   production-runsheet.md        production + domain, step by step
   project-plan.md               architecture, rules, data model -- source

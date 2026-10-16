@@ -52,7 +52,7 @@
       "destructive": false
     }
   ],
-  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
+  "help_text": "usage: admin_cli.py [-h] [--api-url API_URL] [--region REGION]\n                    {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment} ...\n\nBloggerBear admin operator CLI\n\npositional arguments:\n  {topics,articles,feedback-config,inbox,approve,pipeline-config,review,lineage,stats,moderation,failed-executions,security,sign-ins,musings,models,model-config,refinements,equipment}\n    topics              Manage Topics\n    articles            Manage articles\n    feedback-config     When BloggerBear takes feedback: lockdown, rate limit, daily limit, per-\n                        article limit\n    inbox               What is waiting for you (articles, prompt changes, failed runs), at a\n                        glance\n    approve             Go through what is waiting for you, one keystroke each: y approve, r\n                        reject, z skip, v read it all, q quit. Up to 30 at a time; run it again\n                        for the next batch\n    pipeline-config     Pipeline-wide settings (the default research interval, the draft review\n                        mode, who may reach the assistant, the stagger between topics)\n    review              How the fresh-data review of drafts is doing\n    lineage             Audit and repair article lineage/cost data\n    stats               Observability: one-time catch-up jobs\n    moderation          Manage the moderation queue\n    failed-executions   View daily_cycle executions that exhausted their retries\n    security            Security incidents: list them, move them along, or open one by hand\n    sign-ins            Sign-ins to the operator's assistant: the log, and unlocking a user\n    musings             The Musings feed: list the musings, fix one's text, or have one written\n                        again\n    models              Manage the AI model registry\n    model-config        Manage the global default/fallback model\n    refinements         Manage prompt refinements\n    equipment           What the bear wears: armor (global guidance), rings (topic guidance), the\n                        backpack\n\noptions:\n  -h, --help            show this help message and exit\n  --api-url API_URL     Admin API base URL (default: $BLOGGERBEAR_ADMIN_API_URL)\n  --region REGION       AWS region (default: $AWS_REGION / $AWS_DEFAULT_REGION)\n",
   "commands": {
     "topics": {
       "help": "Manage Topics",
@@ -65,9 +65,13 @@
         "delete",
         "trigger",
         "candidates",
-        "findings"
+        "findings",
+        "schedule",
+        "reschedule",
+        "pause",
+        "resume"
       ],
-      "help_text": "usage: admin_cli.py topics [-h] {list,get,create,update,delete,trigger,candidates,findings} ...\n\npositional arguments:\n  {list,get,create,update,delete,trigger,candidates,findings}\n    list                List all topics\n    get                 Get one topic\n    create              Create a topic\n    update              Update a topic\n    delete              Delete a topic\n    trigger             Manually trigger a pipeline run\n    candidates          List candidate ideas considered for a topic\n    findings            Show the most recent research Finding for a topic\n\noptions:\n  -h, --help            show this help message and exit\n"
+      "help_text": "usage: admin_cli.py topics [-h] <action> ...\n\npositional arguments:\n  <action>\n    list        List all topics\n    get         Get one topic\n    create      Create a topic\n    update      Update a topic\n    delete      Delete a topic\n    trigger     Manually trigger a pipeline run\n    candidates  List candidate ideas considered for a topic\n    findings    Show the most recent research Finding for a topic\n    schedule    Show every topic's slot, state and the two schedules written for it, in plain\n                words and as written (the stagger: docs/project-plan.md, Staggered schedules)\n    reschedule  Rewrite every topic's two schedules with the stagger as it is now: after changing\n                --stagger-minutes, after adding or deleting a topic (the daily delay is the number\n                of topics), or to give older topics their slots\n    pause       Pause a topic: no research tick, no candidate ideas, no daily article until it is\n                resumed. Its schedules are disabled, the topic page says Paused, and the bear\n                muses about it\n    resume      Resume a paused topic: its schedules are enabled again from the next heartbeat\n\noptions:\n  -h, --help    show this help message and exit\n"
     },
     "topics list": {
       "help": "List all topics",
@@ -300,6 +304,22 @@
           "destructive": false
         },
         {
+          "name": "--stagger-slot",
+          "dest": "stagger_slot",
+          "kind": "option",
+          "flags": [
+            "--stagger-slot"
+          ],
+          "help": "This topic's turn in the stagger: slot 1's research heartbeat runs at :05 past the hour, slot 2's at :10, ... (with the pipeline's stagger of 5 minutes), and its daily cycle the same way after every topic's heartbeat. Omit for the next free slot. `topics schedule` shows the result",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
           "name": "--model-id",
           "dest": "model_id",
           "kind": "option",
@@ -349,7 +369,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics create [-h] --topic-id TOPIC_ID --name NAME [--adapter ADAPTER]\n                                  [--config-json CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n\noptions:\n  -h, --help            show this help message and exit\n  --topic-id TOPIC_ID\n  --name NAME\n  --adapter ADAPTER     Adapter key (default: web_search -- independent web research on the\n                        topic's name)\n  --config-json CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Topic-specific goal, e.g. '{\"primary_focus\": \"...\", \"exclusion_criteria\":\n                        \"...\"}'; omit to inherit the adapter/global default\n  --financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1\n                        hour))\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (the --research-cadence schedule is\n                        only the heartbeat). Omit to inherit the pipeline-wide default\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336 (default 24). Widen it for a\n                        topic that does not write every day (one day of a rotation, a weekly\n                        topic)\n  --review-mode {off,shadow,enforce}\n                        This topic's fresh-data review mode; omit to inherit the pipeline-wide\n                        mode\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default:\n                        cron(0 9 * * ? *))\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in (default: Australia/Sydney)\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+      "help_text": "usage: admin_cli.py topics create [-h] --topic-id TOPIC_ID --name NAME [--adapter ADAPTER]\n                                  [--config-json CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n\noptions:\n  -h, --help            show this help message and exit\n  --topic-id TOPIC_ID\n  --name NAME\n  --adapter ADAPTER     Adapter key (default: web_search -- independent web research on the\n                        topic's name)\n  --config-json CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Topic-specific goal, e.g. '{\"primary_focus\": \"...\", \"exclusion_criteria\":\n                        \"...\"}'; omit to inherit the adapter/global default\n  --financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)' (default: rate(1\n                        hour))\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (the --research-cadence schedule is\n                        only the heartbeat). Omit to inherit the pipeline-wide default\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336 (default 24). Widen it for a\n                        topic that does not write every day (one day of a rotation, a weekly\n                        topic)\n  --review-mode {off,shadow,enforce}\n                        This topic's fresh-data review mode; omit to inherit the pipeline-wide\n                        mode\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)' (default:\n                        cron(0 9 * * ? *))\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in (default: Australia/Sydney)\n  --stagger-slot STAGGER_SLOT\n                        This topic's turn in the stagger: slot 1's research heartbeat runs at :05\n                        past the hour, slot 2's at :10, ... (with the pipeline's stagger of 5\n                        minutes), and its daily cycle the same way after every topic's heartbeat.\n                        Omit for the next free slot. `topics schedule` shows the result\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
     },
     "topics update": {
       "help": "Update a topic",
@@ -553,6 +573,22 @@
           "destructive": false
         },
         {
+          "name": "--stagger-slot",
+          "dest": "stagger_slot",
+          "kind": "option",
+          "flags": [
+            "--stagger-slot"
+          ],
+          "help": "Move this topic to another turn in the stagger (a whole number no other topic holds); '' gives it the next free slot. Its two schedules are rewritten at once",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        },
+        {
           "name": "--model-id",
           "dest": "model_id",
           "kind": "option",
@@ -602,7 +638,7 @@
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--model-id MODEL_ID]\n                                  [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
+      "help_text": "usage: admin_cli.py topics update [-h] [--name NAME] [--adapter-config-json ADAPTER_CONFIG_JSON]\n                                  [--editorial-goals-json EDITORIAL_GOALS_JSON] [--financial]\n                                  [--no-financial] [--research-cadence RESEARCH_CADENCE]\n                                  [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                  [--findings-window-hours FINDINGS_WINDOW_HOURS]\n                                  [--review-mode {off,shadow,enforce,}]\n                                  [--daily-cadence DAILY_CADENCE]\n                                  [--daily-timezone DAILY_TIMEZONE] [--stagger-slot STAGGER_SLOT]\n                                  [--model-id MODEL_ID] [--fallback-model-id FALLBACK_MODEL_ID]\n                                  [--model-candidates MODEL_CANDIDATES]\n                                  topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help            show this help message and exit\n  --name NAME\n  --adapter-config-json ADAPTER_CONFIG_JSON\n  --editorial-goals-json EDITORIAL_GOALS_JSON\n                        Replaces the topic's whole editorial_goals block; '{}' clears it (back to\n                        the default)\n  --financial\n  --no-financial\n  --research-cadence RESEARCH_CADENCE\n                        EventBridge Scheduler expression, e.g. 'rate(1 hour)'\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs for this topic; '' clears it\n                        (inherit the pipeline-wide default)\n  --findings-window-hours FINDINGS_WINDOW_HOURS\n                        How many hours back the daily article reads findings, never past the\n                        topic's last article: whole hours, 1 to 336, for a topic that does not\n                        write every day; '' clears it (back to 24)\n  --review-mode {off,shadow,enforce,}\n                        This topic's fresh-data review mode, overriding the pipeline-wide one:\n                        'off', 'shadow' (record only) or 'enforce' (act on it); '' clears it\n                        (inherit)\n  --daily-cadence DAILY_CADENCE\n                        EventBridge Scheduler expression, e.g. 'cron(0 9 * * ? *)'\n  --daily-timezone DAILY_TIMEZONE\n                        IANA zone the daily cron is read in, e.g. 'Australia/Sydney'. A topic\n                        created before this option existed is on UTC until you set it\n  --stagger-slot STAGGER_SLOT\n                        Move this topic to another turn in the stagger (a whole number no other\n                        topic holds); '' gives it the next free slot. Its two schedules are\n                        rewritten at once\n  --model-id MODEL_ID   Pin this topic to one Bedrock model (overrides the global default); ''\n                        clears it\n  --fallback-model-id FALLBACK_MODEL_ID\n                        Model to retry with if this topic's primary model call fails; '' clears it\n  --model-candidates MODEL_CANDIDATES\n                        Comma-separated model IDs to rotate between -- one is picked at random per\n                        daily run, ahead of --model-id; '' clears rotation\n"
     },
     "topics delete": {
       "help": "Delete a topic",
@@ -744,6 +780,117 @@
       ],
       "destructive": false,
       "help_text": "usage: admin_cli.py topics findings [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "topics schedule": {
+      "help": "Show every topic's slot, state and the two schedules written for it, in plain words and as written (the stagger: docs/project-plan.md, Staggered schedules)",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--json",
+          "dest": "as_json",
+          "kind": "flag",
+          "flags": [
+            "--json"
+          ],
+          "help": "Print the raw answer as JSON",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics schedule [-h] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --json      Print the raw answer as JSON\n"
+    },
+    "topics reschedule": {
+      "help": "Rewrite every topic's two schedules with the stagger as it is now: after changing --stagger-minutes, after adding or deleting a topic (the daily delay is the number of topics), or to give older topics their slots",
+      "group": false,
+      "arguments": [
+        {
+          "name": "--dry-run",
+          "dest": "dry_run",
+          "kind": "flag",
+          "flags": [
+            "--dry-run"
+          ],
+          "help": "Show what would be written without changing anything",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        },
+        {
+          "name": "--json",
+          "dest": "as_json",
+          "kind": "flag",
+          "flags": [
+            "--json"
+          ],
+          "help": "Print the raw answer as JSON",
+          "type": "str",
+          "choices": null,
+          "default": false,
+          "required": false,
+          "nargs": 0,
+          "metavar": null,
+          "destructive": false,
+          "value": true
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics reschedule [-h] [--dry-run] [--json]\n\noptions:\n  -h, --help  show this help message and exit\n  --dry-run   Show what would be written without changing anything\n  --json      Print the raw answer as JSON\n"
+    },
+    "topics pause": {
+      "help": "Pause a topic: no research tick, no candidate ideas, no daily article until it is resumed. Its schedules are disabled, the topic page says Paused, and the bear muses about it",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics pause [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
+    },
+    "topics resume": {
+      "help": "Resume a paused topic: its schedules are enabled again from the next heartbeat",
+      "group": false,
+      "arguments": [
+        {
+          "name": "topic_id",
+          "dest": "topic_id",
+          "kind": "positional",
+          "flags": [],
+          "help": null,
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": true,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
+        }
+      ],
+      "destructive": false,
+      "help_text": "usage: admin_cli.py topics resume [-h] topic_id\n\npositional arguments:\n  topic_id\n\noptions:\n  -h, --help  show this help message and exit\n"
     },
     "articles": {
       "help": "Manage articles",
@@ -1320,7 +1467,7 @@
       "help_text": "usage: admin_cli.py approve [-h] [--limit LIMIT] [--source {all,moderation,refinements}]\n                            [--skip-hours SKIP_HOURS] [--include-skipped] [--reset-skipped]\n                            [--dry-run] [--mock]\n\noptions:\n  -h, --help            show this help message and exit\n  --limit LIMIT         How many to go through this time (default 30)\n  --source {all,moderation,refinements}\n                        Only articles (moderation) or only prompt changes (refinements). Default:\n                        both\n  --skip-hours SKIP_HOURS\n                        A skipped item is hidden from your next reviews for this many hours\n                        (default 24; 0 = until cleared)\n  --include-skipped     Show items you skipped earlier too\n  --reset-skipped       Forget everything you skipped before starting\n  --dry-run             Go through the motions but change nothing\n  --mock                Practise the keys on made-up items: no AWS, nothing sent (or set\n                        BLOGGERBEAR_REVIEW_MOCK=1)\n"
     },
     "pipeline-config": {
-      "help": "Pipeline-wide settings (the default research interval, the draft review mode, who may reach the assistant)",
+      "help": "Pipeline-wide settings (the default research interval, the draft review mode, who may reach the assistant, the stagger between topics)",
       "group": true,
       "subcommands": [
         "get",
@@ -1416,10 +1563,26 @@
           "nargs": null,
           "metavar": null,
           "destructive": false
+        },
+        {
+          "name": "--stagger-minutes",
+          "dest": "stagger_minutes",
+          "kind": "option",
+          "flags": [
+            "--stagger-minutes"
+          ],
+          "help": "Minutes between one topic's schedules and the next (0-30): slot 1's research heartbeat at :05 past, slot 2's at :10, and every daily cycle one slot past the hour's last heartbeat, then one slot apart; 0 turns it off; '' clears it (back to 5). Then run `topics reschedule`",
+          "type": "str",
+          "choices": null,
+          "default": null,
+          "required": false,
+          "nargs": null,
+          "metavar": null,
+          "destructive": false
         }
       ],
       "destructive": false,
-      "help_text": "usage: admin_cli.py pipeline-config set [-h] [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                        [--review-mode {off,shadow,enforce,}]\n                                        [--review-on-unavailable {hold,note,}]\n                                        [--assistant-access {open,allowlist,off,}]\n\noptions:\n  -h, --help            show this help message and exit\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (1-168); '' clears it (back to 1)\n  --review-mode {off,shadow,enforce,}\n                        Fresh-data review of drafts: 'shadow' runs and records it without changing\n                        any outcome (the default), 'enforce' acts on it (revises minor problems,\n                        holds major ones), 'off' skips it; '' clears it (back to the default). A\n                        topic's own --review-mode overrides this\n  --review-on-unavailable {hold,note,}\n                        In enforce mode, when the review could not run: 'hold' the article for a\n                        person (the default) or 'note' the gap and publish; '' clears it\n  --assistant-access {open,allowlist,off,}\n                        Who may reach the operator's assistant: 'open' any signed-in caller from\n                        anywhere (the default), 'allowlist' only from the operator's addresses,\n                        'off' nobody; '' clears it (back to open). Applies from the next request,\n                        no deploy\n"
+      "help_text": "usage: admin_cli.py pipeline-config set [-h] [--research-interval-hours RESEARCH_INTERVAL_HOURS]\n                                        [--review-mode {off,shadow,enforce,}]\n                                        [--review-on-unavailable {hold,note,}]\n                                        [--assistant-access {open,allowlist,off,}]\n                                        [--stagger-minutes STAGGER_MINUTES]\n\noptions:\n  -h, --help            show this help message and exit\n  --research-interval-hours RESEARCH_INTERVAL_HOURS\n                        Whole hours between real research runs (1-168); '' clears it (back to 1)\n  --review-mode {off,shadow,enforce,}\n                        Fresh-data review of drafts: 'shadow' runs and records it without changing\n                        any outcome (the default), 'enforce' acts on it (revises minor problems,\n                        holds major ones), 'off' skips it; '' clears it (back to the default). A\n                        topic's own --review-mode overrides this\n  --review-on-unavailable {hold,note,}\n                        In enforce mode, when the review could not run: 'hold' the article for a\n                        person (the default) or 'note' the gap and publish; '' clears it\n  --assistant-access {open,allowlist,off,}\n                        Who may reach the operator's assistant: 'open' any signed-in caller from\n                        anywhere (the default), 'allowlist' only from the operator's addresses,\n                        'off' nobody; '' clears it (back to open). Applies from the next request,\n                        no deploy\n  --stagger-minutes STAGGER_MINUTES\n                        Minutes between one topic's schedules and the next (0-30): slot 1's\n                        research heartbeat at :05 past, slot 2's at :10, and every daily cycle one\n                        slot past the hour's last heartbeat, then one slot apart; 0 turns it off;\n                        '' clears it (back to 5). Then run `topics reschedule`\n"
     },
     "review": {
       "help": "How the fresh-data review of drafts is doing",

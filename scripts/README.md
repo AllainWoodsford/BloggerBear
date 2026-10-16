@@ -291,6 +291,52 @@ and the raw message, for manual follow-up. There's no automatic replay; to
 retry a topic after fixing whatever caused the failure, use
 `topics trigger <topic_id> --pipeline daily_cycle` again.
 
+## Schedules, the stagger and pausing: `topics schedule`, `reschedule`, `pause`, `resume`
+
+Topics take turns so that no two call their sources or Bedrock at the same minute
+(docs/project-plan.md §11, "Staggered schedules by slot"). Every topic has a **slot** (1, 2,
+3, ...; the next free one when it is created) and the pipeline has one **stagger**, 5 minutes by
+default: slot 1's research heartbeat runs at :05 past the hour it would run anyway, slot 2's at
+:10, and every daily cycle starts after the hour's heartbeats, one slot apart (four topics: the
+last heartbeat is at :20, so 09:25, 09:30, 09:35 and 09:40 for a 9 AM cadence). The slot sets the minute; the cadence
+still sets the hour pattern, the day and the time zone. What was written is on the topic's row
+in DynamoDB (`stagger_slot`, `research_schedule`, `daily_schedule`, `paused`) and printed here:
+
+```bash
+python scripts/admin_cli.py topics schedule                 # every topic: slot, state, both schedules in words and as written
+python scripts/admin_cli.py topics schedule --json
+python scripts/admin_cli.py pipeline-config set --stagger-minutes 5    # the gap (0 turns staggering off; '' back to 5)
+python scripts/admin_cli.py topics reschedule --dry-run      # what would be written: slots for older topics, every schedule
+python scripts/admin_cli.py topics reschedule                # write it: after a stagger change, a topic added or deleted
+python scripts/admin_cli.py topics update wow-forever --stagger-slot 3    # move a topic to another turn ('' = next free)
+python scripts/admin_cli.py topics create --topic-id ... --name ... --stagger-slot 2
+```
+
+`topics schedule` prints, for each topic:
+
+```
+github-trending  (slot 2, running)
+  research: every 4 hours at :10 past
+            cron(10 */4 * * ? *)  UTC
+  daily:    daily at 09:30  Australia/Sydney
+            cron(30 9 * * ? *)
+  real research every 4 h · last researched 2026-10-15T04:10:12+00:00 · last article 2026-10-14T23:30:03+00:00
+```
+
+Twelve five-minute slots fill an hour; past that, shorten the stagger or read
+docs/enhancements/dispatcher-sqs-enhancement.md.
+
+**Pausing** a topic stops everything of it until it is resumed: no research tick, no candidate
+ideas, no daily article. The Topics row's `paused` is what the handlers obey, whatever invokes
+them; the two schedules are disabled as well so the heartbeats cost nothing, `topics trigger`
+refuses the topic, the topic page's "Articles in the Pipeline" says Paused, and the bear muses
+about it (a reflective one on a pause, an excited one on a resume). Pausing twice is a no-op.
+
+```bash
+python scripts/admin_cli.py topics pause wow-forever
+python scripts/admin_cli.py topics resume wow-forever
+```
+
 ## What is waiting for you: `inbox` and `approve`
 
 Two things need a person, and both are covered:

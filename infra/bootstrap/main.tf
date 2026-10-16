@@ -865,15 +865,35 @@ data "aws_iam_policy_document" "gha_deploy_other_environment" {
   for_each = var.separate_environment_permissions ? local.deploy_role_other_environment : {}
 
   # Every ARN with the other environment's name in it: tables, functions, roles, queues, topics,
-  # alarms, dashboards, schedules, state machines, log groups, buckets and their objects. One
-  # pattern, because the name sits after a different separator in each service's ARN (":", "/",
-  # "table/", "log-group:/aws/lambda/"). An action that cannot be limited to a resource is asked
-  # for with the resource "*", which this does not match, so it is unaffected.
+  # alarms, dashboards, schedules, state machines, log groups, web ACLs, buckets and their
+  # objects. The same pattern for each service, because the name sits after a different
+  # separator in each one's ARN (":", "/", "table/", "log-group:/aws/lambda/"). The service has
+  # to be spelled out: IAM allows "*" in an ARN's region, account and resource, but not in its
+  # service ("Resource vendor must be fully qualified"). So this is the list of services whose
+  # ARN carries our name; a resource whose ARN carries an id instead (a distribution, a REST
+  # API, a user pool, a certificate) is caught by the tag statement below. S3 and IAM ARNs have
+  # no region, and S3's no account either, and IAM refuses even a "*" in those places ("can not
+  # contain region information"); an IAM resource must also start with its type ("role/",
+  # "policy/"), not a "*". So those two are written in their own shape. An action that cannot
+  # be limited to a resource is asked for with the resource "*", which this does not match, so
+  # it is unaffected.
   statement {
-    sid       = "NotTheOtherEnvironmentByName"
-    effect    = "Deny"
-    actions   = ["*"]
-    resources = ["arn:aws:*:*:*:*${var.unique_name_prefix}-${each.value}-*"]
+    sid     = "NotTheOtherEnvironmentByName"
+    effect  = "Deny"
+    actions = ["*"]
+    resources = concat(
+      [
+        for service in [
+          "cloudwatch", "dynamodb", "lambda", "logs", "scheduler", "sns", "sqs", "states", "wafv2",
+        ] :
+        "arn:aws:${service}:*:*:*${var.unique_name_prefix}-${each.value}-*"
+      ],
+      [
+        "arn:aws:iam::*:role/${var.unique_name_prefix}-${each.value}-*",
+        "arn:aws:iam::*:policy/${var.unique_name_prefix}-${each.value}-*",
+        "arn:aws:s3:::${var.unique_name_prefix}-${each.value}-*",
+      ],
+    )
   }
 
   # What has no name of ours in its ARN (a CloudFront distribution, a REST API, a user pool, a

@@ -16,6 +16,9 @@ public site's reverse-chronological Musings feed:
   tweet-like post that names the gear and thanks the readers whose feedback made it drop. It carries a
   snapshot of the gear (name, rarity, slot, what it says) so the Musings page can show it, and so the
   post still makes sense if the gear is deleted later.
+- Pauses and resumes: written when the operator pauses a topic or starts it again (the Admin API's
+  pause and resume routes). The bear says, in a line, that it is putting that topic's research to
+  one side for a while, or that it is back on it; never why, and never anything about what was found.
 
 Mood is derived from real signal, not random, in both cases -- see each
 function's docstring below for exactly what drives it.
@@ -41,6 +44,10 @@ _FEEDBACK_MUSING_MOOD_REFLECTIVE = "reflective"
 _FEEDBACK_MUSING_MOOD_CURIOUS = "curious"
 _LOOT_MUSING_MOOD = "excited"
 _REJECTED_MUSING_MOOD = "shocked"
+# A pause is a considered step back; a resume is the bear back on the trail. Both reuse moods that
+# already have their bear (frontend/bears/), so nothing new has to be drawn.
+_PAUSE_MUSING_MOOD = "reflective"
+_RESUME_MUSING_MOOD = "excited"
 
 # Every mood BloggerBear can have. The Musings page shows a bear for each (frontend/bears/<mood>.svg
 # and frontend/moods.js); a test fails if a mood is added here without its picture.
@@ -234,6 +241,72 @@ def generate_and_store_rejection_musing(*, topic_id: str, topic_name: str, model
         kind="rejection",
         text=text,
         mood=_REJECTED_MUSING_MOOD,
+        created_at=datetime.now(UTC).isoformat(),
+        topic_id=topic_id,
+    )
+
+
+_PAUSE_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
+
+You have just decided to pause your research on the topic "{topic_name}" for a while: no new \
+findings, no new articles on it until you pick it up again. You're at peace with it -- a \
+reflective, unhurried note, not an apology -- and you may say you'll be back to it.
+
+Name the topic "{topic_name}" exactly as written. Say nothing about why, and nothing about what \
+you had found. Write your musing now.
+"""
+
+_RESUME_MUSING_PROMPT_TEMPLATE = """{voice_guidance}
+
+You have just picked your research on the topic "{topic_name}" back up after a pause: the \
+sniffing-out starts again from the next heartbeat. You're glad to be back on it -- excited, \
+a little springy, like a bear leaving the den in spring.
+
+Name the topic "{topic_name}" exactly as written. Say nothing about why it was paused, and \
+nothing about what you expect to find. Write your musing now.
+"""
+
+
+def _pause_fallback_text(topic_name: str, paused: bool) -> str:
+    """The post when the model is unavailable or its answer will not do: plain, always accurate."""
+    if paused:
+        return _truncate(
+            f"I'm setting my {topic_name} research down for a while. "
+            "The den is quiet on that front until I pick it up again."
+        )
+    return _truncate(f"I'm back on {topic_name}! Nose to the ground from the next heartbeat.")
+
+
+def _pause_text_is_usable(text: str, topic_name: str) -> bool:
+    """A model-written post must name the topic, and pass the same screen a comment does."""
+    return bool(text) and topic_name.lower() in text.lower() and rule_drop_reason(text) is None
+
+
+def generate_and_store_pause_musing(
+    *, topic_id: str, topic_name: str, paused: bool, model_id: str
+) -> dict:
+    """BloggerBear muses about pausing a topic (`paused` True, kind "pause", mood reflective) or
+    taking it up again (kind "resume", mood excited).
+
+    It names the topic only: never why, and never anything that was found. If the model fails,
+    or its answer does not name the topic or does not pass the comment screen, a plain accurate
+    post is used instead, so the change is always noted on the Musings page. Storing the musing
+    is the only thing that can raise.
+    """
+    template = _PAUSE_MUSING_PROMPT_TEMPLATE if paused else _RESUME_MUSING_PROMPT_TEMPLATE
+    prompt = template.format(voice_guidance=_VOICE_GUIDANCE, topic_name=topic_name)
+    try:
+        text = _truncate(tracked_claude("musings", prompt, model_id, max_tokens=_MUSING_MAX_TOKENS))
+    except Exception as exc:  # noqa: BLE001 - the post must not depend on the model
+        print(f"musings: could not write a pause/resume musing, using the plain one: {exc!r}")
+        text = ""
+    if not _pause_text_is_usable(text, topic_name):
+        text = _pause_fallback_text(topic_name, paused)
+    return put_musing(
+        musing_id=str(uuid.uuid4()),
+        kind="pause" if paused else "resume",
+        text=text,
+        mood=_PAUSE_MUSING_MOOD if paused else _RESUME_MUSING_MOOD,
         created_at=datetime.now(UTC).isoformat(),
         topic_id=topic_id,
     )

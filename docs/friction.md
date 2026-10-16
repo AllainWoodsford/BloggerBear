@@ -803,6 +803,29 @@ under #278's branch; it was caught and redone before the push. **Lesson:** after
 merges, check the newest deploy run, not each one; and scratch commits belong in a scratch branch
 that is never pushed.
 
+## 12. The silent topic (2026-10-15)
+
+**#299 · Nine days of "no usable angles", and nothing was wrong.** `wow-forever` stopped
+publishing after 5 October; so did `tech-market-news`. Research was fine (a Finding every four
+hours), Step Functions said every daily run succeeded, the moderation queue and failed-executions
+table were empty, and no alarm fired, because the run's answer, `no_usable_angles`, is a valid
+outcome. Rotation had put both topics on MiniMax M2, a reasoning model, and on Bedrock its thinking
+counts against `maxTokens`. Ideation used the 1,024-token default. With the topic's approved
+guidance in the prompt the model thought for all 1,024 tokens and sent back a `reasoningContent`
+block and no text; three runs of the exact production prompt did the same, each in about nine
+seconds, which is what the Lambda's unvarying 9.2 s had been saying all along. The parser found no
+angles and bailed, and because the roll to the next model only ran after a publish, a topic whose
+model never published kept that model for good. **AWS friction:** a reply cut off mid-thought is
+reported as a normal reply (`stopReason: max_tokens`, empty text), not an error, so the fallback
+that an exception reaches never ran; and with no invocation logging configured, the reply could only
+be reproduced, not read back. **Fix:** ideation gets the draft's budget (4,096, one retry at 8,192);
+a reply that stopped at its limit with no text tries the fallback model; the bail-out line logs the
+model, stop reason, output tokens and reply length; and a bail-out rolls the model forward too. By
+hand: both topics set to Nova Micro, and MiniMax removed from the registry and the rotation pool
+in both environments. **Lesson:** a run that "succeeds" by writing nothing needs the same alarm as
+one that fails (1.9, 11's #265 again), and a constant duration is a symptom: a model that takes
+exactly as long every day is hitting a limit, not finishing.
+
 ---
 
 ## 12. Vision and the Rail Access Monitor (2026-10-10 on)
@@ -1103,3 +1126,104 @@ a finding already in the shared history that cannot be rewritten. (#298, rail PR
    is a second copy that drifts (#266, #267, #268–#272).
 8. **A lesson is a to-do until a PR carries it.** 1.9 named the missing alarm; it took a lost week
    of Stats to build it (#265).
+
+---
+
+## 13. Cost switches, the stagger and pausing (2026-10-15)
+
+One pull request, `claude/clever-einstein-r6qclu` ("Cost saving: optional firewall switches,
+hardened by default", with the staggered schedules by slot, pausing and the digest's steering).
+Numbered after the vision section #285 adds, and written at the end of this file rather than
+beside it, so the two merge without a conflict; every entry names that pull request so it stays
+its own when more are added. Theme: the environment was the obstacle more often than the code.
+
+**13.1 · The Terraform registry is behind the proxy; the release host is not.** `terraform init`
+failed with "Failed to query available provider packages": the session's proxy answers
+`registry.terraform.io` with a 403 on CONNECT, while `releases.hashicorp.com` answers 200, so
+`validate` could not run and the biggest Terraform change in the stretch would have gone to CI
+unvalidated. **Fix:** download the three providers' zips from the release host into a
+`filesystem_mirror` (a `TF_CLI_CONFIG_FILE` with `provider_installation`), then `init
+-backend=false` and `validate` on both roots, which passed. **Lesson:** when a registry is
+refused, its download host usually is not; a mirror is twenty lines.
+
+**13.2 · A sensitive value cannot decide a `count`.** The admin API's resource policy is built
+from `admin_allowed_cidrs` (sensitive), and the first draft of the rest-api module decided
+`count` on `var.resource_policy == null`, which Terraform refuses for a sensitive value, and
+would have refused only at plan time. **Fix:** a plain `resource_policy_enabled` bool beside the
+policy, the same shape as `associate_web_acl` / `web_acl_id`, which the module already needed
+for the same reason (an unknown ARN). The two shapes of the Deny statement (with and without a
+`Condition`) are built with two `for _ in (cond ? [1] : [])` expressions rather than a
+conditional, because a conditional's results must be one type. **Lesson:** anything derived
+from a sensitive variable can only ever be a value, never a count, a for_each or a condition on
+one.
+
+**13.3 · Twelve subcommands overflowed the assistant's CLI reference.** Adding `schedule`,
+`reschedule`, `pause` and `resume` under `topics` made argparse's usage line
+`{list,get,create,...}` 123 columns wide, and `test_generate_cli_reference.py` holds the stored
+help to 100. **Fix:** a `metavar="<action>"` on the `topics` subparsers; each subcommand is still
+listed with its help below. **Lesson:** a usage line cannot wrap inside its braces; name the
+group once it has more than a handful of members.
+
+**13.4 · A test kept the name of the behaviour it no longer checks.**
+`test_any_financial_contributor_routes_digest_to_moderation` now asserts the digest is
+*published* with the guidance and the disclaimer, because #285 inserts a hundred lines
+immediately above its `def` line and renaming it would conflict with that hunk. The body says
+so in a comment. **Lesson:** rename it in the sweep after #285 merges; a misleading test name is
+a smaller cost than a conflict another agent has to resolve.
+
+**13.5 · A word boundary after a symbol.** The figure filter's percentage pattern ended in `\b`,
+so `3%.` and `30% on` never matched: after `%` comes punctuation or a space, not a word, and
+there is no boundary between two non-word characters. Found by the steering test, not by eye.
+**Fix:** `(?!\w)`. **Lesson:** `\b` after a symbol is almost always wrong.
+
+**13.6 · One red test that is not this PR's.**
+`test_ops_mcp_memory.py::test_no_table_other_than_the_assistants_own_changes` fails on an
+untouched `origin/dev` checkout too (3 rows where it wants 4); it is the date-pinned test #285's
+entry 12.14 describes. Left alone here so the fix lands once, on that branch.
+
+**13.7 · Working beside an open integration branch.** #285 touches 114 files, several of them
+this PR's: the two `main.tf` files, both deploy workflows, `admin_api_handler.py`,
+`research_tick_handler.py`, `daily_cycle_handler.py`, the digest, the CLI, PROGRESS, friction,
+configuration. Every hunk here was placed away from theirs (the workflow lines beside
+`TF_VAR_admin_allowed_cidrs` rather than at the end of the block, PROGRESS lines mid-list, new
+test files rather than new tests in shared files, this section at the end of this file), and
+nothing in #285 was edited. The switch variables sit beside `admin_allowed_cidrs` in each
+`variables.tf`, not at the end where #285 appends its own (a review caught the first draft
+appending too). The one certain conflict is `lambdas/ops_mcp/cli_reference.json`, which both
+regenerate: resolve it by running `scripts/generate_cli_reference.py` again, never by hand.
+**Lesson:** read the other branch's diff first and choose where to insert, not just what.
+
+**13.8 · The container's Python is 3.13; CI's is 3.11.** The test suite ran under 3.13 here
+(the session hook installs only ruff, 12.7), and the regenerated CLI reference records
+`help_python: 3.13`, as the committed one already did. Nothing in this PR depends on a 3.13-only
+feature, and the suite's own guard compares help text loosely across releases. **Lesson:** say
+which interpreter ran the suite in the pull request.
+
+**13.9 · A review found four things the tests had been written to agree with.** Before the push,
+four independent reviewers read the diff and three refuters judged each finding. What stood: the
+first daily cycle shared a minute with the last research heartbeat (`topics × stagger` is the
+last heartbeat's minute, not the minute after it); `rate(5 hours)` was being rewritten to a
+`*/5` cron that resets at midnight, the very trap §4 of the plan warns about; a cron that names
+days could be carried past midnight onto other days; and the resource policy's `execute-api:/*`
+shorthand, which API Gateway stores expanded, would have shown as a change on every plan. All
+four had tests, because the tests were written from the same understanding as the code.
+**Fix:** one slot past the last heartbeat; only an N that divides 24 becomes a cron; a
+day-constrained cron is left alone past midnight; the module writes the full ARN. **Lesson:** a
+test written by the author of the code checks the author's intent, not the world; have someone
+try to refute the intent too.
+
+**13.10 · Checkov loses a counted ACL's logging configuration unless the reference says
+`count.index`.** The first CI run of this pull request failed only on Checkov: CKV2_AWS_31
+("Ensure WAF2 has a Logging Configuration") on `aws_wafv2_web_acl.public_api[0]` in both roots
+and on production's `aws_wafv2_web_acl.this[0]`, each with a logging configuration two hundred
+lines below it. The admin ACL passed, which was the clue: its `count` is `var.a && var.b`, which
+Checkov's renderer cannot evaluate, so it stays one unexpanded resource; the others' `count`
+evaluates to 1, Checkov expands them to `[0]` copies, and then the logging configuration's
+`aws_wafv2_web_acl.public_api[0].arn` no longer finds the copy. Ten small variants against
+the pinned 3.3.25 showed what does: `aws_wafv2_web_acl.public_api[count.index].arn`, which the
+expansion rewrites to the copy's own index (`one(...[*].arn)` and `[*].arn[0]` fail the same
+way). **Fix:** every logging configuration names its ACL and its log group by `count.index`, with
+a comment saying why, and the repo-config scan is 904 passed, 0 failed.
+No skip: the check is right to want the link, and a `checkov:skip` would hide a real loss of it.
+**Lesson:** when a graph check fails on a resource that plainly has the connection, reproduce it
+on a few lines and vary the reference, not the resource; the passing sibling says what differs.

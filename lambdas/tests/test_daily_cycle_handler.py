@@ -2067,7 +2067,10 @@ def test_the_draft_is_given_room_for_an_article_and_one_automatic_retry(s3_bucke
     ideate, draft, title = calls
     assert draft["max_tokens"] == daily_cycle_handler.DRAFT_MAX_TOKENS == 4096
     assert draft["retry_max_tokens"] == daily_cycle_handler.DRAFT_RETRY_MAX_TOKENS == 8192
-    assert "max_tokens" not in ideate and "max_tokens" not in title  # short outputs keep the default
+    # Ideation's room is for a reasoning model's thinking, not its three short lines.
+    assert ideate["max_tokens"] == daily_cycle_handler.IDEATION_MAX_TOKENS == 4096
+    assert ideate["retry_max_tokens"] == daily_cycle_handler.IDEATION_RETRY_MAX_TOKENS == 8192
+    assert "max_tokens" not in title  # a short output keeps the default
 
 
 def test_a_complete_draft_is_published_as_before(s3_bucket):
@@ -2554,6 +2557,89 @@ def test_ideate_prompt_is_unchanged_with_no_recent_titles():
     assert "Already covered recently" not in captured_prompt["text"]
 
 
+# --- _ideate gives a reasoning model room to think, and notices when it never stopped ------------
+
+
+def test_ideate_asks_for_room_to_think_and_one_retry_with_more():
+    """Three angles never need 4,096 tokens; a reasoning model's thinking, which counts against
+    the limit, did (MiniMax M2 spent all 1,024 of the old default on it and sent no text)."""
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked", return_value=_tracked_result("Angle one\nAngle two")
+    ) as mock_invoke:
+        daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    kwargs = mock_invoke.call_args.kwargs
+    assert kwargs["max_tokens"] == daily_cycle_handler.IDEATION_MAX_TOKENS
+    assert kwargs["retry_max_tokens"] == daily_cycle_handler.IDEATION_RETRY_MAX_TOKENS
+    assert kwargs["fallback_model_id"] == "fallback-m"
+
+
+def test_ideate_reaches_the_fallback_when_the_reply_is_all_thinking_and_no_text():
+    """Bedrock reports a reply that ran out of tokens mid-thought as a normal reply with no text,
+    not as an error, so invoke_model_tracked's own fallback (exceptions only) never ran."""
+    responses = [
+        _tracked_result("", stop_reason="max_tokens", output_tokens=8192, attempts=2),
+        _tracked_result("Angle one\nAngle two\nAngle three", model_id="fallback-m", output_tokens=30),
+    ]
+    calls = []
+
+    def model(prompt, model_id, **kwargs):
+        calls.append(model_id)
+        return responses.pop(0)
+
+    with patch("daily_cycle_handler.invoke_model_tracked", side_effect=model):
+        angles, lineage_call = daily_cycle_handler._ideate(
+            NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m"
+        )
+
+    assert calls == ["m", "fallback-m"]
+    assert angles == ["Angle one", "Angle two", "Angle three"]
+    assert lineage_call["model_id"] == "fallback-m"
+    assert lineage_call["used_fallback"] is True
+    assert lineage_call["output_tokens"] == 8192 + 30  # the wasted call still cost money
+    assert lineage_call["attempts"] == 3
+    assert lineage_call["stop_reason"] == "end_turn"
+
+
+def test_ideate_returns_nothing_when_there_is_no_fallback_to_reach():
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("", stop_reason="max_tokens", output_tokens=4096),
+    ) as mock_invoke:
+        angles, lineage_call = daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", None)
+
+    assert angles == []
+    assert mock_invoke.call_count == 1
+    assert lineage_call["stop_reason"] == "max_tokens"
+    assert lineage_call["reply_chars"] == 0
+
+
+def test_ideate_does_not_call_the_fallback_twice_when_it_already_answered():
+    """invoke_model_tracked already fell back (the first model raised); if the fallback's own
+    reply is all thinking, there is no third model to try."""
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("", stop_reason="max_tokens", used_fallback=True, model_id="fallback-m"),
+    ) as mock_invoke:
+        angles, _ = daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    assert angles == []
+    assert mock_invoke.call_count == 1
+
+
+def test_a_cut_off_reply_that_still_has_text_in_it_is_parsed_not_retried():
+    """What a model managed to write before the limit is kept (the Oct 3 production article came
+    from exactly that); only a reply with *no* text is treated as a failure."""
+    with patch(
+        "daily_cycle_handler.invoke_model_tracked",
+        return_value=_tracked_result("Angle one\nAngle two", stop_reason="max_tokens"),
+    ) as mock_invoke:
+        angles, _ = daily_cycle_handler._ideate(NON_FINANCIAL_TOPIC, "some findings", "m", "fallback-m")
+
+    assert angles == ["Angle one", "Angle two"]
+    assert mock_invoke.call_count == 1
+
+
 # --- _draft_title validates its own output, with one retry -----------------------------------------
 
 
@@ -2633,6 +2719,55 @@ def test_handler_bails_out_cleanly_when_ideation_has_no_usable_angles(s3_bucket)
     assert result == {"status": "no_usable_angles", "topic_id": NON_FINANCIAL_TOPIC["topic_id"]}
     mock_put_candidate.assert_not_called()  # nothing that wasn't a real angle is stored as one
     mock_put_article.assert_not_called()
+
+
+def _bail_out_with_no_usable_angles(reply):
+    with (
+        patch("daily_cycle_handler.get_topic", return_value=NON_FINANCIAL_TOPIC),
+        patch("daily_cycle_handler.list_recent_findings", return_value=FINDINGS),
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
+        patch("daily_cycle_handler.invoke_model_tracked", return_value=reply),
+        patch("daily_cycle_handler.put_article"),
+    ):
+        return daily_cycle_handler.handler({"topic_id": NON_FINANCIAL_TOPIC["topic_id"]}, None)
+
+
+def test_no_usable_angles_rolls_the_topic_to_another_model_from_the_pool(
+    s3_bucket, _no_rotation_pool_by_default
+):
+    """The roll forward used to happen only after a publish, so a topic whose model could never
+    propose an angle kept that model indefinitely (two production topics, nine days each)."""
+    mock_get, mock_set = _no_rotation_pool_by_default
+    mock_get.return_value = ["model-a", "model-b"]
+
+    with patch("daily_cycle_handler.random.choice", return_value="model-a"):
+        result = _bail_out_with_no_usable_angles(_tracked_result("", stop_reason="max_tokens"))
+
+    assert result["status"] == "no_usable_angles"
+    mock_set.assert_called_once_with("github-trending", "model-a")
+
+
+def test_no_usable_angles_with_no_pool_configured_rolls_nothing(s3_bucket, _no_rotation_pool_by_default):
+    _, mock_set = _no_rotation_pool_by_default
+
+    result = _bail_out_with_no_usable_angles(_tracked_result("I cannot propose article angles."))
+
+    assert result["status"] == "no_usable_angles"
+    mock_set.assert_not_called()
+
+
+def test_no_usable_angles_says_what_came_back(s3_bucket, capsys):
+    """A refusal and an all-thinking reply used to log the same line; the stop reason and the
+    reply's length tell them apart without re-running the model."""
+    _bail_out_with_no_usable_angles(_tracked_result("", stop_reason="max_tokens", output_tokens=4096))
+
+    out = capsys.readouterr().out
+    assert "no usable angles for topic_id=github-trending" in out
+    assert "stop_reason=max_tokens" in out
+    assert "output_tokens=4096" in out
+    assert "reply_chars=0" in out
 
 
 def test_handler_holds_an_article_whose_title_is_still_implausible_after_retry(s3_bucket):

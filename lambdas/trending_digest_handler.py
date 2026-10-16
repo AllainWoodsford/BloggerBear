@@ -21,11 +21,14 @@ digest"):
      genuine cross-topic connection if one exists.
   4. Run the digest through the exact same compliance review as any other
      draft (docs/project-plan.md §2 hard constraint #3: "Drafts must pass
-     compliance review before publish") -- routed to manual moderation
-     unconditionally if any contributing topic is financial, same
-     "regardless of confidence" rule any financial draft gets, since the
-     digest may echo financial-topic content even though it isn't itself
-     a financial-topic draft in the Topics-table sense.
+     compliance review before publish"). It is reviewed as the non-financial
+     survey it is, not held for a person whenever a contributing topic is
+     financial: the digest carries no figures and nothing more specific than
+     a theme and its direction (common/digest.py's without_figures, and the
+     steering in _DIGEST_PROMPT_TEMPLATE), so there is no price, forecast or
+     advice in it for a person to check. A financial contributor still folds
+     the financial drafting guidance into the prompt and the disclaimer onto
+     the body, and the review can still hold it for what it says.
   5. Publish (Articles "published", topic_id=DIGEST_TOPIC_ID) or route to
      ModerationQueue -- reusing put_article/put_moderation_item exactly
      like daily_cycle_handler.py's own publish-or-moderate step, so the
@@ -62,7 +65,7 @@ from common import compliance
 from common.attribution import sources_for_topics
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage
-from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
+from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME, without_figures
 from common.dynamo import (
     get_article,
     get_latest_finding,
@@ -99,6 +102,13 @@ event), or, if nothing does, the single standout item>
 
 Plain sentences only: no headings, no titles, no bold, no bullet points. Do not speculate beyond \
 what's given, and do not give financial or investment advice.
+
+This is a general survey for readers who follow none of these topics closely, so keep every line \
+general: say what kind of thing is moving and in which direction, not the particulars. Do not \
+include figures of any kind: no prices, amounts, percentages, counts, rankings, dates or version \
+numbers, and no words that stand in for them (doubled, halved, record, all-time high). Name a \
+product, project, coin or company only where a line would mean nothing without it, and prefer the \
+category it belongs to. A sentence with a figure in it will be removed before publication.
 """
 
 _DIGEST_FINANCIAL_GUIDANCE_HEADER = "Financial-topic guidance (mandatory):"
@@ -166,10 +176,14 @@ def _run_trending_digest() -> dict:
         draft_text = compliance.append_financial_disclaimer(draft_text)
     title = f"Trending Everywhere -- {today}"
 
-    # A minimal synthetic "topic" -- review_draft only ever reads
-    # is_financial off of it.
+    # A minimal synthetic "topic" -- review_draft only ever reads is_financial off of it, and
+    # is_financial is what routes a draft to a person unconditionally. The digest is not that
+    # draft: it is a cross-topic survey with every figure stripped (_compose_digest) and the
+    # disclaimer appended above whenever a contributor is financial, so it is reviewed as the
+    # non-financial piece it is and published when the review passes. The review itself still
+    # runs on every digest and can still hold it (hard constraint #3).
     review = compliance.review_draft(
-        draft_text, {"is_financial": any_financial}, model_id, fallback_model_id=fallback_model_id
+        draft_text, {"is_financial": False}, model_id, fallback_model_id=fallback_model_id
     )
 
     source_refs = []
@@ -272,10 +286,11 @@ def _clean_sentence_text(text: str) -> str:
 
 def _fallback_from_summary(summary: str) -> str:
     """A topic the model gave no line for still gets its section: the start of its own finding's
-    summary, as plain prose, cut at a sentence end where one comes early enough."""
+    summary, as plain prose with its figures left out (a finding is full of them; the digest
+    carries none), cut at a sentence end where one comes early enough."""
     lines = [line.strip() for line in str(summary or "").splitlines()]
     text = " ".join(_clean_sentence_text(line) for line in lines if line and not line.startswith("#"))
-    text = " ".join(text.split())
+    text = without_figures(" ".join(text.split()))
     if len(text) <= _FALLBACK_MAX_CHARS:
         return text
     cut = text[:_FALLBACK_MAX_CHARS]
@@ -287,14 +302,18 @@ def _compose_digest(contributions: list[dict], model_text: str) -> str:
     """The digest body, laid out by code so it is the same shape every day: the model's overview
     paragraph (if it gave one), then a `## <Topic name>` section per contributing topic, in order,
     with the model's line for that topic -- or, if it gave none, the start of that topic's own
-    finding summary. No title in the body (the page already shows it)."""
+    finding summary. Every sentence with a figure in it is left out, so the digest stays the
+    general survey it is meant to be. No title in the body (the page already shows it)."""
     overview = ""
     per_topic: dict[int, str] = {}
     for line in (model_text or "").splitlines():
         match = _LINE.match(_MARKUP.sub("", line))  # "**OVERVIEW:**" is still the overview
         if not match:
             continue
-        key, text = match.group(1).upper(), _clean_sentence_text(match.group(2))
+        # The digest's steering, held to: a sentence the model wrote with a figure in it is
+        # dropped here (common/digest.py); a line that was nothing but figures falls back to
+        # the topic's own finding, stripped the same way.
+        key, text = match.group(1).upper(), without_figures(_clean_sentence_text(match.group(2)))
         if not text:
             continue
         if key == "OVERVIEW":
