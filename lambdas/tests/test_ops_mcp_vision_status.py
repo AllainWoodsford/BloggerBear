@@ -1079,6 +1079,35 @@ def test_a_state_needs_time_to_parse_on_the_cpu_the_function_has(monkeypatch, me
     assert fake.bodies[1].closed
 
 
+@pytest.mark.parametrize(
+    ("memory", "seconds", "most", "read", "refused"),
+    [
+        ("512", vision_status.READ_SECONDS, 9.26, 8.0, 10.0),
+        ("512", vision_status.HEALTH_READ_SECONDS, 3.47, 3.0, 4.0),
+        ("512", vision_status.WATCH_READ_SECONDS, 2.32, 2.0, 3.0),
+        ("1769", vision_status.HEALTH_READ_SECONDS, 12.0, 8.0, 13.0),
+        ("1769", vision_status.WATCH_READ_SECONDS, 8.0, 7.0, 8.5),
+    ],
+)
+def test_each_call_parses_only_its_deadlines_worth_on_the_cpu_the_function_has(
+    monkeypatch, memory, seconds, most, read, refused
+):
+    """The rate holds for every call, not only the survey: at the function's 512 MB the survey's 8 s
+    parses at most about 9.3 MiB, pipeline_health's 3 s about 3.5 MiB and the watch's 2 s about
+    2.3 MiB, well under the LARGE_STATE_BYTES (8 MiB) those two may read, so a 4 MiB state they read
+    before is not checked; at 1,769 MB they parse up to the 8 MiB again (ops-assistant-vision.md,
+    "Bounded"). Sizes in MiB; `most` is the whole deadline's worth, before any download time."""
+    monkeypatch.setenv(vision_status.MEMORY_SIZE_ENV, memory)
+    mib = 1024 * 1024
+    assert seconds * vision_status.parse_bytes_per_second() / mib == pytest.approx(most, abs=0.01)
+    fake = FakeS3({key("late"): _stand_in(int(read * mib))})
+    assert _read_late(fake, seconds)[1] == "read"
+    fake = FakeS3({key("late"): _stand_in(int(refused * mib))})
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, seconds) == (None, "not_checked")
+
+
 class _Raw:
     def stream(self, **kwargs):
         yield b""
