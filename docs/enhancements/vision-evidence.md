@@ -337,19 +337,41 @@ newest one's steps are on screen.", and lists the other sites' ids under `other_
   (`dynamo.list_articles_for_topic`: at most 200 articles, never a Scan, and only the fields the
   join uses: the id, status, who published it and when, and the lineage) for the article each
   finding fed, found by its lineage's `captured_at`. The one-topic answer makes one such read; the
-  all-topics answer one per topic with a finding. The Articles reads end by a deadline of 12
-  seconds from the call's start (`DEADLINE_SECONDS`): it answers through API Gateway, which gives up
-  after 29 seconds, and on the ask page the agent's own model calls share those 29 seconds. Each
-  page of a read goes through its own DynamoDB client with a one-second connect, the time left
-  before the deadline as its read timeout (at least 0.1 s) and no retry, so a read that would start
-  after the deadline is skipped, and one that times out, or runs out of time between pages, is
-  stopped; the shared client the pipeline uses keeps botocore's 60-second timeouts and ten
-  attempts. The worst case is the 8-second Logs wait, plus the reads, which end by the 12-second
-  deadline, plus one connect: 8 + 4 + 1 + 0.1 = 13.1 seconds. A skipped or stopped read is said as
-  a failed one is: that topic's "what a person did" and its article counts are not checked (never
-  "no article yet", never a count of what one page held). The `vision_site` lines are never read
+  all-topics answer one per topic with a finding. A read skipped or stopped by the call's limit
+  (below) is said as a failed one is: that topic's "what a person did" and its article counts are
+  not checked (never "no article yet", never a count of what one page held). The `vision_site`
+  lines are never read
   (24 a day per site would fill the 1,000-row cap within weeks), and no `stats` aggregate is used
   (it would count a failed attempt's lines twice).
+- **One limit for the whole call** (`CALL_LIMIT_SECONDS`, 12 seconds from its start): Alexa+ gives
+  up after roughly 15 seconds, and the tool answers through API Gateway, which gives up after 29
+  (on the ask page the agent's own model calls share those 29), inside the ops-mcp function's 30.
+  Every AWS call the tool makes is held to the time left before it: the Topics read, the access
+  check (the two log groups' tags, and the account id their ARNs need), starting the queries,
+  polling them, stopping the ones still running, and the Articles reads, whose own deadline
+  (`DEADLINE_SECONDS`) is the same 12 seconds since they come last. Each request goes through a
+  client built for it with a one-second connect, the time left as its read timeout (at least
+  0.1 s) and one attempt, so a request that stalls is never sent twice; a request that would start
+  at or after the limit is not made. A request Logs throttles is asked again above botocore instead
+  (`logs.run_queries`' `recover_throttles`, which only this tool passes): a poll counts as still
+  running and is asked again next round, within the wait, and a start is tried once more after one
+  pause, each a new request with the time left, so the sum below still holds. The shared clients
+  keep longer bounds (the Logs client's 3-second connect, 8-second read and two attempts; the
+  pipeline's DynamoDB resource's 60-second timeouts and ten attempts), which no limit could hold.
+  A step out of time ends as when it fails, never as a partial count or an exception: the access
+  check refuses ("I couldn't reach CloudWatch Logs"), a query is not checked ("The decision logs
+  didn't answer in time"), a stop is skipped (a query left running is cheap and ends by itself),
+  an Articles read is not checked, and a Topics read that fails says "I couldn't read the topics
+  just now". Normally the steps before the 8-second Logs wait take well under a second and the
+  Articles reads have the rest of the 12 seconds. The worst case for a request that stalls is a
+  sum: it starts before the limit and ends by its connect, its read timeout and its client's
+  build, which comes after the time left is read: 12 + 1 + 0.1 + 0.2 = 13.3 seconds (0.2 s is the
+  build measured for the first client of a service in a process; about 10 ms after). The name
+  lookup each request makes before it connects is outside these timeouts, and each request makes
+  its own (a client per request reuses no connection). A read timeout is an idle bound, the
+  longest wait between two reads of the socket, so a request whose bytes keep trickling in is
+  bounded only by the function's 30-second timeout; a hard end per request would need a thread,
+  which a DynamoDB Query of at most 200 small items does not warrant.
 - **By equality, never a pattern**: the only values put into a query are a topic id that passed
   `ID_PATTERN` and a scene id that passed `^[A-Za-z0-9_.-]{1,100}$`, each a quoted string compared
   with `=`, so `rail-sydney` never reads `rail-sydney-demo`'s lines.

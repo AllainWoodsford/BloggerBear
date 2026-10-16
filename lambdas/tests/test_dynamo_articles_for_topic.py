@@ -182,7 +182,7 @@ def test_a_topic_with_nothing_since_gives_an_empty_list_from_one_query(articles)
 
 def test_a_table_passed_in_is_the_only_one_read(articles):
     """The operator's assistant passes its own table, whose every page has only the time its call
-    has left (vision_evidence._BoundedArticles): every page goes through it, with the same Query,
+    has left (vision_evidence._Bounded): every page goes through it, with the same Query,
     and the shared resource's table is never read."""
     for n in range(10):
         _article(f"a{n}", day=2 + n % 7, hour=n, captured=f"2026-10-{2 + n % 7:02d}T{n:02d}:00:00+00:00")

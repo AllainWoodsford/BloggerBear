@@ -110,18 +110,20 @@ def _label(topic: dict) -> str:
     return _topic_label(topic, topic.get("topic_id") or "")
 
 
-def resolve(asked) -> Match:
-    """The topic `asked` means, or the candidates for it."""
+def resolve(asked, *, table=None) -> Match:
+    """The topic `asked` means, or the candidates for it. `table`, when given, is the Topics table
+    read (dynamo.get_topic's and list_topics'), in place of the shared resource's: vision_evidence
+    passes one that holds each request to its call's time left."""
     if not isinstance(asked, str) or not asked.strip():
         return Match("none")
     asked = asked.strip()[:ASKED_MAX_CHARS]
     if not _SAYABLE.match(asked):
         return Match("refused")
     if ID_PATTERN.match(asked):
-        exact = get_topic(asked)
+        exact = get_topic(asked) if table is None else get_topic(asked, table=table)
         if exact is not None:
             return Match("exact", exact)
-    topics = list_topics()
+    topics = list_topics() if table is None else list_topics(table=table)
     flat = _flat(asked)
     for topic in topics:
         if flat and flat in (_flat(topic.get("name") or ""), _flat(topic.get("topic_id") or "")):
@@ -148,10 +150,11 @@ def _either(names: list[str]) -> str:
     return ", ".join(names[:-1]) + " or " + names[-1]
 
 
-def pick(asked) -> tuple[dict | None, dict, str | None]:
+def pick(asked, *, table=None) -> tuple[dict | None, dict, str | None]:
     """For a tool that takes a topic: the topic to use, what to put in its result about how it was
-    chosen (`matched_topic`), and, when nothing is to be read, the words to answer with instead."""
-    match = resolve(asked)
+    chosen (`matched_topic`), and, when nothing is to be read, the words to answer with instead.
+    `table` is resolve's."""
+    match = resolve(asked) if table is None else resolve(asked, table=table)
     note = {
         "how": match.how,
         "topic_id": match.topic_id,
@@ -172,13 +175,14 @@ def pick(asked) -> tuple[dict | None, dict, str | None]:
     return None, note, "I couldn't find that topic, and there are no topics to suggest."
 
 
-def pick_spoken(asked) -> tuple[dict | None, dict, str | None]:
+def pick_spoken(asked, *, table=None) -> tuple[dict | None, dict, str | None]:
     """`pick`, with every topic in its note and its refusal named by `tools.spoken_label`, as every
     template of the assistant's vision round names topics: `pick` names them as the operator set
-    them (`_label`), and the tools of that round send their result whole to a voice caller."""
+    them (`_label`), and the tools of that round send their result whole to a voice caller. `table`
+    is resolve's."""
     from ops_mcp.tools import spoken_label  # tools imports nothing of this module
 
-    one, matched, refusal = pick(asked)
+    one, matched, refusal = pick(asked) if table is None else pick(asked, table=table)
     candidates = [
         {"topic_id": each.get("topic_id"), "name": spoken_label(each)}
         for each in matched.get("did_you_mean") or []
