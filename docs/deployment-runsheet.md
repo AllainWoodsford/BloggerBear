@@ -868,9 +868,10 @@ Check by hand, because nothing in this repository can:
 
 ## Tearing down and cost control
 
-- **To taper, not stop:** lower a topic's cadence or research interval, or disable its schedules.
-  Free, and reversible at once. `pipeline-config set --research-interval-hours` does it for every
-  topic.
+- **To taper, not stop:** lower a topic's cadence or research interval, or pause it
+  (`topics pause <topic_id>`: its schedules are disabled and nothing of it runs until
+  `topics resume`). Free, and reversible at once. `pipeline-config set --research-interval-hours`
+  does it for every topic.
 - **Dev:** run the `destroy-dev` workflow by hand (type `destroy` to confirm). CloudFront
   distributions take 10 to 20 minutes to disable before they can be deleted; that is normal, not
   a stuck job.
@@ -879,6 +880,12 @@ Check by hand, because nothing in this repository can:
 - **To stop outright:** destroy dev, then production, in that order. Decide first whether to keep
   the domain and its hosted zone.
 - What it costs, roughly: [production-runsheet.md](production-runsheet.md#what-it-costs-list-prices-roughly).
+
+The firewall is the biggest fixed line on the bill (about US$39 a month for a full deployment,
+at list price), and four switches can trim it for a deployment that only tries the project out:
+[docs/cost-saving.md](cost-saving.md). Every switch is on by default, and the admin API's address
+allowlist stays on whatever you switch off. A fork that stores real people's data should leave
+them alone.
 
 ## Local development
 

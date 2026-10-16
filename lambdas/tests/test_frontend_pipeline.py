@@ -29,7 +29,8 @@ def _box(activity) -> dict | None:
             "/topics/crypto/activity": activity,
         },
     )
-    boxes = [child for child in children if child.get("className") == "pipeline-box"]
+    # By class, not by the whole className: a paused topic's box also carries pipeline-box--paused.
+    boxes = [child for child in children if "pipeline-box" in (child.get("className") or "").split()]
     return boxes[0] if boxes else None
 
 
@@ -95,3 +96,52 @@ def test_no_pending_articles_means_no_more_line():
     box = _box({"pending_review_count": 0, "pipeline_items": [RESEARCHING]})
 
     assert _texts(box) == ["Researching | Bitcoin"]
+
+
+# --- a paused topic (admin CLI `topics pause`) -------------------------------------------------
+
+
+def _paused_item(since=None):
+    item = {"status": "paused", "label": "Paused", "title": ""}
+    if since:
+        item["since"] = since
+    return item
+
+
+def _two_days_ago() -> str:
+    from datetime import UTC, datetime, timedelta
+
+    return (datetime.now(UTC) - timedelta(days=2, minutes=1)).isoformat()
+
+
+@needs_node
+def test_a_paused_topic_shows_a_paused_row_with_how_long_and_a_still_spinner():
+    box = _box({"paused": True, "pending_review_count": 0, "pipeline_items": [_paused_item(_two_days_ago())]})
+
+    assert _texts(box) == ["Paused | paused 2 days ago"]
+    assert box["className"] == "pipeline-box pipeline-box--paused"
+    (row,) = _rows(box)
+    status = row["children"][0]
+    assert status["className"] == "pipeline-status pipeline-status--paused"
+
+
+@needs_node
+def test_pending_articles_still_list_above_the_paused_row():
+    box = _box({"paused": True, "pending_review_count": 1, "pipeline_items": _pending(1) + [_paused_item()]})
+
+    assert _texts(box) == ["Pending review | Pending 0", "Paused"]
+
+
+@needs_node
+def test_a_running_topic_has_no_paused_class():
+    box = _box({"paused": False, "pending_review_count": 0, "pipeline_items": [RESEARCHING]})
+
+    assert box["className"] == "pipeline-box"
+
+
+@needs_node
+def test_an_older_api_with_only_the_paused_flag_still_reads_paused():
+    box = _box({"paused": True, "researching": True, "pending_review_count": 0})
+
+    assert _texts(box) == ["Paused"]
+    assert box["className"] == "pipeline-box pipeline-box--paused"

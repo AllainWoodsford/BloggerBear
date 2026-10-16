@@ -370,13 +370,12 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
             "trending_digest_handler.invoke_model_tracked",
             return_value=_tracked_result("OVERVIEW: A synthesized digest."),
         ) as mock_invoke,
+        # The digest is reviewed as the non-financial survey it is (no figures, nothing more
+        # specific than a theme), so a financial contributor no longer holds it for a person on
+        # its own; the review still runs, and here passes. (The test's name is from before.)
         patch(
             "trending_digest_handler.compliance.review_draft",
-            return_value={
-                "compliant": False,
-                "reasons": ["financial topic - routed to manual moderation regardless of content"],
-                "lineage_call": _DUMMY_LINEAGE_CALL,
-            },
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
         ) as mock_review,
         patch("trending_digest_handler.put_article") as mock_put_article,
         patch("trending_digest_handler.put_moderation_item") as mock_put_moderation,
@@ -386,35 +385,25 @@ def test_any_financial_contributor_routes_digest_to_moderation(s3_bucket):
     ):
         result = trending_digest_handler.handler({}, None)
 
-    # One contributing topic (crypto) is financial -> the synthesis prompt
-    # must carry the mandatory financial guidance, and review_draft must be
-    # called with is_financial=True, regardless of the other (non-financial)
-    # contributor.
+    # One contributing topic (crypto) is financial -> the synthesis prompt must still carry the
+    # mandatory financial guidance, but review_draft is called with is_financial=False: the
+    # unconditional hold is for a financial topic's own draft, not for the digest.
     synthesis_prompt = mock_invoke.call_args.args[0]
     assert "Financial-topic guidance (mandatory):" in synthesis_prompt
     assert "Do not use recommendation language" in synthesis_prompt
-    assert mock_review.call_args.args[1] == {"is_financial": True}
+    assert mock_review.call_args.args[1] == {"is_financial": False}
 
-    assert result["status"] == "pending_moderation"
-    assert result["compliant"] is False
+    assert result["status"] == "published"
+    assert result["compliant"] is True
     mock_put_article.assert_called_once()
-    assert mock_put_article.call_args.kwargs["status"] == "pending_moderation"
-    assert mock_put_article.call_args.kwargs["published_at"] is None
-    assert mock_put_article.call_args.kwargs["published_by"] is None
-    mock_put_moderation.assert_called_once()
-    moderation_kwargs = mock_put_moderation.call_args.kwargs
-    assert moderation_kwargs["topic_id"] == "digest"
-    assert moderation_kwargs["reasons"] == [
-        "financial topic - routed to manual moderation regardless of content"
-    ]
-    # Not published on this pass -- nothing to render a static page for or
-    # muse about yet (see the compliant-path test for when these do fire).
-    mock_render_page.assert_not_called()
-    mock_musing.assert_not_called()
+    assert mock_put_article.call_args.kwargs["status"] == "published"
+    assert mock_put_article.call_args.kwargs["published_by"] == "ai_only"
+    mock_put_moderation.assert_not_called()
+    mock_render_page.assert_called_once()
+    mock_musing.assert_called_once()
 
-    # The standing disclaimer must be appended to the stored draft body
-    # (even though it's pending moderation, not yet published) --
-    # deterministic, not left to the model to remember.
+    # The standing disclaimer is still appended to the stored body whenever a contributor is
+    # financial -- deterministic, not left to the model to remember.
     body_s3_key = mock_put_article.call_args.kwargs["body_s3_key"]
     stored = s3_bucket.get_object(Bucket=ENV["CONTENT_BUCKET"], Key=body_s3_key)
     stored_body = stored["Body"].read().decode("utf-8")
@@ -594,7 +583,10 @@ def test_a_topic_the_model_skipped_falls_back_to_its_own_finding():
     reply = "OVERVIEW: Busy day.\n1: Repo X.\n3: Story Y."
     body = trending_digest_handler._compose_digest(_CONTRIBUTIONS, reply)
 
-    assert "## Crypto Markets\n\nBitcoin rose 3%. Ether was flat." in body
+    # The finding's own words stand in, minus any sentence with a figure in it: the digest
+    # carries none (common/digest.py's without_figures), so "Bitcoin rose 3%." is left out.
+    assert "## Crypto Markets\n\nEther was flat." in body
+    assert "3%" not in body
 
 
 def test_an_unformatted_reply_still_gives_every_topic_its_section():

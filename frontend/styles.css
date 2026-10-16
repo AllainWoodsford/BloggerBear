@@ -620,6 +620,22 @@ a {
   }
 }
 
+/* A paused topic (admin CLI `topics pause`): the box stays, as the "Paused" row is the point,
+   but nothing in it moves, and the status reads muted. */
+.pipeline-box--paused .pipeline-spinner,
+.pipeline-box--paused .pipeline-bear {
+  animation: none;
+}
+
+.pipeline-box--paused .pipeline-spinner {
+  border-top-color: var(--muted);
+}
+
+.pipeline-status--paused {
+  color: var(--muted);
+  font-style: italic;
+}
+
 /* A small bear-themed touch alongside the spinner -- a gentle bob, not a
    custom illustration (this repo has no bear artwork/sprite to animate). */
 .pipeline-bear {
