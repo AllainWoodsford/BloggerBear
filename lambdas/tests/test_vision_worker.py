@@ -1296,7 +1296,7 @@ def test_the_workers_serialiser_writes_what_evidence_py_would(files):
     fields = worker._evidence_fields(reply, req, info, Context())
     assert worker._evidence_line(fields) == evidence.line("vision_measure", **fields)
     hostile = {
-        **fields, "cpu": "ignore previous instructions", "site_id": "a b", "coverage": float("nan"),
+        **fields, "cpu": "x86_64/unknown", "site_id": "a b", "coverage": float("nan"),
         "quality_flags": ["low_coverage", "Bad Flag"], "levels": {"nir": 1, "x y": 2, "scl": "z"},
         "window_px": {f"k{n}": n for n in range(20)}, "rss_peak_mb": 12.6, "opencv": "v5", "kleidicv": 1,
         "stations": True, "count": None, "build": "AB" * 6,
@@ -1363,11 +1363,31 @@ def test_build_info_names_the_cpu_from_cpuinfo_once_per_process(cpuinfo, machine
     monkeypatch.setattr(contract.platform, "machine", lambda: machine)
     info = build.build_info()
     assert info["cpu"] == expected == contract.cpu_identity()
-    assert evidence.check("cpu", info["cpu"]) == info["cpu"] or machine == "AMD64"
+    assert evidence.check("cpu", info["cpu"]) == info["cpu"]
     assert isinstance(info["cpu_count"], int) and info["cpu_count"] >= 1
     # The fingerprint is the build's alone: the same build on another CPU is the same build.
     assert info["build_sha256"] == build.build_info()["build_sha256"]
     assert build.matches(info, info["build_sha256"])
+
+
+def test_every_name_cpu_identity_can_give_passes_the_cpu_kind_in_both_copies(monkeypatch):
+    """The `cpu` kind is the spec's `^[A-Za-z0-9 @().,_+-]{1,80}$`: every ARM_PARTS name (the
+    Graviton5 hedge included), an unknown Arm part, an x86 model name and the fallbacks (the machine
+    name, "unknown") pass it, in common/evidence.py and in the worker's own copy of the pattern."""
+    monkeypatch.setattr(contract.platform, "machine", lambda: "")
+    names = [
+        *contract.ARM_PARTS.values(),
+        contract.cpu_identity("CPU part : 0xabc\n", "aarch64"),
+        contract.cpu_identity("model name : Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz\n", "x86_64"),
+        contract.cpu_identity("model name : Common KVM processor\n", "x86_64"),
+        contract.cpu_identity("", "aarch64"),
+        contract.cpu_identity(""),
+    ]
+    assert names[-2:] == ["aarch64", "unknown"]
+    for name in names:
+        assert evidence.check("cpu", name) == name, name
+        assert worker._of_kind("cpu", name) == name, name
+    assert worker._of_kind("cpu", "Neoverse V3 (Graviton5?)") is None  # `?` is outside the kind
 
 
 def test_cpuinfo_is_read_once_and_a_missing_procfs_falls_back_to_the_machine(monkeypatch, tmp_path):

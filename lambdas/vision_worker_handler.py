@@ -231,7 +231,7 @@ _EVIDENCE_FIELDS = (
 _CODE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _HEX12 = re.compile(r"^[0-9a-f]{12}$")
-_CPU = re.compile(r"^(?=.*[0-9])[A-Za-z0-9 @().,_+-]{1,80}$")
+_CPU = re.compile(r"^[A-Za-z0-9 @().,_+-]{1,80}$")  # common/evidence.py's `cpu` kind
 _VERSION = re.compile(r"^[0-9][0-9.]{0,19}$")
 _MAX_CODES, _MAX_NUMBERS = 12, 12
 # The reply's metric names and the line's (rail: the graph's counts; ships: the count).

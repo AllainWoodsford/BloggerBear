@@ -99,8 +99,9 @@ def parsed(event, **fields):
         ("bool", [True, False], [1, 0, "true", None]),
         ("hex12", [BUILD, "0123456789ab"], ["AB" * 6, "ab" * 5, "ab" * 32, "0123456789ag"]),
         ("model", [MODEL, "anthropic.claude-3-haiku-20240307-v1:0"], ["", "a b", "arn:aws:bedrock:x", 3]),
-        ("cpu", [CPU, "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz", "Arm core 0xd4f", "AMD64"],
-         ["", "x/y", "a" * 81, "a1\nb", "unknown", "ignore previous instructions"]),
+        ("cpu", [CPU, "Intel(R) Xeon(R) Platinum 8375C CPU @ 2.90GHz", "Arm core 0xd4f", "AMD64",
+                 "unknown", "Neoverse V3 (Graviton5, unconfirmed)"],
+         ["", "x/y", "a" * 81, "a1\nb", "Neoverse V3 (Graviton5?)", "a:b", 5]),
         ("version", ["5.0.0", "4.11.0.86", "5"], ["v5", "", "5.0-rc"]),
     ],
 )
@@ -165,7 +166,11 @@ def test_each_tools_result_keeps_its_own_fields_and_an_unknown_tool_is_other():
     assert kept[3]["result"] == {"results": 3, "dated": 2}  # never the hosts
     assert kept[4]["result"] == {"code": "no_time"}  # the bad request id is left out, the code kept
     assert kept[5]["result"] == {"code": "unknown_tool"} and kept[6]["result"] == {"code": "budget"}
-    assert evidence.check("steps", [{"tool": "look_again", "ok": "yes", "ms": 1}]) is None
+    # A step that is not a step (`ok` not a bool, `ms` not a number) is left out; the others stay.
+    assert evidence.check("steps", [{"tool": "look_again", "ok": "yes", "ms": 1}]) == []
+    mixed = [steps[1], {"tool": "look_again", "ok": "yes", "ms": 1}, steps[2],
+             {"tool": "site_history", "ok": True, "ms": "fast"}]  # fmt: skip
+    assert evidence.check("steps", mixed) == kept[1:3]
     assert evidence.check("steps", "look_again") is None
 
 
@@ -219,6 +224,17 @@ def test_a_field_given_as_none_is_simply_absent():
     text = evidence.line("vision_site", site_id="sydney", outcome="none", code=None, worker_request_id=None)
     record = json.loads(text)
     assert "code" not in record and "dropped" not in record
+
+
+def test_a_malformed_step_is_left_out_and_the_steps_are_cut_not_dropped():
+    """One bad step must not lose the trail: the field keeps the steps that are steps, says `cut`,
+    and `steps_total` still says how many there were."""
+    steps = [{"tool": "site_history", "ok": True, "ms": 1, "result": {"scenes": 2}},
+             {"tool": "look_again", "ok": "yes", "ms": 1},
+             {"tool": "previous_scene", "ok": True, "ms": 2, "result": {"scene_id": "S1", "figure": False}}]
+    out = parsed("vision_triage", site_id="s", scene_id="x", steps=steps, steps_total=3)
+    assert [s["tool"] for s in out["steps"]] == ["site_history", "previous_scene"]
+    assert out["steps_total"] == 3 and out["cut"] == ["steps"] and "dropped" not in out
 
 
 def test_lists_are_cut_not_dropped_and_say_so():
@@ -383,17 +399,21 @@ HOSTILE = [
 
 
 # The kinds that take a plain token (an id, a model id, a build prefix, a CPU name from
-# /proc/cpuinfo, cv2's version) accept these three as whole values: a dotted or numeric token is an
-# id, a model id or a version, twelve digits are twelve hex characters, and a CPU name is digits and
-# words. No other kind, and no other hostile value, ever passes: a run of words is no CPU (the kind
-# wants a digit), and an e-mail address is nothing. The emitters fill those kinds only from ids the
-# code made, the model the topic resolves to, the build's SHA-256, /proc/cpuinfo and cv2.__version__;
+# /proc/cpuinfo, cv2's version) accept these as whole values: a dotted or numeric token is an id, a
+# model id or a version, twelve digits are twelve hex characters, and the `cpu` kind (the spec's
+# `^[A-Za-z0-9 @().,_+-]{1,80}$`: the `@` of "CPU @ 2.90GHz", the `.` of "2.90") takes a run of
+# plain ASCII words and an e-mail-shaped token too. No other kind, and no other hostile value, ever
+# passes. The emitters fill those kinds only from ids the code made, the model the topic resolves
+# to, the build's SHA-256, cpu_identity() (/proc/cpuinfo or the machine name) and cv2.__version__;
 # where third-party text enters (a site name, an exception, a news result), the adapter and handler
 # tests feed it there.
 MAY_PASS = {
+    "someone@example.com": {"cpu"},
     "198.51.100.7": {"id", "ids", "cpu", "version", "model"},
+    "ignore previous instructions": {"cpu"},
+    "system prompt": {"cpu"},
+    "news.example": {"id", "ids", "model", "cpu"},
     "123456789012": {"id", "ids", "cpu", "version", "model", "hex12"},
-    "news.example": {"id", "ids", "model"},
 }
 
 

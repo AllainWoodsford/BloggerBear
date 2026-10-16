@@ -1042,7 +1042,10 @@ def test_a_rejection_posts_a_shocked_musing_naming_only_the_topic(aws_resources)
     _put_article()
     _put_moderation_item()
 
-    with patch("admin_api_handler.generate_and_store_rejection_musing") as mock_musing:
+    with (
+        patch("admin_api_handler.generate_and_store_rejection_musing") as mock_musing,
+        patch("admin_api_handler.get_article", wraps=admin_api_handler.get_article) as get_article,
+    ):
         event = _event("POST /moderation-queue/{queue_id}/reject", path_params={"queue_id": "queue-1"})
         result = admin_api_handler.handler(event, None)
 
@@ -1051,6 +1054,7 @@ def test_a_rejection_posts_a_shocked_musing_naming_only_the_topic(aws_resources)
     kwargs = mock_musing.call_args.kwargs
     assert kwargs["topic_id"] == "github-trending" and kwargs["topic_name"] == "GitHub Trending"
     assert set(kwargs) == {"topic_id", "topic_name", "model_id"}  # no article id, no title
+    assert get_article.call_count == 1  # read once: the decision line and the musing share it
 
 
 def test_a_failed_rejection_musing_never_fails_the_rejection(aws_resources):

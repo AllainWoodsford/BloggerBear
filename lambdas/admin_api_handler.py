@@ -1583,7 +1583,7 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
         article_id=article_id, queue_id=queue_id, from_status=(article or {}).get("status"),
     )  # fmt: skip
     if article_status == "rejected":
-        _post_rejection_musing(item.get("topic_id") or (get_article(article_id) or {}).get("topic_id"))
+        _post_rejection_musing(item.get("topic_id") or (article or {}).get("topic_id"))
     refresh_articles_snapshot()
 
     action_key = "approved" if new_status == "approved" else "rejected"

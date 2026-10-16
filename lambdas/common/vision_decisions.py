@@ -4,8 +4,9 @@ the trace a reader builds from an entry.
 docs/enhancements/vision-evidence.md. The two vision adapters share this module, so their records
 cannot drift (vision_sites.site_status is the pattern). It knows no adapter: what is adapter-specific
 (the measure keys and their words, which input each measure depends on, the look_again settings)
-comes in through the adapter's `decision_vocabulary()`. No cv2, numpy or boto3: the adapter registry
-imports this through the adapters, and every pipeline Lambda imports the registry.
+comes in through the adapter's `decision_vocabulary()`. No cv2 or numpy: the adapter registry
+imports this through the adapters, and every pipeline Lambda imports the registry (boto3 is reached,
+as the adapters themselves reach it, through common.costing's USD_TO_AUD_RATE).
 
 **The ring** is `state["sites"][site_id]["decisions"]`, the last DECISIONS_KEPT entries. It lives
 in the site's record because both adapters' `fetch_state` deep-copy each record from the previous
@@ -182,14 +183,14 @@ def measured_by(result, seconds: float | None) -> dict:
     }
 
 
-def failed_by(exc, seconds: float | None, *, backend: str | None = None, request_id=None) -> dict:
+def failed_by(exc, seconds: float | None, *, backend: str | None = None) -> dict:
     """Who was asked when the measurement failed (common/vision_client.VisionError): the request
     id the worker answered with, if it answered, the client's wall time, and the error's code."""
     return {
         "backend": backend,
         "build": None,
         "cpu": None,
-        "worker_request_id": getattr(exc, "request_id", None) or request_id,
+        "worker_request_id": getattr(exc, "request_id", None) or None,
         "worker_ms": _ms(seconds),
         "code": getattr(exc, "code", None),
     }

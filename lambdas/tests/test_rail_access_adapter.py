@@ -2286,6 +2286,13 @@ def test_each_sites_turn_leaves_a_line_at_its_branch(adapter, capsys):
     assert line["outcome"] == "none" and line["code"] == "site_outside_scene" and line["scene_id"] == "S2"
     assert line["worker_request_id"] == "req-2" and "detail" not in json.dumps(line)
 
+    # A failure before the worker answered has no request id to carry (and no earlier visit of the
+    # site this tick to borrow one from: each site is visited once per tick).
+    unanswered = FakeRailWorker({}, error=vision_client.VisionError("invoke", "read timed out"))
+    run(adapter, scene(2, day=4), unanswered, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["code"] == "invoke" and line["scene_id"] == "S2" and "worker_request_id" not in line
+
     failing = FakeOverpass(osm.OsmError("timeout", "no answer from either endpoint", transient=True))
     run(adapter, scene(1), worker, failing)
     (line,) = evidence_lines(capsys, "vision_site")

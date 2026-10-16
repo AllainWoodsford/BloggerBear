@@ -75,6 +75,10 @@ STEP_MEASURES = {
     "ships": ("coverage", "count", "density_per_km2"),
     "rail_access": ("coverage", "served_share", "desert_km2", "built_up_km2", "station_count", "flag_count"),
 }
+# All of them in one order: summarise_step reads the body alone and is not told the task, and a
+# task's body carries only its own measures (the rail reply has no `count`, the ships reply no
+# `served_share`).
+STEP_MEASURE_KEYS = tuple(dict.fromkeys(key for keys in STEP_MEASURES.values() for key in keys))
 # The hosts `web_context` read, kept on the trail for the page alone (common/vision_decisions.py):
 # lower-case ASCII host names, at most this many. A host is part of a URL, third-party text, so it
 # never reaches a log line.
@@ -358,14 +362,14 @@ def triage(
     "reason", "tool_calls", "model_id", "input_tokens", "output_tokens", "model_calls"}, and the
     trail's steps beside them: "stop" (STOPS), "steps" (one per tool call, in order, the budget
     refusals included: {"tool", "ok", "ms", "result"}), "steps_total", "budget_refusals",
-    "elapsed_ms", "deadline_left_s", "figure", "cost_usd" (the price unit; readers show AUD) and
-    "hosts" (what `web_context` read, for the page alone). Never raises."""
+    "elapsed_ms" (from the start of triage() to its return, on `clock`), "deadline_left_s", "figure",
+    "cost_usd" (the price unit; readers show AUD) and "hosts" (what `web_context` read, for the page
+    alone). Never raises."""
     converse = converse or _converse
     measure = _Recorder(measure or vision_client.measure, clock)
     load_image = load_image or (lambda key: None)
-    # Read at the first turn's deadline check (one clock reading per turn), so a scripted clock
-    # sees the same readings it always did.
-    started: float | None = None
+    # `elapsed_ms` runs from here to finish(): the brief and the figure load are part of the time.
+    started = clock()
     trail: dict = {"tool_calls": [], "model_id": canonical_model_id(model_id), "input_tokens": 0,
                    "output_tokens": 0, "model_calls": 0, "stop": None, "steps": [], "steps_total": 0,
                    "budget_refusals": 0, "elapsed_ms": 0, "deadline_left_s": None, "figure": False,
@@ -374,7 +378,7 @@ def triage(
     def finish(verdict_value: str, reason: str, stop: str) -> dict:
         now = clock()
         trail["stop"] = stop
-        trail["elapsed_ms"] = _ms(now - started) if started is not None else 0
+        trail["elapsed_ms"] = _ms(now - started)
         trail["deadline_left_s"] = None if deadline is None else round(deadline - now, 3)
         trail["cost_usd"] = _cost_usd(trail)
         _record_stats(trail)
@@ -386,7 +390,6 @@ def triage(
     # The news tool is offered only when there is a search to answer it with.
     tools = [t for t in profile.tools if t["toolSpec"]["name"] != "web_context" or web_search is not None]
     tool_names = {t["toolSpec"]["name"] for t in profile.tools}
-    measures = STEP_MEASURES.get(profile.task, ())
 
     latest = history[-1] if history else {}
     brief = {
@@ -415,7 +418,6 @@ def triage(
     used = 0
     for _turn in range(max_tool_calls + 2):
         now = clock()
-        started = now if started is None else started
         if deadline is not None and deadline - now < MIN_SECONDS_TO_ANSWER:
             return finish("artefact", "no time left to decide", "deadline")
         try:
@@ -457,7 +459,7 @@ def triage(
                     backend=backend, load_image=load_image, measure=measure, network=network,
                     web_search=web_search, deadline=deadline, clock=clock, read_timeout=read_timeout,
                 )  # fmt: skip
-                result = summarise_step(tool, use.get("input"), body, status, measure.last, measures)
+                result = summarise_step(tool, use.get("input"), body, status, measure.last)
                 step = {"tool": tool, "ok": status == "success", "ms": _ms(clock() - before),
                         "result": result}  # fmt: skip
                 if tool == "web_context" and status == "success":
@@ -506,13 +508,14 @@ class _Recorder:
         return result
 
 
-def summarise_step(name: str, given, body: list[dict], status: str, call: dict | None, measures=()) -> dict:
+def summarise_step(name: str, given, body: list[dict], status: str, call: dict | None) -> dict:
     """One tool call's code-derived result, from the body `_run_tool` returned to the model (the
-    body itself is unchanged): what `look_again` measured (`measures` of the re-measurement) at
-    which settings, with the worker call's ids (`call`, the recorder's last); the previous scene's
-    id and whether it had a figure; how many scenes `site_history` listed; how many results
-    `web_context` found and how many were dated (never the hosts: a host is part of a URL); or the
-    code of why a call failed. `name` is the tool's name in the profile, or "other". Pure."""
+    body itself is unchanged): what `look_again` measured (STEP_MEASURE_KEYS: a body carries its
+    own task's measures and no other's) at which settings, with the worker call's ids (`call`, the
+    recorder's last); the previous scene's id and whether it had a figure; how many scenes
+    `site_history` listed; how many results `web_context` found and how many were dated (never the
+    hosts: a host is part of a URL); or the code of why a call failed. `name` is the tool's name in
+    the profile, or "other". Pure."""
     first = body[0] if body and isinstance(body[0], dict) else {}
     payload = first.get("json") if isinstance(first.get("json"), dict) else None
     text = first.get("text")
@@ -522,7 +525,7 @@ def summarise_step(name: str, given, body: list[dict], status: str, call: dict |
             settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
             result = {
                 "settings": dict(settings),
-                "measured": {key: payload[key] for key in measures if key in payload},
+                "measured": {key: payload[key] for key in STEP_MEASURE_KEYS if key in payload},
                 "quality_flags": list(payload.get("quality_flags") or []),
             }
         elif text == NO_TIME_TEXT:

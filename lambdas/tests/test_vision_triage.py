@@ -623,9 +623,10 @@ def test_web_context_keeps_to_the_result_cap_and_ten_seconds_without_a_deadline(
 
 
 def test_near_the_deadline_web_context_gets_only_what_is_left_and_the_agent_then_fails_closed():
-    # 12 s left at the first turn (enough to ask), 7 s when the tool runs: the search may run to the
-    # deadline, not ten seconds past it, and with under ten left no further turn starts.
-    times = iter([100.0, 105.0])
+    # The clock is read once as triage() starts, then at each turn: 12 s left at the first turn
+    # (enough to ask), 7 s when the tool runs: the search may run to the deadline, not ten seconds
+    # past it, and with under ten left no further turn starts.
+    times = iter([100.0, 100.0, 105.0])
     search = FakeSearch(HEADLINES)
     script = Script(tool("web_context"), text('{"verdict": "real", "reason": "x"}'))
     out = run_rail(script, search=search, deadline=112.0, clock=lambda: next(times, 105.0))
@@ -707,6 +708,37 @@ def test_the_trail_says_how_it_stopped_at_every_exit(recorded):
     assert (closed["verdict"], closed["stop"]) == ("artefact", "no_model")
     assert closed["steps"] == closed["tool_calls"] == closed["hosts"] == []
     assert closed["model_calls"] == 0 and closed["cost_usd"] is None
+
+
+def test_elapsed_ms_runs_from_the_start_of_triage_the_figure_load_included():
+    """`elapsed_ms` is from the start of triage() to its return, on `clock`: the brief and the
+    figure's load from S3 are part of it, and an exit before any model call reports its own time."""
+
+    class Ticking:
+        def __init__(self):
+            self.now = 0.0
+
+        def __call__(self):
+            self.now += 1.0
+            return self.now
+
+    clock = Ticking()
+
+    def slow_load(key):
+        clock(), clock()  # two seconds of clock fetching the figure
+        return PNG
+
+    out = vision_triage.triage(
+        site=SITE, verdict=VERDICT, history=HISTORY, scene=SCENE, model_id="m", object_noun="ships",
+        params={}, load_image=slow_load, converse=Script(text('{"verdict": "real", "reason": "x"}')),
+        measure=Worker(), clock=clock,
+    )  # fmt: skip
+    # Read at the start (1), twice by the load (2, 3), at the turn (4) and at the answer (5).
+    assert out["figure"] is True and out["stop"] == "answered" and out["elapsed_ms"] == 4000
+    out = run(Script(text('{"verdict": "real", "reason": "x"}')), task="rail_yards", clock=Ticking())
+    assert out["stop"] == "no_profile" and out["elapsed_ms"] == 1000
+    out = run(Script(text('{"verdict": "real", "reason": "x"}')), deadline=11.0, clock=Ticking())
+    assert (out["stop"], out["elapsed_ms"], out["deadline_left_s"]) == ("deadline", 2000, 8.0)
 
 
 def test_each_step_keeps_its_tools_result_and_its_time_from_the_clock():
@@ -874,12 +906,18 @@ def test_summarise_step_is_pure_and_reads_only_the_body():
     body = [{"json": {"settings": {"reach_m": 800, "hub_count": 4}, "served_share": 0.6, "coverage": 0.9,
                       "stations": [{"id": "s:n1"}], "quality_flags": ["graph_too_large"]}}]  # fmt: skip
     call = {"worker_request_id": "req-1", "build": "ab" * 6, "worker_ms": 120, "code": None}
-    result = vision_triage.summarise_step("look_again", {"reach_m": 800}, body, "success", call,
-                                          vision_triage.STEP_MEASURES["rail_access"])  # fmt: skip
+    result = vision_triage.summarise_step("look_again", {"reach_m": 800}, body, "success", call)
     assert result == {"settings": {"reach_m": 800, "hub_count": 4},
                       "measured": {"coverage": 0.9, "served_share": 0.6},
                       "quality_flags": ["graph_too_large"],
                       "worker_request_id": "req-1", "build": "ab" * 6, "worker_ms": 120}  # fmt: skip
+    # The documented five-argument call, and the body alone says which task's measures these are.
+    ships = [{"json": {"settings": {"offset": 25}, "count": 12, "coverage": 0.9, "density_per_km2": 0.4,
+                       "rejected": {"edge": 2}, "quality_flags": []}}]  # fmt: skip
+    assert vision_triage.summarise_step("look_again", {"offset": 25}, ships, "success", None) == {
+        "settings": {"offset": 25}, "measured": {"coverage": 0.9, "count": 12, "density_per_km2": 0.4},
+        "quality_flags": [],
+    }
     assert vision_triage.summarise_step("previous_scene", {}, [{"text": vision_triage.NO_PREVIOUS_TEXT}],
                                         "success", None) == {"code": "none"}  # fmt: skip
     assert vision_triage.summarise_step("site_history", {}, [{"text": "The tool failed (KeyError)."}],
@@ -888,3 +926,5 @@ def test_summarise_step_is_pure_and_reads_only_the_body():
                                         "success", None) == {"results": 0, "dated": 0}  # fmt: skip
     assert vision_triage.summarise_step("other", {}, [], "error", None) == {"code": "unknown_tool"}
     assert set(vision_triage.STEP_MEASURES) == set(vision_triage.PROFILES)
+    every = {k for keys in vision_triage.STEP_MEASURES.values() for k in keys}
+    assert set(vision_triage.STEP_MEASURE_KEYS) == every

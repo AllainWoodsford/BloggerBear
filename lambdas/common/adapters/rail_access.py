@@ -421,10 +421,8 @@ class RailAccessAdapter(Adapter):
             self._visits[site["id"]] = vision_decisions.measured_by(result, self.clock() - asked)
             entry = _history_entry(scene, result, network, key, stale)
         except vision_client.VisionError as exc:
-            answered = (self._visits.get(site["id"]) or {}).get("worker_request_id")
-            self._visits[site["id"]] = vision_decisions.failed_by(
-                exc, self.clock() - asked, backend=config["backend"], request_id=answered
-            )
+            self._visits[site["id"]] = vision_decisions.failed_by(exc, self.clock() - asked,
+                                                                  backend=config["backend"])  # fmt: skip
             record["last_error"] = _error(now, exc.code, exc.detail)
             record["failed_scene"] = {
                 "id": scene["id"],

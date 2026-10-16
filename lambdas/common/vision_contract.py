@@ -371,7 +371,9 @@ ARM_PARTS = {
     "0xd0c": "Neoverse N1 (Graviton2)",
     "0xd40": "Neoverse V1 (Graviton3)",
     "0xd4f": "Neoverse V2 (Graviton4)",
-    "0xd84": "Neoverse V3 (Graviton5?)",
+    # Graviton5 is expected to be Neoverse V3; the name says so until a worker has reported one.
+    # Every name here passes the evidence line's `cpu` kind (letters, digits, spaces, "@().,_+-").
+    "0xd84": "Neoverse V3 (Graviton5, unconfirmed)",
 }
 _CPUINFO_PATH = Path("/proc/cpuinfo")
 # /proc/cpuinfo, read once per process (None until then): a warm worker names its CPU on every

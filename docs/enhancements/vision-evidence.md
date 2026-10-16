@@ -96,8 +96,9 @@ Every line carries `evidence` (`bloggerbear/1`), `event`, and the bound `tick`, 
 topic explicitly). The schema is declared in `evidence.EVENTS`, not inferred: a field is kept only
 when its value passes its kind's check (`code`, `id`, `iso`, `int`, `num`, `bool`, `hex12`,
 `model`, `cpu`, `numbers`, `version`, `codes`, `ids`, `steps`); a value that fails is dropped and
-its *name* goes under `dropped`, so schema drift can be read off the log; a list over its cap is
-cut, never dropped whole, and named under `cut`.
+its *name* goes under `dropped`, so schema drift can be read off the log; a list is cut, never
+dropped whole (over its cap it keeps its first items; a step that is not a step is left out and the
+others stay), and named under `cut`.
 
 | Event | Emitted by | Fields |
 |---|---|---|

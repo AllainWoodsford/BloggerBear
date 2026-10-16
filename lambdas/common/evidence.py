@@ -18,10 +18,10 @@ decision ring (common/vision_decisions.py), never here.
 
 **The line's shape is fixed.** It starts with PREFIX (`evidence` then `event` as the first two
 keys), which ops_mcp/log_review.py relies on to leave these lines out of its error search (their
-codes include words such as "failed" and "timeout"). Lists are cut, never dropped whole, and the
-field's name goes under `cut`; a line over MAX_LINE_BYTES loses its step results first, then its
-steps, and is last replaced by a stub that says `truncated`. `ensure_ascii` keeps every line to one
-line of ASCII.
+codes include words such as "failed" and "timeout"). Lists are cut, never dropped whole (over the
+cap, or a step that is not a step is left out), and the field's name goes under `cut`; a line over
+MAX_LINE_BYTES loses its step results first, then its steps, and is last replaced by a stub that
+says `truncated`. `ensure_ascii` keeps every line to one line of ASCII.
 
 **Print, not logging.** The handlers already print. In Lambda's default Text log format a printed
 line is written as it is, so Logs Insights discovers its JSON fields (`filter event = "..."`).
@@ -76,9 +76,10 @@ _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _HEX12 = re.compile(r"^[0-9a-f]{12}$")
 _MODEL = re.compile(r"^[A-Za-z0-9._:/-]{1,160}$")
 # A CPU's name (vision_contract.cpu_identity): "Neoverse V1 (Graviton3)", "Intel(R) Xeon(R) Platinum
-# 8375C CPU @ 2.90GHz". Every one names a model or a generation, so a digit is required: a run of
-# plain words is not a CPU.
-_CPU = re.compile(r"^(?=.*[0-9])[A-Za-z0-9 @().,_+-]{1,80}$")
+# 8375C CPU @ 2.90GHz", or the machine name ("aarch64", "unknown") when /proc/cpuinfo names none.
+# A shape, not a filter (a run of plain words passes it): the emitters fill it from cpu_identity()
+# alone, and the worker's serialiser keeps a copy of this pattern.
+_CPU = re.compile(r"^[A-Za-z0-9 @().,_+-]{1,80}$")
 _VERSION = re.compile(r"^[0-9][0-9.]{0,19}$")
 
 # What each tool's `result` may carry in a triage step (common/vision_triage.summarise_step builds
@@ -394,7 +395,8 @@ def _step(value) -> dict:
 
 
 def _check(kind: str, value) -> tuple[object, bool]:
-    """`value` through `kind`: (the cleaned value, whether a list was cut); _Dropped if it fails."""
+    """`value` through `kind`: (the cleaned value, whether a list was cut: over its cap, or a step
+    that is not a step left out); _Dropped if it fails."""
     if kind in _SCALAR:
         return _SCALAR[kind](value), False
     if kind in _LISTS:
@@ -402,8 +404,13 @@ def _check(kind: str, value) -> tuple[object, bool]:
     if kind == "steps":
         if isinstance(value, str) or not isinstance(value, list | tuple):
             raise _Dropped
-        steps = [_step(item) for item in value]
-        return steps[:MAX_STEPS], len(steps) > MAX_STEPS
+        steps = []
+        for item in value:
+            try:
+                steps.append(_step(item))
+            except _Dropped:
+                continue  # one malformed step is left out, and the field is `cut`; the rest stay
+        return steps[:MAX_STEPS], len(steps) > MAX_STEPS or len(steps) < len(value)
     raise _Dropped
 
 

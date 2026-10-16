@@ -149,7 +149,7 @@ def test_measured_by_and_failed_by_keep_only_code_derived_fields():
     failed = vd.failed_by(Refused(), 2.5, backend="opencv")
     assert failed == {"backend": "opencv", "build": None, "cpu": None, "worker_request_id": "req-2",
                       "worker_ms": 2500, "code": "site_outside_scene"}  # fmt: skip
-    assert vd.failed_by(RuntimeError("x"), 1.0, request_id="req-3")["worker_request_id"] == "req-3"
+    assert vd.failed_by(RuntimeError("x"), 1.0)["worker_request_id"] is None  # no answer, no request id
     assert "detail" not in json.dumps(failed)
 
 
