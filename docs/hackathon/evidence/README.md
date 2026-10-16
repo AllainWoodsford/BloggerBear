@@ -41,8 +41,13 @@ Schema `bloggerbear.vision-eval/1` (`scripts/vision_runs.py` writes and reads it
   changed since, or when the index says why the difference does not matter.
 - `environment.host` holds five fields of the EC2 instance identity and nothing else (never an
   account id, an instance id or an IP). `environment.libraries` lists, on Linux, the OpenCV shared
-  objects mapped into the process during the run, each with its sha256 and the package that owns
-  it: with the build fingerprint, that is what shows which binaries did the work.
+  objects mapped into the process during the run (with `--isolate`, into the processes the scenes
+  ran in), each with its sha256 and the package that owns it: with the build fingerprint, that is
+  what shows which binaries did the work.
+- `worker` never holds an ARN (it carries the account id): a deployed worker is named by its
+  Region and its `CodeSha256`. Paths (`cv2_path`, a library's `path`, the parameters' files) are
+  recorded relative to the repository, or as `~/...` under the home directory, so no run file
+  names the user who made it.
 - `inputs.scenes` carries every asset's ETag as read. A run refuses to start when a pinned ETag
   has changed ("input changed"), so two run files that cite the same ETags read the same bytes.
 - `results` is each script's own shape (the benchmark's old report shape is kept there, so its
@@ -90,8 +95,11 @@ CPU; the Graviton session's run files are the first measurements of the worker's
 ## The 4.x pin
 
 The Graviton session's third venv runs `opencv-python-headless==4.14.0.94`, so the report can say
-what OpenCV 5 changed for this workload. It is PyPI's newest 4.x release (28 July 2026), with
-`cp37-abi3` aarch64 wheels (`manylinux2014_aarch64.manylinux_2_17_aarch64` and
-`manylinux_2_28_aarch64`); on 16 October it was installed into a fresh venv beside
-`numpy==2.4.4` and `import cv2; cv2.__version__` gave `4.14.0`. The deployed worker's pin
+what OpenCV 5 changed for this workload. It is PyPI's newest 4.x release (its wheels uploaded on
+28 and 29 July 2026; `https://pypi.org/pypi/opencv-python-headless/json`, read on 16 October),
+with `cp37-abi3` aarch64 wheels (`manylinux2014_aarch64.manylinux_2_17_aarch64` and
+`manylinux_2_28_aarch64`); on 16 October it was installed into a fresh Python 3.11 venv beside
+`numpy==2.4.4`, `requests==2.34.2` and `networkx==3.4.2` (the runsheet's stock4 line), `import
+cv2; cv2.__version__` gave `4.14.0`, and `vision_benchmark.py kernels` ran on it (x86, so only
+that the code runs on 4.x is shown, not a timing). The deployed worker's pin
 (`lambdas/requirements-vision.txt`) is unchanged: 5.0.0.93.

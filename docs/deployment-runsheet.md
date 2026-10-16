@@ -847,18 +847,27 @@ shadow them, and the handler would answer `not_cool`).
      ```
 
      ```powershell
-     aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json - | jq '.sites.sydney.network | {ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' | Out-File -Encoding utf8 scripts\vision_benchmark_networks\sydney.json
+     aws s3 cp s3://<prefix>-dev-content/snapshots/rail-sydney/running-state.json "$env:TEMP\running-state.json"
+     jq -a '.sites.sydney.network | {ways, stations, pois, fetched_at, source, endpoint, query_url, counts}' "$env:TEMP\running-state.json" | Set-Content -Encoding ascii scripts\vision_benchmark_networks\sydney.json
      ```
 
+     The PowerShell lines differ on purpose: Windows PowerShell re-encodes whatever passes between
+     two programs through its own pipe, which mangles any station name outside ASCII, so the state
+     is downloaded to a file first and `jq -a` writes every such character as a `\u` escape; and
+     `Set-Content -Encoding ascii` writes the lines as they are, with no byte-order mark (the
+     benchmark reads a file with one too).
+
      The alternative is `python scripts/vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26`
+     (PowerShell: `py -3.11 scripts\vision_benchmark.py fetch-network --scene sydney-rail-2024-08-26`)
      on any machine that reaches Overpass (the network is then whatever OpenStreetMap holds that
      day). Fill the row in `scripts/vision_benchmark_networks/NOTICE.md` from the file's
-     `fetched_at`, `endpoint` and `query_url` and `sha256sum`, run
-     `python scripts/pii_denylist_check.py --staged` before committing it (Sydney's suburb and
+     `fetched_at`, `endpoint` and `query_url` and its sha256 (`sha256sum`; PowerShell:
+     `Get-FileHash scripts\vision_benchmark_networks\sydney.json`), `git add` it and run
+     `python scripts/pii_denylist_check.py --staged` (PowerShell:
+     `py -3.11 scripts\pii_denylist_check.py --staged`) before committing it: Sydney's suburb and
      station names could match the denylist; if they do, decide whether to allow the term or keep
-     the file out of git, in which case the run files still cite its sha256), and commit it. Without
-     the file the two rail scenes report `error: network_file missing` and only the ship scene is
-     timed.
+     the file out of git, in which case the run files still cite its sha256. Without the file the
+     two rail scenes report `error: network_file missing` and only the ship scene is timed.
    - **The pinned scenes.** `scripts/vision_eval_manifest.json` was pinned on 16 October (every
      asset's ETag and size, from the build container). Confirm nothing moved, on your own machine
      or the instance:
@@ -909,10 +918,10 @@ shadow them, and the handler would answer `not_cool`).
    sha256sum stock-buildinfo.txt stock4-buildinfo.txt
    ```
 
-   `opencv-python-headless==4.14.0.94` is the 4.x pin: PyPI's newest 4.x release (28 July 2026),
-   with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28); it was installed beside
-   `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0 (the evidence README records the
-   check). Use `python3.12` in place of `python3` here if step 3 said so. Stock aarch64 builds can
+   `opencv-python-headless==4.14.0.94` is the 4.x pin: PyPI's newest 4.x release (its wheels
+   uploaded on 28 and 29 July 2026), with `cp37-abi3` aarch64 wheels (manylinux_2_17 and 2_28);
+   it was installed beside `numpy==2.4.4` on 16 October and imports as `cv2` 4.14.0, and the
+   benchmark's `kernels` ran on it (the evidence README records the check). Use `python3.12` in place of `python3` here if step 3 said so. Stock aarch64 builds can
    include KleidiCV too, which is why the proof is the fingerprint and the mapped libraries, not
    the flag.
 8. **The runs.** Interleave the backends, so a slow minute on the instance does not land on one
