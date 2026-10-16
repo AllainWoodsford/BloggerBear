@@ -484,7 +484,8 @@ call:
 - `site_history()`: every stored scene's date, key values and coverage;
 - `web_context()` (rail only, when the topic's `web_context` is true): at most five news
   headlines from the last 60 days for "<city> rail station opening closure line", through the
-  existing GDELT search (`common/web_search.search_web`), within 10 s.
+  existing news search (`common/web_search.search_web`): GDELT, with the AgentCore web-search
+  gateway as its fallback when GDELT fails; within 10 s.
 
 Bounds are in code: at most `triage_max_tool_calls` tool calls, at most that plus two model turns,
 a deadline (`triage_deadline_seconds` after the tick started) under which no model turn starts with
@@ -673,8 +674,9 @@ The benchmark with the rail kernels (`python scripts/vision_benchmark.py kernels
 2048 px synthetic images, 20 runs, medians) on **this build container's CPU, not Graviton**: an
 Intel Xeon at 2.10 GHz with 4 vCPUs, stock `opencv-python-headless` 5.0.0 (build `0ef08003c311`),
 Python 3.11, on the integration branch with PR J's code; then pinned to one CPU (`taskset -c 0`),
-as the worker's one vCPU is. The machine is shared, and two runs differed by up to 40 % on some
-rows:
+as the worker's one vCPU is. **Indicative only:** the machine is a shared container, two runs
+differed by up to 40 % on some rows, and no row here is a COOL ratio (COOL is measured against stock
+on one Graviton4 instance, §9):
 
 | Operation | 4 vCPUs, ms | 1 CPU, ms |
 |---|---:|---:|
@@ -860,7 +862,8 @@ None of this is automatic.
    adapter's default (§5, "Editorial goal") is not what you want. Check
    `docs/risks/opencv-bushfire-watch-01.md` against it.
 5. **Run Sydney for real:** a tick with the Overpass network on the deployed worker, for the
-   measurements the submission needs (its table in `docs/hackathon/opencv-2026-submission.md`).
+   measurements the submission needs (the live run in
+   [the technical report](../hackathon/technical-report.md#6-evaluation) §6).
 6. **COOL:** the Graviton session, exactly as the
    [runsheet's COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark) gives
    it: the Friday reconnaissance (the product's delivery type, Region, price and Python), a
@@ -871,8 +874,10 @@ None of this is automatic.
    proof checklist it ends with; pin the COOL `build_sha256` as `COOL_BUILD_SHA256`; terminate the
    instance and unsubscribe if not kept.
 7. **For the submission:** the benchmark table (x86, Graviton stock, Graviton COOL), a run of the
-   loop on dev showing an artefact rejected and a real change held for review, the architecture
-   diagram (§1), and the video.
+   loop on dev showing an artefact rejected and a real change held for review, and the video. The
+   package is in `docs/hackathon/`: the [technical report](../hackathon/technical-report.md), the
+   system and agent [diagrams](../hackathon/diagrams/README.md), the
+   [reproduction guide](../hackathon/REPRODUCE.md) and the [video script](../hackathon/video-script.md).
 
 ---
 

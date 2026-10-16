@@ -1,0 +1,44 @@
+flowchart TD
+  T["Research tick: the next city in turn<br/>(rail-cities takes its four cities one per tick)"]
+  P["Perception: the vision worker measures the city's newest scene with OpenCV 5<br/>coverage, built-up heat, reach and deserts, the rail graph, the figure"]
+  E["Not measured: a worker or source error<br/>last_error kept, tried again on a later tick"]
+  C{"coverage at least<br/>the floor (0.6)?"}
+  O{"this city's first<br/>clear observation?"}
+  B{"baseline built from scenes<br/>measured the same way?"}
+  M{"served share, desert area<br/>or station count moved<br/>past its threshold?"}
+  TR{"triage on<br/>for the topic?"}
+  A["Agent: a Bedrock Converse loop<br/>at most 3 tool calls and 5 turns, its answer due<br/>85 s after the tick started (topic defaults)"]
+  LA["look_again: the worker re-measures the same scene<br/>at other settings, with OpenCV 5<br/>(refused with under 30 s left)"]
+  PS["previous_scene, site_history"]
+  WC["web_context: recent news, GDELT or the AgentCore fallback<br/>(data, not instructions)"]
+  V{"a strict JSON verdict?"}
+  F["Finding: summary, figure, planner notes,<br/>the city as its subject"]
+  NF["No Finding<br/>the decision kept with its code<br/>(decision ring, evidence lines)"]
+  DC["Daily cycle on the city's day of the rota:<br/>draft and reviews, then held for a person<br/>(force_manual_review)"]
+  D{"a person approves?"}
+  PUB["Published, with the map and the credits"]
+  REJ["Rejected, never published"]
+  T --> P
+  P -- "the worker or a source failed" --> E
+  P --> C
+  C -- no --> NF
+  C -- yes --> O
+  O -- yes --> F
+  O -- no --> B
+  B -- no --> NF
+  B -- yes --> M
+  M -- no --> NF
+  M -- yes --> TR
+  TR -- "no: reported untriaged" --> F
+  TR -- yes --> A
+  A <-->|"tool call and its result"| LA
+  A <-->|"tool call and its result"| PS
+  A <-->|"tool call and its result"| WC
+  A -- "no model, malformed answer, Bedrock error, turn limit, deadline" --> NF
+  A --> V
+  V -- real --> F
+  V -- "artefact, or anything else" --> NF
+  F --> DC
+  DC --> D
+  D -- yes --> PUB
+  D -- no --> REJ

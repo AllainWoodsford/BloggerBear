@@ -9,8 +9,13 @@ Why a test: every submission-round PR updates the rows it closes, the owner upda
 by hand, and the ops assistant's `submission_status` (if it is built) ships a copy of this table
 inside the MCP Lambda, where `redact.looks_like_instructions` is the rule for text a model reads.
 A malformed row fails here, not in a judge's or the assistant's reading of it. The Python CI runs
-this file on a pull request that touches `lambdas/` or `scripts/`; on a docs-only one the owner
-runs it by hand, until `python-ci.yml` lists `docs/hackathon/**` (the last two tests).
+this file on every pull request that touches `docs/hackathon/`, `lambdas/` or `scripts/`.
+
+The rest of the submission package is held here too: the technical report keeps the rubric's eight
+sections in order; each diagram's Mermaid source has its SVG, appears verbatim in every page that
+embeds it, and names what the rubric asks for; README.md sends judges to the package first; every
+placeholder is marked for R2 in one form; and REPRODUCE.md's tier 1a is CI's own commands with only
+the judges' constraints file added, parsed from `python-ci.yml`, so it cannot drift unseen.
 
 The parser is deliberately plain: a cell holds no `|`, so a row is split on it. The "Say" list is
 `SAY_PHRASES` until `scripts/submission_index.py` exists; the test then imports it from there.
@@ -32,6 +37,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lambdas"))
 
 from ops_mcp import redact, suggestions
+
+import submission_check
 
 ROOT = Path(__file__).resolve().parents[2]
 HACKATHON = ROOT / "docs" / "hackathon"
@@ -104,8 +111,11 @@ _SEPARATOR_CELL = re.compile(r"^:?-+:?$")
 _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)")
 _LINK_DEFINITION = re.compile(r"^[ \t]*\[(?!\^)[^\]]+\]:[ \t]*(\S+)", re.M)
 # python-ci.yml's pull_request path filters, read from the text as test_terraform_wiring.py reads
-# the workflows (PyYAML is not a dependency).
-_PULL_REQUEST_PATHS = re.compile(r"^on:\n  pull_request:\n    paths:\n((?:      - '[^']+'\n)+)", re.M)
+# the workflows (PyYAML is not a dependency); a comment line between two entries is part of the list.
+_PULL_REQUEST_PATHS = re.compile(
+    r"^on:\n  pull_request:\n    paths:\n((?:      (?:- '[^']+'|#[^\n]*)\n)+)", re.M
+)
+_PATH_ENTRY = re.compile(r"^      - '([^']+)'$", re.M)
 
 
 def _cells(line: str) -> list[str]:
@@ -217,7 +227,7 @@ def dead_links(root: Path, pages: list[Path]) -> list[tuple[str, str]]:
 def python_ci_pull_request_paths() -> list[str]:
     match = _PULL_REQUEST_PATHS.search(PYTHON_CI.read_text(encoding="utf-8"))
     assert match, "python-ci.yml's pull_request trigger has no paths list where this test reads it"
-    return re.findall(r"'([^']+)'", match[1])
+    return _PATH_ENTRY.findall(match[1])
 
 
 @pytest.fixture
@@ -442,12 +452,207 @@ def test_a_change_to_this_file_runs_it_in_the_python_ci():
     assert "scripts/**" in python_ci_pull_request_paths()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="python-ci.yml does not list docs/hackathon/**, so a pull request that changes only the tracker "
-    "runs no pytest and the owner runs this file by hand. terraform.yml applies dev on a push that touches "
-    "python-ci.yml, so the path goes in with the next PR that deploys; when it lands, drop this marker "
-    "and the 'by hand' wording in the tracker's header and docs/PROGRESS.md.",
-)
 def test_a_change_to_the_tracker_alone_runs_this_file_in_the_python_ci():
     assert TRACKER_PATH_FILTER in python_ci_pull_request_paths()
+
+
+def test_the_path_filter_is_read_past_the_comments_between_its_entries():
+    paths = python_ci_pull_request_paths()
+    assert ".claude/skills/**" in paths and TRACKER_PATH_FILTER in paths
+    assert not any(path.startswith("#") for path in paths)
+
+
+# --- the submission package (R1) -----------------------------------------------------------------
+
+REPORT = HACKATHON / "technical-report.md"
+REPRODUCE = HACKATHON / "REPRODUCE.md"
+DIAGRAMS = HACKATHON / "diagrams"
+README = ROOT / "README.md"
+BLOGGER_VISION = ROOT / "docs" / "architecture" / "blogger-vision.md"
+# The rubric's eight sections, in its order (decision 15: the rubric's headings, not Devpost's).
+REPORT_SECTIONS = (
+    "1. The problem",
+    "2. Users",
+    "3. Architecture",
+    "4. The OpenCV 5 implementation",
+    "5. AWS deployment",
+    "6. Evaluation",
+    "7. Limitations",
+    "8. Responsible use",
+)
+REPORT_APPENDICES = ("Appendix A. Best use of COOL", "Appendix B. Agentic Vision", "Appendix C. Reproduce")
+# Each diagram, the pages that embed its source verbatim, and the words the rubric's lines ask it to
+# show (S4: the OpenCV 5 and AWS components, COOL, the agent's news search and its fallback, the
+# assistant, the rotation; A1: the loop's tools, the fail-closed edges and the person).
+DIAGRAM_PAGES = {
+    "architecture": (REPORT, BLOGGER_VISION),
+    "agent-workflow": (REPORT, BLOGGER_VISION),
+}
+DIAGRAM_WORDS = {
+    "architecture": (
+        "vision worker", "us-west-2", "sentinel-cogs", "OpenCV 5", "COOL", "Bedrock", "Overpass",
+        "Earth Search", "GDELT", "AgentCore", "MCP", "Alexa+", "CloudFront", "rota",
+    ),
+    "agent-workflow": (
+        "look_again", "previous_scene", "site_history", "web_context", "deadline", "no model", "artefact",
+        "No Finding", "a person", "rota",
+    ),
+}
+# The one form every placeholder in the package takes, so R2 (and submission_check.py) find them all.
+PLACEHOLDER_PREFIX = "[R2: "
+CONSTRAINTS_FLAG = ("-c", "constraints-py311.txt")
+
+
+def _level_two_headings(text: str) -> list[str]:
+    return [line[3:].strip() for line in text.splitlines() if line.startswith("## ")]
+
+
+def _mermaid_blocks(text: str) -> list[str]:
+    return re.findall(r"^```mermaid\n(.*?)^```$", text, re.M | re.S)
+
+
+def _fenced_after(text: str, heading: str, language: str) -> str:
+    """The first ```<language> block after the line `heading`."""
+    start = text.index(heading)
+    match = re.compile(rf"^```{language}\n(.*?)^```$", re.M | re.S).search(text, start)
+    assert match, f"no ```{language} block after {heading!r}"
+    return match.group(1)
+
+
+def _commands(block: str) -> list[list[str]]:
+    """Each line of a shell block as its tokens, `&&` and `;` splitting a line into commands."""
+    commands = []
+    for line in block.splitlines():
+        for part in re.split(r"\s*(?:&&|;)\s*", line.strip()):
+            if part:
+                commands.append(part.split())
+    return commands
+
+
+def _without_constraints(tokens: list[str]) -> list[str]:
+    out, skip = [], False
+    for n, token in enumerate(tokens):
+        if skip:
+            skip = False
+            continue
+        if tuple(tokens[n : n + 2]) == CONSTRAINTS_FLAG:
+            skip = True
+            continue
+        out.append(token)
+    return out
+
+
+def ci_commands() -> dict[str, list]:
+    """What python-ci.yml runs, read from its text: every pip install of the install step, in order,
+    the ruff check (not its --fix retry) and the pytest line."""
+    text = PYTHON_CI.read_text(encoding="utf-8")
+    start = text.index("- name: Install dependencies")
+    end = text.index("- name: Print the installed packages")
+    pips = [
+        line.strip().split()
+        for line in text[start:end].splitlines()
+        if re.match(r"^\s*(python -m )?pip install ", line)
+    ]
+    ruff = [m.group(1).split() for m in re.finditer(r"\b(ruff check [^;\n]+?)\s*(?:;|$)", text, re.M)]
+    pytest_lines = [line.strip().split() for line in text.splitlines() if re.match(r"^\s*pytest ", line)]
+    return {"pip": pips, "ruff": [r for r in ruff if "--fix" not in r], "pytest": pytest_lines}
+
+
+def test_the_report_has_the_rubrics_eight_sections_in_order_then_the_appendices():
+    headings = _level_two_headings(REPORT.read_text(encoding="utf-8"))
+    assert headings == list(REPORT_SECTIONS) + list(REPORT_APPENDICES), headings
+
+
+def test_every_diagram_has_its_svg_and_is_embedded_verbatim():
+    sources = sorted(DIAGRAMS.glob("*.mmd"))
+    assert {path.stem for path in sources} == set(DIAGRAM_PAGES)
+    for source in sources:
+        svg = source.with_suffix(".svg")
+        assert svg.exists(), f"{source.name} has no SVG export (docs/hackathon/diagrams/README.md says how)"
+        assert svg.read_text(encoding="utf-8").lstrip().startswith("<svg"), f"{svg.name} is not an SVG"
+        text = source.read_text(encoding="utf-8")
+        for page in DIAGRAM_PAGES[source.stem]:
+            assert text in _mermaid_blocks(page.read_text(encoding="utf-8")), (
+                f"{page.relative_to(ROOT)} does not embed {source.name} verbatim"
+            )
+
+
+@pytest.mark.parametrize("name", sorted(DIAGRAM_WORDS))
+def test_each_diagram_names_what_the_rubric_asks_for(name):
+    text = (DIAGRAMS / f"{name}.mmd").read_text(encoding="utf-8")
+    missing = [word for word in DIAGRAM_WORDS[name] if word not in text]
+    assert not missing, f"{name}.mmd does not show {missing}"
+
+
+def test_the_readme_sends_judges_to_the_package_first_and_draws_the_vision_worker():
+    text = README.read_text(encoding="utf-8")
+    top = "\n".join(text.splitlines()[:20])
+    assert "Judges" in top and "start here" in top
+    for target in ("docs/hackathon/REPRODUCE.md", "docs/hackathon/technical-report.md"):
+        assert f"]({target})" in top, f"README's judges' line does not link {target}"
+    (diagram,) = _mermaid_blocks(text)
+    assert "vision worker" in diagram and "sentinel-cogs" in diagram
+
+
+def test_the_judges_pages_resolve_their_links():
+    dead = dead_links(ROOT, [README, BLOGGER_VISION])
+    assert not dead, f"links to files that do not exist: {dead}"
+
+
+def test_every_placeholder_in_the_package_is_marked_for_r2():
+    unmarked = [
+        (doc.as_posix(), line, span)
+        for doc in submission_check.PACKAGE_DOCS
+        for line, span in submission_check.placeholders((ROOT / doc).read_text(encoding="utf-8"))
+        if not span.startswith(PLACEHOLDER_PREFIX)
+    ]
+    assert not unmarked, f"a placeholder not in the form {PLACEHOLDER_PREFIX}...]: {unmarked}"
+
+
+def _is_pip_install(command: list[str]) -> bool:
+    return command[:2] == ["pip", "install"] or command[:4] == ["python", "-m", "pip", "install"]
+
+
+def test_reproduce_tier_1a_is_cis_commands_with_only_the_constraints_file_added():
+    tier = _fenced_after(REPRODUCE.read_text(encoding="utf-8"), "## Tier 1a", "bash")
+    venv, activate, *rest = _commands(tier)
+    assert venv == ["python3.11", "-m", "venv", ".venv"] and activate == [".", ".venv/bin/activate"]
+    pips = [command for command in rest if _is_pip_install(command)]
+    checks = [command for command in rest if not _is_pip_install(command)]
+    ci = ci_commands()
+    assert all(" ".join(CONSTRAINTS_FLAG) in " ".join(c) for c in pips), "a pip install without -c"
+    assert [_without_constraints(c) for c in pips] == ci["pip"], (pips, ci["pip"])
+    assert checks == ci["ruff"] + ci["pytest"], (checks, ci["ruff"], ci["pytest"])
+
+
+def test_reproduce_tier_1a_in_powershell_is_the_same_commands():
+    text = REPRODUCE.read_text(encoding="utf-8")
+    bash = _commands(_fenced_after(text, "## Tier 1a", "bash"))[2:]
+    powershell = _commands(_fenced_after(text, "## Tier 1a", "powershell"))
+    assert powershell[:2] == [["py", "-3.11", "-m", "venv", ".venv"], [".\\.venv\\Scripts\\Activate.ps1"]]
+    assert [[token.replace("\\", "/") for token in c] for c in powershell[2:]] == bash
+
+
+def test_the_reports_appendix_c_carries_tier_1a_exactly():
+    reproduce = _fenced_after(REPRODUCE.read_text(encoding="utf-8"), "## Tier 1a", "bash")
+    report = _fenced_after(REPORT.read_text(encoding="utf-8"), "## Appendix C. Reproduce", "bash")
+    assert report == reproduce
+
+
+def test_ci_prints_its_environment_after_installing_it():
+    text = PYTHON_CI.read_text(encoding="utf-8")
+    assert text.index("- name: Install dependencies") < text.index("- name: Print the installed packages")
+    step = text[text.index("- name: Print the installed packages") : text.index("- name: Ruff lint")]
+    assert "run: pip freeze --all" in step
+
+
+def test_tier_1a_parsing_reads_cis_three_installs_and_its_two_checks():
+    ci = ci_commands()
+    assert ci["pip"] == [
+        ["python", "-m", "pip", "install", "--upgrade", "pip"],
+        ["pip", "install", "-r", "lambdas/requirements.txt"],
+        ["pip", "install", "-r", "lambdas/requirements-dev.txt"],
+        ["pip", "install", "-r", "scripts/requirements.txt"],
+    ]
+    assert ci["ruff"] == [["ruff", "check", "lambdas/", "scripts/"]]
+    assert ci["pytest"] == [["pytest", "lambdas/", "scripts/"]]
