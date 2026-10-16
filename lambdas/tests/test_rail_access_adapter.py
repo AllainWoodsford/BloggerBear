@@ -29,10 +29,13 @@ from terraform_text import INFRA
 
 import daily_cycle_handler
 import research_tick_handler
+from common import day_subject as day_subject_module
 from common import evidence, findings_window, osm, scheduler, vision_client, vision_sites, vision_triage
 from common.adapters import MANUAL_REVIEW_ADAPTERS, RAIL_ACCESS_ADAPTER_KEY
 from common.adapters import rail_access as ra
+from common.adapters.base import DaySubject
 from common.adapters.registry import ADAPTER_REGISTRY
+from common.editorial_resolver import ADAPTER_DEFAULTS
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS, clean_figures
 from common.rail_notes import NOTES_LEAD, format_notes, planner_notes
 
@@ -3094,3 +3097,210 @@ def test_a_state_from_before_reaches_the_object_through_the_research_tick(tick_e
     sydney = running_state()["sites"]["sydney"]
     assert "network" not in sydney and sydney["network_fetched_at"] == inline["fetched_at"]
     assert sydney["history"][-1]["network_fetched_at"] == inline["fetched_at"]
+
+
+# --- one city a day: the day-subject round (docs/enhancements/dailysubject_hook.md §4.2, §5) -------
+
+SINGAPORE = [[103.56, 1.61], [104.08, 1.61], [104.08, 1.09], [103.56, 1.09]]
+BOSTON = [[-71.30, 42.42], [-70.90, 42.42], [-70.90, 42.15], [-71.30, 42.15]]
+CITIES = [
+    {"id": "sydney", "name": "Sydney", "polygon": SYDNEY},
+    {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE},
+    {"id": "singapore", "name": "Singapore", "polygon": SINGAPORE},
+    {"id": "boston", "name": "Boston", "polygon": BOSTON},
+]
+# The owner's rota (16 October): two days a week each, Boston one.
+ROTA = {"MON": "sydney", "TUE": "melbourne", "WED": "singapore", "THU": "boston", "FRI": "sydney",
+        "SAT": "melbourne", "SUN": "singapore"}  # fmt: skip
+SYDNEY_TIME = ZoneInfo("Australia/Sydney")
+
+
+def rotating(**config):
+    """A rail topic over the four cities with the owner's rota, read in Sydney."""
+    settings = {"rotation": ROTA, "rotation_timezone": "Australia/Sydney", **config}
+    return {**topic(sites=CITIES, **settings), "daily_timezone": "Australia/Sydney"}
+
+
+def sydney_time(year, month, day, hour=9, minute=5, second=0):
+    return datetime(year, month, day, hour, minute, second, tzinfo=SYDNEY_TIME).astimezone(UTC)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"rotation": {**ROTA, "THU": "perth"}}, "'perth', which is not one of the topic's subjects"),
+        ({"rotation": {**ROTA, "THU": "sydney"}}, "gives no day to boston"),
+        ({"rotation": {key: value for key, value in ROTA.items() if key != "SUN"}}, "must name each of"),
+        ({"rotation": ["sydney", "melbourne", "singapore"]}, "gives no day to boston"),
+        ({"rotation": "sydney"}, "an object of weekdays or a list"),
+        ({"rotation_timezone": "not a zone"}, "must be an IANA zone name"),
+        ({"rotation_timezone": "Mars/Olympus_Mons"}, "is not a zone this system knows"),
+        ({"rotation": None, "rotation_timezone": "UTC"}, "is set but there is no 'rotation'"),
+    ],
+)
+def test_a_rota_that_names_no_site_leaves_a_site_out_or_has_no_zone_is_refused(change, message):
+    """Spec §5: a city in the rota that is not one of the sites, a site the rota gives no day, or a
+    rotation_timezone that is not a zone: ConfigError, at tick time (the topic's last_error) and
+    for the daily run alike (which then stops before any model call)."""
+    config = {"sites": CITIES, "rotation": ROTA, "rotation_timezone": "Australia/Sydney", **change}
+    config = {key: value for key, value in config.items() if value is not None}
+    with pytest.raises(ra.ConfigError, match=re.escape(message)):
+        ra.parse_config(config)
+    adapter = ra.RailAccessAdapter()
+    with pytest.raises(ra.ConfigError):
+        adapter.fetch_state({**rotating(), "adapter_config": config})
+    with pytest.raises(ra.ConfigError):
+        adapter.day_subject({**rotating(), "adapter_config": config}, datetime(2026, 10, 19, tzinfo=UTC))
+
+
+def test_a_rota_is_parsed_with_its_zone_and_a_topic_without_one_has_none():
+    config = ra.parse_config({"sites": CITIES, "rotation": ROTA, "rotation_timezone": "Australia/Sydney"})
+    assert config["rotation"] == {
+        "kind": "weekly", "timezone": "Australia/Sydney",
+        "slots": ("sydney", "melbourne", "singapore", "boston", "sydney", "melbourne", "singapore"),
+    }  # fmt: skip
+    # Without rotation_timezone, the topic's daily_timezone; without either, UTC.
+    rota_only = {"sites": CITIES, "rotation": ROTA}
+    assert ra.parse_config(rota_only, "Australia/Sydney")["rotation"]["timezone"] == "Australia/Sydney"
+    assert ra.parse_config(rota_only)["rotation"]["timezone"] == "UTC"
+    # A list rota, cycled one a day.
+    cycled = ra.parse_config({"sites": CITIES[:2], "rotation": ["sydney", "melbourne", "sydney"]})["rotation"]
+    assert cycled["kind"] == "cycle" and cycled["slots"] == ("sydney", "melbourne", "sydney")
+    # A topic without a rota (the owner's trains-sydney): none, and no day subject.
+    assert ra.parse_config({"sites": SITES})["rotation"] is None
+    monday = datetime(2026, 10, 19, tzinfo=UTC)
+    assert ra.RailAccessAdapter().day_subject(topic(), monday) is None
+    in_sydney = {**topic(), "daily_timezone": "Australia/Sydney"}
+    assert ra.RailAccessAdapter().day_subject(in_sydney, monday) is None
+
+
+def test_the_day_subject_is_the_rotas_city_on_sydneys_calendar_with_its_name_folded_in():
+    adapter = ra.RailAccessAdapter()
+    # Monday 19 October 2026 to Sunday 25 October, at 09:05 Sydney time.
+    week = [adapter.day_subject(rotating(), sydney_time(2026, 10, 19 + n)) for n in range(7)]
+    assert [subject.key for subject in week] == [
+        "sydney", "melbourne", "singapore", "boston", "sydney", "melbourne", "singapore",
+    ]  # fmt: skip
+    monday = week[0]
+    assert monday == DaySubject(
+        key="sydney", label="Sydney", mandate=ra.subject_mandate("Sydney"), style=ra.subject_style("Sydney")
+    )
+    assert day_subject_module.day_subject_error(monday) is None  # what the daily cycle accepts
+    assert monday.mandate.startswith("Report only what was measured for Sydney: proxies from Sentinel-2")
+    assert monday.mandate == ADAPTER_DEFAULTS["rail_access"].replace(
+        "Report only what was measured", "Report only what was measured for Sydney", 1
+    )
+    assert monday.mandate != ADAPTER_DEFAULTS["rail_access"]  # the lead is there to fold the name into
+    assert monday.style.startswith("a plain report of what the rail access measurements show for Sydney: ")
+    # Through the daily cycle's own resolution (common/day_subject.resolve_day_subject).
+    assert day_subject_module.resolve_day_subject(rotating(), sydney_time(2026, 10, 22)).label == "Boston"
+
+
+def test_the_day_turns_at_midnight_in_the_rotas_zone_not_utc():
+    """Spec §5: the daily cycle reads the rota once, at its run's start, on the rota zone's
+    calendar. 23:59:59 on Wednesday in Sydney is Singapore's day; a second later it is Boston's,
+    though both moments are Wednesday in UTC."""
+    adapter = ra.RailAccessAdapter()
+    before, after = sydney_time(2026, 10, 21, 23, 59, 59), sydney_time(2026, 10, 22, 0, 0, 0)
+    assert before.date() == after.date() == datetime(2026, 10, 21).date()  # one UTC day
+    assert adapter.day_subject(rotating(), before).key == "singapore"
+    assert adapter.day_subject(rotating(), after).key == "boston"
+    # Across the start of daylight saving (Sunday 4 October 2026): the local day still decides.
+    assert adapter.day_subject(rotating(), sydney_time(2026, 10, 4, 9, 5)).key == "singapore"
+    assert adapter.day_subject(rotating(), sydney_time(2026, 10, 5, 0, 30)).key == "sydney"
+    # The same rota read in UTC: 09:05 Sydney on Monday is still Sunday in UTC.
+    utc = rotating(rotation_timezone="UTC")
+    assert adapter.day_subject(utc, sydney_time(2026, 10, 19)).key == "singapore"
+
+
+def test_a_label_is_one_plain_line_with_no_markup_and_the_id_without_a_name():
+    sites = [{"id": "sydney", "name": 'Sydney <b>"CBD"</b> [x](y)', "polygon": SYDNEY},
+             {"id": "melbourne", "polygon": MELBOURNE}]  # fmt: skip
+    config = {**rotating(), "adapter_config": {"sites": sites, "rotation": ["sydney", "melbourne"]}}
+    adapter = ra.RailAccessAdapter()
+    epoch = datetime(1970, 1, 1, 0, tzinfo=UTC)  # day 0 of a list rota, in Sydney too (10:00)
+    first = adapter.day_subject(config, epoch)
+    assert first.label == "Sydney b'CBD'/b (x)(y)"
+    assert not {"<", ">", '"', "["} & set(first.mandate + first.style)
+    second = adapter.day_subject(config, epoch + timedelta(days=1))
+    assert (second.key, second.label) == ("melbourne", "melbourne")
+
+
+def test_subjects_are_the_cities_the_summary_reported(adapter):
+    """Spec §4.2: the sites whose scenes the diff summary reported (the rule figures and planner
+    notes follow): a city below the coverage floor, or one the agent doubted, is not a subject; a
+    tick that reports two cities makes a Finding with two (drafted on each one's day)."""
+    two = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    adapter.http_post, adapter.fetch_network = scene(1), FakeOverpass(network())
+    cloudy = metrics(coverage=0.3)
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": cloudy}})
+    state = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2))
+    assert [m["site_id"] for m in state["measured"]] == ["sydney", "melbourne"]
+    assert adapter.subjects(state) == ["sydney", "melbourne"]  # before the diff: every scene measured
+    changed, summary = adapter.material_diff(None, state)
+    assert changed and summary.startswith("First observation. Sydney:") and "Melbourne" not in summary
+    assert adapter.subjects(state) == ["sydney"]  # the cloudy city is not reported, so not a subject
+
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": metrics()}})
+    state = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2))
+    assert adapter.material_diff(None, state)[0] and adapter.subjects(state) == ["sydney", "melbourne"]
+
+    # The agent doubts Melbourne's change: only Sydney is reported, and only Sydney is a subject.
+    def agent(**kwargs):
+        doubted = kwargs["site"]["id"] == "melbourne"
+        return {"verdict": "artefact" if doubted else "real", "reason": "haze" if doubted else "a new line",
+                "tool_calls": [], "model_calls": 1}  # fmt: skip
+
+    adapter.triage_agent, adapter.http_post = agent, scene(2, day=4)
+    adapter.measure = SiteRailWorker({"sydney": {"S2": metrics(served_share=0.6)},
+                                      "melbourne": {"S2": metrics(served_share=0.6)}})  # fmt: skip
+    later = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2), previous_state=state)
+    changed, summary = adapter.material_diff(state, later)
+    assert changed and "Melbourne" not in summary and adapter.subjects(later) == ["sydney"]
+    assert adapter.subjects({"measured": [], "sites": {}}) == []
+
+
+def everywhere_scene(scene_id, when):
+    """A stand-in scene whose box covers every city (a tile never does; the search's rule does)."""
+    return FakeStac([item(scene_id, when, bbox=(-180.0, -90.0, 180.0, 90.0))])
+
+
+def test_the_tick_never_reads_the_rota_and_tags_the_finding_with_the_city_it_measured(tick_env, monkeypatch):
+    """Spec §5: the tick does not read the day's subject, so a day that turns while it runs has
+    nothing to agree on. Whatever the day, the city order_sites reaches is measured, and its Finding
+    reports that city: here Boston (first in the config, none visited yet), on whatever day the
+    test runs, which is Boston's one day in seven at most."""
+    item_ = {**rotating(), "topic_id": "rail"}
+    item_["adapter_config"]["sites"] = [CITIES[3], *CITIES[:3]]
+    boto3.resource("dynamodb", region_name=REGION).Table("Topics").put_item(
+        Item=json.loads(json.dumps(item_), parse_float=Decimal)
+    )
+
+    def never(*args, **kwargs):
+        raise AssertionError("the tick read the day's subject")
+
+    monkeypatch.setattr(ra.RailAccessAdapter, "day_subject", never)
+    monkeypatch.setattr(ra.RailAccessAdapter, "triage_agent", staticmethod(FakeAgent()))
+    monkeypatch.setattr(ra.RailAccessAdapter, "choose_model", staticmethod(lambda topic: ("m", None)))
+    monkeypatch.setattr(ra.RailAccessAdapter, "http_post", everywhere_scene("S0", "2026-10-18T00:00:00Z"))
+    monkeypatch.setattr(ra.RailAccessAdapter, "measure", FakeRailWorker({"S0": metrics()}))
+    monkeypatch.setattr(ra.RailAccessAdapter, "fetch_network", FakeOverpass(network(polygon=BOSTON)))
+    tracked = {"text": "summary", "model_id": "m", "input_tokens": 1, "output_tokens": 1}
+    tracked["used_fallback"] = False
+    with patch("research_tick_handler.invoke_model_tracked", return_value=tracked):
+        result = research_tick_handler.handler({"topic_id": "rail"}, None)
+    assert result["status"] == "material_change"
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    assert finding["subjects"] == ["boston"]
+    assert [m["site_id"] for m in running_state()["measured"]] == ["boston"]
+
+
+def test_a_topic_without_a_rota_still_tags_its_findings_and_has_no_day_subject(tick_env, monkeypatch):
+    """The owner's trains-sydney has no rota: no day subject, so the daily cycle drafts every Finding
+    as before (the plain path); its Findings still say which city they report, so a rota added
+    later finds the recent ones."""
+    result, _ = tick_with(monkeypatch, "S0", metrics(), "2026-10-18T00:00:00Z")
+    assert result["status"] == "material_change"
+    (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    assert finding["subjects"] == ["sydney"]
+    assert day_subject_module.resolve_day_subject(topic(), datetime.now(UTC)) is None

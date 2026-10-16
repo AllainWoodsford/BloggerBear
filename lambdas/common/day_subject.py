@@ -38,7 +38,6 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from common.adapters.base import SUBJECT_KEY, DaySubject
-from common.adapters.registry import ADAPTER_REGISTRY
 from common.scheduler import validate_timezone
 
 # The Finding's field (research_tick_handler.py, common/dynamo.put_finding).
@@ -110,6 +109,10 @@ def resolve_day_subject(topic: dict, at: datetime) -> DaySubject | None:
     topic's adapter is not registered. Raises ValueError for anything that is not a usable
     DaySubject, and lets whatever the hook raises through: a broken rota stops the run, it never
     becomes an article about every subject at once."""
+    # Imported when asked, not with this module: an adapter that names its subjects by the rota
+    # below (rail_access) imports this module, and the registry imports every adapter.
+    from common.adapters.registry import ADAPTER_REGISTRY
+
     adapter_key = (topic or {}).get("adapter")
     adapter_cls = ADAPTER_REGISTRY.get(adapter_key) if isinstance(adapter_key, str) else None
     if adapter_cls is None:

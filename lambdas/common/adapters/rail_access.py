@@ -25,6 +25,8 @@ lives in common/vision_sites.py. What a topic watches is configuration, not code
       "max_sites_per_tick": 1, "time_budget_seconds": 70,  # one city per tick; the budget is capped at 80
       "triage": true, "triage_max_tool_calls": 3, "triage_deadline_seconds": 85,
       "web_context": true,                                 # the agent may ask the news search
+      "rotation": {"MON": "sydney", ...},                  # optional: one city a day (below)
+      "rotation_timezone": "Australia/Sydney",             # whose calendar day; default daily_timezone
     }
 
 **Per tick**, for each site in turn (common/vision_sites.order_sites: those never attempted first,
@@ -47,6 +49,16 @@ therefore never stops a city with a stored network from being measured. A scene 
 for what it is (REFUSED_SCENE_CODES, recorded as `failed_scene`) is nothing new until a newer scene
 appears or NETWORK_RETRY_HOURS pass, so it is not sent again every hour and (d) still gets its
 ticks. Not measured is never "nothing there".
+
+**One city a day** (docs/enhancements/dailysubject_hook.md §4, the day-subject round): with a
+`rotation` (the seven weekdays each naming a site, or a list of sites cycled one a day; every site
+needs a day) the topic writes about one city a day, read on the calendar of `rotation_timezone`
+(the topic's `daily_timezone` when unset, else UTC). `day_subject` names the day's city to the
+daily cycle (common/day_subject.py) with the adapter's own mandate and style, and `subjects` tells
+the research tick which cities a Finding reports: the sites its summary reported, the rule
+`figures` and `planner_notes` follow. The tick never reads the rota: every city is measured as the
+order above reaches it, so each city's Findings are waiting when its day comes. Without a
+`rotation` the topic writes about every city it watches, every run, as before.
 
 **The agent decides.** A numeric change is only a candidate: before it becomes a Finding, the
 triage agent (common/vision_triage.py, the rail profile) looks at the figure and the evidence, may
@@ -101,9 +113,12 @@ import statistics
 import time
 from datetime import UTC, datetime, timedelta
 
+from common import day_subject as rota
 from common import osm, rail_notes, vision_client, vision_decisions, vision_sites, vision_triage
 from common import vision_contract as contract
-from common.adapters.base import Adapter, render_review_evidence
+from common.adapters import RAIL_ACCESS_ADAPTER_KEY
+from common.adapters.base import Adapter, DaySubject, render_review_evidence
+from common.editorial_resolver import ADAPTER_DEFAULTS
 from common.figures import MAX_ALT_CHARS, MAX_CAPTION_CHARS
 from common.model_routing import resolve_model
 from common.vision_sites import (
@@ -217,6 +232,18 @@ MAX_OSM_TTL_DAYS = 365.0
 # state written before NEWEST_ONLY_KEYS (history_size 20, every entry with its lists) peaked at
 # 293 MB.
 MAX_RAIL_SITES = 8
+# A day about one city (day_subject): the adapter's standing goal, whose first sentence names what
+# is reported, gains the city's name there (subject_mandate) ...
+_MANDATE_LEAD = "Report only what was measured"
+# ... and the article style is the example city topics' editorial goal, as it was before one topic
+# rotated through them (scripts/rail_topics.example.json, until the day-subject round).
+SUBJECT_STYLE = (
+    "a plain report of what the rail access measurements show for {label}: the share of its built-up "
+    "area within walking reach of a rail station, the built-up area beyond it, the station count, the "
+    "scene's capture date and coverage, and the rule-based flags and simulations, as proxies measured "
+    "from satellite imagery and OpenStreetMap."
+)
+
 # What a budget-starved site returns from _visit: it waits for the next tick, unstamped.
 DEFERRED = "deferred"
 
@@ -293,11 +320,15 @@ DECISION_VOCABULARY = {
 }
 
 
-def parse_config(adapter_config: dict | None) -> dict:
+def parse_config(adapter_config: dict | None, daily_timezone: str | None = None) -> dict:
     """adapter_config with defaults filled in, or ConfigError: the checks every vision topic
     shares (common/vision_sites.py) with at most MAX_RAIL_SITES sites, then `reach_m` within the
-    worker contract's bounds, a network TTL in (0, MAX_OSM_TTL_DAYS] and `params` as an object (the
-    contract checks each parameter before any call)."""
+    worker contract's bounds, a network TTL in (0, MAX_OSM_TTL_DAYS], `params` as an object (the
+    contract checks each parameter before any call), and the optional rota (`rotation`,
+    `rotation_timezone`: common/day_subject.parse_rotation's rule over the site ids, the zone
+    defaulting to the topic's `daily_timezone`, else UTC), which `rotation` then holds parsed, or
+    None when there is none: a slot that is not a site, a site with no day, or a zone that is not
+    one is a ConfigError."""
     config = vision_sites.parse_site_config(
         adapter_config, DEFAULTS, vision_sites.WHOLE_KEYS, _FLOAT_KEYS, max_sites=MAX_RAIL_SITES
     )
@@ -308,7 +339,25 @@ def parse_config(adapter_config: dict | None) -> dict:
         raise ConfigError(f"osm_ttl_days must be more than 0 and at most {MAX_OSM_TTL_DAYS:g}")
     if not isinstance(config["params"], dict):
         raise ConfigError("params must be an object")
+    try:
+        config[rota.ROTATION_KEY] = rota.parse_rotation(
+            config, [site["id"] for site in config["sites"]], daily_timezone
+        )
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
     return config
+
+
+def subject_mandate(label: str) -> str:
+    """The editorial mandate of a day about one city: the adapter's standing goal
+    (editorial_resolver.ADAPTER_DEFAULTS), with the city's name folded into its first sentence."""
+    return ADAPTER_DEFAULTS[RAIL_ACCESS_ADAPTER_KEY].replace(_MANDATE_LEAD, f"{_MANDATE_LEAD} for {label}", 1)
+
+
+def subject_style(label: str) -> str:
+    """The article style of a day about one city: the example topics' editorial goal (one per city
+    before the day-subject round), as a style line."""
+    return SUBJECT_STYLE.format(label=label)
 
 
 def worker_params(config: dict) -> dict:
@@ -367,7 +416,9 @@ class RailAccessAdapter(Adapter):
     _networks: dict | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
-        config = parse_config(topic_config.get("adapter_config"))
+        # The rota is checked here too (a broken one is the topic's last_error, as any config is), but
+        # the tick never reads the day's city: it measures every city as order_sites reaches it.
+        config = parse_config(topic_config.get("adapter_config"), topic_config.get("daily_timezone"))
         # Kept for material_diff on this same instance (the research tick makes one per tick): the
         # triage agent needs the topic's model and the sites' polygons, and the diff is only given
         # the two states.
@@ -789,6 +840,33 @@ class RailAccessAdapter(Adapter):
     @classmethod
     def decision_vocabulary(cls) -> dict:
         return DECISION_VOCABULARY
+
+    def day_subject(self, topic_config: dict, at: datetime) -> DaySubject | None:
+        """The city a topic with a `rotation` writes about at `at` (the daily run's start), or None
+        for a topic without one (it writes about every city it watches, as before). The rota is
+        read on the calendar of `rotation_timezone`, else the topic's `daily_timezone`, else UTC
+        (common/day_subject.rotation_subject): pure, so the daily cycle and anything else that asks
+        agree. The label is the site's name by rail_notes' name rule (one line, no markup), else
+        its id; the mandate and the style are this adapter's own words with the name folded in
+        (subject_mandate, subject_style). A rota that does not parse raises ConfigError, which
+        stops the daily run before any model call."""
+        topic_config = topic_config or {}
+        config = parse_config(topic_config.get("adapter_config"), topic_config.get("daily_timezone"))
+        rotation = config[rota.ROTATION_KEY]
+        if rotation is None:
+            return None
+        key = rota.rotation_subject(rotation, at)
+        site = next(site for site in config["sites"] if site["id"] == key)
+        label = rail_notes.clean_name(site.get("name")) or key
+        return DaySubject(key=key, label=label, mandate=subject_mandate(label), style=subject_style(label))
+
+    def subjects(self, new_state: dict) -> list[str]:
+        """The cities this observation reports: the sites whose scenes the diff summary reported
+        (`_reported_scenes`, the rule figures and planner_notes follow), so a Finding about two
+        cities is drafted on each one's day and a city it does not report never sees it. Kept
+        whether or not the topic has a rota: a topic that gains one later still finds its recent
+        Findings tagged."""
+        return [site_id for site_id, _latest in self._reported_scenes(new_state)]
 
     def _with_planner_notes(self, summary: str, verdicts: list[dict], new_state: dict) -> str:
         """`summary` with the planner notes of the sites it reports, which are the sites
