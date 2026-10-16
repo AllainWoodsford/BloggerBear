@@ -3420,3 +3420,61 @@ def test_a_city_in_a_state_from_before_is_first_only_if_it_never_had_a_clear_sce
     assert state["sites"]["melbourne"]["first_observed_at"] == state["fetched_at"]  # first now
     changed, summary = adapter.material_diff(before, state)
     assert changed and summary.startswith("First observation. Melbourne:") and "Sydney:" not in summary
+
+
+def test_a_one_city_state_from_before_whose_clear_scenes_were_trimmed_is_not_first_again(adapter):
+    """The owner's trains-sydney as it was before each city kept its own marker: the topic was
+    observed, then history_size cloudy scenes trimmed every clear one from Sydney's history. Its
+    only city is the one the topic observed, so the next clear scene is compared with a baseline
+    ("baseline still building"), as before, not a second first observation; and the city's marker is
+    the topic's from then on."""
+
+    def scene_tick(previous, n, coverage=0.93):
+        worker = FakeRailWorker({f"S{n}": metrics(coverage=coverage)})
+        return tick(adapter, previous, scene(n, day=10 + n), worker, history_size=2)
+
+    state, (changed, _) = scene_tick(None, 0)
+    assert changed
+    for n in (1, 2):
+        state, _ = scene_tick(state, n, coverage=0.3)
+    legacy = json.loads(json.dumps(state))
+    del legacy["sites"]["sydney"]["first_observed_at"]  # written before each city kept its own
+    assert [e["coverage"] for e in legacy["sites"]["sydney"]["history"]] == [0.3, 0.3]
+    marker = legacy["first_observed_at"]
+    assert marker and marker != legacy["fetched_at"]
+    later, diff = scene_tick(legacy, 3)
+    assert diff == (False, "Sydney: baseline still building")
+    assert later["sites"]["sydney"]["decisions"][-1]["code"] == "baseline_building"
+    assert later["sites"]["sydney"]["first_observed_at"] == later["first_observed_at"] == marker
+    # On a cloudy tick too, the city's marker is the topic's, not None.
+    cloudy, diff = scene_tick(legacy, 3, coverage=0.3)
+    assert diff[0] is False and cloudy["sites"]["sydney"]["first_observed_at"] == marker
+    # A one-city state from before that the topic never observed: its first clear scene is first.
+    never = json.loads(json.dumps(legacy))
+    never["first_observed_at"] = None
+    fresh, (changed, summary) = scene_tick(never, 3)
+    assert changed and summary.startswith("First observation. Sydney:")
+    assert fresh["sites"]["sydney"]["first_observed_at"] == fresh["fetched_at"]
+
+
+def test_a_topic_without_a_rota_names_no_day_subject_whatever_else_its_config_holds():
+    """trains-sydney's daily run before the hook never parsed its config: one that sets no rota is
+    answered None before the parse, so a config the tick refuses (here reach_m) still lets the
+    daily run draft the Findings in its window, as before. A topic that sets any part of a rota is
+    parsed in full, and a broken config stops its run."""
+    broken = {**topic(reach_m=99999), "daily_timezone": "Australia/Sydney"}
+    with pytest.raises(ra.ConfigError, match="reach_m"):
+        ra.parse_config(broken["adapter_config"])
+    monday = sydney_time(2026, 10, 19)
+    assert ra.RailAccessAdapter().day_subject(broken, monday) is None
+    assert day_subject_module.resolve_day_subject(broken, monday) is None
+    assert daily_cycle_handler._day_subject(broken, monday) is None
+    for odd in (None, [], "sites"):
+        assert ra.RailAccessAdapter().day_subject({**broken, "adapter_config": odd}, monday) is None
+    for rota_part in ({"rotation": ["sydney"]}, {"rotation_timezone": "UTC"}):
+        partly = {**broken, "adapter_config": {**broken["adapter_config"], **rota_part}}
+        with pytest.raises(ra.ConfigError):
+            ra.RailAccessAdapter().day_subject(partly, monday)
+    # With the config mended, the rota's city.
+    mended = {**broken, "adapter_config": {"sites": SITES, "rotation": ["sydney"]}}
+    assert ra.RailAccessAdapter().day_subject(mended, monday).key == "sydney"

@@ -869,9 +869,15 @@ class RailAccessAdapter(Adapter):
         agree. The label is the site's name by rail_notes' name rule (one line, no markup), else
         its id; the mandate and the style are this adapter's own words with the name folded in
         (subject_mandate, subject_style). A rota that does not parse raises ConfigError, which
-        stops the daily run before any model call."""
+        stops the daily run before any model call. A topic that sets neither `rotation` nor
+        `rotation_timezone` is answered before the config is parsed: its daily run goes ahead as it
+        did before the hook, whatever else its config holds (the tick reports a broken one)."""
         topic_config = topic_config or {}
-        config = parse_config(topic_config.get("adapter_config"), topic_config.get("daily_timezone"))
+        raw = topic_config.get("adapter_config")
+        rota_keys = (rota.ROTATION_KEY, rota.ROTATION_TIMEZONE_KEY)
+        if not isinstance(raw, dict) or all(raw.get(key) is None for key in rota_keys):
+            return None
+        config = parse_config(raw, topic_config.get("daily_timezone"))
         rotation = config[rota.ROTATION_KEY]
         if rotation is None:
             return None
@@ -1176,15 +1182,25 @@ def _failed_scene_id(record: dict, now: datetime) -> str | None:
 def _site_observed_before(old_state: dict | None, site_id: str, floor: float) -> bool:
     """Whether the city's first observation was reported before this tick: its record in `old_state`
     carries `first_observed_at` with a time. A record written before each city kept its own (none in
-    it at all) is judged by its own scenes, against the coverage floor the state stored (`floor`
-    only when it stored none): whether it has one at or above it."""
+    it at all) that is the state's only site is the city the topic observed: observed when the topic
+    was (vision_sites.observed_before), so cloudy scenes that trimmed every clear one from its
+    history never make it first again (a one-city topic such as trains-sydney, as before). One of a
+    state of several sites is judged by its own scenes, against the coverage floor the state stored
+    (`floor` only when it stored none): whether it has one at or above it."""
     record = ((old_state or {}).get("sites") or {}).get(site_id)
     if not isinstance(record, dict):
         return False
     if vision_sites.FIRST_OBSERVED_KEY in record:
         return bool(record[vision_sites.FIRST_OBSERVED_KEY])
+    if _sole_site(old_state, site_id):
+        return vision_sites.observed_before(old_state, floor)
     stored = ((old_state or {}).get("thresholds") or {}).get("coverage_floor")
     return vision_sites.anything_measured({"sites": {site_id: record}}, floor if stored is None else stored)
+
+
+def _sole_site(state: dict | None, site_id: str) -> bool:
+    """Whether `site_id` is the only site `state` holds."""
+    return list((state or {}).get("sites") or {}) == [site_id]
 
 
 def _site_first_observed_at(
@@ -1197,10 +1213,13 @@ def _site_first_observed_at(
 ) -> str | None:
     """The city's `first_observed_at` in the state a fetch builds: its previous one, carried forward
     (for a record from before it existed that was already observed, `_site_observed_before`, the
-    previous state's `fetched_at`); else `fetched_at` when this tick measured the city's newest scene
-    at or above the coverage `floor`; else None."""
+    topic's when it was the state's only site, else the previous state's `fetched_at`); else
+    `fetched_at` when this tick measured the city's newest scene at or above the coverage `floor`;
+    else None."""
     if _site_observed_before(previous_state, site_id, floor):
         previous = previous_state["sites"][site_id].get(vision_sites.FIRST_OBSERVED_KEY)
+        if not previous and _sole_site(previous_state, site_id):
+            previous = previous_state.get(vision_sites.FIRST_OBSERVED_KEY)
         return previous or previous_state.get("fetched_at") or fetched_at
     history = record.get("history") or []
     for m in measured:
