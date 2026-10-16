@@ -3352,3 +3352,71 @@ def test_a_topic_without_a_rota_still_tags_its_findings_and_has_no_day_subject(t
     (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
     assert finding["subjects"] == ["sydney"]
     assert day_subject_module.resolve_day_subject(topic(), datetime.now(UTC)) is None
+
+
+def test_each_citys_first_clear_scene_is_its_own_first_observation_once(adapter, capsys):
+    """Spec §4.4: a rotating topic starts with a first observation per city. After the topic's
+    first (Sydney), Melbourne's first clear scene is reported as Melbourne's, with that code in
+    its ring and Melbourne as the Finding's subject, so Melbourne's day has something to write;
+    a cloudy scene before it is not one, and no later scene of Melbourne is first again, not even
+    after cloudy scenes trim every clear one from its history."""
+    two = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    adapter.fetch_network = FakeOverpass(network())
+
+    def tick(n, melbourne, previous):
+        adapter.http_post = scene(n, day=n)
+        adapter.measure = SiteRailWorker({"sydney": {f"S{n}": metrics()}, "melbourne": {f"S{n}": melbourne}})
+        config = topic(sites=two, max_sites_per_tick=2, history_size=2)
+        state = adapter.fetch_state(config, previous_state=previous)
+        capsys.readouterr()
+        return state, adapter.material_diff(previous, state)
+
+    first, (changed, summary) = tick(1, metrics(coverage=0.3), None)
+    assert changed and summary.startswith("First observation. Sydney:") and "Melbourne" not in summary
+    assert first["first_observed_at"] == first["sites"]["sydney"]["first_observed_at"] == first["fetched_at"]
+    assert first["sites"]["melbourne"]["first_observed_at"] is None
+    assert adapter.subjects(first) == ["sydney"]
+
+    second, (changed, summary) = tick(2, metrics(), first)
+    assert changed and summary.startswith("First observation. Melbourne: served share 73 %, 178 stations")
+    assert "Sydney" not in summary  # within its usual range: not reported
+    assert adapter.subjects(second) == ["melbourne"]
+    assert second["sites"]["melbourne"]["first_observed_at"] == second["fetched_at"]
+    assert second["sites"]["sydney"]["first_observed_at"] == first["fetched_at"]  # carried forward
+    assert second["first_observed_at"] == first["fetched_at"]  # the topic's, unchanged
+    codes = {site: second["sites"][site]["decisions"][-1]["code"] for site in ("sydney", "melbourne")}
+    assert codes == {"sydney": "within_range", "melbourne": "first_observation"}
+
+    third, (changed, _summary) = tick(3, metrics(), second)
+    assert not changed  # compared with its baseline now, and within range
+    later = third
+    for n in (4, 5):  # two cloudy scenes: the history (size 2) keeps no clear one of Melbourne
+        later, _ = tick(n, metrics(coverage=0.3), later)
+    assert all(entry["coverage"] < 0.6 for entry in later["sites"]["melbourne"]["history"])
+    last, (changed, summary) = tick(6, metrics(), later)
+    assert not changed and "First observation" not in summary
+    assert last["sites"]["melbourne"]["first_observed_at"] == second["fetched_at"]
+
+
+def test_a_city_in_a_state_from_before_is_first_only_if_it_never_had_a_clear_scene(adapter):
+    """A state written before each city kept its own marker: a city with a clear scene in its
+    history was observed (the owner's trains-sydney, one city, stays as it was); one with none
+    gets its first observation when its first clear scene comes."""
+    two = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    adapter.fetch_network = FakeOverpass(network())
+    clear = {"scene_id": "S-1", "coverage": 0.9, "served_share": 0.7, "desert_km2": 100.0}
+    clear["station_count"] = 178
+    cloudy = {**clear, "scene_id": "S-2", "coverage": 0.2}
+    before = {
+        "fetched_at": "2026-10-01T00:00:00+00:00", "first_observed_at": "2026-09-01T00:00:00+00:00",
+        "thresholds": {"coverage_floor": 0.6},
+        "sites": {"sydney": {"name": "Sydney", "history": [clear]}, "melbourne": {"name": "Melbourne",
+                                                                              "history": [cloudy]}},
+    }  # fmt: skip
+    adapter.http_post = scene(1)
+    adapter.measure = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": metrics()}})
+    state = adapter.fetch_state(topic(sites=two, max_sites_per_tick=2), previous_state=before)
+    assert state["sites"]["sydney"]["first_observed_at"] == before["fetched_at"]  # observed before
+    assert state["sites"]["melbourne"]["first_observed_at"] == state["fetched_at"]  # first now
+    changed, summary = adapter.material_diff(before, state)
+    assert changed and summary.startswith("First observation. Melbourne:") and "Sydney:" not in summary

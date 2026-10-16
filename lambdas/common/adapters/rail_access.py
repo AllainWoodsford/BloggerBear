@@ -74,11 +74,15 @@ same echoed parameters, so an operator's edit of the reach or the polygon starts
 rather than reading as a change), and the served share moved by at least
 `served_share_threshold` against their median, or the desert area by at least
 `desert_relative_threshold` of its median (at least 1 km²), or the station count differs from the
-previous such scene's. The first tick with a scene at or above the coverage floor is the first
-observation and is reported as such, once: the state records when (`first_observed_at`), so a run
-of cloudy scenes that trims every clear one from the history, or a raised floor, never makes a
-later scene "first" again. A tick before that, with nothing measured or only scenes below the
-floor, is not material.
+previous such scene's. The first tick with a scene at or above the coverage floor is the topic's
+first observation and is reported as such, once: the state records when (`first_observed_at`), so
+a run of cloudy scenes that trims every clear one from the history, or a raised floor, never makes
+a later scene "first" again. A tick before that, with nothing measured or only scenes below the
+floor, is not material. Each city then has a first observation of its own, once, the same way: the
+first clear scene of a city the topic had not yet seen clearly (one added later, or any city of a
+rotating topic after the first) is reported as that city's first observation, and its record keeps
+`first_observed_at` too. Without it, a topic of four cities would report one city's first scene
+and nothing about the other three until one of them changed.
 
 **What is honest.** The heat is a built-up density proxy from imagery, not population; walking
 reach is straight-line distance; the network is OpenStreetMap's (ODbL, credited) and the imagery
@@ -468,6 +472,11 @@ class RailAccessAdapter(Adapter):
                 visit=self._visits.get(site["id"]),
             )
 
+        # Each city's own first observation, set and carried forward the way the topic's is.
+        for site_id, record in sites.items():
+            record[vision_sites.FIRST_OBSERVED_KEY] = _site_first_observed_at(
+                previous_state, site_id, record, measured, config["coverage_floor"], now.isoformat()
+            )
         return {
             "fetched_at": now.isoformat(),
             "task": TASK,
@@ -767,12 +776,23 @@ class RailAccessAdapter(Adapter):
                 return False, not_yet
             summary = "First observation. " + "; ".join(_first_line(v) for v in clear)
             return True, self._with_planner_notes(summary, clear, new_state)
-        self._triage(new_state, [v for v in verdicts if v["material"]])
-        self._record(new_state, verdicts, moved, first_clear=None, floor=floor)
-        material = [v for v in verdicts if v["material"]]
-        if not material:
+        # The topic was observed before. A city whose first clear scene this is (one added later, or
+        # any city of a rotating topic after the first) is its own first observation, reported once.
+        firsts = [
+            v
+            for v in verdicts
+            if v["coverage"] >= floor and not _site_observed_before(old_state, v["site_id"], floor)
+        ]
+        others = [v for v in verdicts if v not in firsts]
+        self._triage(new_state, [v for v in others if v["material"]])
+        first_clear = {v["site_id"] for v in firsts} or None
+        self._record(new_state, verdicts, moved, first_clear=first_clear, floor=floor)
+        material = [v for v in others if v["material"]]
+        if not firsts and not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
-        return True, self._with_planner_notes("; ".join(_describe(v) for v in material), material, new_state)
+        parts = ["First observation. " + "; ".join(_first_line(v) for v in firsts)] if firsts else []
+        parts += ["; ".join(_describe(v) for v in material)] if material else []
+        return True, self._with_planner_notes(". ".join(parts), firsts + material, new_state)
 
     def _record(self, new_state: dict, verdicts: list[dict], moved: dict, *, first_clear, floor) -> None:
         """One decision ring entry and one `vision_decision` line per verdict, on every return path
@@ -1150,6 +1170,43 @@ def _failed_scene_id(record: dict, now: datetime) -> str | None:
     failed = record.get("failed_scene")
     if isinstance(failed, dict) and failed.get("at") == now.isoformat() and isinstance(failed.get("id"), str):
         return failed["id"]
+    return None
+
+
+def _site_observed_before(old_state: dict | None, site_id: str, floor: float) -> bool:
+    """Whether the city's first observation was reported before this tick: its record in `old_state`
+    carries `first_observed_at` with a time. A record written before each city kept its own (none in
+    it at all) is judged by its own scenes, against the coverage floor the state stored (`floor`
+    only when it stored none): whether it has one at or above it."""
+    record = ((old_state or {}).get("sites") or {}).get(site_id)
+    if not isinstance(record, dict):
+        return False
+    if vision_sites.FIRST_OBSERVED_KEY in record:
+        return bool(record[vision_sites.FIRST_OBSERVED_KEY])
+    stored = ((old_state or {}).get("thresholds") or {}).get("coverage_floor")
+    return vision_sites.anything_measured({"sites": {site_id: record}}, floor if stored is None else stored)
+
+
+def _site_first_observed_at(
+    previous_state: dict | None,
+    site_id: str,
+    record: dict,
+    measured: list[dict],
+    floor: float,
+    fetched_at: str,
+) -> str | None:
+    """The city's `first_observed_at` in the state a fetch builds: its previous one, carried forward
+    (for a record from before it existed that was already observed, `_site_observed_before`, the
+    previous state's `fetched_at`); else `fetched_at` when this tick measured the city's newest scene
+    at or above the coverage `floor`; else None."""
+    if _site_observed_before(previous_state, site_id, floor):
+        previous = previous_state["sites"][site_id].get(vision_sites.FIRST_OBSERVED_KEY)
+        return previous or previous_state.get("fetched_at") or fetched_at
+    history = record.get("history") or []
+    for m in measured:
+        if m.get("site_id") == site_id and history and history[-1].get("scene_id") == m.get("scene_id"):
+            if (history[-1].get("coverage") or 0) >= floor:
+                return fetched_at
     return None
 
 
