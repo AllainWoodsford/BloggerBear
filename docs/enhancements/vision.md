@@ -704,6 +704,17 @@ unusable, and how many of the year's items the production search would pick only
 under the floor. The tables above stay as the first indicative numbers; the report cites the
 files.
 
+**Evaluation results: [`RESULTS.md`](../hackathon/evidence/RESULTS.md)**, the index of every run
+file, one table per kind, written by `vision_eval.py index` and checked in CI. The evaluation's
+first half (Q2a) adds `replay` (the real adapter over pinned Sydney scenes, tick by tick, with the
+deployed worker and the real model, or a recording a judge re-runs without AWS: the A2 trace,
+rendered to `docs/hackathon/evidence/replay/`), `failures` (the constructed failure catalogue, its
+tests checked to be collected, its real-data rows through the worker) and `access-baseline` (E5:
+the production distance transform against the precise one and SDG 11.2.1's straight-line buffer).
+Their real-data runs are the operator's, in the
+[runsheet](../deployment-runsheet.md#the-evaluations-real-data-runs); until they are committed,
+RESULTS.md holds the coverage run alone.
+
 The worst cases the worker must survive were measured separately (PR J; the figures are in the
 comments on `RAIL_MAX_WINDOW_PX` in `vision_worker_handler.py`, `MAX_WINDOW_PX` in
 `vision/scene.py` and `MAX_GRAPH_NODES` in `vision/rail_analyse.py`): on one core of the same

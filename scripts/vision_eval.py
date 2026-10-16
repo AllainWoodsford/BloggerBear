@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""The evaluation's inputs: the pinned Sentinel-2 scenes (`pin`) and what each one shows of the
-site (`coverage`). One run file per run, as scripts/vision_runs.py writes it.
+"""The evaluation: its inputs, the pinned Sentinel-2 scenes (`pin`) and what each one shows of the
+site (`coverage`); the replay trace (`replay`), the failure catalogue (`failures`), the access
+baseline (`access-baseline`) and the results index (`index`). One run file per run, as
+scripts/vision_runs.py writes it.
 
     python scripts/vision_eval.py pin           # HEAD every asset, read every STAC item; print the changes
     python scripts/vision_eval.py pin --write   # ... and write them into the manifest
     python scripts/vision_eval.py pin --list-year 56HLH 2024 --write   # add a tile's year (the year set)
     python scripts/vision_eval.py coverage --out docs/hackathon/evidence/runs --write   # E1, E2, the run file
+    python scripts/vision_eval.py replay --sequence sydney-demo --agent bedrock --model-id ID --worker ARN
+    python scripts/vision_eval.py failures --cache ~/cogs --out docs/hackathon/evidence/runs   # 2.5
+    python scripts/vision_eval.py access-baseline --cache ~/cogs --out docs/hackathon/evidence/runs   # E5
+    python scripts/vision_eval.py index [--check]   # docs/hackathon/evidence/index.json and RESULTS.md
 
 The manifest, scripts/vision_eval_manifest.json (`bloggerbear.vision-manifest/1`), names each
 scene by its id on AWS Open Data (`sentinel-cogs`, us-west-2), its four assets (B04, B08, B11, SCL)
@@ -34,8 +40,18 @@ into the manifest, and the year sets under `sets` (`year-2024`: the scenes a run
 reads, by name; a scene's `year` role only marks a candidate); `--cache DIR` answers the reads
 from the cache after the first.
 
+`replay` (2.6.4) drives the real rail access adapter over a pinned sequence through
+scripts/vision_eval_driver.py (whose docstring says how): the worker in this process or deployed,
+the agent on Bedrock, recorded or scripted, the trace rendered through vision_decisions.trace. A
+recorded replay recomputes every measurement and is held to its recording. `failures` (2.5) runs
+the failure catalogue's real-data rows through the worker handler in this process, and checks that
+pytest collects every test the catalogue names. `access-baseline` (E5) compares the production
+distance transform with the precise one and with a straight-line buffer on one scene. `index`
+(2.9) writes the results index from the run files, refusing a malformed one; `--check` is CI's.
+
 Runs on Windows as well as Linux and macOS (nothing here pins a CPU or reads `resource`). Needs
-lambdas/requirements-vision.txt and scripts/requirements.txt installed.
+lambdas/requirements-vision.txt and scripts/requirements.txt installed (and, for `replay`,
+`failures` and `access-baseline`, lambdas/requirements.txt: they import the adapter).
 """
 
 from __future__ import annotations
