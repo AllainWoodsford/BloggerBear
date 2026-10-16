@@ -184,7 +184,7 @@ def _station(sid: str, name: str, lonlat: list[float]) -> dict:
     return {"id": sid, "name": name, "kind": "station", "lon": lonlat[0], "lat": lonlat[1]}
 
 
-def _change(recipe: str, **parts) -> dict:
+def change_record(recipe: str, **parts) -> dict:
     change = {"recipe": recipe, "added_stations": [], "removed_stations": [], "added_ways": [],
               "removed_ways": [], "anchor": None}  # fmt: skip
     change.update(parts)
@@ -268,7 +268,7 @@ def _with_line(network, plane, at, spacing, centre, on_anchor) -> tuple[dict, di
     way = {"id": new_id("w", 1), "points": [[s["lon"], s["lat"]] for s in added], "tunnel": False,
            "name": "Evaluation line"}  # fmt: skip
     derived["ways"] = list(derived.get("ways") or []) + [way]
-    change = _change("add_line", added_stations=ids, added_ways=[way["id"]],
+    change = change_record("add_line", added_stations=ids, added_ways=[way["id"]],
                      anchor=[round(v, 7) for v in centre[:2]], spacing_m=spacing,
                      anchor_station=ids[on_anchor])  # fmt: skip
     return recount(derived), change
@@ -288,36 +288,60 @@ def _direction_back(points_xy: list[tuple]) -> tuple[float, float] | None:
     return None if norm == 0 else (dx / norm, dy / norm)
 
 
-def extend_line(network: dict, polygon: list, *, stations: int = 3,
-                spacing_m: float = EXTENSION_SPACING_M) -> tuple[dict, dict]:  # fmt: skip
-    """C1c: the longest way that has a terminus with room for `stations` stations beyond it inside
-    the polygon, extended from that terminus along its last kilometre, a station every
-    `spacing_m` (closer, by _spacings, only when no way has room at that spacing). Termini (an end
-    no other way comes within TERMINUS_CLEARANCE_M of) first; an end at a junction only when no
-    way has a free terminus with room."""
-    plane = plane_for(polygon)
-    poly = [plane.xy(*p[:2]) for p in polygon]
-    ways = network.get("ways") or []
+def _way_ends(ways: list[dict], plane: Plane) -> list[tuple]:
+    """Every way's two ends: (is a junction, the way's length (negated, longest first), its id, its
+    index, its points on the plane ending at that end, that end's lon/lat as the way holds it)."""
     index = WayIndex(ways, plane)
-    candidates = []
+    ends = []
     for i, way in enumerate(ways):
         points = [plane.xy(*p[:2]) for p in way.get("points") or []]
         if len(points) < 2:
             continue
         raw = [list(p[:2]) for p in way["points"]]
         for end_points, end_lonlat in ((points, raw[-1]), (points[::-1], raw[0])):
+            others = {j for j in index.nearest(*end_points[-1], TERMINUS_CLEARANCE_M) if j != i}
+            ends.append((bool(others), -_way_length(points), str(way.get("id")), i, end_points, end_lonlat))
+    return ends
+
+
+def extend_line(network: dict, polygon: list, *, stations: int = 3, spacing_m: float = EXTENSION_SPACING_M,
+                toward: list | None = None) -> tuple[dict, dict]:  # fmt: skip
+    """C1c: one way extended by `stations` stations, a station every `spacing_m` (closer, by
+    _spacings, only when nothing fits at that spacing), all inside the polygon, from one of its
+    ends: a terminus (an end no other way comes within TERMINUS_CLEARANCE_M of) before a junction.
+
+    With `toward` ([lon, lat] points: the deserts of the baseline's newest measurement, built-up
+    ground beyond reach), the end nearest any of them is extended straight toward it, the last
+    station at most at the point, as a real extension heads for unserved suburbs, so the stations
+    land on built-up ground. Without, or when none fits, the longest way is extended along its last
+    kilometre."""
+    plane = plane_for(polygon)
+    poly = [plane.xy(*p[:2]) for p in polygon]
+    ways = network.get("ways") or []
+    ends = _way_ends(ways, plane)
+    targets = [plane.xy(*t[:2]) for t in toward or []]
+    tries = []
+    if targets:
+        # Each end with its nearest target, terminus first, then nearest; the direction is toward it.
+        for junction, _length, wid, i, end_points, end_lonlat in ends:
             end = end_points[-1]
-            others = {j: d for j, d in index.nearest(*end, TERMINUS_CLEARANCE_M).items() if j != i}
-            key = (bool(others), -_way_length(points), str(way.get("id")))
-            candidates.append((*key, i, end_points, end_lonlat))
-    candidates.sort(key=lambda c: c[:3])
+            target = min(targets, key=lambda t: (math.dist(end, t), t))
+            d = math.dist(end, target)
+            if d > 0:
+                direction = ((target[0] - end[0]) / d, (target[1] - end[1]) / d)
+                tries.append(((junction, d, wid), i, end_points, end_lonlat, direction, d, "toward_desert"))
+    for junction, length, wid, i, end_points, end_lonlat in ends:
+        direction = _direction_back(end_points)
+        if direction is not None:
+            tries.append(((junction, length, wid), i, end_points, end_lonlat, direction, None, "along_line"))
+    tries.sort(key=lambda t: (t[-1] != "toward_desert", t[0]))
     for spacing in _spacings(spacing_m):
-        for _junction, _length, _wid, i, end_points, end_lonlat in candidates:
-            direction = _direction_back(end_points)
-            if direction is None:
+        for _key, i, end_points, end_lonlat, direction, reach, how in tries:
+            step = spacing if reach is None else min(spacing, reach / stations)
+            if step < MIN_SPACING_M and step != spacing:
                 continue
             end = end_points[-1]
-            at = [(end[0] + direction[0] * spacing * k, end[1] + direction[1] * spacing * k)
+            at = [(end[0] + direction[0] * step * k, end[1] + direction[1] * step * k)
                   for k in range(1, stations + 1)]  # fmt: skip
             if not all(inside(p, poly) for p in at):
                 continue
@@ -327,12 +351,13 @@ def extend_line(network: dict, polygon: list, *, stations: int = 3,
                 _station(sid, f"Evaluation extension station {k + 1}", plane.lonlat(*p))
                 for k, (sid, p) in enumerate(zip(ids, at, strict=True))
             ]
-            # From the terminus exactly as the way holds it, so the two ways join.
+            # From the end exactly as the way holds it, so the two ways join.
             way = {"id": new_id("w", 1), "points": [end_lonlat, *(plane.lonlat(*p) for p in at)],
                    "tunnel": False, "name": ways[i].get("name")}  # fmt: skip
             derived["ways"] = list(derived.get("ways") or []) + [way]
-            change = _change("extend_line", added_stations=ids, added_ways=[way["id"]],
-                             extended_way=str(ways[i].get("id")), spacing_m=spacing)  # fmt: skip
+            change = change_record("extend_line", added_stations=ids, added_ways=[way["id"]],
+                                    extended_way=str(ways[i].get("id")), spacing_m=round(step, 1),
+                                    direction=how)  # fmt: skip
             return recount(derived), change
     raise DeriveError(f"no way has room for {stations} more stations inside the site")
 
@@ -373,7 +398,7 @@ def remove_line(network: dict, polygon: list, *, min_stations: int = 3,
     gone_ways = [str(w.get("id")) for w in ways if w.get("name") == name]
     derived["ways"] = [w for w in derived.get("ways") or [] if w.get("name") != name]
     derived["stations"] = [s for s in derived.get("stations") or [] if str(s["id"]) not in gone_stations]
-    return recount(derived), _change("remove_line", removed_stations=sorted(gone_stations),
+    return recount(derived), change_record("remove_line", removed_stations=sorted(gone_stations),
                                      removed_ways=gone_ways)  # fmt: skip
 
 
@@ -414,7 +439,7 @@ def add_served_station(network: dict, polygon: list, *, gap_m: tuple[float, floa
     derived["stations"] = list(derived.get("stations") or []) + [
         _station(sid, "Evaluation infill station", plane.lonlat(*best))
     ]
-    return recount(derived), _change("add_served_station", added_stations=[sid], between=[ida, idb])
+    return recount(derived), change_record("add_served_station", added_stations=[sid], between=[ida, idb])
 
 
 def _project(p, a, b) -> tuple[float, float]:
@@ -436,7 +461,7 @@ def duplicate_stations(network: dict, polygon: list, *, stations: int = 3) -> tu
     for k, station in enumerate(picks):
         copies.append({**copy.deepcopy(station), "id": new_id("dup", k + 1)})
     derived["stations"] = list(derived.get("stations") or []) + copies
-    return recount(derived), _change("duplicate_stations", added_stations=[c["id"] for c in copies],
+    return recount(derived), change_record("duplicate_stations", added_stations=[c["id"] for c in copies],
                                      duplicated=[str(s["id"]) for s in picks])  # fmt: skip
 
 
@@ -447,7 +472,7 @@ DERIVATIONS = {
     "add_served_station": add_served_station,
     "duplicate_stations": duplicate_stations,
 }
-# What each derivation takes from a case's recipe, beside the polygon (and `anchor` for add_line).
+# What each derivation takes from a case's recipe, beside the polygon.
 RECIPE_KEYS = {
     "add_line": ("stations", "spacing_m"),
     "extend_line": ("stations", "spacing_m"),
@@ -455,26 +480,38 @@ RECIPE_KEYS = {
     "add_served_station": (),
     "duplicate_stations": ("stations",),
 }
+# What a recipe's `anchor` may ask for, by derivation: add_line the largest desert of the baseline's
+# newest measurement, extend_line all of its deserts (it heads for the nearest).
+ANCHORS = {"add_line": ("largest_desert",), "extend_line": ("deserts",)}
 
 
-def derive(network: dict, recipe: dict, polygon: list, *, anchor=None) -> tuple[dict, dict]:
+def derive(network: dict, recipe: dict, polygon: list, *, deserts: list | None = None) -> tuple[dict, dict]:
     """The network a case's recipe ({"derive": <name>, ...its keys}) makes from `network` (A),
-    and what was changed. DeriveError for a recipe this module does not know, or cannot make."""
+    and what was changed. `deserts` are the baseline's newest measurement's (its `deserts` list),
+    used when the recipe asks for an anchor. DeriveError for a recipe this module does not know,
+    or cannot make."""
     name = recipe.get("derive")
     if name not in DERIVATIONS:
         raise DeriveError(f"unknown derivation {name!r} (known: {sorted(DERIVATIONS)})")
     kwargs = {key: recipe[key] for key in RECIPE_KEYS[name] if key in recipe}
-    if name == "add_line":
-        kwargs["anchor"] = anchor
+    anchor = recipe.get("anchor")
+    if anchor == "largest_desert":
+        kwargs["anchor"] = largest_desert(deserts)
+    elif anchor == "deserts":
+        kwargs["toward"] = desert_points(deserts)
     return DERIVATIONS[name](network, polygon, **kwargs)
 
 
-def largest_desert(entry: dict | None) -> list[float] | None:
-    """The [lon, lat] of the largest desert (built-up area beyond reach) in a history entry's
-    `deserts` (the newest entry keeps them), or None when it has none."""
-    deserts = [d for d in (entry or {}).get("deserts") or [] if isinstance(d, dict)]
-    usable = [d for d in deserts if all(isinstance(d.get(key), int | float) for key in ("lon", "lat"))]
-    if not usable:
-        return None
-    best = max(usable, key=lambda d: (d.get("area_km2") or 0.0, -d["lon"], -d["lat"]))
-    return [best["lon"], best["lat"]]
+def desert_points(deserts: list | None) -> list[list[float]]:
+    """The [lon, lat] of every desert that has one, largest first."""
+    usable = [d for d in deserts or [] if isinstance(d, dict)
+              and all(isinstance(d.get(key), int | float) for key in ("lon", "lat"))]  # fmt: skip
+    usable.sort(key=lambda d: (-(d.get("area_km2") or 0.0), d["lon"], d["lat"]))
+    return [[d["lon"], d["lat"]] for d in usable]
+
+
+def largest_desert(deserts: list | None) -> list[float] | None:
+    """The [lon, lat] of the largest desert (built-up area beyond reach) of a measurement's
+    `deserts` list (the newest history entry keeps it), or None when it has none."""
+    points = desert_points(deserts)
+    return points[0] if points else None

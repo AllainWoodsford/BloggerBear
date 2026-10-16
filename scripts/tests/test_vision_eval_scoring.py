@@ -98,7 +98,9 @@ def test_add_line_lays_its_stations_through_the_anchor_inside_the_site_and_beyon
     anchor = nets.farthest_point(network, polygon)
     nearest = min(distance_m(plane, anchor, (s["lon"], s["lat"])) for s in network["stations"])
     assert nearest > nets.REACH_M  # the farthest point is beyond every station's reach
-    derived, change = nets.derive(network, {"derive": "add_line", "stations": 5}, polygon, anchor=anchor)
+    deserts = [{"lon": anchor[0], "lat": anchor[1], "area_km2": 3.0}]
+    recipe = {"derive": "add_line", "stations": 5, "anchor": "largest_desert"}
+    derived, change = nets.derive(network, recipe, polygon, deserts=deserts)
     added = [s for s in derived["stations"] if s["id"] in change["added_stations"]]
     assert len(added) == 5 and change["added_ways"] == ["eval-w1"] and change["anchor"] == anchor
     poly = [plane.xy(*p) for p in polygon]
@@ -120,11 +122,13 @@ def test_add_line_without_room_anywhere_is_refused_by_name():
         nets.add_line(network, polygon, stations=40)
 
 
-def test_largest_desert_is_the_anchor_add_line_is_given():
-    entry = {"deserts": [{"lon": 151.0, "lat": -33.9, "area_km2": 2.0}, {"lon": 151.1, "lat": -33.8,
-                                                                        "area_km2": 6.5}, {"lon": "x"}]}
-    assert nets.largest_desert(entry) == [151.1, -33.8]
-    assert nets.largest_desert({"deserts": []}) is None and nets.largest_desert(None) is None
+def test_the_deserts_anchor_add_line_on_the_largest_and_extend_line_on_every_one():
+    deserts = [{"lon": 151.0, "lat": -33.9, "area_km2": 2.0}, {"lon": 151.1, "lat": -33.8, "area_km2": 6.5},
+               {"lon": "x"}]  # fmt: skip
+    assert nets.largest_desert(deserts) == [151.1, -33.8]
+    assert nets.desert_points(deserts) == [[151.1, -33.8], [151.0, -33.9]]  # largest first, the bad one out
+    assert nets.largest_desert([]) is None and nets.largest_desert(None) is None
+    assert nets.ANCHORS == {"add_line": ("largest_desert",), "extend_line": ("deserts",)}
 
 
 def test_extend_line_continues_a_terminus_outward_inside_the_site():

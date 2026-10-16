@@ -3,7 +3,7 @@
   "case": "C1c",
   "base": "C1",
   "title": "A line extended by three stations",
-  "built_as": "As C1, with the newest scene measured with A plus a three-station extension of an existing line beyond its terminus; the news announces the extension.",
+  "built_as": "As C1, with the newest scene measured with A plus a three-station extension of an existing line from its end nearest built-up ground beyond reach (the baseline's deserts), toward it; the news announces the extension.",
   "networks": {
     "A": {
       "file": "vision_benchmark_networks/sydney.json"
@@ -11,7 +11,8 @@
     "B": {
       "from": "A",
       "derive": "extend_line",
-      "stations": 3
+      "stations": 3,
+      "anchor": "deserts"
     }
   },
   "news": [

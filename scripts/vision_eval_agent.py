@@ -1,7 +1,50 @@
-"""The agent's evaluation (the specification's 2.6), its counterfactuals (2.6.6) and the stability
-run (E3): `vision_eval.py agent`, `counterfactual` and `stability`.
+"""The agent's evaluation, its counterfactuals and the stability run: `vision_eval.py agent`,
+`counterfactual` and `stability` (the specification's 2.6.1-2.6.3, 2.6.6 and E3).
 
-(The driver-dependent half of this module is written once Q2a's driver lands.)
+**The cases** are scripts/vision_eval_cases/<case>/case.json (`load_cases`): the history (manifest
+scenes, each with the network it was measured with), the newest scene, the thresholds, the news
+`web_context` replays (null: the tool withheld), the expected verdict and why, and which input moved
+(`driven_by`). A case may build on another (`base`). Fixture A is the city's network file; every other
+network is A with one change made by code (scripts/vision_eval_networks.py), anchored where it
+asks on the deserts of the baseline's newest measurement, so the cases read the same on any copy of
+A. C1-C5 and C10 are the task cases, scored per class; C6-C9 the failure cases.
+
+**`agent`** builds each case through the real RailAccessAdapter with Q2a's driver
+(scripts/vision_eval_driver.py): the history ticks with triage off (their measurements kept by what
+was asked, so the scenes several cases share are measured once), then the newest tick `--repeats`
+times from the same state with the real common/vision_triage.triage, its converse the live model
+(`--agent bedrock --model-id`, the operator's credentials) or the case's script (`--agent
+scripted`, and always for C7 and C9), its `look_again` the same worker as the tick (C6: a worker
+that refuses with `unreadable_scene`), its news the case's, its figure from the run's local store,
+and its deadline production's: 85 s from the tick's start on the real clock (C7: a clock moved past
+it). The worker is the deployed one (`--worker <ARN>`, every site id `eval-`) or this process
+(`--worker in-process`), which is refused without `--cache` off an EC2 instance in us-west-2
+(`in_process_refusal`): an uncached re-measurement would run the cases out of time for the
+harness's reasons. A case whose newest scene does not pass the gate never reaches the agent; it is
+reported as such and left out of the scores (C3 and C10 are included only if they pass). Every
+Converse response is kept in the run file (`agent.responses`, the driver's recorded form), with each
+run's verdict, stop, steps, reason, time, tokens and cost in USD and AUD (the built-in price table;
+the deployed Models table is not read from an operator's machine).
+
+**`counterfactual`** (2.6.6), for C1 and C10 (C4 when C10 does not pass the gate). (a) The agent
+level: the newest tick's repeats in two arms that differ only in what `look_again` answers: the
+newest scene's own measurement at the requested settings (`measured`), or the same with the moved
+measures set back to the baseline median (`baseline`, a constructed tool output); repeat k of one
+arm is paired with repeat k of the other. (b) The gate level, in this process: the newest scene
+with SCL clouded inside the site until the worker's coverage is 0.62, then 0.58, either side of the
+0.6 floor (`clouded_to`), all else equal: the agent is called or not, a Finding would be written or
+not; no model is asked below the floor.
+
+**`stability`** (E3): the year set (the manifest's `sets`, in time order) through the production
+rule, triage off, the default thresholds, `history_size` 6, one network throughout: every material
+verdict is a false alarm. The rate over the decisions with its Wilson 95 % interval, by month, and
+the spreads: served share, desert and built-up area, the built-up mask's IoU scene to scene and to
+the first (from the worker's own masks, in this process), and the Jaccard of hubs and of flags.
+
+`--synthetic` runs any of the three on the driver's synthetic city (the cases' scenes mapped onto
+synthetic scenes, fixture A the synthetic network), in this process, with no network: what CI runs,
+with the scripted model. Every run writes one run file (scripts/vision_runs.py), kind
+`eval-agent`, `eval-counterfactual` or `eval-stability`. Runs on Windows as well as Linux and macOS.
 """
 
 from __future__ import annotations
@@ -9,11 +52,16 @@ from __future__ import annotations
 import copy
 import json
 import re
+import sys
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import vision_eval_driver as driver
 import vision_eval_networks as networks
 import vision_eval_scoring as scoring
+import vision_runs
 
 SCRIPTS = Path(__file__).resolve().parent
 CASES_DIR = SCRIPTS / "vision_eval_cases"
@@ -39,8 +87,6 @@ RUN_KEYS = {
 }
 SCRIPT_TURNS = ("tool", "text", "raise", "decide_by")
 TOOLS = ("look_again", "previous_scene", "site_history", "web_context")
-# How a network is anchored for add_line.
-ANCHORS = ("largest_desert",)
 CASE_NAME = re.compile(r"^C\d+[a-z]?$")
 FIELDS = (
     "schema", "case", "kind", "title", "built_as", "site", "history", "newest", "networks", "thresholds",
@@ -132,6 +178,10 @@ def validate_case(case: dict, manifest: dict) -> dict:
             fail(f"scene {step['scene']!r} is not of site {case['site']!r}")
         if step.get("network") not in nets:
             fail(f"scene {step['scene']!r} names network {step.get('network')!r}, not in networks")
+    for step in case["history"]:
+        if "file" not in (nets.get(step["network"]) or {}):
+            fail(f"history scene {step['scene']!r} must be measured with a file network (fixture A): a "
+                 "derived network is anchored on the history's own measurement")
     if len({step["scene"] for step in steps}) != len(steps):
         fail("a scene appears twice in history and newest")
     for key, spec in nets.items():
@@ -177,8 +227,8 @@ def _validate_network(fail, key, spec, nets) -> None:
     allowed = {"from", "derive", "anchor", *networks.RECIPE_KEYS[recipe]}
     if set(spec) - allowed:
         fail(f"network {key!r}: {recipe} takes only {sorted(allowed)}")
-    if "anchor" in spec and (recipe != "add_line" or spec["anchor"] not in ANCHORS):
-        fail(f"network {key!r}: anchor is add_line's, one of {ANCHORS}")
+    if "anchor" in spec and spec["anchor"] not in networks.ANCHORS.get(recipe, ()):
+        fail(f"network {key!r}: {recipe}'s anchor is one of {networks.ANCHORS.get(recipe, ())}")
 
 
 def _validate_expected(fail, case) -> None:
@@ -226,11 +276,16 @@ def network_file(spec: dict, root: Path = SCRIPTS) -> Path:
     return root / spec["file"]
 
 
-def case_networks(case: dict, fixture_a: dict, polygon: list, *, anchor=None) -> tuple[dict, dict]:
+def case_networks(case: dict, fixture_a: dict, polygon: list, *, deserts: list | None = None) -> tuple:
     """{key: network} for every network the case names, and {key: what was changed}: a file
     network is `fixture_a` (every case's file network is fixture A, given once to the run), and a
-    derived one is made from it (vision_eval_networks.derive), with `anchor` for an add_line that
-    asks for one."""
+    derived one is made from it (vision_eval_networks.derive), anchored on `deserts` (the
+    baseline's newest measurement's) when its recipe asks.
+
+    C1's new line is the replay's own (vision_eval_driver.with_new_line: five stations 600 m apart,
+    west to east, centred on the largest desert), so `replay --sequence sydney-c1` and case C1
+    measure the same network B; vision_eval_networks.add_line lays it only when that line would
+    leave the site, or there is no desert to centre it on (the change says which)."""
     built, changes = {}, {}
     for key, spec in case["networks"].items():
         if "file" in spec:
@@ -238,14 +293,33 @@ def case_networks(case: dict, fixture_a: dict, polygon: list, *, anchor=None) ->
     for key, spec in case["networks"].items():
         if "file" in spec:
             continue
-        derived, change = networks.derive(built[spec["from"]], spec, polygon,
-                                          anchor=anchor if spec.get("anchor") else None)  # fmt: skip
-        built[key], changes[key] = derived, change
+        base = built[spec["from"]]
+        centre = networks.largest_desert(deserts) if spec.get("anchor") == "largest_desert" else None
+        line = None
+        if spec["derive"] == "add_line" and centre is not None:
+            line = driver.with_new_line(base, *centre, stations=spec.get("stations", 5))
+            known = {x["id"] for x in base.get("stations") or []}
+            added = [s for s in line["stations"] if s["id"] not in known]
+            plane = networks.plane_for(polygon)
+            poly = [plane.xy(*p[:2]) for p in polygon]
+            if not all(networks.inside(plane.xy(s["lon"], s["lat"]), poly) for s in added):
+                line = None
+        if line is not None:
+            ways = {x["id"] for x in base.get("ways") or []}
+            change = networks.change_record(
+                "add_line", added_stations=[s["id"] for s in added],
+                added_ways=[w["id"] for w in line["ways"] if w["id"] not in ways],
+                anchor=[round(v, 7) for v in centre], construction="vision_eval_driver.with_new_line",
+            )  # fmt: skip
+            built[key], changes[key] = networks.recount(line), change
+            continue
+        built[key], changes[key] = networks.derive(base, spec, polygon, deserts=deserts)
     return built, changes
 
 
-def needs_anchor(case: dict) -> bool:
-    return any(spec.get("anchor") == "largest_desert" for spec in case["networks"].values())
+def needs_deserts(case: dict) -> bool:
+    """Whether a derived network of the case is anchored on the baseline's deserts."""
+    return any(spec.get("anchor") for spec in case["networks"].values())
 
 
 # --- the model: scripted, live and recorded ------------------------------------------------------------
@@ -351,32 +425,28 @@ def decide_by_look_again(messages: list[dict]) -> str:
     return json.dumps({"verdict": "artefact", "reason": "The re-measurement is back at the baseline."})
 
 
-class RecordingConverse:
-    """`converse` with every response kept: the content blocks the model returned (text and tool
-    uses; a response holds no image), its stop reason and token usage, in call order, under the
-    tag of the case and repeat. A call that raised is kept as its exception's class name only."""
+class Conversation:
+    """One triage's `converse`, as the driver takes it (vision_eval_driver.Driver._triage): every
+    response it hands back is kept in the driver's recorded form (the message, the stop reason and
+    the tokens: never ResponseMetadata, whose headers carry the service's request ids), so a run
+    file's `agent.responses` replays through vision_eval_driver.RecordedAgent; a call that raised
+    is kept apart, as its exception's class name only."""
 
-    def __init__(self, converse, sink: list, tag: dict):
-        self.converse, self.sink, self.tag, self.calls = converse, sink, dict(tag), 0
+    def __init__(self, call):
+        self.call, self.responses, self.errors, self.refused = call, [], [], None
 
     def __call__(self, **request) -> dict:
-        self.calls += 1
         try:
-            response = self.converse(**request)
+            response = self.call(**request)
         except Exception as exc:
-            self.sink.append({**self.tag, "turn": self.calls, "error": type(exc).__name__})
+            self.errors.append(type(exc).__name__)
             raise
-        message = (response.get("output") or {}).get("message") or {}
-        usage = response.get("usage") or {}
-        blocks = [block for block in message.get("content") or [] if "text" in block or "toolUse" in block]
-        self.sink.append({
-            **self.tag,
-            "turn": self.calls,
-            "stopReason": response.get("stopReason"),
-            "content": blocks,
-            "usage": {key: usage.get(key) for key in ("inputTokens", "outputTokens")},
-        })  # fmt: skip
+        kept = ("output", "stopReason", "usage")
+        self.responses.append({key: copy.deepcopy(response.get(key)) for key in kept if key in response})
         return response
+
+    def finish(self) -> None:
+        pass
 
 
 def bedrock_converse(region: str, client=None):
@@ -517,3 +587,1010 @@ def clouded_to(coverage: float | None, report: dict):
         yield report
     finally:
         scene.read_site = original
+
+
+# --- the harness, on the driver ---------------------------------------------------------------------------
+
+DEFAULT_REPEATS = 5
+# Fixture A for the Sydney cases: the file the runsheet's fixture step captures (and the benchmark's
+# scenes file names).
+DEFAULT_NETWORK = SCRIPTS / "vision_benchmark_networks" / "sydney.json"
+# C7's clock is moved this far forward when the agent is asked: past the topic's whole allowance.
+DEADLINE_JUMP_SECONDS = 1000.0
+# A decision the agent took part in (vision_decisions.CODES): the gate passed.
+TRIAGED_CODES = ("reported", "artefact")
+COUNTERFACTUAL_CASES = ("C1", "C10")
+# The case that stands in when one does not pass the gate (2.6.6: C4 if C10 does not).
+COUNTERFACTUAL_STAND_IN = {"C10": "C4"}
+COUNTERFACTUAL_ARMS = ("measured", "baseline")
+# Arm (b)'s two coverages, either side of the rail floor (0.6).
+GATE_COVERAGES = {"above": 0.62, "below": 0.58}
+# The counterfactual's scripted model: re-measure at the topic's own reach, then answer by what came
+# back (decide_by_look_again), so CI shows a verdict that follows the tool's numbers.
+COUNTERFACTUAL_SCRIPT = ({"tool": "look_again", "input": {"reach_m": 1000}}, {"decide_by": "look_again"})
+YEAR_SET = "year-2024"
+# The production deadline the agent keeps, from the tick's start (the adapter's own default).
+TRIAGE_DEADLINE_SECONDS = driver.rail_access.DEFAULTS["triage_deadline_seconds"]
+# E3's production rule: triage off (every material verdict counts, none is judged away) and the
+# history the adapter keeps by default; the thresholds are the adapter's defaults.
+STABILITY_RULE = {"triage": False, "history_size": 6}
+# The synthetic year: this many clear synthetic scenes, ten days apart (CI's E3).
+SYNTHETIC_YEAR_SCENES = 6
+SYNTHETIC_SITE = {"id": "synthetic", "name": "Synthetic city"}
+# A manifest scene measured under this coverage keeps its cloud on the synthetic city: the west share
+# of the city's SCL set to cloud, as the driver's synthetic cloud scene is (C4's cloud edge in CI).
+SYNTHETIC_CLEAR_COVERAGE = 0.95
+
+
+class ArmableClock(driver.Clock):
+    """The driver's clock, which C7's agent moves past the triage deadline when it is asked."""
+
+    def __init__(self, base=time.monotonic):
+        super().__init__(base=base)
+        self.jump = 0.0
+
+    def arm(self, seconds: float) -> None:
+        self.jump += seconds
+
+    def __call__(self) -> float:
+        return super().__call__() + self.jump
+
+
+class Clocks:
+    """A new clock for each tick (the driver asks for one), frozen at 0 for CI so no budget or
+    deadline ever bites, else the real monotonic clock; the newest kept so the agent can arm it."""
+
+    def __init__(self, frozen: bool):
+        self.frozen, self.current = frozen, None
+
+    def __call__(self, n: int) -> ArmableClock:
+        self.current = ArmableClock(base=(lambda: 0.0) if self.frozen else time.monotonic)
+        return self.current
+
+
+class CaseAgent:
+    """The agent the driver asks during a case's newest tick, in vision_eval_driver's agent shape
+    (`mode`, `model_id`, `converse_for`): each conversation is a `Conversation` over `call()` (the
+    live Converse or a fresh script) and is kept; with `past_deadline` the tick's clock is moved
+    past the deadline as the loop starts (C7)."""
+
+    def __init__(self, mode: str, model_id: str, call, clocks: Clocks | None = None, past_deadline=False):
+        self.mode, self.model_id, self.call = mode, model_id, call
+        self.clocks, self.past_deadline = clocks, past_deadline
+        self.conversations: list[Conversation] = []
+
+    def converse_for(self, tick: int, site_id: str) -> Conversation:
+        if self.past_deadline and self.clocks is not None and self.clocks.current is not None:
+            self.clocks.current.arm(DEADLINE_JUMP_SECONDS)
+        conversation = Conversation(self.call())
+        self.conversations.append(conversation)
+        return conversation
+
+
+class MemoMeasure:
+    """`measure` with each answer kept by what was asked (the site, the scene, the backend, the
+    parameters, the floor, the task and the network's digest): the history scenes several cases
+    share are measured once a run. A refusal is not kept."""
+
+    def __init__(self, measure):
+        self.measure, self.answers, self.hits, self.misses = measure, {}, 0, 0
+
+    def __call__(self, site, scene, backend="opencv", **kwargs):
+        key = vision_runs.digest({
+            "site": site, "scene": scene.get("id"), "backend": backend, "params": kwargs.get("params"),
+            "floor": kwargs.get("coverage_floor"), "task": kwargs.get("task"),
+            "network": vision_runs.digest(kwargs.get("network")),
+        })  # fmt: skip
+        if key in self.answers:
+            self.hits += 1
+            return copy.deepcopy(self.answers[key])
+        result = self.measure(site, scene, backend=backend, **kwargs)
+        self.misses += 1
+        self.answers[key] = copy.deepcopy(result)
+        return result
+
+
+def refusing_measure(code: str):
+    """C6's `look_again`: the worker refuses every re-measurement with `code`."""
+    from common import vision_client
+
+    def measure(site, scene, *args, **kwargs):
+        raise vision_client.VisionError(code, "the evaluation's tool-failure case refuses it")
+
+    return measure
+
+
+@dataclass
+class Setup:
+    """What one run's cases are measured and asked with: the site ({id, name, polygon}), the scenes
+    by manifest name (real, or their synthetic stand-ins), fixture A, the tick's worker and its
+    memo for the history, the in-process worker for arm (b) (None when there is none), the model
+    (`agent_mode` bedrock or scripted, `model_id`, the live `converse`) and whether clocks are
+    frozen (CI)."""
+
+    site: dict
+    scenes: dict
+    fixture_a: dict
+    measure: object
+    agent_mode: str = "scripted"
+    model_id: str = driver.SCRIPTED_MODEL
+    converse: object = None
+    frozen: bool = True
+    gate_measure: object = None
+    memo: MemoMeasure = field(init=False)
+    gate_memo: MemoMeasure | None = field(init=False)
+
+    def __post_init__(self):
+        self.memo = MemoMeasure(self.measure)
+        self.gate_memo = MemoMeasure(self.gate_measure) if self.gate_measure is not None else None
+
+
+def _overrides(case: dict, triage: bool) -> dict:
+    return {**case["thresholds"], "triage": triage, "web_context": case["news"] is not None}
+
+
+def _topic(case: dict, setup: Setup, triage: bool, name: str | None = None) -> dict:
+    return driver.topic_config(name or f"agent-{case['case']}", setup.site["id"], setup.site["polygon"],
+                               site_name=setup.site["name"], overrides=_overrides(case, triage))  # fmt: skip
+
+
+def _specs(steps: list[dict], setup: Setup, nets: dict, news, previous: str | None = None) -> list:
+    """The driver's ticks for `steps` ({scene, network}): the network stored when its label changes."""
+    specs = []
+    for step in steps:
+        scene = setup.scenes[step["scene"]]
+        label = step["network"]
+        network = nets[label] if label != previous else None
+        specs.append(driver.TickSpec(scene=scene, now=driver.tick_time(scene["captured_at"]), network=network,
+                                     label=label, news=list(news or [])))  # fmt: skip
+        previous = label
+    return specs
+
+
+def build_history(case: dict, setup: Setup, memo: MemoMeasure, store, name: str | None = None) -> tuple:
+    """The case's history through the real adapter with triage off (fixture A, frozen clocks), as
+    topic `name` (the newest tick's own, so it reads the same network object): the state after it
+    and each tick's code."""
+    history = driver.Driver(_topic(case, setup, triage=False, name=name), measure=memo, store=store,
+                            clock=lambda n: driver.Clock.frozen())  # fmt: skip
+    files = {key: setup.fixture_a for key, spec in case["networks"].items() if "file" in spec}
+    specs = _specs(case["history"], setup, files, [])
+    results = history.run(specs)
+    rows = [{"scene": spec.scene["name"], "network": spec.label, "code": (r["codes"] or [None])[0]}
+            for spec, r in zip(specs, results, strict=True)]  # fmt: skip
+    return history.state, rows
+
+
+def newest_deserts(state: dict | None, site_id: str) -> list:
+    """The deserts of the site's newest measured scene in `state` (only the newest entry keeps them)."""
+    history = ((((state or {}).get("sites") or {}).get(site_id) or {}).get("history")) or []
+    return list(history[-1].get("deserts") or []) if history else []
+
+
+def networks_record(nets: dict, changes: dict) -> dict:
+    return {key: {"sha256": vision_runs.digest(net), "fetched_at": net.get("fetched_at"),
+                  "counts": networks.recount(copy.deepcopy(net))["counts"], "change": changes.get(key)}
+            for key, net in nets.items()}  # fmt: skip
+
+
+def case_agent(case: dict, setup: Setup, clocks: Clocks, script=None) -> CaseAgent:
+    """The model a case is asked: the live one when the run is live and the case asks for it, else
+    the case's script (`script` instead, for the counterfactual); C8's invalid model id; C7's clock."""
+    run = case["run"]
+    live = setup.agent_mode == "bedrock" and run["converse"] == "model" and setup.converse is not None
+    turns = list(script if script is not None else case["scripted"])
+    call = (lambda: setup.converse) if live else (lambda: ScriptedConverse(turns))
+    model_id = setup.model_id if live else driver.SCRIPTED_MODEL
+    if run.get("model_id") == "invalid":
+        model_id = INVALID_MODEL_ID
+    mode = "bedrock" if live else "scripted"
+    return CaseAgent(mode, model_id, call, clocks, past_deadline=run.get("clock") == "past_deadline")
+
+
+def run_row(case: dict, repeat: int, result: dict, outcome: dict | None, site_id: str) -> dict:
+    """One repeat's run, as the scores read it, with the case's labels and the trail's facts."""
+    trail = outcome or {}
+    steps = list(trail.get("steps") or [])
+    tokens_in, tokens_out = int(trail.get("input_tokens") or 0), int(trail.get("output_tokens") or 0)
+    usd, aud = (None, None)
+    if trail.get("model_calls"):
+        usd, aud = model_cost(trail.get("model_id"), tokens_in, tokens_out)
+    expected = case["expected"]
+    required = case["kind"] == "failure" and expected["stop"] != "answered"
+    measured = next((m for m in result.get("measurements") or [] if m.get("kind") == "tick"), {})
+    return {
+        "case": case["case"],
+        "repeat": repeat,
+        "kind": case["kind"],
+        "expected": expected["verdict"] if isinstance(expected["verdict"], str) else None,
+        "expected_stop": expected["stop"] if required else None,
+        "driven_by": case["driven_by"],
+        "code": (result.get("codes") or [None])[0],
+        "agent_called": outcome is not None,
+        "finding": bool(result.get("changed")),
+        "verdict": trail.get("verdict"),
+        "stop": trail.get("stop"),
+        "reason": trail.get("reason"),
+        "tools": [call.get("name") for call in trail.get("tool_calls") or []],
+        "steps": steps,
+        "look_again_failed": any(s.get("tool") == "look_again" and not s.get("ok") for s in steps),
+        "elapsed_ms": trail.get("elapsed_ms"),
+        "deadline_left_s": trail.get("deadline_left_s"),
+        "model_id": trail.get("model_id"),
+        "model_calls": trail.get("model_calls"),
+        "input_tokens": tokens_in,
+        "output_tokens": tokens_out,
+        "cost_usd": usd,
+        "cost_aud": aud,
+        "measured": measured.get("metrics"),
+        "measured_ok": measured.get("ok"),
+    }
+
+
+def _outcome(state: dict, site_id: str) -> dict | None:
+    return ((state or {}).get("triage") or {}).get(site_id)
+
+
+def _responses(result: dict, case: str, repeat: int, arm: str | None = None) -> list[dict]:
+    tag = {"case": case, "repeat": repeat, **({"arm": arm} if arm else {})}
+    return [{**tag, **talk} for talk in result.get("responses") or []]
+
+
+def run_case(case: dict, setup: Setup, repeats: int) -> tuple[dict, list[dict]]:
+    """One case: its history, its networks, then its newest tick `repeats` times from the same state
+    (once when the gate stays shut: the measurement repeats exactly, and no model is asked). Returns
+    the case's results and the Converse responses kept."""
+    out = {"case": case["case"], "kind": case["kind"], "title": case["title"], "expected": case["expected"],
+           "driven_by": case["driven_by"], "conditional": case["conditional"], "base": case.get("base"),
+           "history": [], "newest": dict(case["newest"]), "networks": {}, "gate": None, "included": False,
+           "runs": [], "error": None}  # fmt: skip
+    store = driver.LocalStore()
+    responses: list[dict] = []
+    try:
+        before, out["history"] = build_history(case, setup, setup.memo, store)
+        site_id = driver.SITE_PREFIX + setup.site["id"]
+        nets, changes = case_networks(case, setup.fixture_a, setup.site["polygon"],
+                                      deserts=newest_deserts(before, site_id))  # fmt: skip
+        out["networks"] = networks_record(nets, changes)
+        spec = _specs([case["newest"]], setup, nets, case["news"])[0]
+        clocks = Clocks(setup.frozen)
+        agent = case_agent(case, setup, clocks)
+        look_again = refusing_measure(case["run"]["look_again"]) if case["run"].get("look_again") else None
+        newest = driver.Driver(_topic(case, setup, triage=True), measure=setup.measure, agent=agent,
+                               store=store, clock=clocks, look_again_measure=look_again)  # fmt: skip
+        n = len(case["history"]) + 1
+        for repeat in range(repeats):
+            result = newest.tick(before, spec, n=n)
+            outcome = _outcome(result.pop("state"), newest.site_id)
+            out["runs"].append(run_row(case, repeat, result, outcome, newest.site_id))
+            responses += _responses(result, case["case"], repeat)
+            if repeat == 0:
+                out["gate"] = out["runs"][0]["code"]
+                out["included"] = outcome is not None
+            if outcome is None:
+                break
+        out["converse_errors"] = [error for talk in agent.conversations for error in talk.errors]
+    except (networks.DeriveError, driver.ReplayRefused, KeyError, ValueError) as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        store.close()
+    return out, responses
+
+
+def run_agent(cases: list[dict], setup: Setup, repeats: int) -> tuple[dict, list[dict], list[dict], dict]:
+    """Every case: (results, the Converse responses, the run's checks, its summary)."""
+    by_case, responses = {}, []
+    for case in cases:
+        result, talks = run_case(case, setup, repeats)
+        by_case[case["case"]] = result
+        responses += talks
+    task_runs = [run for c in by_case.values() if c["kind"] == "task" and c["included"] for run in c["runs"]]
+    failure_runs = [run for c in by_case.values() if c["kind"] == "failure" for run in c["runs"]]
+    scores = scoring.agent_scores(task_runs, failure_runs)
+    gate_closed = sum(1 for c in by_case.values()
+                      if c["kind"] == "task" and not c["included"] and not c["error"])  # fmt: skip
+    results = {
+        "cases": by_case,
+        "scores": scores,
+        "c6": c6_observed(by_case.get("C6")),
+        "history": {"measured": setup.memo.misses, "reused": setup.memo.hits},
+    }
+    summary = scoring.agent_summary(scores, cases=len(by_case), gate_closed=gate_closed,
+                                    runs=sum(len(c["runs"]) for c in by_case.values()))  # fmt: skip
+    results["scored"] = {"task_runs": len(task_runs), "failure_runs": len(failure_runs)}
+    return results, responses, agent_checks(by_case), summary
+
+
+def c6_observed(case: dict | None) -> dict | None:
+    """C6 as observed (2.6.3): how many repeats called `look_again`, saw it fail, answered, and
+    with which verdicts."""
+    if not case or not case.get("runs"):
+        return None
+    runs = case["runs"]
+    return {
+        "runs": len(runs),
+        "look_again_failed": sum(1 for r in runs if r["look_again_failed"]),
+        "answered": sum(1 for r in runs if r["stop"] == "answered"),
+        "verdicts": {v: sum(1 for r in runs if scoring.label(r) == v) for v in scoring.LABELS},
+    }
+
+
+def agent_checks(by_case: dict) -> list[dict]:
+    """A case that could not be built; an unconditional task case that never reached the agent; a
+    failure case (C7-C9) that did not end as required, in any repeat."""
+    checks = []
+    for name, case in by_case.items():
+        if case["error"]:
+            checks.append({"name": f"{name}: built", "expected": True, "got": case["error"], "pass": False})
+            continue
+        if case["kind"] == "task" and case["conditional"] is None:
+            checks.append({"name": f"{name}: reached the agent", "expected": True, "got": case["included"],
+                           "pass": bool(case["included"])})  # fmt: skip
+        required = [run for run in case["runs"] if run["expected_stop"]]
+        if required:
+            ok = all(run["verdict"] == "artefact" and run["stop"] == run["expected_stop"] for run in required)
+            got = ", ".join(sorted({str(run["stop"]) for run in required}))
+            expected = required[0]["expected_stop"]
+            checks.append({"name": f"{name}: failed closed as required", "expected": expected, "got": got,
+                           "pass": ok})  # fmt: skip
+    return checks
+
+
+# --- the counterfactuals (2.6.6) ----------------------------------------------------------------------------
+
+
+class ArmMeasure:
+    """Arm (a)'s `look_again`: the newest scene measured at the requested settings (each settings
+    measured once, through `memo`, so every repeat of both arms sees the same numbers), and in the
+    `baseline` arm the moved measures set back to the baseline median (`baseline`, `moved`: the
+    tick's own verdict), a constructed tool output. The figure is the re-measurement's in both
+    arms: only the numbers differ."""
+
+    def __init__(self, memo: MemoMeasure, arm: str, baseline: dict | None = None, moved=()):
+        self.memo, self.arm, self.baseline, self.moved = memo, arm, dict(baseline or {}), tuple(moved)
+
+    def __call__(self, site, scene, *args, **kwargs):
+        result = self.memo(site, scene, *args, **kwargs)
+        if self.arm == "baseline":
+            result = set_back(result, self.baseline, self.moved)
+        return result
+
+
+def set_back(result, baseline: dict, moved) -> object:
+    """A copy of a worker result with each moved measure at its baseline value: the served share
+    (and the served area with it), the desert area, the station count (and the snapped count by
+    the same step)."""
+    out = copy.deepcopy(result)
+    metrics = out.reply["metrics"]
+    if "served_share" in moved and baseline.get("served_share") is not None:
+        metrics["served_share"] = baseline["served_share"]
+        if isinstance(metrics.get("built_up_km2"), int | float):
+            metrics["served_km2"] = round(baseline["served_share"] * metrics["built_up_km2"], 4)
+    if "desert_km2" in moved and baseline.get("desert_km2") is not None:
+        metrics["desert_km2"] = baseline["desert_km2"]
+    if "station_count" in moved and baseline.get("station_count") is not None:
+        step = baseline["station_count"] - (metrics.get("station_count") or 0)
+        metrics["station_count"] = baseline["station_count"]
+        if isinstance(metrics.get("snapped_station_count"), int):
+            metrics["snapped_station_count"] += step
+    return out
+
+
+def counterfactual_case(case: dict, setup: Setup, repeats: int, arms: tuple[str, ...]) -> tuple[dict, list]:
+    """2.6.6 for one case: arm (a)'s two arms of `repeats` each, and arm (b)'s two coverages."""
+    out = {"case": case["case"], "gate": None, "included": False, "agent": None, "gate_level": None,
+           "error": None}  # fmt: skip
+    responses: list[dict] = []
+    store = driver.LocalStore()
+    try:
+        name = f"counterfactual-{case['case']}"
+        before, out["history"] = build_history(case, setup, setup.memo, store, name=name)
+        site_id = driver.SITE_PREFIX + setup.site["id"]
+        nets, changes = case_networks(case, setup.fixture_a, setup.site["polygon"],
+                                      deserts=newest_deserts(before, site_id))  # fmt: skip
+        out["networks"] = networks_record(nets, changes)
+        spec = _specs([case["newest"]], setup, nets, case["news"])[0]
+        n = len(case["history"]) + 1
+        if "a" in arms:
+            out["agent"], talks = agent_arms(case, setup, store, before, spec, n, repeats)
+            responses += talks
+            out["gate"], out["included"] = out["agent"]["gate"], out["agent"]["included"]
+        if "b" in arms:
+            out["gate_level"] = gate_arms(case, setup, nets, spec, n)
+    except (networks.DeriveError, driver.ReplayRefused, KeyError, ValueError) as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    finally:
+        store.close()
+    return out, responses
+
+
+def agent_arms(case, setup, store, before, spec, n, repeats) -> tuple[dict, list]:
+    """Arm (a): `measured` first (its first repeat's verdict gives the baseline and the moved
+    measures), then `baseline`; the case's model, with the counterfactual script when scripted."""
+    runs: dict[str, list[dict]] = {}
+    responses: list[dict] = []
+    look_memo = MemoMeasure(setup.measure)
+    verdict = {}
+    out = {"gate": None, "included": False}
+    for arm in COUNTERFACTUAL_ARMS:
+        clocks = Clocks(setup.frozen)
+        agent = case_agent(case, setup, clocks, script=COUNTERFACTUAL_SCRIPT)
+        measure = ArmMeasure(look_memo, arm, verdict.get("baseline"), verdict.get("moved") or ())
+        tick = driver.Driver(_topic(case, setup, triage=True, name=f"counterfactual-{case['case']}"),
+                             measure=setup.measure, agent=agent, store=store, clock=clocks,
+                             look_again_measure=measure)  # fmt: skip
+        runs[arm] = []
+        for repeat in range(repeats):
+            result = tick.tick(before, spec, n=n)
+            outcome = _outcome(result.pop("state"), tick.site_id)
+            runs[arm].append(run_row(case, repeat, result, outcome, tick.site_id))
+            responses += _responses(result, case["case"], repeat, arm)
+            if arm == "measured" and repeat == 0:
+                entry = (result.get("decisions") or [{}])[0]
+                verdict = {"baseline": entry.get("baseline") or {}, "moved": list(entry.get("moved") or [])}
+                out.update(gate=runs[arm][0]["code"], included=outcome is not None, **verdict)
+            if outcome is None:
+                break
+        if not out["included"]:
+            break
+    out["arms"] = runs
+    out["score"] = scoring.agent_counterfactual(runs) if out["included"] else None
+    return out, responses
+
+
+def gate_arms(case: dict, setup: Setup, nets: dict, spec, n: int) -> dict:
+    """Arm (b): the same newest scene in this process, SCL clouded to just above and just below the
+    floor (GATE_COVERAGES), from a history measured in this process too; once each (the gate is
+    deterministic), with the case's model (its script in CI): called above the floor if the change
+    is material, never below it."""
+    if setup.gate_measure is None:
+        return {"skipped": "no in-process worker for this run (arm (b) needs --cache, or --synthetic)"}
+    store = driver.LocalStore()
+    try:
+        before, _rows = build_history(case, setup, setup.gate_memo, store, name=f"gate-{case['case']}")
+        sides = {}
+        for side, coverage in GATE_COVERAGES.items():
+            clocks = Clocks(setup.frozen)
+            agent = case_agent(case, setup, clocks)
+            tick = driver.Driver(_topic(case, setup, triage=True, name=f"gate-{case['case']}"),
+                                 measure=setup.gate_measure, agent=agent, store=store,
+                                 clock=clocks)  # fmt: skip
+            report: dict = {}
+            with clouded_to(coverage, report):
+                result = tick.tick(before, spec, n=n)
+            outcome = _outcome(result.pop("state"), tick.site_id)
+            measured = next((m for m in result.get("measurements") or [] if m.get("kind") == "tick"), {})
+            sides[side] = {
+                "target": coverage,
+                "coverage": (measured.get("metrics") or {}).get("coverage"),
+                "clouded": report,
+                "measured": bool(measured.get("ok")),
+                "code": (result.get("codes") or [None])[0],
+                "agent_called": outcome is not None,
+                "model_calls": (outcome or {}).get("model_calls", 0),
+                "verdict": (outcome or {}).get("verdict"),
+                "finding": bool(result.get("changed")),
+            }
+        return scoring.gate_counterfactual(sides["above"], sides["below"])
+    finally:
+        store.close()
+
+
+def run_counterfactual(cases: list[dict], setup: Setup, repeats: int, arms: tuple[str, ...]) -> tuple:
+    """2.6.6 over `cases` (C1 and C10 by default): a case that does not pass the gate is replaced
+    by its stand-in (C10 by C4). Returns (results, responses, checks, summary)."""
+    by_name = {case["case"]: case for case in cases}
+    done, responses = {}, []
+    for case in cases:
+        if case["case"] not in COUNTERFACTUAL_CASES and case["case"] in COUNTERFACTUAL_STAND_IN.values():
+            continue  # a stand-in runs only in place of the case it stands in for
+        result, talks = counterfactual_case(case, setup, repeats, arms)
+        stand_in = COUNTERFACTUAL_STAND_IN.get(case["case"])
+        if "a" in arms and not result["included"] and not result["error"] and stand_in in by_name:
+            result["replaced_by"] = stand_in
+            done[case["case"]] = result
+            result, talks = counterfactual_case(by_name[stand_in], setup, repeats, arms)
+            result["stands_in_for"] = case["case"]
+        done[result["case"]] = result
+        responses += talks
+    agent_rows = {name: r["agent"]["score"] for name, r in done.items()
+                  if r.get("agent") and r["agent"]["score"]}  # fmt: skip
+    gate_rows = {name: r["gate_level"] for name, r in done.items()
+                 if r.get("gate_level") and "skipped" not in r["gate_level"]}  # fmt: skip
+    checks = []
+    for name, result in done.items():
+        if result["error"]:
+            checks.append({"name": f"{name}: built", "expected": True, "got": result["error"], "pass": False})
+        row = gate_rows.get(name)
+        if row is not None:
+            below = row["below"]
+            ok = not below["agent_called"] and not below["finding"] and not below.get("model_calls")
+            checks.append({"name": f"{name}: no model below the floor", "expected": True, "got": ok,
+                           "pass": ok})  # fmt: skip
+    summary = scoring.counterfactual_summary(agent_rows, gate_rows)
+    return {"cases": done, "arms": list(arms)}, responses, checks, summary
+
+
+# --- E3: stability over the year --------------------------------------------------------------------------
+
+
+def run_stability(setup: Setup, names: list[str], capture: bool) -> tuple[dict, list, dict]:
+    """E3 over the scenes `names` in time order: the production rule (triage off, the default
+    thresholds, history_size 6), fixture A throughout. Returns (results, checks, summary)."""
+    site = setup.site
+    topic = driver.topic_config("stability", site["id"], site["polygon"], site_name=site["name"],
+                                overrides=STABILITY_RULE)  # fmt: skip
+    store = driver.LocalStore()
+    masks: list = []
+    rows, decisions = [], []
+    try:
+        stable = driver.Driver(topic, measure=setup.measure, store=store,
+                               clock=lambda n: driver.Clock.frozen())  # fmt: skip
+        specs = _specs([{"scene": name, "network": "A"} for name in names], setup, {"A": setup.fixture_a}, [])
+        state, first_mask, previous_mask = None, None, None
+        for n, spec in enumerate(specs, start=1):
+            before = len(masks)
+            with capturing_masks(masks) if capture else _nothing():
+                result = stable.tick(state, spec, n=n)
+            state = result.pop("state")
+            measured = next((m for m in result.get("measurements") or [] if m.get("kind") == "tick"), {})
+            metrics = measured.get("metrics") or {}
+            code = (result.get("codes") or [None])[0]
+            mask = masks[-1] if len(masks) > before else None
+            if mask is not None:
+                masks[-1] = None  # keep two masks at a time, not a year of them
+            row = {
+                "scene": spec.scene["name"], "scene_id": spec.scene["scene_id"],
+                "captured_at": spec.scene["captured_at"],
+                "code": code, "material": code in TRIAGED_CODES, "ok": bool(measured.get("ok")),
+                "error": measured.get("code"), "coverage": metrics.get("coverage"),
+                "served_share": metrics.get("served_share"), "desert_km2": metrics.get("desert_km2"),
+                "built_up_km2": metrics.get("built_up_km2"), "station_count": metrics.get("station_count"),
+                "hubs": metrics.get("hubs"), "flags": metrics.get("flags"),
+                "iou_previous": mask_iou(previous_mask, mask), "iou_first": mask_iou(first_mask, mask),
+                "moved": (result.get("decisions") or [{}])[0].get("moved"),
+            }  # fmt: skip
+            rows.append(row)
+            decisions.append({key: row[key] for key in ("scene", "captured_at", "code", "material")})
+            if mask is not None:
+                first_mask = first_mask or mask
+                previous_mask = mask
+    finally:
+        store.close()
+    alarms = scoring.false_alarms(decisions)
+    spreads = scoring.stability_spread([row for row in rows if row["ok"]])
+    checks = [{"name": "every scene measured", "expected": len(rows), "got": sum(1 for r in rows if r["ok"]),
+               "pass": all(r["ok"] for r in rows)}]  # fmt: skip
+    results = {"scenes": rows, "false_alarms": alarms, "spread": spreads, "masks": capture}
+    return results, checks, scoring.stability_summary(alarms, spreads)
+
+
+@contextmanager
+def _nothing():
+    yield
+
+
+# --- the synthetic city and the real one --------------------------------------------------------------------
+
+
+def synthetic_entry(manifest: dict, name: str, seed: int) -> dict:
+    """The synthetic stand-in for a manifest scene: the synthetic city with noise of `seed`, the
+    scene's capture time, and its cloud when it was measured under SYNTHETIC_CLEAR_COVERAGE (that
+    share of the city's west under SCL cloud, as the driver's cloud scene is)."""
+    scene = next(s for s in manifest["scenes"] if s["name"] == name)
+    coverage = scene.get("site_coverage")
+    cloudy = isinstance(coverage, int | float) and coverage < SYNTHETIC_CLEAR_COVERAGE
+    cloud = round(1.0 - coverage, 4) if cloudy else 0.0
+    return {"name": f"synthetic-{name}", "seed": seed, "cloud": cloud, "captured_at": scene["captured_at"]}
+
+
+def synthetic_year_entries(count: int = SYNTHETIC_YEAR_SCENES) -> list[dict]:
+    """CI's year set: `count` clear synthetic scenes, ten days apart from 5 January 2024."""
+    from datetime import datetime, timedelta
+
+    start = datetime(2024, 1, 5, 0, 6, 11)
+    return [{"name": f"synthetic-year-{k + 1}", "seed": 200 + k, "cloud": 0.0,
+             "captured_at": (start + timedelta(days=10 * k)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+            for k in range(count)]  # fmt: skip
+
+
+def synthetic_blobs_for(entries: list[dict]) -> dict[str, bytes]:
+    """Each entry's four bands as GeoTIFF bytes by URL, as vision_eval_driver.synthetic_blobs writes
+    its own scenes (vision_benchmark.synthetic_city, the cloud over the west share in SCL)."""
+    from vision_benchmark import CITY_EPSG, synthetic_city
+
+    blobs, transform = {}, driver.synthetic_transform()
+    for entry in entries:
+        bands = synthetic_city(driver.SYNTHETIC_SIZE, seed=entry["seed"])
+        if entry["cloud"]:
+            scl = bands["scl"].copy()
+            scl[:, : int(round(driver.SYNTHETIC_SIZE * entry["cloud"]))] = 9
+            bands["scl"] = scl
+        for band, asset in driver.synthetic_scene(entry)["assets"].items():
+            nodata = None if band == "scl" else "0"
+            blobs[asset["url"]] = driver.geotiff(bands[band], transform, CITY_EPSG, nodata=nodata)
+    return blobs
+
+
+def synthetic_setup(entries: dict[str, dict], fixture_a: dict, **model) -> Setup:
+    """A run on the synthetic city: `entries` ({the name the run uses: synthetic entry}), measured by
+    the worker handler in this process (arm (b) too), frozen clocks."""
+    blobs = synthetic_blobs_for(list(entries.values()))
+    measure = driver.in_process_measure(driver.synthetic_fetch(blobs), driver.SYNTHETIC_ENVIRON)
+    scenes = {name: driver.synthetic_scene(entry) for name, entry in entries.items()}
+    site = {**SYNTHETIC_SITE, "polygon": driver.synthetic_polygon()}
+    return Setup(site=site, scenes=scenes, fixture_a=fixture_a, measure=measure, frozen=True,
+                 gate_measure=measure, **model)  # fmt: skip
+
+
+def scene_names(cases: list[dict]) -> list[str]:
+    steps = [step for case in cases for step in [*case["history"], case["newest"]]]
+    return list(dict.fromkeys(step["scene"] for step in steps))
+
+
+def bench_shaped(scenes: list[dict]) -> list[dict]:
+    """Manifest scenes in the benchmark's shape ({name, scene_id, assets: {band: url}}), for its
+    `prepare_inputs` (the HEADs, the pinned-ETag rule, the cache)."""
+    return [{"name": s["name"], "scene_id": s["scene_id"],
+             "assets": {band: a["url"] for band, a in s["assets"].items()}} for s in scenes]  # fmt: skip
+
+
+class Refused(Exception):
+    """A run refused before anything is measured (exit 2), with the reason to print."""
+
+
+def real_setup(args, manifest: dict, site_name: str, names: list[str], *, head=None, imds=None,
+               lambda_client=None, gate: bool = False, deadline: bool = True,
+               **model) -> tuple[Setup, dict, dict]:  # fmt: skip
+    """A run on the real city: the manifest's site and scenes, fixture A from `--network`, the
+    worker `--worker` (an ARN, or `in-process`: refused without `--cache` off an EC2 instance in
+    us-west-2 when the run keeps the production `deadline`; E3, triage off, keeps none and reads
+    uncached if it must), each asset HEADed first and a changed pinned ETag refused
+    (InputChanged). `gate`: arm (b) needs an in-process worker too, under the same rule. Returns
+    (setup, inputs, worker)."""
+    import vision_worker_handler
+
+    import vision_benchmark
+
+    in_process = args.worker == "in-process"
+    if ((in_process and deadline) or gate) and args.cache is None:
+        where_ = vision_runs.where()
+        region = None
+        if where_ == "ec2":
+            region = ((imds or vision_benchmark.imds_identity)() or {}).get("region")
+        refusal = in_process_refusal(None, where_, region)
+        if refusal and not in_process:
+            refusal += "; arm (b) clouds SCL in this process, so it needs the same (or pass --arms a)"
+        if refusal:
+            raise Refused(refusal)
+    path = Path(args.network or DEFAULT_NETWORK)
+    try:
+        fixture_a = driver.load_network_file(path)
+    except FileNotFoundError as exc:
+        raise Refused(f"{exc}: {path} (fixture A: the runsheet's fixture step captures it)") from exc
+    scenes = {s["name"]: s for s in manifest["scenes"]}
+    chosen = [scenes[name] for name in names]
+    site = manifest["sites"][site_name]
+    heads, cache, manifest_sha = vision_benchmark.prepare_inputs(
+        bench_shaped(chosen), manifest, args.cache, head=head, manifest_path=args.manifest
+    )
+    local = driver.in_process_measure(cache or vision_worker_handler.http_fetch)
+    if in_process:
+        measure, worker = local, _in_process_worker()
+    else:
+        from common import vision_client
+
+        client = lambda_client(args.worker) if lambda_client else vision_benchmark.lambda_client(args.worker)
+        measure = driver.deployed_measure(args.worker)
+        worker = {"kind": "deployed", "region": vision_client.region_of(args.worker),
+                  "code_sha256": vision_benchmark.deployed_code_sha256(client, args.worker)}  # fmt: skip
+    inputs = {
+        "manifest_sha256": manifest_sha,
+        "cache": cache is not None,
+        "cache_index_sha256": cache.index_sha256() if cache else None,
+        "scenes": vision_benchmark.scene_inputs(bench_shaped(chosen), heads),
+        "networks": _network_input(path),
+    }
+    setup = Setup(site={"id": site_name, "name": site_name.capitalize(), "polygon": site["polygon"]},
+                  scenes=scenes, fixture_a=fixture_a, measure=measure, frozen=False,
+                  gate_measure=local if gate else None, **model)  # fmt: skip
+    return setup, inputs, worker
+
+
+# --- the command line ---------------------------------------------------------------------------------------
+
+COMMANDS = ("agent", "counterfactual", "stability")
+KIND = {"agent": "eval-agent", "counterfactual": "eval-counterfactual", "stability": "eval-stability"}
+PRICE_SOURCE = "the built-in price table (common/model_pricing.py); AUD at common/costing.USD_TO_AUD_RATE"
+
+
+def add_parsers(sub, manifest_default: Path) -> None:
+    """The three subcommands' arguments, on vision_eval.py's subparsers."""
+    helps = {
+        "agent": "2.6.1-2.6.3: the agent's cases, scored per class against two baselines; a run file",
+        "counterfactual": "2.6.6: OpenCV's output changed and nothing else, at the agent and at the gate",
+        "stability": "E3: the production rule over the year set, one network; false alarms and spreads",
+    }
+    for name in COMMANDS:
+        p = sub.add_parser(name, help=helps[name])
+        p.add_argument("--manifest", type=Path, default=manifest_default)
+        p.add_argument("--synthetic", action="store_true",
+                       help="the synthetic city, in this process, no network (what CI runs)")  # fmt: skip
+        p.add_argument("--network", type=Path,
+                       help=f"fixture A (default {DEFAULT_NETWORK.name}, or the synthetic one)")  # fmt: skip
+        p.add_argument("--worker", metavar="ARN|in-process",
+                       help="the deployed worker's ARN, or in-process (with --cache)")  # fmt: skip
+        p.add_argument("--cache", type=vision_runs.cache_dir, nargs="?", default=None, metavar="DIR",
+                       const=vision_runs.default_cache_dir(),
+                       help="answer range reads from DIR (~ expanded), filled on first read")  # fmt: skip
+        p.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
+        p.add_argument("--tag", help="a suffix for the run id")
+        if name in ("agent", "counterfactual"):
+            p.add_argument("--case", action="append", metavar="NAME", help="only this case (repeatable)")
+            p.add_argument("--repeats", type=int, default=DEFAULT_REPEATS)
+            p.add_argument("--agent", choices=("bedrock", "scripted"), default="scripted",
+                           help="the live model (with --model-id), or each case's script")  # fmt: skip
+            p.add_argument("--model-id", help="the Bedrock model id the rail topic uses")
+            p.add_argument("--bedrock-region", help="Bedrock's Region (default: the AWS SDK's own)")
+        if name == "counterfactual":
+            p.add_argument("--arms", default="a,b", help="a (the agent), b (the gate), or both: a,b")
+        if name == "stability":
+            p.add_argument("--set", default=YEAR_SET, help="the manifest's scene set, in time order")
+            p.add_argument("--scenes", type=int, default=SYNTHETIC_YEAR_SCENES,
+                           help="with --synthetic: how many synthetic scenes")  # fmt: skip
+
+
+def _model(args, converse) -> dict:
+    if args.agent == "bedrock":
+        if not args.model_id:
+            raise Refused("--agent bedrock needs --model-id: the Bedrock model id the rail topic uses")
+        return {"agent_mode": "bedrock", "model_id": args.model_id,
+                "converse": converse or bedrock_converse(args.bedrock_region)}  # fmt: skip
+    return {"agent_mode": "scripted", "model_id": driver.SCRIPTED_MODEL, "converse": None}
+
+
+def _network_input(path: Path) -> list[dict]:
+    return [{"file": vision_runs.shown_path(path), "sha256": vision_runs.sha256_file(path)}]
+
+
+def _synthetic_inputs(path: Path) -> dict:
+    return {"manifest_sha256": None, "cache": False, "synthetic": True, "scenes": [],
+            "networks": _network_input(path)}  # fmt: skip
+
+
+def _in_process_worker() -> dict:
+    return {"kind": "in-process", "region": None, "code_sha256": vision_runs.worker_code_sha256()}
+
+
+def _setup_for(args, manifest: dict, site: str, names: list[str], *, model: dict, deadline: bool, gate: bool,
+               seams: dict):  # fmt: skip
+    """(setup, inputs, worker) for the synthetic city or the real one."""
+    if args.synthetic:
+        order = {s["name"]: i for i, s in enumerate(manifest["scenes"])}
+        entries = {name: synthetic_entry(manifest, name, 100 + order[name]) for name in names}
+        path = Path(args.network or driver.SYNTHETIC_NETWORK_FILE)
+        setup = synthetic_setup(entries, driver.load_network_file(path), **model)
+        return setup, _synthetic_inputs(path), _in_process_worker()
+    if not args.worker:
+        raise Refused("pass --worker <ARN> (the deployed worker) or --worker in-process with --cache DIR")
+    return real_setup(args, manifest, site, names, gate=gate, deadline=deadline, **seams, **model)
+
+
+def _run_file(command: str, args, started: str, worker: dict, inputs: dict, params: dict, results, checks,
+              summary, agent: dict | None) -> dict:  # fmt: skip
+    from vision import build
+
+    from vision_benchmark import cpu_identity
+
+    env = vision_runs.environment(cpu_identity(), build.build_info())
+    tag = args.tag
+    if tag is None:
+        mode = getattr(args, "agent", None) if command != "stability" else None
+        tag = "-".join(part for part in (mode, "synthetic" if args.synthetic else None) if part) or None
+    run = vision_runs.new_run(KIND[command], env["cpu"], "opencv", env, worker=worker, inputs=inputs,
+                              params=params, tag=tag, mode=command, started=started)  # fmt: skip
+    vision_runs.finish(run, results, checks, summary)
+    run["agent"] = agent
+    return run
+
+
+def main(args, manifest: dict, **seams) -> int:
+    """`agent`, `counterfactual` or `stability` (args.command); 2 when refused before anything is
+    measured, 1 when a check failed, else 0. `seams` (converse, head, imds, lambda_client) are the
+    tests' stand-ins for Bedrock, the bucket's HEADs, the instance identity and the Lambda client."""
+    try:
+        if args.command == "stability":
+            run = _main_stability(args, manifest, seams)
+        else:
+            run = (_main_agent if args.command == "agent" else _main_counterfactual)(args, manifest, seams)
+    except (Refused, CaseError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (vision_runs.InputChanged, vision_runs.WrongHost) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(MARKDOWN[args.command](run))
+    if args.out:
+        print(f"wrote {vision_runs.write(run, args.out)}")
+    return 0 if all(check["pass"] for check in run["checks"]) else 1
+
+
+def _one_site(cases: list[dict]) -> str:
+    sites = sorted({case["site"] for case in cases})
+    if len(sites) != 1:
+        raise Refused(f"one run measures one site; these cases name {sites}")
+    return sites[0]
+
+
+def _agent_block(model: dict, responses: list[dict], region) -> dict:
+    return {"mode": model["agent_mode"], "model_id": model["model_id"], "region": region,
+            "price": PRICE_SOURCE, "responses": responses}  # fmt: skip
+
+
+def _main_agent(args, manifest: dict, seams: dict) -> dict:
+    cases = load_cases(manifest, only=args.case)
+    if args.repeats < 1:
+        raise Refused("--repeats must be at least 1")
+    model = _model(args, seams.pop("converse", None))
+    started = vision_runs.utc_now()
+    setup, inputs, worker = _setup_for(args, manifest, _one_site(cases), scene_names(cases), model=model,
+                                       deadline=True, gate=False, seams=seams)  # fmt: skip
+    results, responses, checks, summary = run_agent(cases, setup, args.repeats)
+    params = {"cases": [c["case"] for c in cases], "repeats": args.repeats, "synthetic": args.synthetic,
+              "deadline_seconds": TRIAGE_DEADLINE_SECONDS, "frozen_clock": setup.frozen,
+              "cache": args.cache is not None}  # fmt: skip
+    return _run_file("agent", args, started, worker, inputs, params, results, checks, summary,
+                     _agent_block(model, responses, args.bedrock_region))  # fmt: skip
+
+
+def _main_counterfactual(args, manifest: dict, seams: dict) -> dict:
+    arms = tuple(part.strip() for part in args.arms.split(",") if part.strip())
+    if not arms or set(arms) - {"a", "b"}:
+        raise Refused("--arms takes a, b or a,b")
+    wanted = args.case or [*COUNTERFACTUAL_CASES, *COUNTERFACTUAL_STAND_IN.values()]
+    cases = load_cases(manifest, only=list(dict.fromkeys(wanted)))
+    if args.repeats < 1:
+        raise Refused("--repeats must be at least 1")
+    model = _model(args, seams.pop("converse", None))
+    started = vision_runs.utc_now()
+    setup, inputs, worker = _setup_for(args, manifest, _one_site(cases), scene_names(cases), model=model,
+                                       deadline=True, gate="b" in arms, seams=seams)  # fmt: skip
+    results, responses, checks, summary = run_counterfactual(cases, setup, args.repeats, arms)
+    params = {"cases": [c["case"] for c in cases], "repeats": args.repeats, "arms": list(arms),
+              "gate_coverages": GATE_COVERAGES, "synthetic": args.synthetic, "frozen_clock": setup.frozen,
+              "script": list(COUNTERFACTUAL_SCRIPT) if model["agent_mode"] == "scripted" else None}
+    return _run_file("counterfactual", args, started, worker, inputs, params, results, checks, summary,
+                     _agent_block(model, responses, args.bedrock_region))  # fmt: skip
+
+
+def _main_stability(args, manifest: dict, seams: dict) -> dict:
+    started = vision_runs.utc_now()
+    model = {"agent_mode": "scripted", "model_id": driver.SCRIPTED_MODEL, "converse": None}
+    if args.synthetic:
+        entries = {e["name"]: e for e in synthetic_year_entries(args.scenes)}
+        path = Path(args.network or driver.SYNTHETIC_NETWORK_FILE)
+        setup = synthetic_setup(entries, driver.load_network_file(path), **model)
+        inputs, worker, names = _synthetic_inputs(path), _in_process_worker(), list(entries)
+    else:
+        sets = manifest.get("sets") or {}
+        if args.set not in sets:
+            raise Refused(f"no set {args.set!r} in the manifest (it has {sorted(sets)}); "
+                          "coverage --write records them")  # fmt: skip
+        names = list(sets[args.set]["scenes"])
+        if not args.worker:
+            args.worker = "in-process"
+        setup, inputs, worker = _setup_for(args, manifest, sets[args.set]["site"], names, model=model,
+                                           deadline=False, gate=False, seams=seams)  # fmt: skip
+    capture = worker["kind"] == "in-process"
+    results, checks, summary = run_stability(setup, names, capture)
+    params = {"set": None if args.synthetic else args.set, "scenes": names, "synthetic": args.synthetic,
+              "thresholds": "default", "triage": False, "history_size": 6, "masks": capture}  # fmt: skip
+    return _run_file("stability", args, started, worker, inputs, params, results, checks, summary, None)
+
+
+# --- what each prints ---------------------------------------------------------------------------------------
+
+
+def _n(value, digits: int = 3) -> str:
+    if value is None:
+        return "-"
+    return f"{value:.{digits}f}" if isinstance(value, float) else str(value)
+
+
+def _row(*cells) -> str:
+    return "| " + " | ".join(str(cell) for cell in cells) + " |"
+
+
+def agent_markdown(run: dict) -> str:
+    agent, s = run.get("agent") or {}, run["summary"]
+    lines = [
+        f"**agent** {agent.get('mode')} (model `{agent.get('model_id')}`), worker {run['worker']['kind']}, "
+        f"where {run['environment'].get('where')}",
+        "",
+        _row("case", "expected", "driven by", "gate", "runs", "real", "artefact", "failed closed",
+             "look_again", "cost (AUD)"),  # fmt: skip
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for name, case in run["results"]["cases"].items():
+        expected, driven = case["expected"]["verdict"], case["driven_by"] or "-"
+        if case["error"]:
+            lines.append(_row(name, expected, driven, f"not built: {case['error']}", 0, "", "", "", "", ""))
+            continue
+        runs = case["runs"]
+        labels = [scoring.label(r) for r in runs if r["agent_called"]]
+        counts = [labels.count(label) for label in scoring.LABELS]
+        cost = sum(r["cost_aud"] or 0 for r in runs)
+        looked = sum(1 for r in runs if "look_again" in r["tools"])
+        lines.append(_row(name, expected, driven, case["gate"], len(runs), *counts, looked, f"{cost:.4f}"))
+    real = f"{_n(s['recall_real'])} [{_n(s['recall_real_wilson_low'])}, {_n(s['recall_real_wilson_high'])}]"
+    artefact = (f"{_n(s['recall_artefact'])} [{_n(s['recall_artefact_wilson_low'])}, "
+                f"{_n(s['recall_artefact_wilson_high'])}]")  # fmt: skip
+    lines += [
+        "",
+        f"Balanced accuracy {_n(s['balanced_accuracy'])} (recall real {real}, recall artefact {artefact}); "
+        f"numeric-only {_n(s['numeric_only_balanced_accuracy'])}, always-artefact "
+        f"{_n(s['always_artefact_balanced_accuracy'])}; {s['gate_closed']} case(s) never reached the agent.",
+        f"Stability {_n(s['stability'])}; failed closed as required {s['fail_closed']} of "
+        f"{s['fail_closed_runs']}; latency p50 {_n(s['latency_p50_ms'])} ms, p95 "
+        f"{_n(s['latency_p95_ms'])} ms; tokens {_n(s['tokens_mean'])} a run; cost "
+        f"{_n(s['cost_usd_total'], 4)} USD ({_n(s['cost_aud_total'], 4)} AUD) in all.",
+    ]
+    return "\n".join(lines)
+
+
+def counterfactual_markdown(run: dict) -> str:
+    s = run["summary"]
+    lines = ["**counterfactual**", "",
+             _row("case", "arm", "repeats", "called look_again", "real", "artefact", "failed closed"),
+             "|---|---|---:|---:|---:|---:|---:|"]  # fmt: skip
+    for name, case in run["results"]["cases"].items():
+        score = (case.get("agent") or {}).get("score")
+        if case.get("error"):
+            lines.append(_row(name, f"not built: {case['error']}", "", "", "", "", ""))
+        elif case.get("agent") and not score:
+            lines.append(_row(name, f"gate {case['gate']}: never reached the agent", "", "", "", "", ""))
+        for arm in COUNTERFACTUAL_ARMS if score else ():
+            labels = score["labels"].get(arm) or {}
+            counts = [labels.get(label, 0) for label in scoring.LABELS]
+            lines.append(_row(name, arm, score["repeats"][arm], score["called_look_again"][arm], *counts))
+    lines += ["", _row("case", "side", "coverage", "code", "agent called", "a Finding would be written"),
+              "|---|---|---:|---|---|---|"]  # fmt: skip
+    for name, case in run["results"]["cases"].items():
+        gate = case.get("gate_level") or {}
+        if "skipped" in gate:
+            lines.append(_row(name, f"skipped: {gate['skipped']}", "", "", "", ""))
+        for side in ("above", "below") if "above" in gate else ():
+            row = gate[side]
+            coverage = _n(row["coverage"], 4)
+            lines.append(_row(name, side, coverage, row["code"], row["agent_called"], row["finding"]))
+    lines += ["", f"Agent level: {s['agent_flips']} flip(s) in {s['agent_pairs']} pair(s) that both called "
+              f"look_again ({s['agent_called_look_again']} repeats called it). Gate level: "
+              f"{s['gate_flips']} of {s['gate_pairs']} pair(s) flipped."]  # fmt: skip
+    return "\n".join(lines)
+
+
+def stability_markdown(run: dict) -> str:
+    s, results = run["summary"], run["results"]
+    lines = ["**stability** (E3)", "",
+             _row("scene", "captured", "coverage", "served share", "desert km²", "built-up km²", "code",
+                  "mask IoU (previous, first)"),
+             "|---|---|---:|---:|---:|---:|---|---|"]  # fmt: skip
+    for row in results["scenes"]:
+        iou = f"{_n(row['iou_previous'], 4)}, {_n(row['iou_first'], 4)}"
+        lines.append(_row(row["scene"], str(row["captured_at"])[:10], _n(row["coverage"], 4),
+                          _n(row["served_share"], 4), _n(row["desert_km2"], 2), _n(row["built_up_km2"], 2),
+                          row["code"], iou))  # fmt: skip
+    lines += ["", f"False alarms: {s['false_material']} of {s['decisions']} decisions "
+              f"({_n(s['false_material_rate'])}, Wilson 95 % {_n(s['wilson_low'])}-{_n(s['wilson_high'])}). "
+              f"Spread: served share {_n(s['served_share_spread'], 4)}, desert "
+              f"{_n(s['desert_rel_spread'])} and built-up {_n(s['built_up_rel_spread'])} of their medians; "
+              "smallest mask IoU "
+              f"{_n(s['mask_iou_min'], 4)}, hub Jaccard {_n(s['hub_jaccard_min'])}, flag Jaccard "
+              f"{_n(s['flag_jaccard_min'])}."]  # fmt: skip
+    return "\n".join(lines)
+
+
+MARKDOWN = {"agent": agent_markdown, "counterfactual": counterfactual_markdown,
+            "stability": stability_markdown}  # fmt: skip
+
+

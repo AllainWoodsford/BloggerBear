@@ -621,11 +621,16 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--write", action="store_true", help="put site_coverage and aot_mean into the manifest")
     c.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     c.add_argument("--tag", help="a suffix for the run id")
+    import vision_eval_agent  # the agent, counterfactual and stability subcommands (Q2b)
+
+    vision_eval_agent.add_parsers(sub, MANIFEST_FILE)
     args = parser.parse_args(argv)
 
     manifest = load_manifest(args.manifest)
     if args.command == "pin":
         return _main_pin(args, manifest)
+    if args.command in vision_eval_agent.COMMANDS:
+        return vision_eval_agent.main(args, manifest)
     return _main_coverage(args, manifest)
 
 
