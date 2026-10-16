@@ -323,9 +323,8 @@ kept is numbers and one map per scene.
    runs for most of a minute, which leaves too little of the tick to measure, so the scene waits
    (the tick's `vision_site` line says `deferred` for `time_budget`) and the network is stored
    (the runsheet's [`rail_access` topics](../deployment-runsheet.md#rail_access-topics), "A large
-   city's first network can take a minute"). Trigger it again (with four cities, the next three
-   ticks take the other cities first, so trigger until Sydney's turn comes back, or wait): that
-   tick measures the newest scene against the stored network, and if its coverage is at least
+   city's first network can take a minute"). Trigger it again: Sydney kept its place, so the next
+   tick measures its newest scene against the stored network, and if its coverage is at least
    0.6, that is the first observation and a Finding appears, carrying the map and the planner
    notes (a cloudy scene reports nothing, and the next clear one is first). The figure is in the
    content bucket under `vision/<topic>/<site>/<scene>.png`, and the running state at

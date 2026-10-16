@@ -77,7 +77,9 @@ any other before calling S3. Vision on and off, dev and production, a bad Region
 client are planned in `tests/vision.tftest.hcl`; `test_terraform_wiring.py` holds the file's
 actions, counts and conditions, and the worker name against the vision-worker module's.
 
-**Bounded.** A rail state can pass 20 MB and `pipeline_health` opens every briefing, so the reads
+**Bounded.** A rail state is 11 to 23 MB until the day-subject round's first tick moves its networks
+to their own objects, and 3.6 to 16.4 MB after it (the measurements are in `MAX_RAIL_SITES`'s
+comment, `common/adapters/rail_access.py`), and `pipeline_health` opens every briefing, so the reads
 share one budget weighted by each object's size (24 MiB in flight, four at once), taken before its
 body is read; nothing over 24 MiB is read, and `pipeline_health` and the watch read nothing over 8
 MiB (at 512 MB the parse rule below holds them well under that). Each call has a deadline (8 s, 3 s
@@ -89,15 +91,19 @@ slowest shape measured (a dict-dense 24 MiB state at 4.0 CPU-seconds, 6.0 MiB pe
 one of that size takes 0.7), scaled by the share of a vCPU the function's memory buys (Lambda gives
 one vCPU at 1,769 MB; the function has 512 MB, 0.29 of one, so 1.16 MiB a second): a call ends by
 its deadline, or, when a parse begun with that time to spare runs slower still, up to that parse's
-length later. At 512 MB a 24 MiB state needs 20.7 s left and a real 11.3 MB rail state 9.3 s. The
+length later. At 512 MB a 24 MiB state needs 20.7 s left, a three-city rail state from before the
+day-subject round's first tick (11.3 MB) 9.3 s, and the same state after it (3.6 MB) about 3 s. The
 rate holds for every call, so what each parses at most is its deadline's worth, less the time the
 download took: about 9 MiB within the 8 s survey, about 3.5 MiB within `pipeline_health`'s 3 s and
-about 2.3 MiB within the watch's 2 s, well under the 8 MiB those two may read. A rail topic's sites,
-and any state between those sizes and 8 MiB that `pipeline_health` and the watch read before, read
-"not checked this time" until the function has more memory (at 1,769 MB: 6 s for 24 MiB, 2.7 s for
-11.3 MB; `pipeline_health` parses up to its 8 MiB again, and the watch nearly so, 8 MiB taking its
-whole 2 s), which is the owner's call. A state not read in time is "not checked this time", never
-"fine".
+about 2.3 MiB within the watch's 2 s (#325), well under the 8 MiB those two may read. So after that
+first tick `vision_status` parses a four-city rail state at 512 MB, where before it said "not
+checked this time" for every rail topic; a state from before it, or the largest after it (eight
+cities with long CJK names, 16.4 MB), still reads "not checked this time" there. `pipeline_health`
+and the watch stop near 3.5 and 2.3 MiB, so a rail state above that, and any other state between
+those sizes and the 8 MiB they may read, reads "not checked this time" in their sentence until the
+function has more memory (at 1,769 MB: 6 s for 24 MiB, 2.7 s for 11.3 MB; `pipeline_health` parses
+up to its 8 MiB again, and the watch nearly so, 8 MiB taking its whole 2 s), which is the owner's
+call. A state not read in time is "not checked this time", never "fine".
 
 ## What is spoken, what is on screen
 
@@ -236,8 +242,10 @@ to do it, all read-only, all over the same rules (`lambdas/ops_mcp/topic_finding
 **Three windows, one rule.** The default is everything that has not expired; `days` (1 to 14, the
 Finding TTL) narrows it; `next_article` shows exactly what the next daily run reads: from the
 topic's last article within its findings window, expired or not, at most 48, with the draft's
-40,000-character budget noted. The window's start is one function the daily cycle, the tool and
-the route all call, `common/findings_window.window_start`, so the three cannot disagree. DynamoDB
+40,000-character budget noted. Without `subject`, a rotating topic is read for today's subject
+(from that subject's last article, only the Findings that report it), which is echoed in
+`subject`. The window's start is one function the daily cycle, the tool and the route all call,
+`common/findings_window.window_start`, so the three cannot disagree. DynamoDB
 deletes an expired item lazily, so the unexpired reads skip and count what the TTL has not yet
 removed (`expired_left_out`).
 

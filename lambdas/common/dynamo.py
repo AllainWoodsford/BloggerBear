@@ -209,7 +209,9 @@ def list_recent_findings(topic_id: str, limit: int = 5, since: str | None = None
 # Interrogating a topic's Findings (the assistant's topic_findings, the Admin API's findings route
 # and `admin_cli findings list`). Read-only, and only ever a Query on the topic's own key: a test
 # in each caller holds the table to `query` and nothing else. list_recent_findings above stays as
-# it is: the daily cycle and Re-Write read through it.
+# it is: the daily cycle and Re-Write read a topic that does not rotate through it, and a rotating
+# topic's window through list_findings below (up to common/findings_window.SUBJECT_READ_LIMIT, so
+# the 48-cap falls after the subject filter).
 #
 # DynamoDB's TTL deletes an expired item lazily, up to about two days after `expires_at`, so a
 # read that wants what is still alive skips any item whose `expires_at` has passed (the daily run

@@ -1,7 +1,9 @@
 # The day-subject hook: one topic that rotates through the cities it is configured to watch
 
-**Status:** S1 and S2 built (#320, #323), with S1's review leftovers in S1b (#324) · **Date:** 2026-10-15 · **Pick up after:** the assistant's
-vision round (PR M, PR N) and before the competition report (Phase 3), or after the deadline ·
+**Status:** S1 and S2 built (#320, #323), with S1's review leftovers in S1b (#324), S2's review
+fixes in #327 and both reviews' nits in S3 · **Date:** 2026-10-15 · **Pick up after:** the
+assistant's vision round (PR M, PR N) and before the competition report (Phase 3), or after the
+deadline ·
 **Builds on:** [rail-access-monitor.md](rail-access-monitor.md), [vision.md](vision.md) §5,
 `common/editorial_goals.py` (the crypto feed's day goals), PR K (`findings_window_hours`, #297)
 
@@ -129,9 +131,13 @@ last_article_at)`. With subjects:
   bound is `last_article_by_subject.get(key)`; absent means "never written about this subject",
   so the window alone bounds it. `force` ignores both stamps, as now.
 - `_record_article_written(topic_id, run_started, subject_key=None)`: one `UpdateExpression`
-  that sets `last_article_at` and, when a key is given, `last_article_by_subject.#k`
-  (`SET last_article_by_subject = if_not_exists(last_article_by_subject, :empty)` first, then the
-  key; two statements in one transaction are not needed, two sequential updates are fine).
+  that sets `last_article_at` and, when a key is given, `last_article_by_subject.#k`. DynamoDB
+  refuses to set a map and a key inside it in one expression, so it is two sequential writes (no
+  transaction needed). The first is a conditional overwrite, `SET last_article_by_subject = :empty`
+  only when the topic exists and the field is missing or not a map (`attribute_not_exists(...) OR
+  NOT attribute_type(..., :map)`); a map already there fails the condition and is left alone, and a
+  field that was not a map (a hand edit) is replaced and logged. The second sets the key and
+  `last_article_at` together (as built: `dynamo.set_topic_last_article_at`, 3.10).
 - **A known gap, not widened here:** `admin_api._update_topic` reads the topic and writes it
   back whole (`put_item`), so an edit that lands between the stamp and the read restores the old
   stamps (vision.md §10). With a map it is the same race on more fields. Fixing it is a
@@ -443,11 +449,15 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
   converting it with `topics update` risks re-drafting those Findings
   (`test_findings_window.py::test_a_subject_never_written_about_is_bounded_by_the_window_alone`).
 - `force`: ignores both stamps, keeps the subject filter.
-- A rail topic whose stored config does not parse (hand-edited past `topics update`'s check): the
-  adapter cannot say whether it rotates, so the daily run stops with its `ConfigError` before any
-  model call, and the next-article read (`topic_findings`, `findings list --next-article`) fails
-  the same way, a tool error or a 500, rather than answer with a window the daily run would not
-  read. A rail topic always has sites: `parse_config` refuses one without.
+- A rail topic whose stored config does not parse (hand-edited past `topics update`'s check):
+  `day_subject` answers None before it parses anything when `adapter_config` sets neither
+  `rotation` nor `rotation_timezone` (#327), so a rail topic without a rota reads as one with no
+  subject: its daily run and its next-article read are what they always were, and the broken config
+  is the tick's `last_error`. Only a rail topic that sets a rota (either key) and whose stored
+  config does not parse cannot say whose day it is: the daily run stops with its `ConfigError`
+  before any model call, and the next-article read (`topic_findings`, `findings list
+  --next-article`) fails the same way, a tool error or a 500, rather than answer with a window the
+  daily run would not read.
 
 ## 6. Order, size and where it sits
 
