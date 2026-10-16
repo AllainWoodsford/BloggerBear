@@ -44,6 +44,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import vision_runs
@@ -600,6 +601,332 @@ def coverage_markdown(run: dict) -> str:
     return "\n".join(lines)
 
 
+# --- shared by the in-process subcommands ------------------------------------------------------------------
+
+# The Region the imagery lives in: an in-process worker there reads `sentinel-cogs` as fast as the
+# deployed one does.
+IMAGERY_REGION = "us-west-2"
+NETWORKS_DIR = Path(__file__).with_name("vision_benchmark_networks")
+EVIDENCE_DIR = ROOT / "docs" / "hackathon" / "evidence"
+REPLAY_DIR = EVIDENCE_DIR / "replay"
+# How a refusal and a usage error end (a run that started and failed a check ends 1).
+REFUSED = 2
+# sydney-c1's network B when no file is given (vision_eval_driver.line_on_largest_desert).
+NETWORK_B_DERIVED = "A with a five-station line through the previous scene's largest area beyond reach"
+
+
+def in_imagery_region(identity=None) -> bool:
+    """Whether this machine is an EC2 instance in IMAGERY_REGION (IMDS answers within 1 s, or not:
+    off EC2 it is not)."""
+    if identity is None:
+        from vision_benchmark import imds_identity
+
+        identity = imds_identity()
+    return bool(identity) and identity.get("region") == IMAGERY_REGION
+
+
+def in_process_refusal(cache, synthetic: bool, identity=None) -> str | None:
+    """2.6.2's rule: an in-process worker under the production deadline is refused without `--cache`
+    off an instance in IMAGERY_REGION, because a `look_again` would then re-read about 54 MB inside
+    the agent's 85 s and fail closed for the harness's reasons (`no_time`, `deadline`), scored as
+    the agent's. None when allowed (the synthetic city reads nothing)."""
+    if synthetic or cache is not None or in_imagery_region(identity):
+        return None
+    return ("refused: --worker in-process with the production deadline needs --cache DIR (or an EC2 "
+            f"instance in {IMAGERY_REGION}): the agent's look_again would re-read the scene inside its "
+            "deadline and fail closed for the harness's reasons")  # fmt: skip
+
+
+def network_file_for(site: str, given: Path | None) -> Path:
+    """The network fixture a run reads: `--network`, else the site's committed one."""
+    import vision_eval_driver as driver
+
+    if given is not None:
+        return Path(given)
+    if site == "synthetic":
+        return driver.SYNTHETIC_NETWORK_FILE
+    return NETWORKS_DIR / f"{site}.json"
+
+
+def head_scenes(scenes: list[dict], manifest: dict, head=None) -> dict[str, dict]:
+    """Every asset's HEAD, refused (InputChanged) when a pinned ETag moved; {} for synthetic scenes."""
+    urls = [asset["url"] for scene in scenes for asset in scene["assets"].values()
+            if asset["url"].startswith(vision_runs.BUCKET_PREFIX)]  # fmt: skip
+    if not urls:
+        return {}
+    heads = vision_runs.head_assets(urls, head)
+    vision_runs.check_pinned(heads, vision_runs.pinned_etags(manifest))
+    return heads
+
+
+def scene_etags(scenes: list[dict], heads: dict[str, dict]) -> list[dict]:
+    return [
+        {"name": scene["name"], "scene_id": scene["scene_id"],
+         "etag_by_asset": {band: (heads.get(asset["url"]) or {}).get("etag") if heads else None
+                           for band, asset in scene["assets"].items()}}
+        for scene in scenes
+    ]  # fmt: skip
+
+
+def worker_fetch(cache_dir: Path | None, heads: dict[str, dict], synthetic: bool, fetch=None):
+    """What the in-process worker reads through: `fetch` when given, the synthetic city's files, the
+    cache over the handler's own HTTPS reads, or (None) those reads alone."""
+    import vision_eval_driver as driver
+
+    if fetch is not None:
+        return fetch, None
+    if synthetic:
+        return driver.synthetic_fetch(), None
+    if cache_dir is None:
+        return None, None
+    import vision_worker_handler
+
+    etags = {url: fields.get("etag") or "" for url, fields in heads.items()}
+    cache = vision_runs.CachedFetch(cache_dir, etags, fetch=vision_worker_handler.http_fetch)
+    return cache, cache
+
+
+def worker_environ(backend: str, cool_sha: str | None, synthetic: bool) -> dict:
+    """The in-process handler's environment for the run (it reads these at call time)."""
+    import vision_eval_driver as driver
+
+    environ = {"VISION_BACKEND": backend}
+    if cool_sha:
+        environ["COOL_BUILD_SHA256"] = cool_sha
+    if synthetic:
+        environ.update(driver.SYNTHETIC_ENVIRON)
+    return environ
+
+
+# --- replay (2.6.4) -------------------------------------------------------------------------------------
+
+
+def replay_summary(ticks: list[dict]) -> dict:
+    """The replay's `summary`: ticks replayed (`steps`), decisions, how many the agent was asked
+    about, its look_again calls, its verdicts, and the ticks whose diff would write a Finding."""
+    entries = [entry for tick in ticks for entry in tick.get("decisions") or []]
+    triaged = [entry["triage"] for entry in entries if entry.get("triage")]
+    look_again = sum(1 for t in triaged for step in t.get("steps") or [] if step.get("tool") == "look_again")
+    return {
+        "steps": len(ticks),
+        "decisions": len(entries),
+        "triaged": len(triaged),
+        "look_again": look_again,
+        "verdict_real": sum(1 for t in triaged if t.get("verdict") == "real" and t.get("stop") == "answered"),
+        "verdict_artefact": sum(1 for t in triaged if t.get("verdict") != "real"),
+        "finding": sum(1 for tick in ticks if tick.get("changed")),
+    }
+
+
+def agent_spend(ticks: list[dict], model_id: str | None) -> dict:
+    """The agent's tokens over the run and their price from the built-in table (the Models registry
+    is the deployment's; a replay prices with the table the code ships), USD and AUD, or null when
+    the table has no price for the model."""
+    from common.costing import USD_TO_AUD_RATE, call_cost_usd
+    from common.model_pricing import default_model_entry
+
+    entries = [entry["triage"] for tick in ticks for entry in tick.get("decisions") or []
+               if entry.get("triage")]  # fmt: skip
+    tokens = {"input_tokens": sum(int(t.get("input_tokens") or 0) for t in entries),
+              "output_tokens": sum(int(t.get("output_tokens") or 0) for t in entries)}  # fmt: skip
+    usd = call_cost_usd(tokens, default_model_entry(model_id)) if model_id and any(tokens.values()) else None
+    return {**tokens, "cost_usd": round(usd, 6) if usd is not None else None,
+            "cost_aud": round(usd * USD_TO_AUD_RATE, 6) if usd is not None else None,
+            "price_source": "common/model_pricing.py's built-in table"}  # fmt: skip
+
+
+def _main_replay(args, manifest: dict) -> int:
+    import vision_eval_driver as driver
+
+    sequence = driver.SEQUENCES[args.sequence]
+    synthetic = sequence["site"] == "synthetic"
+    agent_mode = args.agent
+    deployed = args.worker != "in-process"
+    usage = None
+    if agent_mode == "recorded" and not args.from_run:
+        usage = "--agent recorded needs --from <a replay run file>"
+    elif agent_mode == "recorded" and deployed:
+        usage = "--agent recorded re-measures in-process (--worker in-process): it needs no AWS"
+    elif agent_mode == "bedrock" and not args.model_id:
+        usage = "--agent bedrock needs --model-id <the topic's model or inference profile id>"
+    elif args.backend == "cool" and not args.cool_sha:
+        usage = "--backend cool needs --cool-sha <hex>: the pinned COOL build's fingerprint"
+    elif deployed and synthetic:
+        usage = "the synthetic city exists only in this process: --worker in-process"
+    if usage:
+        print(usage, file=sys.stderr)
+        return REFUSED
+    if agent_mode == "bedrock" and not deployed:
+        refusal = in_process_refusal(args.cache, synthetic)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return REFUSED
+
+    recorded = None
+    if agent_mode == "recorded":
+        try:
+            recorded = vision_runs.load(args.from_run)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return REFUSED
+        replayed = (recorded.get("params") or {}).get("sequence")
+        if recorded["kind"] != "eval-replay" or replayed != args.sequence:
+            print(f"refused: {args.from_run} is not a replay of {args.sequence}", file=sys.stderr)
+            return REFUSED
+
+    started = vision_runs.utc_now()
+    try:
+        site, scenes = driver.sequence_scenes(args.sequence, manifest)
+    except KeyError as exc:
+        print(str(exc.args[0]), file=sys.stderr)
+        return REFUSED
+    limit = len(recorded["results"]["ticks"]) if recorded else (args.limit or len(scenes))
+    scenes = scenes[:limit]
+    network_path = network_file_for(sequence["site"], args.network)
+    try:
+        network_a = driver.load_network_file(network_path)
+        network_b_file = driver.load_network_file(args.network_b) if args.network_b else None
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"{exc} ({vision_runs.shown_path(network_path)})", file=sys.stderr)
+        return REFUSED
+    networks = [{"label": "A", "file": vision_runs.shown_path(network_path),
+                 "sha256": vision_runs.sha256_file(network_path)}]  # fmt: skip
+    if "B" in sequence["networks"][:limit]:
+        given = args.network_b
+        networks.append({
+            "label": "B", "file": vision_runs.shown_path(given) if given else None,
+            "sha256": vision_runs.sha256_file(given) if given else None,
+            "derived": None if given else NETWORK_B_DERIVED,
+        })  # fmt: skip
+    if recorded:
+        old = {row.get("label"): row.get("sha256") for row in recorded["inputs"].get("networks") or []}
+        moved = [row["label"] for row in networks if row["sha256"] and old.get(row["label"]) != row["sha256"]]
+        if moved:
+            said = ", ".join(moved)
+            print(f"input changed: network {said} is not the file the recording read", file=sys.stderr)
+            return REFUSED
+
+    try:
+        heads = head_scenes(scenes, manifest)
+    except (vision_runs.InputChanged, vision_runs.WrongHost) as exc:
+        print(str(exc), file=sys.stderr)
+        return REFUSED
+    if recorded:
+        then = {row["scene_id"]: row.get("etag_by_asset") for row in recorded["inputs"].get("scenes") or []}
+        for row in scene_etags(scenes, heads):
+            if then.get(row["scene_id"]) != row["etag_by_asset"]:
+                print(f"input changed: {row['name']} is not the bytes the recording read", file=sys.stderr)
+                return REFUSED
+
+    fetch, cache = worker_fetch(args.cache, heads, synthetic)
+    if deployed:
+        from common import vision_client
+
+        from vision_benchmark import deployed_code_sha256, lambda_client
+
+        measure = driver.deployed_measure(args.worker)
+        worker = {"kind": "deployed", "region": vision_client.region_of(args.worker),
+                  "code_sha256": deployed_code_sha256(lambda_client(args.worker), args.worker)}  # fmt: skip
+    else:
+        measure = driver.in_process_measure(fetch, worker_environ(args.backend, args.cool_sha, synthetic))
+        worker = {"kind": "in-process", "region": None, "code_sha256": vision_runs.worker_code_sha256()}
+
+    if agent_mode == "bedrock":
+        agent, clock = driver.BedrockAgent(args.model_id, region=args.region), (lambda n: driver.Clock())
+    elif agent_mode == "recorded":
+        told = recorded["agent"] or {}
+        agent = driver.RecordedAgent(told.get("responses") or [], told.get("model_id"))
+        readings = [tick.get("clock") or [] for tick in recorded["results"]["ticks"]]
+        clock = lambda n: driver.Clock.replay(readings[n - 1])  # noqa: E731
+    else:
+        agent, clock = driver.ScriptedAgent(), (lambda n: driver.Clock.frozen())
+    # A recorded replay runs under the recording's thresholds, whatever the sequence's are now.
+    thresholds = args.thresholds or sequence["thresholds"]
+    if recorded:
+        thresholds = (recorded.get("params") or {}).get("thresholds") or thresholds
+    topic = driver.topic_config(args.sequence, site["id"], site["polygon"], site_name=site["name"],
+                                thresholds=thresholds, params=site.get("params"),
+                                overrides={"backend": args.backend})  # fmt: skip
+    run_driver = driver.Driver(topic, measure=measure, agent=agent, clock=clock)
+    network_b = network_b_file or driver.line_on_largest_desert(network_a, run_driver.site_id)
+    nows = None
+    if recorded:
+        nows = [datetime.fromisoformat(tick["at"]) for tick in recorded["results"]["ticks"]]
+    try:
+        specs = driver.tick_specs(args.sequence, scenes, network_a, network_b, nows=nows)
+        ticks = run_driver.run(specs)
+    except driver.ReplayRefused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return REFUSED
+    finally:
+        figures = {tick["n"]: tick.pop("figure_key", None) for tick in run_driver.results}
+
+    checks, parity_ = [], None
+    if recorded:
+        checks, parity_ = driver.compare_recorded(recorded["results"]["ticks"], ticks)
+
+    from vision_benchmark import environment as bench_environment
+
+    env = bench_environment()
+    tag = "-".join(part for part in (args.sequence, agent_mode, args.tag) if part)
+    run = vision_runs.new_run(
+        "eval-replay", env["cpu"], args.backend, env, worker=worker, tag=tag, mode="replay", started=started,
+        inputs={"manifest_sha256": None if synthetic else vision_runs.sha256_file(args.manifest),
+                "cache": cache is not None, "cache_index_sha256": cache.index_sha256() if cache else None,
+                "scenes": scene_etags(scenes, heads), "networks": networks},
+        params={"sequence": args.sequence, "agent": agent_mode,
+                "worker": "deployed" if deployed else "in-process", "backend": args.backend,
+                "thresholds": thresholds, "limit": args.limit, "synthetic": synthetic,
+                "model_id": agent.model_id, "from": recorded["run_id"] if recorded else None,
+                "tick_lag_hours": driver.TICK_LAG.total_seconds() / 3600.0,
+                "scripted": {"tools": list(driver.SCRIPTED_TOOLS), "look_again": driver.SCRIPTED_LOOK_AGAIN,
+                             "rule": driver.SCRIPTED_RULE}
+                if agent_mode == "scripted" else None},
+    )  # fmt: skip
+    results = {
+        "sequence": {"site": sequence["site"], "scenes": [scene["name"] for scene in scenes],
+                     "networks": sequence["networks"][:limit], "news": list(sequence["news"])},
+        "topic_id": run_driver.topic_id,
+        "site_id": run_driver.site_id,
+        "ticks": ticks,
+        "ring": driver.ring_of(run_driver.state, run_driver.site_id),
+        "excluded": list(driver.EXCLUDED),
+        "parity": parity_,
+    }  # fmt: skip
+    vision_runs.finish(run, results, checks, replay_summary(ticks))
+    run["agent"] = {"mode": agent_mode, "model_id": agent.model_id,
+                    "responses": [talk for tick in ticks for talk in tick.get("responses") or []],
+                    **agent_spend(ticks, agent.model_id)}  # fmt: skip
+    for tick in ticks:
+        tick.pop("responses", None)  # kept once, under agent.responses
+    if args.out:
+        path = vision_runs.out_path(run, args.out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for tick in ticks:
+            png = run_driver.store.load_image(figures[tick["n"]]) if figures.get(tick["n"]) else None
+            tick["figure"] = None
+            if png and args.figures:
+                figure = path.with_name(f"{path.stem}.{tick['n']}-{tick['scene']}.png")
+                figure.write_bytes(png)
+                tick["figure"] = figure.name
+        vision_runs.write(run, path)
+        print(f"wrote {path}")
+    if args.trace:
+        trace_path = Path(args.trace) if args.trace is not True else REPLAY_DIR / f"{args.sequence}.md"
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_path.write_text(driver.render_markdown(run), encoding="utf-8")
+        print(f"wrote {trace_path}")
+    run_driver.store.close()
+    s = run["summary"]
+    print(f"replay {args.sequence} ({agent_mode}): {s['steps']} ticks, {s['decisions']} decisions, "
+          f"{s['triaged']} sent to the agent ({s['look_again']} look_again), {s['verdict_real']} real, "
+          f"{s['verdict_artefact']} artefact, {s['finding']} Finding(s) would be written")  # fmt: skip
+    for check in run["checks"]:
+        if not check["pass"]:
+            print(f"FAIL {check['name']}: {check['got']}", file=sys.stderr)
+    return 0 if all(check["pass"] for check in run["checks"]) else 1
+
+
 # --- main ---------------------------------------------------------------------------------------------
 
 
@@ -621,11 +948,42 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--write", action="store_true", help="put site_coverage and aot_mean into the manifest")
     c.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     c.add_argument("--tag", help="a suffix for the run id")
+
+    import vision_eval_driver as driver
+
+    r = sub.add_parser("replay", help="2.6.4: the real adapter over a pinned sequence, tick by tick")
+    r.add_argument("--sequence", required=True, choices=sorted(driver.SEQUENCES))
+    r.add_argument("--manifest", type=Path, default=MANIFEST_FILE)
+    r.add_argument("--network", type=Path, help="the network fixture (default: the site's committed one)")
+    r.add_argument("--network-b", type=Path,
+                   help=f"sydney-c1's second network (default: {NETWORK_B_DERIVED})")  # fmt: skip
+    r.add_argument("--worker", default="in-process", metavar="ARN|in-process",
+                   help="the deployed worker's ARN (site ids sent as eval-*), or in-process")  # fmt: skip
+    r.add_argument(
+        "--cache", type=vision_runs.cache_dir, nargs="?", const=vision_runs.default_cache_dir(),
+        default=None, metavar="DIR", help="answer the in-process worker's reads from DIR, filled once",
+    )
+    r.add_argument("--backend", choices=("opencv", "cool"), default="opencv")
+    r.add_argument("--cool-sha", help="the pinned COOL build's sha256 (required with --backend cool)")
+    r.add_argument("--agent", choices=("bedrock", "recorded", "scripted"), default="scripted")
+    r.add_argument("--from", dest="from_run", type=Path, help="the replay run file --agent recorded replays")
+    r.add_argument("--model-id", help="the model or inference profile id (--agent bedrock)")
+    r.add_argument("--region", help="Bedrock's Region (--agent bedrock; default: the AWS configuration's)")
+    r.add_argument("--thresholds", choices=sorted(driver.THRESHOLDS), help="the sequence's own by default")
+    r.add_argument("--limit", type=int, help="replay only the first N ticks")
+    r.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
+    r.add_argument("--trace", nargs="?", const=True, default=None, metavar="FILE",
+                   help="write the trace as Markdown (default: replay/<sequence>.md)")  # fmt: skip
+    r.add_argument("--tag", help="a suffix for the run id (after the sequence and the agent)")
+    r.add_argument("--no-figures", dest="figures", action="store_false",
+                   help="do not write each tick's figure beside the run file")  # fmt: skip
     args = parser.parse_args(argv)
 
     manifest = load_manifest(args.manifest)
     if args.command == "pin":
         return _main_pin(args, manifest)
+    if args.command == "replay":
+        return _main_replay(args, manifest)
     return _main_coverage(args, manifest)
 
 

@@ -107,9 +107,11 @@ THRESHOLDS = {
     "demo": {"served_share_threshold": 0.0, "desert_relative_threshold": 0.0, "min_baseline": 1},
 }
 # The scripted agent's moves: one `look_again` at this reach (the settings the trace's example
-# names), then an answer by SCRIPTED_RULE. Its model id is this code (the `model` kind takes it).
+# names), then the news (`web_context`, when the topic offers it), then an answer by SCRIPTED_RULE.
+# Its model id is this code (the `model` kind takes it).
 SCRIPTED_MODEL = "scripted"
 SCRIPTED_LOOK_AGAIN = {"reach_m": 800}
+SCRIPTED_TOOLS = ("look_again", "web_context")
 SCRIPTED_RULE = "real when the station count changed (the network moved), else artefact"
 # Where the in-process worker is "deployed": vision_client.measure needs an ARN in the backend's
 # variable before it calls the client it is given; this one names no account and is never invoked.
@@ -596,8 +598,9 @@ class BedrockAgent:
 
 
 class ScriptedAgent:
-    """No model: one `look_again` (SCRIPTED_LOOK_AGAIN) when the tool is offered, then the answer
-    by SCRIPTED_RULE, in Converse's shape, recorded as a real run's responses are."""
+    """No model: the tools SCRIPTED_TOOLS names, one a turn, each when the request offers it (a
+    `look_again` at SCRIPTED_LOOK_AGAIN, then the news), then the answer by SCRIPTED_RULE, in
+    Converse's shape, recorded as a real run's responses are."""
 
     mode = "scripted"
 
@@ -606,13 +609,19 @@ class ScriptedAgent:
         self.model_id = model_id
 
     def converse_for(self, tick: int, site_id: str) -> _Recording:
-        state = {"turn": 0}
+        state = {"turn": 0, "planned": None}
 
         def converse(**request):
             state["turn"] += 1
-            if state["turn"] == 1 and self.look_again and "look_again" in _offered(request):
-                block = {"toolUse": {"toolUseId": f"scripted-{tick}-1", "name": "look_again",
-                                     "input": dict(self.look_again)}}  # fmt: skip
+            if state["planned"] is None:
+                offered = _offered(request)
+                inputs = {"look_again": self.look_again}
+                state["planned"] = [(name, inputs.get(name, {})) for name in SCRIPTED_TOOLS
+                                    if name in offered]  # fmt: skip
+            if state["planned"]:
+                name, given = state["planned"].pop(0)
+                block = {"toolUse": {"toolUseId": f"scripted-{tick}-{state['turn']}", "name": name,
+                                     "input": dict(given)}}  # fmt: skip
                 return {"output": {"message": {"role": "assistant", "content": [block]}},
                         "stopReason": "tool_use", "usage": {"inputTokens": 0, "outputTokens": 0}}  # fmt: skip
             verdict, why = scripted_verdict(request.get("messages") or [])
@@ -833,6 +842,9 @@ class Driver:
             "at": new_state.get("fetched_at"),
             "network": spec.label,
             "network_fetched_at": (self._network or {}).get("fetched_at"),
+            # The network this tick stored (None: it kept the last), by its canonical digest, so a
+            # derived network B is held to the recording's too.
+            "network_digest": vision_runs.digest(self._network) if network is not None else None,
             "measured": measured,
             "changed": bool(changed),
             "codes": [entry.get("code") for entry in appended],
@@ -1137,6 +1149,8 @@ def compare_recorded(recorded_ticks: list[dict], replayed_ticks: list[dict]) -> 
             differences.append(f"{len(old_entries)} recorded entries vs {len(new_entries)}")
         for a, b in zip(old_entries, new_entries, strict=False):
             differences += compare_entry(a, b)
+        if old.get("network_digest") != new.get("network_digest"):
+            differences.append("the network this tick stored differs from the recording's")
         checks.append({"name": f"tick {n} ({new.get('scene')}): the ring equals the recording",
                        "expected": "equal", "got": "; ".join(differences[:6]) or "equal",
                        "pass": not differences})  # fmt: skip

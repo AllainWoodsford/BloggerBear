@@ -130,7 +130,8 @@ def test_the_synthetic_city_runs_through_the_real_adapter_with_every_decision_co
     last = results[-1]["decisions"][0]
     assert last["triage"]["verdict"] == "real" and last["network_changed"] is True
     assert "station_count" in last["moved"] and last["reported"] is True
-    assert [s["tool"] for s in last["triage"]["steps"]] == ["look_again"]
+    assert [s["tool"] for s in last["triage"]["steps"]] == ["look_again", "web_context"]
+    assert last["triage"]["steps"][1]["result"] == {"results": 0, "dated": 0}
     assert last["triage"]["steps"][0]["result"]["settings"] == {"reach_m": 800}
     assert [m["kind"] for m in results[-1]["measurements"]] == ["tick", "look_again"]
     assert results[2]["decisions"][0]["triage"]["verdict"] == "artefact"
@@ -157,7 +158,7 @@ def test_the_synthetic_city_runs_through_the_real_adapter_with_every_decision_co
     assert all(e.get("site_id", "eval-").startswith("eval-") for e in parsed)
     # The agent's responses are kept in the recorded format, and the clock read in every tick.
     assert [len(r["responses"]) for r in results] == [0, 0, 1, 1]
-    assert [len(t["turns"]) for t in results[-1]["responses"]] == [2]
+    assert [len(t["turns"]) for t in results[-1]["responses"]] == [3]
     assert all(r["clock"] and set(r["clock"]) == {0.0} for r in results)
 
 
