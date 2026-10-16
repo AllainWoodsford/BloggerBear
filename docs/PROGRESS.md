@@ -807,6 +807,17 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked in CI). The real-data runs are the
   operator's (submission PR Q2a; `scripts/vision_eval_driver.py`, `scripts/vision_eval.py`;
   [results](hackathon/evidence/RESULTS.md))
+- [x] The submission round's evaluation, second half (Q2b), on Q2a's driver: thirteen agent cases
+  balanced between the classes (four real, all network-driven; five artefact; four failure cases),
+  each network derived from the Sydney fixture by code; `vision_eval.py agent` (the real triage on
+  each case's newest tick, five repeats, per-class recall with Wilson intervals and balanced
+  accuracy against numeric-only and always-artefact, failed-closed runs in their own column, every
+  Converse response kept, the cost in USD and AUD), `counterfactual` (only OpenCV's output changed:
+  the agent's re-measurement, and SCL clouded either side of the coverage floor) and `stability`
+  (E3: the year set through the production rule on one network, the false-alarm rate with its
+  interval, the spreads). CI runs all three scripted on the synthetic city; the live runs are the
+  operator's (submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
+  [the cases](hackathon/evidence/README.md#the-agents-cases))
 
 ## Backlog / not yet scheduled
 

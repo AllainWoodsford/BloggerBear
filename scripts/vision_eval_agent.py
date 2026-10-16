@@ -1331,7 +1331,7 @@ def add_parsers(sub, manifest_default: Path) -> None:
             p.add_argument("--agent", choices=("bedrock", "scripted"), default="scripted",
                            help="the live model (with --model-id), or each case's script")  # fmt: skip
             p.add_argument("--model-id", help="the Bedrock model id the rail topic uses")
-            p.add_argument("--bedrock-region", help="Bedrock's Region (default: the AWS SDK's own)")
+            p.add_argument("--region", help="Bedrock's Region, as replay takes it (default: the SDK's own)")
         if name == "counterfactual":
             p.add_argument("--arms", default="a,b", help="a (the agent), b (the gate), or both: a,b")
         if name == "stability":
@@ -1345,7 +1345,7 @@ def _model(args, converse) -> dict:
         if not args.model_id:
             raise Refused("--agent bedrock needs --model-id: the Bedrock model id the rail topic uses")
         return {"agent_mode": "bedrock", "model_id": args.model_id,
-                "converse": converse or bedrock_converse(args.bedrock_region)}  # fmt: skip
+                "converse": converse or bedrock_converse(args.region)}  # fmt: skip
     return {"agent_mode": "scripted", "model_id": driver.SCRIPTED_MODEL, "converse": None}
 
 
@@ -1445,7 +1445,7 @@ def _main_agent(args, manifest: dict, seams: dict) -> dict:
               "deadline_seconds": TRIAGE_DEADLINE_SECONDS, "frozen_clock": setup.frozen,
               "cache": args.cache is not None}  # fmt: skip
     return _run_file("agent", args, started, worker, inputs, params, results, checks, summary,
-                     _agent_block(model, responses, args.bedrock_region))  # fmt: skip
+                     _agent_block(model, responses, args.region))  # fmt: skip
 
 
 def _main_counterfactual(args, manifest: dict, seams: dict) -> dict:
@@ -1465,7 +1465,7 @@ def _main_counterfactual(args, manifest: dict, seams: dict) -> dict:
               "gate_coverages": GATE_COVERAGES, "synthetic": args.synthetic, "frozen_clock": setup.frozen,
               "script": list(COUNTERFACTUAL_SCRIPT) if model["agent_mode"] == "scripted" else None}
     return _run_file("counterfactual", args, started, worker, inputs, params, results, checks, summary,
-                     _agent_block(model, responses, args.bedrock_region))  # fmt: skip
+                     _agent_block(model, responses, args.region))  # fmt: skip
 
 
 def _main_stability(args, manifest: dict, seams: dict) -> dict:
