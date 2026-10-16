@@ -26,7 +26,7 @@ topic's Findings follows in the next one (see [Status](#status)).
 | Asked | Tool | Reads | Returns |
 |---|---|---|---|
 | "How is the vision pipeline doing?", "Is the satellite worker on?", "Why wasn't Sydney measured?", "Why wasn't Botany Bay measured?" (a site) | **`vision_status(topic?)`** (new) | Topics (one Scan); where vision is on, each vision topic's running state; the pipeline config (each topic's research interval) and this week's stats row (triage spend: the triage agent's calls only, since the worker Lambda's own cost is not tracked) | whether the worker is on and where; per topic and site: when last measured, the newest scene, coverage, the measure and triage, and why a site was not measured; a card per problem with its fix; the sites as a `table` |
-| "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each | one sentence: the worker off, or the vision topics with a site not measured on the last try, or how many were not checked; the same cards |
+| "What needs my attention?" | `pipeline_health` | the same running states, in 3 s and at most 8 MiB each | one sentence: the worker off, or the vision topics whose sites setting doesn't parse and those with a site not measured on the last try (both clauses in the one sentence when both hold), or how many were not checked; the same cards |
 | "Watch the Sydney topic" | `watch(topic)`, then `watch_list` | a watched vision topic's running state, at most two per call | "research is on time" no longer hides sites that were not measured |
 | "Any errors in the vision worker?", "Look at the logs for the rail Sydney topic" | `log_review` | the worker's log group **in `vision_region`**, beside the home Region's functions | the worker's errors by root cause, `scene_unreadable` among them ([the log reader](ops-assistant-log-reader.md#a-second-region-the-vision-worker)) |
 | "How does the vision pipeline work?" | `architecture(feature="vision-pipeline")` (new feature) | nothing: the catalogue | nine steps with this environment's names |
@@ -82,7 +82,11 @@ body is read; nothing over 24 MiB is read, and `pipeline_health` and the watch r
 8 MiB. Each call has a deadline (8 s, 3 s for `pipeline_health`, 2 s per watched topic), S3 is
 asked with a 1 s connect and 2 s read timeout and no retry, a body is read in chunks with the
 deadline checked between them, and every body is closed and every thread joined before the
-answer. A state not read in time is "not checked this time", never "fine".
+answer. A parse is not interrupted once begun, so a state is read and parsed only with time left
+to parse its size at 6 MiB a second (the slowest shape measured, a dict-dense 24 MiB state at
+3.8 s; a real one of that size takes 0.7 s): a call ends by its deadline, or, when a parse begun
+with that time to spare runs slower still, up to that parse's length later. A state not read in
+time is "not checked this time", never "fine".
 
 ## What is spoken, what is on screen
 

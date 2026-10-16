@@ -946,7 +946,9 @@ def test_two_large_states_are_never_read_at_once_and_memory_stays_bounded(monkey
 
 def test_a_stalled_body_is_closed_at_the_deadline_and_no_thread_is_left(monkeypatch):
     monkeypatch.setenv("CONTENT_BUCKET", BUCKET)
-    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 50) + b"}"}, wait=0.3)
+    # Small enough to have time to parse (a quarter of a second at PARSE_BYTES_PER_SECOND): it is the
+    # stalled chunks, not the parse-time rule, that stop it.
+    fake = FakeS3({key("slow"): b"{" + b" " * (vision_status.CHUNK_BYTES * 5) + b"}"}, wait=0.3)
     before = set(threading.enumerate())
     started = time.monotonic()
     with patch.object(vision_status, "_s3", return_value=fake):
@@ -1018,6 +1020,34 @@ def test_a_body_whose_end_comes_after_the_deadline_is_not_checked():
     assert _read_late(fake, 0.1) == (None, "not_checked")
     assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
     assert _read_late(fake, 5.0)[1] == "read"  # the same body, with time to spare, is parsed
+
+
+def _stand_in(size: int) -> bytes:
+    """A JSON object of exactly `size` bytes that parses at once: the parse-time rule reads the size,
+    not the shape."""
+    head, tail = b'{"pad": "', b'"}'
+    return head + b"x" * (size - len(head) - len(tail)) + tail
+
+
+def test_a_state_is_read_only_with_time_left_to_parse_it(monkeypatch):
+    """24 MiB is four seconds at PARSE_BYTES_PER_SECOND: with eight left it is read and parsed; with
+    one left it is not checked, before any byte of it is read or the parse begun."""
+    fake = FakeS3({key("late"): _stand_in(vision_status.MAX_STATE_BYTES)})
+    assert _read_late(fake, 8.0)[1] == "read"
+    monkeypatch.setattr(vision_status, "_IN_FLIGHT", _NoBudget())
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, 1.0) == (None, "not_checked")
+    assert fake.bodies[1].closed and not fake.bodies[1].reading
+
+
+def test_a_state_whose_download_leaves_too_little_time_to_parse_it_is_not_parsed():
+    """The time left is read again before the parse: one second's worth of bytes, begun with 1.5 s
+    left, whose chunks take 0.6 s to come, leaves too little for its parse."""
+    size = vision_status.PARSE_BYTES_PER_SECOND
+    fake = FakeS3({key("late"): _stand_in(size)}, wait=0.6 * vision_status.CHUNK_BYTES / size)
+    with patch.object(vision_status.json, "loads", side_effect=AssertionError("parsed")):
+        assert _read_late(fake, 1.5) == (None, "not_checked")
+    assert fake.bodies[0].closed and vision_status._IN_FLIGHT.used == 0
 
 
 class _Raw:
