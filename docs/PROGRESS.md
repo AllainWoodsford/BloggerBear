@@ -755,6 +755,14 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `docs/hackathon/evidence/runs/`); the network fixture directory's ODbL notice; the COOL runsheet
   corrected into the Graviton session's script, with the 4.x pin (`opencv-python-headless==4.14.0.94`)
   (#308, submission PR Q1)
+- [x] The submission round's `vision_evidence`: the operator's assistant and Alexa+ answer "what did
+  the vision agent do for rail Sydney this week?" from the evidence lines alone, read-only: three
+  fixed Logs Insights queries by field equality within one 8-second budget, every line parsed and
+  checked, kept, reported and written told apart, one decision's trace step by step, what a person
+  did from the Articles table's topic index, the agent's spend in AUD, one sentence per topic and
+  nothing summed across topics, and no new grant (#313, submission PR P2a, on the integration branch
+  after the evidence trail; `lambdas/ops_mcp/vision_evidence.py`, `lambdas/common/dynamo.py`;
+  [design](enhancements/vision-evidence.md#asking-the-assistant))
 
 ## Backlog / not yet scheduled
 

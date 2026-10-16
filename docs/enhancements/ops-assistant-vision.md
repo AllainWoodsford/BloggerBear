@@ -32,6 +32,7 @@ that followed it, the tool that interrogates a topic's Findings ([Topic findings
 | "How does the vision pipeline work?" | `architecture(feature="vision-pipeline")` (new feature) | nothing: the catalogue | nine steps with this environment's names |
 | "How do I set up a rail topic?" | `cli_guides("vision")` (new guide) | nothing: the CLI reference | the steps, with a sites config never filled in (below) |
 | "How can I check the worker myself?" | `investigate("vision")` (new runsheet) | nothing: the runsheets | the worker's log and function with console links in the vision Region, the research tick's log, the running state in S3 |
+| "What did the vision agent do for rail Sydney this week?", "Walk me through the latest Sydney scene" | **`vision_evidence(topic?, days?, scene?)`** (added in the submission round) | the evidence lines in the research-tick and admin-api log groups (three fixed queries, one 8 s budget, up to 90 days); for a finding written, the Articles table's topic index | per topic: the decisions by code, what the agent did and decided, the findings written, what a person did with each article, and the agent's spend in AUD; the decisions, or one decision's trace, as a `table`; all code-derived, so a voice caller gets the same ([the evidence trail](vision-evidence.md#asking-the-assistant)) |
 
 **Why a site was not measured**, in code (`ops_mcp/vision_status.py`, `classify`), one class per
 site, each a fixed set of words and, for a problem, a card (`ops_mcp/suggestions.py`):
@@ -254,3 +255,4 @@ and `python-ci.yml` runs the tests when a skill changes.
 | `architecture(feature="vision-pipeline")`; `cli_guides("vision")`; sites never filled in | done | #300 |
 | `vision.tf`, `OPS_VISION_REGION`, `OPS_SCREEN_CLIENT_IDS` | done; `terraform test` not run locally | #300 |
 | Interrogating a topic's Findings: `topic_findings`, `GET /topics/{topic_id}/findings`, `findings list`, the `topic-findings` skill, `FINDINGS_TABLE` | done; `terraform validate` not run locally | #307 |
+| `vision_evidence`: what the pipeline measured and decided, and what a person did, from the logs | done | the submission round ([vision-evidence.md](vision-evidence.md#asking-the-assistant)) |
