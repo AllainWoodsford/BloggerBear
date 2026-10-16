@@ -41,10 +41,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError, ConnectionClosedError, EndpointConnectionError
+from botocore.retries.standard import ExponentialBackoff, RetryContext
 
 from common import evidence
 from common.adapters.base import SEEN_KEY
@@ -64,7 +67,12 @@ from common.lambda_timing import track_lambda_duration
 from common.model_routing import resolve_model
 from common.relevance import research_relevance_rule, topic_label
 from common.research_schedule import is_due, next_due_at, resolve_interval_hours
-from common.vision_sites import S3_CONFIG
+from common.vision_sites import (
+    S3_ATTEMPT_MAX_SECONDS,
+    S3_CALL_MAX_SECONDS,
+    S3_ONE_ATTEMPT_CONFIG,
+    s3_stalled,
+)
 
 FINDING_TTL_DAYS = 14
 COMPACT_STATE_MAX_CHARS = 4000
@@ -82,17 +90,92 @@ RESEARCH_RETRY_MAX_TOKENS = 4096
 MAX_PLANNER_NOTES_PER_FINDING = 7
 
 _s3_client = None
+# How many times in all the tick's own S3 calls are made when S3 answers each at once with an error
+# botocore's defaults ask again: their max_attempts (legacy mode), which this client had until S4, so
+# a tick of any topic rides out the same 500s, SlowDowns and throttles as before (_recovered).
+S3_RECOVERED_ATTEMPTS = 5
+# The errors those defaults ask again when S3 answers (botocore's _retry.json, S3's entries
+# included): any 5xx (SlowDown is a 503), a 429 or 509, a throttling code, S3's RequestTimeout and
+# BadDigest, and a connection S3 dropped or refused. Never a timeout: that is a stall.
+_RECOVERED_STATUS = frozenset({429, 509})
+_RECOVERED_CODES = frozenset({
+    "SlowDown", "Throttling", "ThrottlingException", "ThrottledException", "RequestThrottledException",
+    "TooManyRequestsException", "ProvisionedThroughputExceededException", "RequestTimeout",
+    "RequestTimeoutException", "PriorRequestNotComplete", "BadDigest",
+})  # fmt: skip
+# The wait before each new attempt: botocore's standard mode, random() x min(2 ** (n - 1), 20) s
+# before attempt n + 1 (legacy mode's is the same for these four).
+_BACKOFF = ExponentialBackoff()
+_sleep = time.sleep
+# What the tick returns when its adapter's calls to S3 stalled and its Lambda has too little left for
+# the stores (_stores_would_not_finish): an error, with nothing stored.
+STALLED_REASON = "the content bucket stalled this tick, and too little time is left to store the state"
 
 
 def _get_s3_client():
-    """The content bucket's client, bounded as the adapters' calls to it are (vision_sites.S3_CONFIG:
-    a stalled call raises within S3_CALL_MAX_SECONDS, 41 s, where botocore's defaults took about
-    310 s). The running state's read then fails the tick inside its 120 s Lambda, with nothing
-    stored, and its store after a rail tick whose every city waited on S3 ends inside it too."""
+    """The content bucket's client: one attempt a request (vision_sites.S3_ONE_ATTEMPT_CONFIG), so a
+    stalled call raises within S3_ATTEMPT_MAX_SECONDS, 20 s (botocore's defaults took about 310 s),
+    and is never made twice. The running state's read then fails the tick inside its 120 s Lambda,
+    with nothing stored. An error S3 answers at once is asked again above botocore (_recovered)."""
     global _s3_client
     if _s3_client is None:
-        _s3_client = boto3.client("s3", config=S3_CONFIG)
+        _s3_client = boto3.client("s3", config=S3_ONE_ATTEMPT_CONFIG)
     return _s3_client
+
+
+def _answered_at_once(exc: BaseException, seconds: float) -> bool:
+    """Whether a call to S3 that raised `exc` after `seconds` is one botocore's defaults ask again
+    and S3 answered at once (_RECOVERED_CODES): a stall (vision_sites.s3_stalled) never is."""
+    if s3_stalled(exc, seconds):
+        return False
+    if isinstance(exc, ClientError):
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode") or 0
+        code = exc.response.get("Error", {}).get("Code")
+        return status >= 500 or status in _RECOVERED_STATUS or code in _RECOVERED_CODES
+    return isinstance(exc, ConnectionClosedError | EndpointConnectionError)
+
+
+def _recovered(call: Callable, time_left: Callable[[], float] | None = None):
+    """`call()`, one request to S3, made again when S3 answers it at once with an error botocore's
+    defaults ask again (_answered_at_once): up to S3_RECOVERED_ATTEMPTS in all, after botocore's
+    standard backoff, and only while the Lambda has the time for that wait and one more whole
+    attempt (`time_left`; no bound outside a Lambda). A stall is never asked again: it raises, as
+    does the last error."""
+    attempt = 1
+    while True:
+        asked = time.monotonic()
+        try:
+            return call()
+        except Exception as exc:
+            if attempt >= S3_RECOVERED_ATTEMPTS or not _answered_at_once(exc, time.monotonic() - asked):
+                raise
+            wait = _BACKOFF.delay_amount(RetryContext(attempt_number=attempt))
+            if time_left is not None and time_left() < wait + S3_ATTEMPT_MAX_SECONDS:
+                raise
+            print(f"research_tick_handler: S3 answered {type(exc).__name__} at once; asked again")
+            _sleep(wait)
+            attempt += 1
+
+
+def _time_left(context) -> Callable[[], float] | None:
+    """The seconds the invocation's Lambda has left, as a callable (the context's
+    get_remaining_time_in_millis), or None when the handler is called without one (a test, a
+    script): then nothing is bounded by it."""
+    remaining = getattr(context, "get_remaining_time_in_millis", None)
+    if not callable(remaining):
+        return None
+    return lambda: remaining() / 1000.0
+
+
+def _stores_would_not_finish(adapter, time_left: Callable[[], float] | None) -> bool:
+    """Whether the tick must end without storing anything: its adapter's calls to S3 stalled this
+    tick (Adapter.s3_stalled), so the stores may well stall too, and the Lambda has less than
+    S3_CALL_MAX_SECONDS left, the time the stores take should they (the snapshot's and the running
+    state's, one attempt each). A store that could not finish is never started. On a tick whose
+    calls to S3 were answered, never."""
+    if time_left is None:
+        return False
+    return adapter.s3_stalled() and time_left() < S3_CALL_MAX_SECONDS
 
 
 def _snapshot_key(topic_id: str, captured_at: str) -> str:
@@ -106,25 +189,26 @@ def _running_state_key(topic_id: str) -> str:
     return f"snapshots/{topic_id}/running-state.json"
 
 
-def _load_running_state(bucket: str, topic_id: str) -> dict | None:
+def _load_running_state(
+    bucket: str, topic_id: str, time_left: Callable[[], float] | None = None
+) -> dict | None:
     try:
-        return _load_prior_state(bucket, _running_state_key(topic_id))
+        return _load_prior_state(bucket, _running_state_key(topic_id), time_left)
     except _get_s3_client().exceptions.NoSuchKey:
         return None
 
 
-def _store_state(bucket: str, key: str, snapshot: dict) -> None:
-    _get_s3_client().put_object(
-        Bucket=bucket,
-        Key=key,
-        Body=json.dumps(snapshot).encode("utf-8"),
-        ContentType="application/json",
+def _store_state(bucket: str, key: str, snapshot: dict, time_left: Callable[[], float] | None = None) -> None:
+    body = json.dumps(snapshot).encode("utf-8")
+    s3 = _get_s3_client()
+    _recovered(
+        lambda: s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json"), time_left
     )
 
 
-def _load_prior_state(bucket: str, s3_key: str) -> dict:
+def _load_prior_state(bucket: str, s3_key: str, time_left: Callable[[], float] | None = None) -> dict:
     s3 = _get_s3_client()
-    response = s3.get_object(Bucket=bucket, Key=s3_key)
+    response = _recovered(lambda: s3.get_object(Bucket=bucket, Key=s3_key), time_left)
     return json.loads(response["Body"].read())
 
 
@@ -216,13 +300,14 @@ def handler(event, context) -> dict:
     # manual "run research now" must not be refused because the interval hasn't
     # elapsed.
     force = (event or {}).get("force") is True
+    time_left = _time_left(context)
 
     if (event or {}).get("prefetch_network") is True:
         # Only the Admin API's network_prefetch trigger sets this: fetch the topic's rail networks
         # with the time a slow Overpass needs, and nothing else (no Finding, no research time).
         print(f"research_tick_handler: prefetching networks for topic_id={topic_id}")
         try:
-            return _run_network_prefetch(topic_id)
+            return _run_network_prefetch(topic_id, time_left)
         except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
             print(f"research_tick_handler: unhandled exception prefetching for topic_id={topic_id}: {exc!r}")
             return {"status": "error", "topic_id": topic_id, "reason": str(exc)}
@@ -233,7 +318,7 @@ def handler(event, context) -> dict:
         started = time.monotonic()
         outcome, error_type = "error", None
         try:
-            result = _run_research_tick(topic_id, force=force)
+            result = _run_research_tick(topic_id, force=force, time_left=time_left)
             outcome = _outcome(result)
             return result
         except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
@@ -308,9 +393,10 @@ def _record_research_check(topic_id: str, now: datetime) -> None:
         print(f"research_tick_handler: could not record last_research_at for {topic_id}: {exc!r}")
 
 
-def _run_network_prefetch(topic_id: str) -> dict:
+def _run_network_prefetch(topic_id: str, time_left: Callable[[], float] | None = None) -> dict:
     """The `prefetch_network` event: the adapter's prefetch_networks (rail_access), one log line
-    per site. A paused topic fetches nothing, as for a tick."""
+    per site. A paused topic fetches nothing, as for a tick. The adapter is told the Lambda's time
+    left (Adapter.lambda_time_left), so it starts no store that could not finish."""
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
@@ -321,7 +407,9 @@ def _run_network_prefetch(topic_id: str) -> dict:
     adapter_cls = ADAPTER_REGISTRY.get(adapter_key)
     if adapter_cls is None or not hasattr(adapter_cls, "prefetch_networks"):
         return {"status": "error", "reason": f"adapter {adapter_key} has no network to prefetch"}
-    sites = adapter_cls().prefetch_networks(topic)
+    adapter = adapter_cls()
+    adapter.lambda_time_left = time_left
+    sites = adapter.prefetch_networks(topic)
     for site in sites:
         detail = {key: value for key, value in site.items() if key not in ("site_id", "status")}
         where = f"{topic_id}/{site['site_id']}"
@@ -329,7 +417,9 @@ def _run_network_prefetch(topic_id: str) -> dict:
     return {"status": "network_prefetched", "topic_id": topic_id, "sites": sites}
 
 
-def _run_research_tick(topic_id: str, force: bool = False) -> dict:
+def _run_research_tick(
+    topic_id: str, force: bool = False, time_left: Callable[[], float] | None = None
+) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "reason": f"unknown topic_id: {topic_id}"}
@@ -354,22 +444,29 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     evidence.note(adapter=adapter_key)  # the registry key as typed: stored, never branched on
 
     adapter = adapter_cls()
+    # The Lambda's time left, for an adapter whose calls can stall (Adapter.lambda_time_left).
+    adapter.lambda_time_left = time_left
     bucket = os.environ["CONTENT_BUCKET"]
 
     # The prior snapshot is loaded before fetching (rather than after, as
     # the diff needs it) so an adapter that opts in via `uses_previous_state`
     # can reuse what it already fetched earlier in the day instead of
     # re-requesting slow-changing data on every hourly tick.
-    old_state = _load_running_state(bucket, topic_id) if adapter.keeps_running_state else None
+    old_state = _load_running_state(bucket, topic_id, time_left) if adapter.keeps_running_state else None
     if old_state is None:
         prior_finding = get_latest_finding(topic_id)
         if prior_finding is not None:
-            old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"])
+            old_state = _load_prior_state(bucket, prior_finding["raw_snapshot_s3_key"], time_left)
 
     if adapter.uses_previous_state:
         new_state = adapter.fetch_state(topic, previous_state=old_state)
     else:
         new_state = adapter.fetch_state(topic)
+
+    # S3 stalled in the fetch and the Lambda has too little left to store what it found: the tick
+    # ends now, nothing stored and no check recorded, so the next heartbeat tries again.
+    if _stores_would_not_finish(adapter, time_left):
+        return {"status": "error", "topic_id": topic_id, "reason": STALLED_REASON}
 
     # The source answered: this counts as a check even if nothing is new. (A fetch
     # that raises records nothing, so the next heartbeat retries rather than waiting
@@ -379,11 +476,13 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     changed, diff_summary = adapter.material_diff(old_state, new_state)
     if not changed:
         if adapter.keeps_running_state:
+            if _stores_would_not_finish(adapter, time_left):
+                return {"status": "error", "topic_id": topic_id, "reason": STALLED_REASON}
             running = dict(new_state)
             seen = _merge_seen(adapter, old_state, new_state, datetime.now(UTC).date())
             if seen:
                 running[SEEN_KEY] = seen
-            _store_state(bucket, _running_state_key(topic_id), running)
+            _store_state(bucket, _running_state_key(topic_id), running, time_left)
             evidence.note(stored=True)
         return {"status": "no_change"}
 
@@ -426,9 +525,11 @@ def _run_research_tick(topic_id: str, force: bool = False) -> dict:
     if seen:
         snapshot[SEEN_KEY] = seen
 
-    _store_state(bucket, snapshot_key, snapshot)
+    if _stores_would_not_finish(adapter, time_left):
+        return {"status": "error", "topic_id": topic_id, "reason": STALLED_REASON}
+    _store_state(bucket, snapshot_key, snapshot, time_left)
     if adapter.keeps_running_state:
-        _store_state(bucket, _running_state_key(topic_id), snapshot)
+        _store_state(bucket, _running_state_key(topic_id), snapshot, time_left)
     evidence.note(stored=True)
 
     expires_at = int((datetime.now(UTC) + timedelta(days=FINDING_TTL_DAYS)).timestamp())

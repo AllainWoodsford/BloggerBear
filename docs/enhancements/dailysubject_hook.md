@@ -428,6 +428,16 @@ S2 was built on S1 (#320, with its review fixes, 7176098) and on the owner's net
 - **An import cycle, fixed once:** `common/day_subject.py` imported the adapter registry at its top,
   and the rail adapter imports the module for the rota; S1's review fixes (7176098) import the
   registry inside `resolve_day_subject`, which S2 needed too.
+- **S4 as built (#332): the read and move rules above hold until S3 stalls.** A call that times out,
+  or fails only after 5 s, is a stall: every city after it waits unread (`network_read`, now worded
+  "its rail network couldn't be read from storage this tick", so it covers a read not made after a
+  stall), inline networks stay in the record, and the agent gets no figure; a read that stalls for
+  a network the record does not name waits too, since a network fetched then could not be stored.
+  An error S3 answers at once still costs only that call, as in S2. A read, a move, a figure's or a
+  refreshed network's store, or the agent's figure starts only while the research tick's Lambda has
+  the time a stalled call takes (`S3_CALL_RESERVE_SECONDS`), and after a stall the tick stores
+  nothing that could not finish. The tick's own client makes one attempt a request and rides out
+  quick errors as botocore's defaults did. Against an S3 that answers, a tick is what it was.
 
 ## 5. Edge cases (each with a test)
 

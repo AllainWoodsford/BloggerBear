@@ -36,14 +36,14 @@ nothing new to measure: (a) the newest Sentinel-2 L2A scene over the whole site 
 STAC, free, no key); a scene the site already has is nothing new. Then the site's network is read
 from its object (`_load_network`); one the record names for this polygon that S3 fails to hand back
 this time is not a missing one: the site waits for the next tick (`last_error` "network_read") and
-keeps it. The tick's S3 calls are bounded together, so that a stalled S3 cannot run it past its
-Lambda one call at a time (S3_RESERVE_SECONDS): a named network is read only with the time a stalled
-read takes, and after a failure the sites that need a read wait unread (after a stall, every site).
+keeps it. Where S3 stalls, the tick's calls to it are bounded together (S3_CALL_RESERVE_SECONDS):
+once one has stalled every site after it waits unread, and a call the tick can do without starts
+only while the Lambda has the time for a stalled one. Against an S3 that answers, nothing changes.
 (b) No usable network (none stored, one the record does not name that S3 answered with an error
-for, or one fetched for another polygon: each carries its polygon's `site_key`): fetch it now through the
-Overpass API (common/osm.py) when OSM_RESERVE_SECONDS remain, with the rest of the budget less
-FIRST_FETCH_MARGIN_SECONDS (a big city's query runs for most of a minute); a fetch that takes that
-long leaves the scene to the next tick, which measures it against the network now stored. A
+for, or one fetched for another polygon: each carries its polygon's `site_key`): fetch it now
+through the Overpass API (common/osm.py) when OSM_RESERVE_SECONDS remain, with the rest of the
+budget less FIRST_FETCH_MARGIN_SECONDS (a big city's query runs for most of a minute); a fetch that
+takes that long leaves the scene to the next tick, which measures it against the network now stored. A
 failure is `last_error` "osm" and the site waits for the next tick (no NETWORK_RETRY_HOURS: nothing
 serves meanwhile). (c) A new scene: the worker measures it against the stored network, stale or not
 (the entry says `network_stale`), when MEASURE_RESERVE_SECONDS remain, else next tick. (d) Nothing
@@ -207,25 +207,36 @@ MEASURE_RESERVE_SECONDS = vision_sites.MEASURE_RESERVE_SECONDS
 # ... and is waited on for at most this long (its own timeout is 60 s; the client's default 90 s
 # would run the tick out of time). Both are the rule satellite_vision keeps too, in vision_sites.
 WORKER_READ_TIMEOUT = vision_sites.WORKER_READ_TIMEOUT
-# The tick's S3 calls (vision_sites.S3_CONFIG: each raises within S3_CALL_MAX_SECONDS, 41 s) are
-# bounded together, as each alone is not enough: four cities' stalled reads in a row are 2.7 minutes.
-# - A network the site's record names is read, and each call of an inline network's move made
-#   (_move_inline_network), only with this much of the budget left, so a stalled one still ends
-#   inside the budget. Otherwise the site waits for time, and the network stays inline.
-# - After a call fails, no other network is moved, and a site whose network would be read waits
-#   unread (NETWORK_READ_ERROR): S3 is most likely failing for it too. A site whose network is still
-#   inline is served from the record, as when its move fails.
-# - After a call fails only once S3_STALLED_SECONDS have passed (S3 not answering, where an error
-#   it answers comes in well under a second, its one retry included), every site after it waits
-#   and the agent is shown no figure: a site measured now would leave its figure's store, and the
-#   research tick its running state's, to the same stall, after the measuring time.
-# So an S3 that stalls from the tick's first call to it costs the measuring loop one call (at most
-# one scene search and S3_CALL_MAX_SECONDS), and the tick ends inside its 120 s Lambda with the
-# running state's store (research_tick_handler bounds its own calls the same way). A stall that
-# begins after S3 answered a site's read can still cost that site one more call, as long: its
-# figure's store, its new network's store, or a read the record does not name.
-S3_RESERVE_SECONDS = vision_sites.S3_CALL_MAX_SECONDS
-S3_STALLED_SECONDS = float(vision_sites.S3_CONNECT_TIMEOUT_SECONDS)
+# The tick's S3 calls (vision_sites.S3_CONFIG: each raises within S3_CALL_MAX_SECONDS, 41 s, and in
+# about 31 s when S3 holds a request and never answers) are bounded together only where S3 stalls. A
+# tick against an S3 that answers makes the same calls, and comes to the same outcome, as before S4.
+# (a) Once a call has stalled this tick (vision_sites.s3_stalled: it timed out, or failed only after
+#     S3_STALLED_SECONDS), the tick starts no call it can do without: no network's read, no call of
+#     an inline network's move, no figure's or refreshed network's store, no figure for the agent.
+#     Every site after it waits unread (NETWORK_READ_ERROR), an inline network stays in the record,
+#     and the agent is told the figure is not available. Four cities' stalled reads in a row would be
+#     2.7 minutes. An error S3 answers at once is no stall: it costs that one call, as it always did.
+# (b) Such a call starts only while the research tick's Lambda has S3_CALL_RESERVE_SECONDS left
+#     (Adapter.lambda_time_left): the call's own worst case, and TICK_END_SECONDS after it. A call
+#     that then stalls still ends inside the Lambda, and so does the tick: the sites after it wait at
+#     once, and the research tick's guard stores the state only with S3_CALL_MAX_SECONDS left for
+#     that, else ends with its handled error, nothing stored. Without the time, the site waits for
+#     it (a read), the network stays inline (a move), the refreshed network is not kept (refreshed on
+#     a later tick), the measurement is kept without its figure (as when the figure's store fails),
+#     or the agent has no figure. Against an S3 that answers, (b) holds back only a call started with
+#     under 44 s of the Lambda left: at the 80 s budget cap, in the budget's last few seconds.
+# A first network's store after its fetch is always made: it is what the fetch, most of the budget,
+# was for. It starts FIRST_FETCH_MARGIN_SECONDS before the budget's end at the latest, so even when
+# S3 stalls just then the store fails (about 31 s) and the guard ends the tick, inside its Lambda.
+TICK_END_SECONDS = 3.0
+S3_CALL_RESERVE_SECONDS = vision_sites.S3_CALL_MAX_SECONDS + TICK_END_SECONDS
+S3_STALLED_SECONDS = vision_sites.S3_STALLED_SECONDS
+# prefetch_networks stores each network by the same rule. A fetch that took most of
+# PREFETCH_BUDGET_SECONDS (the city it exists for: Overpass took up to 75 s to answer Sydney) leaves
+# less than S3_CALL_RESERVE_SECONDS, so that store makes one attempt (vision_sites.S3_ONE_ATTEMPT_CONFIG)
+# when this much is left: one attempt at its longest, and TICK_END_SECONDS. Later still, it is not
+# stored ("store"), and the operator triggers the prefetch again.
+PREFETCH_STORE_RESERVE_SECONDS = vision_sites.S3_ATTEMPT_MAX_SECONDS + TICK_END_SECONDS
 # After a refresh of a stale network fails, the cached one keeps serving and the refresh waits
 # this long: Overpass fails in spells (429s, 504s, timeouts), each try may take OSM_RESERVE_SECONDS
 # of a tick, and a struggling mirror asked again every hour only stays struggling. Four tries a day
@@ -272,9 +283,10 @@ SUBJECT_STYLE = (
     "from satellite imagery and OpenStreetMap."
 )
 
-# What _visit returns for a budget-starved site, or one whose record names a stored network that S3
-# could not read (NETWORK_READ_ERROR): it waits for the next tick, unstamped. So do the sites after
-# an S3 call failed in the tick (S3_RESERVE_SECONDS).
+# What _visit returns for a site left without the time for what was due (the measuring budget's,
+# or the Lambda's for its network's read: S3_CALL_RESERVE_SECONDS), or one whose record names a
+# stored network that S3 could not read (NETWORK_READ_ERROR): it waits for the next tick,
+# unstamped. So do the sites after an S3 call stalled in the tick (S3_CALL_RESERVE_SECONDS, (a)).
 DEFERRED = "deferred"
 
 # What a site's record keeps of its network, now that the network is in its own object
@@ -301,13 +313,15 @@ NEWEST_ONLY_KEYS = ("stations", "flags", "suggestions", "deserts")
 
 # What the operator's assistant may say about a rail topic's sites (status): the shared codes, and
 # this adapter's own "osm" (a site with no usable network, so it waits) and NETWORK_READ_ERROR (its
-# stored network could not be read this tick, so it waits and keeps it). The network's own refresh
-# failures are an input's errors, in osm.ERROR_WORDS (a code not in them: "another error").
+# network was not read from S3 this tick, so it waits and keeps whatever its record names: the read
+# failed, or was not made because a call to S3 had stalled earlier in the tick, S3_CALL_RESERVE_SECONDS).
+# The network's own refresh failures are an input's errors, in osm.ERROR_WORDS (a code not in them:
+# "another error").
 NETWORK_READ_ERROR = "network_read"
 STATUS_WORDS = {
     **vision_sites.STATUS_WORDS,
     "osm": ("source", "its OpenStreetMap rail data couldn't be fetched"),
-    NETWORK_READ_ERROR: ("source", "its stored rail network couldn't be read"),
+    NETWORK_READ_ERROR: ("source", "its rail network couldn't be read from storage this tick"),
 }
 _NETWORK_WORDS = {code: ("source", words) for code, words in osm.ERROR_WORDS.items()}
 # Fixed words for the measure and the input the status reports.
@@ -447,10 +461,9 @@ class RailAccessAdapter(Adapter):
     # Set by fetch_state: the network each site measured this tick was measured with (site id ->
     # network), for the triage agent's look_again and the source references; never stored.
     _networks: dict | None = None
-    # Set by fetch_state: the first S3 call that failed this tick ("<error>: <detail>"), None while
-    # S3 answers, and whether one failed only after S3_STALLED_SECONDS (S3_RESERVE_SECONDS).
-    _s3_failure: str | None = None
-    _s3_stalled: bool = False
+    # Set by fetch_state (and prefetch_networks): the first S3 call that stalled this invocation
+    # ("<error>: <detail>"), None while S3 answers (S3_CALL_RESERVE_SECONDS, (a)).
+    _s3_stall: str | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
         # The rota is checked here too (a broken one is the topic's last_error, as any config is), but
@@ -463,10 +476,9 @@ class RailAccessAdapter(Adapter):
         self._visits, self._networks = {}, {}
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
-        # Counted from before the inline networks' move, which calls S3 too.
         budget = Budget(self.clock, config["time_budget_seconds"])
         self._started = budget.started
-        self._s3_failure, self._s3_stalled = None, False
+        self._s3_stall = None
         previous_sites = (previous_state or {}).get("sites") or {}
         sites, measured = {}, []
         for site in config["sites"]:
@@ -475,7 +487,7 @@ class RailAccessAdapter(Adapter):
             record["history"] = _slim_history(record.get("history") or [])
             record["name"] = site.get("name") or site["id"]
             # ... and one written before each network had its own object has it moved there.
-            self._move_inline_network(site, record, topic_id, budget)
+            self._move_inline_network(site, record, topic_id)
             sites[site["id"]] = record
 
         # Each site's turn leaves a `vision_site` line as it happens, so a tick that times out
@@ -489,12 +501,10 @@ class RailAccessAdapter(Adapter):
                 record["last_error"] = _error(now, "time_budget", "next tick")
                 vision_decisions.site_line(site["id"], "deferred", code="time_budget", budget=budget)
                 continue
-            if self._s3_failure is not None and (
-                self._s3_stalled or not _inline_network(record, site_key(site["polygon"]))
-            ):
-                # S3 failed this tick (it stalled, or this site's network would be read from it): the
-                # site waits unread, before its scene search (S3_RESERVE_SECONDS).
-                detail = f"not read: S3 failed earlier this tick ({self._s3_failure})"
+            if self._s3_stall is not None:
+                # A call to S3 stalled this tick: the site waits unread, before its scene search, with
+                # its network where its record has it (S3_CALL_RESERVE_SECONDS, (a)).
+                detail = f"not read: S3 stalled earlier this tick ({self._s3_stall})"
                 record["last_error"] = _error(now, NETWORK_READ_ERROR, detail)
                 vision_decisions.site_line(site["id"], "deferred", code=NETWORK_READ_ERROR, budget=budget)
                 continue
@@ -541,13 +551,12 @@ class RailAccessAdapter(Adapter):
     def _visit(self, site: dict, record: dict, config: dict, now: datetime, budget: Budget, topic_id: str):
         """One site's turn, scene first (the module docstring's (a) to (d)). Returns
         {"site_id", "scene_id"} when a scene was measured, DEFERRED when the budget left too little
-        time for what was due (the read of the network the record names among it:
-        S3_RESERVE_SECONDS) or a stored network the record names could not be read from S3
-        (NETWORK_READ_ERROR), and None for any other outcome (nothing new, or an error recorded in
-        `record`)."""
+        time for what was due, or the Lambda too little for its network's read (S3_CALL_RESERVE_SECONDS),
+        or a stored network the record names could not be read from S3 (NETWORK_READ_ERROR), and None
+        for any other outcome (nothing new, or an error recorded in `record`)."""
         key = site_key(site["polygon"])
-        if _reads_named_network(record, key) and budget.remaining() < S3_RESERVE_SECONDS:
-            return DEFERRED  # no time for its read after the scene search, so no search either
+        if not _inline_network(record, key) and not self._time_for_s3():
+            return DEFERRED  # no time left for its network's read, so no scene search either
         try:
             scene = search_newest_scene(site, config, now, http_post=self.http_post, assets=ASSETS_RAIL)
         except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
@@ -560,8 +569,8 @@ class RailAccessAdapter(Adapter):
         # polygon or parameters is a new request, so it is sent at once.
         refused = new_scene and _refused_before(record, scene["id"], now, key, worker_params(config))
         new_scene = new_scene and not refused
-        if _reads_named_network(record, key) and budget.remaining() < S3_RESERVE_SECONDS:
-            return DEFERRED  # a stalled read would end past the budget: it waits for time
+        if not _inline_network(record, key) and not self._time_for_s3():
+            return DEFERRED  # a stalled read would end past the Lambda (S3_CALL_RESERVE_SECONDS, (b))
         network = self._load_network(site, record, key, topic_id, now)
         if network is DEFERRED:
             return DEFERRED  # its stored network could not be read this time (NETWORK_READ_ERROR)
@@ -592,8 +601,9 @@ class RailAccessAdapter(Adapter):
                 and budget.remaining() >= OSM_RESERVE_SECONDS
             ):
                 self._fetch_network(
-                    site, record, now, key, topic_id, seconds=OSM_RESERVE_SECONDS, timeout=osm.TIMEOUT_SECONDS
-                )
+                    site, record, now, key, topic_id,
+                    seconds=OSM_RESERVE_SECONDS, timeout=osm.TIMEOUT_SECONDS, refresh=True,
+                )  # fmt: skip
             if not refused:
                 record.pop("last_error", None)
             return None
@@ -631,7 +641,10 @@ class RailAccessAdapter(Adapter):
                 "params": worker_params(config),
             }
             return None
-        if result.image_png:
+        if result.image_png and not self._time_for_s3():
+            # Kept without its figure, as when its store fails (S3_CALL_RESERVE_SECONDS, (b)).
+            print(f"rail_access: the figure for {site['id']} was not stored: too little of the tick left")
+        elif result.image_png:
             asked = self.clock()
             try:
                 entry["image_key"] = self.store_image(topic_id, site["id"], scene["id"], result.image_png)
@@ -663,10 +676,10 @@ class RailAccessAdapter(Adapter):
         next tick with `last_error` NETWORK_READ_ERROR, and the record keeps NETWORK_FIELDS and any
         `network_error` (its NETWORK_RETRY_HOURS backoff). Fetching it again would spend most of the
         tick on Overpass for a network S3 still holds. One the record does not name is no network
-        (fetched again), unless S3 did not answer at all (S3_STALLED_SECONDS): then it waits too,
-        as a network fetched now could not be stored. Either way the tick reads no other site's
-        (S3_RESERVE_SECONDS). A body that is not JSON (ValueError) was read whole and is no network,
-        now or next tick, so it is fetched again like a missing one."""
+        (fetched again) when S3 answered with an error; when the read stalled (S3_STALLED_SECONDS) it
+        waits too, as a network fetched now could not be stored, and the tick reads no other site's
+        (S3_CALL_RESERVE_SECONDS, (a)). A body that is not JSON (ValueError) was read whole and is no
+        network, now or next tick, so it is fetched again like a missing one, and it stalls nothing."""
         if _inline_network(record, key):
             return record["network"]
         if isinstance(record.get("network"), dict):
@@ -680,7 +693,7 @@ class RailAccessAdapter(Adapter):
         except Exception as exc:  # noqa: BLE001 - not read this time: the visit waits, or no network
             print(f"rail_access: could not read the network for {site['id']}: {exc!r}")
             detail = self._s3_failed(exc, asked)
-            if record.get("network_site_key") == key or self._s3_stalled:
+            if record.get("network_site_key") == key or self._s3_stall is not None:
                 record["last_error"] = _error(now, NETWORK_READ_ERROR, detail)
                 return DEFERRED
             network = None
@@ -694,22 +707,23 @@ class RailAccessAdapter(Adapter):
         _remember_network(record, network, vision_sites.network_key(topic_id, site["id"]))
         return network
 
-    def _move_inline_network(self, site: dict, record: dict, topic_id: str, budget: Budget) -> None:
+    def _move_inline_network(self, site: dict, record: dict, topic_id: str) -> None:
         """A state written before each network had its own object keeps it in the site's record
         (`network`): move it to the object, unless the object already holds one at least as new for
         the site's polygon (a prefetch the tick had not adopted), and keep NETWORK_FIELDS in its
         place. If it cannot be stored it stays in the record, which this tick serves it from
-        (`_load_network`), and the next tick tries again: never lost. So it does when the budget has
-        too little left for the move's read or store (S3_RESERVE_SECONDS each), or once an S3 call
-        has failed this tick, this move's read included. An object S3 hands back whole that is not
-        JSON (ValueError) is no network: it is written over."""
+        (`_load_network`), and the next tick tries again: never lost. So it does when the object
+        cannot be read (it may hold a newer one: it is not written over unseen), when the Lambda has
+        too little left for the move's read or its store, or once a call to S3 has stalled this
+        tick (S3_CALL_RESERVE_SECONDS). An object S3 hands back whole that is not JSON (ValueError)
+        is no network: it is written over."""
         inline = record.get("network")
         if inline is None:
             return
         if not isinstance(inline, dict):
             record.pop("network")  # not a network: nothing to keep
             return
-        if self._s3_failure is not None or budget.remaining() < S3_RESERVE_SECONDS:
+        if not self._time_for_s3():
             return
         key = site_key(site["polygon"])
         asked = self.clock()
@@ -727,7 +741,7 @@ class RailAccessAdapter(Adapter):
         if stored_usable and not inline_newer:
             network, object_key = stored, vision_sites.network_key(topic_id, site["id"])
         else:
-            if budget.remaining() < S3_RESERVE_SECONDS:
+            if not self._time_for_s3():
                 return
             asked = self.clock()
             try:
@@ -741,15 +755,38 @@ class RailAccessAdapter(Adapter):
         _remember_network(record, network, object_key)
 
     def _s3_failed(self, exc: Exception, asked: float) -> str:
-        """An S3 call asked at `asked` (the clock's reading) raised `exc`: the tick's later S3 calls
-        are cut (S3_RESERVE_SECONDS), all of them when it failed only after S3_STALLED_SECONDS.
-        Returns the detail to record."""
+        """An S3 call asked at `asked` (the clock's reading) raised `exc`. When it stalled
+        (vision_sites.s3_stalled), the invocation starts no other call it can do without
+        (S3_CALL_RESERVE_SECONDS, (a)); an error S3 answered at once costs that call alone. Returns
+        the detail to record."""
         detail = f"{type(exc).__name__}: {exc}"
-        if self._s3_failure is None:
-            self._s3_failure = detail
-        if self.clock() - asked >= S3_STALLED_SECONDS:
-            self._s3_stalled = True
+        if self._s3_stall is None and vision_sites.s3_stalled(exc, self.clock() - asked):
+            self._s3_stall = detail
         return detail
+
+    def _time_for_s3(self, seconds: float = S3_CALL_RESERVE_SECONDS) -> bool:
+        """Whether a call to S3 the invocation can do without may start: no call has stalled yet,
+        and the Lambda has `seconds` left (Adapter.lambda_time_left; no bound outside a Lambda)."""
+        if self._s3_stall is not None:
+            return False
+        return self.lambda_time_left is None or self.lambda_time_left() >= seconds
+
+    def s3_stalled(self) -> bool:
+        return self._s3_stall is not None
+
+    def _figure_for_agent(self, key: str) -> bytes | None:
+        """The agent's read of a figure (the scene's, or the previous one's), made as any call the
+        tick can do without: none once S3 has stalled or without the Lambda's time for a stalled
+        one, and a stall in it is the tick's (S3_CALL_RESERVE_SECONDS). The agent is then told the
+        figure is not available."""
+        if not self._time_for_s3():
+            return None
+        asked = self.clock()
+        try:
+            return self.load_image(key)
+        except Exception as exc:  # noqa: BLE001 - the agent says the figure is not available
+            self._s3_failed(exc, asked)
+            raise
 
     def prefetch_networks(self, topic_config: dict) -> list[dict]:
         """Each site's network from Overpass with the time a slow city needs
@@ -760,16 +797,23 @@ class RailAccessAdapter(Adapter):
         result per site, in the configured order:
 
             {"site_id", "status": "stored", "fetched_at", "counts", "truncated"}
-            {"site_id", "status": "failed", "code", "detail"}   (osm.OsmError codes, or "fetch")
+            {"site_id", "status": "failed", "code", "detail"}   (osm.OsmError codes, "fetch", "store")
             {"site_id", "status": "deferred"}                   (too little time left: trigger again)
-        """
+
+        Each store is caught on its own ("store": the network is not kept, the other sites go on),
+        and is started only while the invocation's Lambda has the time for it should S3 stall:
+        S3_CALL_RESERVE_SECONDS for a whole call, else one attempt (vision_sites.S3_ONE_ATTEMPT_CONFIG,
+        PREFETCH_STORE_RESERVE_SECONDS), so a city whose query takes most of PREFETCH_BUDGET_SECONDS
+        is still stored. After a store stalls, the sites left are deferred, unfetched: S3 would most
+        likely stall for them too."""
         config = parse_config(topic_config.get("adapter_config"))
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
         deadline = self.clock() + PREFETCH_BUDGET_SECONDS
+        self._s3_stall = None
         results = []
         for site in config["sites"]:
-            if deadline - self.clock() < PREFETCH_MIN_SECONDS:
+            if deadline - self.clock() < PREFETCH_MIN_SECONDS or self._s3_stall is not None:
                 results.append({"site_id": site["id"], "status": "deferred"})
                 continue
             try:
@@ -790,7 +834,10 @@ class RailAccessAdapter(Adapter):
                 results.append({"site_id": site["id"], "status": "failed", "code": "fetch", "detail": detail})
                 continue
             network["site_key"] = site_key(site["polygon"])
-            self.store_network(topic_id, site["id"], network)
+            stored = self._prefetch_store(topic_id, site["id"], network)
+            if stored is not None:
+                results.append({"site_id": site["id"], "status": "failed", "code": "store", "detail": stored})
+                continue
             results.append(
                 {
                     "site_id": site["id"],
@@ -802,15 +849,37 @@ class RailAccessAdapter(Adapter):
             )
         return results
 
+    def _prefetch_store(self, topic_id: str, site_id: str, network: dict) -> str | None:
+        """prefetch_networks' store of one site's network: None once stored, else why it was not
+        (the result's `detail`)."""
+        if self._time_for_s3():
+            config = None  # vision_sites.S3_CONFIG's two attempts, as every other store
+        elif self._time_for_s3(PREFETCH_STORE_RESERVE_SECONDS):
+            config = vision_sites.S3_ONE_ATTEMPT_CONFIG  # the time left holds one attempt, not two
+        else:
+            return "not stored: too little of the invocation left for it"
+        asked = self.clock()
+        try:
+            if config is None:
+                self.store_network(topic_id, site_id, network)
+            else:
+                self.store_network(topic_id, site_id, network, config=config)
+        except Exception as exc:  # noqa: BLE001 - one site's store must not stop the others
+            return self._s3_failed(exc, asked)
+        return None
+
     def _fetch_network(
         self, site: dict, record: dict, now: datetime, key: str, topic_id: str, *, seconds: float,
-        timeout: float,
+        timeout: float, refresh: bool = False,
     ) -> dict | None:
         """The site's network from Overpass within `seconds` from now (both hops included, each
         reading for at most `timeout`), with the polygon's `site_key`, written to its object (the
         one prefetch_networks writes) and named in `record` (NETWORK_FIELDS); None on failure, with
         `network_error` recorded and whatever was stored left as it was. A network that cannot be
-        written is a failure too ("store"): kept nowhere, it would be fetched again every tick."""
+        written is a failure too ("store"): kept nowhere, it would be fetched again every tick. A
+        `refresh` (d) is stored only with the time for it (S3_CALL_RESERVE_SECONDS, (a) and (b)):
+        without it the refreshed network is not kept, nothing failed, and the stale one serves until
+        a later tick refreshes it."""
         try:
             network = self.fetch_network(
                 site["polygon"],
@@ -827,6 +896,9 @@ class RailAccessAdapter(Adapter):
             record["network_error"] = _error(now, "fetch", f"{type(exc).__name__}: {exc}")
             return None
         network["site_key"] = key
+        if refresh and not self._time_for_s3():
+            print(f"rail_access: the refreshed network for {site['id']} was not stored: too little time left")
+            return None
         asked = self.clock()
         try:
             object_key = self.store_network(topic_id, site["id"], network)
@@ -924,9 +996,6 @@ class RailAccessAdapter(Adapter):
         # One deadline for every site's decision: the tick's start plus the topic's allowance.
         started = self._started if self._started is not None else self.clock()
         deadline = started + config["triage_deadline_seconds"]
-        # S3 stalled in the fetch: the figures are not read (S3_RESERVE_SECONDS), and the agent is
-        # told they are not available.
-        load_image = (lambda key: None) if self._s3_stalled else self.load_image
         for verdict in candidates:
             record = new_state["sites"][verdict["site_id"]]
             latest = record["history"][-1]
@@ -945,7 +1014,7 @@ class RailAccessAdapter(Adapter):
                     object_noun=None,
                     params=worker_params(config),
                     backend=config["backend"],
-                    load_image=load_image,
+                    load_image=self._figure_for_agent,
                     measure=self.measure,
                     max_tool_calls=config["triage_max_tool_calls"],
                     task=TASK,
@@ -1237,12 +1306,6 @@ def _inline_network(record: dict, key: str) -> bool:
     return isinstance(inline, dict) and inline.get("site_key") == key
 
 
-def _reads_named_network(record: dict, key: str) -> bool:
-    """Whether the visit reads a network the record names for this polygon from its object (none
-    inline for it): the read S3_RESERVE_SECONDS is kept for."""
-    return not _inline_network(record, key) and record.get("network_site_key") == key
-
-
 def _remember_network(record: dict, network: dict, object_key: str) -> None:
     """Name in the site's record the network its object holds (NETWORK_FIELDS): where it is, when
     it was fetched, for which polygon, and its counts. What `status`, `source_refs` and a person
@@ -1256,9 +1319,10 @@ def _remember_network(record: dict, network: dict, object_key: str) -> None:
 
 
 def _forget_network(record: dict) -> None:
-    """The record no longer names a network: none usable was found (the object is missing, cannot be
-    read and is not named by the record, or is another polygon's). One the record names that cannot
-    be read is kept, and the site waits (`_load_network`, NETWORK_READ_ERROR)."""
+    """The record no longer names a network: none usable was found (the object is missing, is not
+    one, is another polygon's, or is one the record does not name that S3 answered with an error
+    for). One the record names that cannot be read is kept and the site waits, and so does any site
+    whose read stalled or was not made after a stall (`_load_network`, NETWORK_READ_ERROR)."""
     for field in NETWORK_FIELDS:
         record.pop(field, None)
 

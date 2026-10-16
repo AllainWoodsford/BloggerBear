@@ -36,6 +36,7 @@ from decimal import Decimal
 import boto3
 import requests
 from botocore.config import Config
+from botocore.exceptions import ConnectTimeoutError, ReadTimeoutError
 
 from common.figures import plain_text
 
@@ -241,16 +242,21 @@ def closed_ring(polygon: list) -> list:
 
 
 # The content bucket's client for the four calls below (the tick's figures and networks, both
-# vision adapters; rail_access's prefetch_networks; the triage agent's figure read) and for the
-# research tick's own (research_tick_handler: the running state, the snapshots). botocore's
+# vision adapters; rail_access's prefetch_networks; the triage agent's figure read). botocore's
 # defaults wait 60 s to connect and 60 s on each read, five times (legacy mode): a stalled GetObject
 # raised after about 308 s, long past the research tick's 120 s Lambda timeout. Here each attempt
 # waits at most S3_CONNECT_TIMEOUT_SECONDS to connect (urllib3 sends the request, a body of a few MB
 # included, under the same allowance: well under a second inside the region) and
-# S3_READ_TIMEOUT_SECONDS on each read, and there are S3_MAX_ATTEMPTS in all (`total_max_attempts`
-# counts the first) with standard mode's wait of at most S3_RETRY_WAIT_SECONDS before the second.
+# S3_READ_TIMEOUT_SECONDS on each read: S3_ATTEMPT_MAX_SECONDS in all.
 S3_CONNECT_TIMEOUT_SECONDS = 5
 S3_READ_TIMEOUT_SECONDS = 15
+S3_ATTEMPT_MAX_SECONDS = S3_CONNECT_TIMEOUT_SECONDS + S3_READ_TIMEOUT_SECONDS
+# These calls keep the two attempts S3b (#329) gave them (`total_max_attempts` counts the first, and
+# standard mode waits at most S3_RETRY_WAIT_SECONDS before the second), so a tick against an S3 that
+# answers makes the same calls as before S4. The second attempt rides out an error S3 answers at once
+# (a 500, a SlowDown) inside the call, where the visit could only wait a tick for it. What a stall
+# costs is bounded by the tick instead, which makes no other such call once one has stalled
+# (rail_access, S3_CALL_RESERVE_SECONDS).
 S3_MAX_ATTEMPTS = 2
 S3_RETRY_WAIT_SECONDS = 1  # standard mode's first backoff: random() x 2 ** 0
 S3_CONFIG = Config(
@@ -258,20 +264,33 @@ S3_CONFIG = Config(
     read_timeout=S3_READ_TIMEOUT_SECONDS,
     retries={"total_max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
 )
-# A stalled call so raises in about 31 s, and at the latest once every attempt has connected and
-# read for as long as it may: 2 x (5 + 15) + 1 = 41 s. That is long against the tick (its measuring
-# budget is at most 80 s of the Lambda's 120), so the tick may not make such calls one after
-# another: rail_access starts a stored network's read, or a call of a network's move, only with this
-# much of its budget left, and cuts the tick's later S3 calls once one has failed
-# (rail_access.S3_RESERVE_SECONDS). A stall then costs its measuring loop one call, and the research
-# tick's own read or store of the running state ends within this long too.
-S3_CALL_MAX_SECONDS = (
-    S3_MAX_ATTEMPTS * (S3_CONNECT_TIMEOUT_SECONDS + S3_READ_TIMEOUT_SECONDS) + S3_RETRY_WAIT_SECONDS
+# A stalled call so raises in about 31 s (two read timeouts and the wait between), and at the latest
+# once every attempt has connected and read for as long as it may: 2 x (5 + 15) + 1 = 41 s.
+S3_CALL_MAX_SECONDS = S3_MAX_ATTEMPTS * S3_ATTEMPT_MAX_SECONDS + S3_RETRY_WAIT_SECONDS
+# The research tick's own client (research_tick_handler: the running state and the snapshots) makes
+# one attempt a request, so a stalled one costs at most S3_ATTEMPT_MAX_SECONDS and is never made
+# twice; an error S3 answers at once is asked again above botocore, as often as botocore's defaults
+# did. rail_access's prefetch stores a network this way too when its invocation has too little time
+# left for a whole call of S3_CONFIG's.
+S3_ONE_ATTEMPT_CONFIG = Config(
+    connect_timeout=S3_CONNECT_TIMEOUT_SECONDS,
+    read_timeout=S3_READ_TIMEOUT_SECONDS,
+    retries={"total_max_attempts": 1, "mode": "standard"},
 )
+# A call that failed only after this long stalled: S3 did not answer it (an error S3 answers comes in
+# well under a second, the second attempt included). So did one that timed out connecting or reading.
+S3_STALLED_SECONDS = float(S3_CONNECT_TIMEOUT_SECONDS)
 
 
-def _s3():
-    return boto3.client("s3", config=S3_CONFIG)
+def s3_stalled(exc: BaseException, seconds: float) -> bool:
+    """Whether a call to S3 that raised `exc` after `seconds` stalled (S3_STALLED_SECONDS): the
+    tick then starts no other call it can do without (rail_access), and the research tick never
+    asks it again."""
+    return isinstance(exc, ReadTimeoutError | ConnectTimeoutError) or seconds >= S3_STALLED_SECONDS
+
+
+def _s3(config: Config | None = None):
+    return boto3.client("s3", config=S3_CONFIG if config is None else config)
 
 
 def store_image(topic_id: str, site_id: str, scene_id: str, png: bytes) -> str:
@@ -291,10 +310,11 @@ def network_key(topic_id: str, site_id: str) -> str:
     return f"vision/{topic_id}/{site_id}/network.json"
 
 
-def store_network(topic_id: str, site_id: str, network: dict) -> str:
-    """A site's network, in the content bucket (written over the one before); returns its key."""
+def store_network(topic_id: str, site_id: str, network: dict, *, config: Config | None = None) -> str:
+    """A site's network, in the content bucket (written over the one before); returns its key.
+    `config` is the client's, S3_CONFIG unless given (S3_ONE_ATTEMPT_CONFIG for a late prefetch)."""
     key = network_key(topic_id, site_id)
-    _s3().put_object(
+    _s3(config).put_object(
         Bucket=os.environ["CONTENT_BUCKET"],
         Key=key,
         Body=json.dumps(network, ensure_ascii=False).encode("utf-8"),

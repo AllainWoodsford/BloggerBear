@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -110,6 +111,19 @@ class Adapter(ABC):
     # `drafting_guidance`: anything else this source's articles should always do (their shape,
     # how they end). Added to the drafting prompt, and to a Re-Write so it keeps that shape.
     drafting_guidance: str = ""
+
+    # Set by the research tick on the instance it makes for one invocation (a tick, or a network
+    # prefetch): the seconds its Lambda has left, read from the invocation's context when called;
+    # None when nothing bounds the call (a test, a script). An adapter whose calls can stall asks it
+    # before one it can do without (rail_access's S3 calls), so the invocation ends inside its Lambda.
+    lambda_time_left: Callable[[], float] | None = None
+
+    def s3_stalled(self) -> bool:
+        """Whether a call to the content bucket stalled during this instance's fetch_state or
+        material_diff (common/vision_sites.s3_stalled: it timed out, or failed only after
+        S3_STALLED_SECONDS). The research tick then starts its stores only with the time a stalled
+        one takes left. False for an adapter that makes no such call, or never says."""
+        return False
 
     @abstractmethod
     def fetch_state(self, topic_config: dict) -> dict:

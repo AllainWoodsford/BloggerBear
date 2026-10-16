@@ -3,15 +3,26 @@ from __future__ import annotations
 import inspect
 import io
 import json
+import random
+import threading
 import time
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
 import test_vision_sites
 from botocore.config import Config
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
+from botocore.retries.standard import ExponentialBackoff
 from moto import mock_aws
 
 import research_tick_handler
@@ -995,17 +1006,64 @@ def test_a_prefetch_event_refuses_a_paused_topic_or_one_with_no_network(aws_reso
     assert result == {"status": "error", "reason": "unknown topic_id: nope"}
 
 
-# --- the running state's own S3 calls are bounded (S4) ---------------------------------------------
+# --- the tick's own S3 calls: bounded where S3 stalls, recovered where it answers (S4) ------------
 
 # A content endpoint that accepts and never answers (test_vision_sites.py's fixture).
 stalled_s3 = test_vision_sites.stalled_s3
 
+_S3_ERRORS = {
+    500: b"<?xml version='1.0'?><Error><Code>InternalError</Code><Message>try again</Message></Error>",
+    503: b"<?xml version='1.0'?><Error><Code>SlowDown</Code>"
+         b"<Message>Please reduce your request rate.</Message></Error>",
+}  # fmt: skip
 
-def test_the_ticks_own_s3_client_is_the_bounded_one(monkeypatch):
+
+@pytest.fixture
+def scripted_s3(monkeypatch):
+    """A loopback S3 that answers each request with the next status in `answers` (500 InternalError,
+    503 SlowDown; 200 once the list is spent, a GET with `{"sites": {}}`), as the content bucket's
+    endpoint for every client built while it runs. Yields (answers, the methods it was asked)."""
+    for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy",
+                "AWS_RETRY_MODE", "AWS_MAX_ATTEMPTS", "AWS_PROFILE", "AWS_SESSION_TOKEN"):  # fmt: skip
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+    answers, asked = [], []
+
+    class S3(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def _answer(self):
+            asked.append(self.command)
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            status = answers.pop(0) if answers else 200
+            body = _S3_ERRORS.get(status) or (b'{"sites": {}}' if self.command == "GET" else b"")
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("ETag", '"probe"')
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_GET = do_PUT = _answer
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), S3)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("AWS_ENDPOINT_URL_S3", f"http://127.0.0.1:{server.server_address[1]}")
+    try:
+        yield answers, asked
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_ticks_own_s3_client_makes_one_attempt_a_request(monkeypatch):
     """The running state's read and store, a prior Finding's snapshot read and the snapshot's store
-    all go through one client, built with vision_sites.S3_CONFIG (each call raises within
-    S3_CALL_MAX_SECONDS on a stall, where botocore's defaults took about 310 s), and the handler
-    builds no other S3 client."""
+    all go through one client, built with vision_sites.S3_ONE_ATTEMPT_CONFIG: a stalled call raises
+    within S3_ATTEMPT_MAX_SECONDS (20 s; botocore's defaults took about 310 s) and is never made
+    twice. The handler builds no other S3 client."""
     built = []
 
     def client(service, **kwargs):
@@ -1019,22 +1077,107 @@ def test_the_ticks_own_s3_client_is_the_bounded_one(monkeypatch):
     research_tick_handler._load_prior_state("bucket", "snapshots/rail/x.json")
     research_tick_handler._store_state("bucket", "snapshots/rail/running-state.json", {})
     assert [service for service, _ in built] == ["s3"]
-    assert built[0][1] == {"config": vision_sites.S3_CONFIG}
-    assert built[0][1]["config"] is vision_sites.S3_CONFIG
+    assert built[0][1] == {"config": vision_sites.S3_ONE_ATTEMPT_CONFIG}
+    assert vision_sites.S3_ONE_ATTEMPT_CONFIG.retries == {"total_max_attempts": 1, "mode": "standard"}
     assert inspect.getsource(research_tick_handler).count("boto3.client(") == 1
+
+
+@pytest.mark.parametrize("call", ["read", "store"])
+def test_errors_s3_answers_at_once_are_ridden_out_as_botocores_defaults_did(scripted_s3, monkeypatch, call):
+    """Finding 2 (S4b), for real, against a loopback S3: every topic's tick reads and stores its state
+    through a client of one attempt a request, and asks again above botocore what botocore's
+    defaults asked again (legacy mode, five attempts: this client before S4). A 500 and a SlowDown
+    then success, four SlowDowns then success, five SlowDowns, six 500s: the result and the number
+    of requests are the same as with botocore's defaults."""
+    answers, asked = scripted_s3
+    monkeypatch.setattr(random, "random", lambda: 0.0)  # legacy mode's backoff, without the wait
+    monkeypatch.setattr(research_tick_handler, "_sleep", lambda seconds: None)
+    key = "snapshots/rail/running-state.json"
+
+    def before_s4():
+        client = boto3.client("s3")  # botocore's defaults, as the handler built its client before S4
+        if call == "read":
+            return json.loads(client.get_object(Bucket="content-test", Key=key)["Body"].read())
+        return client.put_object(Bucket="content-test", Key=key, Body=b"{}") and None
+
+    def after():
+        research_tick_handler._s3_client = None
+        if call == "read":
+            return research_tick_handler._load_running_state("content-test", "rail")
+        return research_tick_handler._store_state("content-test", key, {})
+
+    for script in ([500, 503], [503] * 4, [503] * 5, [500] * 6):
+        outcomes = []
+        for tick in (before_s4, after):
+            answers[:], asked[:] = script, []
+            try:
+                outcome = ("answered", tick())
+            except ClientError as exc:
+                outcome = ("raised", exc.response["Error"]["Code"])
+            outcomes.append((outcome, len(asked)))
+        assert outcomes[0] == outcomes[1], script
+        assert outcomes[1][1] == min(len(script) + 1, 5), script
+    assert outcomes[1] == (("raised", "InternalError"), 5)
+
+
+def test_only_an_error_s3_answers_at_once_is_asked_again():
+    """What is asked again: what botocore's defaults ask again (a 5xx, SlowDown, a throttle, S3's
+    RequestTimeout, a connection dropped or refused), when S3 answered it in under S3_STALLED_SECONDS.
+    A timeout, or an error that came only after that, is a stall: never asked again. Nor is an error
+    that would come again (a missing key, a refusal)."""
+
+    def answered(code, status):
+        error = {"Error": {"Code": code, "Message": "x"}, "ResponseMetadata": {"HTTPStatusCode": status}}
+        return ClientError(error, "GetObject")
+
+    at_once = research_tick_handler._answered_at_once
+    for code, status in (("InternalError", 500), ("SlowDown", 503), ("ServiceUnavailable", 503),
+                         ("Throttling", 400), ("RequestTimeout", 400), ("TooManyRequests", 429)):  # fmt: skip
+        assert at_once(answered(code, status), 0.2), code
+        assert not at_once(answered(code, status), vision_sites.S3_STALLED_SECONDS), code
+    for code, status in (("NoSuchKey", 404), ("AccessDenied", 403), ("InvalidArgument", 400)):
+        assert not at_once(answered(code, status), 0.2), code
+    assert at_once(ConnectionClosedError(endpoint_url="http://s3"), 0.2)
+    assert at_once(EndpointConnectionError(endpoint_url="http://s3"), 0.2)
+    assert not at_once(ReadTimeoutError(endpoint_url="http://s3"), 0.2)
+    assert not at_once(ConnectTimeoutError(endpoint_url="http://s3"), 0.2)
+    assert not at_once(ValueError("not JSON"), 0.2)
+
+
+def test_an_error_is_asked_again_only_while_the_lambda_has_the_time_for_another_attempt(monkeypatch):
+    """Each new attempt waits botocore's standard backoff (random() x 1, 2, 4, 8 s) and starts only
+    while the Lambda has that wait and one whole attempt (S3_ATTEMPT_MAX_SECONDS) left. Outside a
+    Lambda, five attempts in all."""
+    calls, waits = [], []
+
+    def slow_down():
+        calls.append(1)
+        error = {"Error": {"Code": "SlowDown", "Message": "x"}, "ResponseMetadata": {"HTTPStatusCode": 503}}
+        raise ClientError(error, "PutObject")
+
+    monkeypatch.setattr(research_tick_handler, "_sleep", waits.append)
+    monkeypatch.setattr(research_tick_handler, "_BACKOFF", ExponentialBackoff(random=lambda: 1.0))
+    room = vision_sites.S3_ATTEMPT_MAX_SECONDS + 2 + 1  # for the second wait and attempt, not the third
+    with pytest.raises(ClientError):
+        research_tick_handler._recovered(slow_down, lambda: room)
+    assert len(calls) == 3 and waits == [1.0, 2.0]
+    calls.clear(), waits.clear()
+    with pytest.raises(ClientError):
+        research_tick_handler._recovered(slow_down)
+    assert len(calls) == research_tick_handler.S3_RECOVERED_ATTEMPTS == 5 and waits == [1.0, 2.0, 4.0, 8.0]
 
 
 def test_a_stalled_running_state_read_fails_the_tick_inside_its_lambda_with_nothing_stored(
     stalled_s3, monkeypatch
 ):
-    """Finding 3 (S4), for real: a rail tick whose running state's read meets an endpoint that never
-    answers, with S3_CONFIG's retries and its read timeout scaled down to 0.3 s. The read raises
-    after two attempts, and the tick ends in an error before any city is visited, with nothing
-    stored. Unscaled that is about 31 s (at most S3_CALL_MAX_SECONDS); with botocore's defaults the
-    read took about 310 s and the Lambda timed out at 120 s inside it."""
+    """For real: a rail tick whose running state's read meets an endpoint that never answers, with
+    the client's read timeout scaled down to 0.3 s. The read raises after one attempt, is not asked
+    again (a stall), and the tick ends in an error before any city is visited, with nothing stored.
+    Unscaled that is about 15 s (at most S3_ATTEMPT_MAX_SECONDS); with botocore's defaults the read
+    took about 310 s and the Lambda timed out at 120 s inside it."""
     read = 0.3
-    scaled = vision_sites.S3_CONFIG.merge(Config(read_timeout=read))
-    monkeypatch.setattr(research_tick_handler, "S3_CONFIG", scaled)
+    scaled = vision_sites.S3_ONE_ATTEMPT_CONFIG.merge(Config(read_timeout=read))
+    monkeypatch.setattr(research_tick_handler, "S3_ONE_ATTEMPT_CONFIG", scaled)
     monkeypatch.setattr(lambda_timing, "record_lambda_duration", lambda *args: None)
     sydney = [[150.9, -34.1], [151.5, -34.1], [151.5, -33.6], [150.9, -33.6]]
     rail = {"topic_id": "rail", "name": "Rail", "adapter": "rail_access",
@@ -1044,9 +1187,112 @@ def test_a_stalled_running_state_read_fails_the_tick_inside_its_lambda_with_noth
     monkeypatch.setattr(RailAccessAdapter, "fetch_state", lambda self, *args, **kwargs: fetched.append(1))
 
     began = time.monotonic()
-    result = research_tick_handler.handler({"topic_id": "rail", "force": True}, None)
+    result = research_tick_handler.handler({"topic_id": "rail", "force": True}, _Lambda(120.0))
     took = time.monotonic() - began
 
     assert result["status"] == "error" and result["reason"].startswith("Read timeout on endpoint URL")
-    assert fetched == [] and len(stalled_s3) == 2  # two attempts, then no other S3 call
-    assert 2 * read <= took < 2 * read + 1 + 1.5
+    assert fetched == [] and len(stalled_s3) == 1  # one attempt, then no other S3 call
+    assert read <= took < read + 1.5
+
+
+class _Lambda:
+    """A Lambda context whose time left is scripted: each reading takes the next of `seconds`, the
+    last again once they are spent."""
+
+    aws_request_id = "7c1d2e3f-0000-4000-8000-00000000beef"
+
+    def __init__(self, *seconds):
+        self.seconds, self.readings = list(seconds), 0
+
+    def get_remaining_time_in_millis(self):
+        self.readings += 1
+        return int((self.seconds.pop(0) if len(self.seconds) > 1 else self.seconds[0]) * 1000)
+
+
+class _MetAStall(GitHubTrendingAdapter):
+    """A topic that keeps running state and whose fetch met a stalled S3 (Adapter.s3_stalled)."""
+
+    keeps_running_state = True
+    stalled, changed = True, False
+
+    def fetch_state(self, topic_config, previous_state=None):
+        self.told = self.lambda_time_left
+        return {"repos": [_repo("a/b", 100)], "fetched_at": "2026-09-13T00:00:00+00:00"}
+
+    def material_diff(self, old_state, new_state):
+        return self.changed, "a change"
+
+    def s3_stalled(self):
+        return self.stalled
+
+
+def test_after_a_stall_no_store_starts_that_could_not_finish(aws_resources, monkeypatch, capsys):
+    """Finding 5 (S4b), with a scripted clock: S3 began to stall in the middle of the tick. Before
+    the state's or the snapshot's store, with less than S3_CALL_MAX_SECONDS of the Lambda left, the
+    tick ends with an error and nothing stored, rather than start a store that could run it past its
+    Lambda; checked after the fetch (no check is recorded then: the next heartbeat tries again) and
+    again before the stores. With the time for them, they are made. A tick that met no stall stores
+    as before, whatever the time left."""
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _MetAStall)
+    checks = []
+    monkeypatch.setattr(research_tick_handler, "set_topic_last_research_at", lambda *args: checks.append(1))
+    s3 = boto3.client("s3", region_name=REGION)
+    running_key = "snapshots/github-trending-python/running-state.json"
+
+    def stored():
+        return [o["Key"] for o in s3.list_objects_v2(Bucket="bloggerbear-content-test").get("Contents", [])]
+
+    def tick(*seconds, stalled=True, changed=False):
+        monkeypatch.setattr(_MetAStall, "stalled", stalled)
+        monkeypatch.setattr(_MetAStall, "changed", changed)
+        context = _Lambda(*seconds)
+        summary = _tracked("a summary")
+        with patch("research_tick_handler.invoke_model_tracked", return_value=summary) as bedrock:
+            result = research_tick_handler.handler({"topic_id": "github-trending-python"}, context)
+        return result, bedrock.called, context.readings
+
+    stalled_reason = {"status": "error", "topic_id": "github-trending-python",
+                      "reason": research_tick_handler.STALLED_REASON}  # fmt: skip
+    # The stall is seen after the fetch with 30 s left: nothing else happens.
+    assert tick(30.0) == (stalled_reason, False, 1) and stored() == [] and checks == []
+    # 60 s after the fetch, 30 s before the running state's store (no change).
+    assert tick(60.0, 30.0) == (stalled_reason, False, 2) and stored() == [] and checks == [1]
+    # 60 s after the fetch, 30 s before the snapshot's store (a change: the summary was asked for).
+    assert tick(60.0, 30.0, changed=True) == (stalled_reason, True, 2) and stored() == []
+    assert not boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
+    lines = tick_lines(capsys)
+    assert [(line["outcome"], line["stored"]) for line in lines] == [("error", False)] * 3
+    # With the time for the stores (S3_CALL_MAX_SECONDS): stored, as every tick.
+    assert tick(60.0, research_tick_handler.S3_CALL_MAX_SECONDS) == ({"status": "no_change"}, False, 2)
+    assert stored() == [running_key]
+    # No stall: stored with 5 s left, as before S4; the time left is never read for it.
+    s3.delete_object(Bucket="bloggerbear-content-test", Key=running_key)
+    assert tick(5.0, stalled=False) == ({"status": "no_change"}, False, 0) and stored() == [running_key]
+
+
+def test_the_adapter_is_told_the_lambdas_time_left(aws_resources, monkeypatch):
+    """The research tick hands its adapter the Lambda's time left (Adapter.lambda_time_left), read
+    from the invocation's context; with no Lambda context, None (nothing is bounded by it)."""
+    monkeypatch.setitem(research_tick_handler.ADAPTER_REGISTRY, "github_trending", _MetAStall)
+    monkeypatch.setattr(_MetAStall, "stalled", False)
+    seen = []
+    real = _MetAStall.fetch_state
+    monkeypatch.setattr(_MetAStall, "fetch_state", lambda self, *args: seen.append(self) or real(self, *args))
+    research_tick_handler.handler({"topic_id": "github-trending-python"}, _Lambda(97.5))
+    research_tick_handler.handler({"topic_id": "github-trending-python"}, None)
+    assert seen[0].told() == 97.5 and seen[1].told is None
+
+
+def test_a_prefetch_is_told_the_lambdas_time_left(aws_resources, monkeypatch):
+    """The prefetch_network event hands the adapter the Lambda's time left too, so it starts no
+    network's store that could not finish (rail_access.prefetch_networks)."""
+    _put_rail_topic()
+    told = []
+
+    def prefetch(self, topic_config):
+        told.append(self.lambda_time_left)
+        return []
+
+    monkeypatch.setattr(RailAccessAdapter, "prefetch_networks", prefetch)
+    research_tick_handler.handler({"topic_id": "trains", "prefetch_network": True}, _Lambda(119.0))
+    assert told[0]() == 119.0

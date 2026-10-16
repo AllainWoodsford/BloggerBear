@@ -19,7 +19,7 @@ from unittest.mock import MagicMock
 import boto3
 import pytest
 from botocore.config import Config
-from botocore.exceptions import ReadTimeoutError
+from botocore.exceptions import ClientError, ConnectTimeoutError, ReadTimeoutError
 from moto import mock_aws
 
 from common import vision_sites as vs
@@ -262,6 +262,11 @@ def test_the_content_buckets_calls_are_bounded_so_a_stalled_read_ends_inside_the
     assert config.retries == {"total_max_attempts": 2, "mode": "standard"}
     two_attempts = 2 * (vs.S3_CONNECT_TIMEOUT_SECONDS + vs.S3_READ_TIMEOUT_SECONDS) + 1
     assert vs.S3_CALL_MAX_SECONDS == two_attempts == 41  # the bound rail_access keeps (S4)
+    # The research tick's own client: the same allowances, one attempt.
+    one = vs.S3_ONE_ATTEMPT_CONFIG
+    assert (one.connect_timeout, one.read_timeout) == (config.connect_timeout, config.read_timeout)
+    assert one.retries == {"total_max_attempts": 1, "mode": "standard"}
+    assert vs.S3_ATTEMPT_MAX_SECONDS == vs.S3_CONNECT_TIMEOUT_SECONDS + vs.S3_READ_TIMEOUT_SECONDS == 20
     assert vs.STAC_TIMEOUT_SECONDS + two_attempts < rail_access.DEFAULTS["time_budget_seconds"] < 120
 
 
@@ -286,6 +291,32 @@ def test_every_content_bucket_call_builds_its_client_with_the_bounded_config(mon
     vs.load_image("vision/rail/sydney/S1.png")
     assert [service for service, _ in built] == ["s3"] * 4
     assert all(set(kwargs) == {"config"} and kwargs["config"] is vs.S3_CONFIG for _, kwargs in built)
+
+
+def test_a_store_given_a_config_builds_its_client_with_it(monkeypatch):
+    """store_network's `config`: rail_access's prefetch passes S3_ONE_ATTEMPT_CONFIG when its
+    invocation has the time for one attempt only, and its client is built with that; without it,
+    S3_CONFIG."""
+    monkeypatch.setenv("CONTENT_BUCKET", "content-test")
+    built = []
+    monkeypatch.setattr(vs.boto3, "client", lambda service, **kwargs: built.append(kwargs) or MagicMock())
+    vs.store_network("rail", "sydney", {"site_key": "k"}, config=vs.S3_ONE_ATTEMPT_CONFIG)
+    vs.store_network("rail", "sydney", {"site_key": "k"})
+    assert built[0]["config"] is vs.S3_ONE_ATTEMPT_CONFIG and built[1]["config"] is vs.S3_CONFIG
+
+
+def test_a_call_stalled_when_it_timed_out_or_failed_only_after_the_connect_allowance():
+    """s3_stalled: a read or connect timeout, or any failure that came only after
+    S3_STALLED_SECONDS (an error S3 answers comes in well under a second). The tick then starts no
+    other call it can do without (rail_access), and the research tick never asks it again."""
+    answered = {"Error": {"Code": "SlowDown", "Message": "x"}, "ResponseMetadata": {"HTTPStatusCode": 503}}
+    slow_down = ClientError(answered, "PutObject")
+    assert vs.S3_STALLED_SECONDS == vs.S3_CONNECT_TIMEOUT_SECONDS
+    assert vs.s3_stalled(ReadTimeoutError(endpoint_url="http://s3"), 0.1)
+    assert vs.s3_stalled(ConnectTimeoutError(endpoint_url="http://s3"), 0.1)
+    assert vs.s3_stalled(slow_down, vs.S3_STALLED_SECONDS)
+    assert not vs.s3_stalled(slow_down, vs.S3_STALLED_SECONDS - 0.1)
+    assert not vs.s3_stalled(ValueError("not JSON"), 0.1)
 
 
 @pytest.fixture
