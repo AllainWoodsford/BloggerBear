@@ -177,6 +177,22 @@ class Adapter(ABC):
         assistant speaks a phrase only if it is in some adapter's vocabulary. Empty by default."""
         return frozenset()
 
+    @classmethod
+    def decision_vocabulary(cls) -> dict:
+        """The adapter's fixed words for its evidence (common/vision_decisions.py), so no reader
+        re-implements a rule of its own. An adapter that keeps a decision ring in its running
+        state returns:
+
+            {"measures": {code: {"label": str, "unit": str, "scale": 100 | 1}},  # a ring entry's
+             "moved":    {code: str},                   # the words for a measure that moved
+             "sources":  {code: "imagery" | "network" | "imagery_and_network"},  # which input
+             "settings": {code: {"label": str, "unit": str}}}   # look_again's settings
+
+        Every word is plain (vision_decisions.WORD); the union over the registry is the vocabulary
+        readers check codes against. Empty, the default: the adapter writes no decision ring, and
+        the assistant's evidence tools leave its topics out."""
+        return {}
+
     def status(self, topic_config: dict, state: dict | None, *, now: datetime) -> dict | None:
         """What the operator's assistant may show about this topic's sites (lambdas/ops_mcp/
         vision_status.py), from its config and its running state (None before the first tick).
