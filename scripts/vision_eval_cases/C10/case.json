@@ -1,0 +1,67 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C10",
+  "kind": "task",
+  "title": "Smoke that SCL does not flag",
+  "built_as": "The clear November 2019 scenes as the baseline and sydney-2019-12-26-smoke as the newest (the 2019-20 bushfire season: aerosol optical thickness 0.44 over the site), all with fixture A. Included only when the smoke scene crosses a threshold.",
+  "site": "sydney",
+  "history": [
+    {
+      "scene": "sydney-2019-11-01",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2019-11-06",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2019-11-07",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2019-11-27",
+      "network": "A"
+    }
+  ],
+  "newest": {
+    "scene": "sydney-2019-12-26-smoke",
+    "network": "A"
+  },
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    }
+  },
+  "thresholds": {
+    "coverage_floor": 0.6,
+    "min_baseline": 1,
+    "served_share_threshold": 0.02,
+    "desert_relative_threshold": 0.1
+  },
+  "news": [],
+  "expected": {
+    "verdict": "artefact",
+    "stop": "answered"
+  },
+  "why": "The network is the same; haze the scene classification does not flag may shift the built-up index.",
+  "driven_by": "imagery",
+  "conditional": "gate",
+  "run": {
+    "converse": "model"
+  },
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "ndvi_max": 0.25
+      }
+    },
+    {
+      "tool": "previous_scene",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"artefact\", \"reason\": \"The map did not change and the scene is hazy; the move is the haze.\"}"
+    }
+  ]
+}

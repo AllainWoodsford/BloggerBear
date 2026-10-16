@@ -1,0 +1,37 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C6",
+  "base": "C1",
+  "kind": "failure",
+  "title": "A tool fails: look_again's re-measurement is refused",
+  "built_as": "C1, with every look_again re-measurement raising the worker's unreadable_scene. Run live: how the real model handles a failed tool is the result.",
+  "expected": {
+    "verdict": [
+      "real",
+      "artefact"
+    ],
+    "stop": "answered",
+    "look_again_failed": true
+  },
+  "why": "A failed tool must not stop the decision: C1's verdict, or a reasoned artefact, with the failed look_again in the steps.",
+  "driven_by": null,
+  "run": {
+    "converse": "model",
+    "look_again": "unreadable_scene"
+  },
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "reach_m": 1200
+      }
+    },
+    {
+      "tool": "web_context",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"real\", \"reason\": \"The re-measurement failed, but the map's new stations and the news agree.\"}"
+    }
+  ]
+}

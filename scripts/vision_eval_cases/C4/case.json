@@ -1,0 +1,63 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C4",
+  "kind": "task",
+  "title": "A cloud edge: coverage between 0.6 and 0.7",
+  "built_as": "Three clear winter scenes measured with fixture A, and a winter scene from the manifest whose site coverage is between 0.6 and 0.7 (sydney-2024-08-11, 0.667), also with A: just above the floor, with a third of the city under cloud or its shadow.",
+  "site": "sydney",
+  "history": [
+    {
+      "scene": "sydney-2024-05-28",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2024-06-27",
+      "network": "A"
+    },
+    {
+      "scene": "sydney-2024-07-17",
+      "network": "A"
+    }
+  ],
+  "newest": {
+    "scene": "sydney-2024-08-11",
+    "network": "A"
+  },
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    }
+  },
+  "thresholds": {
+    "coverage_floor": 0.6,
+    "min_baseline": 1,
+    "served_share_threshold": 0.02,
+    "desert_relative_threshold": 0.1
+  },
+  "news": [],
+  "expected": {
+    "verdict": "artefact",
+    "stop": "answered"
+  },
+  "why": "The network is the same; a third of the site is under cloud, so the measures moved with what could be seen, not with the city.",
+  "driven_by": "imagery",
+  "conditional": "gate",
+  "run": {
+    "converse": "model"
+  },
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "ndvi_max": 0.25
+      }
+    },
+    {
+      "tool": "previous_scene",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"artefact\", \"reason\": \"A third of the site is under cloud and the map did not change.\"}"
+    }
+  ]
+}

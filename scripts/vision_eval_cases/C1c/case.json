@@ -1,0 +1,42 @@
+{
+  "schema": "bloggerbear.vision-case/1",
+  "case": "C1c",
+  "base": "C1",
+  "title": "A line extended by three stations",
+  "built_as": "As C1, with the newest scene measured with A plus a three-station extension of an existing line beyond its terminus; the news announces the extension.",
+  "networks": {
+    "A": {
+      "file": "vision_benchmark_networks/sydney.json"
+    },
+    "B": {
+      "from": "A",
+      "derive": "extend_line",
+      "stations": 3
+    }
+  },
+  "news": [
+    {
+      "title": "Rail extension adds three stations",
+      "url": "https://news.example.com/rail/extension-opens",
+      "published_at": "2024-08-27T00:00:00Z",
+      "source": "Example Transit News",
+      "snippet": "Trains now run three stops further, past the old terminus, after the extension opened on Monday."
+    }
+  ],
+  "why": "An existing line runs three stations further: the station count and the served ground move, and the news reports the extension.",
+  "scripted": [
+    {
+      "tool": "look_again",
+      "input": {
+        "reach_m": 1200
+      }
+    },
+    {
+      "tool": "web_context",
+      "input": {}
+    },
+    {
+      "text": "{\"verdict\": \"real\", \"reason\": \"The line now runs three stations past its old end, and the news reports the extension opening.\"}"
+    }
+  ]
+}
