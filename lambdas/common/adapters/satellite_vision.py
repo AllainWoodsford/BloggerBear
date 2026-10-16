@@ -64,7 +64,7 @@ import statistics
 import time
 from datetime import UTC, datetime
 
-from common import vision_client, vision_sites, vision_triage
+from common import vision_client, vision_decisions, vision_sites, vision_triage
 from common.adapters.base import Adapter, render_review_evidence
 from common.model_routing import resolve_model
 from common.vision_sites import (
@@ -134,6 +134,28 @@ _FLOAT_KEYS = vision_sites.FLOAT_KEYS + ("relative_threshold", "absolute_thresho
 # What the operator's assistant calls a site's count (status): fixed words, never `object_noun`,
 # which is the operator's own text and is never spoken.
 MEASURE_LABEL = "objects counted"
+# The adapter's fixed words for its evidence (Adapter.decision_vocabulary): the measures a decision
+# ring entry keeps, the words for the one measure `_judge` can name as moved, which input it depends
+# on (the imagery alone), and the words for look_again's settings (the worker contract's
+# parameters). Never `object_noun`.
+DECISION_VOCABULARY = {
+    "measures": {
+        "count": {"label": "objects counted", "unit": "", "scale": 1},
+        "density_per_km2": {"label": "objects per square kilometre", "unit": "per km²", "scale": 1},
+        "clear_water_km2": {"label": "clear water", "unit": "km²", "scale": 1},
+    },
+    "moved": {"count": "the count"},
+    "sources": {"count": "imagery"},
+    "settings": {
+        "stretch_max": {"label": "stretch ceiling", "unit": ""},
+        "block_size": {"label": "block size", "unit": "px"},
+        "offset": {"label": "threshold offset", "unit": ""},
+        "min_length_m": {"label": "shortest object", "unit": "m"},
+        "max_length_m": {"label": "longest object", "unit": "m"},
+        "min_elongation": {"label": "least elongation", "unit": ""},
+        "edge_buffer_px": {"label": "shore buffer", "unit": "px"},
+    },
+}
 
 
 def parse_config(adapter_config: dict | None) -> dict:
@@ -163,6 +185,9 @@ class SatelliteVisionAdapter(Adapter):
     _topic: dict | None = None
     _config: dict | None = None
     _started: float | None = None
+    # Set by fetch_state for the decision ring: each site's worker call this tick (site id ->
+    # vision_decisions.measured_by or failed_by), for the evidence lines and the ring entry.
+    _visits: dict | None = None
 
     def fetch_state(self, topic_config: dict, previous_state: dict | None = None) -> dict:
         config = parse_config(topic_config.get("adapter_config"))
@@ -170,6 +195,7 @@ class SatelliteVisionAdapter(Adapter):
         # triage agent needs the topic's model and the sites' polygons, and the diff is only given
         # the two states.
         self._topic, self._config = topic_config, config
+        self._visits = {}
         topic_id = topic_config.get("topic_id", "topic")
         now = datetime.now(UTC)
         budget = Budget(self.clock, config["time_budget_seconds"])
@@ -181,18 +207,23 @@ class SatelliteVisionAdapter(Adapter):
             record["name"] = site.get("name") or site["id"]
             sites[site["id"]] = record
 
+        # Each site's turn leaves a `vision_site` line at its branch, as it happens, so a tick that
+        # times out mid-loop still leaves the lines of every site visited before it.
         for site in order_sites(config["sites"], previous_sites):
             record = sites[site["id"]]
             if len(measured) >= config["max_sites_per_tick"]:
+                vision_decisions.site_line(site["id"], "not_reached", budget=budget)
                 continue
             if budget.exhausted():
                 record["last_error"] = {"at": now.isoformat(), "code": "time_budget", "detail": "next tick"}
+                vision_decisions.site_line(site["id"], "deferred", code="time_budget", budget=budget)
                 continue
             try:
                 scene = search_newest_scene(site, config, now, http_post=self.http_post)
             except Exception as exc:  # noqa: BLE001 - one site's search must not stop the others
                 record["last_attempt_at"] = now.isoformat()
                 record["last_error"] = {"at": now.isoformat(), "code": "search", "detail": str(exc)[:300]}
+                vision_decisions.site_line(site["id"], "none", code="search", budget=budget)
                 continue
             known = {entry.get("scene_id") for entry in record["history"]}
             new_scene = scene is not None and scene["id"] not in known
@@ -200,11 +231,14 @@ class SatelliteVisionAdapter(Adapter):
                 # Too little of the budget left to wait on the worker (rail_access keeps the same
                 # rule): not an attempt, so the site keeps its place and goes first next tick.
                 record["last_error"] = {"at": now.isoformat(), "code": "time_budget", "detail": "next tick"}
+                vision_decisions.site_line(site["id"], "deferred", code="time_budget", budget=budget)
                 continue
             record["last_attempt_at"] = now.isoformat()
             if not new_scene:
                 record.pop("last_error", None)
+                vision_decisions.site_line(site["id"], "no_scene" if scene is None else "none", budget=budget)
                 continue
+            asked = self.clock()
             try:
                 result = self.measure(
                     {"id": site["id"], "polygon": site["polygon"]},
@@ -216,7 +250,15 @@ class SatelliteVisionAdapter(Adapter):
                 )
             except vision_client.VisionError as exc:
                 record["last_error"] = {"at": now.isoformat(), "code": exc.code, "detail": exc.detail[:300]}
+                visit = vision_decisions.failed_by(exc, self.clock() - asked, backend=config["backend"])
+                self._visits[site["id"]] = visit
+                vision_decisions.site_line(
+                    site["id"], "none", code=exc.code, scene_id=scene["id"], budget=budget, visit=visit
+                )
                 continue
+            # Who measured, for the evidence lines and the ring: the worker's request id, build
+            # and CPU, and the client's wall time.
+            self._visits[site["id"]] = vision_decisions.measured_by(result, self.clock() - asked)
 
             metrics = result.metrics
             entry = {
@@ -245,6 +287,9 @@ class SatelliteVisionAdapter(Adapter):
             record["history"] = [*record["history"], entry][-config["history_size"] :]
             record.pop("last_error", None)
             measured.append({"site_id": site["id"], "scene_id": scene["id"]})
+            vision_decisions.site_line(
+                site["id"], "measured", scene_id=scene["id"], budget=budget, visit=self._visits[site["id"]]
+            )
 
         return {
             "fetched_at": now.isoformat(),
@@ -284,26 +329,38 @@ class SatelliteVisionAdapter(Adapter):
 
     def material_diff(self, old_state: dict | None, new_state: dict) -> tuple[bool, str]:
         verdicts = self.assess(new_state)
+        moved = vision_decisions.moved_by_site(verdicts)
         floor = {**DEFAULTS, **(new_state.get("thresholds") or {})}["coverage_floor"]
         first = vision_sites.first_observation(old_state, new_state, verdicts, floor)
         noun = new_state.get("object_noun") or DEFAULTS["object_noun"]
         if first is not None:
             clear, not_yet = first
+            self._record(new_state, verdicts, moved, first_clear={v["site_id"] for v in clear}, floor=floor)
             if not clear:
                 return False, not_yet
             lines = [f"{v['name']}: {v['count']} {noun} (coverage {v['coverage']:.0%})" for v in clear]
             return True, "First observation. " + "; ".join(lines)
         self._triage(new_state, [v for v in verdicts if v["material"]])
+        self._record(new_state, verdicts, moved, first_clear=None, floor=floor)
         material = [v for v in verdicts if v["material"]]
         if not material:
             return False, "; ".join(f"{v['name']}: {v['reason']}" for v in verdicts) or "no new scene"
         return True, "; ".join(_describe(v, noun) for v in material)
 
+    def _record(self, new_state: dict, verdicts: list[dict], moved: dict, *, first_clear, floor) -> None:
+        """One decision ring entry and one `vision_decision` line per verdict, on every return path
+        of material_diff (common/vision_decisions.record)."""
+        vision_decisions.record(
+            new_state, verdicts, moved=moved, first_clear=first_clear, floor=floor,
+            visits=self._visits or {}, vocabulary=self.decision_vocabulary(),
+        )  # fmt: skip
+
     def _triage(self, new_state: dict, candidates: list[dict]) -> None:
         """Ask the agent about each numerically material site; an "artefact" (or any failure)
         makes that site not material. Records the trail in `new_state` (it is stored after the
-        diff). Skipped, leaving the numeric verdict, when the topic turns triage off or the state
-        didn't come from this instance's fetch (the review path)."""
+        diff) and prints each site's `vision_triage` line right after its outcome, so a timeout
+        later in the tick still leaves it. Skipped, leaving the numeric verdict, when the topic
+        turns triage off or the state didn't come from this instance's fetch (the review path)."""
         config = self._config
         if not candidates or not config or not config["triage"] or self._topic is None:
             return
@@ -320,7 +377,7 @@ class SatelliteVisionAdapter(Adapter):
             record = new_state["sites"][verdict["site_id"]]
             latest = record["history"][-1]
             if model_id is None:
-                outcome = {"verdict": "artefact", "reason": failure, "tool_calls": []}
+                outcome = vision_triage.closed_outcome(failure, "no_model")
             else:
                 outcome = self.triage_agent(
                     site={**sites[verdict["site_id"]], "name": record.get("name")},
@@ -340,6 +397,7 @@ class SatelliteVisionAdapter(Adapter):
                     read_timeout=vision_sites.WORKER_READ_TIMEOUT,
                 )
             trails[verdict["site_id"]] = outcome
+            vision_decisions.triage_line(verdict["site_id"], latest.get("scene_id"), outcome)
             latest["triage"] = {"verdict": outcome["verdict"], "reason": outcome["reason"]}
             verdict["triage"] = latest["triage"]
             if outcome["verdict"] != "real":
@@ -353,6 +411,10 @@ class SatelliteVisionAdapter(Adapter):
     @classmethod
     def status_vocabulary(cls) -> frozenset[str]:
         return vision_sites.STATUS_VOCABULARY | {MEASURE_LABEL}
+
+    @classmethod
+    def decision_vocabulary(cls) -> dict:
+        return DECISION_VOCABULARY
 
     def status(self, topic_config: dict, state: dict | None, *, now: datetime) -> dict | None:
         """Each site's last scene, its verdict by `assess`'s rule (`_judge`), its count under fixed
@@ -434,6 +496,9 @@ def _judge(latest: dict, earlier: list[dict], config: dict) -> tuple[str, dict]:
         "relative": None,
         "material": False,
         "reason": "",
+        # The measure named in `reason` as moved, as a code (the decision ring's `moved`): written
+        # by the same condition, so the two cannot drift.
+        "moved": [],
     }
     if latest["coverage"] < config["coverage_floor"]:
         fields["reason"] = "coverage below the floor"
@@ -447,7 +512,7 @@ def _judge(latest: dict, earlier: list[dict], config: dict) -> tuple[str, dict]:
     fields.update(baseline=baseline, delta=delta, relative=round(relative, 3))
     big_enough = abs(delta) >= config["absolute_threshold"]
     if big_enough and abs(relative) >= config["relative_threshold"]:
-        fields.update(material=True, reason="changed against the baseline")
+        fields.update(material=True, reason="changed against the baseline", moved=["count"])
         return "changed", fields
     fields["reason"] = "within the usual range"
     return "within_range", fields

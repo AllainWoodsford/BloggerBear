@@ -78,6 +78,15 @@ _NOT_ERRORS = r"/^(START|END|INIT_START) /"
 # "error" above and was counted as an error in ops-agent, and its "tool_calls" read like
 # instructions (redact.py), so the assistant reported its own bookkeeping as someone probing.
 _OWN_RECORD = r"/^ops_agent: (turn=|briefing run tool_calls=)/"
+# The pipeline's evidence lines (common/evidence.py): one JSON line per step, holding only codes
+# and numbers. Their codes include words such as "failed" and "timeout", so without this every
+# tick would read as an error, as the assistant's own turn record once did (_OWN_RECORD). A test
+# holds the regex to evidence.PREFIX.
+_EVIDENCE_RECORD = r'/^\{"evidence": "bloggerbear\//'
+# What may sit either side of a topic id in a free-text log line: anything that is not an id
+# character (suggestions.ID_PATTERN), or the line's edge. "rail-sydney" between these never
+# matches "rail-sydney-demo", whose id goes on with "-".
+_ID_EDGE = "[^A-Za-z0-9_-]"
 # The assistant's own functions. Their logs are written by this code about its own tool calls, so a
 # line of theirs that reads like instructions is still withheld but is not a sign of anything.
 ASSISTANT_FUNCTIONS = ("ops-agent", "ops-mcp")
@@ -295,14 +304,17 @@ def classify(message: str) -> Cause:
 
 
 def _topic_filter(topic_id: str | None, prefix: str | None) -> str:
-    """A filter narrowing a query to one topic's lines: those naming the topic, or written by its
-    adapter. Both are checked before they get here: the id against ID_PATTERN (letters, digits,
-    "-" and "_"), the prefix from ADAPTER_PREFIXES. Neither can end the regex or add a command."""
+    """A filter narrowing a query to one topic's lines: those naming the topic as a whole id (the
+    print lines are free text, so the id is matched between non-id characters or the line's
+    edges, never as a substring: a deep dive on "rail-sydney" does not read "rail-sydney-demo"),
+    or written by its adapter. Both are checked before they get here: the id against ID_PATTERN
+    (letters, digits, "-" and "_"), the prefix from ADAPTER_PREFIXES. Neither can end the regex or
+    add a command."""
     if topic_id is None:
         return ""
     if not ID_PATTERN.match(topic_id) or (prefix is not None and prefix not in ADAPTER_PREFIXES.values()):
         raise ValueError("not a topic filter this module builds")
-    words = [re.escape(topic_id)] + ([re.escape(prefix)] if prefix else [])
+    words = [f"(^|{_ID_EDGE}){re.escape(topic_id)}({_ID_EDGE}|$)"] + ([re.escape(prefix)] if prefix else [])
     return f"\n| filter @message like /{'|'.join(words)}/"
 
 
@@ -311,7 +323,7 @@ def queries(topic_id: str | None = None, prefix: str | None = None) -> dict[str,
     narrow = _topic_filter(topic_id, prefix)
     errors = (
         f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS} "
-        f"and @message not like {_OWN_RECORD}{narrow}"
+        f"and @message not like {_OWN_RECORD} and @message not like {_EVIDENCE_RECORD}{narrow}"
     )
     return {
         "sample": (

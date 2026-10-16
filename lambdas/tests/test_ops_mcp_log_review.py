@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from common import evidence
 from ops_mcp import log_review, logs, redact
 from ops_mcp.suggestions import CATALOGUE
 
@@ -258,7 +259,8 @@ def test_a_rail_topic_deep_dive_reads_the_worker_unfiltered(monkeypatch, vision_
     by_group = {job[0][0]: job for job in run.jobs if job[0][1] == "sample"}
     assert set(by_group) == {"home", "vision-worker"}
     assert by_group["home"][2] == (GROUP.format("research-tick"), GROUP.format("daily-cycle"))
-    assert "| filter @message like /rail\\-sydney|rail_access:/" in by_group["home"][3]
+    narrowed = "| filter @message like /(^|[^A-Za-z0-9_-])rail\\-sydney([^A-Za-z0-9_-]|$)|rail_access:/"
+    assert narrowed in by_group["home"][3]
     assert by_group["vision-worker"][2] == (GROUP.format("vision-worker"),)
     assert by_group["vision-worker"][1] == vision_region
     assert "rail-sydney" not in by_group["vision-worker"][3]
@@ -371,7 +373,7 @@ def test_a_topic_reads_its_two_functions_narrowed_to_its_id_and_adapter(monkeypa
     result = review(run, topic="crypto")
     assert run.jobs[0][2] == (GROUP.format("research-tick"), GROUP.format("daily-cycle"))
     sample_query = run.jobs[0][3]
-    assert "| filter @message like /crypto|crypto_feed:/" in sample_query
+    assert "| filter @message like /(^|[^A-Za-z0-9_-])crypto([^A-Za-z0-9_-]|$)|crypto_feed:/" in sample_query
     assert result["scope"] == {
         "functions": ["research-tick", "daily-cycle"],
         "topic_id": "crypto",
@@ -392,7 +394,7 @@ def test_a_vision_topic_narrows_to_the_lines_its_adapter_prints(adapter, monkeyp
     )
     run = Run()
     review(run, topic="cities")
-    assert f"| filter @message like /cities|{adapter}:/" in run.jobs[0][3]
+    assert f"| filter @message like /(^|[^A-Za-z0-9_-])cities([^A-Za-z0-9_-]|$)|{adapter}:/" in run.jobs[0][3]
 
 
 def test_every_prefix_is_a_registered_adapters():
@@ -407,7 +409,7 @@ def test_a_topic_with_an_adapter_we_do_not_know_filters_on_its_id_only(monkeypat
     )
     run = Run()
     review(run, topic="t1")
-    assert run.jobs[0][3].count("filter @message like /t1/") == 1
+    assert run.jobs[0][3].count("filter @message like /(^|[^A-Za-z0-9_-])t1([^A-Za-z0-9_-]|$)/") == 1
 
 
 @pytest.mark.parametrize("topic", ["no;such", "a = b", "x" * 200, ""])
@@ -424,6 +426,31 @@ def test_the_topic_filter_refuses_anything_it_did_not_build():
         log_review.queries("ok", "not-ours:")
     with pytest.raises(ValueError):
         log_review.queries("a/ | stats", None)
+
+
+def test_the_topic_filter_matches_a_whole_id_never_a_topic_whose_id_starts_with_it():
+    """A deep dive on rail-sydney must not read rail-sydney-demo's lines (nor "rail-sydney2"'s):
+    the id is matched between non-id characters or the line's edges. The regex body is run here
+    as Python's `re`, which the console's Logs Insights syntax shares for these forms."""
+    query = log_review.queries("rail-sydney", "rail_access:")
+    body = re.search(r"\| filter @message like /(.+)/$", query["sample"].splitlines()[-3]).group(1)
+    pattern = re.compile(body)
+    for line in (
+        "research_tick_handler: starting run for topic_id=rail-sydney force=False",
+        "research_tick_handler: rail-sydney not due until 2026-10-16T05:00:00+00:00",
+        '{"evidence": "bloggerbear/1", "event": "research_tick", "topic_id": "rail-sydney"}',
+        "rail-sydney",
+        "rail_access: could not store the figure for sydney: OSError('x')",
+    ):
+        assert pattern.search(line), line
+    for line in (
+        "research_tick_handler: starting run for topic_id=rail-sydney-demo force=False",
+        '{"evidence": "bloggerbear/1", "event": "research_tick", "topic_id": "rail-sydney-demo"}',
+        "topic_id=rail-sydney2",
+        "topic_id=demo-rail-sydney",
+        "topic_id=rail_sydney",
+    ):
+        assert not pattern.search(line), line
 
 
 # --- what comes back -------------------------------------------------------------------------------
@@ -557,6 +584,25 @@ def test_the_assistants_record_of_a_turn_is_not_read_as_an_error():
     for query in log_review.queries().values():
         if "filter @message like" in query and "(?i)(error|" in query:
             assert f"@message not like {log_review._OWN_RECORD}" in query
+
+
+def test_the_pipelines_evidence_lines_are_never_read_as_errors():
+    """common/evidence.py's lines carry codes such as `bedrock_error`, `timeout` and
+    `search_failed`: every one would match ERROR_PATTERN. The error search leaves them out by
+    their fixed prefix, in every query that searches for errors, the vision worker's group
+    included (it is read with the same text)."""
+    excluded = re.compile(log_review._EVIDENCE_RECORD[1:-1])  # the body between the query's slashes
+    assert excluded.match(evidence.PREFIX)
+    for event in evidence.EVENTS:
+        line = evidence.line(event, stop="bedrock_error", code="timeout", outcome="error", error_type="x")
+        assert line is not None and excluded.match(line), event
+        assert not redact.looks_like_instructions(line), event
+    assert not excluded.match('{"evident": "bloggerbear/1"}') and not excluded.match(" " + evidence.PREFIX)
+    for query in log_review.queries().values():
+        if "filter @message like" in query and "(?i)(error|" in query:
+            assert f"@message not like {log_review._EVIDENCE_RECORD}" in query
+    narrowed = log_review.queries("rail-sydney", None)["totals"]
+    assert f"@message not like {log_review._EVIDENCE_RECORD}" in narrowed
 
 
 def test_the_agent_still_writes_the_record_the_query_leaves_out():
