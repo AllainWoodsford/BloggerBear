@@ -310,10 +310,12 @@ def _ask(event: dict, *, admitted: bool = False) -> dict:
         briefings.record(_caller_id(event), result)
 
     names = ",".join(call["name"] for call in result["tool_calls"])
+    echoed = 1 if result.pop("echo", False) else 0
     print(
         f"ops_agent: turn={result['turn']} tool_calls={len(result['tool_calls'])} "
         f"tools={names or '-'} findings={len(result['findings'])} "
-        f"fixes={policy.suggested_fixes(result['findings'])} tables={len(result.get('tables') or [])}"
+        f"fixes={policy.suggested_fixes(result['findings'])} tables={len(result.get('tables') or [])} "
+        f"echo={echoed}"
     )
     return _response(200, result)
 
@@ -401,10 +403,11 @@ def _briefing_run(event: dict) -> dict:
         print(f"ops_agent: briefing run failed error={exc}")
         briefings.record_failure(user_id, request_id)
         return {"ok": False}
+    echoed = 1 if result.pop("echo", False) else 0
     recorded = briefings.record(user_id, result, request_id=request_id)
     print(
         f"ops_agent: briefing run tool_calls={len(result['tool_calls'])} "
-        f"findings={len(result['findings'])} recorded={recorded}"
+        f"findings={len(result['findings'])} recorded={recorded} echo={echoed}"
     )
     return {"ok": recorded}
 

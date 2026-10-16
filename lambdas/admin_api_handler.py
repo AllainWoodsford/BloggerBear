@@ -14,19 +14,31 @@ from `httpMethod` + `resource` instead, so `_ROUTES` below needs no changes
 either way. `handler` never raises -- every route function is wrapped in a
 broad top-level try/except that logs the real exception and returns a
 generic 500, per the task contract.
+
+The evidence trail (common/evidence.py, docs/enhancements/vision-evidence.md): `handler` binds
+Lambda's request id as `tick` and API Gateway's as `api_request_id` (which joins the access log,
+holding no caller details), and the routes that act on an article or a topic print one line after
+the write: `moderation_decision` when a person approves, rejects, force-publishes, unpublishes or
+sends back an article, and `topic_changed` when a topic is created, changed, paused or resumed
+(which top-level keys and which `adapter_config` keys changed, the new numbers and switches among
+them: generic over every adapter, no key named in code). The API is IAM-authenticated, so a
+decision is a person's; the line records *that* one decided and when, never who: no ARN, no user
+name, no operator text (rule 1).
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import boto3
 
-from common import equipment, feedback_limits, gear, security_events, sign_ins
+from common import equipment, evidence, feedback_limits, gear, security_events, sign_ins
 from common.adapters import CRYPTO_FEED_ADAPTER_KEY, MANUAL_REVIEW_ADAPTERS
 from common.assistant_access import assistant_access_error, effective_assistant_access
 from common.attribution import sources_for_article
@@ -34,6 +46,7 @@ from common.digest import DIGEST_TOPIC_ID, DIGEST_TOPIC_NAME
 from common.dynamo import (
     REWRITE_FAILED_STATUS,
     claim_moderation_for_rewrite,
+    count_findings,
     delete_musings_for_article,
     delete_prompt_refinement,
     delete_topic,
@@ -56,6 +69,7 @@ from common.dynamo import (
     list_all_moderation_items,
     list_candidate_ideas,
     list_failed_executions,
+    list_findings,
     list_models,
     list_moderation_by_status,
     list_musings,
@@ -88,7 +102,7 @@ from common.editorial_resolver import (
 )
 from common.fact_check import fact_check_label
 from common.figures import clean_figures
-from common.findings_window import findings_window_error
+from common.findings_window import findings_window_error, window_start
 from common.fresh_review import (
     on_unavailable_error,
     resolve_on_unavailable,
@@ -187,6 +201,71 @@ def _dynamo_numbers(value):
     if isinstance(value, list):
         return [_dynamo_numbers(item) for item in value]
     return value
+
+
+# --- the evidence lines ----------------------------------------------------------------------------
+
+_MISSING = object()
+
+
+def changed_fields(before: dict | None, after: dict | None) -> list[str]:
+    """The top-level keys whose values differ between two topic items (every key of `after` when
+    there is no `before`), sorted; only keys the evidence `code` kind takes. Knows no key."""
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    keys = {key for key in set(before) | set(after) if before.get(key, _MISSING) != after.get(key, _MISSING)}
+    return sorted(key for key in keys if evidence.check("code", key))
+
+
+def changed_config(before: dict | None, after: dict | None) -> dict:
+    """What changed between two `adapter_config` blocks, for the `topic_changed` line: the
+    top-level keys whose values differ (`config_keys`), and among them the new values that are
+    finite numbers (`config_numbers`) or switches (`config_on`, `config_off`). A key enters only
+    if it passes the evidence `code` kind, a value only if it is a number or a bool: a name, a
+    polygon, a list or any other operator text never does. Knows no key, so it is the same for
+    every adapter."""
+    after = after if isinstance(after, dict) else {}
+    keys = changed_fields(before, after)
+    numbers, on, off = {}, [], []
+    for key in keys:
+        value = after.get(key)
+        if isinstance(value, bool):
+            (on if value else off).append(key)
+        elif isinstance(value, Decimal):
+            value = float(value)
+            if math.isfinite(value):
+                numbers[key] = value
+        elif isinstance(value, int | float) and math.isfinite(value):
+            numbers[key] = value
+    return {"config_keys": keys, "config_numbers": numbers, "config_on": on, "config_off": off}
+
+
+def _topic_changed(action: str, before: dict | None, after: dict) -> None:
+    """One `topic_changed` line after a topic was written: `created`, `updated`, `paused` or
+    `resumed`, with what changed. Never a name, a polygon, an editorial goal or any other text."""
+    evidence.emit(
+        "topic_changed",
+        topic_id=after.get("topic_id"),
+        action=action,
+        fields=changed_fields(before, after),
+        force_manual_review=after.get("force_manual_review") is True,
+        **changed_config((before or {}).get("adapter_config"), after.get("adapter_config")),
+    )
+
+
+def _moderation_decision(decision: str, *, topic_id, article_id, queue_id=None, from_status=None) -> None:
+    """One `moderation_decision` line after a person's write: `approved`, `rejected`,
+    `force_published`, `unpublished` or `sent_back`, with the article's status before. Always
+    `by: human` (the API is IAM-authenticated), and never who."""
+    evidence.emit(
+        "moderation_decision",
+        topic_id=topic_id,
+        queue_id=queue_id,
+        article_id=article_id,
+        decision=decision,
+        from_status=from_status,
+        by="human",
+    )
 
 
 def _response(status_code: int, payload: dict) -> dict:
@@ -388,6 +467,7 @@ def _create_topic(event: dict) -> dict:
     if review_mode is not None:
         item["review_mode"] = review_mode
     put_topic(item)
+    _topic_changed("created", None, item)
     try:
         _apply_topic_schedules(item, topics=[*topics, item])
     except ValueError as exc:
@@ -531,6 +611,7 @@ def _update_topic(event: dict) -> dict:
         return _error(400, str(exc))
 
     put_topic(updated)
+    _topic_changed("updated", topic, updated)
     try:
         _apply_topic_schedules(updated, topics=topics)
     except ValueError as exc:
@@ -727,7 +808,9 @@ def _set_topic_paused(event: dict, *, paused: bool) -> dict:
         return _response(200, {"topic_id": topic_id, "paused": paused, "changed": False})
 
     now = datetime.now(UTC).isoformat()
-    set_topic_fields(topic_id, {"paused": paused, "paused_at" if paused else "resumed_at": now})
+    fields = {"paused": paused, "paused_at" if paused else "resumed_at": now}
+    set_topic_fields(topic_id, fields)
+    _topic_changed("paused" if paused else "resumed", topic, {**topic, **fields})
     payload = {"topic_id": topic_id, "paused": paused, "changed": True, "at": now}
     try:
         payload["schedules"] = set_topic_schedules_state(topic_id, enabled=not paused)
@@ -824,6 +907,106 @@ def _get_latest_finding_route(event: dict) -> dict:
     if finding is None:
         return _error(404, f"no findings yet for topic '{topic_id}'")
     return _response(200, finding)
+
+
+# GET /topics/{topic_id}/findings (scripts/admin_cli.py's `findings list`): a topic's Findings,
+# newest first, with their raw items, for the operator at a terminal and a developer's session.
+# The limits, and the three windows, are the same the operator's assistant's topic_findings
+# applies (lambdas/ops_mcp/topic_findings.py); `next_article` reads exactly what the next daily
+# run reads (common/findings_window.window_start, no expiry filter, at most MAX_WINDOW_FINDINGS).
+FINDINGS_LIMIT_DEFAULT, FINDINGS_LIMIT_MAX = 5, 20
+FINDINGS_DAYS_MAX = 14
+FINDINGS_WINDOW_MAX = 48  # daily_cycle_handler.MAX_WINDOW_FINDINGS; a test holds the two equal
+# Lambda answers at most 6 MB. Past this many bytes of body the oldest items are dropped until it
+# fits, and the body says so.
+FINDINGS_BODY_MAX_BYTES = 5_000_000
+_WHOLE_NUMBER = re.compile(r"^\d{1,6}$")
+
+
+def _whole_number_param(event: dict, name: str, low: int, high: int, default: int | None):
+    """A whole-number query parameter from `low` to `high`, or `default` when absent. Raises
+    ValueError, with the message for the 400, otherwise."""
+    raw = _query_param(event, name)
+    if raw is None:
+        return default
+    if not _WHOLE_NUMBER.match(raw.strip()) or not low <= int(raw) <= high:
+        raise ValueError(f"'{name}' must be a whole number from {low} to {high}")
+    return int(raw)
+
+
+def _since_param(event: dict) -> datetime | None:
+    """`since` as an aware UTC datetime, or None when absent. Raises ValueError when it is not
+    ISO-8601."""
+    raw = _query_param(event, "since")
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.strip())
+    except ValueError as exc:
+        raise ValueError("'since' must be an ISO-8601 timestamp") from exc
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _list_findings_route(event: dict) -> dict:
+    """A topic's Findings, newest first (raw items, numbers as JSON numbers): the unexpired ones,
+    or the last `days`, or those `since` a timestamp, or with `next_article=true` what the next
+    daily run will read. `limit` (1 to 20, default 5) is how many are listed; `count` is how many
+    the window holds (a floor when `count_is_at_least`), `more` whether some were not listed."""
+    try:
+        limit = _whole_number_param(event, "limit", 1, FINDINGS_LIMIT_MAX, FINDINGS_LIMIT_DEFAULT)
+        days = _whole_number_param(event, "days", 1, FINDINGS_DAYS_MAX, None)
+        since_given = _since_param(event)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    next_article_raw = _query_param(event, "next_article")
+    if next_article_raw is not None and next_article_raw != "true":
+        return _error(400, "'next_article' must be 'true' when given")
+    next_article = next_article_raw == "true"
+    if sum(1 for chosen in (days, since_given, next_article) if chosen) > 1:
+        return _error(400, "give at most one of 'days', 'since' and 'next_article'")
+
+    topic_id = _path_param(event, "topic_id")
+    topic = get_topic(topic_id)
+    if topic is None:
+        return _error(404, f"topic '{topic_id}' not found")
+
+    now = datetime.now(UTC)
+    unexpired_at: int | None = int(now.timestamp())
+    if next_article:
+        # What the daily run reads: the window from the last article, every item in it whether or
+        # not its TTL has passed, at most the cap (read one more to know whether there are more).
+        since = window_start(topic, now)
+        unexpired_at = None
+        findings, expired, _ = list_findings(
+            topic_id, since=since, limit=FINDINGS_WINDOW_MAX + 1, unexpired_at=None
+        )
+        count, complete = len(findings), len(findings) <= FINDINGS_WINDOW_MAX
+        findings = findings[:limit]
+    else:
+        if days is not None:
+            since = (now - timedelta(days=days)).isoformat()
+        elif since_given is not None:
+            since = since_given.isoformat()
+        else:
+            since = None
+        findings, expired, _ = list_findings(topic_id, since=since, limit=limit, unexpired_at=unexpired_at)
+        count, complete = count_findings(topic_id, since=since, unexpired_at=unexpired_at)
+    body = {
+        "topic_id": topic_id,
+        "since": since,
+        "until": now.isoformat(),
+        "count": count,
+        "count_is_at_least": not complete,
+        "expired_left_out": expired,
+        "more": count > len(findings),
+        "truncated": False,
+        "findings": findings,
+    }
+    while findings and len(json.dumps(body, default=_json_number).encode("utf-8")) > FINDINGS_BODY_MAX_BYTES:
+        findings.pop()  # the oldest
+        body["truncated"] = True
+        body["more"] = True
+    return _response(200, body)
 
 
 # --- Articles ---------------------------------------------------------
@@ -981,6 +1164,10 @@ def _publish_article(event: dict) -> dict:
     # result (common/rewrite.py only finishes an item that is still "rewriting").
     if moderation_item is not None and moderation_item.get("status") in ("pending", "rewriting"):
         update_moderation_status(moderation_item["queue_id"], "approved")
+    _moderation_decision(
+        "force_published", topic_id=article.get("topic_id"), article_id=article_id,
+        queue_id=(moderation_item or {}).get("queue_id"), from_status=article.get("status"),
+    )  # fmt: skip
 
     refresh_articles_snapshot()
     return _response(200, {"published": article_id})
@@ -1017,6 +1204,10 @@ def _unpublish_article(event: dict) -> dict:
     moderation_item = get_moderation_item_by_article_id(article_id)
     if moderation_item is not None and moderation_item.get("status") != "rejected":
         update_moderation_status(moderation_item["queue_id"], "rejected")
+    _moderation_decision(
+        "unpublished", topic_id=article.get("topic_id"), article_id=article_id,
+        queue_id=(moderation_item or {}).get("queue_id"), from_status=article.get("status"),
+    )  # fmt: skip
 
     refresh_articles_snapshot()
     return _response(200, {"unpublished": article_id, **_clear_article_traces(article)})
@@ -1210,7 +1401,7 @@ def _rewrite_moderation_item(event: dict) -> dict:
             "it, or say what is wrong with 'instructions' (admin_cli articles rewrite)",
         )
 
-    return _start_rewrite(item, model_id, instructions)
+    return _start_rewrite(item, model_id, instructions, from_status="pending_moderation")
 
 
 def _rewrite_model_error(model_id: str) -> str | None:
@@ -1236,10 +1427,13 @@ def _rewrite_instructions(body: dict, *, required: bool) -> tuple[str, str | Non
     return instructions, None
 
 
-def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | None = None) -> dict:
+def _start_rewrite(
+    item: dict, model_id: str, instructions: str, extra: dict | None = None, *, from_status: str | None = None
+) -> dict:
     """Claim a pending queue item for a Re-Write and start it in the background (the daily-cycle
     Lambda, asynchronously). 202, or 409 if someone else claimed it first, or 502 (and the item
-    back to pending) if the Lambda could not be invoked."""
+    back to pending) if the Lambda could not be invoked. `from_status` is the article's status
+    before (a pending item's article is `pending_moderation`), for the evidence line."""
     queue_id = item["queue_id"]
     rewrite_id = str(uuid.uuid4())
     requested_at = datetime.now(UTC).isoformat()
@@ -1251,15 +1445,23 @@ def _start_rewrite(item: dict, model_id: str, instructions: str, extra: dict | N
         instructions=instructions or None,
     ):
         return _error(409, f"moderation queue item '{queue_id}' is not pending")
-    return _invoke_rewrite(item, rewrite_id, model_id, extra)
+    return _invoke_rewrite(item, rewrite_id, model_id, extra, from_status=from_status)
 
 
 def _invoke_rewrite(
-    item: dict, rewrite_id: str, model_id: str, extra: dict | None = None, *, still_published: bool = False
+    item: dict,
+    rewrite_id: str,
+    model_id: str,
+    extra: dict | None = None,
+    *,
+    still_published: bool = False,
+    from_status: str | None = None,
 ) -> dict:
     """Start the Re-Write that owns `item` (already `rewriting` under `rewrite_id`). 202, or 502
     with the item released if the Lambda could not be invoked: back to the inbox, or, when the
-    article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`."""
+    article is `still_published` (it stays up while it is rewritten), closed as `rewrite_failed`.
+    `from_status` is the article's status before, for the evidence line (`published` when it is
+    still up, or was taken down for this rewrite)."""
     queue_id = item["queue_id"]
     try:
         _get_lambda_client().invoke(
@@ -1282,6 +1484,10 @@ def _invoke_rewrite(
         update_moderation_status(queue_id, "pending")
         return _error(502, "could not start the rewrite; the item is back in the inbox")
 
+    _moderation_decision(
+        "sent_back", topic_id=item.get("topic_id"), article_id=item["article_id"], queue_id=queue_id,
+        from_status=from_status,
+    )  # fmt: skip
     return _response(
         202,
         {"rewriting": queue_id, "article_id": item["article_id"], "model_id": model_id, **(extra or {})},
@@ -1363,7 +1569,9 @@ def _rewrite_article(event: dict) -> dict:
             extra=claim,
         )
         extra = {"unpublished": False, "stays_published_until_rewritten": True}
-        return _invoke_rewrite(item, rewrite_id, model_id, extra, still_published=True)
+        return _invoke_rewrite(
+            item, rewrite_id, model_id, extra, still_published=True, from_status="published"
+        )
     if status == "published":
         # Forced. Off the site first (page, then status), so a failure part-way leaves it down,
         # not half-up.
@@ -1381,7 +1589,7 @@ def _rewrite_article(event: dict) -> dict:
             reasons=[SENT_BACK_REASON],
             created_at=datetime.now(UTC).isoformat(),
         )
-    return _start_rewrite(item, model_id, instructions, extra)
+    return _start_rewrite(item, model_id, instructions, extra, from_status=status)
 
 
 _STATS_RECENT_LIMIT = 20
@@ -1460,8 +1668,8 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
 
     article_id = item["article_id"]
     published_at = datetime.now(UTC).isoformat() if article_status == "published" else None
+    article = get_article(article_id)
     if article_status == "published":
-        article = get_article(article_id)
         # published_by="humans": this only ever reaches "published" via an
         # operator's moderation-approve action (docs/project-plan.md §11,
         # PR 2 of 5) -- lineage is untouched, fixed at draft time.
@@ -1473,8 +1681,12 @@ def _resolve_moderation_item(event: dict, *, new_status: str, article_status: st
     else:
         update_article_status(article_id, article_status, published_at=published_at)
     update_moderation_status(queue_id, new_status)
+    _moderation_decision(
+        new_status, topic_id=item.get("topic_id") or (article or {}).get("topic_id"),
+        article_id=article_id, queue_id=queue_id, from_status=(article or {}).get("status"),
+    )  # fmt: skip
     if article_status == "rejected":
-        _post_rejection_musing(item.get("topic_id") or (get_article(article_id) or {}).get("topic_id"))
+        _post_rejection_musing(item.get("topic_id") or (article or {}).get("topic_id"))
     refresh_articles_snapshot()
 
     action_key = "approved" if new_status == "approved" else "rejected"
@@ -2454,6 +2666,7 @@ _ROUTES = {
     "POST /topics/reschedule": _reschedule_topics,
     "GET /topics/{topic_id}/candidates": _list_candidates,
     "GET /topics/{topic_id}/findings/latest": _get_latest_finding_route,
+    "GET /topics/{topic_id}/findings": _list_findings_route,
     "GET /articles/{article_id}": _get_article,
     "POST /articles/{article_id}/publish": _publish_article,
     "POST /articles/{article_id}/unpublish": _unpublish_article,
@@ -2521,8 +2734,12 @@ def handler(event, context) -> dict:
     if route_fn is None:
         return _error(404, f"no route for '{route_key}'")
 
-    try:
-        return route_fn(event)
-    except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
-        print(f"admin_api_handler: unhandled exception on {route_key}: {exc!r}")
-        return _error(500, "internal server error")
+    # API Gateway's request id joins its access log (which holds no caller details); it is bound
+    # only when it is an id, so nothing the request carries can be written as one.
+    api_request_id = evidence.check("id", ((event or {}).get("requestContext") or {}).get("requestId"))
+    with evidence.bind(tick=getattr(context, "aws_request_id", None), api_request_id=api_request_id):
+        try:
+            return route_fn(event)
+        except Exception as exc:  # noqa: BLE001 - top-level Lambda guard, never raise unhandled
+            print(f"admin_api_handler: unhandled exception on {route_key}: {exc!r}")
+            return _error(500, "internal server error")

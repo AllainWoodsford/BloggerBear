@@ -1006,6 +1006,9 @@ module "admin_api" {
     # out when it's actually finished, since there's no dedicated job-
     # status system. See admin_api_handler.py's _get_latest_finding_route.
     "GET /topics/{topic_id}/findings/latest",
+    # A topic's Findings, newest first (`findings list`): the admin_api_handler.py route the
+    # assistant's topic_findings and the topic-findings Claude Code skill mirror.
+    "GET /topics/{topic_id}/findings",
     # Force-publish override -- publishes an article regardless of its
     # current status, unlike the moderation approve/reject routes below
     # which only act on a pending ModerationQueue item. See
@@ -2906,9 +2909,13 @@ module "ops_assistant" {
     Project   = local.default_tags.Project
   }
 
-  # The nine app tables its tools read (read-only), as in dev.
+  # The eleven app tables its tools read (read-only), as in dev. Findings is among them for
+  # topic_findings, which only ever Queries one topic's rows (a test holds it to Query); the one
+  # map also grants Scan, accepted to keep the one-map design, since a Scan of Findings reaches
+  # nothing a per-topic Query does not.
   tables = {
     TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }
+    FINDINGS_TABLE          = { name = module.app_data.findings_table_name, arn = module.app_data.findings_table_arn }
     ARTICLES_TABLE          = { name = module.app_data.articles_table_name, arn = module.app_data.articles_table_arn }
     MODERATION_QUEUE_TABLE  = { name = module.app_data.moderation_queue_table_name, arn = module.app_data.moderation_queue_table_arn }
     FAILED_EXECUTIONS_TABLE = { name = module.app_data.failed_executions_table_name, arn = module.app_data.failed_executions_table_arn }
@@ -2970,6 +2977,12 @@ module "ops_assistant" {
   agent_allowed_origin = local.site_url
 
   agent_forward_key = random_password.ops_agent_forward_key.result
+
+  # The assistant's vision round (vision.tf in the module): where the worker runs, it may read the
+  # worker's log there and each topic's running state, and is told the Region. Known at plan time;
+  # nothing here waits on module.vision_worker.
+  vision_enabled = var.vision_enabled
+  vision_region  = var.vision_region
 }
 
 # Made once and kept in state, as in dev: the key the agent sends the MCP server so that

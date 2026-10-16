@@ -109,6 +109,21 @@ _DROPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 _KEPT_JOINERS = frozenset("\u200c\u200d")
 
 
+# What the operator's assistant says for each OsmError code (and the adapter's own "fetch", for a
+# fetch that broke some other way), when a rail topic's network could not be fetched
+# (rail_access.status, read by ops_mcp/vision_status.py). Fixed words, never the server's: the
+# detail beside a code is a server's text and is shown on screen only. An input's codes, in their
+# own namespace: a site's error codes are common/vision_sites.STATUS_WORDS.
+ERROR_WORDS = {
+    "timeout": "OpenStreetMap timed out",
+    "http": "OpenStreetMap failed",
+    "rate_limited": "OpenStreetMap rate-limited the request",
+    "bad_response": "OpenStreetMap sent a bad answer",
+    "too_large": "OpenStreetMap sent too much",
+    "fetch": "OpenStreetMap failed",
+}
+
+
 class OsmError(RuntimeError):
     """The network could not be fetched. `code` is one of "http" (a refusal or a connection
     failure), "rate_limited" (429), "timeout", "bad_response" (not the JSON asked for) or

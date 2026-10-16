@@ -1119,7 +1119,9 @@ def test_a_headline_search_that_errors_does_not_sink_an_analysis_tick(capsys):
         state = CryptoFeedAdapter().fetch_state(DEEP_DIVE)
 
     assert state["web_results"] == [] and len(state["analyzed_pool"]) == POOL_SIZE
-    assert "no headlines this tick (gdelt down)" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # The error's repr: one line, whatever its message held.
+    assert "no headlines this tick (" in out and "'gdelt down')" in out
 
 
 def test_analysis_day_headlines_use_the_crypto_query_not_the_market_news_one():

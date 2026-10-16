@@ -24,7 +24,7 @@ from moto import mock_aws
 
 import daily_cycle_handler
 import research_tick_handler
-from common import findings_window, osm, scheduler, vision_client, vision_sites, vision_triage
+from common import evidence, findings_window, osm, scheduler, vision_client, vision_sites, vision_triage
 from common.adapters import MANUAL_REVIEW_ADAPTERS, RAIL_ACCESS_ADAPTER_KEY
 from common.adapters import rail_access as ra
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -168,11 +168,12 @@ def metrics(served_share=0.73, desert_km2=111.3, station_count=178, coverage=0.9
 
 
 class FakeRailWorker:
-    """Answers with metrics from a dict keyed by scene id, echoing the params it was given."""
+    """Answers with metrics from a dict keyed by scene id, echoing the params it was given, with
+    `request_id` as the worker's Lambda request id (None, as a fake that gives none)."""
 
-    def __init__(self, by_scene, error=None, takes=0.0, clock=None):
+    def __init__(self, by_scene, error=None, takes=0.0, clock=None, request_id=None):
         self.by_scene, self.error, self.calls = by_scene, error, []
-        self.takes, self.clock = takes, clock
+        self.takes, self.clock, self.request_id = takes, clock, request_id
 
     def __call__(self, site, scene, backend, params, coverage_floor, task, network, read_timeout):
         self.calls.append({"site": site, "scene": scene, "backend": backend, "params": params,
@@ -190,7 +191,7 @@ class FakeRailWorker:
             "metrics": {**m, "params": {**m["params"], **params},
                         "network": {**m["network"], "fetched_at": network["fetched_at"]}},
         }  # fmt: skip
-        return vision_client.VisionResult(reply=reply, image_png=PNG)
+        return vision_client.VisionResult(reply=reply, image_png=PNG, request_id=self.request_id)
 
 
 class FakeAgent:
@@ -1866,3 +1867,604 @@ def test_the_finding_keeps_the_notes_and_the_prompt_asks_for_them(tick_env, monk
     (finding,) = boto3.resource("dynamodb", region_name=REGION).Table("Findings").scan()["Items"]
     expected = [{"site_id": "sydney", **note} for note in latest_notes(running_state())]
     assert finding["planner_notes"] == expected and len(expected) == 5
+
+
+# --- what the operator's assistant may show (status) ---------------------------------------------
+
+
+@pytest.fixture
+def no_egress():
+    """status is pure: an AWS client, an HTTP request or a socket would fail the test."""
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("status reached outside the process")
+
+    with (
+        patch("boto3.client", refuse),
+        patch("requests.Session.request", refuse),
+        patch("requests.post", refuse),
+        patch("socket.socket.connect", refuse),
+    ):
+        yield
+
+
+def said(status):
+    """Every phrase a status offers to be spoken: codes' and verdicts' words, and labels."""
+    found = []
+    for site in status["sites"]:
+        found += [site[key]["words"] for key in ("error", "last_verdict", "refused") if site[key]]
+        found += [site["measure"]["label"]] if site["measure"] else []
+        for entry in site["inputs"]:
+            found += [entry["label"]] + ([entry["error"]["words"]] if entry["error"] else [])
+    return found
+
+
+def status_of(adapter, state, **config):
+    return adapter.status(topic(**config), state, now=datetime.now(UTC))
+
+
+# Never copied into a status: the network's lists, the per-scene lists, and what the worker needs.
+NEVER_IN_STATUS = ("ways", "stations", "pois", *ra.NEWEST_ONLY_KEYS, "assets", "params", "site_key", "hubs")
+
+
+def keys_of(value):
+    if isinstance(value, dict):
+        return set(value) | {key for item in value.values() for key in keys_of(item)}
+    if isinstance(value, list):
+        return {key for item in value for key in keys_of(item)}
+    return set()
+
+
+def test_status_after_a_measured_tick(adapter, no_egress):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    status = status_of(adapter, state)
+    assert status["config_error"] is None and status["backend"] == "opencv"
+    (site,) = status["sites"]
+    assert (site["site_id"], site["name"], site["order"], site["scenes"]) == ("sydney", "Sydney", 1, 1)
+    assert site["measure"] == {"label": "built-up area served (%)", "value": 73.0}
+    assert site["last_verdict"] == {"code": "baseline_building", "words": "still building its baseline"}
+    assert site["last_scene"]["scene_id"] == "S1" and site["last_scene"]["figure_stored"] is True
+    assert site["inputs"] == [
+        {
+            "label": "OpenStreetMap rail network",
+            "fetched_at": state["fetched_at"],
+            "stale": False,
+            "error": None,
+        }
+    ]
+    assert site["error"] is None and site["refused"] is None
+    assert not keys_of(status) & set(NEVER_IN_STATUS)
+    assert set(said(status)) <= ra.RailAccessAdapter.status_vocabulary()
+
+
+def test_a_big_network_never_reaches_the_status(adapter, no_egress):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    record = state["sites"]["sydney"]
+    way = {"points": [[151.2, -33.9]] * 30, "name": "Line"}
+    record["network"]["ways"] = [{"id": f"w{n}", **way} for n in range(5000)]
+    assert len(json.dumps(state)) > 2_000_000
+    status = status_of(adapter, state)
+    assert len(json.dumps(status)) < 2_000 and not keys_of(status) & set(NEVER_IN_STATUS)
+
+
+def test_a_stale_network_and_a_failed_refresh_with_a_cached_copy(adapter, no_egress):
+    first = aged(run(adapter, scene(1), FakeRailWorker({"S1": metrics()})), 31)
+    assert status_of(adapter, first)["sites"][0]["inputs"][0]["stale"] is True
+    failing = FakeOverpass(osm.OsmError("rate_limited", "HTTP 429 from overpass-api.de", transient=True))
+    state = run(adapter, scene(1), FakeRailWorker({}), failing, previous=first)
+    site = status_of(adapter, state)["sites"][0]
+    (network_input,) = site["inputs"]
+    assert network_input["fetched_at"] == first["sites"]["sydney"]["network"]["fetched_at"]
+    assert network_input["stale"] is True
+    assert network_input["error"] == {
+        "code": "rate_limited",
+        "kind": "source",
+        "words": "OpenStreetMap rate-limited the request",
+        "at": state["fetched_at"],
+        "detail": "HTTP 429 from overpass-api.de",
+    }
+    assert site["error"] is None  # the cached copy serves: the site is not failing
+    assert set(said(status_of(adapter, state))) <= ra.RailAccessAdapter.status_vocabulary()
+
+
+def test_no_network_is_a_source_error_with_no_cached_copy(adapter, no_egress):
+    failing = FakeOverpass(osm.OsmError("timeout", "no answer from either endpoint", transient=True))
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}), failing)
+    site = status_of(adapter, state)["sites"][0]
+    assert (site["error"]["code"], site["error"]["kind"]) == ("osm", "source")
+    assert site["error"]["words"] == "its OpenStreetMap rail data couldn't be fetched"
+    assert site["inputs"][0]["fetched_at"] is None and site["inputs"][0]["stale"] is None
+    assert site["inputs"][0]["error"]["words"] == "OpenStreetMap timed out"
+    broken = run(adapter, scene(1), FakeRailWorker({}), FakeOverpass(ValueError("bad polygon")))
+    assert status_of(adapter, broken)["sites"][0]["inputs"][0]["error"]["words"] == "OpenStreetMap failed"
+
+
+def test_the_old_polygons_network_is_not_a_cached_copy(adapter, no_egress):
+    state = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    wider = [{"id": "sydney", "name": "Sydney", "polygon": [[150.5, -34.3], *SYDNEY[1:]]}]
+    assert status_of(adapter, state, sites=wider)["sites"][0]["inputs"][0]["fetched_at"] is None
+
+
+@pytest.mark.parametrize("code", ra.REFUSED_SCENE_CODES)
+def test_a_refused_scene_is_reported_while_the_refusal_holds(adapter, no_egress, code):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    refusing = FakeRailWorker({}, error=vision_client.VisionError(code, "the worker's detail"))
+    failed = run(adapter, scene(2), refusing, previous=first)
+    site = status_of(adapter, failed)["sites"][0]
+    at = datetime.fromisoformat(failed["fetched_at"])
+    assert site["refused"] == {
+        "scene_id": "S2",
+        "code": code,
+        "words": ra.STATUS_WORDS[code][1],
+        "at": failed["fetched_at"],
+        "retry_at": (at + timedelta(hours=6)).isoformat(),
+    }
+    assert site["error"]["kind"] == "site"
+    # Past NETWORK_RETRY_HOURS, or for an edited polygon or reach, it is no longer refused.
+    later = json.loads(json.dumps(failed))
+    later["sites"]["sydney"]["failed_scene"]["at"] = (datetime.now(UTC) - timedelta(hours=7)).isoformat()
+    assert status_of(adapter, later)["sites"][0]["refused"] is None
+    assert status_of(adapter, failed, reach_m=800)["sites"][0]["refused"] is None
+    moved = [{"id": "sydney", "name": "Sydney", "polygon": [[150.8, -34.2], *SYDNEY[1:]]}]
+    assert status_of(adapter, failed, sites=moved)["sites"][0]["refused"] is None
+
+
+def test_a_transient_worker_failure_is_not_refused(adapter, no_egress):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    failing = FakeRailWorker({}, error=vision_client.VisionError("unreadable_scene", "read timed out"))
+    failed = run(adapter, scene(2), failing, previous=first)
+    site = status_of(adapter, failed)["sites"][0]
+    assert site["refused"] is None
+    assert (site["error"]["code"], site["error"]["kind"]) == ("unreadable_scene", "worker")
+
+
+@pytest.mark.parametrize(
+    ("latest", "verdict"),
+    [
+        (metrics(coverage=0.3), "below_floor"),
+        (metrics(), "within_range"),
+        (metrics(served_share=0.80), "reported"),
+    ],
+)
+def test_the_newest_scenes_verdict_is_assess_s_rule(adapter, no_egress, latest, verdict):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    state = run(adapter, scene(2, day=4), FakeRailWorker({"S2": latest}), previous=first)
+    adapter.material_diff(first, state)
+    assert status_of(adapter, state)["sites"][0]["last_verdict"]["code"] == verdict
+
+
+def test_a_change_the_agent_doubted_is_an_artefact(adapter, no_egress):
+    adapter.triage_agent = FakeAgent("artefact", "the extra line is a shadow")
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    state = run(adapter, scene(2, day=4), FakeRailWorker({"S2": metrics(served_share=0.80)}), previous=first)
+    adapter.material_diff(first, state)
+    site = status_of(adapter, state)["sites"][0]
+    assert site["last_verdict"]["code"] == "artefact" and site["last_scene"]["triage"] == "artefact"
+    assert "shadow" not in json.dumps(site)
+
+
+def test_a_rail_entry_from_before_the_newest_only_keys_still_reads(adapter, no_egress):
+    old = {
+        "sites": {
+            "sydney": {
+                "history": [
+                    {"scene_id": "S0", "coverage": 0.9, "served_share": 0.7, "stations": [{"id": "n1"}]},
+                    {"scene_id": "S1", "coverage": 0.9, "served_share": 0.71, "flags": []},
+                ],
+                "network": {"fetched_at": "2026-09-01T00:00:00+00:00"},
+            }
+        }
+    }
+    site = status_of(adapter, old)["sites"][0]
+    assert site["scenes"] == 2 and site["measure"]["value"] == 71.0
+    assert site["inputs"][0]["fetched_at"] is None  # no site_key: not the polygon's network
+    assert not keys_of(site) & set(NEVER_IN_STATUS)
+
+
+def test_a_bad_rail_config_is_reported(no_egress):
+    status = ra.RailAccessAdapter().status(topic(reach_m=-5), None, now=datetime.now(UTC))
+    assert "reach_m" in status["config_error"] and status["sites"][0]["site_id"] == "sydney"
+    assert status["sites"][0]["refused"] is None and status["sites"][0]["inputs"][0]["stale"] is None
+
+
+def test_assess_is_unchanged_by_the_shared_rule(adapter):
+    first = run(adapter, scene(1), FakeRailWorker({"S1": metrics()}))
+    state = run(adapter, scene(2, day=4), FakeRailWorker({"S2": metrics(served_share=0.80)}), previous=first)
+    (verdict,) = adapter.assess(state)
+    assert verdict["material"] and verdict["reason"] == "served share moved"
+    assert verdict["baseline"]["served_share"] == 0.73 and verdict["delta"]["served_share"] == 0.07
+    assert list(verdict)[-8:] == ["baseline", "baseline_scenes", "delta", "relative", "material", "reason",
+                                  "moved", "network_changed"]  # fmt: skip
+    assert verdict["moved"] == ["served_share"] and verdict["network_changed"] is False
+
+
+# --- the evidence trail (common/vision_decisions.py, common/evidence.py) ---------------------------
+
+
+def evidence_lines(capsys, event=None):
+    """Every evidence line printed so far, parsed as a reader would (evidence.parse); `event`
+    narrows them to one event."""
+    parsed = [evidence.parse(line) for line in capsys.readouterr().out.splitlines()]
+    return [line for line in parsed if line and (event is None or line["event"] == event)]
+
+
+TRAIL_STEPS = [
+    {"tool": "look_again", "ok": True, "ms": 29800,
+     "result": {"settings": {"reach_m": 800}, "measured": {"coverage": 0.93, "served_share": 0.6411},
+                "quality_flags": [], "worker_request_id": "req-la", "build": "ab" * 6, "worker_ms": 29700}},
+    {"tool": "web_context", "ok": True, "ms": 1400, "result": {"results": 3, "dated": 2}},
+]  # fmt: skip
+
+
+class TrailAgent(FakeAgent):
+    """A FakeAgent whose outcome carries the whole trail common/vision_triage.triage returns:
+    `steps` (TRAIL_STEPS, or `steps`), the hosts it read and the rest."""
+
+    def __init__(self, verdict="real", reason="the new line is in the news and on the map", steps=None,
+                 hosts=("news.example",), **more):  # fmt: skip
+        super().__init__(verdict, reason)
+        self.steps, self.hosts, self.more = list(TRAIL_STEPS if steps is None else steps), list(hosts), more
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "verdict": self.verdict, "reason": self.reason, "tool_calls": [], "model_calls": 3,
+            "model_id": "au.anthropic.claude-haiku-4-5-20251001-v1:0", "input_tokens": 4200,
+            "output_tokens": 310,
+            "stop": "answered", "steps": self.steps, "steps_total": len(self.steps), "budget_refusals": 0,
+            "elapsed_ms": 38100, "deadline_left_s": 12.5, "figure": True, "cost_usd": 0.00575,
+            "hosts": self.hosts, **self.more,
+        }  # fmt: skip
+
+
+# The reason phrases _judge writes, and the codes it writes beside them: the one rule, pinned.
+REASON_CODES = {
+    "served share moved": "served_share",
+    "desert area moved": "desert_km2",
+    "station count changed": "station_count",
+}
+
+
+@pytest.mark.parametrize(
+    ("series", "moved"),
+    [
+        ([(0.73, 111.3, 178), (0.70, 111.3, 178)], ["served_share"]),
+        ([(0.73, 111.3, 178), (0.73, 130.0, 178)], ["desert_km2"]),
+        ([(0.73, 111.3, 178), (0.73, 111.3, 180)], ["station_count"]),
+        ([(0.73, 111.3, 178), (0.70, 130.0, 178)], ["served_share", "desert_km2"]),
+        ([(0.73, 111.3, 178), (0.70, 111.3, 177)], ["served_share", "station_count"]),
+        ([(0.73, 111.3, 178), (0.73, 130.0, 180)], ["desert_km2", "station_count"]),
+        ([(0.73, 111.3, 178), (0.70, 130.0, 180)], ["served_share", "desert_km2", "station_count"]),
+        ([(0.73, 111.3, 178), (0.735, 112.0, 178)], []),
+        ([(0.73, 111.3, 178), (0.5, 300.0, 178, 0.3)], []),  # below the floor
+        ([(0.73, 111.3, 178)], []),  # the baseline still building
+    ],
+)
+def test_moved_is_written_by_the_same_conditions_as_the_reasons(adapter, series, moved):
+    """`_judge` names each measure that moved as a code beside its reason phrase: the two are
+    written by one condition each, so a material verdict always names what moved, an immaterial
+    one never does, and every code is one of the vocabulary's."""
+    (verdict,) = adapter.assess(history_state(adapter, series))
+    assert verdict["moved"] == moved and bool(verdict["moved"]) == verdict["material"]
+    if verdict["material"]:
+        assert [REASON_CODES[part] for part in verdict["reason"].split(", ")] == verdict["moved"]
+    assert set(verdict["moved"]) <= set(ra.DECISION_VOCABULARY["moved"]) == set(REASON_CODES.values())
+
+
+@pytest.mark.parametrize(
+    ("series", "agent", "config", "code", "reported"),
+    [
+        ([(0.73, 111.3, 178), (0.735, 112.0, 178)], None, {}, "within_range", False),
+        ([(0.73, 111.3, 178), (0.70, 111.3, 178)], TrailAgent("real"), {}, "reported", True),
+        ([(0.73, 111.3, 178), (0.70, 111.3, 178)], TrailAgent("artefact", "haze"), {}, "artefact", False),
+        ([(0.73, 111.3, 178), (0.70, 111.3, 178)], "no model", {}, "artefact", False),
+        ([(0.73, 111.3, 178), (0.70, 111.3, 178)], None, {"triage": False}, "reported", True),
+        ([(0.73, 111.3, 178), (0.5, 300.0, 178, 0.3)], None, {}, "below_floor", False),
+        ([(0.73, 111.3, 178)], None, {}, "baseline_building", False),
+    ],
+)
+def test_the_rings_code_is_the_verdict_the_status_speaks(
+    adapter, series, agent, config, code, reported, capsys
+):
+    """The ring's code (vision_decisions.decision_code, from the verdict's fields alone) equals the
+    code vision_sites.verdict_status gives the newest scene from `_judge` and the entry's triage
+    mark, for every path but the first observation: one rule, read two ways."""
+    if agent == "no model":
+        adapter.choose_model = lambda topic: (_ for _ in ()).throw(RuntimeError("no model config"))
+    elif agent is not None:
+        adapter.triage_agent = agent
+    state = history_state(adapter, series, **config)
+    adapter.material_diff(EARLIER, state)
+    (entry,) = state["sites"]["sydney"]["decisions"]
+    history = state["sites"]["sydney"]["history"]
+    judged = ra._judge(history[-1], history[:-1], ra._thresholds(state))[0]
+    assert entry["code"] == vision_sites.verdict_status(judged, history[-1])["code"] == code
+    assert entry["reported"] is reported
+    (line,) = evidence_lines(capsys, "vision_decision")
+    assert line["code"] == code and line["reported"] is reported
+    assert line["triaged"] == (entry["triage"] is not None)
+    if agent == "no model":
+        assert entry["triage"]["stop"] == "no_model" and entry["triage"]["steps"] == []
+        assert line["stop"] == "no_model"
+    if config.get("triage") is False:
+        assert entry["triage"] is None and "verdict" not in line
+
+
+def test_a_material_change_leaves_a_ring_entry_with_the_trail_and_three_lines(adapter, capsys):
+    adapter.triage_agent = TrailAgent()
+    with evidence.bind(tick="t-1", run="r" * 12, topic_id="rail"):
+        state = history_state(adapter, [(0.73, 111.3, 178), (0.70, 111.3, 180)])
+        changed, _summary = adapter.material_diff(EARLIER, state)
+    assert changed
+    (entry,) = state["sites"]["sydney"]["decisions"]
+    latest = state["sites"]["sydney"]["history"][-1]
+    assert entry["v"] == 1 and entry["at"] == state["fetched_at"]
+    assert (entry["tick"], entry["run"]) == ("t-1", "r" * 12)
+    assert entry["scene_id"] == "S1" and entry["captured_at"] == latest["captured_at"]
+    assert entry["measure"] == {"served_share": 0.70, "desert_km2": 111.3, "built_up_km2": 412.3,
+                                "station_count": 180, "flag_count": 1}  # fmt: skip
+    assert entry["baseline"] == {"served_share": 0.73, "desert_km2": 111.3, "station_count": 178}
+    assert entry["delta"]["station_count"] == 2 and entry["relative"] == {"desert_km2": 0.0}
+    assert entry["thresholds"] == state["thresholds"] and entry["baseline_scenes"] == 1
+    assert (entry["code"], entry["reported"]) == ("reported", True)
+    assert entry["moved"] == ["served_share", "station_count"] and entry["network_changed"] is False
+    assert entry["measured_by"] == {"backend": "opencv", "build": "ab" * 6, "cpu": None,
+                                    "worker_request_id": None, "worker_ms": 0}  # fmt: skip
+    triage = entry["triage"]
+    assert triage["verdict"] == "real" and triage["stop"] == "answered" and triage["steps"] == TRAIL_STEPS
+    assert triage["hosts"] == ["news.example"] and triage["reason"] == adapter.triage_agent.reason
+    assert triage["model_id"] == "au.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert triage["cost_usd"] == 0.00575
+
+    out = capsys.readouterr().out
+    lines = [evidence.parse(line) for line in out.splitlines() if line.startswith(evidence.PREFIX)]
+    events = [line["event"] for line in lines]
+    assert events == ["vision_site", "vision_site", "vision_triage", "vision_decision"]
+    site, triage_line, decision = lines[1], lines[2], lines[3]
+    assert all((line["tick"], line["run"], line["topic_id"]) == ("t-1", "r" * 12, "rail") for line in lines)
+    assert site["outcome"] == "measured" and site["scene_id"] == "S1" and "code" not in site
+    assert triage_line["tools"] == ["look_again", "web_context"] and triage_line["look_again"] == 1
+    assert triage_line["worker_request_ids"] == ["req-la"] and triage_line["steps"] == TRAIL_STEPS
+    assert triage_line["reason_sha256"] == ra.vision_decisions.reason_prefix(adapter.triage_agent.reason)
+    assert decision["code"] == "reported" and decision["moved"] == ["served_share", "station_count"]
+    assert decision["verdict"] == "real" and decision["thresholds"] == state["thresholds"]
+    # Rule 4: the ring alone keeps the reason and the hosts; no line, and no other print, has them.
+    assert "news.example" not in out and "new line is in the news" not in out
+
+
+def test_the_first_observation_and_a_cloudy_first_scene_each_get_their_code(adapter, capsys):
+    clear = history_state(adapter, [(0.73, 111.3, 178)])
+    changed, summary = adapter.material_diff(None, clear)
+    assert changed and summary.startswith("First observation")
+    (entry,) = clear["sites"]["sydney"]["decisions"]
+    assert (entry["code"], entry["reported"], entry["triage"]) == ("first_observation", True, None)
+    assert entry["baseline"] is None and entry["moved"] == [] and entry["network_changed"] is None
+    (line,) = evidence_lines(capsys, "vision_decision")
+    assert line["code"] == "first_observation" and line["reported"] is True and line["triaged"] is False
+
+    cloudy = history_state(adapter, [(0.5, 300.0, 178, 0.2)])
+    assert not adapter.material_diff(None, cloudy)[0]
+    (entry,) = cloudy["sites"]["sydney"]["decisions"]
+    assert (entry["code"], entry["reported"]) == ("below_floor", False)
+    # The next clear scene is the first observation, after the cloudy one's entry.
+    first = run(adapter, scene(1, day=11), FakeRailWorker({"S1": metrics()}), previous=cloudy)
+    assert adapter.material_diff(cloudy, first)[1].startswith("First observation")
+    assert [e["code"] for e in first["sites"]["sydney"]["decisions"]] == ["below_floor", "first_observation"]
+
+
+def test_two_sites_one_clear_and_one_cloudy_get_two_entries_and_two_codes(adapter, capsys):
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    worker = SiteRailWorker({"sydney": {"S1": metrics()}, "melbourne": {"S1": metrics(coverage=0.3)}})
+    state = run(adapter, scene(1), worker, sites=sites, max_sites_per_tick=2)
+    changed, _ = adapter.material_diff(None, state)
+    assert changed
+    codes = {site: [e["code"] for e in record["decisions"]] for site, record in state["sites"].items()}
+    assert codes == {"sydney": ["first_observation"], "melbourne": ["below_floor"]}
+    lines = evidence_lines(capsys, "vision_decision")
+    assert {line["site_id"]: line["code"] for line in lines} == {"sydney": "first_observation",
+                                                                 "melbourne": "below_floor"}  # fmt: skip
+
+
+def test_each_sites_turn_leaves_a_line_at_its_branch(adapter, capsys):
+    """One `vision_site` line per site per tick, as the loop goes: measured (with the worker's
+    request id and wall time), nothing new, a worker failure (its code and the scene), no
+    network, deferred for the budget, and not reached for the per-tick cap."""
+    worker = FakeRailWorker({"S1": metrics()}, request_id="req-1")
+    state = run(adapter, scene(1), worker)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["site_id"] == "sydney" and line["outcome"] == "measured" and line["scene_id"] == "S1"
+    assert line["worker_request_id"] == "req-1" and line["worker_ms"] == 0 and "code" not in line
+    assert isinstance(line["budget_left_s"], float)
+
+    run(adapter, scene(1), worker, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["outcome"] == "none" and not {"code", "scene_id", "worker_request_id"} & set(line)
+
+    refused = FakeRailWorker({}, error=vision_client.VisionError("site_outside_scene", "detail", "req-2"))
+    run(adapter, scene(2, day=4), refused, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["outcome"] == "none" and line["code"] == "site_outside_scene" and line["scene_id"] == "S2"
+    assert line["worker_request_id"] == "req-2" and "detail" not in json.dumps(line)
+
+    # A failure before the worker answered has no request id to carry (and no earlier visit of the
+    # site this tick to borrow one from: each site is visited once per tick).
+    unanswered = FakeRailWorker({}, error=vision_client.VisionError("invoke", "read timed out"))
+    run(adapter, scene(2, day=4), unanswered, previous=state)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["code"] == "invoke" and line["scene_id"] == "S2" and "worker_request_id" not in line
+
+    failing = FakeOverpass(osm.OsmError("timeout", "no answer from either endpoint", transient=True))
+    run(adapter, scene(1), worker, failing)
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["outcome"] == "none" and line["code"] == "osm" and "scene_id" not in line
+
+    clock = Clock()
+    adapter.clock = clock
+    run(adapter, scene(1), worker, FakeOverpass(network(), takes=28.0, clock=clock))
+    (line,) = evidence_lines(capsys, "vision_site")
+    assert line["outcome"] == "deferred" and line["code"] == "time_budget" and line["budget_left_s"] == 42.0
+
+    adapter.clock = ra.time.monotonic
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    run(adapter, scene(1), worker, sites=sites)
+    lines = evidence_lines(capsys, "vision_site")
+    assert [(line["site_id"], line["outcome"]) for line in lines] == [
+        ("sydney", "measured"), ("melbourne", "not_reached"),
+    ]  # fmt: skip
+
+
+def test_a_tick_that_dies_mid_loop_leaves_the_lines_of_the_sites_before_it(adapter, capsys):
+    """Lambda kills a timed-out tick where it stands: the lines already printed are in the log,
+    nothing after them is, and the state is never stored."""
+
+    class Dies(FakeRailWorker):
+        def __call__(self, site, scene, **kwargs):
+            if site["id"] == "melbourne":
+                raise SystemExit("the tick timed out")
+            return super().__call__(site, scene, **kwargs)
+
+    sites = [*SITES, {"id": "melbourne", "name": "Melbourne", "polygon": MELBOURNE}]
+    with pytest.raises(SystemExit):
+        run(adapter, scene(1), Dies({"S1": metrics()}), sites=sites, max_sites_per_tick=2)
+    lines = evidence_lines(capsys)
+    assert [(line["event"], line["site_id"]) for line in lines] == [("vision_site", "sydney")]
+
+    class DiesInTriage(TrailAgent):
+        def __call__(self, **kwargs):
+            if kwargs["site"]["id"] == "melbourne":
+                raise SystemExit("the tick timed out")
+            return super().__call__(**kwargs)
+
+    adapter.triage_agent = DiesInTriage()
+    both = SiteRailWorker({s: {"S0": metrics()} for s in ("sydney", "melbourne")})
+    previous = run(adapter, scene(0, day=1), both, sites=sites, max_sites_per_tick=2)
+    capsys.readouterr()
+    moved = SiteRailWorker({s: {"S1": metrics(served_share=0.70)} for s in ("sydney", "melbourne")})
+    state = run(adapter, scene(1, day=2), moved, previous=previous, sites=sites, max_sites_per_tick=2)
+    with pytest.raises(SystemExit):
+        adapter.material_diff(previous, state)
+    lines = evidence_lines(capsys)
+    assert [(line["event"], line["site_id"]) for line in lines] == [
+        ("vision_site", "sydney"), ("vision_site", "melbourne"), ("vision_triage", "sydney"),
+    ]  # fmt: skip
+    assert "decisions" not in state["sites"]["sydney"]  # the ring is written after the agent
+
+
+def test_network_changed_says_whether_the_baseline_was_measured_against_another_copy(adapter):
+    same = history_state(adapter, [(0.73, 111.3, 178), (0.70, 111.3, 178)])
+    (verdict,) = adapter.assess(same)
+    assert verdict["network_changed"] is False
+    (first,) = adapter.assess(history_state(adapter, [(0.73, 111.3, 178)]))
+    assert first["network_changed"] is None  # no comparable baseline
+    # A stale network is refreshed on a quiet tick; the next scene is measured against the new copy.
+    stale = aged(same, 31)
+    refreshed = run(adapter, scene(1, day=11), FakeRailWorker({}), previous=stale)
+    assert refreshed["sites"]["sydney"]["network"]["fetched_at"] == refreshed["fetched_at"]
+    moved = FakeRailWorker({"S2": metrics(0.68, 111.3, 178)})
+    state = run(adapter, scene(2, day=12), moved, previous=refreshed)
+    (verdict,) = adapter.assess(state)
+    assert verdict["network_changed"] is True and verdict["moved"] == ["served_share"]
+    adapter.material_diff(EARLIER, state)
+    assert state["sites"]["sydney"]["decisions"][-1]["network_changed"] is True
+
+
+def test_the_ring_is_carried_forward_trimmed_and_written_once_per_scene_and_tick(adapter, capsys):
+    before = {"v": 9, "at": "2026-09-01T00:00:00+00:00", "scene_id": "S-9", "code": "within_range"}
+    state = None
+    for n in range(13):
+        worker = FakeRailWorker({f"S{n}": metrics(0.73 + 0.001 * n, 111.3, 178)})
+        state = run(adapter, scene(n, day=1 + n), worker, previous=state)
+        if n == 0:
+            state["sites"]["sydney"]["decisions"] = [before]  # an entry from another version, kept as it is
+        adapter.material_diff(EARLIER if n else None, state)
+    ring = state["sites"]["sydney"]["decisions"]
+    assert len(ring) == ra.vision_decisions.DECISIONS_KEPT == 12
+    assert [e["scene_id"] for e in ring] == [f"S{n}" for n in range(1, 13)]  # the oldest two dropped
+    # Carried forward by fetch_state's deep copy (the ring lives in the site's record), untouched
+    # by the diff until it appends.
+    earlier = run(adapter, scene(0, day=1), FakeRailWorker({"S0": metrics()}), previous={"sites": {"sydney": {
+        "history": [], "decisions": [before]}}})  # fmt: skip
+    assert earlier["sites"]["sydney"]["decisions"] == [before]
+    # The diff run again over the same state (a replay, a test) appends nothing and prints nothing.
+    capsys.readouterr()
+    adapter.material_diff(EARLIER, state)
+    assert len(state["sites"]["sydney"]["decisions"]) == 12 and evidence_lines(capsys) == []
+
+
+def test_the_review_path_writes_no_entry_and_prints_no_line(adapter, capsys):
+    state = history_state(adapter, [(0.73, 111.3, 178), (0.70, 111.3, 178)])
+    capsys.readouterr()
+    assert adapter.review_evidence(topic(), state)
+    assert evidence_lines(capsys) == [] and "decisions" not in state["sites"]["sydney"]
+
+
+def test_a_full_ring_at_the_caps_is_tens_of_kilobytes(adapter):
+    """Twelve decisions with eight steps, five hosts and a 300-character reason each: the ring is
+    tens of KB in a running state of about 10 MB (the module docstring's sizes)."""
+    steps = [TRAIL_STEPS[0]] * evidence.MAX_STEPS
+    hosts = [f"news{n}.example" for n in range(5)]
+    adapter.triage_agent = TrailAgent(steps=steps, hosts=hosts, reason="r" * 300)
+    state = None
+    for n in range(13):
+        worker = FakeRailWorker({f"S{n}": metrics(0.73 if n % 2 else 0.70, 111.3, 178)})
+        state = run(adapter, scene(n, day=1 + n), worker, previous=state)
+        adapter.material_diff(EARLIER if n else None, state)
+    ring = state["sites"]["sydney"]["decisions"]
+    assert len(ring) == 12 and all(len(e["triage"]["steps"]) == 8 for e in ring if e["triage"])
+    size = len(json.dumps(ring))
+    assert 20_000 < size < 60_000, size
+    assert json.loads(json.dumps(state))["sites"]["sydney"]["decisions"] == ring
+
+
+def test_the_vocabulary_is_fixed_words_for_the_rings_measures_and_settings():
+    vocabulary = ra.RailAccessAdapter.decision_vocabulary()
+    assert vocabulary is ra.DECISION_VOCABULARY
+    measures = {"served_share", "desert_km2", "built_up_km2", "station_count", "flag_count"}
+    assert set(vocabulary["measures"]) == measures
+    assert set(vocabulary["settings"]) == set(ra.contract.RAIL_PARAM_LIMITS)
+    assert vocabulary["sources"] == {
+        "served_share": "imagery_and_network", "desert_km2": "imagery_and_network",
+        "station_count": "network",
+    }  # fmt: skip
+    for word in ra.vision_decisions.vocabulary_words(vocabulary):
+        assert ra.vision_decisions.WORD.match(word), word
+
+
+def test_a_failed_attempt_leaves_its_lines_and_the_scene_is_measured_again(tick_env, monkeypatch, capsys):
+    """The summary call raises after material_diff: the `vision_decision` and `vision_triage` lines
+    are already printed, the `research_tick` line says `error` and `stored: false`, nothing is
+    written, and the next tick (a new run) measures the same scene again."""
+    tick_with(monkeypatch, "S0", metrics(), "2026-09-10T00:00:00Z")
+    capsys.readouterr()
+    moved = metrics(served_share=0.70, station_count=180)
+    monkeypatch.setattr(ra.RailAccessAdapter, "triage_agent", staticmethod(TrailAgent()))
+    monkeypatch.setattr(ra.RailAccessAdapter, "choose_model", staticmethod(lambda topic: ("m", None)))
+    monkeypatch.setattr(ra.RailAccessAdapter, "http_post", FakeStac([item("S1", "2026-09-11T00:00:00Z")]))
+    monkeypatch.setattr(ra.RailAccessAdapter, "measure", FakeRailWorker({"S1": moved}, request_id="req-1"))
+    monkeypatch.setattr(ra.RailAccessAdapter, "fetch_network", FakeOverpass(network()))
+    with patch("research_tick_handler.invoke_model_tracked", side_effect=RuntimeError("bedrock throttled")):
+        result = research_tick_handler.handler({"topic_id": "rail"}, None)
+    assert result == {"status": "error", "topic_id": "rail", "reason": "bedrock throttled"}
+    lines = evidence_lines(capsys)
+    events = ["vision_site", "vision_triage", "vision_decision", "research_tick"]
+    assert [line["event"] for line in lines] == events
+    site, triage, decision, tick = lines
+    assert site["outcome"] == "measured" and site["worker_request_id"] == "req-1"
+    assert decision["code"] == "reported" and decision["worker_request_id"] == "req-1"
+    assert tick["outcome"] == "error" and tick["stored"] is False and tick["error_type"] == "RuntimeError"
+    assert tick["decisions"] == 1 and tick["triages"] == 1 and "finding" not in tick
+    assert len({line["run"] for line in lines}) == 1 and all(line["topic_id"] == "rail" for line in lines)
+    assert [e["scene_id"] for e in running_state()["sites"]["sydney"]["history"]] == ["S0"]  # not stored
+
+    # The next attempt: a new run, the scene measured and decided again, and kept this time.
+    result, _ = tick_with(monkeypatch, "S1", moved, "2026-09-11T00:00:00Z", agent=TrailAgent())
+    assert result["status"] == "material_change"
+    again = evidence_lines(capsys)
+    assert [line["event"] for line in again] == events
+    assert again[0]["scene_id"] == "S1" and again[-1]["run"] != tick["run"]
+    assert again[-1]["outcome"] == "material_change" and again[-1]["stored"] is True
+    assert again[-1]["finding"] == again[2]["at"]  # the Finding's captured_at is the decision's `at`
+    state = running_state()
+    assert [e["scene_id"] for e in state["sites"]["sydney"]["history"]] == ["S0", "S1"]
+    (entry,) = (e for e in state["sites"]["sydney"]["decisions"] if e["scene_id"] == "S1")
+    assert entry["run"] == again[-1]["run"] and entry["triage"]["reason"]  # the ring keeps the reason

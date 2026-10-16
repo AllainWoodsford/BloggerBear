@@ -283,7 +283,7 @@ the worker ([the runsheet's steps](deployment-runsheet.md#vision-optional)).
 
 | Variable | Where | Default | What it is |
 |---|---|---|---|
-| `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN, and the pipeline's shared execution role (`lambda_exec`, which twelve functions use) the right to invoke it. Off, none of it exists. |
+| `vision_enabled` | dev and production roots, from CI | `false` | Create the worker, its artifacts bucket and its log group in `vision_region`; give the research tick the worker's ARN, and the pipeline's shared execution role (`lambda_exec`, which twelve functions use) the right to invoke it. Also passed to the operator's assistant (`module "ops_assistant"`), which may then read the worker's log and each topic's running state ([below](#the-ops-assistants-environment-variables)). Off, none of it exists. |
 | `vision_region` | dev and production roots (`terraform.tfvars`) | `"us-west-2"` | Where the worker runs: beside the `sentinel-cogs` bucket, so its range reads stay in one region and only a few KB of metrics and one small PNG cross back. Must equal the bootstrap's. The home region works too, the reads then crossing instead, but in production only if the prefix and the Region fit the worker's bucket name: their lengths together at most 21, so `ap-southeast-2` fits only a prefix of 7 characters or fewer ([the limit](#environment-terraform-variables)). |
 | `vision_region` | `infra/bootstrap` | `"us-west-2"` | Where the deploy roles may create Lambda functions and log groups named `<prefix>-*-vision-*`, and nowhere else outside `aws_region`. |
 | `memory_size`, `timeout` | `infra/modules/vision-worker` | 2048 MB, 60 s | The worker's size and ceiling. 2048 MB is a little over one vCPU, which is what the rail task's window cap was measured against. The timeout stays under the client's default 90 s read timeout, so a caller on that default sees the worker's own error, not its own. Both vision adapters give up first, by design: they wait only 58 s (`WORKER_READ_TIMEOUT` in `common/vision_sites.py`, one rule for `rail_access` and `satellite_vision` since #298), to keep the tick's 120 s for the agent and the summary, so a run that slow is an `invoke` error to them, not the worker's, and the site is tried again next tick. |
@@ -312,6 +312,18 @@ which Terraform does not create yet, keeps what is set on it:
 |---|---|---|
 | `VISION_WORKER_ARN` | the research tick | The stock worker's ARN. Terraform sets it when `vision_enabled` is true and leaves it empty otherwise, which the client reads as "not configured": the adapter records `last_error` on each site and measures nothing. |
 | `VISION_COOL_WORKER_ARN` | the research tick | The COOL worker's, once one exists; optional. A topic whose `backend` is `cool` needs it. |
+
+### The ops assistant's environment variables
+
+Set by Terraform on the assistant's MCP server (`<prefix>-<env>-ops-mcp`,
+`infra/modules/ops-assistant/main.tf`); nothing to set by hand
+([ops-assistant-vision.md](enhancements/ops-assistant-vision.md)).
+
+| Variable | Set on | Meaning |
+|---|---|---|
+| `OPS_VISION_REGION` | the ops MCP server | `vision_region` where `vision_enabled` is true, `""` elsewhere: one variable is both the switch and the Region. Empty, `vision_status` reads no running state and says the worker is off, and `log_review` neither reads nor refuses the worker. The IAM that lets it read the worker's log there and the running states (`vision.tf`) exists only when it is set. |
+| `OPS_SCREEN_CLIENT_IDS` | the ops MCP server | The ask page's Cognito app client id. Only a caller whose token was issued to one of these clients is sent a table's "(unverified)" columns (site names, error text, a Finding's summary); any other client, Alexa+ among them, gets counts and reasons only. Comma-separated; empty, every caller is a voice caller. |
+| `FINDINGS_TABLE` | the ops MCP server | One of the `tables` map every root passes to `module "ops_assistant"` (each key is both the environment variable that names the table and the read grant on its ARN). Findings is among them for `topic_findings`, which Queries one topic's rows; without it the tool answers "I haven't been told where the findings are." |
 
 ### A `satellite_vision` topic
 

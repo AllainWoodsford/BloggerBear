@@ -12,6 +12,10 @@ the pipeline, and nothing here runs a command: the operator does, after reading 
 - architecture.py the catalogue of the project's AWS resources, per environment: the architecture tool
 - runsheets.py    investigate: where to look (dashboards, log groups, queries) when no tool can
 - samples.py      table_sample: a table's newest row, redacted, and whether writes are on time
+- vision_status.py vision_status: the vision worker, and how each vision topic's sites are doing,
+                  from their running state (read within a byte and time budget)
+- topic_findings.py topic_findings: a topic's research Findings, newest first, with what the next
+                  article will be written from (summaries on screen only, never spoken)
 - suggestions.py  the fixed catalogue of commands a finding can suggest
 - memory.py       what it has suggested and what it is watching: the one table it writes to
 - access.py       the assistant_access switch, checked on every request

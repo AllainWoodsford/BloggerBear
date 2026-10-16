@@ -707,6 +707,38 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `rail_access topics` section, the friction entries, and the earlier docs brought in line with
   the merged code, PR L's fixes included: the documentation cut-off for the vision pipeline
   (#296, rail PR F2)
+- [x] The assistant's vision round: the operator's assistant and Alexa+ see the vision pipeline,
+  read-only and only where vision is on. `vision_status` (is the worker on and where, which sites
+  were measured and why the others were not, a card per problem), vision topics in
+  `pipeline_health` and the topic watch, the worker's log read in `vision_region`, the
+  `vision-pipeline` feature, the `vision` guide and runsheet; site names and error text only in
+  "(unverified)" columns for the page, never to a voice caller; no list change and no echo after
+  text written outside the project, held in code; `redact.scrub` withholds instructions however
+  they are spaced or spelt; a sites config is never filled in (#300, on the integration branch
+  for the assistant's work after #285; `lambdas/ops_mcp/vision_status.py`,
+  `lambdas/common/adapters/base.py`, `lambdas/ops_agent/policy.py`,
+  `infra/modules/ops-assistant/vision.tf`; [design](enhancements/ops-assistant-vision.md))
+- [x] The submission round's evidence trail: one JSON line of codes and numbers per step (a tick
+  ran, a site's turn, OpenCV measured, the numbers were compared, the agent decided, a person
+  decided, a topic changed), a decision ring of the last 12 decisions per site in the running
+  state with the agent's trail and each tool's result, the worker's request id on every result,
+  the worker's own line with its CPU, the research tick's and the admin API's lines, `log_review`
+  leaving the lines out and its topic filter matching a whole id, and the runsheet's Logs Insights
+  queries (on the integration branch after the assistant's vision round;
+  `lambdas/common/evidence.py`, `lambdas/common/vision_decisions.py`,
+  `lambdas/common/vision_triage.py`, `lambdas/vision_worker_handler.py`;
+  [design](enhancements/vision-evidence.md))
+- [x] Interrogating a topic's Findings, three ways: the assistant's `topic_findings` (a topic's
+  research Findings newest first as a table, with `next_article` for exactly what the next daily
+  run reads; counts and ages spoken, the summary scrubbed and on the page only, nothing to a voice
+  caller), `GET /topics/{topic_id}/findings` and `admin_cli findings list` (the raw items, with
+  `--days`, `--since` and `--next-article`), and the repository's first Claude Code skill,
+  `topic-findings`, with its rules for Finding text in a developer's session; the findings
+  window's start moved to `common/findings_window.window_start`, shared by the daily cycle, the
+  tool and the route; Findings joins the assistant's readable tables (the Findings round, #307,
+  after #300 on the integration branch; `lambdas/ops_mcp/topic_findings.py`,
+  `.claude/skills/topic-findings/SKILL.md`, `scripts/tests/test_claude_skills.py`;
+  [design](enhancements/ops-assistant-vision.md#topic-findings))
 - [x] The submission round, for the OpenCV AI Competition 2026: the rubric tracker
   (`docs/hackathon/rubric-tracker.md`), one row per rubric line, the owner's ask and each owner
   step, with its status, what it needs, the evidence, the gap, what closes it and what the

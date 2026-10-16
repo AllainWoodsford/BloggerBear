@@ -125,9 +125,11 @@ authoring cycle, reviews, a moderation queue, a static site. The entry adds eyes
 - The article is two to four plain sentences (three to six with planner notes) with the station
   and line names exactly as mapped, the served share, the area beyond reach, the capture date,
   and what was not measured.
-- Adding a city is adding a topic with the admin CLI; the operator's assistant reports what
-  needs attention in the pipeline's home Region (reading the worker's logs and the vision state is
-  its planned vision round).
+- Adding a city is adding a topic with the admin CLI; the operator's assistant reports which
+  sites were measured and why the others were not (`vision_status`, from each topic's running
+  state), reads the worker's log in its own Region, and walks through the pipeline
+  (`architecture(feature="vision-pipeline")`), all read-only
+  ([ops-assistant-vision.md](../enhancements/ops-assistant-vision.md)).
 
 ### Documentation
 

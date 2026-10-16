@@ -211,6 +211,16 @@ in .34"):
 | "...to watch candidate ideas" | `watch` (table) |
 | "...what it is watching" | `watch_list`: still happening, or calmed down |
 | "...what's happening with the firewall" (production only) | `firewall_review` |
+| "...how the vision pipeline is doing", "...whether the satellite worker is on" | `vision_status` |
+| "...why Sydney wasn't measured" | `vision_status` with `topic` (a topic or a site) |
+| "...about errors in the vision worker" | `log_review` (function), read in the vision Region where vision is on |
+| "...what research found for rail Sydney" | `topic_findings` with `topic` |
+| "...what the next crypto article will be written from" | `topic_findings` with `next_article` |
+
+For the vision pipeline and a topic's Findings Alexa+ hears counts, ages and reasons only, from
+fixed words: never a site's name, an error's text or what a Finding's summary says. Those are on
+the ask page, in the table's "(unverified)" columns, which only the page's own sign-in client is
+sent ([ops-assistant-vision.md](../docs/enhancements/ops-assistant-vision.md)).
 
 A log read waits for Logs Insights (up to 15 seconds), which can be close to Alexa's own time limit.
 If Alexa gives up, ask for a briefing instead ("ask BloggerBear to start a briefing"): the agent

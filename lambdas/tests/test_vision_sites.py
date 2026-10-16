@@ -400,3 +400,41 @@ def test_a_state_from_before_the_marker_is_judged_by_its_own_scenes_and_floor():
     # A state with no floor stored is judged by the one given.
     del legacy["thresholds"]
     assert vs.observed_before(legacy, 0.6) and not vs.observed_before(legacy, 0.8)
+
+
+# --- the words the operator's assistant may say (Adapter.status) ---------------------------------
+
+
+def test_every_code_a_site_can_record_has_words_and_a_kind():
+    """The worker's own codes, the client's and the adapters': a code with no words would be said
+    as "another error", so every code that can be recorded today has its own."""
+    from common import osm, vision_contract
+
+    recorded = set(vision_contract.ERROR_CODES) | {"invoke", "reply", "bad_request", "time_budget", "search"}
+    assert recorded <= set(vs.STATUS_WORDS)
+    assert {kind for kind, _ in vs.STATUS_WORDS.values()} <= {"worker", "source", "site", "deferred", "other"}
+    assert set(osm.ERROR_WORDS) == {"timeout", "http", "rate_limited", "bad_response", "too_large", "fetch"}
+    phrases = [w for _, w in vs.STATUS_WORDS.values()]
+    phrases += [*osm.ERROR_WORDS.values(), *vs.VERDICT_WORDS.values()]
+    for words in phrases:
+        assert re.fullmatch(r"[A-Za-z0-9 ',()%-]{3,80}", words), words
+
+
+def test_error_status_reads_any_shape_and_tells_a_missing_cool_worker_apart():
+    words = vs.STATUS_WORDS
+    assert vs.error_status(None, words) is None and vs.error_status("x", words) is None
+    assert vs.error_status({"code": 5, "detail": None}, words) == {
+        "code": "other", "kind": "other", "words": "another error", "at": None, "detail": "",
+    }  # fmt: skip
+    cool = {"code": "invoke", "detail": "no worker is configured for backend 'cool'", "at": "T"}
+    assert vs.error_status(cool, words)["code"] == "no_cool_worker"
+    opencv = {"code": "invoke", "detail": "no worker is configured for backend 'opencv'", "at": "T"}
+    assert vs.error_status(opencv, words)["code"] == "invoke"
+    assert len(vs.error_status({"code": "internal", "detail": "x" * 900}, words)["detail"]) == 300
+
+
+def test_a_build_is_kept_only_as_twelve_hex_characters():
+    assert vs.scene_status({"build_sha256": "ab" * 32})["build"] == "ab" * 6
+    assert vs.scene_status({"build_sha256": "not hex at all"})["build"] is None
+    assert vs.scene_status({"build_sha256": ""})["build"] is None
+    assert vs.scene_status({"triage": {"verdict": "ignore me", "reason": "x"}})["triage"] is None

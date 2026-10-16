@@ -1121,3 +1121,90 @@ def test_one_watch_list_reads_at_most_a_few_function_logs(tables, monkeypatch):
     assert len(asked) == memory.LOG_READS_MAX
     assert all(call["wait_seconds"] == memory.LOG_READ_WAIT_SECONDS for call in asked)
     assert [item["now"]["state"] for item in listed["watching"]].count("unreadable") == 1
+
+
+# --- a watched vision topic (the assistant's vision round) ------------------------------------------
+
+
+def _vision_topic(tables, monkeypatch, topic_id: str, error_code: str | None = "internal"):
+    """A rail topic whose running state (in this fixture's bucket) has its one site failing."""
+    import test_ops_mcp_vision_status as vt
+
+    monkeypatch.setenv("ENVIRONMENT_NAME", "dev")
+    monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
+    now = datetime.now(UTC)
+    topic = {**vt.rail_topic(last_research_at=now.isoformat()), "topic_id": topic_id}
+    tables.Table("Topics").put_item(Item=json.loads(json.dumps(topic), parse_float=Decimal))
+    error = vt.vision_client.VisionError(error_code, "the worker's own words") if error_code else None
+    worker = vt.rail.FakeRailWorker({"S1": vt.rail.metrics()}, error=error)
+    state = vt.rail_state(worker=worker, topic=topic)
+    boto3.client("s3", region_name=REGION).put_object(
+        Bucket=BUCKET, Key=f"snapshots/{topic_id}/running-state.json", Body=json.dumps(state).encode()
+    )
+    return now
+
+
+def test_a_watched_vision_topic_says_its_sites_were_not_measured(tables, monkeypatch):
+    now = _vision_topic(tables, monkeypatch, "rail-sydney")
+    assert memory.watch(ALICE, "topic", "rail-sydney", now=now)["watching"] is True
+
+    listed = memory.watch_list(ALICE, now=now)
+
+    (item,) = listed["watching"]
+    assert item["now"]["research"]["state"] == "on_time"
+    assert item["now"]["sites"]["worker_error"] == 1
+    assert "Rail access: Sydney has no article in the last day, and research is on time; its site wasn't " \
+        "measured on the last try" in listed["spoken"]  # fmt: skip
+    assert "worker's own words" not in json.dumps(listed)
+
+
+def test_a_watched_vision_topic_whose_sites_are_fine_adds_nothing(tables, monkeypatch):
+    now = _vision_topic(tables, monkeypatch, "rail-sydney", error_code=None)
+    memory.watch(ALICE, "topic", "rail-sydney", now=now)
+    listed = memory.watch_list(ALICE, now=now)
+    assert listed["spoken"].endswith("and research is on time.")
+    assert listed["watching"][0]["now"]["sites"]["measured"] == 1
+
+
+def test_a_watched_vision_topic_whose_sites_list_does_not_parse_says_so(tables, monkeypatch):
+    import test_ops_mcp_vision_status as vt
+
+    now = _vision_topic(tables, monkeypatch, "rail-sydney", error_code=None)
+    researched = now.isoformat()
+    broken = vt.topic_item("broken", "Broken", "rail_access", {"sites": "nope"}, last_research_at=researched)
+    tables.Table("Topics").put_item(Item=json.loads(json.dumps(broken), parse_float=Decimal))
+    memory.watch(ALICE, "topic", "broken", now=now)
+    listed = memory.watch_list(ALICE, now=now)
+    assert listed["spoken"].endswith("research is on time; its sites setting doesn't parse.")
+    assert listed["watching"][0]["now"]["sites"]["config_error"] == 1
+
+
+def test_with_the_worker_off_no_running_state_is_read_or_counted(tables, monkeypatch):
+    """Nothing is read with the worker off, so STATE_READS_MAX does not cut a third watched vision
+    topic short: each says why it can't be measured."""
+    for n in range(3):
+        now = _vision_topic(tables, monkeypatch, f"rail-{n}")
+        memory.watch(ALICE, "topic", f"rail-{n}", now=now)
+    monkeypatch.setenv("OPS_VISION_REGION", "")
+    listed = memory.watch_list(ALICE, now=now)
+    assert listed["spoken"].count("its sites can't be measured while the vision worker is off") == 3
+    assert "weren't checked this time" not in listed["spoken"]
+
+
+def test_one_watch_list_reads_at_most_a_few_running_states(tables, monkeypatch):
+    from ops_mcp import vision_status
+
+    for n in range(3):
+        now = _vision_topic(tables, monkeypatch, f"rail-{n}")
+        memory.watch(ALICE, "topic", f"rail-{n}", now=now)
+    read = []
+    real = vision_status.site_health
+    monkeypatch.setattr(vision_status, "site_health", lambda *a, **k: read.append(k) or real(*a, **k))
+
+    listed = memory.watch_list(ALICE, now=now)
+
+    assert len(read) == memory.STATE_READS_MAX
+    assert all(call["budget_seconds"] == vision_status.WATCH_READ_SECONDS for call in read)
+    assert all(call["max_bytes"] == vision_status.LARGE_STATE_BYTES for call in read)
+    assert listed["spoken"].count("its sites weren't checked this time") == 1
+    assert [item["now"]["sites"]["state"] for item in listed["watching"]].count("not_checked") == 1

@@ -64,7 +64,8 @@ GROUP_PATTERN = re.compile(
 
 _LOGS_CONFIG = Config(connect_timeout=3, read_timeout=8, retries={"max_attempts": 2, "mode": "standard"})
 _clients: dict[str, object] = {}
-_tags: dict[str, tuple[float, dict[str, str]]] = {}
+# A group's tags, by (Region, name): the same name in another Region is another group.
+_tags: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
 
 
 class NotAllowed(Exception):
@@ -107,7 +108,7 @@ def check_group(name: str, *, region: str | None = None, now: float | None = Non
     if not region:
         raise NotAllowed("I don't know which region to read logs in.")
     now = time.monotonic() if now is None else now
-    cached = _tags.get(name)
+    cached = _tags.get((region, name))
     if cached is not None and now - cached[0] < TAG_CACHE_SECONDS:
         tags = cached[1]
     else:
@@ -122,7 +123,7 @@ def check_group(name: str, *, region: str | None = None, now: float | None = Non
             ) from exc
         except BotoCoreError as exc:
             raise NotAllowed("I couldn't reach CloudWatch Logs.") from exc
-        _tags[name] = (now, tags)
+        _tags[(region, name)] = (now, tags)
     env = architecture.environment() or ""
     for key, value in samples.default_tags().items():
         if tags.get(key) != value:

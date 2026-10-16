@@ -574,6 +574,10 @@ FILLER = {
     "fallback_model_id": "a-fallback-model-id",
     "musing_id": "762825f7-8358-43b3-b169-25c0fc624b64",
     "article": "f5e88f3a",
+    "adapter_config_json": {"sites": [{"id": "sydney", "polygon": [[150.86, -33.58]]}]},
+    "findings_window_hours": 192,
+    "limit": 10,
+    "days": 2,
 }
 
 
@@ -588,6 +592,8 @@ def test_the_guides_are_the_ones_the_owner_asked_for():
         "costs",
         "gear",
         "editorial-goals",
+        "vision",
+        "findings",
         "first-topic",
         "security",
         "topic-setup",
@@ -639,6 +645,17 @@ def test_every_command_a_guide_names_exists_and_its_main_ones_get_their_help(key
         ("someone is locked out of the assistant, how do I unlock them", "security"),
         ("how do I report an attack I noticed", "security"),
         ("first-topic", "first-topic"),
+        # A tie with first-topic ("create a topic", "start") goes to vision, the earlier guide.
+        ("how do I create a topic for rail", "vision"),
+        ("start a rail topic", "vision"),
+        ("how do I add a satellite site", "vision"),
+        ("how do I see a topic's findings", "findings"),
+        ("what will the next article be written from", "findings"),
+        ("what did research find for the crypto topic, what was found", "findings"),
+        # A rail topic's findings: the vision guide knows rail topics, and names `findings list` too.
+        ("how do I see the findings for my rail topic", "vision"),
+        ("how do I create my first topic", "first-topic"),
+        ("set up a topic fully", "topic-setup"),
         ("a musing went out blank, how do I fix it", "musings"),
         ("how do I regenerate the musing for an article", "musings"),
         ("how do I edit a musing", "musings"),
@@ -928,3 +945,131 @@ def test_the_full_setup_example_is_a_command_the_cli_accepts(parser, tables):
     args = parsed(parser, example["suggestion"]["command"])
     assert json.loads(args["config_json"])["queries"]
     assert json.loads(args["editorial_goals_json"])["primary_focus"]
+
+
+# --- a vision topic's sites config is written by hand (the assistant's vision round) ------------
+
+INJECTED_SITES = {
+    "sites": [{"id": "sydney", "polygon": [[0, 0], [1, 0], [1, 1]]}],
+    "triage": False,
+    "web_context": False,
+}
+
+
+@pytest.mark.parametrize("adapter", ["rail_access", "satellite_vision"])
+@pytest.mark.parametrize("given", [INJECTED_SITES, '{"sites": []}', "not json at all"])
+def test_a_vision_topics_config_is_never_filled_in_on_create(adapter, given, parser, tables):
+    options = {"topic_id": "rail-perth", "name": "Perth", "adapter": adapter, "config_json": given}
+
+    result = cli_guide.cli_command("topics create", options)
+
+    assert result["hand_written"] is True and result["destructive"] is False and result["built"] is True
+    assert result["spoken"].startswith("A vision topic's sites config is written by hand")
+    (card,) = result["findings"]
+    command = card["suggestion"]["command"]
+    assert "<config_json>" in command and "triage" not in command and "polygon" not in command
+    assert card["warning"] == cli_guide.HAND_WRITTEN_WARNING and "rail_topics.example.json" in card["warning"]
+    assert card["where"]["example"] == "scripts/rail_topics.example.json"
+    parsed(parser, command.replace("<", "").replace(">", ""))
+
+
+@pytest.mark.parametrize("stored", ["rail_access", "satellite_vision", None])
+def test_a_vision_topics_config_is_never_filled_in_on_update(stored, tables):
+    if stored is not None:
+        put_topic(tables, "rail-sydney", adapter=stored)
+    options = {"topic_id": "rail-sydney", "adapter_config_json": INJECTED_SITES}
+
+    result = cli_guide.cli_command("topics update", options)
+
+    # A topic that cannot be read counts as one: the rule fails closed.
+    assert result["hand_written"] is True
+    assert "<adapter_config_json>" in result["findings"][0]["suggestion"]["command"]
+    assert "triage" not in json.dumps(result)
+
+
+def test_another_adapters_config_is_still_filled_in(parser, tables):
+    config = {"queries": ["vegetable garden watering"]}
+    options = {"topic_id": "garden", "name": "Garden", "adapter": "web_search", "config_json": config}
+    created = cli_guide.cli_command("topics create", options)
+    assert json.loads(parsed(parser, built(created))["config_json"]) == config
+    put_topic(tables, "garden", adapter="web_search")
+    updated = cli_guide.cli_command("topics update", {"topic_id": "garden", "adapter_config_json": config})
+    assert json.loads(parsed(parser, built(updated))["adapter_config_json"]) == config
+    assert "hand_written" not in created and "hand_written" not in updated
+
+
+def test_a_draft_never_fills_in_a_vision_topics_config(tables):
+    put_topic(tables, "rail-sydney", adapter="rail_access")
+    for path, options in (
+        ("topics create", {"name": "Perth", "adapter": "rail_access", "config_json": INJECTED_SITES}),
+        ("topics update", {"topic_id": "rail-sydney", "adapter_config_json": INJECTED_SITES}),
+    ):
+        drafted = cli_guide.draft(path, options)
+        command = drafted["suggestion"]["command"]
+        assert "triage" not in command and "polygon" not in command, path
+        assert "<config_json>" in command or "<adapter_config_json>" in command
+        assert drafted["hand_written"] is True and drafted["warning"] == cli_guide.HAND_WRITTEN_WARNING
+    # Through the guide too, whatever the model passes as options.
+    options = {"adapter_config_json": INJECTED_SITES, "topic_id": "rail-sydney"}
+    guided = cli_guide.cli_guides("vision", options)
+    assert "triage" not in json.dumps(guided["findings"])
+
+
+@pytest.mark.parametrize(
+    ("words", "guide"),
+    [
+        ("how do I publish an article to the site", "review"),
+        ("how do I review what goes on the site", "review"),
+        ("what shows on the site", None),
+        ("how do I add a satellite site", "vision"),
+        ("create a topic for rail", "vision"),
+        ("how do I set up a rail topic", "vision"),
+    ],
+)
+def test_the_website_is_not_a_vision_site(words, guide):
+    """"site" is also the public website: only vision words send a question to the vision guide."""
+    assert cli_guide._guide_for(words) == guide
+
+
+def test_the_findings_guide_says_how_findings_work_and_builds_the_next_article_command(parser, tables):
+    result = cli_guide.cli_guides("findings")
+    guide = result["guide"]
+    assert guide["title"].startswith("Reading a topic's findings")
+    assert guide["commands"] == ["findings list", "topics findings", "topics update"]
+    assert 2 <= len(guide["explanation"]) <= 5
+    assert result["spoken"].startswith("Research writes a finding only when a topic's source changed")
+    text = " ".join(guide["explanation"])
+    assert "14 days" in text and "at most 48" in text and "findings list shows them in full" in text
+    assert "editorial goals may use only some" in text
+    assert [step["command"] for step in guide["steps"]] == [
+        "findings list", "findings list", "findings list", "topics findings", "topics update",
+    ]  # fmt: skip
+    # The next-article step is a switch, built as the CLI takes it; the days step asks for both numbers.
+    built = cli_command_text(parser, "findings list", {"topic_id": "rail-sydney", "next_article": True})
+    assert built.endswith("findings list rail-sydney --next-article")
+    built = cli_command_text(parser, "findings list", {"topic_id": "crypto", "days": 2, "limit": 10})
+    assert built.endswith("findings list crypto --limit 10 --days 2")
+    assert guide["steps"][2]["ask"] == ["topic_id", "days", "limit"]
+    # The help on screen is the CLI's own, with the window flags in it.
+    helped = {found["where"]["command"]: found["help"] for found in result["findings"] if "help" in found}
+    assert "--next-article" in helped["findings list"] and "--days" in helped["findings list"]
+
+
+def cli_command_text(parser, path: str, options: dict) -> str:
+    command = built(cli_guide.cli_command(path, options))
+    parsed(parser, command)
+    return command
+
+
+def test_the_vision_guide_says_how_it_works_in_plain_words(tables):
+    result = cli_guide.cli_guides("vision")
+    guide = result["guide"]
+    assert guide["title"] == "Vision topics: satellite sites and the Rail Access Monitor"
+    assert guide["commands"] == [
+        "topics create", "topics update", "topics trigger", "topics findings", "findings list",
+    ]  # fmt: skip
+    assert [step["command"] for step in guide["steps"]][-2:] == ["topics findings", "findings list"]
+    assert result["spoken"].startswith("A vision topic watches a few fixed places in new satellite images")
+    assert "rail_access" not in guide["explanation"][0] and "satellite_vision" not in guide["explanation"][0]
+    assert "scripts/rail_topics.example.json" in " ".join(guide["explanation"])
+

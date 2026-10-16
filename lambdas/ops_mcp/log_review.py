@@ -33,6 +33,12 @@ whole). The suggestions are the catalogue's (suggestions.py), by cause.
 **Check it yourself.** The result carries a table of what was found and `how_to` cards with the
 same queries, for the same log groups and window, to paste into Logs Insights, plus a console link
 for each log group: the runsheet, for exactly what was looked at.
+
+**Two Regions.** The vision worker runs in the vision Region (architecture.Component.region_env,
+OPS_VISION_REGION) and exists only where vision is on. Its log is read there, as its own group of
+jobs: with no filter (its lines name neither a topic nor, mostly, a site), and with check-it-
+yourself cards of its own. Where vision is off it is not deployed, so a sweep neither reads nor
+refuses it, and naming it says so.
 """
 
 from __future__ import annotations
@@ -63,7 +69,7 @@ HOW_TO = "how_to"
 ERROR_PATTERN = (
     r"/(?i)(error|exception|traceback|timed out|timeout|throttl|denied|not authorized|\b429\b|"
     r"too many|rate limit|killed|out of memory|could not|failed|unable to|dropping|no usable|"
-    r"missing anchor|refused)/"
+    r"missing anchor|refused|unreadable scene)/"
 )
 # Lambda's own lines that are not errors even when a word above appears in them.
 _NOT_ERRORS = r"/^(START|END|INIT_START) /"
@@ -72,6 +78,15 @@ _NOT_ERRORS = r"/^(START|END|INIT_START) /"
 # "error" above and was counted as an error in ops-agent, and its "tool_calls" read like
 # instructions (redact.py), so the assistant reported its own bookkeeping as someone probing.
 _OWN_RECORD = r"/^ops_agent: (turn=|briefing run tool_calls=)/"
+# The pipeline's evidence lines (common/evidence.py): one JSON line per step, holding only codes
+# and numbers. Their codes include words such as "failed" and "timeout", so without this every
+# tick would read as an error, as the assistant's own turn record once did (_OWN_RECORD). A test
+# holds the regex to evidence.PREFIX.
+_EVIDENCE_RECORD = r'/^\{"evidence": "bloggerbear\//'
+# What may sit either side of a topic id in a free-text log line: anything that is not an id
+# character (suggestions.ID_PATTERN), or the line's edge. "rail-sydney" between these never
+# matches "rail-sydney-demo", whose id goes on with "-".
+_ID_EDGE = "[^A-Za-z0-9_-]"
 # The assistant's own functions. Their logs are written by this code about its own tool calls, so a
 # line of theirs that reads like instructions is still withheld but is not a sign of anything.
 ASSISTANT_FUNCTIONS = ("ops-agent", "ops-mcp")
@@ -89,6 +104,9 @@ ADAPTER_PREFIXES = {
 }
 # The functions that run per topic.
 TOPIC_FUNCTIONS = ("research-tick", "daily-cycle")
+# The vision worker: added to a topic's deep dive when its adapter `uses_vision_worker`, and read
+# in its own Region with no filter.
+WORKER_FUNCTION = "vision-worker"
 
 FIX_WORDS = {
     "settings": "a settings change",
@@ -145,6 +163,18 @@ CAUSES: tuple[Cause, ...] = (
         "A dependency is missing from the deployment package. Add it to lambdas/requirements.txt "
         "(or the function's own requirements file) and redeploy.",
         "lambdas/requirements*.txt, then the package build in infra/",
+    ),
+    # Before access_denied and the source_* causes: classify() takes the first match, and a worker
+    # line such as "unreadable scene S2B_...: HTTPSConnectionPool(...): Read timed out" would be a
+    # source timeout, and one with a 403 from the imagery host a Terraform fix.
+    _cause(
+        "scene_unreadable",
+        r"unreadable scene",
+        "couldn't read a satellite scene",
+        "transient",
+        "The imagery host was slow or refused a range read; the next tick tries again. If it "
+        "happens for every scene, check VISION_ALLOWED_URL_PREFIXES and the sentinel-cogs bucket.",
+        "the vision worker's log group, in the vision Region",
     ),
     _cause(
         "access_denied",
@@ -248,6 +278,20 @@ OTHER = _cause(
     "the function's log group",
 )
 BY_KEY = {cause.key: cause for cause in (*CAUSES, OTHER)}
+# Where the vision worker's own settings are (infra/modules/vision-worker), for the two causes whose
+# `where` names the roots' functions.
+WORKER_WHERE = {
+    "lambda_timeout": "var.timeout in infra/modules/vision-worker (at most 60 s: the research tick waits "
+    "58 s for it, vision_sites.WORKER_READ_TIMEOUT)",
+    "out_of_memory": "var.memory_size in infra/modules/vision-worker",
+}
+
+
+def _where(cause: Cause, function: str) -> str:
+    """Where the change for `cause` is made, for `function`."""
+    if function == WORKER_FUNCTION and cause.key in WORKER_WHERE:
+        return WORKER_WHERE[cause.key]
+    return cause.where
 
 
 def classify(message: str) -> Cause:
@@ -260,14 +304,17 @@ def classify(message: str) -> Cause:
 
 
 def _topic_filter(topic_id: str | None, prefix: str | None) -> str:
-    """A filter narrowing a query to one topic's lines: those naming the topic, or written by its
-    adapter. Both are checked before they get here: the id against ID_PATTERN (letters, digits,
-    "-" and "_"), the prefix from ADAPTER_PREFIXES. Neither can end the regex or add a command."""
+    """A filter narrowing a query to one topic's lines: those naming the topic as a whole id (the
+    print lines are free text, so the id is matched between non-id characters or the line's
+    edges, never as a substring: a deep dive on "rail-sydney" does not read "rail-sydney-demo"),
+    or written by its adapter. Both are checked before they get here: the id against ID_PATTERN
+    (letters, digits, "-" and "_"), the prefix from ADAPTER_PREFIXES. Neither can end the regex or
+    add a command."""
     if topic_id is None:
         return ""
     if not ID_PATTERN.match(topic_id) or (prefix is not None and prefix not in ADAPTER_PREFIXES.values()):
         raise ValueError("not a topic filter this module builds")
-    words = [re.escape(topic_id)] + ([re.escape(prefix)] if prefix else [])
+    words = [f"(^|{_ID_EDGE}){re.escape(topic_id)}({_ID_EDGE}|$)"] + ([re.escape(prefix)] if prefix else [])
     return f"\n| filter @message like /{'|'.join(words)}/"
 
 
@@ -276,7 +323,7 @@ def queries(topic_id: str | None = None, prefix: str | None = None) -> dict[str,
     narrow = _topic_filter(topic_id, prefix)
     errors = (
         f"filter @message like {ERROR_PATTERN} and @message not like {_NOT_ERRORS} "
-        f"and @message not like {_OWN_RECORD}{narrow}"
+        f"and @message not like {_OWN_RECORD} and @message not like {_EVIDENCE_RECORD}{narrow}"
     )
     return {
         "sample": (
@@ -312,6 +359,7 @@ class Scope:
     adapter: str | None = None
     prefix: str | None = None
     note: str | None = None  # something to say about how the name was taken
+    worker_unfiltered: bool = False  # a topic deep dive that reads the vision worker too
 
     def words(self) -> str:
         if self.topic_name:
@@ -321,14 +369,17 @@ class Scope:
         return "every function"
 
 
-def _readable_here(component: architecture.Component, env: str) -> bool:
-    """A function of this environment whose log group this tool reads: in the home Region, and not
-    one that exists only with an optional feature on (architecture.Component.home_sweep)."""
-    return component.kind == "function" and architecture.exists_in(component, env) and component.home_sweep
+def _here(component: architecture.Component, env: str) -> bool:
+    """A function of this environment, in whichever Region it lives (architecture.exists_in: the
+    vision worker only where vision is on)."""
+    return component.kind == "function" and architecture.exists_in(component, env)
 
 
 def _functions(env: str) -> list[architecture.Component]:
-    return [c for c in architecture.CATALOGUE if _readable_here(c, env)]
+    return [c for c in architecture.CATALOGUE if _here(c, env)]
+
+
+NOT_DEPLOYED = "The vision worker isn't deployed in this environment: vision is off."
 
 
 def scope(function: str | None, topic: str | None, env: str) -> Scope:
@@ -343,22 +394,30 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
         if not isinstance(topic, str) or not ID_PATTERN.match(topic):
             raise Refused("That topic's id isn't one I can look up.")
         adapter = item.get("adapter") if item.get("adapter") in ADAPTER_REGISTRY else None
-        functions = [architecture.by_key("function", key) for key in TOPIC_FUNCTIONS]
+        keys = list(TOPIC_FUNCTIONS)
+        adapter_cls = ADAPTER_REGISTRY.get(adapter) if adapter else None
+        # A topic measured by the vision worker: its lines are read too, where it is deployed.
+        worker = adapter_cls is not None and adapter_cls.uses_vision_worker
+        if worker:
+            keys.append(WORKER_FUNCTION)
+        functions = [architecture.by_key("function", key) for key in keys]
+        found = [c for c in functions if _here(c, env)]
         return Scope(
-            [c for c in functions if _readable_here(c, env)],
+            found,
             topic_id=topic,
             topic_name=_topic_label(item, topic),
             adapter=adapter,
             prefix=ADAPTER_PREFIXES.get(adapter or ""),
             note=topic_match.took(matched).strip() or None,
+            worker_unfiltered=any(c.key == WORKER_FUNCTION for c in found),
         )
     if function is not None:
         # A near miss ("reserch tick") is taken and said; several close ones are asked about.
         resolved, took_note, did_you_mean = architecture.forgiving(function, "function")
-        found = [c for c in resolved.matches if c.kind == "function" and architecture.exists_in(c, env)]
-        if found and not any(_readable_here(c, env) for c in found):
-            raise Refused("That function's logs are kept outside this Region, so I can't read them yet.")
-        found = [c for c in found if _readable_here(c, env)]
+        named = [c for c in resolved.matches if c.kind == "function"]
+        found = [c for c in named if _here(c, env)]
+        if not found and any(c.region_env for c in named):
+            raise Refused(NOT_DEPLOYED)
         if not found:
             raise Refused(did_you_mean or "I don't know a function by that name in this environment.")
         if resolved.asked_env is not None and resolved.asked_env not in architecture.ENVIRONMENTS:
@@ -372,6 +431,24 @@ def scope(function: str | None, topic: str | None, env: str) -> Scope:
 
 def _lambda_group(component: architecture.Component, env: str) -> str:
     return architecture.fill(f"/aws/lambda/{component.name}", env)
+
+
+HOME = "home"
+QUERY_KINDS = ("sample", "totals", "runs", "baseline")
+
+
+def _groups(chosen: Scope, env: str) -> list[tuple[str, list, str | None, dict[str, str]]]:
+    """(name, functions, Region, queries) per group of jobs: "home" for the functions in this
+    Region, under the topic's filter; and one per function with its own Region (the vision
+    worker), named by its key, with no filter."""
+    home = [c for c in chosen.functions if c.region_env is None]
+    found = []
+    if home:
+        found.append((HOME, home, logs.home_region(), queries(chosen.topic_id, chosen.prefix)))
+    for component in chosen.functions:
+        if component.region_env is not None:
+            found.append((component.key, [component], architecture.component_region(component), queries()))
+    return found
 
 
 # --- reading and working it out --------------------------------------------------------------------
@@ -393,7 +470,7 @@ def review(
     *,
     now: datetime | None = None,
     run: Callable[[list], dict] | None = None,
-    readable: Callable[[list[str]], tuple[list[str], list[dict]]] | None = None,
+    readable: Callable[[list[str], str | None], tuple[list[str], list[dict]]] | None = None,
     wait_seconds: float = logs.WAIT_SECONDS,
 ) -> dict:
     env = architecture.environment()
@@ -404,44 +481,71 @@ def review(
     except Refused as exc:
         return _refusal(str(exc))
     when = logs.window(hours, start, end, now=now)
-    region = logs.home_region()
-    wanted = [_lambda_group(c, env) for c in chosen.functions]
-    allowed, refused = (readable or (lambda names: logs.readable(names, region=region)))(wanted)
-    if not allowed:
+    if readable is None:
+        readable = lambda names, region: logs.readable(names, region=region)  # noqa: E731
+
+    # One group of jobs per (Region, filter): the pipeline's functions in the home Region under the
+    # topic filter, and the vision worker in its own Region with none. Two groups even when the
+    # Regions are the same: under the topic filter every worker line would be dropped.
+    groups = []
+    for name, members, region, text in _groups(chosen, env):
+        allowed, refused_here = readable([_lambda_group(c, env) for c in members], region)
+        groups.append(
+            {"name": name, "region": region, "text": text, "allowed": allowed, "refused": refused_here}
+        )
+    refused = [entry for group in groups for entry in group["refused"]]
+    groups = [group for group in groups if group["allowed"]]
+    if not groups:
         return _refusal(
             "I'm not allowed to read those logs: "
             + (refused[0]["why"] if refused else "no log group to read."),
             refused=refused,
         )
 
-    text = queries(chosen.topic_id, chosen.prefix)
-    groups = tuple(allowed)
     baseline_start = when.start - timedelta(days=BASELINE_DAYS)
-    jobs = [
-        (("all", "sample"), region, groups, text["sample"], when.start, when.end),
-        (("all", "totals"), region, groups, text["totals"], when.start, when.end),
-        (("all", "runs"), region, groups, text["runs"], when.start, when.end),
-        (("all", "baseline"), region, groups, text["baseline"], baseline_start, when.start),
-    ]
+    jobs = []
+    for group in groups:
+        names, region, text = tuple(group["allowed"]), group["region"], group["text"]
+        jobs += [
+            ((group["name"], "sample"), region, names, text["sample"], when.start, when.end),
+            ((group["name"], "totals"), region, names, text["totals"], when.start, when.end),
+            ((group["name"], "runs"), region, names, text["runs"], when.start, when.end),
+            ((group["name"], "baseline"), region, names, text["baseline"], baseline_start, when.start),
+        ]
     # `wait_seconds` is shorter when a caller reads several logs in one request (memory.py).
     if run is None:
         run = lambda batch: logs.run_queries(batch, label="ops_log_review", wait_seconds=wait_seconds)  # noqa: E731
     results = run(jobs)
-    sample = results.get(("all", "sample"))
-    totals = results.get(("all", "totals"))
-    runs = results.get(("all", "runs"))
-    baseline = results.get(("all", "baseline"))
-    complete = all(part is not None for part in (sample, totals, runs, baseline))
+    parts = {kind: [results.get((group["name"], kind)) for group in groups] for kind in QUERY_KINDS}
+    complete = all(part is not None for found in parts.values() for part in found)
+    merged = {kind: [row for part in found if part for row in part] for kind, found in parts.items()}
+    # The baseline is known per group: a function whose group's baseline didn't answer has no
+    # "typical", rather than a typical of zero that would make its errors look unusual.
+    known = {
+        _function_key(name, env)
+        for group, part in zip(groups, parts["baseline"], strict=True)
+        if part is not None
+        for name in group["allowed"]
+    }
+    baseline = merged["baseline"] if known else None
 
-    per_function = _work_out(sample or [], totals or [], runs or [], baseline, env, when)
+    per_function = _work_out(
+        merged["sample"], merged["totals"], merged["runs"], baseline, env, when, known=known
+    )
     findings = _findings(per_function, chosen, when)
     total = sum(row["errors"] for row in per_function.values())
     examples_withheld = sum(row["withheld"] for row in per_function.values())
-    ranked = _by_errors(allowed, per_function, env)
+    cards = []
+    for group in groups:
+        ranked = _by_errors(group["allowed"], per_function, env)
+        cards += _check_yourself(
+            group["allowed"], group["text"], when, group["region"], ranked, now,
+            suffix="" if group["name"] == HOME else f"-{group['name']}",
+        )  # fmt: skip
 
     return {
         "spoken": _spoken(per_function, chosen, when, total, complete, refused),
-        "findings": findings + _check_yourself(allowed, text, when, region, ranked, now),
+        "findings": findings + cards,
         "environment": env,
         "scope": {
             "functions": [c.key for c in chosen.functions],
@@ -467,9 +571,10 @@ def _refusal(spoken: str, **more) -> dict:
     return {"spoken": spoken, "findings": [], "errors": 0, "functions": [], **more}
 
 
-def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
+def _work_out(sample, totals, runs, baseline, env, when, *, known=None) -> dict[str, dict]:
     """Per function: error lines, the share of each cause (scaled to the total), examples
-    (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline."""
+    (scrubbed), the REPORT numbers, and whether errors are unusual against the baseline. `known`
+    is the functions whose baseline answered (None: all of them); the others have no typical."""
     rows: dict[str, dict] = {}
 
     def row(group: str) -> dict:
@@ -523,6 +628,8 @@ def _work_out(sample, totals, runs, baseline, env, when) -> dict[str, dict]:
             key = _function_key(logs.group_of(line.get("@log")), env)
             daily.setdefault(key, []).append(logs.count(line.get("errors")))
         for key, row_ in rows.items():
+            if known is not None and key not in known:
+                continue
             days = daily.get(key, [])
             days = days + [0] * max(0, BASELINE_DAYS - len(days))
             row_["typical"] = round(median(days) * when.hours / 24, 1)
@@ -594,7 +701,7 @@ def _findings(rows: dict[str, dict], chosen: Scope, when: logs.Window) -> list[d
             "fix_type": cause.fix_type,
             "needs": FIX_WORDS[cause.fix_type],
             "advice": cause.advice,
-            "change_where": cause.where,
+            "change_where": _where(cause, key),
             "count": count,
             "estimated": row["estimated"],
             "unusual": row["unusual"],
@@ -617,11 +724,15 @@ def _check_yourself(
     region: str | None,
     ranked: list[str] | tuple = (),
     now: datetime | None = None,
+    *,
+    suffix: str = "",
 ) -> list[dict]:
     """The runsheet for exactly what was read: the error lines and the per-function counts, over
     the same window, as a query to paste with its log groups on SOURCE lines ahead of it
     (logs.py): the `ranked` ones first, the closest to what was found. Two cards, not four: the
-    baseline and REPORT queries are on the function's own dashboard already."""
+    baseline and REPORT queries are on the function's own dashboard already. `suffix` keeps the
+    cards of a second group (the vision worker's) apart from the first's: the agent's ledger keeps
+    one card per (kind, id)."""
     sources = logs.closest_groups(groups, ranked)
     queries_with_sources = {
         name: logs.source_query(sources, text[name], when, region, now=now)
@@ -645,7 +756,7 @@ def _check_yourself(
         cards.append(
             {
                 "kind": HOW_TO,
-                "id": f"log-review-{name}",
+                "id": f"log-review-{name}{suffix}",
                 "noticed": f"Check it yourself: {title}",
                 "where": where,
                 "suggestion": {
@@ -672,7 +783,7 @@ def _table(rows: dict[str, dict], when: logs.Window) -> dict:
                     count,
                     FIX_WORDS[cause.fix_type],
                     cause.advice,
-                    cause.where,
+                    _where(cause, key),
                 ]
             )
     return {
@@ -733,6 +844,8 @@ def _spoken(rows, chosen: Scope, when: logs.Window, total: int, complete: bool, 
             )
     if chosen.topic_id and chosen.adapter:
         words.append(f"I narrowed it to lines naming the topic or written by its {chosen.adapter} adapter.")
+    if chosen.worker_unfiltered:
+        words.append("The vision worker's lines are for every vision topic: they don't name one.")
     if not complete:
         words.append("Some of the logs didn't answer in time, so the numbers may be low.")
     if refused:

@@ -907,6 +907,9 @@ module "admin_api" {
     # out when it's actually finished, since there's no dedicated job-
     # status system. See admin_api_handler.py's _get_latest_finding_route.
     "GET /topics/{topic_id}/findings/latest",
+    # A topic's Findings, newest first (`findings list`): the admin_api_handler.py route the
+    # assistant's topic_findings and the topic-findings Claude Code skill mirror.
+    "GET /topics/{topic_id}/findings",
     # Force-publish override -- publishes an article regardless of its
     # current status, unlike the moderation approve/reject routes below
     # which only act on a pending ModerationQueue item. See
@@ -2718,12 +2721,16 @@ module "ops_assistant" {
   # Keyed by the environment variable common/dynamo.py reads each table's name from. This is the
   # whole of what the assistant can see in DynamoDB: the tables its tools read today
   # (pipeline_health and admin_inbox: Topics, Articles, ModerationQueue, FailedExecutions, and the
-  # pipeline row in ModelConfig) and the ones the next tools in the design's table read
-  # (content_checks: Musings; security_events: SecurityEvents; spend: the two Stats tables). Not
-  # here, so neither readable by it nor known to it: Findings, CandidateIdeas, Feedback,
-  # PromptRefinements, Models, ViewCounts.
+  # pipeline row in ModelConfig), the ones the design's later tools read (content_checks: Musings;
+  # security_events: SecurityEvents; spend: the two Stats tables) and Findings, for topic_findings
+  # (a topic's research Findings, newest first). topic_findings only ever Queries one topic's
+  # rows, and a test holds it to Query; the one map also grants Scan, which is accepted to keep
+  # the one-map design, since a Scan of Findings reaches nothing a per-topic Query does not. Not
+  # here, so neither readable by it nor known to it: CandidateIdeas, Feedback, PromptRefinements,
+  # Models, ViewCounts.
   tables = {
     TOPICS_TABLE            = { name = module.app_data.topics_table_name, arn = module.app_data.topics_table_arn }
+    FINDINGS_TABLE          = { name = module.app_data.findings_table_name, arn = module.app_data.findings_table_arn }
     ARTICLES_TABLE          = { name = module.app_data.articles_table_name, arn = module.app_data.articles_table_arn }
     MODERATION_QUEUE_TABLE  = { name = module.app_data.moderation_queue_table_name, arn = module.app_data.moderation_queue_table_arn }
     FAILED_EXECUTIONS_TABLE = { name = module.app_data.failed_executions_table_name, arn = module.app_data.failed_executions_table_arn }
@@ -2786,6 +2793,12 @@ module "ops_assistant" {
   # The key the agent sends the MCP server with the operator's address, so that "allowlist"
   # admits a question asked through the agent (the server otherwise sees Lambda's address).
   agent_forward_key = random_password.ops_agent_forward_key.result
+
+  # The assistant's vision round (vision.tf in the module): where the worker runs, it may read the
+  # worker's log there and each topic's running state, and is told the Region. Known at plan time;
+  # nothing here waits on module.vision_worker.
+  vision_enabled = var.vision_enabled
+  vision_region  = var.vision_region
 }
 
 # Made once and kept in state, like random_password.api_origin_verify: both functions are given

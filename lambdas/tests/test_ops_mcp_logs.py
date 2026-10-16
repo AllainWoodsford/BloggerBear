@@ -169,6 +169,19 @@ def test_tags_are_remembered_for_a_while(dev, monkeypatch):
     assert len(fake.asked) == 2
 
 
+def test_the_tag_cache_is_kept_per_region_and_name(dev, monkeypatch):
+    """The vision worker's log group is read in the vision Region (the assistant's vision round): a
+    group of the same name in another Region is another group, with its own tags."""
+    name = "/aws/lambda/bloggerbear-dev-vision-worker"
+    fake = _fake(monkeypatch, FakeTags({name: {**TAGS, "Environment": "dev"}}))
+    logs.check_group(name, region="us-west-2", now=0)
+    logs.check_group(name, region="us-west-2", now=10)
+    assert len(fake.asked) == 1 and ":us-west-2:" in fake.asked[0]
+    logs.check_group(name, region="ap-southeast-2", now=10)
+    assert len(fake.asked) == 2 and ":ap-southeast-2:" in fake.asked[1]
+    assert set(logs._tags) == {("us-west-2", name), ("ap-southeast-2", name)}
+
+
 def test_readable_splits_allowed_from_refused_with_reasons(dev, monkeypatch):
     good = "/aws/lambda/bloggerbear-dev-research-tick"
     _fake(monkeypatch, FakeTags({good: {**TAGS, "Environment": "dev"}}))
