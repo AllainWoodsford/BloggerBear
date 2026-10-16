@@ -275,6 +275,11 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     topic = get_topic(topic_id)
     if topic is None:
         return {"status": "error", "topic_id": topic_id, "error": "topic not found"}
+    if topic.get("paused") is True:
+        # Paused by the operator (`topics pause`): no candidate ideas, no draft, no article,
+        # whatever started this run, until it is resumed. The Topics row decides.
+        print(f"daily_cycle_handler: {topic_id} is paused; nothing written")
+        return {"status": "paused", "topic_id": topic_id}
 
     run_started = datetime.now(UTC)
     since = _window_start(topic, run_started, force)

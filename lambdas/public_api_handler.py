@@ -256,15 +256,21 @@ def _researching_ref(latest: dict, previous: dict | None) -> dict | None:
     return fresh or (refs[0] if refs else None)
 
 
-def _last_checked_at(topic_id: str, latest_finding: dict) -> str | None:
+def _topic_row(topic_id: str) -> dict:
+    """The topic's own row, or {} when there is none or it cannot be read: a label must never
+    break the page. Only two things are ever read off it here: when its source was last checked,
+    and whether the operator has paused it."""
+    try:
+        return get_topic(topic_id) or {}
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"public_api_handler: could not read topic {topic_id} for its activity: {exc!r}")
+        return {}
+
+
+def _last_checked_at(topic: dict, latest_finding: dict) -> str | None:
     """When the topic's source was last successfully checked (a check that finds nothing new
     writes no finding, so the topic row is the only record), else when the newest finding was
     captured. Just a timestamp: nothing else from the topic is exposed."""
-    try:
-        topic = get_topic(topic_id) or {}
-    except Exception as exc:  # noqa: BLE001 - a label must never break the page
-        print(f"public_api_handler: could not read topic {topic_id} for its last check: {exc!r}")
-        topic = {}
     return topic.get("last_research_at") or latest_finding.get("captured_at") or None
 
 
@@ -284,11 +290,18 @@ def _topic_activity(event: dict) -> dict:
     latest source title/url already visible once an article is eventually
     published. No bodies, moderation reasons, queue ids, or finding
     summaries are returned here.
+
+    A topic the operator has paused (`topics pause`) says so: `paused` is true,
+    `researching` is false, and a "Paused" item stands where the researching
+    item would (with `since`, when it was paused), so the box reads "Paused"
+    rather than "Researching" for a topic nothing is happening on.
     No topic-existence check, matching _list_articles above -- an unknown
     topic_id just yields `researching: false, pending_review_count: 0`, not
     a 404.
     """
     topic_id = _path_param(event, "topic_id")
+    topic = _topic_row(topic_id)
+    paused = topic.get("paused") is True
     researching = False
     pipeline_items = []
     pending_items = list_pending_moderation_for_topic(topic_id)
@@ -307,27 +320,34 @@ def _topic_activity(event: dict) -> dict:
             }
         )
 
-    recent_findings = list_recent_findings(topic_id, limit=2)
-    latest_finding = recent_findings[0] if recent_findings else None
-    if latest_finding is not None:
-        researching = True
-        research_ref = _researching_ref(
-            latest_finding, recent_findings[1] if len(recent_findings) > 1 else None
-        )
-        researching_item = {
-            "status": "researching",
-            "label": "Researching",
-            "title": (research_ref or {}).get("title") or (research_ref or {}).get("url") or "",
-        }
-        checked_at = _last_checked_at(topic_id, latest_finding)
-        if checked_at:
-            researching_item["checked_at"] = checked_at
-        pipeline_items.append(researching_item)
+    if paused:
+        paused_item = {"status": "paused", "label": "Paused", "title": ""}
+        if isinstance(topic.get("paused_at"), str) and topic["paused_at"]:
+            paused_item["since"] = topic["paused_at"]
+        pipeline_items.append(paused_item)
+    else:
+        recent_findings = list_recent_findings(topic_id, limit=2)
+        latest_finding = recent_findings[0] if recent_findings else None
+        if latest_finding is not None:
+            researching = True
+            research_ref = _researching_ref(
+                latest_finding, recent_findings[1] if len(recent_findings) > 1 else None
+            )
+            researching_item = {
+                "status": "researching",
+                "label": "Researching",
+                "title": (research_ref or {}).get("title") or (research_ref or {}).get("url") or "",
+            }
+            checked_at = _last_checked_at(topic, latest_finding)
+            if checked_at:
+                researching_item["checked_at"] = checked_at
+            pipeline_items.append(researching_item)
     return _response(
         200,
         {
             "topic_id": topic_id,
             "researching": researching,
+            "paused": paused,
             "pending_review_count": pending_review_count,
             "pipeline_items": pipeline_items,
         },
