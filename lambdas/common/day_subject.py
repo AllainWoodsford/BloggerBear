@@ -26,7 +26,9 @@ subject ({"MON": "sydney", ...}) or a list of subjects cycled one a day
 ((date - 1970-01-01).days mod its length), every subject at least once; and `rotation_timezone`,
 the zone whose calendar day decides (an IANA name; default the adapter's choice, then UTC), so
 "Tuesday" is Tuesday where the subjects are. The adapter parses it with its config and names the
-subject from it in `day_subject`.
+subject from it in `day_subject`. An adapter module may import this one at its top, for the rota,
+so this module imports the adapter registry (which imports every adapter module) only inside
+`resolve_day_subject`: at the top it would be an import cycle that every pipeline Lambda fails on.
 
 Topic-agnostic: what a subject is, whose day it is and the words for it are the adapter's. Nothing
 here names an adapter or a domain (docs/project-plan.md §2 rule 5).
@@ -110,7 +112,7 @@ def resolve_day_subject(topic: dict, at: datetime) -> DaySubject | None:
     DaySubject, and lets whatever the hook raises through: a broken rota stops the run, it never
     becomes an article about every subject at once."""
     # Imported when asked, not with this module: an adapter that names its subjects by the rota
-    # below (rail_access) imports this module, and the registry imports every adapter.
+    # below imports this module, and the registry imports every adapter.
     from common.adapters.registry import ADAPTER_REGISTRY
 
     adapter_key = (topic or {}).get("adapter")

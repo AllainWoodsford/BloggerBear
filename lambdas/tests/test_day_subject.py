@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -248,3 +251,38 @@ def test_a_list_rota_cycles_one_a_day_from_1970():
 def test_a_rota_that_cannot_be_used_says_why(config, words):
     with pytest.raises(ValueError, match=re.escape(words)):
         day_subject.parse_rotation(config, CITIES)
+
+
+# --- what the module is --------------------------------------------------------------------------
+
+
+def _fresh_import(code: str) -> str:
+    lambdas_dir = Path(day_subject.__file__).resolve().parents[1]
+    code = "import sys; sys.path.insert(0, sys.argv[1]); " + code
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(lambdas_dir)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
+
+
+def test_an_adapter_module_can_import_this_one_at_its_top():
+    """An adapter names its day subject with the rota (parse_rotation, rotation_subject), imported at
+    its module's top. The registry imports every adapter module, so a registry import at this
+    module's top would be an import cycle every pipeline Lambda fails on. In a fresh interpreter,
+    importing this module loads no adapter module but the base, and it still imports while the
+    registry is part-way through importing its adapters (the moment an adapter imports it)."""
+    loaded = _fresh_import(
+        "import common.day_subject; "
+        "print(sorted(m for m in sys.modules if m.startswith('common.adapters.')))"
+    )
+    assert loaded == "['common.adapters.base']"
+
+    midway = _fresh_import(
+        "import types; "
+        "sys.modules['common.adapters.registry'] = types.ModuleType('common.adapters.registry'); "
+        "from common.day_subject import parse_rotation, rotation_subject; print('imported')"
+    )
+    assert midway == "imported"
