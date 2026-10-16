@@ -1389,7 +1389,12 @@ def _run_file(command: str, args, started: str, worker: dict, inputs: dict, para
         tag = "-".join(part for part in (mode, "synthetic" if args.synthetic else None) if part) or None
     run = vision_runs.new_run(KIND[command], env["cpu"], "opencv", env, worker=worker, inputs=inputs,
                               params=params, tag=tag, mode=command, started=started)  # fmt: skip
-    vision_runs.finish(run, results, checks, summary)
+    # The summary holds numbers only (the index refuses anything else): a value that could not be
+    # measured (no run with a price, no decision for an interval) is left out, never zero.
+    numbers = {key: value for key, value in summary.items()
+               if isinstance(value, int | float) and not isinstance(value, bool)}  # fmt: skip
+    vision_runs.finish(run, results, checks, numbers)
+    run["results"]["not_measured"] = sorted(key for key in summary if key not in numbers)
     run["agent"] = agent
     return run
 
@@ -1501,8 +1506,15 @@ def _row(*cells) -> str:
     return "| " + " | ".join(str(cell) for cell in cells) + " |"
 
 
+def _summary(run: dict) -> dict:
+    """The run's summary with every code it left out (not measured) read as None."""
+    from collections import defaultdict
+
+    return defaultdict(lambda: None, run["summary"])
+
+
 def agent_markdown(run: dict) -> str:
-    agent, s = run.get("agent") or {}, run["summary"]
+    agent, s = run.get("agent") or {}, _summary(run)
     lines = [
         f"**agent** {agent.get('mode')} (model `{agent.get('model_id')}`), worker {run['worker']['kind']}, "
         f"where {run['environment'].get('where')}",
@@ -1539,7 +1551,7 @@ def agent_markdown(run: dict) -> str:
 
 
 def counterfactual_markdown(run: dict) -> str:
-    s = run["summary"]
+    s = _summary(run)
     lines = ["**counterfactual**", "",
              _row("case", "arm", "repeats", "called look_again", "real", "artefact", "failed closed"),
              "|---|---|---:|---:|---:|---:|---:|"]  # fmt: skip
@@ -1570,7 +1582,7 @@ def counterfactual_markdown(run: dict) -> str:
 
 
 def stability_markdown(run: dict) -> str:
-    s, results = run["summary"], run["results"]
+    s, results = _summary(run), run["results"]
     lines = ["**stability** (E3)", "",
              _row("scene", "captured", "coverage", "served share", "desert km²", "built-up km²", "code",
                   "mask IoU (previous, first)"),

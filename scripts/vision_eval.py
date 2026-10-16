@@ -1555,6 +1555,9 @@ KIND_WORDS = {
     "eval-replay": "2.6.4: the real adapter over a pinned sequence, tick by tick, with the agent",
     "eval-failures": "2.5: the failure catalogue's real-data rows and the tests that hold the rest",
     "eval-access-baseline": "E5: the production distance transform against the precise one and a buffer",
+    "eval-agent": "2.6.1-2.6.3: the agent's cases, per class, against numeric-only and always-artefact",
+    "eval-counterfactual": "2.6.6: only OpenCV's output changed, at the agent and at the coverage gate",
+    "eval-stability": "E3: the year set through the production rule on one network: false alarms, spreads",
 }
 
 

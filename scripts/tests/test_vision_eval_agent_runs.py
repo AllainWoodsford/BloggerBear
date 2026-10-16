@@ -92,13 +92,14 @@ def test_the_scripted_synthetic_run_scores_every_case_and_writes_a_run_file(agen
     assert len(cases["C3"]["runs"]) == 1
     s = run["summary"]
     assert (s["cases"], s["gate_closed"], s["runs"]) == (13, 1, 12 * 2 + 1)
-    assert all(value is None or isinstance(value, int | float) for value in s.values())
+    assert all(isinstance(value, int | float) and not isinstance(value, bool) for value in s.values())
     assert s["recall_real"] == 1.0 and s["recall_artefact"] == 1.0 and s["balanced_accuracy"] == 1.0
     assert s["numeric_only_balanced_accuracy"] == 0.5 and s["always_artefact_balanced_accuracy"] == 0.5
     assert (s["fail_closed"], s["fail_closed_runs"]) == (6, 6) and s["stability"] == 1.0
     assert s["recall_network_driven"] == 1.0 and s["recall_imagery_driven"] == 1.0
-    # The scripted model has no price: no cost is invented for it.
-    assert s["cost_usd_total"] is None and s["tokens_mean"] > 0
+    # The scripted model has no price: no cost is invented for it, and the summary says not measured.
+    assert "cost_usd_total" not in s and "cost_usd_total" in run["results"]["not_measured"]
+    assert s["tokens_mean"] > 0
     assert run["results"]["history"]["reused"] > 0  # the shared winter history is measured once
     assert run["params"]["frozen_clock"] is True and run["params"]["repeats"] == 2
 
@@ -361,6 +362,22 @@ def test_stability_on_the_real_city_names_a_set_the_manifest_holds(capsys):
 
 
 # --- the command line --------------------------------------------------------------------------------------
+
+
+def test_the_index_takes_the_three_kinds_run_files(agent_run, counterfactual_run, tmp_path):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    for run in (agent_run[2], counterfactual_run[1]):
+        vision_runs.write(run, runs)
+    code, stability = run_main(["stability", "--synthetic", "--scenes", "3"], runs)
+    assert code == 0 and stability["kind"] == "eval-stability"
+    assert vision_eval.main(["index", "--evidence", str(tmp_path)]) == 0
+    rows = json.loads((tmp_path / "index.json").read_text())
+    rows = rows["runs"] if isinstance(rows, dict) else rows
+    assert {row["kind"] for row in rows} == {"eval-agent", "eval-counterfactual", "eval-stability"}
+    text = (tmp_path / "RESULTS.md").read_text()
+    for kind in ("eval-agent", "eval-counterfactual", "eval-stability"):
+        assert f"## {kind} (1 run)" in text and vision_eval.KIND_WORDS[kind] in text
 
 
 def test_the_three_subcommands_are_vision_evals_and_their_kinds_are_known(capsys):
