@@ -9,11 +9,14 @@ for within one budget (WAIT_SECONDS): a topic's `vision_decision` and `vision_tr
 `research_tick` lines of the attempts that made a decision, and the `moderation_decision` lines of
 what people did. Then, for each topic with a Finding written, one short DynamoDB Query on the
 Articles table's topic index (common/dynamo.list_articles_for_topic, which reads only the fields
-the join uses) for the articles the Findings fed, each started only within DEADLINE_SECONDS of the
-call's start: a read that would start later is skipped, and what people did is then not checked,
-as when a read fails. Nothing else: `vision_site` lines are never read (24 a day per site would
-fill the 1,000-row cap within weeks), no `stats` aggregate is used (it would count lines, so a
-failed attempt's decisions would count twice), and the running state is not opened.
+the join uses) for the articles the Findings fed, each ending by DEADLINE_SECONDS from the call's
+start: every page of a read is given the time left as its read timeout, a short connect and no
+retry (_BoundedArticles). A read that would start later is skipped, and one that times out or runs
+out of time between pages is stopped; that topic's article counts and what people did are then
+not checked, as when a read fails, never a partial count. Nothing else: `vision_site` lines are
+never read (24 a day per site would fill the 1,000-row cap within weeks), no `stats` aggregate is
+used (it would count lines, so a failed attempt's decisions would count twice), and the running
+state is not opened.
 
 **Parsed, never trusted** (the submission round's rule 7). The only values put into a query are a
 topic id that passed suggestions.ID_PATTERN and a scene id that passed SCENE_ID, each a quoted
@@ -21,9 +24,10 @@ string compared by equality, never in a regex: `rail-sydney` never matches `rail
 Every `@message` goes through evidence.parse, and a row is then dropped, and counted under
 `dropped`, when its topic id is not one asked for (re-checked here), its event not one its query
 asked for, its decision code not one of vision_decisions.CODES, its stop not one of
-vision_triage.STOPS, a tool not one of the triage profiles' tools or `other`, a moved measure not
-in the union of the adapters' declared vocabularies, or it lacks the ids it is joined by. A line
-that is not JSON is dropped too.
+vision_triage.STOPS, its verdict not one of vision_triage.VERDICTS, a tool not one of the triage
+profiles' tools or `other`, a moved measure not in the union of the adapters' declared
+vocabularies, its coverage outside 0 to 1 (a share of the site), or it lacks the ids it is joined
+by. A line that is not JSON is dropped too.
 
 **Kept, reported and written are three facts** (docs/enhancements/vision-evidence.md). A
 `vision_triage` row joins its decision by (tick, run, site, scene) and a decision its attempt by
@@ -68,9 +72,14 @@ DynamoDB Query per topic with a Finding written. Nothing here writes.
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
 from datetime import UTC, datetime, timedelta
+from functools import partial
+
+import boto3
+from botocore.config import Config
 
 from common import evidence, vision_decisions
 from common.adapters.registry import ADAPTER_REGISTRY
@@ -94,8 +103,18 @@ WAIT_SECONDS = 8.0
 # after 29 s, and on the ask page the ops agent's own model calls share those 29 s
 # (ops_agent/agent.py); Alexa+'s own limit is closer still. So after the 8 s Logs wait only a few
 # seconds are left for the Articles reads, one per topic with a Finding written: a read that would
-# start after this is skipped, and that topic's person step is said as not checked.
+# start after this is skipped, every page of one that has started is given only the time left
+# (_BoundedArticles), and that topic's articles and person step are then said as not checked.
+# The worst case, from the call's start, is the 8 s Logs wait, plus the reads, which end by the
+# 12 s deadline (its last 4 s), plus one connect and the read timeout's floor: 8 + 4 + 1 + 0.1 =
+# 13.1 s, inside Alexa+'s limit and API Gateway's 29 s. The topic list, the access check and
+# starting the queries come before the wait and out of the reads' 4 s: when they run long, the
+# reads are skipped rather than the call made longer.
 DEADLINE_SECONDS = 12.0
+# Each Articles page's connect, as vision_status._s3's, and the least read timeout it is given
+# (botocore needs one above zero). One attempt in all: the next question asks again.
+CONNECT_SECONDS = 1.0
+MIN_READ_SECONDS = 0.1
 # The functions whose log groups are read, by their catalogue keys (architecture.py).
 TICK_FUNCTION = "research-tick"
 ADMIN_FUNCTION = "admin-api"
@@ -189,9 +208,19 @@ PEOPLE_NOT_CHECKED = "What people decided wasn't checked this time."
 ON_SCREEN = "The decisions are on screen."
 STEPS_ON_SCREEN = "The steps are on screen."
 # A topic whose decisions were all left out as unknown (the attempts query cut at its row cap): the
-# cut note follows it, so it never says that nothing was measured.
+# cut note follows it, so it never says that nothing was measured. With copies known to be not kept
+# beside them, it keeps their count (UNKNOWN_KEPT_FAILED).
 UNKNOWN_KEPT = "For {label}, I couldn't tell which of its decisions {window} were kept."
+UNKNOWN_KEPT_FAILED = (
+    "For {label}, I couldn't tell which of its decisions {window} were kept; {failed} came from ticks "
+    "that failed, and {were} measured again."
+)
 UNKNOWN_KEPT_SHORT = "For {label}, I couldn't tell which decisions were kept."
+# The topics an all-topics answer that runs long leaves out, by what the table holds for them: only
+# those with a row are said to be on screen.
+REST_ON_SCREEN = "{topics} {are} on screen."
+REST_NO_DECISIONS = "{topics} made no decisions."
+REST_UNKNOWN_KEPT = "For {topics}, I couldn't tell which decisions were kept."
 # One scene id decided for several sites of a topic (a tick decides every site in one tile).
 MANY_SITES = "That scene was decided for {n} sites; the newest one's steps are on screen."
 NO_EVIDENCE_TOPIC = (
@@ -855,8 +884,12 @@ def _shows_rows(counts: dict) -> bool:
 def _main_sentence(label: str, counts: dict, days: int) -> str:
     """The "None" or "Some" template of one topic. Of the gate's counts only those above zero are
     said; the agent's always is, as it is what the question is about. With none kept and some left
-    out as unknown (the attempts query cut), UNKNOWN_KEPT: never "no new clear scene was measured"."""
+    out as unknown (the attempts query cut), UNKNOWN_KEPT: never "no new clear scene was measured";
+    with copies known to be not kept beside them, UNKNOWN_KEPT_FAILED keeps their count."""
     n, window = counts["decisions"], f"in the last {_plural(days, 'day')}"
+    if n == 0 and counts["unknown"] and counts["not_kept"]:
+        failed = counts["not_kept"]
+        return UNKNOWN_KEPT_FAILED.format(label=label, window=window, failed=failed, were=_was(failed))
     if n == 0 and counts["unknown"]:
         return UNKNOWN_KEPT.format(label=label, window=window)
     if n == 0 and counts["not_kept"]:
@@ -896,10 +929,14 @@ def _agent_sentence(counts: dict) -> str:
 
 
 def _findings_sentence(counts: dict) -> str:
+    """The findings written and what became of their articles; only the findings when the topic's
+    Articles read was skipped or failed (its article counts are None: not checked, never zero)."""
     if not counts["decisions"]:
         return ""
     written, held = counts["findings_written"], counts["articles_held"]
     approved, rejected = counts["articles_approved"], counts["articles_rejected"]
+    if held is None or approved is None or rejected is None:
+        return f"{_plural(written, 'finding')} {_was(written)} written."
     return (
         f"{_plural(written, 'finding')} {_was(written)} written; {_plural(held, 'article')} {_is(held)} "
         f"waiting for review, {approved} {_was(approved)} approved and {rejected} rejected."
@@ -947,10 +984,24 @@ def _topic_spoken(took: str, label: str, counts: dict, days: int, notes: list[st
     ])  # fmt: skip
 
 
+def _rest_sentences(rest: list[dict]) -> list[str]:
+    """The topics an answer that runs long leaves out, by what the table holds for them: those with
+    a row are on screen; of the others, those with decisions left out as unknown are said as such,
+    and the rest made no decisions. Never "on screen" for a topic with no row."""
+    shown = sum(1 for counts in rest if _shows_rows(counts))
+    unknown = sum(1 for counts in rest if not _shows_rows(counts) and counts["unknown"])
+    none = len(rest) - shown - unknown
+    return [
+        REST_ON_SCREEN.format(topics=_plural(shown, "more topic"), are=_is(shown)) if shown else "",
+        REST_NO_DECISIONS.format(topics=_plural(none, "more topic")) if none else "",
+        REST_UNKNOWN_KEPT.format(topics=_plural(unknown, "more topic")) if unknown else "",
+    ]
+
+
 def _all_topics_spoken(labels: list[str], per_topic: list[dict], days: int, notes: list[str]) -> str:
     """Every topic: one "None" or "Some" sentence each, never summed; when that runs long, a short
-    sentence each, and then as many as fit with the rest said to be on screen. The decisions are
-    said to be on screen only when the table has a row."""
+    sentence each, and then as many as fit with the rest said for what they are (_rest_sentences).
+    The decisions are said to be on screen only when the table has a row."""
     closing = [*notes, ON_SCREEN if any(_shows_rows(counts) for counts in per_topic) else ""]
     full = [_main_sentence(label, counts, days) for label, counts in zip(labels, per_topic, strict=True)]
     lead = f"In the last {_plural(days, 'day')}, "
@@ -960,8 +1011,7 @@ def _all_topics_spoken(labels: list[str], per_topic: list[dict], days: int, note
     ]
     candidates = [[*full, *closing], [*short, *closing]]
     for kept in range(len(short) - 1, 0, -1):
-        rest = len(short) - kept
-        candidates.append([*short[:kept], f"{_plural(rest, 'more topic')} {_is(rest)} on screen.", *closing])
+        candidates.append([*short[:kept], *_rest_sentences(per_topic[kept:]), *closing])
     return _first_that_fits(candidates)
 
 
@@ -1081,6 +1131,44 @@ def _spend_aud(triages: list[dict]) -> float | None:
     return round(sum(priced) * USD_TO_AUD_RATE, 4) if priced else None
 
 
+# --- the Articles read --------------------------------------------------------------------------------
+
+
+def _articles_table(read_timeout: float):
+    """The Articles table for one page of one read, as vision_status._s3 builds its client: a
+    short connect, `read_timeout` (the time left) and one attempt in all. common/dynamo's shared
+    resource keeps botocore's defaults (60 s each way, ten attempts for DynamoDB), which no deadline
+    here could bound."""
+    config = Config(
+        connect_timeout=CONNECT_SECONDS,
+        read_timeout=max(read_timeout, MIN_READ_SECONDS),
+        retries={"total_max_attempts": 1, "mode": "standard"},
+    )
+    return boto3.resource("dynamodb", config=config).Table(os.environ["ARTICLES_TABLE"])
+
+
+class _BoundedArticles:
+    """What dynamo.list_articles_for_topic reads through for one topic: each page (each Query) goes
+    through _articles_table with the time left before `deadline` as its read timeout, and a page
+    that would start at or after the deadline is not made. The read then raises, so one cut between
+    pages is a failed read (not checked), never a partial count."""
+
+    def __init__(self, clock, deadline: float):
+        self.clock, self.deadline = clock, deadline
+
+    def query(self, **kwargs):
+        left = self.deadline - self.clock()
+        if left <= 0:
+            raise TimeoutError("the Articles read ran out of time")
+        return _articles_table(left).query(**kwargs)
+
+
+def _read_articles(topic_id: str, since: str, *, clock, deadline: float) -> list[dict]:
+    """A topic's articles created since `since` (dynamo.list_articles_for_topic), every page of the
+    read ending by `deadline` on `clock`, plus a connect."""
+    return list_articles_for_topic(topic_id, since, table=_BoundedArticles(clock, deadline))
+
+
 # --- the tool ---------------------------------------------------------------------------------------
 
 
@@ -1121,7 +1209,8 @@ def vision_evidence(
     logs, over the last `days` (1 to EVIDENCE_LOOKBACK_DAYS): for `topic` (as the operator said
     it), or every topic that keeps decision evidence; with `scene` (a scene id, or "latest") one
     decision's chain step by step. `run`, `readable`, `articles` and `clock` are the tests' seams
-    for logs.run_queries, logs.readable, dynamo.list_articles_for_topic and time.monotonic."""
+    for logs.run_queries, logs.readable, the bounded Articles read (_read_articles) and
+    time.monotonic."""
     clock = clock or time.monotonic
     started = clock()
     now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
@@ -1240,8 +1329,8 @@ def vision_evidence(
     for line in parsed["people"]:  # newest first: an article's newest decision
         people_by_article.setdefault(line["article_id"], line)
     vocabulary_of = {item["topic_id"]: vocabularies[item["adapter"]] for item in items}
-    if articles is None:
-        articles = list_articles_for_topic
+    if articles is None:  # every page ends by the deadline (_BoundedArticles)
+        articles = partial(_read_articles, clock=clock, deadline=started + DEADLINE_SECONDS)
     article_by_at: dict[str, dict[str, dict] | None] = {}
     rendered = []
     for entry in entries:
@@ -1283,6 +1372,9 @@ def vision_evidence(
         per_topic[topic_id]["not_kept"] += copies
     for topic_id, scenes in unknown.items():
         per_topic[topic_id]["unknown"] += scenes
+    for topic_id, found in article_by_at.items():
+        if found is None:  # its Articles read was skipped or failed: not checked, never zero
+            per_topic[topic_id].update(dict.fromkeys(_ARTICLE_COUNTS.values()))
     spend = {topic_id: _spend_aud([t for t in triages if t["topic_id"] == topic_id]) for topic_id in ids}
     result["topics"] = [
         {

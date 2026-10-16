@@ -678,12 +678,13 @@ VISION_EVIDENCE_DOC = (
     "range and from which input, what the triage agent did (its tools, including OpenCV "
     "re-measurements, and its verdict), whether a finding was written, and whether its article was "
     'approved. Pass `topic` for one topic, `scene` (a scene id, or "latest") for one decision step by '
-    "step, and `days` for the window (up to 90). Say its counts as `spoken` does and that the rows are "
-    "on screen; never read a table's cells aloud."
+    "step, and `days` for the window (up to 90). Say what `spoken` says; it says when rows are on "
+    "screen. Never read a table's cells aloud."
 )
 VISION_EVIDENCE_INSTRUCTION = (
     "vision_evidence says what the vision pipeline measured and decided and what a person did about it, "
-    "and with `scene` walks one decision step by step. Say its counts and that the rows are on screen."
+    "and with `scene` walks one decision step by step. Say what `spoken` says; it says when rows are on "
+    "screen."
 )
 
 

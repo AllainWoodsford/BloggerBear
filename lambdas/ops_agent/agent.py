@@ -282,7 +282,7 @@ SYSTEM_PROMPT = "\n".join(
         # lines from the logs (ops_mcp/vision_evidence.py); its `spoken` and rows are code-derived.
         "Asked what the vision pipeline or its agent did, why a change was or was not reported, or for "
         "evidence that OpenCV's output changed a decision: call vision_evidence (`scene` for one "
-        "decision step by step). Say what its `spoken` says; the rows are on screen.",
+        "decision step by step). Say what its `spoken` says; it says when rows are on screen.",
         # The architecture tool answers for this environment whatever name is pasted; the model
         # only has to pass the name as given and repeat what came back about the environment.
         "When the operator asks what a table, function, log group, dashboard or other AWS "

@@ -265,12 +265,19 @@ Alexa+ and the ask page both call `vision_evidence` (`lambdas/ops_mcp/vision_evi
 Of the gate's counts (first observation, too cloudy to count, still building a baseline, within
 the usual range) only those above zero are said, so a quiet week is not a list of zeros; the
 agent's count is always said, as it is what the question is about, and the findings sentence says
-its zeros. A topic with no decision says "made no decisions in the last 7 days: no new clear scene
-was measured." and nothing more, since there is nothing on screen; "The decisions are on screen."
-closes an answer only when the table has a row. When the attempts query was cut at its 1,000 rows
-and every decision of a topic was left out as unknown, the topic is said as "For Rail access:
-Sydney, I couldn't tell which of its decisions in the last 7 days were kept.", followed by "Only
-the newest 1000 log lines were read.", never as "no new clear scene was measured".
+its zeros, except when the topic's Articles read was skipped or failed: then it says only "1 finding
+was written.", never "0 articles are waiting for review", and "What people decided wasn't checked
+this time." follows. A topic with no decision says "made no decisions in the last 7 days: no new
+clear scene was measured." and nothing more, since there is nothing on screen; "The decisions are on
+screen." closes an answer only when the table has a row. When the attempts query was cut at its
+1,000 rows and every decision of a topic was left out as unknown, the topic is said as "For Rail
+access: Sydney, I couldn't tell which of its decisions in the last 7 days were kept.", followed by
+"Only the newest 1000 log lines were read.", never as "no new clear scene was measured"; when some
+of its decisions are known to come from failed ticks, the sentence keeps their count ("...were
+kept; 3 came from ticks that failed, and were measured again."). An all-topics answer too long for one
+sentence a topic says as many short ones as fit, and then the rest by what the table holds for them:
+"4 more topics are on screen." only for topics with a row, "6 more topics made no decisions." and
+"For 2 more topics, I couldn't tell which decisions were kept." for the others.
 
 The page shows one row per decision: the topic, the site, the scene, how clear it was, OpenCV's
 measures, which measures moved and from which input (the imagery, OpenStreetMap, or both), the
@@ -295,7 +302,9 @@ and `spend_aud`), `window`, `queries` (each `complete`, `cut` or `not_checked`),
 `spend_note` and `as_of`. With a `topic`, the top-level `counts` and `spend_aud` are that topic's.
 With no `topic` they are null: per-topic numbers are never summed, so a reader of the all-topics
 answer reads each topic's from `topics[].counts` and `topics[].spend_aud`. Both are also null
-when the decisions or attempts query did not finish. A scene answer adds `decision` (the summary)
+when the decisions or attempts query did not finish. A topic whose Articles read was skipped or
+failed has `articles_held`, `articles_approved` and `articles_rejected` null in its counts: not
+checked, never zero. A scene answer adds `decision` (the summary)
 and `other_sites` (below), and its `rows` are the trace's.
 
 **One decision, step by step.** "Walk me through the latest Sydney scene" passes `scene` as
@@ -328,20 +337,27 @@ newest one's steps are on screen.", and lists the other sites' ids under `other_
   (`dynamo.list_articles_for_topic`: at most 200 articles, never a Scan, and only the fields the
   join uses: the id, status, who published it and when, and the lineage) for the article each
   finding fed, found by its lineage's `captured_at`. The one-topic answer makes one such read; the
-  all-topics answer one per topic with a finding. The whole call has a deadline of 12 seconds from
-  its start (`DEADLINE_SECONDS`): it answers through API Gateway, which gives up after 29 seconds,
-  and on the ask page the agent's own model calls share those 29 seconds, so an Articles read that
-  would start after it is skipped, and that topic's "what a person did" is not checked, as when a
-  read fails (never "no article yet"). The `vision_site` lines are never read (24 a day per
-  site would fill the 1,000-row cap within weeks), and no `stats` aggregate is used (it would
-  count a failed attempt's lines twice).
+  all-topics answer one per topic with a finding. The Articles reads end by a deadline of 12
+  seconds from the call's start (`DEADLINE_SECONDS`): it answers through API Gateway, which gives up
+  after 29 seconds, and on the ask page the agent's own model calls share those 29 seconds. Each
+  page of a read goes through its own DynamoDB client with a one-second connect, the time left
+  before the deadline as its read timeout (at least 0.1 s) and no retry, so a read that would start
+  after the deadline is skipped, and one that times out, or runs out of time between pages, is
+  stopped; the shared client the pipeline uses keeps botocore's 60-second timeouts and ten
+  attempts. The worst case is the 8-second Logs wait, plus the reads, which end by the 12-second
+  deadline, plus one connect: 8 + 4 + 1 + 0.1 = 13.1 seconds. A skipped or stopped read is said as
+  a failed one is: that topic's "what a person did" and its article counts are not checked (never
+  "no article yet", never a count of what one page held). The `vision_site` lines are never read
+  (24 a day per site would fill the 1,000-row cap within weeks), and no `stats` aggregate is used
+  (it would count a failed attempt's lines twice).
 - **By equality, never a pattern**: the only values put into a query are a topic id that passed
   `ID_PATTERN` and a scene id that passed `^[A-Za-z0-9_.-]{1,100}$`, each a quoted string compared
   with `=`, so `rail-sydney` never reads `rail-sydney-demo`'s lines.
 - **Parsed, never trusted**: every line goes through `evidence.parse`, and a line is dropped and
   counted (`dropped`) when its topic is not the one asked for, its event not the query's, its
-  decision code, stop, tool or moved measure not one the pipeline writes (the triage profiles'
-  tools, the union of the adapters' `decision_vocabulary()`), or it lacks the ids it is joined by.
+  decision code, stop, verdict, tool or moved measure not one the pipeline writes (the triage
+  profiles' tools, the union of the adapters' `decision_vocabulary()`), its coverage is outside 0
+  to 1, or it lacks the ids it is joined by.
 - **Kept, reported and written**, as above: a decision of an attempt with `stored: false` or no
   `research_tick` line is not kept, counted under `not_kept` and never as a decision; a scene
   decided twice is shown once, the kept copy first.
