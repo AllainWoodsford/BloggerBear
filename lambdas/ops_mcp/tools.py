@@ -305,20 +305,31 @@ _SITE_PROBLEMS = ("worker_error", "source_error", "refused", "site_problem", "st
 
 def _vision_spoken(health: dict) -> str:
     """At most one sentence about the vision topics, the first that holds: the worker is off; a
-    topic has a site that was not measured; some topics' sites were not checked this time."""
+    topic's sites setting doesn't parse, or a topic has a site that was not measured (one sentence
+    with both clauses when both hold); some topics' sites were not checked this time."""
+    from ops_mcp.vision_status import _whose  # imported here: vision_status imports this module
+
     topics = list(health["topics"].values())
     if not topics:
         return ""
     off = [entry["label"] for entry in topics if entry["uses_worker"] and entry["state"] == "worker_off"]
     if off:
         return f"The vision worker is off, so {_few(off)} can't be measured."
-    failing = [entry["label"] for entry in topics if any(entry["sites"][name] for name in _SITE_PROBLEMS)]
+    failing = [entry for entry in topics if any(entry["sites"][name] for name in _SITE_PROBLEMS)]
     if failing:
-        verb = "has" if len(failing) == 1 else "have"
-        return (
-            f"{_few(failing)} {verb} a site that wasn't measured on the last try; ask about the vision "
-            "pipeline for why."
-        )
+        # A topic whose sites list itself doesn't parse has no site (vision_status.WHOLE_TOPIC), so
+        # none of its "wasn't measured": it is said as the memory watch says it.
+        unparsed = [e["label"] for e in failing if e["sites"]["config_error"] and not e["sites"]["total"]]
+        rest = [e["label"] for e in failing if not (e["sites"]["config_error"] and not e["sites"]["total"])]
+        clauses = []
+        if len(unparsed) == 1:
+            clauses.append(f"{_whose(unparsed[0])} sites setting doesn't parse")
+        elif unparsed:
+            clauses.append(f"{_few(unparsed)}'s sites settings don't parse")
+        if rest:
+            verb = "has" if len(rest) == 1 else "have"
+            clauses.append(f"{_few(rest)} {verb} a site that wasn't measured on the last try")
+        return f"{', and '.join(clauses)}; ask about the vision pipeline for why."
     unchecked = sum(1 for entry in topics if entry["state"] in ("not_checked", "too_large", "unreadable"))
     if unchecked:
         topics_word = "topic" if unchecked == 1 else "topics"

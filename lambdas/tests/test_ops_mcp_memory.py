@@ -1166,6 +1166,31 @@ def test_a_watched_vision_topic_whose_sites_are_fine_adds_nothing(tables, monkey
     assert listed["watching"][0]["now"]["sites"]["measured"] == 1
 
 
+def test_a_watched_vision_topic_whose_sites_list_does_not_parse_says_so(tables, monkeypatch):
+    import test_ops_mcp_vision_status as vt
+
+    now = _vision_topic(tables, monkeypatch, "rail-sydney", error_code=None)
+    researched = now.isoformat()
+    broken = vt.topic_item("broken", "Broken", "rail_access", {"sites": "nope"}, last_research_at=researched)
+    tables.Table("Topics").put_item(Item=json.loads(json.dumps(broken), parse_float=Decimal))
+    memory.watch(ALICE, "topic", "broken", now=now)
+    listed = memory.watch_list(ALICE, now=now)
+    assert listed["spoken"].endswith("research is on time; its sites setting doesn't parse.")
+    assert listed["watching"][0]["now"]["sites"]["config_error"] == 1
+
+
+def test_with_the_worker_off_no_running_state_is_read_or_counted(tables, monkeypatch):
+    """Nothing is read with the worker off, so STATE_READS_MAX does not cut a third watched vision
+    topic short: each says why it can't be measured."""
+    for n in range(3):
+        now = _vision_topic(tables, monkeypatch, f"rail-{n}")
+        memory.watch(ALICE, "topic", f"rail-{n}", now=now)
+    monkeypatch.setenv("OPS_VISION_REGION", "")
+    listed = memory.watch_list(ALICE, now=now)
+    assert listed["spoken"].count("its sites can't be measured while the vision worker is off") == 3
+    assert "weren't checked this time" not in listed["spoken"]
+
+
 def test_one_watch_list_reads_at_most_a_few_running_states(tables, monkeypatch):
     from ops_mcp import vision_status
 

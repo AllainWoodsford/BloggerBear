@@ -147,7 +147,8 @@ SINCE_MAX_HOURS = 168
 LOG_READS_MAX = 2
 # A watched topic whose adapter watches sites has its running state read as well
 # (vision_status.site_health), WATCH_READ_SECONDS each and nothing over LARGE_STATE_BYTES, at most
-# this many per call; past that its sites are said not to be checked this time.
+# this many per call; past that its sites are said not to be checked this time. With the worker off
+# nothing is read, and nothing is counted.
 STATE_READS_MAX = 2
 LOG_READ_WAIT_SECONDS = 8
 
@@ -1099,9 +1100,10 @@ def _watched_sites(topic_id: str, now: datetime, state_reads: list[int]) -> tupl
     topic = get_topic(topic_id)
     if topic is None or not vision_status.site_topics([topic], now):
         return None, ""
-    if state_reads[0] >= STATE_READS_MAX:
-        return {"state": "not_checked"}, "; its sites weren't checked this time"
-    state_reads[0] += 1
+    if vision_status.worker_on():  # with the worker off site_health reads nothing
+        if state_reads[0] >= STATE_READS_MAX:
+            return {"state": "not_checked"}, "; its sites weren't checked this time"
+        state_reads[0] += 1
     health = vision_status.site_health(
         [topic],
         now,
@@ -1116,6 +1118,8 @@ def _watched_sites(topic_id: str, now: datetime, state_reads: list[int]) -> tupl
         return sites, "; its sites can't be measured while the vision worker is off"
     failing = sum(sites[name] for name in tools._SITE_PROBLEMS)
     if failing:
+        if not sites["total"]:  # the sites list itself doesn't parse (vision_status.WHOLE_TOPIC)
+            return sites, "; its sites setting doesn't parse"
         if sites["total"] == 1:
             return sites, "; its site wasn't measured on the last try"
         verb = "wasn't" if failing == 1 else "weren't"
