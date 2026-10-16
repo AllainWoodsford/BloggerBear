@@ -3,6 +3,7 @@ from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import boto3
 import pytest
@@ -11,13 +12,19 @@ from moto import mock_aws
 import common.dynamo as dynamo
 import daily_cycle_handler
 import research_tick_handler
-from common import findings_window
+from common import compliance, editorial_resolver, findings_window
+from common.adapters.base import DaySubject
+from common.adapters.github_trending import GitHubTrendingAdapter
+from common.adapters.registry import ADAPTER_REGISTRY
+from common.day_subject import parse_rotation, rotation_subject
 from common.editorial_goals import (
     ARTICLE_STYLES,
     EDITORIAL_MANDATES,
     EditorialGoal,
     goal_for_date,
 )
+from common.editorial_resolver import MANDATE_ALIGNMENT_RULE, resolve_editorial_goals
+from common.relevance import ideation_relevance_rule
 
 
 def _tracked_result(
@@ -2933,3 +2940,428 @@ def test_findings_without_figures_give_the_article_none(s3_bucket):
 
     assert mock_put_article.call_args.kwargs["figures"] == []
     assert mock_render.call_args.kwargs["figures"] == []
+
+
+# --- the day-subject round: one topic that rotates through its subjects (common/day_subject.py) ---
+
+_ROTA_KEY = "rota_test"
+# A weekly rota read in Sydney, where daylight saving starts on Sunday 2026-10-04: the fortnight
+# below crosses it, and a run at 09:05 local is 23:05 UTC the day before, then 22:05.
+_ROTA = {"MON": "north", "TUE": "south", "WED": "north", "THU": "south", "FRI": "north",
+         "SAT": "south", "SUN": "north"}  # fmt: skip
+_ROTA_ZONE = "Australia/Sydney"
+
+
+class _RotaAdapter(GitHubTrendingAdapter):
+    """A test adapter whose topics rotate through two subjects by the generic weekly rota."""
+
+    SUBJECTS = {"north": "North Shore", "south": "South Bank"}
+    asked: list = []  # every `at` day_subject was asked about
+
+    def day_subject(self, topic_config, at):
+        type(self).asked.append(at)
+        config, zone = topic_config.get("adapter_config"), topic_config.get("daily_timezone")
+        rota = parse_rotation(config, self.SUBJECTS, zone)
+        if rota is None:
+            return None
+        key = rotation_subject(rota, at)
+        label = self.SUBJECTS[key]
+        return DaySubject(
+            key=key,
+            label=label,
+            mandate=f"Report only what was measured for {label}.",
+            style=f"A short, plain report on {label}.",
+        )
+
+
+@pytest.fixture
+def rotating(s3_bucket, monkeypatch):
+    """A real (moto) Topics and Findings table, the rota adapter registered, and a clock the test
+    sets: the daily cycle reads its window, its findings and its stamps for real."""
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+    monkeypatch.setattr(dynamo, "_dynamodb_resource", None)
+    monkeypatch.setitem(ADAPTER_REGISTRY, _ROTA_KEY, _RotaAdapter)
+    monkeypatch.setattr(_RotaAdapter, "asked", [])
+    client = boto3.client("dynamodb", region_name="ap-southeast-2")
+    client.create_table(
+        TableName=ENV["TOPICS_TABLE"],
+        KeySchema=[{"AttributeName": "topic_id", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "topic_id", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    client.create_table(
+        TableName=ENV["FINDINGS_TABLE"],
+        KeySchema=[
+            {"AttributeName": "topic_id", "KeyType": "HASH"},
+            {"AttributeName": "captured_at", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "topic_id", "AttributeType": "S"},
+            {"AttributeName": "captured_at", "AttributeType": "S"},
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    resource = boto3.resource("dynamodb", region_name="ap-southeast-2")
+    clock = {"now": None}
+
+    class _Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"] if tz is None else clock["now"].astimezone(tz)
+
+    monkeypatch.setattr(daily_cycle_handler, "datetime", _Clock)
+    yield {
+        "topics": resource.Table(ENV["TOPICS_TABLE"]),
+        "findings": resource.Table(ENV["FINDINGS_TABLE"]),
+        "clock": clock,
+    }
+
+
+def _rotating_topic(**extra):
+    return {
+        "topic_id": "rota",
+        "name": "Two Cities",
+        "adapter": _ROTA_KEY,
+        "adapter_config": {"rotation": _ROTA, "rotation_timezone": _ROTA_ZONE},
+        "is_financial": False,
+        **extra,
+    }
+
+
+def _local(day: date, hour: int, minute: int = 0) -> datetime:
+    """A local Sydney time as an aware UTC datetime."""
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=ZoneInfo(_ROTA_ZONE)).astimezone(UTC)
+
+
+def _put_subject_finding(rotating, captured: datetime, summary: str, subjects=None, topic_id="rota"):
+    item = {
+        "topic_id": topic_id,
+        "captured_at": captured.isoformat(),
+        "summary": summary,
+        "source_refs": [{"url": f"https://example.org/{len(summary)}", "title": summary}],
+    }
+    if subjects is not None:
+        item["subjects"] = subjects
+    rotating["findings"].put_item(Item=item)
+
+
+def _run_at(rotating, at: datetime, **event):
+    """One daily run at `at`, everything but DynamoDB mocked. Returns the result, the findings the
+    article was drafted from (None if no draft), the prompts and put_article's kwargs."""
+    rotating["clock"]["now"] = at
+    responses = ["Angle one\nAngle two\nAngle three", "# Draft body", "A Title"]
+    with (
+        patch("daily_cycle_handler.list_prompt_refinements", return_value=[]),
+        patch("daily_cycle_handler.get_top_voted_articles", return_value=[]),
+        patch("daily_cycle_handler.resolve_model", return_value=("m", None)),
+        patch("daily_cycle_handler.build_lineage", return_value=_DUMMY_LINEAGE),
+        patch("daily_cycle_handler.record_article_lineage"),
+        patch("daily_cycle_handler.refresh_articles_snapshot"),
+        patch(
+            "daily_cycle_handler.invoke_model_tracked",
+            side_effect=[_tracked_result(r) for r in responses],
+        ) as mock_invoke,
+        patch(
+            "daily_cycle_handler.compliance.review_draft",
+            return_value={"compliant": True, "reasons": [], "lineage_call": _DUMMY_LINEAGE_CALL},
+        ),
+        patch("daily_cycle_handler.put_candidate_idea", wraps=_fake_put_candidate_idea),
+        patch("daily_cycle_handler.put_article") as mock_put_article,
+        patch("daily_cycle_handler.put_moderation_item"),
+        patch("daily_cycle_handler.render_and_publish_article_page"),
+        patch("daily_cycle_handler.generate_and_store_article_musing"),
+        patch(
+            "daily_cycle_handler._format_findings_summaries",
+            wraps=daily_cycle_handler._format_findings_summaries,
+        ) as drafted_from,
+    ):
+        result = daily_cycle_handler.handler({"topic_id": "rota", **event}, None)
+    drafted = [f["summary"] for f in drafted_from.call_args.args[0]] if drafted_from.called else None
+    prompts = [call.args[0] for call in mock_invoke.call_args_list]
+    article = mock_put_article.call_args.kwargs if mock_put_article.called else None
+    return result, drafted, prompts, article
+
+
+def _stamps(rotating) -> dict:
+    item = rotating["topics"].get_item(Key={"topic_id": "rota"})["Item"]
+    return {"topic": item.get("last_article_at"), "by_subject": item.get("last_article_by_subject")}
+
+
+def _longest_gap_days(rota: dict) -> int:
+    """The most days between one subject's day and its next, round the week."""
+    days = [rota[day] for day in ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")]
+    gaps = []
+    for index, subject in enumerate(days):
+        gaps.append(next(step for step in range(1, 8) if days[(index + step) % 7] == subject))
+    return max(gaps)
+
+
+def test_a_rotating_topic_drafts_every_finding_once_on_its_subjects_day_over_a_fortnight(rotating):
+    """Fourteen daily runs at 09:05 Sydney time, across the start of daylight saving, with the real
+    window, selection and stamps: every Finding is drafted exactly once on each of its subjects'
+    days (the first one after it was captured), a Finding with no subjects never is, a day whose
+    subject found nothing writes nothing and stamps nothing, and the rota is read on Sydney's
+    calendar, not UTC's."""
+    gap = _longest_gap_days(_ROTA)
+    assert gap == 3  # south: Saturday to Tuesday
+    # Wide enough for the rota (24 h per day of the longest gap, and a day to spare); a number
+    # comes back from DynamoDB as a Decimal.
+    rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=24 * gap + 24))
+    first = date(2026, 9, 28)  # a Monday
+    days = [first + timedelta(days=n) for n in range(14)]
+    findings = {}  # summary -> (captured, subjects)
+    for number, day in enumerate(days):
+        # Research found something for North every day but one, for South on some days only, both
+        # at once now and then, and once something that reports no subject at all.
+        if number != 5:
+            findings[f"north {number}"] = (_local(day, 3), ["north"])
+        if number % 3 == 0:
+            findings[f"south {number}"] = (_local(day, 4), ["south"])
+        if number in (2, 9):
+            findings[f"both {number}"] = (_local(day, 5), ["north", "south"])
+        if number == 4:
+            findings[f"none {number}"] = (_local(day, 6), None)
+
+    drafted_on = {summary: [] for summary in findings}
+    outcomes = []
+    stored = set()
+    for day in days:
+        run = _local(day, 9, 5)
+        for summary, (captured, subjects) in findings.items():  # what research has found by now
+            if captured < run and summary not in stored:
+                _put_subject_finding(rotating, captured, summary, subjects)
+                stored.add(summary)
+        result, drafted, prompts, article = _run_at(rotating, run)
+        expected_subject = _ROTA[("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")[day.weekday()]]
+        assert result.get("subject") == expected_subject  # Sydney's weekday, every day
+        outcomes.append((day, expected_subject, result["status"]))
+        for summary in drafted or []:
+            drafted_on[summary].append((day, expected_subject))
+        if drafted:
+            assert article["subject"] == expected_subject
+            label = _RotaAdapter.SUBJECTS[expected_subject]
+            assert f"Editorial Mandate: Report only what was measured for {label}." in prompts[0]
+            assert f"Article style: A short, plain report on {label}." in prompts[1]
+    # The rota was asked once a run, at the run's start, and nothing else asked it.
+    assert _RotaAdapter.asked == [_local(day, 9, 5) for day in days]
+
+    for summary, (captured, subjects) in findings.items():
+        if subjects is None:
+            assert drafted_on[summary] == [], summary  # never drafted by a rotating topic
+            continue
+        assert sorted(subject for _, subject in drafted_on[summary]) == sorted(subjects), summary
+        for subject in subjects:
+            (drafted_day,) = (d for d, s in drafted_on[summary] if s == subject)
+            # The first of the subject's days whose run came after the Finding.
+            assert drafted_day == next(
+                d for d in days if _local(d, 9, 5) > captured and outcomes[days.index(d)][1] == subject
+            ), (summary, subject)
+
+    # South found nothing between its Thursday 2026-10-01 article and its Saturday: that Saturday
+    # writes nothing and stamps nothing, and its Tuesday reads from the Thursday. Every other run
+    # published.
+    quiet = [(day, subject) for day, subject, status in outcomes if status == "no_findings"]
+    assert quiet == [(date(2026, 10, 3), "south")]
+    assert all(status == "published" for day, _, status in outcomes if day != date(2026, 10, 3))
+    stamps = _stamps(rotating)
+    last_written = {
+        subject: max(_local(day, 9, 5) for day, s, done in outcomes if s == subject and done == "published")
+        for subject in ("north", "south")
+    }
+    assert stamps["by_subject"] == {subject: at.isoformat() for subject, at in last_written.items()}
+    assert stamps["topic"] == max(last_written.values()).isoformat()
+
+
+def test_a_subject_with_nothing_new_writes_nothing_and_stamps_nothing(rotating):
+    monday = date(2026, 9, 28)
+    rotating["topics"].put_item(
+        Item=_rotating_topic(
+            findings_window_hours=96,
+            last_article_at=_local(monday, 9, 5).isoformat(),
+            last_article_by_subject={"south": _local(monday - timedelta(days=2), 9, 5).isoformat()},
+        )
+    )
+    _put_subject_finding(rotating, _local(monday, 12), "north only", ["north"])
+    _put_subject_finding(rotating, _local(monday, 13), "no subject")
+    before = _stamps(rotating)
+
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        rotating["clock"]["now"] = _local(monday + timedelta(days=1), 9, 5)  # Tuesday: South's day
+        result = daily_cycle_handler.handler({"topic_id": "rota"}, None)
+
+    assert result == {"status": "no_findings", "topic_id": "rota", "subject": "south"}
+    never.assert_not_called()  # stopped before any model call
+    assert _stamps(rotating) == before
+
+
+def test_force_keeps_the_subject_filter_but_ignores_the_stamps(rotating):
+    wednesday = date(2026, 9, 30)  # North's day
+    rotating["topics"].put_item(
+        Item=_rotating_topic(
+            findings_window_hours=96,
+            last_article_at=_local(wednesday, 9, 5).isoformat(),
+            last_article_by_subject={"north": _local(wednesday, 9, 5).isoformat()},
+        )
+    )
+    _put_subject_finding(rotating, _local(wednesday, 3), "north, already written", ["north"])
+    _put_subject_finding(rotating, _local(wednesday, 4), "south's", ["south"])
+
+    result, drafted, _, _ = _run_at(rotating, _local(wednesday, 15))
+    assert result["status"] == "no_findings" and drafted is None
+
+    result, drafted, _, article = _run_at(rotating, _local(wednesday, 15), force=True)
+    assert result["status"] == "published" and result["subject"] == "north"
+    assert drafted == ["north, already written"] and article["subject"] == "north"
+
+
+def test_a_subjects_stamp_bounds_its_window_even_when_the_topics_is_older(rotating):
+    """A Finding newer than the topic-wide stamp but older than its subject's is not drafted again:
+    the subject's stamp wins when there is one."""
+    friday = date(2026, 10, 2)  # North's day
+    rotating["topics"].put_item(
+        Item=_rotating_topic(
+            findings_window_hours=96,
+            last_article_at=_local(friday - timedelta(days=3), 9, 5).isoformat(),
+            last_article_by_subject={"north": _local(friday - timedelta(days=1), 9, 5).isoformat()},
+        )
+    )
+    _put_subject_finding(rotating, _local(friday - timedelta(days=2), 3), "before north's stamp", ["north"])
+    _put_subject_finding(rotating, _local(friday, 3), "after it", ["north"])
+
+    result, drafted, _, _ = _run_at(rotating, _local(friday, 9, 5))
+
+    assert result["status"] == "published" and drafted == ["after it"]
+
+
+def test_a_plain_topic_still_drafts_a_finding_with_no_subjects_and_keeps_its_one_stamp(rotating):
+    rotating["topics"].put_item(Item={**NON_FINANCIAL_TOPIC, "topic_id": "rota"})
+    monday = date(2026, 9, 28)
+    _put_subject_finding(rotating, _local(monday, 3), "a plain finding")
+    _put_subject_finding(rotating, _local(monday, 4), "one that names a subject", ["north"])
+
+    result, drafted, _, article = _run_at(rotating, _local(monday, 9, 5))
+
+    assert result == {
+        "status": "published",
+        "topic_id": "rota",
+        "article_id": result["article_id"],
+        "compliant": True,
+    }
+    assert drafted == ["one that names a subject", "a plain finding"]
+    assert "subject" not in article
+    stamps = _stamps(rotating)
+    assert stamps == {"topic": _local(monday, 9, 5).isoformat(), "by_subject": None}
+
+
+def test_a_paused_rotating_topic_stays_paused_and_its_rota_is_not_read(rotating):
+    rotating["topics"].put_item(Item=_rotating_topic(paused=True))
+
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        rotating["clock"]["now"] = _local(date(2026, 9, 28), 9, 5)
+        result = daily_cycle_handler.handler({"topic_id": "rota"}, None)
+
+    assert result == {"status": "paused", "topic_id": "rota"}
+    assert _RotaAdapter.asked == []
+    never.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "adapter_config, words",
+    [
+        ({"rotation": {**_ROTA, "MON": "east"}}, "'east', which is not one of the topic's subjects"),
+        ({"rotation": ["north"]}, "gives no day to south"),
+        ({"rotation": _ROTA, "rotation_timezone": "Not/AZone"}, "is not a zone"),
+    ],
+)
+def test_a_broken_rota_stops_the_run_before_any_model_call_and_stamps_nothing(
+    rotating, adapter_config, words
+):
+    rotating["topics"].put_item(Item={**_rotating_topic(), "adapter_config": adapter_config})
+    _put_subject_finding(rotating, _local(date(2026, 9, 28), 3), "north", ["north"])
+
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        rotating["clock"]["now"] = _local(date(2026, 9, 28), 9, 5)
+        result = daily_cycle_handler.handler({"topic_id": "rota"}, None)
+
+    assert result["status"] == "error" and words in result["error"]
+    never.assert_not_called()
+    assert _stamps(rotating) == {"topic": None, "by_subject": None}
+
+
+def test_an_adapter_whose_day_subject_is_not_one_stops_the_run(rotating, monkeypatch):
+    monkeypatch.setattr(_RotaAdapter, "day_subject", lambda self, topic_config, at: "north")
+    rotating["topics"].put_item(Item=_rotating_topic())
+
+    with patch("daily_cycle_handler.invoke_model_tracked") as never:
+        rotating["clock"]["now"] = _local(date(2026, 9, 28), 9, 5)
+        result = daily_cycle_handler.handler({"topic_id": "rota"}, None)
+
+    assert result["status"] == "error" and "not a DaySubject" in result["error"]
+    never.assert_not_called()
+
+
+def test_the_day_subject_is_said_in_the_log_and_held_articles_name_it_too(rotating, capsys):
+    rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=96))
+    _put_subject_finding(rotating, _local(date(2026, 9, 28), 3), "north", ["north"])
+
+    with patch("daily_cycle_handler.compliance.requires_manual_review", return_value=True):
+        result, _, _, article = _run_at(rotating, _local(date(2026, 9, 28), 9, 5))
+
+    assert result["status"] == "pending_moderation" and result["subject"] == "north"
+    assert article["subject"] == "north"
+    assert "daily_cycle_handler: day_subject=north topic_id=rota" in capsys.readouterr().out
+
+
+def test_a_day_subject_keeps_the_adapters_standing_goal_in_the_prompts(rotating, monkeypatch):
+    """resolve_editorial_goals: a day subject is inside the adapter's domain, unlike crypto's
+    market-news day, so the adapter's default goal stays in both prompts."""
+    monkeypatch.setitem(
+        editorial_resolver.ADAPTER_DEFAULTS, _ROTA_KEY, "Report only what the two cities' sensors measured."
+    )
+    rotating["topics"].put_item(Item=_rotating_topic(findings_window_hours=96))
+    _put_subject_finding(rotating, _local(date(2026, 9, 28), 3), "north", ["north"])
+
+    _, _, prompts, _ = _run_at(rotating, _local(date(2026, 9, 28), 9, 5))
+
+    standing = "Adapter-Specific Standard Goal: Report only what the two cities' sensors measured."
+    assert standing in prompts[0] and standing in prompts[1]
+    assert "Global Default Goal" not in prompts[0] + prompts[1]
+    assert "assigned daily editorial vector for 'Two Cities'" in prompts[0]
+
+
+def test_the_crypto_prompts_are_exactly_what_the_goal_lookup_always_built(s3_bucket):
+    """The DaySubject seam is additive: a crypto day's ideation and draft prompts are built from
+    EDITORIAL_MANDATES and ARTICLE_STYLES exactly as before it existed."""
+    goal = EditorialGoal.TREND_INVENTOR
+    topic = {**FINANCIAL_TOPIC, "adapter_config": {"editorial_goal": goal.value}}
+    findings = [_finding_at(datetime.now(UTC).isoformat(), "Finding", "https://example/f")]
+
+    _, mock_invoke, _ = _run_crypto(topic, findings)
+
+    summaries = daily_cycle_handler._format_findings_summaries(findings)
+    standing = (
+        f"ACTIVE EDITORIAL MANDATE:\n{resolve_editorial_goals(topic, goal)}\n\n"
+        f"{ideation_relevance_rule('Crypto Markets')}\n"
+        f"{MANDATE_ALIGNMENT_RULE}"
+    )
+    financial = f"\n\nFinancial-topic guidance (mandatory):\n{compliance.FINANCIAL_DRAFTING_GUIDANCE}"
+    expected_ideation = (
+        "Based on the following recent research findings and the assigned daily "
+        "editorial vector for 'Crypto Markets', propose exactly "
+        "3 distinct, specific candidate article angles. "
+        "Reply with exactly one angle per line, no numbering, no extra "
+        "commentary.\n\n"
+        f"{standing}\n\n"
+        f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n"
+        "Apply this mandate strictly within the theme of 'Crypto Markets' and the Active "
+        "Editorial Mandate above: it decides the shape of each angle, never the subject.\n\n"
+        f"Data Payload:\n{summaries}"
+        f"{financial}"
+    )
+    draft_prompt = mock_invoke.call_args_list[1].args[0]
+    assert mock_invoke.call_args_list[0].args[0] == expected_ideation
+    assert f"\n\nArticle style: {ARTICLE_STYLES[goal]}{financial}" in draft_prompt
+    assert draft_prompt.startswith(
+        "Write a full article draft in markdown (a few paragraphs) for a blog about 'Crypto Markets', "
+        f"on this angle: Angle one\n\nCORE EDITORIAL DIRECTION:\n{resolve_editorial_goals(topic, goal)}"
+    )

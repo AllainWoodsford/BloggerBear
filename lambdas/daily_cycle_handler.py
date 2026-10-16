@@ -14,7 +14,11 @@ model):
    Topics with a daily editorial goal (the crypto feed -- see
    common/editorial_goals.py) resolve today's goal here and keep only the
    findings that belong to it; its mandate and article style are folded into
-   steps 3 and 5. Every other topic is unaffected.
+   steps 3 and 5. A topic that rotates through several subjects (its adapter
+   names a day subject, common/day_subject.py) does the same with the day's
+   subject: the window starts at that subject's previous article, only the
+   findings that report the subject are kept, and its own mandate and style
+   are folded in. Every other topic is unaffected.
 3. Ideate: ask Bedrock for 3 candidate angles, store them as CandidateIdeas.
    Ideation and drafting (step 5) both carry a relevance guardrail keyed to
    the active topic's name (common/relevance.py) and the topic's standing
@@ -42,9 +46,11 @@ from datetime import UTC, date, datetime
 import boto3
 
 from common import compliance, equipment, fresh_review
+from common.adapters.base import DaySubject
 from common.attribution import sources_for_topic
 from common.bedrock import invoke_model_tracked
 from common.costing import build_lineage, build_research_lineage
+from common.day_subject import ARTICLE_SUBJECT_FIELD, resolve_day_subject, subject_findings
 from common.dynamo import (
     get_last_armor_versions,
     get_model_rotation_candidates,
@@ -233,27 +239,52 @@ def _window_hours(topic: dict) -> int:
     return findings_window_hours(topic)
 
 
-def _window_start(topic: dict, run_started: datetime, force: bool) -> str:
+def _window_start(topic: dict, run_started: datetime, force: bool, subject_key: str | None = None) -> str:
     """ISO timestamp findings must be captured at or after to feed this article: the topic's
-    findings window, never reaching back past its previous article, as common/findings_window.py's
-    `window_start` works it out (the one rule, shared with the assistant's topic_findings and the
-    Admin API's findings route). `_window_hours` says in the log when a stored window is not
-    valid; the rule itself is the shared one."""
-    return window_start(topic, run_started, force=force, hours=_window_hours(topic))
+    findings window, never reaching back past its previous article (on the day's subject, for a
+    topic that rotates: `subject_key`), as common/findings_window.py's `window_start` works it out
+    (the one rule, shared with the assistant's topic_findings and the Admin API's findings route).
+    `_window_hours` says in the log when a stored window is not valid; the rule itself is the
+    shared one."""
+    return window_start(topic, run_started, force=force, hours=_window_hours(topic), subject_key=subject_key)
 
 
-def _record_article_written(topic_id: str, run_started: datetime) -> None:
+def _record_article_written(topic_id: str, run_started: datetime, subject_key: str | None = None) -> None:
     """Remember when this run began, so the next window starts there.
 
     The run's *start* (not its end) is stored: a finding captured while the article
     was being written belongs to the next one. Never raises -- the article already
     exists by now, and an error here would make Step Functions retry the whole run
-    and write a duplicate.
+    and write a duplicate. For a topic that rotates, the day's subject's own stamp is
+    set too (`last_article_by_subject`), so that subject's next day reads from here
+    and the other subjects' windows stay where they were.
     """
     try:
-        set_topic_last_article_at(topic_id, run_started.isoformat())
+        if subject_key is None:
+            set_topic_last_article_at(topic_id, run_started.isoformat())
+        else:
+            set_topic_last_article_at(topic_id, run_started.isoformat(), subject_key=subject_key)
     except Exception as exc:  # noqa: BLE001
         print(f"daily_cycle_handler: could not record last_article_at for {topic_id}: {exc!r}")
+
+
+def _day_subject(topic: dict, run_started: datetime) -> DaySubject | None:
+    """The subject this run writes about, for a topic whose adapter rotates through several
+    (common/day_subject.py), asked once at the run's start; None for every other topic. A topic
+    with a daily editorial goal (the crypto feed) keeps its goal and is not asked: the goal's path
+    is unchanged. Whatever the adapter raises stops the run before any model call (the handler's
+    guard returns it as an error), and nothing is stamped: a broken rota writes nothing."""
+    if resolve_goal_for_topic(topic, run_started.date()) is not None:
+        return None
+    return resolve_day_subject(topic, run_started)
+
+
+def _no_findings(topic_id: str, subject_key: str | None) -> dict:
+    """The "nothing to write about" result. For a rotating topic it names the day's subject; for
+    every other topic it is exactly what it always was."""
+    if subject_key is None:
+        return {"status": "no_findings", "topic_id": topic_id}
+    return {"status": "no_findings", "topic_id": topic_id, ARTICLE_SUBJECT_FIELD: subject_key}
 
 
 def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
@@ -267,15 +298,22 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         return {"status": "paused", "topic_id": topic_id}
 
     run_started = datetime.now(UTC)
-    since = _window_start(topic, run_started, force)
+    # A topic that rotates through subjects writes about the day's one (common/day_subject.py),
+    # asked once here, so a run that crosses midnight keeps the subject it started with.
+    day_subject = _day_subject(topic, run_started)
+    subject_key = day_subject.key if day_subject is not None else None
+    if day_subject is not None:
+        print(f"daily_cycle_handler: day_subject={subject_key} topic_id={topic_id}")
+    since = _window_start(topic, run_started, force, subject_key)
     findings = list_recent_findings(topic_id, limit=MAX_WINDOW_FINDINGS, since=since)
     if not findings:
         # Nothing new since the topic's last article (or in its findings window): better
         # no article than one rewritten from findings a previous run already used.
-        return {"status": "no_findings", "topic_id": topic_id}
+        return _no_findings(topic_id, subject_key)
 
     # Topics with a daily editorial goal (the crypto feed) get the day's
-    # goal and only the findings that belong to it; every other topic gets
+    # goal and only the findings that belong to it, a rotating topic the day's
+    # subject and only the findings that report it; every other topic gets
     # (None, findings) back unchanged.
     #
     # The research tally is taken from the whole window *before* that selection:
@@ -283,9 +321,21 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
     # window starts where the last one ended, so nothing is counted twice.
     research = build_research_lineage(findings)
     window_findings = findings
-    editorial_goal, findings = _select_goal_and_findings(topic, findings)
-    if editorial_goal is not None:
+    editorial_goal, findings = _select_subject_and_findings(topic, findings, day_subject)
+    if isinstance(editorial_goal, EditorialGoal):
         print(f"daily_cycle_handler: editorial_goal={editorial_goal.value} topic_id={topic_id}")
+    if day_subject is not None:
+        if not findings:
+            # Nothing on the day's subject since its last article: no article today and no stamp,
+            # so the subject's next day still reads from its own last article. Never another
+            # subject's findings instead: those are their own day's article.
+            print(f"daily_cycle_handler: no new findings on day_subject={subject_key} topic_id={topic_id}")
+            return _no_findings(topic_id, subject_key)
+        # Each subject's window starts at its own last article, so the windows of different
+        # subjects overlap and a tally of the whole window would count a Finding once per subject.
+        # The tally is of the Findings this article is written from: each is counted on its own
+        # subject's day (on each day, for one that reports two subjects).
+        research = build_research_lineage(findings)
 
     model_id, fallback_model_id = resolve_model(topic)
     summaries_block = _format_findings_summaries(findings)
@@ -432,8 +482,9 @@ def _run_daily_cycle(topic_id: str, force: bool = False) -> dict:
         # The topic's adapter's source credit, as declared right now: stored on the article so
         # it keeps the credit it was written with (common/attribution.py).
         attribution=sources_for_topic(topic),
+        subject_key=subject_key,
     )
-    _record_article_written(topic_id, run_started)
+    _record_article_written(topic_id, run_started, subject_key)
     return result
 
 
@@ -588,6 +639,19 @@ def _captured_date(finding: dict) -> date | None:
     return captured.astimezone(UTC).date()
 
 
+def _select_subject_and_findings(
+    topic: dict, findings: list[dict], day_subject: DaySubject | None
+) -> tuple[EditorialGoal | DaySubject | None, list[dict]]:
+    """What this article is about, and the findings it is written from. A rotating topic's day
+    subject (common/day_subject.py) keeps only the findings that report it (none, if none do: the
+    caller then stops; never crypto's "follow the newest finding's day" fallback, which would write
+    about another subject on this one's day). Without one, the crypto feed's editorial goal, as
+    `_select_goal_and_findings` resolves it (an unchanged path), or nothing at all."""
+    if day_subject is None:
+        return _select_goal_and_findings(topic, findings)
+    return day_subject, subject_findings(findings, day_subject.key)
+
+
 def _select_goal_and_findings(
     topic: dict, findings: list[dict]
 ) -> tuple[EditorialGoal | None, list[dict]]:
@@ -615,6 +679,17 @@ def _select_goal_and_findings(
         return goal, findings
     same_day = [f for f in findings if _captured_date(f) == newest_day]
     return resolve_goal_for_topic(topic, newest_day), same_day
+
+
+def _goal_mandate(goal: EditorialGoal | DaySubject) -> str:
+    """The day's editorial mandate: an editorial goal's, as it always was, or a day subject's own
+    (written by its adapter, the subject's name folded in)."""
+    return goal.mandate if isinstance(goal, DaySubject) else EDITORIAL_MANDATES[goal]
+
+
+def _goal_style(goal: EditorialGoal | DaySubject) -> str:
+    """The day's article style, the same way."""
+    return goal.style if isinstance(goal, DaySubject) else ARTICLE_STYLES[goal]
 
 
 def _format_findings_summaries(findings: list[dict]) -> str:
@@ -690,7 +765,7 @@ def _ideate(
     model_id: str,
     fallback_model_id: str | None,
     guidance: str | None = None,
-    goal: EditorialGoal | None = None,
+    goal: EditorialGoal | DaySubject | None = None,
     recent_titles: list[str] | None = None,
 ) -> tuple[list[str], dict]:
     topic_name = topic_label(topic)
@@ -740,7 +815,7 @@ def _ideate(
             "Reply with exactly one angle per line, no numbering, no extra "
             "commentary.\n\n"
             f"{standing_goal}{already_covered}\n\n"
-            f"Editorial Mandate: {EDITORIAL_MANDATES[goal]}\n"
+            f"Editorial Mandate: {_goal_mandate(goal)}\n"
             f"Apply this mandate strictly within the theme of '{topic_name}' and the Active "
             "Editorial Mandate above: it decides the shape of each angle, never the subject.\n\n"
             f"Data Payload:\n{summaries_block}"
@@ -840,7 +915,7 @@ def _draft_article(
     fallback_model_id: str | None,
     guidance: str | None = None,
     few_shot_excerpt: str | None = None,
-    goal: EditorialGoal | None = None,
+    goal: EditorialGoal | DaySubject | None = None,
 ) -> tuple[str, dict]:
     topic_name = topic_label(topic)
     # The boundary backs up the ideation rule: an imperfect angle can still
@@ -854,7 +929,7 @@ def _draft_article(
         f"\n\n{DRAFT_ALIGNMENT_DIRECTIVE}"
     )
     if goal is not None:
-        prompt += f"\n\nArticle style: {ARTICLE_STYLES[goal]}"
+        prompt += f"\n\nArticle style: {_goal_style(goal)}"
     if guidance:
         prompt += f"\n\n{_FEEDBACK_GUIDANCE_HEADER}\n{guidance}"
     if compliance.is_financial_topic(topic):
@@ -983,11 +1058,16 @@ def _publish_or_moderate(
     original_body: str | None = None,
     equipment_used: list[dict] | None = None,
     attribution: list[dict] | None = None,
+    subject_key: str | None = None,
 ) -> dict:
     """Store the article and either publish it or send it to moderation.
 
     `attribution` is the source credit to store on the article and show on its page
     (common/attribution.py); None stores nothing, and readers fall back to the topic's adapter.
+
+    `subject_key` is the day's subject of a topic that rotates (common/day_subject.py), stored on
+    the article as `subject` and named in the result, so Re-Write and the operator can see what it
+    was about; None (every other topic) stores and returns nothing new.
 
     `hold_reasons` are reasons to keep it from publishing regardless of the compliance
     verdict (today: a truncated draft). Any of them sends it to moderation, listed ahead
@@ -1044,8 +1124,10 @@ def _publish_or_moderate(
         **({"body_original_s3_key": body_original_s3_key} if body_original_s3_key else {}),
         **({"equipment_used": equipment_used} if equipment_used is not None else {}),
         **({"attribution": attribution} if attribution is not None else {}),
+        **({ARTICLE_SUBJECT_FIELD: subject_key} if subject_key is not None else {}),
         figures=figures,
     )
+    subject = {ARTICLE_SUBJECT_FIELD: subject_key} if subject_key is not None else {}
 
     if compliant:
         # Static article publishing (docs/project-plan.md §11): render the
@@ -1081,6 +1163,7 @@ def _publish_or_moderate(
             "topic_id": topic_id,
             "article_id": article_id,
             "compliant": True,
+            **subject,
         }
 
     put_moderation_item(
@@ -1097,4 +1180,5 @@ def _publish_or_moderate(
         "article_id": article_id,
         "compliant": False,
         "reasons": reasons,
+        **subject,
     }

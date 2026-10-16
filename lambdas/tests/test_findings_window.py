@@ -112,6 +112,36 @@ def test_set_topic_last_article_at_does_not_create_a_missing_topic(topics_table)
     assert "Item" not in topics_table.get_item(Key={"topic_id": "deleted"})
 
 
+def test_a_subjects_stamp_is_set_with_the_topics_and_the_other_subjects_are_left_alone(topics_table):
+    dynamo.set_topic_last_article_at("t", "2026-09-21T09:00:00+00:00", subject_key="north")  # makes the map
+    dynamo.set_topic_last_article_at("t", "2026-09-22T09:00:00+00:00", subject_key="south")
+    dynamo.set_topic_last_article_at("t", "2026-09-23T09:00:00+00:00", subject_key="north")
+
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item == {
+        "topic_id": "t",
+        "name": "T",
+        "adapter": "web_search",
+        "last_article_at": "2026-09-23T09:00:00+00:00",
+        "last_article_by_subject": {
+            "north": "2026-09-23T09:00:00+00:00",
+            "south": "2026-09-22T09:00:00+00:00",
+        },
+    }
+    # A plain stamp (a topic that does not rotate) leaves the map alone.
+    dynamo.set_topic_last_article_at("t", "2026-09-24T09:00:00+00:00")
+    item = topics_table.get_item(Key={"topic_id": "t"})["Item"]
+    assert item["last_article_at"] == "2026-09-24T09:00:00+00:00"
+    assert item["last_article_by_subject"]["north"] == "2026-09-23T09:00:00+00:00"
+
+
+def test_a_subjects_stamp_does_not_create_a_missing_topic(topics_table):
+    with pytest.raises(topics_table.meta.client.exceptions.ConditionalCheckFailedException):
+        dynamo.set_topic_last_article_at("deleted", "2026-09-21T09:00:00+00:00", subject_key="north")
+
+    assert "Item" not in topics_table.get_item(Key={"topic_id": "deleted"})
+
+
 # --- the adapter contract behind "what counts as new" -----------------------
 
 
@@ -242,6 +272,69 @@ def test_an_invalid_stored_window_falls_back_to_the_default_day(bad):
 
 def test_it_is_pure_and_takes_no_topic_at_all():
     assert findings_window.window_start(None, RUN) == _hours_before(24)
+    assert findings_window.window_start(None, RUN, subject_key="north") == _hours_before(24)
+
+
+# --- window_start with a subject: a topic that rotates (common/day_subject.py) --------------------
+
+
+def _rotating(**subject_stamps) -> dict:
+    """A topic with a 96-hour window whose last article (on any subject) was 2 hours ago."""
+    return {
+        "findings_window_hours": Decimal("96"),  # as DynamoDB hands it back
+        "last_article_at": _hours_before(2),
+        "last_article_by_subject": {key: _hours_before(hours) for key, hours in subject_stamps.items()},
+    }
+
+
+def test_with_a_subject_its_own_last_article_bounds_the_window_not_the_topics():
+    topic = _rotating(north=50, south=26)
+
+    assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(50)
+    assert findings_window.window_start(topic, RUN, subject_key="south") == _hours_before(26)
+    # Without a subject, the rule every other topic has: the topic-wide stamp.
+    assert findings_window.window_start(topic, RUN) == _hours_before(2)
+
+
+def test_a_subject_never_written_about_is_bounded_by_the_window_alone():
+    topic = _rotating(north=50)
+
+    assert findings_window.window_start(topic, RUN, subject_key="south") == _hours_before(96)
+    no_map = {**topic, "last_article_by_subject": None}
+    assert findings_window.window_start(no_map, RUN, subject_key="north") == _hours_before(96)
+    # A map edited by hand into something else is no stamp at all.
+    for odd in ("north", ["north"], 7):
+        topic = {**_rotating(), "last_article_by_subject": odd}
+        assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(96)
+
+
+def test_a_subject_stamp_older_than_the_window_leaves_the_window_and_force_ignores_both_stamps():
+    topic = _rotating(north=200)
+    assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(96)
+
+    topic = _rotating(north=50)
+    assert findings_window.window_start(topic, RUN, force=True, subject_key="north") == _hours_before(96)
+    assert findings_window.window_start(topic, RUN, force=True) == _hours_before(96)
+
+
+def test_a_subject_stamp_is_read_as_the_topic_stamp_is_naive_as_utc_unreadable_as_none():
+    naive = (RUN - timedelta(hours=5)).replace(tzinfo=None)
+    topic = {"last_article_by_subject": {"north": naive.isoformat()}}
+
+    as_utc = naive.replace(tzinfo=UTC).isoformat()
+    assert findings_window.window_start(topic, RUN, subject_key="north") == as_utc
+    for bad in ("not a date", 12345, "", None):
+        topic = {"last_article_by_subject": {"north": bad}, "last_article_at": _hours_before(1)}
+        assert findings_window.window_start(topic, RUN, subject_key="north") == _hours_before(24)
+
+
+def test_last_article_at_reads_the_stamp_that_bounds_the_window():
+    topic = _rotating(north=50)
+
+    assert findings_window.last_article_at(topic) == _hours_before(2)
+    assert findings_window.last_article_at(topic, "north") == _hours_before(50)
+    assert findings_window.last_article_at(topic, "south") is None
+    assert findings_window.last_article_at(None, "north") is None
 
 
 # --- the paged readers behind topic_findings and the Admin API's findings route -------------------
