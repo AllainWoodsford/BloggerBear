@@ -770,6 +770,12 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   nothing summed across topics, and no new grant (#313, submission PR P2a, on the integration branch
   after the evidence trail; `lambdas/ops_mcp/vision_evidence.py`, `lambdas/common/dynamo.py`;
   [design](enhancements/vision-evidence.md#asking-the-assistant))
+- [x] A slow city's network fetched out of band: `topics trigger <topic> --pipeline
+  network_prefetch` runs the research tick's function only to fetch each site's network, with up to
+  90 s per Overpass reply and 100 s in all, into `vision/<topic>/<site>/network.json`; the next tick
+  adopts it for a site with none, or whose own is stale and older. No Finding, running state or
+  research time is written. For a city that still misses #312's first-fetch minute (#315, rail;
+  `lambdas/common/adapters/rail_access.py`, `lambdas/research_tick_handler.py`)
 
 ## Backlog / not yet scheduled
 
