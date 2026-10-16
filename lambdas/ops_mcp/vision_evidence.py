@@ -7,11 +7,13 @@ the submission round: the assistant and Alexa+ can interrogate the evidence, via
 groups in the home Region, through three fixed Logs Insights queries started together and waited
 for within one budget (WAIT_SECONDS): a topic's `vision_decision` and `vision_triage` lines, the
 `research_tick` lines of the attempts that made a decision, and the `moderation_decision` lines of
-what people did. Then, for a topic with a Finding written, one short DynamoDB Query on the Articles
-table's topic index (common/dynamo.list_articles_for_topic) for the articles the Findings fed.
-Nothing else: `vision_site` lines are never read (24 a day per site would fill the 1,000-row cap
-within weeks), no `stats` aggregate is used (it would count lines, so a failed attempt's decisions
-would count twice), and the running state is not opened.
+what people did. Then, for each topic with a Finding written, one short DynamoDB Query on the
+Articles table's topic index (common/dynamo.list_articles_for_topic, which reads only the fields
+the join uses) for the articles the Findings fed, each started only within DEADLINE_SECONDS of the
+call's start: a read that would start later is skipped, and what people did is then not checked,
+as when a read fails. Nothing else: `vision_site` lines are never read (24 a day per site would
+fill the 1,000-row cap within weeks), no `stats` aggregate is used (it would count lines, so a
+failed attempt's decisions would count twice), and the running state is not opened.
 
 **Parsed, never trusted** (the submission round's rule 7). The only values put into a query are a
 topic id that passed suggestions.ID_PATTERN and a scene id that passed SCENE_ID, each a quoted
@@ -50,8 +52,9 @@ cost of every triage the logs hold, a failed attempt's included (it was spent).
 
 **Topics are never summed together.** Each topic is counted on its own, under its entry in
 `topics`; the all-topics answer says one sentence per topic, and has no top-level `counts` or
-`spend_aud` (they are null), so the demo topic's numbers never inflate Sydney's. A topic with
-several sites keeps one sentence, and the table splits it by site.
+`spend_aud` (they are null: read each topic's from `topics[].counts` and `topics[].spend_aud`), so
+the demo topic's numbers never inflate Sydney's. A topic with several sites keeps one sentence, and
+the table splits it by site.
 
 **A named exception to logs.window's limits** (LOOKBACK_DAYS = 30, MAX_HOURS = 168): this module's
 queries are fixed text, filter by field equality on one topic, and read only the research-tick and
@@ -64,7 +67,9 @@ DynamoDB Query per topic with a Finding written. Nothing here writes.
 
 from __future__ import annotations
 
+import math
 import re
+import time
 from datetime import UTC, datetime, timedelta
 
 from common import evidence, vision_decisions
@@ -83,8 +88,14 @@ DAYS_DEFAULT = 7
 # days. logs.window itself is unchanged.
 EVIDENCE_LOOKBACK_DAYS = 90
 # One budget for every query of one call. Alexa+'s own limit is close to 15 s (alexa/README.md), and
-# this plus a short DynamoDB query keeps the call well inside it.
+# this plus the short Articles reads under DEADLINE_SECONDS keeps the call inside it.
 WAIT_SECONDS = 8.0
+# The whole call's deadline, from its start. The tool answers through API Gateway, which gives up
+# after 29 s, and on the ask page the ops agent's own model calls share those 29 s
+# (ops_agent/agent.py); Alexa+'s own limit is closer still. So after the 8 s Logs wait only a few
+# seconds are left for the Articles reads, one per topic with a Finding written: a read that would
+# start after this is skipped, and that topic's person step is said as not checked.
+DEADLINE_SECONDS = 12.0
 # The functions whose log groups are read, by their catalogue keys (architecture.py).
 TICK_FUNCTION = "research-tick"
 ADMIN_FUNCTION = "admin-api"
@@ -93,6 +104,17 @@ ADMIN_FUNCTION = "admin-api"
 SCENE_ID = re.compile(r"^[A-Za-z0-9_.-]{1,100}$")
 LATEST = "latest"
 SPOKEN_MAX_WORDS = 120
+# The largest measure `spoken` says, after the vocabulary's scale: the adapters' measures are
+# shares, areas of a city in km², and counts of stations or objects, all far below a million. A
+# larger value on a line is corrupt or forged, and read aloud it would be noise, so the scene answer
+# says "OpenCV measured it." instead.
+SPOKEN_MEASURE_MAX = 1e6
+# policy.TABLE_TITLE_MAX_CHARS (ops_agent/policy.py), which cuts a table's title for the page. The
+# ops-mcp package copies only common/ and ops_mcp/ (infra/modules/ops-assistant/main.tf), so it is
+# not imported here; a test holds the two equal.
+TABLE_TITLE_MAX_CHARS = 120
+# The fewest letters of a topic's label a shortened title keeps.
+TITLE_LABEL_MIN_CHARS = 12
 SPEND_NOTE = "AUD, at the project's fixed rate"
 SOURCE = "logs"
 EVIDENCE = "evidence"  # the first half of every job's key in logs.run_queries
@@ -166,6 +188,12 @@ NOT_IN_TIME = "The decision logs didn't answer in time. Ask again in a minute."
 PEOPLE_NOT_CHECKED = "What people decided wasn't checked this time."
 ON_SCREEN = "The decisions are on screen."
 STEPS_ON_SCREEN = "The steps are on screen."
+# A topic whose decisions were all left out as unknown (the attempts query cut at its row cap): the
+# cut note follows it, so it never says that nothing was measured.
+UNKNOWN_KEPT = "For {label}, I couldn't tell which of its decisions {window} were kept."
+UNKNOWN_KEPT_SHORT = "For {label}, I couldn't tell which decisions were kept."
+# One scene id decided for several sites of a topic (a tick decides every site in one tile).
+MANY_SITES = "That scene was decided for {n} sites; the newest one's steps are on screen."
 NO_EVIDENCE_TOPIC = (
     "That topic keeps no decision evidence: this covers the topics that measure satellite imagery."
 )
@@ -179,6 +207,9 @@ COUNT_KEYS = (
     "real", "artefact", "failed_closed", "look_again", "web_context", "reported", "findings_written",
     "not_kept", "articles_held", "articles_approved", "articles_rejected",
 )  # fmt: skip
+# What the join reads of an article beside its lineage (dynamo.ARTICLES_FOR_TOPIC_FIELDS is these and
+# `lineage`; a test holds the two together).
+ARTICLE_FIELDS = ("article_id", "status", "published_by", "created_at", "published_at")
 # The decision codes counted as they are; the agent's verdicts are counted from the trace.
 _GATE_CODES = ("first_observation", "below_floor", "baseline_building", "within_range")
 _ARTICLE_COUNTS = {"held": "articles_held", "approved": "articles_approved", "rejected": "articles_rejected"}
@@ -305,6 +336,9 @@ def _accepted(line: dict, kind: str, asked: set[str], moved_ok: frozenset[str]) 
             return False
         if any(code not in moved_ok for code in line.get("moved") or []):
             return False
+        coverage = line.get("coverage")
+        if coverage is not None and not 0 <= coverage <= 1:
+            return False  # a share of the site: anything else is corrupt or forged
     elif event == "vision_triage":
         if any(tool not in TOOL_NAMES for tool in line.get("tools") or []):
             return False
@@ -397,13 +431,14 @@ def _entry(decision: dict, triage: dict | None, attempt: dict | None, kept: bool
 
 def join(
     decisions: list[dict], triages: list[dict], attempts: list[dict], *, horizon: str | None = None
-) -> tuple[list[dict], dict[str, int]]:
+) -> tuple[list[dict], dict[str, int], dict[str, int]]:
     """Kept, reported and written: a triage joins its decision by (tick, run, site, scene), a
     decision its attempt by (tick, run); an attempt with `stored: false` or no line makes its
     decisions not kept. One entry per (topic, site, scene), the kept copy preferred, else the
     newest; newest first. And, per topic, how many not-kept copies there were (each counted, never
     as a decision). `horizon` is the oldest attempt line read when that query was cut at its row
-    cap: a decision logged before it with no attempt is left out, unknown rather than not kept."""
+    cap: a decision logged before it with no attempt is left out, unknown rather than not kept, and
+    the third part says, per topic, how many scenes were left out so and not shown otherwise."""
     attempt_by: dict[tuple, dict] = {}
     for attempt in attempts:  # newest first: the first line of an attempt wins
         attempt_by.setdefault((attempt.get("tick"), attempt["run"]), attempt)
@@ -413,9 +448,11 @@ def join(
         triage_by.setdefault(key, triage)
     shown: dict[tuple, dict] = {}
     not_kept: dict[str, int] = {}
+    left_out: set[tuple] = set()
     for decision in decisions:
         attempt = attempt_by.get((decision.get("tick"), decision["run"]))
         if attempt is None and horizon is not None and (decision.get("logged") or "") < horizon:
+            left_out.add((decision["topic_id"], decision["site_id"], decision["scene_id"]))
             continue
         kept = bool(attempt and attempt.get("stored") is True)
         triage = triage_by.get(
@@ -429,7 +466,10 @@ def join(
         if current is None or (kept and not current["kept"]):
             shown[key] = entry
     ordered = sorted(shown.values(), key=lambda entry: (entry["at"], entry["logged"] or ""), reverse=True)
-    return ordered, not_kept
+    unknown: dict[str, int] = {}
+    for topic_id, _site, _scene in left_out - set(shown):
+        unknown[topic_id] = unknown.get(topic_id, 0) + 1
+    return ordered, not_kept, unknown
 
 
 def _article_by_captured_at(articles: list[dict]) -> dict[str, dict]:
@@ -451,10 +491,7 @@ def _article_part(article: dict | None) -> dict | None:
     """What the trace reads of an article: its id, status, who published it and when."""
     if article is None:
         return None
-    return {
-        key: article.get(key) if isinstance(article.get(key), str) else None
-        for key in ("article_id", "status", "published_by", "created_at", "published_at")
-    }
+    return {key: article.get(key) if isinstance(article.get(key), str) else None for key in ARTICLE_FIELDS}
 
 
 # --- one decision, rendered -------------------------------------------------------------------------
@@ -810,10 +847,18 @@ def _first_that_fits(candidates: list[list[str]]) -> str:
     return _words(candidates[-1])
 
 
+def _shows_rows(counts: dict) -> bool:
+    """Whether the table has a row for the topic: a kept decision, or a scene not kept."""
+    return bool(counts["decisions"] or counts["not_kept"])
+
+
 def _main_sentence(label: str, counts: dict, days: int) -> str:
     """The "None" or "Some" template of one topic. Of the gate's counts only those above zero are
-    said; the agent's always is, as it is what the question is about."""
+    said; the agent's always is, as it is what the question is about. With none kept and some left
+    out as unknown (the attempts query cut), UNKNOWN_KEPT: never "no new clear scene was measured"."""
     n, window = counts["decisions"], f"in the last {_plural(days, 'day')}"
+    if n == 0 and counts["unknown"]:
+        return UNKNOWN_KEPT.format(label=label, window=window)
     if n == 0 and counts["not_kept"]:
         failed = counts["not_kept"]
         return _sentence(
@@ -872,6 +917,9 @@ def _short_sentence(label: str, counts: dict, lead: str = "") -> str:
     """One topic in a few words, for an answer that would otherwise run long; `lead` says the
     window before the first."""
     n = counts["decisions"]
+    if n == 0 and counts["unknown"]:
+        said = UNKNOWN_KEPT_SHORT.format(label=label)
+        return f"{lead}{said[:1].lower()}{said[1:]}" if lead else said
     if n == 0:
         return _sentence(f"{lead}{label} made no decisions.")
     return _sentence(
@@ -882,25 +930,28 @@ def _short_sentence(label: str, counts: dict, lead: str = "") -> str:
 
 def _topic_spoken(took: str, label: str, counts: dict, days: int, notes: list[str]) -> str:
     """One topic: the templates of 1.17.4 in order, the details dropped (the not-kept sentence,
-    then the agent's, then the findings') until the answer is under SPOKEN_MAX_WORDS."""
+    then the agent's, then the findings') until the answer is under SPOKEN_MAX_WORDS. The decisions
+    are said to be on screen only when the table has a row."""
     main = _main_sentence(label, counts, days)
     agent, findings = _agent_sentence(counts), _findings_sentence(counts)
     not_kept = _not_kept_sentence(counts)
-    closing = [*notes, ON_SCREEN]
+    on_screen = ON_SCREEN if _shows_rows(counts) else ""
+    closing = [*notes, on_screen]
     return _first_that_fits([
         [took, main, agent, findings, not_kept, *closing],
         [took, main, agent, findings, *closing],
         [took, main, findings, *closing],
         [took, main, *closing],
         [took, _short_sentence(label, counts), *closing],
-        [_short_sentence(label, counts), ON_SCREEN],
+        [_short_sentence(label, counts), on_screen],
     ])  # fmt: skip
 
 
 def _all_topics_spoken(labels: list[str], per_topic: list[dict], days: int, notes: list[str]) -> str:
     """Every topic: one "None" or "Some" sentence each, never summed; when that runs long, a short
-    sentence each, and then as many as fit with the rest said to be on screen."""
-    closing = [*notes, ON_SCREEN]
+    sentence each, and then as many as fit with the rest said to be on screen. The decisions are
+    said to be on screen only when the table has a row."""
+    closing = [*notes, ON_SCREEN if any(_shows_rows(counts) for counts in per_topic) else ""]
     full = [_main_sentence(label, counts, days) for label, counts in zip(labels, per_topic, strict=True)]
     lead = f"In the last {_plural(days, 'day')}, "
     short = [
@@ -914,17 +965,35 @@ def _all_topics_spoken(labels: list[str], per_topic: list[dict], days: int, note
     return _first_that_fits(candidates)
 
 
+def _plausible(code: str, value, vocabulary: dict) -> bool:
+    """Whether a measure may be said aloud: a number whose value, scaled as the vocabulary declares,
+    is below SPOKEN_MEASURE_MAX."""
+    if not _is_number(value):
+        return False
+    item = ((vocabulary or {}).get("measures") or {}).get(code)
+    scaled = value * ((item.get("scale") if isinstance(item, dict) else None) or 1)
+    return math.isfinite(scaled) and abs(scaled) < SPOKEN_MEASURE_MAX
+
+
 def _scene_spoken(
-    took: str, label: str, summary: dict, entry: dict, vocabulary: dict, notes: list[str]
+    took: str,
+    label: str,
+    summary: dict,
+    entry: dict,
+    vocabulary: dict,
+    notes: list[str],
+    closing: str = STEPS_ON_SCREEN,
 ) -> str:
     """One decision's chain in fixed sentences: facts only, nothing about the baseline after the
     re-measurement, never a site or scene id. OpenCV's measure is said for the vocabulary's first
-    measure and every measure that moved."""
+    measure and every measure that moved, each only when it is plausible (SPOKEN_MEASURE_MAX)."""
     coverage = entry.get("coverage")
     clear = f"{coverage * 100:.0f}% clear" if _is_number(coverage) else "of unknown cloud cover"
     opening = f"That {label} scene was {clear}."
     measures = list((vocabulary or {}).get("measures") or {})
-    said = _measure_words(entry.get("measure") or {}, vocabulary, codes={*measures[:1], *summary["moved"]})
+    measure = entry.get("measure") or {}
+    plausible = {code: value for code, value in measure.items() if _plausible(code, value, vocabulary)}
+    said = _measure_words(plausible, vocabulary, codes={*measures[:1], *summary["moved"]})
     measured = f"OpenCV measured {said}." if said else "OpenCV measured it."
     gate = ""
     effect = summary.get("effect")
@@ -961,9 +1030,9 @@ def _scene_spoken(
     action = ACTION_SENTENCES.get(summary["action"], "")
     person = PERSON_SENTENCES.get(summary.get("person"), "")
     return _first_that_fits([
-        [took, opening, measured, gate, agent, action, person, *notes, STEPS_ON_SCREEN],
-        [took, opening, gate, agent, action, person, *notes, STEPS_ON_SCREEN],
-        [took, opening, gate, action, STEPS_ON_SCREEN],
+        [took, opening, measured, gate, agent, action, person, *notes, closing],
+        [took, opening, gate, agent, action, person, *notes, closing],
+        [took, opening, gate, action, closing],
     ])  # fmt: skip
 
 
@@ -971,9 +1040,9 @@ def _scene_spoken(
 
 
 def _empty_counts() -> dict:
-    """COUNT_KEYS, and `untriaged` (a change reported with triage off), which only the spoken
-    sentence uses."""
-    return {key: 0 for key in COUNT_KEYS} | {"untriaged": 0}
+    """COUNT_KEYS, and `untriaged` (a change reported with triage off) and `unknown` (the scenes
+    left out as unknown, join's third part), which only the spoken sentences use."""
+    return {key: 0 for key in COUNT_KEYS} | {"untriaged": 0, "unknown": 0}
 
 
 def _count(counts: dict, summary: dict, articles_seen: set, findings_seen: set) -> None:
@@ -1026,6 +1095,17 @@ def _table(title: str, columns: list[str], rows: list) -> dict:
     return {"title": title, "columns": list(columns), "rows": rows}
 
 
+def _title(label: str, tail: str) -> str:
+    """A table's title within TABLE_TITLE_MAX_CHARS that keeps `tail` whole (the spend and its AUD
+    label, or a scene's ids): the topic's label is shortened first, to no fewer than
+    TITLE_LABEL_MIN_CHARS letters and an ellipsis; only a tail too long even for that is cut."""
+    if len(label) + len(tail) <= TABLE_TITLE_MAX_CHARS:
+        return label + tail
+    room = max(TABLE_TITLE_MAX_CHARS - len(tail) - 1, TITLE_LABEL_MIN_CHARS)
+    head = label if len(label) <= room else label[:room].rstrip() + "…"
+    return (head + tail)[:TABLE_TITLE_MAX_CHARS]
+
+
 def vision_evidence(
     topic: str | None = None,
     days: int = DAYS_DEFAULT,
@@ -1035,12 +1115,15 @@ def vision_evidence(
     run=None,
     readable=None,
     articles=None,
+    clock=None,
 ) -> dict:
     """What the vision pipeline measured and decided and what a person did about it, from the
     logs, over the last `days` (1 to EVIDENCE_LOOKBACK_DAYS): for `topic` (as the operator said
     it), or every topic that keeps decision evidence; with `scene` (a scene id, or "latest") one
-    decision's chain step by step. `run`, `readable` and `articles` are the tests' seams for
-    logs.run_queries, logs.readable and dynamo.list_articles_for_topic."""
+    decision's chain step by step. `run`, `readable`, `articles` and `clock` are the tests' seams
+    for logs.run_queries, logs.readable, dynamo.list_articles_for_topic and time.monotonic."""
+    clock = clock or time.monotonic
+    started = clock()
     now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
     env = architecture.environment()
     if env is None:
@@ -1152,7 +1235,7 @@ def vision_evidence(
     horizon = None
     if status["attempts"] == CUT:
         horizon = min((line["logged"] for line in parsed["attempts"] if line.get("logged")), default=None)
-    entries, not_kept = join(decisions, triages, parsed["attempts"], horizon=horizon)
+    entries, not_kept, unknown = join(decisions, triages, parsed["attempts"], horizon=horizon)
     people_by_article: dict[str, dict] = {}
     for line in parsed["people"]:  # newest first: an article's newest decision
         people_by_article.setdefault(line["article_id"], line)
@@ -1167,6 +1250,10 @@ def vision_evidence(
         unread = False
         first = vision_decisions.trace(entry, vocabulary=vocabulary, attempt=entry["attempt"], now=now)
         if _step_rows(first)["action"]["code"] == "finding_written":
+            if topic_id not in article_by_at and clock() - started >= DEADLINE_SECONDS:
+                # Too late to start another read: not checked, as a failed read is.
+                print("ops_vision_evidence: articles read skipped, past the deadline")
+                article_by_at[topic_id] = None
             if topic_id not in article_by_at:
                 try:
                     article_by_at[topic_id] = _article_by_captured_at(articles(topic_id, since.isoformat()))
@@ -1194,6 +1281,8 @@ def vision_evidence(
             _count(per_topic[entry["topic_id"]], summary, *seen[entry["topic_id"]])
     for topic_id, copies in not_kept.items():
         per_topic[topic_id]["not_kept"] += copies
+    for topic_id, scenes in unknown.items():
+        per_topic[topic_id]["unknown"] += scenes
     spend = {topic_id: _spend_aud([t for t in triages if t["topic_id"] == topic_id]) for topic_id in ids}
     result["topics"] = [
         {
@@ -1220,26 +1309,36 @@ def vision_evidence(
         if chosen is None:
             none = f"I found no decision for that {label} scene in the last {_plural(days, 'day')}."
             result["spoken"] = _words([took, none, *notes])
-            result["table"] = _table(f"{label}: one decision, step by step", TRACE_COLUMNS, [])
+            result["table"] = _table(_title(label, ": one decision, step by step"), TRACE_COLUMNS, [])
             return result
         entry, rows, summary = chosen
         vocabulary = vocabulary_of[entry["topic_id"]]
+        # One scene id, several sites (a tick decides every site in one tile): the newest is shown,
+        # and the others' site ids are kept for the page.
+        others = [
+            other["site_id"]
+            for other, _rows, _summary in rendered
+            if other is not entry and other["scene_id"] == entry["scene_id"]
+        ]
         result["rows"] = [{**row, "numbers": dict(row["numbers"]), "ids": dict(row["ids"])} for row in rows]
         result["decision"] = summary
+        result["other_sites"] = others
         result["table"] = _table(
-            f"{label}: scene {entry['scene_id']} at {entry['site_id']}, step by step",
+            _title(label, f": scene {entry['scene_id']} at {entry['site_id']}, step by step"),
             TRACE_COLUMNS,
             trace_rows(rows, entry, vocabulary),
         )
-        result["spoken"] = _scene_spoken(took, label, summary, entry, vocabulary, notes)
+        closing = MANY_SITES.format(n=len(others) + 1) if others else STEPS_ON_SCREEN
+        result["spoken"] = _scene_spoken(took, label, summary, entry, vocabulary, notes, closing)
         return result
 
     result["rows"] = [summary for _entry, _rows, summary in rendered]
     title = f"Vision decisions in {env}, the last {_plural(days, 'day')}"
     if one_topic:
-        title = f"{labels[ids[0]]}, the last {_plural(days, 'day')}"
+        tail = f", the last {_plural(days, 'day')}"
         if spend[ids[0]] is not None:
-            title += f": the agent cost A${spend[ids[0]]:.4f} ({SPEND_NOTE})"
+            tail += f": the agent cost A${spend[ids[0]]:.4f} ({SPEND_NOTE})"
+        title = _title(labels[ids[0]], tail)
     result["table"] = _table(
         title,
         DECISION_COLUMNS,

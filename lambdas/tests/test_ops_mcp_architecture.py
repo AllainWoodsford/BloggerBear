@@ -412,7 +412,10 @@ def test_the_vision_pipeline_walks_from_a_site_to_the_person_who_approves(dev, m
     keys = {(c["kind"], c["key"]) for c in answer["components"]}
     assert {("function", "vision-worker"), ("bucket", "content"), ("table", "findings")} <= keys
     text = " ".join(" ".join(row) for row in answer["table"]["rows"])
-    for words in ("force_manual_review", "VISION_ENABLED", "osm_ttl_days", "vision_status", "log_review"):
+    for words in (
+        "force_manual_review", "VISION_ENABLED", "osm_ttl_days", "vision_status", "log_review",
+        "vision_evidence reads what the pipeline decided from its evidence lines",
+    ):  # fmt: skip
         assert words in text, words
     research = architecture.FEATURES[0].steps[0].what
     assert "or satellite imagery (see the vision pipeline)" in research
@@ -700,7 +703,7 @@ def test_the_vision_runsheet_links_to_the_vision_region_and_says_when_vision_is_
     monkeypatch.setenv("OPS_VISION_REGION", "us-west-2")
     answer = runsheets.investigate("vision")
     assert answer["runsheet"]["id"] == "vision"
-    assert answer["assistant_tools"] == ["vision_status", "log_review", "topic_findings"]
+    assert answer["assistant_tools"] == ["vision_status", "log_review", "topic_findings", "vision_evidence"]
     worker_log, worker, tick, state = answer["steps"]
     assert worker_log["console_url"].startswith("https://us-west-2.console.aws.amazon.com/cloudwatch/")
     assert worker["console_url"].startswith("https://us-west-2.console.aws.amazon.com/lambda/")
