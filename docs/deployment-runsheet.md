@@ -1651,18 +1651,25 @@ The logs are read through Logs Insights, a few queries at a time, each batch wai
    ```
 
    It writes `docs/hackathon/evidence/live/<UTC date>/`, and with `--networks` each city's network
-   as `scripts/vision_benchmark_networks/<site>.json` (O2's Sydney fixture among them: fill its row
-   in that directory's `NOTICE.md` from the file's `fetched_at`, `endpoint` and `query_url` and its
-   sha256, which `provenance.json` gives under `networks`). It prints any log read that did not
-   complete: "not_checked" means a query did not finish within `--logs-wait`; run it again with
-   `--logs-wait 300 --replace`. Exit 2 with `pii-denylist: <file>:<line> contains denylist entry
-   #n` means a personal string reached a file: the export is moved to `live/<date>.refused/`
-   (git ignores it) and no network file is kept; find where the string came from, then export
+   as `scripts/vision_benchmark_networks/<site>.json` (fill each new file's row in that directory's
+   `NOTICE.md` from its `fetched_at`, `endpoint` and `query_url` and its sha256, which
+   `provenance.json` gives under `networks`). O2's Sydney fixture is left byte for byte when it
+   holds the same network (its `kept` says `unchanged`), and kept, with a line saying so, when it
+   holds another: the evaluation's real-data runs pin its sha256, and `replay --agent recorded`
+   refuses a file that changed, so do not pass `--replace-networks` once those runs are made. It
+   prints any log read that did not complete: "not_checked" means a query did not finish within
+   `--logs-wait`; run it again with `--logs-wait 300 --replace` (`--replace` removes only the
+   export's own files: your `labels.csv` stays). Exit 2 with `pii-denylist: <file>:<line> contains
+   denylist entry #n` means a personal string reached a file: the export is moved to
+   `live/<date>.refused/` (git ignores it), your `labels.csv` is left where it was, and every
+   network file it wrote is put back as it was; find where the string came from, then export
    again. Leave out `--with-notes` for the committed export unless you have read every note it
    adds (model and third-party text, scrubbed and labelled, but quoted).
 2. **Read it before committing**: `summary.json`'s `logs` (each `complete`), `redacted` (0
-   expected; anything else, find out why), `human_control.completeness.unmatched` (a line nothing
-   corroborates: the report says so), and the traces under `traces/`.
+   expected; anything else, `redacted_at` names each file, line and field: find out why),
+   `observed_failures.worker.not_checked` (worker runs whose own line was not read: 0 when every
+   log read completed), `human_control.completeness.unmatched` (a line nothing corroborates: the
+   report says so), and the traces under `traces/`.
 3. **The trace** the report and the video quote (the latest decision of a city, or of the demo
    topic; `--scene <scene id>` for one in particular):
 

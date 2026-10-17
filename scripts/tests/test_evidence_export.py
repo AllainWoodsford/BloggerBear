@@ -10,17 +10,23 @@ from those groups, filtering topics sloppily (a substring of the line) so the ex
 re-check is what keeps another topic's lines out, and planting `@log`, `@ptr` and an ARN in what it
 returns. The running states (each topic's real final state), the figures, the networks and the
 Findings, Articles and Topics tables are in moto. `gh` is a fake subprocess. Nothing touches the
-network: requests, urllib and socket.connect refuse, and only moto answers boto3.
+network: requests, urllib and socket.connect refuse (while the module's pipeline runs too), and only
+moto answers boto3.
 
 What is held: every file of the table and only schema fields in it; the planted `@log`, `@ptr`,
 ARN and account id never reaching a file; a forged line reported as unmatched, and lines of another
 topic or with a code the pipeline never writes dropped; a failed attempt's copy under `not_kept`;
 the observed failures with their zero rows; E11; the worker by caller, build and CPU; the people's
 decisions and the held share; the demo topic apart; `--with-notes`, `--networks` and `--figures`;
-a topic with no state; queries that did not finish (said, never zero); a PII hit (exit 2, moved
-aside); the provenance (functions without ARN or role, the deploy's commit, every line's group,
-stream, time and query); `trace` from an export and live; the labels template that `index --check`
-reads once filled in; and the query text, the kept rule and the redaction backstop themselves.
+a topic with no state; queries that did not finish (said, never zero), the workers' own lines alone
+among them (no run counted as ended without a reply); a PII hit (exit 2, moved aside, the network
+files put back, even when the move fails); `--replace` keeping the operator's labels and refusing a
+directory that is not an export; an `--out` outside live/ leaving the README beside it; a committed
+network fixture left byte for byte; a network object that cannot be read; the provenance
+(functions without ARN or role, the deploy's commit, every line's group, stream (Lambda's shape
+only), time and query); `trace` from an export and live; the labels template that `index --check`
+reads once filled in; and the query text, the kept rule and the redaction backstop themselves (the
+code's own 12-hex ids and hex tokens left, and where it replaced said).
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ from table_schemas import create_table  # noqa: E402
 import evidence_export as ee  # noqa: E402
 import vision_eval  # noqa: E402
 import vision_eval_driver as driver  # noqa: E402
+import vision_runs  # noqa: E402
 
 REGION, VISION = "ap-southeast-2", "us-west-2"
 TICK_GROUP = "/aws/lambda/bloggerbear-dev-research-tick"
@@ -73,8 +80,7 @@ SECRET = "Quentin Placeholder"
 DEPLOY_SHA, LATER_SHA = "a" * 40, "b" * 40
 
 
-@pytest.fixture(autouse=True)
-def _no_network(monkeypatch):
+def _refuse_network(monkeypatch) -> None:
     import socket
     import urllib.request
 
@@ -88,6 +94,11 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(requests.Session, "request", refuse)
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
     monkeypatch.setattr(socket.socket, "connect", refuse)
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    _refuse_network(monkeypatch)
     monkeypatch.delenv("PII_DENYLIST", raising=False)
 
 
@@ -328,7 +339,11 @@ class Pipeline:
 
 @pytest.fixture(scope="module")
 def pipeline():
-    return Pipeline()
+    # Module-scoped, so set up before the autouse guard of the first test: it refuses the network
+    # itself while the adapter, the worker handler and the admin API run.
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        _refuse_network(monkeypatch)
+        return Pipeline()
 
 
 # --- the fakes: Logs Insights, Lambda, gh --------------------------------------------------------------
@@ -479,6 +494,7 @@ def aws(pipeline, monkeypatch, tmp_path):
     }.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(ee, "NETWORKS_DIR", tmp_path / "networks")
+    monkeypatch.setattr(ee, "LIVE_DIR", tmp_path / "live")
     with mock_aws():
         import boto3
 
@@ -662,10 +678,20 @@ def test_the_planted_log_ptr_arn_and_account_never_reach_a_file(exported):
     text = every_text(exported) + every_text(exported.parent)
     for planted in (PLANTED_LOG, PLANTED_PTR, ACCOUNT, "arn:", "@log", "@ptr", PROFILE_ARN):
         assert planted not in text, planted
+    # The stream planted with an ARN is not of Lambda's shape: withheld, so nothing is left for the
+    # backstop, which replaced nothing (0 is what a real export expects) and says so.
     summary = json.loads((exported / "summary.json").read_text(encoding="utf-8"))
-    assert summary["redacted"] >= 1  # the planted log stream's ARN, caught by the backstop
-    provenance = (exported / "provenance.json").read_text(encoding="utf-8")
-    assert '"log_stream": "' in provenance and "[$LATEST][redacted]" in provenance
+    assert summary["redacted"] == 0 and summary["redacted_at"] == []
+    provenance = json.loads((exported / "provenance.json").read_text(encoding="utf-8"))
+    streams = {
+        row["log_stream"] for rows in provenance["lines"].values() for row in rows if "log_stream" in row
+    }
+    streams |= {
+        row["log"]["log_stream"] for row in provenance["lines"]["decisions.jsonl"] if row.get("log")
+    }
+    assert ee.STREAM_WITHHELD in streams
+    lambdas_own = "[$LATEST]0123456789abcdef0123456789abcdef"
+    assert all(s == ee.STREAM_WITHHELD or s.endswith(lambdas_own) for s in streams)
 
 
 def test_only_schema_fields_are_written_and_no_model_or_third_party_text(exported, pipeline):
@@ -775,6 +801,7 @@ def test_the_summary_counts_the_cities_and_the_demo_apart_with_zero_rows(exporte
     }
     assert all(n == 0 for n in worker["refusals_by_code"]["production"].values())
     assert worker["ended_without_a_reply"] == {"timeout": 1, "out_of_memory": 1, "error": 0, "other": 0}
+    assert worker["not_checked"] == 0
     assert failures["research_tick"]["timeouts"] == 1
     e11 = summary["e11_tick_time"]
     assert e11["cities"]["with_agent"]["n"] == 3 and e11["cities"]["with_agent"]["p50"] == 13000
@@ -956,6 +983,166 @@ def test_logs_that_did_not_finish_are_said_never_counted_as_zero(aws, tmp_path):
     assert aws.fake_logs.stopped  # the unfinished queries were stopped, so they cost no more
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
     assert {q["state"] for q in provenance["queries"].values() if q["kind"] == "measures"} == {"not_checked"}
+
+
+def test_a_measures_read_that_did_not_finish_counts_no_worker_run_as_ended_without_a_reply(aws, tmp_path):
+    aws.fake_logs.unfinished = {"vision_measure"}  # the REPORT lines are read, the workers' own lines not
+    out = tmp_path / "live" / "2024-07-29"
+    assert run_export(aws, out, "--logs-wait", "0.05") == 0
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    assert summary["logs"]["measures"]["state"] == "not_checked"
+    assert summary["logs"]["worker_reports"]["state"] == "complete"
+    worker = summary["observed_failures"]["worker"]
+    # Every run's line may be in the window not read: none is a failure, all are not checked.
+    assert worker["ended_without_a_reply"] == {"timeout": 0, "out_of_memory": 0, "error": 0, "other": 0}
+    assert worker["not_checked"] == 14 and summary["observed_failures"]["complete"] is False
+    workers = summary["human_control"]["completeness"]["worker_request_ids"]
+    assert workers["ended_without_a_reply"] == 0 and workers["not_checked"] == workers["request_ids"] == 12
+    lines = read_jsonl(out / "worker.jsonl")
+    assert len(lines) == 14 and all(
+        line["ended_without_a_reply"] is None and line["cause"] is None for line in lines
+    )
+    # With every query read, only the two lost runs ended without a reply (the summary test holds it).
+    data = {
+        "measures": [],
+        "worker_reports": [
+            {"request_id": "r-1", "logged": "2024-07-29T10:00:30+00:00"},
+            {"request_id": "r-2", "logged": "2024-07-29T12:00:00+00:00"},
+        ],
+        "measure_gaps": [{"start": "2024-07-29T09:00:00+00:00", "end": "2024-07-29T10:00:00+00:00"}],
+    }
+    lost, unknown = ee.no_reply_reports(data)  # r-1 is within a minute of the window not read
+    assert [r["request_id"] for r in lost] == ["r-2"] and [r["request_id"] for r in unknown] == ["r-1"]
+
+
+def test_replace_keeps_the_operators_labels_and_never_removes_what_is_not_an_export(aws, tmp_path, capsys):
+    live = tmp_path / "live"
+    out = live / "2024-07-29"
+    assert run_export(aws, out) == 0
+    text = (out / ee.TEMPLATE_FILE).read_text(encoding="utf-8")
+    rows = list(csv.DictReader(line for line in text.splitlines() if not line.startswith("#")))
+    for row in rows:
+        row["label"], row["reason"] = "agree", "looks_real"
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=vision_eval.LABEL_COLUMNS, lineterminator="\n")
+    writer.writeheader()
+    writer.writerows(rows)
+    (out / ee.LABEL_FILE).write_text(buffer.getvalue(), encoding="utf-8")
+    labels = (out / ee.LABEL_FILE).read_bytes()
+    (out / "traces" / "stale.md").write_text("an older export's trace", encoding="utf-8")
+    assert run_export(aws, out, "--replace") == 0  # the runsheet's re-run after a log read not checked
+    assert (out / ee.LABEL_FILE).read_bytes() == labels and not (out / "traces" / "stale.md").exists()
+    summary = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+    agreement = summary["human_control"]["agreement"]
+    assert agreement["cities"]["labelled"] + agreement["demo"]["labelled"] == len(rows) == 5
+    assert ee.main(["agreement", "--from", str(out)]) == 0
+    recounted = json.loads((out / "summary.json").read_text(encoding="utf-8"))["human_control"]["agreement"]
+    assert recounted == agreement
+    # A directory that holds anything else is not an export: refused with --replace too, untouched.
+    for other in (live, tmp_path):
+        before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+        with pytest.raises(ee.Refused, match="is not an export"):
+            run_export(aws, other, "--replace")
+        assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+    elsewhere = tmp_path / "evidence"
+    (elsewhere / "runs").mkdir(parents=True)
+    (elsewhere / "index.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ee.Refused, match="is not an export"):
+        run_export(aws, elsewhere, "--replace")
+    assert (elsewhere / "index.json").is_file() and (elsewhere / "runs").is_dir()
+
+
+def test_an_out_outside_live_never_writes_over_the_readme_beside_it(aws, tmp_path):
+    evidence_dir = tmp_path / "evidence"
+    evidence_dir.mkdir()
+    (evidence_dir / "README.md").write_text("ORIGINAL evidence README\n", encoding="utf-8")
+    assert run_export(aws, evidence_dir / "retry-export") == 0
+    assert (evidence_dir / "README.md").read_text(encoding="utf-8") == "ORIGINAL evidence README\n"
+    assert (evidence_dir / "retry-export" / "summary.json").is_file()
+    assert run_export(aws, tmp_path / "live" / "2024-07-29") == 0  # in live/: its README, with the credits
+    assert "© OpenStreetMap contributors" in (tmp_path / "live" / "README.md").read_text(encoding="utf-8")
+
+
+def _o2_capture(pipeline) -> bytes:
+    """Sydney's network object as the runsheet's O2 step writes it: jq -a, indented, nulls for the
+    fields the object lacks."""
+    network = pipeline.city.store.load_network(CITIES, CITY_SITE)
+    fixture = {key: network.get(key) for key in ee.NETWORK_FIELDS}
+    return (json.dumps(fixture, indent=2, ensure_ascii=True) + "\n").encode("ascii")
+
+
+def test_networks_leave_the_committed_fixture_byte_for_byte_and_keep_one_that_differs(
+    aws, pipeline, tmp_path, monkeypatch, capsys
+):
+    networks = tmp_path / "networks"
+    networks.mkdir()
+    fixture = networks / f"{CITY_SITE}.json"
+    fixture.write_bytes(_o2_capture(pipeline))
+    pinned = vision_runs.sha256_file(fixture)
+    out = tmp_path / "live" / "2024-07-29"
+    assert run_export(aws, out, "--networks") == 0
+    assert vision_runs.sha256_file(fixture) == pinned  # the run files' pins still hold
+    entry = json.loads((out / "provenance.json").read_text(encoding="utf-8"))["networks"]
+    entry = next(iter(entry.values()))
+    assert entry["written"] is False and entry["kept"].startswith("unchanged") and entry["sha256"] == pinned
+    # Another network in the file: kept, and said; --replace-networks writes over it.
+    other = json.loads(fixture.read_text(encoding="utf-8"))
+    other["ways"] = other["ways"][:1]
+    fixture.write_text(json.dumps(other, indent=2) + "\n", encoding="utf-8")
+    held = fixture.read_bytes()
+    capsys.readouterr()
+    assert run_export(aws, out, "--networks", "--replace") == 0
+    assert fixture.read_bytes() == held and "--replace-networks writes over it" in capsys.readouterr().err
+    assert run_export(aws, out, "--networks", "--replace", "--replace-networks") == 0
+    stored = pipeline.city.store.load_network(CITIES, CITY_SITE)
+    assert ee.same_network(fixture.read_bytes(), ee.fixture_of(stored))
+    # A PII hit puts the file it wrote over back as it was, and leaves the operator's labels in place.
+    fixture.write_bytes(held)
+    (out / ee.LABEL_FILE).write_text(",".join(vision_eval.LABEL_COLUMNS) + "\n", encoding="utf-8")
+    monkeypatch.setenv("PII_DENYLIST", SECRET)
+    assert run_export(aws, out, "--with-notes", "--networks", "--replace", "--replace-networks") == 2
+    assert fixture.read_bytes() == held
+    assert sorted(p.name for p in out.iterdir()) == [ee.LABEL_FILE]
+    assert (tmp_path / "live" / "2024-07-29.refused" / "summary.json").is_file()
+
+
+def test_a_network_that_cannot_be_read_is_said_and_the_export_finishes(aws, tmp_path, monkeypatch):
+    def refused(topic_id, site_id):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")  # a corrupt object, as json raises
+
+    monkeypatch.setattr(ee.vision_sites, "load_network", refused)
+    out = tmp_path / "live" / "2024-07-29"
+    assert run_export(aws, out, "--networks", "--figures", "2") == 0
+    assert not list((tmp_path / "networks").glob("*.json"))
+    networks = json.loads((out / "provenance.json").read_text(encoding="utf-8"))["networks"]
+    assert networks == {
+        f"vision/{CITIES}/{CITY_SITE}/network.json": {
+            "topic_id": CITIES,
+            "site_id": CITY_SITE,
+            "from": f"vision/{CITIES}/{CITY_SITE}/network.json",
+            "error": "ValueError",
+        }
+    }
+    assert len(list((out / "figures").glob("*.png"))) == 2
+
+
+def test_a_refusal_that_cannot_move_the_export_aside_still_exits_2_and_keeps_no_network(
+    aws, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("PII_DENYLIST", SECRET)
+    real_rename = Path.rename
+
+    def held_open(self, target):
+        if str(target).endswith(".refused"):
+            raise PermissionError("a file in it is open")
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", held_open)
+    out = tmp_path / "live" / "2024-07-29"
+    assert run_export(aws, out, "--with-notes", "--networks") == 2
+    err = capsys.readouterr().err
+    assert "could not be moved aside (PermissionError)" in err and "do not commit" in err
+    assert not list((tmp_path / "networks").glob("*.json"))  # put back before the move was tried
 
 
 def test_a_pii_hit_refuses_the_export_names_the_file_and_line_and_moves_it_aside(
@@ -1144,6 +1331,71 @@ def test_the_backstop_redacts_account_ids_and_arns_but_not_a_uuids_last_group():
     assert cleaned["f"] == value["f"] and count == 4
 
 
+def test_the_backstop_leaves_code_made_hex_ids_and_says_where_it_replaced():
+    # All-digit 12-hex ids, built here so no 12-digit literal sits in the source (test_terraform_wiring).
+    ids = (5839_2017_4628, 3019_2837_4650, 9988_7766_5544, 1122_3344_5566)
+    run, build, reason, step_build = (str(n) for n in ids)
+    stream = f"2026/10/24/[$LATEST]ab{run}cdef0123456789abcd"  # a 12-digit run inside the hex
+    lines = [
+        {
+            "run": run,  # evidence.new_run's uuid4().hex[:12], all digits one time in 270
+            "measured_by": {"build": build},
+            "triage": {"reason_sha256": reason},
+            "steps": [{"result": {"build": step_build}}],
+        },
+        {
+            "stream": stream,
+            "etag": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+            "query_id": f"0f0e0d0c-1111-4222-8333-{ACCOUNT}",
+        },
+        {"site_id": f"acct-{ACCOUNT}", "code": f"{ACCOUNT}-x", "run": f"x {ACCOUNT}", "build": int(ACCOUNT)},
+    ]
+    found = []
+    cleaned, count = ee.backstop(lines, found)
+    assert cleaned[:2] == lines[:2]  # the code's own ids, the stream's hex, an ETag, a UUID: all kept
+    # Beside a hyphen it is replaced (a hyphenated name can hold an account id), and a hex12 field
+    # keeps only a 12-hex value: anything else in it goes through the rule.
+    assert cleaned[2] == {
+        "site_id": "acct-[redacted]",
+        "code": "[redacted]-x",
+        "run": "x [redacted]",
+        "build": "[redacted]",
+    }
+    assert count == 4 and [ee.redacted_place("decisions.jsonl", path, line) for path, line in found] == [
+        "decisions.jsonl:3 site_id",
+        "decisions.jsonl:3 code",
+        "decisions.jsonl:3 run",
+        "decisions.jsonl:3 build",
+    ]
+    found = []
+    ee.backstop(f"# Trace\n\nline two\nthe role {PLANTED_ARN}\n", found)
+    assert [ee.redacted_place("traces/x.md", path, line) for path, line in found] == ["traces/x.md:4"]
+    found = []
+    ee.backstop({"queries": {"q-1": {"statistics": {"bytesScanned": int(ACCOUNT)}}}}, found)
+    assert [ee.redacted_place("provenance.json", *place) for place in found] == [
+        "provenance.json queries/q-1/statistics/bytesScanned"
+    ]
+
+
+def test_a_lines_stream_and_time_are_written_only_in_lambdas_shapes():
+    row = {
+        "_group": TICK_GROUP,
+        "_slice": "decisions-0",
+        "@timestamp": "2026-10-24 01:02:03.456",
+        "@logStream": "2026/10/24/[$LATEST]0123456789abcdef0123456789abcdef",
+    }
+    assert ee._from(row) == {
+        "log_group": TICK_GROUP,
+        "log_stream": row["@logStream"],
+        "timestamp": row["@timestamp"],
+        "query": "decisions-0",
+    }
+    for planted in ("2026/10/24/[$LATEST]someone@example.com", "2026/10/24/[$LATEST]10.1.2.3", PLANTED_ARN):
+        assert ee._from({**row, "@logStream": planted})["log_stream"] == ee.STREAM_WITHHELD
+    assert ee._from({**row, "@timestamp": "by someone@example.com"})["timestamp"] is None
+    assert ee._from({})["log_stream"] is None
+
+
 def test_report_lines_are_read_as_fields_never_as_text():
     row = {
         "@timestamp": "2026-10-20 01:00:00.000",
@@ -1252,3 +1504,20 @@ def test_networks_come_from_each_sites_object_or_a_legacy_inline_copy(monkeypatc
     assert "CONTENT_BUCKET" not in os.environ  # put back as it was
     fields = ("ways", "stations", "pois", "fetched_at", "source")
     assert ee.fixture_of(stored) == {key: stored[key] for key in fields}
+    # A key no config could hold (it would name a file outside the folder) is passed over; a read
+    # that fails is said, never raised.
+    state["sites"]["../../escape"] = {"network": stored}
+    state["sites"]["sydney"]["network_key"] = "set"
+
+    def failing(topic_id, site_id):
+        from botocore.exceptions import ClientError
+
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "GetObject")
+
+    errors = {}
+    found = ee.site_networks(CITIES, state, BUCKET, load=failing, errors=errors)
+    assert [site for site, _network, _where in found] == ["boston"]
+    assert errors == {
+        "melbourne": {"from": f"vision/{CITIES}/melbourne/network.json", "error": "AccessDenied"},
+        "sydney": {"from": f"vision/{CITIES}/sydney/network.json", "error": "AccessDenied"},
+    }

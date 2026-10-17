@@ -891,6 +891,16 @@ python scripts/evidence_export.py agreement --from docs/hackathon/evidence/live/
 python scripts/pii_denylist_check.py --files <path> ...    # what the export runs on every file it writes
 ```
 
+On Windows, in the activated venv:
+
+```powershell
+python scripts\evidence_export.py export --env dev --networks --figures 12
+python scripts\evidence_export.py trace --topic rail-cities --site sydney --scene latest --from docs\hackathon\evidence\live\<date>
+python scripts\evidence_export.py trace --env dev --topic rail-sydney-demo --scene latest
+python scripts\evidence_export.py agreement --from docs\hackathon\evidence\live\<date>
+python scripts\pii_denylist_check.py --files <path> ...
+```
+
 **`export`** reads, read-only, what the deployed system measured, decided and did into
 `docs/hackathon/evidence/live/<UTC date>/` (the [evidence README](../docs/hackathon/evidence/README.md#the-live-evidence-live)
 lists the files and their fields): each vision topic's running state and its decision ring; the
@@ -904,12 +914,19 @@ logs' 90 days (`--since ISO` otherwise). The queries are the operator's assistan
 one cut at 1,000 rows is split by time and asked again, and one that did not finish is said as not
 checked in `summary.json`, never as zero. Only schema fields are written; `--with-notes` adds the
 agent's reasons, the news hosts and the Finding summaries, through `redact.scrub`, labelled as
-unverified. A backstop replaces any 12-digit number or ARN left (`summary.json`'s `redacted` says
-how many), and `pii_denylist_check.py --files` reads every file written: a hit exits 2, naming the
-file and line, and moves the export to `live/<date>.refused/`, which git ignores. `--networks`
-also writes each city's `scripts/vision_benchmark_networks/<site>.json` from its network object, in
-the fixture's shape; `--figures N` copies at most N figures (the triaged decisions' first). An
-export already in the directory is refused without `--replace`. Resource names come from
+unverified. A backstop replaces any ARN and any 12-digit number left, beside a hyphen too, but not
+one inside a longer hex token or a UUID, nor a code-made 12-hex `run`, `build` or `reason_sha256`
+(`summary.json`'s `redacted` says how many, 0 expected, and `redacted_at` where), and
+`pii_denylist_check.py --files` reads every file written: a hit exits 2, naming the file and line,
+puts back every network file it wrote and moves the export to `live/<date>.refused/`, which git
+ignores (the operator's `labels.csv` stays). `--networks` also writes each city's
+`scripts/vision_benchmark_networks/<site>.json` from its network object, in the fixture's shape: a
+file that already holds the same network is left byte for byte (run files pin its sha256), and one
+that holds another is kept unless `--replace-networks`. `--figures N` copies at most N figures (the
+triaged decisions' first, whatever the agent's verdict, then the reported ones). An export already in
+the directory is refused without `--replace`, which removes only the export's own files (never
+`labels.csv`); a directory that holds anything else is refused either way, and `live/README.md` is
+written only beside the exports in `live/`. Resource names come from
 `--prefix` (`bloggerbear`) and `--env`; the Regions are Terraform's defaults unless given
 (`--region`, `--vision-region`).
 

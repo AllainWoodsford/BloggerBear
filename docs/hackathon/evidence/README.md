@@ -221,21 +221,32 @@ writer's own kinds (`lambdas/common/evidence.py`); never a log's `@log` (it name
 reason. Run with `--with-notes`, the agent's reasons, the news hosts it read and the Findings'
 summaries are added, through `redact.scrub` and labelled "unverified, model text" (or third-party
 text); the report quotes notes from the evaluation's run files by default. Before the export
-finishes, every 12-digit number and ARN left is replaced with `[redacted]` (`summary.json`'s
-`redacted` counts them: 0 is expected), and `scripts/pii_denylist_check.py --files` reads every file
-written; a hit refuses the export.
+finishes, every ARN and every 12-digit number left is replaced with `[redacted]`: a run of exactly
+twelve digits, beside a hyphen too, but not one inside a longer hex token (a log stream's id, an
+ETag), a UUID's last group, or a `run`, `build` or `reason_sha256` value that is the code's own
+12-hex id. `summary.json`'s `redacted` counts them (0 is expected) and `redacted_at` names each
+file, line and field. A line's log stream and time are written only in Lambda's and Logs Insights'
+own shapes. `scripts/pii_denylist_check.py --files` then reads every file written; a hit refuses the
+export (exit 2): the directory is moved to `live/<date>.refused/`, which git ignores, the operator's
+`labels.csv` left where it was, and every network file it wrote put back as it was.
+
+`--replace` writes over an export: it removes only the export's own files and folders, never the
+operator's `labels.csv`, and refuses a directory that holds anything else. `live/README.md` is
+written only beside the exports in `live/`. `--networks` leaves a network file that already holds
+the same network byte for byte (the evaluation's run files pin its sha256), and keeps one that holds
+another network unless `--replace-networks` is given.
 
 | File | From | Holds |
 |---|---|---|
 | `decisions.jsonl` | each vision topic's running state (its decision ring, `snapshots/<topic>/running-state.json`) and the research tick's `vision_decision` and `vision_triage` lines | one line per decision, `(topic_id, site_id, scene_id)` once: the ring's entries first (`source: state`, kept), then the decisions only the logs still hold (`source: logs`, `kept` from their attempt's `research_tick` line); each with its fields of the ring's schema, the agent's part without its reason or hosts, who measured, `finding_written` (from its attempt's line, else the Findings and the articles, else null) and its not-kept copies under `not_kept` (an attempt that failed: `stored_false`, or `no_attempt_line`) |
 | `triage.jsonl` | the research tick's group | every `vision_triage` line of the topics: the verdict, the stop, every step with its result, tokens and cost in USD |
-| `worker.jsonl` | the worker's group, us-west-2 | every `vision_measure` line, with its REPORT line's billed duration and memory joined by the request id, and its `caller` from the site id (`production`, `demo`, `eval`, `bench`); then every REPORT with no line, `ended_without_a_reply` with its `cause` (`timeout`, `out_of_memory`, `error`, `other`) |
+| `worker.jsonl` | the worker's group, us-west-2 | every `vision_measure` line, with its REPORT line's billed duration and memory joined by the request id, and its `caller` from the site id (`production`, `demo`, `eval`, `bench`); then every REPORT with no line, `ended_without_a_reply` with its `cause` (`timeout`, `out_of_memory`, `error`, `other`), or `ended_without_a_reply: null` with no cause when it was logged where the `vision_measure` query did not read (whether it replied is not known) |
 | `ticks.jsonl` | the research tick's group | every `research_tick` line of the topics: outcome, `stored`, decisions, triages, the Finding's time, the tick's own ms |
 | `people.jsonl` | the admin API's group | every `moderation_decision` and `topic_changed` line of the topics; never who |
 | `articles.json` | the Articles table (a Query on `by_topic_created_at`) | per topic since the window's start: `article_id`, `status`, `published_by`, `created_at`, `published_at` and the lineage's research `captured_at`s; never the body or the title |
 | `findings.json` | the Findings table (a Query on the topic) | `captured_at`, `expires_at`, the figures' keys, planner-note counts by type, `research_call` (its model id, tokens), the subjects (site ids); the summary only with `--with-notes` |
 | `history.json` | the running states | per topic its times and thresholds; per site its first observation, network times and counts, the last error's code and time (never its detail), and each history entry's scalars (never stations, flags, suggestions, deserts, hubs or the network) |
-| `figures/` (`--figures N`) | the content bucket | at most N figures, the triaged decisions' first: they carry their credits in the strip |
+| `figures/` (`--figures N`) | the content bucket | at most N figures of kept decisions that were triaged (whatever the agent's verdict, an artefact's too) or reported, the triaged first, for the labels: not every one shows a reported change. They carry their credits in the strip |
 | `traces/` | the above | one Markdown trace per triaged decision (`vision_decisions.trace`, as the assistant's scene view shows it), for the labels |
 | `labels-template.csv` | the triaged decisions | one row per triaged decision: `decision` (`<topic>/<site>/<scene>`), `verdict`, `figure`, `trace` (file names), and empty `label` and `reason`; the reason codes in its header. Filled in and saved as `labels.csv` (O9) |
 | `provenance.json` | everything read | where each line came from: the log group the query named, the stream, the time, the query (its Logs Insights id, window and run time, under `queries`); each state's key, ETag and time; each function's `CodeSha256` and `LastModified` (never its ARN or role) and the deploy that produced it: the head commit of the newest `terraform.yml` run on `dev` created before `LastModified` (`gh run list`; null, with the reason, without `gh`); the exporter's own commit |
@@ -247,7 +258,8 @@ written; a hit refuses the export.
   written, the not-kept copies, and the decisions whose attempt could not be read (`unknown_kept`);
 - **the failures observed in the deployment**, zero rows included: the sites' turns by outcome and
   by error code; the worker's refusals by code, production's and the demo's; the worker runs that
-  ended without a reply (from REPORT lines: a worker timeout never writes its line); the attempts
+  ended without a reply (from REPORT lines: a worker timeout never writes its line; a REPORT logged
+  where the `vision_measure` query did not read is `not_checked`, never counted); the attempts
   not kept (`stored: false`, or no `research_tick` line) and the research tick's timeouts; the
   OpenStreetMap failures (site turns with `osm`, each site's network error now); the triage stops
   other than `answered`;

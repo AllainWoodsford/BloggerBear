@@ -28,10 +28,14 @@ imported, not copied, so the two readers cannot drift), and is written as the fi
 never `@log` (it names the account), `@ptr` or a raw `@message`. A decision ring entry is re-checked
 field by field with the same kinds. The agent's reason, the hosts of the news it read and the
 Findings' summaries are third-party or model text: they are written only with `--with-notes`,
-through redact.scrub and labelled as unverified. Before finishing, every 12-digit number and every
-`arn:` string left anywhere is replaced with `[redacted]` (a backstop: no schema field holds one),
-and scripts/pii_denylist_check.py --files reads every file written; a hit refuses the export (exit
-2, naming the file and line) and moves the directory aside, where git ignores it.
+through redact.scrub and labelled as unverified. Before finishing, every `arn:` string and every
+12-digit number left anywhere (not one inside a longer hex token or a UUID, nor a code-made 12-hex
+`run` or `build`) is replaced with `[redacted]` (a backstop: no schema field holds one; summary.json
+says how many and where), and scripts/pii_denylist_check.py --files reads every file written; a hit
+refuses the export (exit 2, naming the file and line) and moves the directory aside, where git
+ignores it. `--replace` removes only the export's own files (never the operator's labels.csv), and
+only from a directory that holds nothing else; `--networks` leaves a network file that already holds
+the same network as it is (run files pin its sha256).
 
 **Logs are read within bounds.** The queries are the assistant's fixed text (topic ids compared by
 equality), run through ops_mcp/logs.run_queries a few at a time, each batch waited for at most
@@ -145,11 +149,35 @@ SUMMARY_LABEL = "the Finding's summary (unverified, model text)"
 NOTE_MAX_CHARS = redact.TEXT_MAX_CHARS
 SUMMARY_MAX_CHARS = 4000
 REDACTED = "[redacted]"
-# The backstop: an AWS account id is a 12-digit number; redact.py's rule (a run of exactly twelve
-# digits, not inside a longer number or after a hyphen, so a UUID's last group is not one), and any
-# ARN, which names the account.
-_TWELVE_DIGITS = re.compile(r"(?<![\d-])\d{12}(?![\d-])")
+# The backstop: an AWS account id is a 12-digit number. Every run of exactly twelve digits is
+# replaced, beside a hyphen too (a bucket's or a role's name can hold one), unless it is part of a
+# longer hex token (a hex letter beside it: a Lambda log stream's 32-hex tail, an ETag, a hash) or a
+# UUID's last group (a request id); and any ARN, which names the account.
+_TWELVE_DIGITS = re.compile(
+    r"(?<![\dA-Fa-f])(?<![0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-)\d{12}(?![\dA-Fa-f])"
+)
 _ARN = re.compile(r"\barn:[^\s\"',\]\}]*")
+# The fields whose value is a 12-hex id the code makes (evidence.new_run's `run`, a build's or a
+# reason's sha256 prefix): about one in 270 is all digits, and is not an account id, so the backstop
+# leaves such a value, and only such a value, of those fields alone.
+_HEX12 = re.compile(r"[0-9a-f]{12}")
+HEX12_FIELDS = frozenset(
+    {
+        "run",
+        *(name for fields in evidence.EVENTS.values() for name, kind in fields.items() if kind == "hex12"),
+    }
+)
+# How many of the backstop's replacements summary.json names (`redacted_at`), the first ones.
+REDACTED_AT_MAX = 100
+# Lambda names its log streams "2026/10/24/[$LATEST]" and a hex id (a version or an alias in the
+# brackets), and Logs Insights its times "2026-10-24 01:02:03.456": a line's provenance keeps a stream
+# or a time of that shape only (STREAM_WITHHELD otherwise), never a planted address or name.
+_STREAM = re.compile(r"\d{4}/\d{2}/\d{2}/\[[A-Za-z0-9$_-]{1,64}\][0-9A-Za-z]{1,64}")
+_LOG_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?")
+STREAM_WITHHELD = "[withheld: not a Lambda log stream name]"
+# A worker run's vision_measure line is printed just before Lambda's REPORT line: a REPORT logged
+# within this of a window the measures query did not read may have its line in that window.
+REPORT_AFTER_MEASURE = timedelta(minutes=1)
 # A Lambda REPORT line's numbers and status, as Lambda writes them.
 _REPORT_REQUEST = re.compile(r"RequestId: ([A-Za-z0-9-]{1,64})")
 _REPORT_FIELDS = {
@@ -169,6 +197,8 @@ PRODUCTION = "production"
 SITE_OUTCOMES = ("measured", "deferred", "not_reached", "none", "no_scene")
 MODERATION_DECISIONS = vision_evidence.MODERATION_DECISIONS
 LABEL_FILE, TEMPLATE_FILE = "labels.csv", "labels-template.csv"
+# The export's own folders, beside FILES: all `--replace` ever removes (never the operator's labels).
+EXPORT_DIRS = ("figures", "traces")
 FILES = (
     "decisions.jsonl",
     "triage.jsonl",
@@ -579,11 +609,15 @@ def read_logs(
 
 
 def _from(row: dict) -> dict:
-    """A line's provenance: the group the query named (never @log), its stream, its time, its query."""
+    """A line's provenance: the group the query named (never @log), its stream and its time (each
+    only in Lambda's and Logs Insights' shapes), its query."""
+    stream, stamp = row.get("@logStream"), row.get("@timestamp")
+    if stream and not (isinstance(stream, str) and _STREAM.fullmatch(stream)):
+        stream = STREAM_WITHHELD
     return {
         "log_group": row.get("_group"),
-        "log_stream": row.get("@logStream"),
-        "timestamp": row.get("@timestamp"),
+        "log_stream": stream or None,
+        "timestamp": stamp if isinstance(stamp, str) and _LOG_TIME.fullmatch(stamp) else None,
         "query": row.get("_slice"),
     }
 
@@ -689,6 +723,36 @@ def no_reply_cause(report: dict) -> str:
 def caller_of(site_id) -> str:
     text = str(site_id or "")
     return next((name for prefix, name in CALLERS if text.startswith(prefix)), PRODUCTION)
+
+
+def unread_windows(kinds: dict, slices: dict, kind: str) -> list[dict]:
+    """The windows of `kind`'s query that were not read whole: not finished (`missing`), or cut at
+    Logs Insights' limit with no shorter slice to ask (its older rows were not kept)."""
+    return kinds[kind]["missing"] + [
+        {"start": s["start"], "end": s["end"]}
+        for s in slices.values()
+        if s["kind"] == kind and s["state"] == "cut"
+    ]
+
+
+def no_reply_reports(data: dict) -> tuple[list[dict], list[dict]]:
+    """The worker's REPORT lines with no vision_measure line: (those that ended without a reply,
+    those whose line may sit in a window the measures query did not read). A run is only said to
+    have ended without a reply when the measures query read its time: otherwise it is not checked,
+    never a failure."""
+    measured = {m.get("request_id") for m in data["measures"] if m.get("request_id")}
+    gaps = data["measure_gaps"]
+    lost, unknown = [], []
+    for report in data["worker_reports"]:
+        if report["request_id"] in measured:
+            continue
+        when = _time(report.get("logged"))
+        unread = any(
+            when is None or (_time(w["start"]) <= when and when - REPORT_AFTER_MEASURE <= _time(w["end"]))
+            for w in gaps
+        )
+        (unknown if unread else lost).append(report)
+    return lost, unknown
 
 
 # --- the decisions: the ring and the logs, merged ------------------------------------------------------
@@ -1139,20 +1203,46 @@ def fixture_of(network: dict) -> dict:
     return {key: network.get(key) for key in NETWORK_FIELDS if key in network}
 
 
-def site_networks(topic_id: str, state: dict | None, bucket: str, load=None) -> list[tuple[str, dict, str]]:
+def same_network(held: bytes, fixture: dict) -> bool:
+    """Whether a network file already holds `fixture`: the same fields and values once read, however
+    it was written (the runsheet's O2 capture is jq's: indented, `\\u` escapes, a missing field as
+    null). Such a file is left as it is, byte for byte, so the sha256 every run file pins still holds."""
+    try:
+        text = json.loads(held.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return False
+
+    def present(value: dict) -> dict:
+        return {key: item for key, item in value.items() if item is not None}
+
+    return isinstance(text, dict) and present(text) == present(fixture)
+
+
+def site_networks(
+    topic_id: str, state: dict | None, bucket: str, load=None, errors: dict | None = None
+) -> list[tuple[str, dict, str]]:
     """(site id, network, where) for each site of a topic: the site's own object
     (vision/<topic>/<site>/network.json, through vision_sites.load_network), or the network a state
-    written before kept inline (`legacy_inline`)."""
+    written before kept inline (`legacy_inline`). Only a site id a config can hold
+    (vision_sites.SITE_ID: it names a file); an object that cannot be read (refused, timed out, not
+    JSON) goes into `errors` as {site id: {"from", "error"}}, never raised."""
     load = load or vision_sites.load_network
     found = []
     sites = (state or {}).get("sites") if isinstance((state or {}).get("sites"), dict) else {}
     for site_id in sorted(sites):
+        if not isinstance(site_id, str) or not vision_sites.SITE_ID.fullmatch(site_id):
+            continue
         record = sites[site_id] if isinstance(sites[site_id], dict) else {}
         network, where = None, None
         if record.get("network_key"):
-            with _content_bucket(bucket):
-                network = load(topic_id, site_id)
             where = vision_sites.network_key(topic_id, site_id)
+            try:
+                with _content_bucket(bucket):
+                    network = load(topic_id, site_id)
+            except Exception as exc:  # noqa: BLE001 - a network not read is said, never raised
+                network = None
+                if errors is not None:
+                    errors[site_id] = {"from": where, "error": _error_code(exc)}
         if network is None and isinstance(record.get("network"), dict):
             network, where = record["network"], "legacy_inline"
         if isinstance(network, dict) and isinstance(network.get("ways"), list):
@@ -1242,36 +1332,61 @@ def deploy_for(last_modified, runs: list[dict] | None, why: str | None) -> dict:
 # --- the backstop --------------------------------------------------------------------------------------
 
 
-def backstop(value) -> tuple[object, int]:
-    """`value` with every 12-digit number and every `arn:` string replaced with REDACTED, keys
-    included, and how many were. No schema field holds one: a count above zero says one got through."""
+def backstop(value, found: list | None = None) -> tuple[object, int]:
+    """`value` with every `arn:` string and every account-id-like 12-digit number (_TWELVE_DIGITS; a
+    12-digit integer too) replaced with REDACTED, keys included, and how many were. A HEX12_FIELDS
+    value that is a 12-hex id is left alone. No schema field holds an account id: a count above zero
+    says one got through, and `found` (when given) gets where each was, as (path, line): the keys and
+    list indexes down to it (already cleaned), and in a text of several lines, its line."""
     count = 0
 
-    def text(s: str) -> str:
+    def note(path: tuple, s: str | None = None, at: int = 0) -> None:
+        if found is not None:
+            found.append((path, s.count("\n", 0, at) + 1 if s is not None and "\n" in s else None))
+
+    def text(s: str, path: tuple) -> str:
         nonlocal count
-        s, n = _ARN.subn(REDACTED, s)
-        s, m = _TWELVE_DIGITS.subn(REDACTED, s)
-        count += n + m
+        for pattern in (_ARN, _TWELVE_DIGITS):
+            for match in pattern.finditer(s):
+                note(path, s, match.start())
+            s, n = pattern.subn(REDACTED, s)
+            count += n
         return s
 
-    def walk(item):
+    def walk(item, path: tuple):
         nonlocal count
         if isinstance(item, str):
-            return text(item)
+            return text(item, path)
         if isinstance(item, bool) or item is None:
             return item
         if isinstance(item, int | float):
             if (isinstance(item, int) or float(item).is_integer()) and len(str(abs(int(item)))) == 12:
                 count += 1
+                note(path)
                 return REDACTED
             return item
         if isinstance(item, dict):
-            return {text(str(key)): walk(val) for key, val in item.items()}
+            out = {}
+            for key, val in item.items():
+                name = text(str(key), path)
+                code_made = key in HEX12_FIELDS and isinstance(val, str) and _HEX12.fullmatch(val)
+                out[name] = val if code_made else walk(val, (*path, name))
+            return out
         if isinstance(item, list | tuple):
-            return [walk(val) for val in item]
-        return text(str(item))
+            return [walk(val, (*path, n)) for n, val in enumerate(item)]
+        return text(str(item), path)
 
-    return walk(value), count
+    return walk(value, ()), count
+
+
+def redacted_place(name: str, path: tuple, line: int | None) -> str:
+    """Where the backstop replaced a value, for summary.json's `redacted_at`: the file, then a
+    .jsonl file's line (its first index) or a text's line, then the keys down to the value."""
+    if name.endswith(".jsonl") and path and isinstance(path[0], int):
+        name, path = f"{name}:{path[0] + 1}", path[1:]
+    elif line is not None:
+        name = f"{name}:{line}"
+    return " ".join([name, "/".join(str(part) for part in path)]).strip()
 
 
 # --- the summary ---------------------------------------------------------------------------------------
@@ -1429,8 +1544,7 @@ def summarise(data: dict) -> dict:
         }
     production = [m for m in measures if caller_of(m.get("site_id")) == PRODUCTION]
     demo_measures = [m for m in measures if caller_of(m.get("site_id")) == "demo"]
-    measured_ids = {m.get("request_id") for m in measures if m.get("request_id")}
-    no_reply = [r for r in worker_reports if r["request_id"] not in measured_ids]
+    no_reply, reply_unread = no_reply_reports(data)
     failures["worker"] = {
         "refusals_by_code": {
             caller: _zeros(
@@ -1441,9 +1555,12 @@ def summarise(data: dict) -> dict:
         "ended_without_a_reply": _zeros(
             ("timeout", "out_of_memory", "error", "other"), Counter(no_reply_cause(r) for r in no_reply)
         ),
+        "not_checked": len(reply_unread),
         "note": (
             "a worker timeout never writes vision_measure: these are counted from Lambda's REPORT lines, "
-            "of every caller (a run that wrote no line names no site)"
+            "of every caller (a run that wrote no line names no site); not_checked: REPORT lines logged "
+            "while the vision_measure query did not read (it did not finish, or was cut), whose runs may "
+            "have replied: never counted as ended without a reply"
         ),
     }
     failures["research_tick"] = {
@@ -1669,7 +1786,9 @@ def completeness(data: dict) -> dict:
             triages["unmatched"] += 1
             unmatched.append(_listed("vision_triage", line))
     measured = {m.get("request_id") for m in data["measures"] if m.get("request_id")}
-    reported = {r["request_id"] for r in data["worker_reports"]}
+    # A REPORT counts as a run that ended without a reply only where the measures query read its
+    # time; one in a window it did not read falls through to not_checked.
+    reported = {r["request_id"] for r in no_reply_reports(data)[0]}
     gave_up = {s.get("worker_request_id") for s in data["sites"] if s.get("code") in ("invoke", "reply")}
     workers = {
         "request_ids": 0,
@@ -1811,11 +1930,7 @@ def collect(
     records = []
     for topic_id in topic_ids:
         records += ring_records(topic_id, states[topic_id], with_notes=args.with_notes)
-    unread = kinds["ticks"]["missing"] + [
-        {"start": s["start"], "end": s["end"]}
-        for s in slices.values()
-        if s["kind"] == "ticks" and s["state"] == "cut"
-    ]
+    unread = unread_windows(kinds, slices, "ticks")
     decisions, merge = merge_decisions(
         records,
         decision_lines,
@@ -1894,6 +2009,7 @@ def collect(
         "measures": parsed["measures"],
         "worker_reports": reports["worker_reports"],
         "tick_reports": reports["tick_reports"],
+        "measure_gaps": unread_windows(kinds, slices, "measures"),
         "decisions": decisions,
         "merge": merge,
         "articles": articles,
@@ -1931,8 +2047,10 @@ def _file_name(*parts: str) -> str:
 def worker_lines(data: dict) -> list[dict]:
     """worker.jsonl: every vision_measure line with its REPORT's billed duration and most memory
     used, joined by the request id, and its caller; then every REPORT with no vision_measure line,
-    which ended without a reply."""
+    which ended without a reply, or (`ended_without_a_reply: null`, no cause) was logged where the
+    measures query did not read, so whether it replied is not known."""
     by_id = {r["request_id"]: r for r in data["worker_reports"]}
+    unknown = {r["request_id"] for r in no_reply_reports(data)[1]}
     out, measured = [], set()
     for line in data["measures"]:
         report = by_id.get(line.get("request_id"))
@@ -1950,11 +2068,12 @@ def worker_lines(data: dict) -> list[dict]:
     for report in data["worker_reports"]:
         if report["request_id"] in measured:
             continue
+        known = report["request_id"] not in unknown
         out.append(
             {
                 "event": "lambda_report",
-                "ended_without_a_reply": True,
-                "cause": no_reply_cause(report),
+                "ended_without_a_reply": True if known else None,
+                "cause": no_reply_cause(report) if known else None,
                 "caller": None,
                 **_public(report),
             }
@@ -2158,6 +2277,40 @@ def build_files(data: dict, *, figures: dict, traces: dict) -> tuple[dict[str, o
     return files, provenance
 
 
+def check_out_dir(out_dir: Path, *, replace: bool) -> None:
+    """Refuse an output directory before anything is read: one that is not empty and holds anything
+    but an export's own files (FILES, EXPORT_DIRS) and the operator's labels.csv, with or without
+    --replace (it is not an export, and nothing of it is the export's to remove); one that holds an
+    export, without --replace."""
+    shown = vision_runs.shown_path(out_dir)
+    if not out_dir.exists():
+        return
+    if not out_dir.is_dir():
+        raise Refused(f"{shown} is not a directory")
+    names = sorted(path.name for path in out_dir.iterdir())
+    own = {*FILES, *EXPORT_DIRS}
+    foreign = [name for name in names if name not in own and name != LABEL_FILE]
+    if foreign:
+        raise Refused(
+            f"{shown} is not empty and is not an export (it holds {', '.join(foreign[:5])}"
+            f"{', ...' if len(foreign) > 5 else ''}): name an empty directory, or an export's, with --out"
+        )
+    if any(name in own for name in names) and not replace:
+        raise Refused(
+            f"{shown} already holds an export; pass --replace to write over it ({LABEL_FILE} is kept)"
+        )
+
+
+def clear_export(out_dir: Path) -> None:
+    """An export's own files and folders removed from `out_dir` (check_out_dir allowed nothing else
+    but labels.csv, which stays)."""
+    for name in FILES:
+        (out_dir / name).unlink(missing_ok=True)
+    for name in EXPORT_DIRS:
+        if (out_dir / name).is_dir():
+            shutil.rmtree(out_dir / name)
+
+
 def export(
     args,
     aws: Aws | None = None,
@@ -2172,17 +2325,14 @@ def export(
     now = (now or datetime.now(UTC)).astimezone(UTC).replace(microsecond=0)
     aws = aws or Aws(args.region, args.vision_region)
     out_dir = Path(args.out) if args.out else LIVE_DIR / now.date().isoformat()
-    if out_dir.exists() and any(out_dir.iterdir()) and not args.replace:
-        raise Refused(
-            f"{vision_runs.shown_path(out_dir)} already holds an export; pass --replace to write over it"
-        )
+    check_out_dir(out_dir, replace=args.replace)
     if args.figures is not None and args.figures < 0:
         raise Refused("--figures takes a number, 0 or more")
     data = collect(args, aws, now=now, gh=gh, sleep=sleep, run=run, live_dir=out_dir.parent)
     data["regions"] = (aws.home_region, aws.vision_region)
     data["with_notes"] = args.with_notes
-    if out_dir.exists() and args.replace:
-        shutil.rmtree(out_dir)
+    if out_dir.exists():
+        clear_export(out_dir)  # the export's own files only: the operator's labels.csv stays
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
@@ -2219,32 +2369,50 @@ def export(
             name = "traces/" + _file_name(record["topic_id"], record["site_id"], record["scene_id"]) + ".md"
             traces[(record["topic_id"], record["site_id"], record["scene_id"])] = name
 
-    # The networks (--networks): each city's object, in the fixture's shape.
-    network_provenance = {}
+    # The networks (--networks): each city's object, in the fixture's shape. A file already there
+    # that holds the same network is left byte for byte (run files pin its sha256); one that holds
+    # another is kept unless --replace-networks. `network_files`: each file written, and the bytes
+    # it held before (None: new), for a refusal to put back.
+    network_provenance: dict[str, dict] = {}
+    network_files: dict[Path, bytes | None] = {}
     if args.networks:
         chosen: dict[str, tuple] = {}
         for topic_id in data["topic_ids"]:
             if group_of(topic_id, data["demos"]) == "demo":
                 continue  # the demo topic measures Sydney's polygon again: the city's network is the fixture
+            errors: dict[str, dict] = {}
             for site_id, network, where in site_networks(
-                topic_id, data["states"][topic_id], data["names"]["bucket"]
+                topic_id, data["states"][topic_id], data["names"]["bucket"], errors=errors
             ):
                 current = chosen.get(site_id)
                 if current is None or str(network.get("fetched_at") or "") > str(
                     current[1].get("fetched_at") or ""
                 ):
                     chosen[site_id] = (topic_id, network, where)
+            for site_id, error in sorted(errors.items()):
+                network_provenance[error["from"]] = {"topic_id": topic_id, "site_id": site_id, **error}
         for site_id, (topic_id, network, where) in sorted(chosen.items()):
             path = NETWORKS_DIR / f"{_file_name(site_id)}.json"
-            write_text(path, json.dumps(fixture_of(network), ensure_ascii=False) + "\n")
-            written.append(path)
-            network_provenance[vision_runs.shown_path(path)] = {
-                "topic_id": topic_id,
-                "site_id": site_id,
-                "from": where,
-                "sha256": vision_runs.sha256_file(path),
-                "fetched_at": network.get("fetched_at"),
-            }
+            fixture = fixture_of(network)
+            before = path.read_bytes() if path.is_file() else None
+            entry = {"topic_id": topic_id, "site_id": site_id, "from": where, "written": False, "kept": None}
+            if before is not None and same_network(before, fixture):
+                entry["kept"] = "unchanged: the file already holds this network"
+            elif before is not None and not args.replace_networks:
+                entry["kept"] = "differs: the file holds another network; --replace-networks writes over it"
+                print(
+                    f"  network {vision_runs.shown_path(path)} kept: the stored network differs from it. "
+                    "--replace-networks writes over it, and every run file that pinned its sha256 then no "
+                    "longer replays",
+                    file=sys.stderr,
+                )
+            else:
+                write_text(path, json.dumps(fixture, ensure_ascii=False) + "\n")
+                written.append(path)
+                network_files[path] = before
+                entry["written"] = True
+            entry.update(sha256=vision_runs.sha256_file(path), fetched_at=network.get("fetched_at"))
+            network_provenance[vision_runs.shown_path(path)] = entry
     data["network_provenance"] = network_provenance
 
     files, provenance = build_files(data, figures=figures, traces=traces)
@@ -2253,11 +2421,14 @@ def export(
         key = (record["topic_id"], record["site_id"], record["scene_id"])
         if key in traces:
             files[traces[key]] = trace_markdown(record, data, source=f"the export of {data['exported_at']}")
-    # The backstop over every file's content, then the summary, which says how many it replaced.
-    texts, total = {}, 0
+    # The backstop over every file's content, then the summary, which says how many it replaced and
+    # where (`redacted_at`), so a real account id is told from a code value that looks like one.
+    texts, total, places = {}, 0, []
     for name, content in files.items():
-        cleaned, count = backstop(content)
+        found: list = []
+        cleaned, count = backstop(content, found)
         total += count
+        places += [redacted_place(name, path, line) for path, line in found]
         texts[name] = (
             _jsonl(cleaned)
             if name.endswith(".jsonl")
@@ -2266,36 +2437,69 @@ def export(
             else cleaned
         )
     summary = summarise(data)
-    summary, count = backstop(summary)
+    found = []
+    summary, count = backstop(summary, found)
+    places += [redacted_place("summary.json", path, line) for path, line in found]
     summary["redacted"] = total + count
+    summary["redacted_at"] = backstop(places[:REDACTED_AT_MAX])[0]  # a file's name is from ids too
     texts["summary.json"] = _json(summary)
     for name in (*FILES, *sorted(name for name in texts if name not in FILES)):
         path = out_dir / name
         write_text(path, texts[name])
         written.append(path)
-    readme = out_dir.parent / "README.md"
-    write_text(readme, LIVE_README)
-    written.append(readme)
+    # live/README.md, only beside the exports in live/: an --out elsewhere never writes over the
+    # README of the directory it sits in.
+    if out_dir.parent.resolve() == LIVE_DIR.resolve():
+        readme = out_dir.parent / "README.md"
+        write_text(readme, LIVE_README)
+        written.append(readme)
 
     # The PII check over every file written; a hit refuses the export and moves it aside.
     pii = pii or _pii_check
     if pii([str(path) for path in written]) != 0:
-        aside = out_dir.with_name(out_dir.name + ".refused")
+        return refuse_export(out_dir, network_files)
+    _report(summary, out_dir, written)
+    return 0
+
+
+def refuse_export(out_dir: Path, network_files: dict[Path, bytes | None]) -> int:
+    """A PII hit: first the network files (a tracked directory) put back as they were, each one this
+    export created removed and each it wrote over restored; then the export moved aside, to
+    `<date>.refused/`, which git ignores, the operator's labels.csv left where it was. Exit 2, also
+    when the directory cannot be moved (a file in it held open, on Windows): then it says so."""
+    for path, before in network_files.items():
+        if before is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(before)
+    aside = out_dir.with_name(out_dir.name + ".refused")
+    try:
         if aside.exists():
             shutil.rmtree(aside)
         out_dir.rename(aside)
-        for path in written:
-            if path.parent == NETWORKS_DIR:
-                path.unlink(missing_ok=True)  # a network file sits in a tracked directory: never left there
+    except OSError as exc:
         print(
-            f"refused: the personal-data check found a denylisted term (file and line above). The export was "
-            f"moved to {vision_runs.shown_path(aside)}, which git ignores, and no network file was kept: "
-            "remove the term at its source, or delete the directory; do not commit it.",
+            f"refused: the personal-data check found a denylisted term (file and line above), and "
+            f"{vision_runs.shown_path(out_dir)} could not be moved aside ({type(exc).__name__}): delete the "
+            "export's files by hand (git does not ignore that directory) and do not commit them. No network "
+            "file was kept.",
             file=sys.stderr,
         )
         return REFUSED
-    _report(summary, out_dir, written)
-    return 0
+    labels = aside / LABEL_FILE
+    if labels.is_file():
+        try:
+            out_dir.mkdir(exist_ok=True)
+            labels.replace(out_dir / LABEL_FILE)
+        except OSError:
+            print(f"  your {LABEL_FILE} is in {vision_runs.shown_path(aside)}: copy it back", file=sys.stderr)
+    print(
+        f"refused: the personal-data check found a denylisted term (file and line above). The export was "
+        f"moved to {vision_runs.shown_path(aside)}, which git ignores, and no network file was kept: "
+        "remove the term at its source, or delete the directory; do not commit it.",
+        file=sys.stderr,
+    )
+    return REFUSED
 
 
 def _pii_check(paths: list[str]) -> int:
@@ -2315,7 +2519,12 @@ def _report(summary: dict, out_dir: Path, written: list[Path]) -> None:
         f"triaged: cities {counts['cities']['triaged']}, demo {counts['demo']['triaged']}"
     )
     if summary["redacted"]:
-        print(f"  the backstop redacted {summary['redacted']} value(s): read why before committing")
+        print(
+            f"  the backstop redacted {summary['redacted']} value(s): read why before committing "
+            "(summary.json's redacted_at says where)"
+        )
+        for place in summary["redacted_at"][:10]:
+            print(f"    {place}")
 
 
 # --- trace ---------------------------------------------------------------------------------------------
@@ -2450,7 +2659,14 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument(
         "--networks",
         action="store_true",
-        help="also write scripts/vision_benchmark_networks/<site>.json from the city topics' networks",
+        help="also write scripts/vision_benchmark_networks/<site>.json from the city topics' networks "
+        "(a file that already holds the same network is left as it is; one that holds another is kept)",
+    )
+    e.add_argument(
+        "--replace-networks",
+        action="store_true",
+        help="with --networks, write over a network file that holds another network (its sha256 changes, "
+        "so the run files that pinned it no longer replay)",
     )
     e.add_argument("--figures", type=int, default=0, metavar="N", help="write at most N figures (default 0)")
     e.add_argument(
@@ -2459,7 +2675,11 @@ def main(argv: list[str] | None = None) -> int:
         help="add the agent's reasons, the news hosts and the Finding summaries (scrubbed, unverified)",
     )
     e.add_argument("--out", help="the directory to write (default: docs/hackathon/evidence/live/<UTC date>)")
-    e.add_argument("--replace", action="store_true", help="write over an export already in that directory")
+    e.add_argument(
+        "--replace",
+        action="store_true",
+        help="write over an export already in that directory (its labels.csv is kept)",
+    )
     _aws_options(e)
     t = sub.add_parser("trace", help="one decision's chain as Markdown, from an export or live")
     t.add_argument("--topic", required=True)
