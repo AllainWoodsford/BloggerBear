@@ -1,6 +1,6 @@
 """What the vision adapters share: sites, scenes, history, figures and the tick's time budget.
 
-docs/enhancements/rail-access-monitor.md §3 and §4 (PR E). Two adapters watch fixed sites in
+docs/enhancements/archive/rail-access-monitor.md §3 and §4 (PR E). Two adapters watch fixed sites in
 Sentinel-2 scenes: satellite_vision (the ships task) and rail_access. This module is the part of
 the first that the second needed as it was: the config checks every vision topic shares, the
 Earth Search STAC search and the choice of scene, the figure store in the content bucket, the
@@ -14,7 +14,7 @@ what the agent is told.
 
 No OpenCV, numpy or networkx here: the adapter registry is imported by every pipeline Lambda.
 
-**Data licences** (docs/risks/opencv-bushfire-watch-01.md item 1, checked 2026-10-03):
+**Data licences** (checked 2026-10-03):
 Sentinel-2 is free, full and open under the Copernicus Sentinel data legal notice, which asks
 derived products to carry "Contains modified Copernicus Sentinel data [year]"
 (https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice). The AWS copy

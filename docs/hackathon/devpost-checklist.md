@@ -15,7 +15,7 @@ dates (they decide how long the endpoint must stay up, owner step O11).
 - [x] **Public.** The repository was made public by 16 October:
       https://github.com/AllainWoodsford/BloggerBear. The form gets that URL and the tag; no
       archive or snapshot repository is needed.
-- [ ] The settings [the public repository runsheet](../todo/public-repo-runsheet.md) gives a
+- [ ] The settings [the public repository runsheet](../enhancements/archive/public-repo-runsheet.md) gives a
       public repository: the rulesets, secret scanning, and approval for workflows from forks
       (not confirmed in the repository).
 

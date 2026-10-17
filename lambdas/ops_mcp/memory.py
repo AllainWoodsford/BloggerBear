@@ -2,7 +2,7 @@
 
 One table, OPERATOR_SUGGESTIONS_TABLE (hash key `user_id`, range key `item`), and the only thing
 in the account the assistant's role may write to (infra/modules/ops-assistant/memory.tf). The
-design is docs/enhancements/alexa-plus-operator-assistant-enhancement.md, section 4.
+design is docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md, section 4.
 
 **Rows hold kinds, ids, booleans and timestamps. Never text a model wrote, never a command.**
 

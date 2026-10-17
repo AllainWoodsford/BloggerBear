@@ -149,9 +149,9 @@ are. The second is `vision-pipeline`: the topic, its sites and the `VISION_ENABL
 research tick, the rail map data, the worker in its Region, the running state, the triage agent
 and the Finding, the person who approves, and where to look. Each step's parts are catalogue
 resources (`kind:key`, which the tests hold to the catalogue) or plain words for what is not ours.
-The written versions are [docs/architecture/article-research.md](../architecture/article-research.md)
-and [docs/architecture/blogger-vision.md](../architecture/blogger-vision.md);
-[docs/architecture/README.md](../architecture/README.md) says how to add the next one (for
+The written versions are [docs/architecture/article-research.md](../../architecture/article-research.md)
+and [docs/architecture/blogger-vision.md](../../architecture/blogger-vision.md);
+[docs/architecture/README.md](../../architecture/README.md) says how to add the next one (for
 example "prompts as assets"). A question that names both, "the vision research pipeline", goes to
 the feature whose alias is the longest found in it.
 

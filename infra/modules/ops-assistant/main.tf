@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------
 # The operator's assistant: the ops MCP server (lambdas/ops_mcp), deployed.
-# Design: docs/enhancements/alexa-plus-operator-assistant-enhancement.md (sections 1, 5 and 6).
+# Design: docs/enhancements/archive/alexa-plus-operator-assistant-enhancement.md (sections 1, 5 and 6).
 #
 # What one instance of this module is:
 #

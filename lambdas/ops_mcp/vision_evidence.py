@@ -43,7 +43,7 @@ profiles' tools or `other`, a moved measure not in the union of the adapters' de
 vocabularies, its coverage outside 0 to 1 (a share of the site), or it lacks the ids it is joined
 by. A line that is not JSON is dropped too.
 
-**Kept, reported and written are three facts** (docs/enhancements/vision-evidence.md). A
+**Kept, reported and written are three facts** (docs/enhancements/archive/vision-evidence.md). A
 `vision_triage` row joins its decision by (tick, run, site, scene) and a decision its attempt by
 (tick, run). An attempt whose `research_tick` line says `stored: false`, or has none (the tick timed
 out), did not keep its decisions: the next tick measured the scene again. Rows are de-duplicated by

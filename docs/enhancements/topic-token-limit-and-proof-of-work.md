@@ -1,7 +1,7 @@
 # Per-topic limits, richer vision articles, and a proof of work for the reviewer
 
-**Status:** proposed, not built · **Date:** 2026-10-16 · **Builds on:** [vision.md](vision.md) (the
-vision stack as merged) and [rail-access-monitor.md](rail-access-monitor.md) (the rail task, PRs
+**Status:** proposed, not built · **Date:** 2026-10-16 · **Builds on:** [vision.md](archive/vision.md) (the
+vision stack as merged) and [rail-access-monitor.md](archive/rail-access-monitor.md) (the rail task, PRs
 #285 to #298)
 
 ## Why

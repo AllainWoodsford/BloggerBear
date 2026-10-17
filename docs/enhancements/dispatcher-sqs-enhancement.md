@@ -4,7 +4,7 @@
 the stagger, the pause and the vision stack · **Do it when:** about 15–20 topics (twelve
 five-minute slots fill an hour), or as soon as Bedrock (or GDELT/CoinGecko) starts throttling
 scheduled runs.
-**Background:** finding 3 in [docs/risks/scaling-findings-01.md](../risks/scaling-findings-01.md).
+**Background:** the schedule limit in [project-plan.md, "Still open at scale"](../project-plan.md#still-open-at-scale).
 
 This revision keeps the shape of the first draft and changes what the dispatcher reads and what
 the worker runs, so that it builds on what is now in the Topics table and does not break the

@@ -377,7 +377,7 @@ def test_window_too_large(files, monkeypatch):
     assert reply["error"] == "window_too_large"
 
 
-# The Sydney box of docs/enhancements/rail-access-monitor.md §2, the largest of the four cities, and
+# The Sydney box of docs/enhancements/archive/rail-access-monitor.md §2, the largest of the four cities, and
 # the same box with its east edge 0.09° further out: 3,742 px across at 20 m, within
 # scene.MAX_WINDOW_PX but not within the rail task's own cap.
 SYDNEY_BOX = [[150.86, -33.58], [151.56, -33.58], [151.56, -34.16], [150.86, -34.16]]

@@ -213,7 +213,7 @@ def test_the_cost_saving_page_covers_every_switch_and_warns():
         assert re.search(rf"^\| `{github}` \| variable \| ", table, re.M), github
     assert "cost-saving.md" in table
     readme = _read("README.md")
-    assert "(docs/cost-saving.md)" in readme and "cost-saving.md" in readme.split("docs/\n")[1]
+    assert "| [Cost saving](docs/cost-saving.md) |" in readme  # a row of the README's docs table
     plan = _read("docs", "project-plan.md")
     assert "### Cost saving: optional firewall switches, hardened by default" in plan
     progress = _read("docs", "PROGRESS.md")

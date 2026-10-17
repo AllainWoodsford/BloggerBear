@@ -861,7 +861,7 @@ def test_numbers_from_the_design_docs_are_marked_indicative():
     """The front page's rule: a number cites the evidence or a code anchor, or is marked indicative
     and cites the design doc that recorded it (vision.md §7, friction.md)."""
     report = REPORT.read_text(encoding="utf-8")
-    design = re.compile(r"\]\((?:\.\./)*(?:friction\.md|enhancements/vision\.md#7-measured)")
+    design = re.compile(r"\]\((?:\.\./)*(?:friction\.md|enhancements/archive/vision\.md#7-measured)")
     unmarked = [p[:80] for p in _passages(report) if design.search(p) and "indicative" not in p]
     assert not unmarked, f"cites a design doc for a number without saying indicative: {unmarked}"
     front = report[: report.index("## 1. The problem")]
