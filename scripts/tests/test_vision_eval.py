@@ -965,7 +965,7 @@ def test_the_runsheets_powershell_runs_the_venvs_python_and_checks_what_bash_che
     lines = [line.strip() for block in powershell for line in block.splitlines()]
     after = lines[next(n for n, line in enumerate(lines) if "Activate.ps1" in line) + 1 :]
     assert not [line for line in after if "py -3.11" in line]
-    assert sum(line.count("python scripts\\vision_eval.py") for line in after) == 6
+    assert sum(line.count("python scripts\\vision_eval.py") for line in after) == 9  # Q2a's 6, Q2b's 3
     for step in ("requirements-dev.txt", "index --check", "pii_denylist_check.py --staged"):
         assert step in bash and step in "".join(powershell), step
     assert "ids only" not in RUNSHEET_EVAL and "the agent's note" in RUNSHEET_EVAL

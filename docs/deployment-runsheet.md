@@ -1439,7 +1439,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py agent --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
    ```
 
    It exits 1 when an unconditional case never reached the agent, a failure case did not fail
@@ -1458,7 +1458,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py counterfactual --worker $W --cache $HOME\cogs --agent bedrock --model-id $M --region ap-southeast-2 --repeats 5 --out docs\hackathon\evidence\runs
    ```
 
    Its checks hold that both sides were measured at their coverage and that no model was asked
@@ -1473,7 +1473,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py stability --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py stability --cache $HOME\cogs --out docs\hackathon\evidence\runs
    ```
 
    Its summary's `false_material` of `decisions`, with `wilson_low` and `wilson_high`, is the
