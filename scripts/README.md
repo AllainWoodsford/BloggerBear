@@ -794,8 +794,8 @@ of an unknown kind, is refused by name) and writes `index.json` and `RESULTS.md`
 kind, newest first; a run listed in `older-code.json` is marked "measured on older code" with its
 reason). `--check` fails when a run file was added without re-indexing, and checks the operator's
 labels (`live/*/labels.csv`) when there are any. `scripts/tests/test_vision_eval.py` runs it in CI,
-but only on a pull request python-ci runs on (one that touches `scripts/` or `lambdas/`) until
-python-ci also lists `docs/hackathon/**`: run it before committing run files.
+on every pull request that touches `docs/hackathon/`, `scripts/` or `lambdas/`; run it before
+committing run files too.
 
 All four run on Windows (`python scripts\vision_eval.py ...` in the activated venv: `py -3.11`
 would run the global 3.11, without the venv's packages). The driver they share,
@@ -883,3 +883,26 @@ still runs drafts without that Finding, and if it writes an article from
 other Findings, no later window holds it
 ([docs/deployment-runsheet.md, `rail_access` topics](../docs/deployment-runsheet.md#rail_access-topics),
 "One Finding can still be missed").
+
+## Before submitting to the competition: `submission_check.py`
+
+The OpenCV AI Competition 2026's pre-submit check
+([the Devpost checklist](../docs/hackathon/devpost-checklist.md#the-pre-submit-check)), offline:
+it reads the checkout and asks local git, and fetches nothing.
+
+```bash
+python scripts/submission_check.py --video-seconds 287             # at the tag, opencv-2026-submission
+python scripts/submission_check.py --ref HEAD --video-seconds 287  # before the tag exists
+```
+
+PowerShell: `py -3.11 scripts\submission_check.py --video-seconds 287`. Five checks, each listing
+every failure: no placeholder (`[R2: ...]`, any bracketed text that is not a link, or `<R2: ...>`
+inside code), unclosed code fence or stray backtick left in the report, the reproduction guide, the
+dependency audit, the video script, the Devpost text or the checklist; every repository-relative
+link in them resolves (external ones are listed to open by
+hand); no `missing` row in the rubric tracker but O7, O10 and O11 (the form itself, the optional
+production release, keeping the site up) and any passed with `--accept ID`, all listed; every run
+file under `docs/hackathon/evidence/runs/` measured on vision code equal to the checked commit's,
+from a clean checkout, or listed in `docs/hackathon/evidence/RESULTS.md` as "measured on older
+code" with its reason; and
+the video's length, entered by hand, at most 300 seconds. Exit 0 when all pass, 1 otherwise.

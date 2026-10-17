@@ -928,16 +928,17 @@ def test_index_refuses_a_missing_evidence_directory_and_names_labels_that_are_no
     assert 'live/2026-10-24/labels.csv: not UTF-8 text (save it as "CSV UTF-8")' in capsys.readouterr().err
 
 
-def test_the_docs_say_where_ci_runs_index_check_while_python_ci_skips_docs_only_pull_requests():
+def test_ci_runs_index_check_on_a_pull_request_that_adds_only_run_files():
+    """A run file's commit touches docs/hackathon/ alone: python-ci must run on it, so that this file's
+    `index --check` test catches a run file added without re-indexing, and the docs must not say
+    otherwise."""
     workflow = (ROOT / ".github" / "workflows" / "python-ci.yml").read_text(encoding="utf-8")
     pull_request = workflow.split("pull_request:", 1)[1].split("\n  push:", 1)[0]
-    if "'docs/hackathon/**'" in pull_request:
-        pytest.skip("python-ci runs on a docs-only pull request now: the caveat below can go")
+    assert "'docs/hackathon/**'" in pull_request
     evidence = ROOT / "docs" / "hackathon" / "evidence"
     for path in (evidence / "README.md", evidence / "RESULTS.md", ROOT / "scripts" / "README.md", RUNSHEET):
         text = " ".join(path.read_text(encoding="utf-8").split())
-        assert "until python-ci also lists `docs/hackathon/**`" in text, path
-    assert "CI's `index --check` fails" not in (evidence / "README.md").read_text(encoding="utf-8")
+        assert "until python-ci also lists" not in text, path
 
 
 RUNSHEET = ROOT / "docs" / "deployment-runsheet.md"
