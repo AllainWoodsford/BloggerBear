@@ -93,7 +93,7 @@ Appendix A]
 | What | Where |
 |---|---|
 | The technical report | [technical-report.md](technical-report.md), and its PDF at the tag |
-| The code | [R2: the repository's URL and the tag `opencv-2026-submission`, or the archive (owner step O8)] |
+| The code | https://github.com/AllainWoodsford/BloggerBear at the tag `opencv-2026-submission` [R2: the tag, once made] |
 | The video | [R2: the unlisted video's link] |
 | The working endpoint | [R2: the approved rail article's URL] |
 | Reproduce it | [REPRODUCE.md](REPRODUCE.md) |

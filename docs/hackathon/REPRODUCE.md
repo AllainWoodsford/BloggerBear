@@ -12,16 +12,14 @@ output to check. Every command has its PowerShell line beside the bash one.
 | [2](#tier-2-deploy-it-on-aws) | Deploy it on AWS and watch a city measured, triaged and held for a person | an AWS account, a GitHub fork, Bedrock model access | an afternoon, then days of real scenes |
 | [3](#tier-3-cool-on-graviton4) | COOL against stock OpenCV on Graviton4 | an AWS account and the COOL Marketplace subscription | about 3 hours |
 
-Clone the repository at the submission tag first ([R2: the repository's URL, or the archive's,
-from owner step O8; the same URL goes in both commands below, or, if an archive is submitted,
-its download-and-unpack commands replace them]):
+Clone the public repository at the submission tag first:
 
 ```bash
-git clone <R2: the repository URL> BloggerBear && cd BloggerBear && git checkout opencv-2026-submission
+git clone https://github.com/AllainWoodsford/BloggerBear.git BloggerBear && cd BloggerBear && git checkout opencv-2026-submission
 ```
 
 ```powershell
-git clone <R2: the repository URL> BloggerBear; cd BloggerBear; git checkout opencv-2026-submission
+git clone https://github.com/AllainWoodsford/BloggerBear.git BloggerBear; cd BloggerBear; git checkout opencv-2026-submission
 ```
 
 ## Tier 1a: the CI commands
@@ -167,8 +165,9 @@ commands are bash; on Windows run them in Git Bash ([setup guide](../setup-guide
 
 The runsheet's [COOL section](../deployment-runsheet.md#the-cool-backend-and-the-benchmark), steps 0
 to 12, is the session's script: the reconnaissance and its go or no-go table, a `c8g.xlarge` in
-us-west-2, a COOL venv on the product's own `cv2`, stock OpenCV 5.0.0.93 and 4.14.0.94 venvs beside
-it, the interleaved `kernels`, `scenes`, `compare` and `controls` runs, and the checklist of what
+us-west-2 (or a `c8g.2xlarge`), COOL's own activated environment wrapped as one interpreter with
+the benchmark's packages beside it (COOL 3.1, OpenCV 5.1.0-dev: [the reconnaissance](evidence/cool/recon.md)),
+stock OpenCV 5.0.0.93 and 4.14.0.94 venvs beside it, the interleaved `kernels`, `scenes`, `compare` and `controls` runs, and the checklist of what
 the session must leave behind. Its run files are the only source of the report's COOL numbers
 ([Appendix A](technical-report.md#appendix-a-best-use-of-cool)).
 

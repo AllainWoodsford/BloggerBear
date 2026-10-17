@@ -828,6 +828,13 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   interval, the spreads). CI runs all three scripted on the synthetic city; the live runs are the
   operator's (#337, submission PR Q2b; `scripts/vision_eval_agent.py`, `scripts/vision_eval_cases/`;
   [the cases](hackathon/evidence/README.md#the-agents-cases))
+- [x] COOL's reconnaissance (16 October): the Graviton4 AMI, version 3.1, is offered in
+  us-west-2; its `cv2` (5.1.0-dev, built against numpy 2.5.1) loads only inside the vendor's
+  activated Python 3.12 environment; and its fingerprint is pinned from the build information,
+  committed byte for byte. The runsheet's Graviton session follows the vendor's layout: a wrapper
+  interpreter, with the benchmark's packages in a folder beside it. The repository is public
+  (`docs/hackathon/evidence/cool/`, `docs/deployment-runsheet.md`,
+  `scripts/tests/test_cool_evidence.py`)
 
 ## Backlog / not yet scheduled
 
