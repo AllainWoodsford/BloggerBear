@@ -355,7 +355,7 @@ More, from building and running the original: [friction.md](friction.md).
 ## 10. Where next
 
 - **Production and your domain:** [production-runsheet.md](production-runsheet.md).
-- **Protect your branches** (pull requests only, no force-pushes): [todo/public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
+- **Protect your branches** (pull requests only, no force-pushes): the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - **The operator's assistant** (`<site>/ask.html`): create a user as in
   [After the first deploy](deployment-runsheet.md#5-after-the-first-deploy), step 5.
 - **Costs and tearing down:** [Tearing down and cost control](deployment-runsheet.md#tearing-down-and-cost-control).

@@ -203,7 +203,7 @@ home-Region `ap-southeast-2` fits only a prefix of 7 or fewer;
 
 **Protecting the branches.** Require a pull request on `dev` and `prod`, and block force-pushes
 and deletions. GitHub offers rulesets and branch protection only on public repositories or paid
-plans; [todo/public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) has the commands. Without
+plans; the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) has the commands. Without
 them the AWS side still holds: the deploy roles trust only the `dev` branch and the `production`
 environment, and nothing is applied before the security scans, lint and tests pass in the same run.
 
@@ -1479,5 +1479,5 @@ These need a hand edit in your fork, or cannot be changed yet.
 - **The web search gateway's region** (`ap-northeast-1`) and the privacy page's wording about
   where logs are kept: see the same section.
 - **Repository protection** (rulesets, required reviewers, secret scanning) is set in GitHub, not
-  in code. [todo/public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) lists the settings a
+  in code. The archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) lists the settings a
   public copy should have.

@@ -876,8 +876,8 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   city networks now have their `NOTICE.md` rows); the section now holds a link and what the
   session is for, and every link and mention follows it
 - [x] The docs tidied for the submission: the designs that were built moved to
-  `docs/enhancements/archive/` (with a README saying what each shipped and did not), the Phase 0
-  spec and the public-repository runsheet with them, `docs/risks/` removed with its open items
+  `docs/enhancements/archive/` (with a README saying what each shipped and did not), the original
+  build spec and the public-repository runsheet with them, `docs/risks/` removed with its open items
   carried into the project plan's "Still open at scale" and vision.md §9 and §10; every link and
   comment follows the moves. Three new architecture pages, written from the code: the operator's
   assistant, Alexa+, and the admin CLI and API. Living docs corrected where the code had moved on

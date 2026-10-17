@@ -250,7 +250,7 @@ Set in the AWS console, per account. Nothing in this repository can set or check
 
 ## GitHub repository settings
 
-Set in GitHub, not in code ([todo/public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) has the
+Set in GitHub, not in code (the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md) has the
 commands).
 
 | Setting | Why |

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Benchmark the vision worker's OpenCV work: stock OpenCV 5 against COOL, x86 against Graviton.
 
-The COOL award asks for *measured* value against a baseline (docs/enhancements/
-opencv-agentic-vision-enhancement.md §4). This script is how those numbers are made, the same way
-on every machine, so the rows of the report compare like with like:
+The COOL award asks for *measured* value against a baseline
+(docs/enhancements/archive/opencv-agentic-vision-enhancement.md §4). This script is how those numbers
+are made, the same way on every machine, so the rows of the report compare like with like:
 
     python scripts/vision_benchmark.py kernels                    # the OpenCV operations alone
     python scripts/vision_benchmark.py scenes                     # whole sites, read over HTTPS

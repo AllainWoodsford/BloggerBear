@@ -156,7 +156,7 @@ Also worth doing while you are in Settings:
 
 - Protect `dev` and `prod` (require a pull request, block force-pushes and deletions). On a
   private repository this needs a paid GitHub plan; the AWS trust policy still gates production
-  either way. The commands are in [todo/public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
+  either way. The commands are in the archived [public-repo-runsheet.md](enhancements/archive/public-repo-runsheet.md).
 - Check no credential is stored as a repository **variable**. Variables are shown in plain text and
   are not masked in logs; a credential should only ever be a secret.
 

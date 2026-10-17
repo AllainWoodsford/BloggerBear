@@ -2059,7 +2059,10 @@ fix that was sketched for it:
   operator. The fix is risk-based routing: automatic publishing where a topic's reviews have been
   clean, and the person only where it matters.
 - **One Region, all-at-once deploys and a CLI-only admin.** Each is the right choice for one
-  operator and a small site, and each is where a larger deployment would start.
+  operator and a small site, and each is where a larger deployment would start. The fix, only at
+  real scale, is a second-Region Bedrock fallback, Lambda aliases with traffic shifting in place
+  of one all-or-nothing apply, and an identity provider for admin, with roles and a per-person
+  audit.
 - **Two schedules per topic** stop fitting in an hour at about twelve topics:
   [dispatcher-sqs-enhancement.md](enhancements/dispatcher-sqs-enhancement.md), designed and not
   built.
