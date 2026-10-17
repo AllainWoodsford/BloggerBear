@@ -857,7 +857,7 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   tier 2 (create from the template, then switch by RailVisionSeeding.md §7), the README and the
   vision page say so, and the claim that an article needs a change is corrected. Both diagrams
   re-exported, with a fixed `handDrawnSeed` so an export is the same byte for byte; the video's
-  shots and the live demonstration are re-planned around Sydney's week (submission PR R1b;
+  shots and the live demonstration are re-planned around Sydney's week (#346, submission PR R1b;
   `docs/hackathon/`, `docs/architecture/blogger-vision.md`, `README.md`)
 
 ## Backlog / not yet scheduled
