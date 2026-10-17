@@ -1168,3 +1168,33 @@ def test_s3_is_asked_with_a_short_timeout_and_no_retry(monkeypatch):
     with pytest.raises(ClientError):
         client.get_object(Bucket=BUCKET, Key=key("anchorages"))
     assert len(sent) == 1
+
+
+# --- a paused topic: its sites shown as last measured, said as paused, no card -------------------
+
+
+def test_a_paused_vision_topic_is_said_as_paused_and_raises_no_card(aws):
+    put_topic(aws, rail_topic(last_research_at=recent(), paused=True))
+    failing = rail.FakeRailWorker({}, error=vision_client.VisionError("unreadable_scene", "read timed out"))
+    newer = rail.FakeStac([rail.item("S2", "2026-10-08T00:00:00Z")])
+    put_state("rail-sydney", rail_state(rail_state(), stac=newer, worker=failing))
+
+    result = status()
+
+    assert result["findings"] == []  # its failed site is not a card while it is paused
+    assert result["sites"][0]["class"] == "worker_error"  # still shown as it was last measured
+    (topic,) = result["topics"]
+    assert topic["paused"] is True and topic["next_research_at"] is None
+    assert result["spoken"].endswith(
+        "Rail access: Sydney is paused, so its sites aren't measured until it is resumed."
+    )
+    assert "No topic watches satellite imagery" not in result["spoken"]
+    assert "wasn't measured" not in result["spoken"]
+
+
+def test_a_running_vision_topic_has_no_paused_field(aws):
+    put_topic(aws, rail_topic(last_research_at=recent()))
+    put_state("rail-sydney", rail_state())
+    result = status()
+    assert "paused" not in result["topics"][0]
+    assert "paused" not in result["spoken"]

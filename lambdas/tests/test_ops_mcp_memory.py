@@ -1208,3 +1208,39 @@ def test_one_watch_list_reads_at_most_a_few_running_states(tables, monkeypatch):
     assert all(call["max_bytes"] == vision_status.LARGE_STATE_BYTES for call in read)
     assert listed["spoken"].count("its sites weren't checked this time") == 1
     assert [item["now"]["sites"]["state"] for item in listed["watching"]].count("not_checked") == 1
+
+
+# --- a paused topic (topics pause) ----------------------------------------------------------------
+
+
+def _pause(tables, topic_id="crypto"):
+    tables.Table("Topics").update_item(
+        Key={"topic_id": topic_id}, UpdateExpression="SET paused = :p", ExpressionAttributeValues={":p": True}
+    )
+
+
+def test_pausing_a_topic_clears_what_was_suggested_about_its_runs(tables):
+    put_topic(tables)  # never researched, no article: research_overdue and no_article_today
+    memory.remember(ALICE, tools.pipeline_health(now=NOW), now=NOW)
+    assert len(rows(tables)) == 2
+
+    _pause(tables)
+    result = memory.follow_up(ALICE, now=LATER)
+
+    assert result["open"] == [] and result["findings"] == []
+    assert sorted(entry["kind"] for entry in result["fixed"] + result["cleared"]) == [
+        "no_article_today", "research_overdue",
+    ]  # fmt: skip
+    assert rows(tables) == []
+
+
+def test_a_watched_topic_that_is_paused_is_said_as_paused(tables):
+    put_topic(tables, researched=ago(minutes=30))
+    assert memory.watch(ALICE, "topic", "crypto", now=NOW)["watching"] is True
+    _pause(tables)
+
+    listed = memory.watch_list(ALICE, now=NOW)
+
+    (item,) = listed["watching"]
+    assert item["now"] == {"state": "paused"}
+    assert "Crypto is paused, so it isn't researched or written" in listed["spoken"]

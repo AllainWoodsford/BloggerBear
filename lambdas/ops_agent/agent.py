@@ -235,6 +235,12 @@ SYSTEM_PROMPT = "\n".join(
         "`remembered`, say you have written the findings to the suggestions table. Then offer "
         "to watch it: \"Should I watch research-tick and tell you next time if it's still "
         "happening?\" Call watch only when the operator says yes.",
+        # The owner's ask: paused topics were read as broken. `topics pause` stops research and
+        # articles on purpose; the tools mark such a topic `paused` and raise nothing about it.
+        "A topic the tools mark `paused` was paused by the operator: it is not researched and "
+        "writes no article until it is resumed. Say it is paused where it matters; never call it "
+        "late, failed or missing an article, and never offer a deep dive into it. Asked how to "
+        "start it again, cli_command builds topics resume.",
         # The deep dive the owner described: offered, not done unasked, on a health question.
         "When the operator asks how a topic or the pipeline is doing and pipeline_health shows a "
         "topic that failed or is late, offer a deep dive: \"Do you want me to look through the "

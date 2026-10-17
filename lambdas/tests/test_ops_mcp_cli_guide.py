@@ -819,12 +819,28 @@ def test_a_row_shows_each_setting_and_where_it_is_inherited(tables):
         "Findings window": "48 h",
         "Model": "rotates: model-a, model-b", "Financial": "yes", "Review mode": "off",
         "Last researched": "2026-10-04 11:00 UTC", "Last article": "2026-10-03 23:05 UTC",
+        "State": "running",
     }  # fmt: skip
     assert rows["hn"]["Research interval"] == "4 h (inherited)"
     assert rows["hn"]["Review mode"] == "enforce (inherited)"
     assert rows["hn"]["Model"] == "pipeline default" and rows["hn"]["Adapter"] == "web_search"
     assert rows["hn"]["Timezone"] == "UTC" and rows["hn"]["Last researched"] == "never"
     assert rows["hn"]["Findings window"] == "24 h (default)"
+
+
+def test_a_paused_topic_says_so_in_the_overview_and_in_its_settings(tables):
+    put_topic(tables, "crypto", name="Crypto", paused=True, paused_at="2026-10-15T09:00:00+00:00")
+    put_topic(tables, "hn", name="Hacker News")
+
+    overview = cli_guide.topics_overview()
+    rows = {row[1]: dict(zip(cli_guide.OVERVIEW_COLUMNS, row)) for row in overview["table"]["rows"]}
+    assert rows["crypto"]["State"] == "paused since 2026-10-15 09:00 UTC"
+    assert rows["hn"]["State"] == "running"
+    assert overview["spoken"].startswith("You have 2 topics. 1 of them is paused.")
+
+    one = cli_guide.topics_overview(topic="crypto")
+    assert one["spoken"].endswith("It is paused, so it isn't researched or written until it is resumed.")
+    assert ["State", "paused since 2026-10-15 09:00 UTC"] in one["table"]["rows"]
 
 
 @pytest.mark.parametrize(
