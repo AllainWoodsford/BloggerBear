@@ -931,6 +931,12 @@
         meta.appendChild(
           el("a", { text: "read the article", href: "#/article/" + encodeURIComponent(musing.article_id) })
         );
+        if (musing.topic_name) {
+          // Which topic the article is for, beside the link. An <em>, so it is italic with or
+          // without the stylesheet; .musing-meta's colour makes it grey.
+          meta.appendChild(document.createTextNode(" · "));
+          meta.appendChild(el("em", { className: "musing-topic", text: musing.topic_name }));
+        }
       } else if (musing.kind === "loot") {
         meta.appendChild(document.createTextNode(" · "));
         meta.appendChild(el("a", { text: "see what I am wearing", href: "#/stats" }));
