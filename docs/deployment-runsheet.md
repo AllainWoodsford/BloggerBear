@@ -1334,18 +1334,21 @@ minutes a scene through a slow link. Nothing here writes to AWS.
 
    ```sh
    python3.11 -m venv .venv && . .venv/bin/activate
-   pip install -r lambdas/requirements.txt -r lambdas/requirements-vision.txt -r scripts/requirements.txt
+   pip install -r lambdas/requirements-dev.txt -r scripts/requirements.txt
    E=docs/hackathon/evidence/runs
    C="--cache $HOME/cogs"
    ```
 
    ```powershell
    py -3.11 -m venv .venv; .\.venv\Scripts\Activate.ps1
-   pip install -r lambdas\requirements.txt -r lambdas\requirements-vision.txt -r scripts\requirements.txt
+   pip install -r lambdas\requirements-dev.txt -r scripts\requirements.txt
    ```
 
-   The PowerShell lines below spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\runs`
-   out in full.
+   `lambdas/requirements-dev.txt` is what CI installs: the Lambda and worker requirements, plus
+   pytest and moto, which `failures` needs to check that pytest collects the catalogue's tests
+   (without them it refuses rather than call the tests missing). The PowerShell lines below run
+   `python`, the activated venv's own: `py -3.11` would run the global 3.11, without the venv's
+   packages. They spell `--cache $HOME\cogs` and `--out docs\hackathon\evidence\runs` out in full.
 2. **The failure catalogue (2.5)**: every test it names is checked to be collected, then the real
    rows run through the worker handler in this process (the cloudy and no-data scenes, the smoke
    scene, a site off the tile, a window past the rail cap, a missing key; six scenes read).
@@ -1355,7 +1358,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py failures --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py failures --cache $HOME\cogs --out docs\hackathon\evidence\runs
    ```
 
    It exits 1 when a row did not do what the catalogue says, and the run file says which and how.
@@ -1366,12 +1369,15 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hackathon\evidence\runs
+   python scripts\vision_eval.py access-baseline --cache $HOME\cogs --out docs\hackathon\evidence\runs
    ```
 4. **The replay with the deployed worker and the real model (2.6.4).** Credentials that may invoke
    the worker (`lambda:InvokeFunction` on `<prefix>-dev-vision-worker` in us-west-2) and the
    topics' model (`bedrock:InvokeModel` on the inference profile the topics use, in the home
    Region); `M` is that profile's id (`python scripts/admin_cli.py model-config get` shows it).
+   An application inference profile is given by its ARN, which Converse needs; the run file and
+   the trace then name no model, because that ARN carries the account id (a system profile's ARN
+   is recorded as its id).
    Every site id the worker is sent is `eval-sydney`, so these runs never pass for production's in
    its logs; the run file names the worker's Region and code, never its ARN. About 10 worker calls
    and a few cents of model calls a sequence.
@@ -1388,7 +1394,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    $W = aws lambda get-function --function-name <prefix>-dev-vision-worker --region us-west-2 --query Configuration.FunctionArn --output text
    $M = "<the topics' inference profile id>"
    foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
-     py -3.11 scripts\vision_eval.py replay --sequence $s --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --out docs\hackathon\evidence\runs --trace
+     python scripts\vision_eval.py replay --sequence $s --worker $W --agent bedrock --model-id $M --region ap-southeast-2 --out docs\hackathon\evidence\runs --trace
    }
    ```
 
@@ -1410,7 +1416,7 @@ minutes a scene through a slow link. Nothing here writes to AWS.
    ```powershell
    foreach ($s in "sydney-demo", "sydney-winter", "sydney-c1") {
      $from = (Get-ChildItem "docs\hackathon\evidence\runs\*-eval-replay-*-$s-bedrock.json" | Select-Object -Last 1).FullName
-     py -3.11 scripts\vision_eval.py replay --sequence $s --agent recorded --from $from --cache $HOME\cogs --out docs\hackathon\evidence\runs
+     python scripts\vision_eval.py replay --sequence $s --agent recorded --from $from --cache $HOME\cogs --out docs\hackathon\evidence\runs
    }
    ```
 
@@ -1421,12 +1427,20 @@ minutes a scene through a slow link. Nothing here writes to AWS.
 
    ```sh
    python scripts/vision_eval.py index && python scripts/vision_eval.py index --check
-   python scripts/pii_denylist_check.py --staged    # after `git add`: the traces name scene and station ids only
+   python scripts/pii_denylist_check.py --staged    # after `git add`
    ```
 
    ```powershell
-   py -3.11 scripts\vision_eval.py index; py -3.11 scripts\vision_eval.py index --check
+   python scripts\vision_eval.py index; python scripts\vision_eval.py index --check
+   python scripts\pii_denylist_check.py --staged    # after `git add`
    ```
+
+   Run `index --check` here: CI runs it only on a pull request that also touches `scripts/` or
+   `lambdas/`, until python-ci also lists `docs/hackathon/**`, and this commit touches `docs/`
+   alone. Run the PII check (your `.pii-denylist`) on what is staged, and read each trace before
+   committing it: besides scene and station ids, a trace quotes the agent's note under each
+   decision it was asked about (model text, through `redact.scrub`, of up to 300 characters),
+   which can name a suburb or a station.
 
    Commit the run files and figures, `docs/hackathon/evidence/replay/`, `index.json` and
    `RESULTS.md`, and update the tracker's A2 and S7 rows. A run file made before the submission tag

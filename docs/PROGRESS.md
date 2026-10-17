@@ -804,9 +804,9 @@ submission-round entries after them are docs and tests, with nothing to deploy.
   `vision_eval.py replay` (the A2 trace, live, or recorded and re-run without AWS, held to its
   recording; CI replays a committed synthetic recording), `failures` (the failure catalogue, its 42
   tests named by node id and checked to be collected), `access-baseline` (E5) and `index`
-  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked in CI). The real-data runs are the
-  operator's (#336, submission PR Q2a; `scripts/vision_eval_driver.py`, `scripts/vision_eval.py`;
-  [results](hackathon/evidence/RESULTS.md))
+  (`docs/hackathon/evidence/RESULTS.md` and `index.json`, checked by `index --check`). The
+  real-data runs are the operator's (#336, submission PR Q2a; `scripts/vision_eval_driver.py`,
+  `scripts/vision_eval.py`; [results](hackathon/evidence/RESULTS.md))
 
 ## Backlog / not yet scheduled
 

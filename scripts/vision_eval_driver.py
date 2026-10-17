@@ -18,7 +18,8 @@ the evidence lines are production's own:
 - `measure`: one of `in_process_measure` (the worker handler in this process, its reads through
   any `fetch`: the cache, a fetch that rewrites SCL, the synthetic city), `deployed_measure` (the
   deployed worker by its ARN, through common/vision_client.py, as the research tick calls it;
-  every site id the driver sends starts `eval-`) or `scripted_measure` (fixed metrics);
+  every site id the driver sends starts `eval-`: `Driver` refuses a topic whose site does not, and
+  `deployed_measure` a site that does not) or `scripted_measure` (fixed metrics);
 - `triage_agent`: the real common/vision_triage.triage, with its `converse` from one of
   `BedrockAgent` (real Bedrock, every response recorded), `RecordedAgent` (a run file's recorded
   responses, refused when one no longer fits) or `ScriptedAgent` (fixed answers, no model);
@@ -35,11 +36,16 @@ nowhere else; `frozen_now` sets it by replacing the module's `datetime` name for
 
 **Q2b builds on this** (`agent`, `counterfactual`, `stability`):
 
-    driver = Driver(topic_config(...), measure=..., agent=..., clock=Clock.frozen)
-    results = driver.run(specs)                      # [TickResult], in order; driver.state is the last state
-    before = driver.state                            # e.g. after a case's history ticks
-    again = driver.tick(before, spec, n=len(specs))  # the newest tick again from the same state (repeats)
+    driver = Driver(topic_config(...), measure=..., agent=..., clock=lambda n: Clock.frozen())
+    history, newest = specs[:-1], specs[-1]
+    results = driver.run(history)        # [TickResult], in order; driver.state is the last state
+    again = driver.tick(driver.state, newest, n=len(history) + 1)  # the newest tick, from that state
 
+- `clock` is a factory of the tick's number (`lambda n: Clock.frozen()`, never `Clock.frozen`
+  itself). A tick's number `n` keys its bound ids (`eval-tick-<n>`), the scripted agent's
+  toolUseIds and a recording's responses (RecordedAgent: by tick and site), so the newest tick
+  after `run(history)` is `len(history) + 1`, and a repeat of it from the same state reuses that
+  number; `tick` never changes `driver.state` or `driver.results`.
 - `TickSpec(scene, now, network=None, label=None, news=None)`: `network` is a dict, None (keep
   what the store holds) or a callable `state -> network` (sydney-c1's line laid on the previous
   tick's largest desert, `with_new_line`).
@@ -114,6 +120,11 @@ SCRIPTED_MODEL = "scripted"
 SCRIPTED_LOOK_AGAIN = {"reach_m": 800}
 SCRIPTED_TOOLS = ("look_again", "web_context")
 SCRIPTED_RULE = "real when the station count changed (the network moved), else artefact"
+# What a run file and a trace name the model by is what the ring keeps (common/evidence.py's `model`
+# kind): the canonical id, or none for an application inference profile, whose ARN carries the
+# account id (recorded_model_id). A recorded replay of such a run gives the agent this stand-in,
+# which the ring drops the same way, so the replayed ring still equals the recording's.
+UNNAMED_PROFILE = "arn:application-inference-profile"
 # Where the in-process worker is "deployed": vision_client.measure needs an ARN in the backend's
 # variable before it calls the client it is given; this one names no account and is never invoked.
 IN_PROCESS_ARN = "arn:aws:lambda:us-west-2:000000000000:function:in-process"
@@ -496,9 +507,14 @@ def in_process_measure(fetch=None, environ: dict | None = None) -> Callable:
 
 def deployed_measure(arn: str) -> Callable:
     """`measure` answered by the deployed worker `arn`, exactly as the research tick calls it
-    (common/vision_client.measure, its read timeouts and its checks)."""
+    (common/vision_client.measure, its read timeouts and its checks). A site id that does not start
+    SITE_PREFIX is refused (ValueError) before the worker is invoked: production's worker would
+    log it as production's."""
 
     def measure(site, scene, backend="opencv", **kwargs):
+        if not str(site.get("id") or "").startswith(SITE_PREFIX):
+            said = site.get("id")
+            raise ValueError(f"the deployed worker is sent {SITE_PREFIX}* site ids only, not {said!r}")
         with environment({WORKER_ENV[backend]: arn}):
             return vision_client.measure(site, scene, backend=backend, **kwargs)
 
@@ -551,6 +567,19 @@ class MeasureLog:
 
 
 # --- agents ---------------------------------------------------------------------------------------------
+
+
+def recorded_model_id(model_id) -> str | None:
+    """The agent's model as a run file and a trace name it: the id the ring keeps (common/evidence.py's
+    `model` kind: canonical_model_id, so a system inference profile's ARN gives its id), or None for
+    an application inference profile's ARN, which carries the account id. Converse is still given
+    the id exactly as the operator passed it."""
+    from common.model_pricing import canonical_model_id
+
+    canonical = canonical_model_id(model_id)
+    if not isinstance(canonical, str) or not canonical or canonical.startswith("arn:"):
+        return None
+    return canonical
 
 
 def _trimmed(response: dict) -> dict:
@@ -691,7 +720,8 @@ class RecordedAgent:
     mode = "recorded"
 
     def __init__(self, recorded: list[dict], model_id: str | None):
-        self.model_id = model_id or SCRIPTED_MODEL
+        # None: the recording named no model (an application inference profile, recorded_model_id).
+        self.model_id = model_id or UNNAMED_PROFILE
         self.by_turn = {(row["tick"], row["site_id"]): row["turns"] for row in recorded or []}
 
     def converse_for(self, tick: int, site_id: str) -> _Replaying:
@@ -741,6 +771,9 @@ class Driver:
         if len(self.config["sites"]) != 1:
             raise ValueError("the driver runs a one-site topic")
         self.site = self.config["sites"][0]
+        if not self.site["id"].startswith(SITE_PREFIX):
+            said = self.site["id"]
+            raise ValueError(f"the driver's site ids start {SITE_PREFIX} (topic_config adds it): {said!r}")
         self.measure, self.agent, self.look_again_measure = measure, agent, look_again_measure
         self.store = store or LocalStore()
         self.clock_for = clock or (lambda n: Clock())
@@ -1159,13 +1192,30 @@ def compare_entry(recorded: dict, replayed: dict) -> list[str]:
     return out
 
 
+def call_parity(a: dict, b: dict) -> dict:
+    """vision_benchmark.parity for one worker call, with the `coverage` MeasureLog adds to each
+    record held to PARITY_ABS's tolerance, as the ring's coverage is (compare_entry), not exactly."""
+    from vision_benchmark import parity
+
+    ma, mb = a.get("metrics"), b.get("metrics")
+    same = a.get("metrics_digest") and a.get("metrics_digest") == b.get("metrics_digest")
+    if same or not isinstance(ma, dict) or not isinstance(mb, dict):
+        return parity(a, b)
+    ca, cb = ma.get("coverage"), mb.get("coverage")
+    rest_a = {key: value for key, value in ma.items() if key != "coverage"}
+    rest_b = {key: value for key, value in mb.items() if key != "coverage"}
+    result = parity({**a, "metrics": rest_a, "metrics_digest": None}, {**b, "metrics": rest_b})
+    if not _within("coverage", ca, cb):
+        result["differences"].append(f"coverage: {ca} vs {cb} (abs > {PARITY_ABS['coverage']})")
+        result["pass"] = False
+    return result
+
+
 def compare_recorded(recorded_ticks: list[dict], replayed_ticks: list[dict]) -> tuple[list[dict], dict]:
     """2.6.4's assertions, as run-file checks: per tick, the ring entries equal (compare_entry)
     and the clock replayed without running past its recording; and, reported apart, how many worker
     calls gave the recorded metrics digest exactly (same CPU family) and how many matched within
-    the parity tolerances (vision_benchmark.parity)."""
-    from vision_benchmark import parity
-
+    the parity tolerances (call_parity)."""
     checks = []
     if len(recorded_ticks) != len(replayed_ticks):
         checks.append({"name": "ticks", "expected": len(recorded_ticks), "got": len(replayed_ticks),
@@ -1192,7 +1242,7 @@ def compare_recorded(recorded_ticks: list[dict], replayed_ticks: list[dict]) -> 
             if not (a.get("ok") and b.get("ok")):
                 continue
             digests["calls"] += 1
-            result = parity(a, b)
+            result = call_parity(a, b)
             digests["equal_digest"] += int(result["equal_digest"])
             digests["within_tolerance"] += int(result["pass"])
             if not result["pass"]:
@@ -1224,18 +1274,20 @@ def _cell(text) -> str:
 def render_markdown(run: dict) -> str:
     """The replay as Markdown: what was run, then each tick's decision as the assistant's scene
     view shows it (ops_mcp/vision_evidence.trace_rows over vision_decisions.trace)."""
-    from ops_mcp import vision_evidence
+    from ops_mcp import redact, vision_evidence
 
     vocabulary = rail_access.RailAccessAdapter.decision_vocabulary()
     params, results = run.get("params") or {}, run.get("results") or {}
     agent = run.get("agent") or {}
     thresholds = params.get("thresholds")
+    model = recorded_model_id(agent.get("model_id"))
+    model = f"model `{model}`" if model else "an application inference profile: its ARN names the account"
     lines = [
         f"# Replay: {params.get('sequence')}",
         "",
         f"Generated by `scripts/vision_eval.py replay` from the run file `runs/{run.get('run_id')}.json` "
         "(do not edit by hand). The real rail access adapter, tick by tick, over pinned scenes: "
-        f"the agent {agent.get('mode')} (model `{agent.get('model_id')}`), the worker {params.get('worker')} "
+        f"the agent {agent.get('mode')} ({model}), the worker {params.get('worker')} "
         f"({run.get('backend')}), the code at `{(run.get('code') or {}).get('git_sha')}`.",
         "",
     ]
@@ -1262,7 +1314,8 @@ def render_markdown(run: dict) -> str:
                       "|" + "---|" * len(vision_evidence.TRACE_COLUMNS)]  # fmt: skip
             lines += ["| " + " | ".join(_cell(cell) for cell in row) + " |" for row in table]
             if (entry.get("triage") or {}).get("reason"):
-                note = _cell(entry["triage"]["reason"])
+                # Model text: through redact.scrub, as the export's --with-notes passes it.
+                note = _cell(redact.scrub(entry["triage"]["reason"]))
                 lines += ["", f'The agent\'s note (model text, unverified): "{note}"']
             lines.append("")
     if params.get("synthetic"):

@@ -47,11 +47,13 @@ recorded replay recomputes every measurement and is held to its recording. `fail
 the failure catalogue's real-data rows through the worker handler in this process, and checks that
 pytest collects every test the catalogue names. `access-baseline` (E5) compares the production
 distance transform with the precise one and with a straight-line buffer on one scene. `index`
-(2.9) writes the results index from the run files, refusing a malformed one; `--check` is CI's.
+(2.9) writes the results index from the run files, refusing a malformed one; `--check` fails
+when it is stale (scripts/tests/test_vision_eval.py runs it wherever python-ci runs).
 
 Runs on Windows as well as Linux and macOS (nothing here pins a CPU or reads `resource`). Needs
-lambdas/requirements-vision.txt and scripts/requirements.txt installed (and, for `replay`,
-`failures` and `access-baseline`, lambdas/requirements.txt: they import the adapter).
+lambdas/requirements-vision.txt and scripts/requirements.txt installed (and, for `coverage`,
+`replay`, `failures` and `access-baseline`, lambdas/requirements.txt: they import the adapter;
+for the check that pytest collects the failure catalogue's tests, lambdas/requirements-dev.txt).
 """
 
 from __future__ import annotations
@@ -66,7 +68,7 @@ from datetime import datetime
 from pathlib import Path
 
 import vision_runs
-from vision_benchmark import cpu_identity
+from vision_benchmark import NETWORK_FILE_MISSING, cpu_identity
 
 ROOT = Path(__file__).resolve().parents[1]
 LAMBDAS = ROOT / "lambdas"
@@ -756,6 +758,60 @@ def agent_spend(ticks: list[dict], model_id: str | None) -> dict:
             "price_source": "common/model_pricing.py's built-in table"}  # fmt: skip
 
 
+def lambda_arn(value: str) -> bool:
+    """Whether `--worker` is a Lambda function ARN (common/vision_client.region_of's rule), checked
+    before anything runs, so a function name is a usage error rather than a traceback."""
+    from common import vision_client
+
+    try:
+        vision_client.region_of(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _dicts(value) -> bool:
+    return isinstance(value, list) and all(isinstance(item, dict) for item in value)
+
+
+def recording_problem(recorded: dict) -> str | None:
+    """The first field of a `--from` recording that a recorded replay reads and the file does not
+    hold in the shape the replay wrote it (vision_runs.load checks the top level only); None when
+    the recording is whole. A cut or hand-edited file is then refused by name, never a traceback."""
+    results = recorded.get("results")
+    ticks = results.get("ticks") if isinstance(results, dict) else None
+    if not ticks or not _dicts(ticks):
+        return "results.ticks"
+    for n, tick in enumerate(ticks, start=1):
+        try:
+            datetime.fromisoformat(tick.get("at"))
+        except (TypeError, ValueError):
+            return f"results.ticks[{n}].at"
+        for key in ("decisions", "measurements"):
+            if not _dicts(tick.get(key) or []):
+                return f"results.ticks[{n}].{key}"
+        clock = tick.get("clock") or []
+        if not isinstance(clock, list) or not all(
+            isinstance(value, int | float) and not isinstance(value, bool) for value in clock
+        ):
+            return f"results.ticks[{n}].clock"
+    inputs = recorded.get("inputs")
+    if not isinstance(inputs, dict):
+        return "inputs"
+    for key in ("networks", "scenes"):
+        if not _dicts(inputs.get(key) or []):
+            return f"inputs.{key}"
+    if not all("scene_id" in row for row in inputs.get("scenes") or []):
+        return "inputs.scenes[].scene_id"
+    agent = recorded.get("agent")
+    responses = (agent.get("responses") or []) if isinstance(agent, dict) else None
+    if not _dicts(responses) or not all(
+        {"tick", "site_id", "turns"} <= set(row) and _dicts(row["turns"]) for row in responses
+    ):
+        return "agent.responses"
+    return None
+
+
 def _main_replay(args, manifest: dict) -> int:
     import vision_eval_driver as driver
 
@@ -775,13 +831,24 @@ def _main_replay(args, manifest: dict) -> int:
         usage = "--agent bedrock needs --model-id <the topic's model or inference profile id>"
     elif args.backend == "cool" and not args.cool_sha:
         usage = "--backend cool needs --cool-sha <hex>: the pinned COOL build's fingerprint"
+    elif deployed and not lambda_arn(args.worker):
+        usage = (f"--worker takes the deployed worker's function ARN (arn:aws:lambda:<region>:<account>:"
+                 f"function:<name>) or in-process, not {args.worker!r}")  # fmt: skip
+    elif deployed and args.cache is not None:
+        usage = "--cache answers the in-process worker's reads; the deployed worker reads the bucket itself"
     elif deployed and synthetic:
         usage = "the synthetic city exists only in this process: --worker in-process"
     if usage:
         print(usage, file=sys.stderr)
         return REFUSED
+    host = None
     if agent_mode == "bedrock" and not deployed:
-        refusal = in_process_refusal(args.cache, synthetic)
+        # Recorded as the run's environment.host when it is what allowed the run (no cache).
+        if args.cache is None and not synthetic:
+            from vision_benchmark import imds_identity
+
+            host = imds_identity()
+        refusal = in_process_refusal(args.cache, synthetic, identity=host or {})
         if refusal:
             print(refusal, file=sys.stderr)
             return REFUSED
@@ -793,9 +860,13 @@ def _main_replay(args, manifest: dict) -> int:
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return REFUSED
-        replayed = (recorded.get("params") or {}).get("sequence")
-        if recorded["kind"] != "eval-replay" or replayed != args.sequence:
+        was = recorded.get("params") if isinstance(recorded.get("params"), dict) else {}
+        if recorded["kind"] != "eval-replay" or was.get("sequence") != args.sequence:
             print(f"refused: {args.from_run} is not a replay of {args.sequence}", file=sys.stderr)
+            return REFUSED
+        problem = recording_problem(recorded)
+        if problem:
+            print(f"refused: {args.from_run} is not a whole replay recording: {problem}", file=sys.stderr)
             return REFUSED
 
     started = vision_runs.utc_now()
@@ -891,7 +962,8 @@ def _main_replay(args, manifest: dict) -> int:
 
     from vision_benchmark import environment as bench_environment
 
-    env = bench_environment()
+    env = bench_environment(host=host)
+    model_id = driver.recorded_model_id(agent.model_id)  # never an ARN: Converse alone is given that
     tag = "-".join(part for part in (args.sequence, agent_mode, args.tag) if part)
     run = vision_runs.new_run(
         "eval-replay", env["cpu"], args.backend, env, worker=worker, tag=tag, mode="replay", started=started,
@@ -901,7 +973,7 @@ def _main_replay(args, manifest: dict) -> int:
         params={"sequence": args.sequence, "agent": agent_mode,
                 "worker": "deployed" if deployed else "in-process", "backend": args.backend,
                 "thresholds": thresholds, "limit": args.limit, "synthetic": synthetic,
-                "model_id": agent.model_id, "from": recorded["run_id"] if recorded else None,
+                "model_id": model_id, "from": recorded["run_id"] if recorded else None,
                 "tick_lag_hours": driver.TICK_LAG.total_seconds() / 3600.0,
                 "scripted": {"tools": list(driver.SCRIPTED_TOOLS), "look_again": driver.SCRIPTED_LOOK_AGAIN,
                              "rule": driver.SCRIPTED_RULE}
@@ -918,7 +990,7 @@ def _main_replay(args, manifest: dict) -> int:
         "parity": parity_,
     }  # fmt: skip
     vision_runs.finish(run, results, checks, replay_summary(ticks))
-    run["agent"] = {"mode": agent_mode, "model_id": agent.model_id,
+    run["agent"] = {"mode": agent_mode, "model_id": model_id,
                     "responses": [talk for tick in ticks for talk in tick.get("responses") or []],
                     **agent_spend(ticks, agent.model_id)}  # fmt: skip
     for tick in ticks:
@@ -1066,15 +1138,29 @@ OUTSIDE_SHIFT_DEG = 2.0
 WINDOW_EAST_DEG = 0.12
 
 
+class CollectionFailed(Exception):
+    """pytest could not collect the catalogue's test files here (not installed, or a file failed to
+    import): the check cannot be made, which is not the same as the tests being missing."""
+
+
+# pytest's exit statuses that mean it collected: 0 (tests found) and 5 (none found).
+COLLECTED_STATUSES = (0, 5)
+
+
 def collected_tests(files: list[str], run=None) -> set[str]:
     """The node ids `pytest --collect-only -q` lists for `files`, rooted at the repository (its own
-    pyproject.toml, as `pytest lambdas/ scripts/` runs: a node id is then `lambdas/tests/...`)."""
+    pyproject.toml, as `pytest lambdas/ scripts/` runs: a node id is then `lambdas/tests/...`).
+    CollectionFailed, quoting the end of pytest's output, when pytest did not collect."""
     import subprocess
 
     run = run or subprocess.run
     argv = [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
             "--rootdir", str(ROOT), "-c", str(ROOT / "pyproject.toml"), *files]  # fmt: skip
     done = run(argv, cwd=ROOT, capture_output=True, text=True, timeout=600)
+    if done.returncode not in COLLECTED_STATUSES:
+        output = f"{done.stdout or ''}\n{done.stderr or ''}".splitlines()
+        said = [line.strip() for line in output if line.strip()]
+        raise CollectionFailed(f"pytest exited {done.returncode}: {' / '.join(said[-3:]) or 'no output'}")
     return {line.strip() for line in done.stdout.splitlines() if "::" in line}
 
 
@@ -1276,8 +1362,19 @@ def _main_failures(args, manifest: dict) -> int:
     collected = None
     if args.collect:
         files = sorted({file for case in cases for file, _name in case.get("tests") or ()})
-        collected = collected_tests(files)
+        try:
+            collected = collected_tests(files)
+        except CollectionFailed as exc:
+            print(f"refused: pytest cannot collect the catalogue's tests here ({exc}): install "
+                  "lambdas/requirements-dev.txt (pytest, moto), or pass --no-collect (CI holds that check)",
+                  file=sys.stderr)  # fmt: skip
+            return REFUSED
     network_path = network_file_for("sydney", args.network)
+    if args.network is not None and not network_path.is_file():
+        # An explicit file that is not there is refused, as replay and access-baseline refuse it; only
+        # the default, uncommitted fixture falls back to an empty network.
+        print(f"{NETWORK_FILE_MISSING} ({vision_runs.shown_path(network_path)})", file=sys.stderr)
+        return REFUSED
     if network_path.is_file():
         network = driver.load_network_file(network_path)
         network_note = {"file": vision_runs.shown_path(network_path),
@@ -1576,10 +1673,12 @@ def index_rows(runs_dir: Path) -> list[dict]:
         build = ((env.get("opencv") or {}).get("build_sha256")) or ""
         checks = run.get("checks") or []
         summary = run.get("summary") or {}
+        # A value may be null: vision_benchmark.compare_summary writes None for an interval it could
+        # not compute (`--bootstrap 0`, one sample) and a ratio over a median of 0.
         if not isinstance(summary, dict) or not all(
-            isinstance(v, int | float) and not isinstance(v, bool) for v in summary.values()
+            v is None or (isinstance(v, int | float) and not isinstance(v, bool)) for v in summary.values()
         ):
-            raise ValueError(f"{path}: summary must map codes to numbers")
+            raise ValueError(f"{path}: summary must map codes to numbers (or null)")
         rows.append({
             "run_id": run["run_id"], "kind": run["kind"], "date": (run.get("started_at") or "")[:10],
             "cpu": env.get("cpu"), "backend": run.get("backend"), "build12": build[:12] or None,
@@ -1612,6 +1711,8 @@ def older_code(evidence_dir: Path, rows: list[dict]) -> dict[str, str]:
 
 
 def _number(value) -> str:
+    if value is None:
+        return "n/a"
     if isinstance(value, float):
         return f"{value:.6g}"
     return str(value)
@@ -1623,7 +1724,10 @@ def results_markdown(rows: list[dict], reasons: dict[str, str]) -> str:
         "# Results",
         "",
         "Generated by `python scripts/vision_eval.py index` from the run files in `runs/`; do not edit it "
-        "by hand. `index --check` runs in CI and fails when a run file was added without re-indexing.",
+        "by hand. `index --check` fails when a run file was added without re-indexing: run it before "
+        "committing run files. CI runs it (scripts/tests/test_vision_eval.py) only on a pull request "
+        "python-ci runs on, one that touches `scripts/` or `lambdas/`, until python-ci also lists "
+        "`docs/hackathon/**`.",
         "Every number in the report cites a run file listed here. A run marked **measured on older code** "
         "was made on code that has changed since; the note says why it is still cited "
         f"(`{OLDER_CODE_FILE}`).",
@@ -1672,7 +1776,11 @@ def label_problems(evidence_dir: Path) -> tuple[list[str], int]:
     problems, read = [], 0
     for path in paths:
         name = path.relative_to(evidence_dir).as_posix()
-        lines = path.read_text(encoding="utf-8-sig").splitlines()
+        try:
+            lines = path.read_text(encoding="utf-8-sig").splitlines()
+        except UnicodeDecodeError:
+            problems.append(f"{name}: not UTF-8 text (save it as \"CSV UTF-8\")")
+            continue
         text = [line for line in lines if not line.startswith("#")]
         table = list(csv.DictReader(text))
         header = list(table[0].keys()) if table else next(csv.reader(text[:1]), [])
@@ -1696,6 +1804,9 @@ def label_problems(evidence_dir: Path) -> tuple[list[str], int]:
 
 def _main_index(args) -> int:
     evidence_dir = Path(args.evidence)
+    if not evidence_dir.is_dir():
+        print(f"refused: --evidence {evidence_dir} is not a directory", file=sys.stderr)
+        return REFUSED
     try:
         rows = index_rows(evidence_dir / "runs")
         reasons = older_code(evidence_dir, rows)
@@ -1743,9 +1854,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--write", action="store_true", help="put site_coverage and aot_mean into the manifest")
     c.add_argument("--out", type=Path, help="write the run file here: a .json file, or a directory")
     c.add_argument("--tag", help="a suffix for the run id")
-    # The replay's sequences are vision_eval_driver.SEQUENCES', checked when it runs: `pin` and
-    # `coverage` never import the driver (it imports the adapter, and so boto3), so they run in a
-    # venv with only the worker's requirements (the Graviton session's stock venv).
+    # The replay's sequences are vision_eval_driver.SEQUENCES', checked when it runs: importing this
+    # module never imports the driver (it imports the adapter, and so boto3), so `pin` (without
+    # --list-year) and `index` run in a venv with only the worker's requirements (the Graviton
+    # session's stock venv). `coverage` and `pin --list-year` read the adapter's rule (rail_rule),
+    # which imports the adapter: they need lambdas/requirements.txt too.
     r = sub.add_parser("replay", help="2.6.4: the real adapter over a pinned sequence, tick by tick")
     r.add_argument("--sequence", required=True, metavar="NAME", help=f"one of {', '.join(SEQUENCE_NAMES)}")
     r.add_argument("--manifest", type=Path, default=MANIFEST_FILE)

@@ -443,18 +443,97 @@ def test_the_bedrock_agent_records_each_response_without_its_metadata():
     assert spend["cost_usd"] and spend["cost_aud"] > spend["cost_usd"]
 
 
-def test_pin_and_coverage_never_import_the_driver_and_the_sequence_names_agree():
-    # The Graviton session's stock venv has the worker's requirements only (no boto3): `pin` and
-    # `coverage` must not reach the adapter. A fresh interpreter, so earlier imports do not count.
+def test_importing_vision_eval_and_index_never_reach_the_adapter_and_the_sequence_names_agree():
+    # The Graviton session's stock venv has the worker's requirements only (no boto3): importing
+    # vision_eval must not import the driver, and `index` (as `pin` without --list-year) must not
+    # reach the adapter. `coverage` does, through rail_rule: it needs lambdas/requirements.txt, as
+    # the module docstring says. A fresh interpreter, so earlier imports do not count.
     import subprocess
     import sys
 
     code = (
         "import sys; sys.path[:0] = sys.argv[1:3]; import vision_eval; "
-        "assert 'vision_eval_driver' not in sys.modules and 'boto3' not in sys.modules, sorted(sys.modules)"
+        "assert 'vision_eval_driver' not in sys.modules and 'boto3' not in sys.modules, sorted(sys.modules); "
+        "assert vision_eval.main(['index', '--check']) == 0; "
+        "assert 'boto3' not in sys.modules and 'common.adapters.rail_access' not in sys.modules; "
+        "vision_eval.rail_rule(); assert 'common.adapters.rail_access' in sys.modules"
     )
     done = subprocess.run([sys.executable, "-c", code, str(ROOT / "scripts"), str(ROOT / "lambdas")],
                           capture_output=True, text=True, timeout=120)  # fmt: skip
     assert done.returncode == 0, done.stderr
     assert set(vision_eval.SEQUENCE_NAMES) == set(driver.SEQUENCES)
     assert vision_eval.main(["replay", "--sequence", "sydney-spring"]) == vision_eval.REFUSED
+
+
+# --- review fixes: the model's ARN, the host, the usage and a cut recording ------------------------------
+
+
+def test_an_application_profile_arn_reaches_converse_alone_and_its_recording_still_replays(
+    sydney, tmp_path, monkeypatch
+):
+    import vision_benchmark
+
+    host = {"instance_type": "c8g.xlarge", "ami_id": "ami-0abc", "region": "us-west-2",
+            "architecture": "arm64", "marketplace_product_codes": None}  # fmt: skip
+    monkeypatch.setattr(vision_benchmark, "imds_identity", lambda *args, **kwargs: dict(host))
+    asked = []
+
+    class Client:
+        def converse(self, **request):
+            asked.append(request["modelId"])
+            text = json.dumps({"verdict": "artefact", "reason": "The served share moved within the noise."})
+            return {"output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+                    "stopReason": "end_turn", "usage": {"inputTokens": 100, "outputTokens": 20}}  # fmt: skip
+
+    real = driver.BedrockAgent
+    monkeypatch.setattr(driver, "BedrockAgent", lambda model_id, region=None: real(model_id, client=Client()))
+    profile = "arn:aws:bedrock:ap-southeast-2:123456789012:application-inference-profile/abc123"
+    out, trace = tmp_path / "runs", tmp_path / "sydney-demo.md"
+    argv = ["replay", "--sequence", "sydney-demo", "--network", str(sydney["network"]), "--no-figures"]
+    code = vision_eval.main(
+        [*argv, "--agent", "bedrock", "--model-id", profile, "--out", str(out), "--trace", str(trace)]
+    )
+    assert code == 0 and asked and set(asked) == {profile}
+    path = next(out.glob("*.json"))
+    run = vision_runs.load(path)
+    for text in (path.read_text(encoding="utf-8"), trace.read_text(encoding="utf-8")):
+        assert "123456789012" not in text and "arn:aws" not in text
+    assert run["agent"]["model_id"] is None and run["params"]["model_id"] is None
+    assert run["summary"]["triaged"] == 3 and run["worker"]["kind"] == "in-process"
+    # An instance in us-west-2 is what allowed an in-process worker without --cache: the run says so.
+    assert run["environment"]["host"] == host and run["inputs"]["cache"] is False
+    # The recording replays without AWS, the ring's dropped model id included.
+    again = tmp_path / "again"
+    code = vision_eval.main([*argv, "--agent", "recorded", "--from", str(path), "--out", str(again)])
+    rerun = only_run(again)
+    assert code == 0 and rerun["checks"] and all(check["pass"] for check in rerun["checks"]), rerun["checks"]
+    assert rerun["agent"]["model_id"] is None and rerun["environment"]["host"] is None
+
+
+def test_a_function_name_for_worker_or_a_cache_with_the_deployed_worker_is_a_usage_error(tmp_path, capsys):
+    cases = [
+        (["--worker", "bloggerbear-dev-vision-worker"], "takes the deployed worker's function ARN"),
+        (["--worker", ARN, "--cache", str(tmp_path)], "the deployed worker reads the bucket itself"),
+    ]
+    for extra, said in cases:
+        assert vision_eval.main(["replay", "--sequence", "sydney-demo", *extra]) == vision_eval.REFUSED
+        assert said in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "spoil, field",
+    [
+        (lambda data: data["results"]["ticks"][1].pop("at"), "results.ticks[2].at"),
+        (lambda data: data["results"].update(ticks=[]), "results.ticks"),
+        (lambda data: data["results"]["ticks"][0].update(clock="soon"), "results.ticks[1].clock"),
+        (lambda data: data["results"]["ticks"][2].update(decisions=["x"]), "results.ticks[3].decisions"),
+        (lambda data: data["inputs"]["scenes"][0].pop("scene_id"), "inputs.scenes[].scene_id"),
+        (lambda data: data["agent"]["responses"][0].pop("turns"), "agent.responses"),
+        (lambda data: data.update(agent=None), "agent.responses"),
+    ],
+)
+def test_a_cut_or_hand_edited_recording_is_refused_naming_the_field(tmp_path, capsys, spoil, field):
+    path = recording_copy(tmp_path, spoil)
+    argv = ["replay", "--sequence", "synthetic-city", "--agent", "recorded", "--from", str(path)]
+    assert vision_eval.main(argv) == vision_eval.REFUSED
+    assert f"is not a whole replay recording: {field}" in capsys.readouterr().err

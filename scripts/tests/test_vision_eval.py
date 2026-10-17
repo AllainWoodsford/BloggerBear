@@ -860,3 +860,99 @@ def test_access_baseline_refuses_a_scene_whose_pinned_etag_moved(tmp_path, monke
     monkeypatch.setattr(vision_worker_handler, "http_fetch", lambda *a: pytest.fail("must not read"))
     code = vision_eval.main(["access-baseline", "--network", str(network), "--cache", str(tmp_path / "c")])
     assert code == vision_eval.REFUSED and "input changed" in capsys.readouterr().err
+
+
+# --- review fixes: collection, the network, the index's edges, the operator's commands ------------------
+
+
+class Done:
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = ""):
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def test_failures_refuses_when_pytest_cannot_collect_rather_than_call_every_test_missing(
+    tmp_path, monkeypatch, capsys
+):
+    files = ["lambdas/tests/test_vision_worker.py"]
+    no_pytest = Done(1, stderr="/home/op/.venv/bin/python: No module named pytest\n")
+    with pytest.raises(vision_eval.CollectionFailed, match="exited 1: .*No module named pytest"):
+        vision_eval.collected_tests(files, run=lambda *args, **kwargs: no_pytest)
+    broken = Done(2, stdout="ERROR lambdas/tests/test_rail_access_adapter.py\n!!! Interrupted: 1 error !!!\n")
+    with pytest.raises(vision_eval.CollectionFailed, match="exited 2"):
+        vision_eval.collected_tests(files, run=lambda *args, **kwargs: broken)
+    found = Done(0, stdout=f"{files[0]}::test_a\n\n1 test collected in 0.1s\n")
+    assert vision_eval.collected_tests(files, run=lambda *args, **kwargs: found) == {f"{files[0]}::test_a"}
+    assert vision_eval.collected_tests(files, run=lambda *args, **kwargs: Done(5)) == set()
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: no_pytest)
+    out = tmp_path / "runs"
+    assert vision_eval.main(["failures", "--out", str(out)]) == vision_eval.REFUSED
+    err = capsys.readouterr().err
+    assert "No module named pytest" in err and "--no-collect" in err and "requirements-dev.txt" in err
+    assert not out.exists()
+
+
+def test_failures_refuses_a_network_file_that_is_not_there_when_one_is_named(tmp_path, capsys):
+    code = vision_eval.main(["failures", "--no-collect", "--network", str(tmp_path / "typo.json")])
+    assert code == vision_eval.REFUSED and "network_file missing" in capsys.readouterr().err
+
+
+def test_index_lists_a_summary_value_that_is_null(tmp_path):
+    # vision_benchmark.compare_summary writes None for an interval it could not compute.
+    evidence = evidence_copy(tmp_path)
+    path = next((evidence / "runs").glob("*.json"))
+    run = json.loads(path.read_text(encoding="utf-8"))
+    run["summary"] = {**run["summary"], "scenes": None}
+    path.write_text(json.dumps(run), encoding="utf-8")
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0
+    row = next(line for line in (evidence / "RESULTS.md").read_text(encoding="utf-8").splitlines()
+               if line.startswith(f"| [{run['run_id']}]"))  # fmt: skip
+    assert "| n/a | 7 |" in row
+
+
+def test_index_refuses_a_missing_evidence_directory_and_names_labels_that_are_not_utf8(tmp_path, capsys):
+    assert vision_eval.main(["index", "--evidence", str(tmp_path / "nowhere")]) == vision_eval.REFUSED
+    assert "is not a directory" in capsys.readouterr().err
+    evidence = evidence_copy(tmp_path)
+    assert vision_eval.main(["index", "--evidence", str(evidence)]) == 0
+    live = evidence / "live" / "2026-10-24"
+    live.mkdir(parents=True)
+    text = (
+        "decision,verdict,figure,trace,label,reason\n"
+        "rail-cities/sydney/S2B_56HLH_20241015_0_L2A,real,f.png,t.md,agree,looks_real\n"
+        "# saved by a spreadsheet in its own encoding: café\n"
+    )
+    (live / "labels.csv").write_bytes(text.encode("cp1252"))
+    assert vision_eval.main(["index", "--evidence", str(evidence), "--check"]) == 1
+    assert 'live/2026-10-24/labels.csv: not UTF-8 text (save it as "CSV UTF-8")' in capsys.readouterr().err
+
+
+def test_the_docs_say_where_ci_runs_index_check_while_python_ci_skips_docs_only_pull_requests():
+    workflow = (ROOT / ".github" / "workflows" / "python-ci.yml").read_text(encoding="utf-8")
+    pull_request = workflow.split("pull_request:", 1)[1].split("\n  push:", 1)[0]
+    if "'docs/hackathon/**'" in pull_request:
+        pytest.skip("python-ci runs on a docs-only pull request now: the caveat below can go")
+    evidence = ROOT / "docs" / "hackathon" / "evidence"
+    for path in (evidence / "README.md", evidence / "RESULTS.md", ROOT / "scripts" / "README.md", RUNSHEET):
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        assert "until python-ci also lists `docs/hackathon/**`" in text, path
+    assert "CI's `index --check` fails" not in (evidence / "README.md").read_text(encoding="utf-8")
+
+
+RUNSHEET = ROOT / "docs" / "deployment-runsheet.md"
+RUNSHEET_EVAL = RUNSHEET.read_text(encoding="utf-8").split("### The evaluation's real-data runs", 1)[1]
+RUNSHEET_EVAL = RUNSHEET_EVAL.split("\n## ", 1)[0]
+
+
+def test_the_runsheets_powershell_runs_the_venvs_python_and_checks_what_bash_checks():
+    # `py -3.11` runs the global 3.11, not the activated venv's: every line after Activate.ps1 is `python`.
+    powershell = re.findall(r"```powershell\n(.*?)```", RUNSHEET_EVAL, re.S)
+    bash = "".join(re.findall(r"```sh\n(.*?)```", RUNSHEET_EVAL, re.S))
+    lines = [line.strip() for block in powershell for line in block.splitlines()]
+    after = lines[next(n for n, line in enumerate(lines) if "Activate.ps1" in line) + 1 :]
+    assert not [line for line in after if "py -3.11" in line]
+    assert sum(line.count("python scripts\\vision_eval.py") for line in after) == 6
+    for step in ("requirements-dev.txt", "index --check", "pii_denylist_check.py --staged"):
+        assert step in bash and step in "".join(powershell), step
+    assert "ids only" not in RUNSHEET_EVAL and "the agent's note" in RUNSHEET_EVAL

@@ -753,30 +753,34 @@ python scripts/vision_eval.py index --check    # change nothing; exit 1 if eithe
 tick by tick, over a sequence of the manifest's scenes (`sydney-winter`, `sydney-demo` with the demo
 topic's thresholds of 0, `sydney-c1` with network B on its last tick, and `synthetic-city`), as a
 one-site topic like `trains-sydney`, each tick six hours after its scene. The worker is in this
-process (`--worker in-process`, the default) or the deployed one (`--worker <ARN>`; every site id
-sent is `eval-sydney`, and the run file names the Region, never the ARN). The agent is Bedrock
-(`--agent bedrock --model-id <id> [--region R]`: every Converse response recorded), a recording
-(`--agent recorded --from <run file>`: the responses, the ticks' times and the clock's readings
-replayed, every measurement recomputed in-process and held to the recording: the ring's
-code-derived fields exactly, measurements within 2.7.1's tolerances, the fields left out listed in
-the run file under `excluded`) or scripted (`--agent scripted`, the default: a `look_again` at 800 m,
-the news, then `real` exactly when the station count moved). The news the agent may read is the
-sequence's own (sydney-c1's is constructed and says so), never a live search. A recorded replay is
-refused when a pinned ETag or the network file moved, or when a recorded response calls a tool the
-profile no longer offers (naming the tick and the step); an in-process worker under the real
-model's deadline is refused without `--cache` off an EC2 instance in us-west-2 (its `look_again`
-would re-read the scene inside the agent's 85 s). `--trace` renders the ticks' decisions to
-`docs/hackathon/evidence/replay/<sequence>.md` through `vision_decisions.trace` and the operator's
-assistant's own table; `--limit N` replays the first N ticks; each tick's figure is written beside
-the run file (`--no-figures` to skip). `scripts/tests/fixtures/replay-synthetic-city-scripted.json`
-is a scripted recording CI replays with `--agent recorded`.
+process (`--worker in-process`, the default) or the deployed one (`--worker <ARN>`, without
+`--cache`; every site id sent is `eval-sydney`, and the run file names the Region, never the ARN).
+The agent is Bedrock (`--agent bedrock --model-id <id> [--region R]`: every Converse response
+recorded; an application inference profile's ARN reaches Converse alone, and the run file and the
+trace name no model for it), a recording (`--agent recorded --from <run file>`: the responses, the
+ticks' times and the clock's readings replayed, every measurement recomputed in-process and held to
+the recording: the ring's code-derived fields exactly, measurements within 2.7.1's tolerances, the
+fields left out listed in the run file under `excluded`) or scripted (`--agent scripted`, the
+default: a `look_again` at 800 m, the news, then `real` exactly when the station count moved). The
+news the agent may read is the sequence's own (sydney-c1's is constructed and says so), never a live
+search. A recorded replay is refused when a pinned ETag or the network file moved, or when a
+recorded response calls a tool the profile no longer offers (naming the tick and the step); an
+in-process worker under the real model's deadline is refused without `--cache` off an EC2 instance
+in us-west-2 (its `look_again` would re-read the scene inside the agent's 85 s; when the instance is
+what allowed it, the run file's `environment.host` says so). `--trace` renders the ticks' decisions
+to `docs/hackathon/evidence/replay/<sequence>.md` through `vision_decisions.trace` and the
+operator's assistant's own table; `--limit N` replays the first N ticks; each tick's figure is
+written beside the run file (`--no-figures` to skip).
+`scripts/tests/fixtures/replay-synthetic-city-scripted.json` is a scripted recording CI replays with
+`--agent recorded`.
 
-**`failures`** (2.5) is the constructed failure catalogue: fourteen cases, each with its input,
-what must happen and the tests that hold it, named by pytest node id and checked to be collected
-(`--no-collect` skips that). The rows that read nothing (an asset off the allowlist; a cool request
-to a stock worker and a cool worker without its pin) run anywhere; with `--cache` the real-data
-rows run through the worker handler in this process, and the cloudy row also runs the real adapter
-for one tick on a scene the search does pick under the floor. `--only CASE` picks rows.
+**`failures`** (2.5) is the constructed failure catalogue: fourteen cases, each with its input, what
+must happen and the tests that hold it, named by pytest node id and checked to be collected
+(`--no-collect` skips that; without pytest and moto, `lambdas/requirements-dev.txt`, it refuses
+rather than call the tests missing). The rows that read nothing (an asset off the allowlist; a cool
+request to a stock worker and a cool worker without its pin) run anywhere; with `--cache` the
+real-data rows run through the worker handler in this process, and the cloudy row also runs the real
+adapter for one tick on a scene the search does pick under the floor. `--only CASE` picks rows.
 
 **`access-baseline`** (E5) measures one scene in this process with the worker's own read and
 analysis, then compares the production distance transform (`DIST_L2`, the 5x5 mask, as
@@ -785,14 +789,16 @@ of `cv2.circle` discs of the reach at each station, SDG 11.2.1's simple method):
 served share, its difference from production's, the IoU of the served masks and the median time
 of five runs; it checks production's share is the worker's own.
 
-**`index`** (2.9) reads every run file in `docs/hackathon/evidence/runs/` (a malformed one, or one of
-an unknown kind, is refused by name) and writes `index.json` and `RESULTS.md` (one table per kind,
-newest first; a run listed in `older-code.json` is marked "measured on older code" with its
-reason). `--check`, run in CI by `scripts/tests/test_vision_eval.py`, fails when a run file was
-added without re-indexing, and checks the operator's labels (`live/*/labels.csv`) when there are
-any.
+**`index`** (2.9) reads every run file in `docs/hackathon/evidence/runs/` (a malformed one, or one
+of an unknown kind, is refused by name) and writes `index.json` and `RESULTS.md` (one table per
+kind, newest first; a run listed in `older-code.json` is marked "measured on older code" with its
+reason). `--check` fails when a run file was added without re-indexing, and checks the operator's
+labels (`live/*/labels.csv`) when there are any. `scripts/tests/test_vision_eval.py` runs it in CI,
+but only on a pull request python-ci runs on (one that touches `scripts/` or `lambdas/`) until
+python-ci also lists `docs/hackathon/**`: run it before committing run files.
 
-All four run on Windows (`py -3.11 scripts\vision_eval.py ...`). The driver they share,
+All four run on Windows (`python scripts\vision_eval.py ...` in the activated venv: `py -3.11`
+would run the global 3.11, without the venv's packages). The driver they share,
 `scripts/vision_eval_driver.py`, documents in its docstring the interface the agent evaluation,
 the counterfactuals and the stability run build on.
 
